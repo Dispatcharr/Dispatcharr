@@ -1,4 +1,5 @@
 import useChannelsStore from '../../store/channels.jsx';
+import API from '../../api.js';
 import {
   parseDate,
   RECURRING_DAY_OPTIONS,
@@ -33,8 +34,14 @@ import {
   updateRecurringRuleEnabled,
 } from '../../utils/forms/RecurringRuleModalUtils.js';
 
-const RecurringRuleModal = ({ opened, onClose, ruleId, recording: sourceRecording, onEditOccurrence }) => {
-  const channels = useChannelsStore((s) => s.channels);
+const RecurringRuleModal = ({
+  opened,
+  onClose,
+  ruleId,
+  recording: sourceRecording,
+  onEditOccurrence,
+}) => {
+  const [allChannels, setAllChannels] = useState([]);
   const recurringRules = useChannelsStore((s) => s.recurringRules);
   const fetchRecurringRules = useChannelsStore((s) => s.fetchRecurringRules);
   const recordings = useChannelsStore((s) => s.recordings);
@@ -49,8 +56,8 @@ const RecurringRuleModal = ({ opened, onClose, ruleId, recording: sourceRecordin
   const rule = recurringRules.find((r) => r.id === ruleId);
 
   const channelOptions = useMemo(() => {
-    return getChannelOptions(channels);
-  }, [channels]);
+    return getChannelOptions(allChannels);
+  }, [allChannels]);
 
   const form = useForm({
     mode: 'controlled',
@@ -114,6 +121,23 @@ const RecurringRuleModal = ({ opened, onClose, ruleId, recording: sourceRecordin
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [opened, ruleId, rule]);
+
+  useEffect(() => {
+    if (!opened) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const chans = await API.getChannelsSummary();
+        if (!cancelled) setAllChannels(Array.isArray(chans) ? chans : []);
+      } catch (e) {
+        console.warn('Failed to load channels for recurring rule modal', e);
+        if (!cancelled) setAllChannels([]);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [opened]);
 
   const upcomingOccurrences = useMemo(() => {
     return getUpcomingOccurrences(recordings, userNow, ruleId, toUserTime);
@@ -324,7 +348,8 @@ const RecurringRuleModal = ({ opened, onClose, ruleId, recording: sourceRecordin
       <Stack gap="md">
         <Group justify="space-between" align="center">
           <Text fw={600}>
-            {channels?.[rule.channel]?.name || `Channel ${rule.channel}`}
+            {allChannels.find((c) => c.id === rule.channel)?.name ||
+              `Channel ${rule.channel}`}
           </Text>
           <Switch
             size="sm"

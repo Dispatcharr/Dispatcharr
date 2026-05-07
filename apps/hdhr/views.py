@@ -84,15 +84,27 @@ class LineupAPIView(APIView):
         description="Retrieve the available channel lineup",
     )
     def get(self, request):
-        channels = Channel.objects.all().order_by("channel_number")
-        lineup = [
-            {
-                "GuideNumber": str(ch.channel_number),
-                "GuideName": ch.name,
-                "URL": request.build_absolute_uri(f"/proxy/ts/stream/{ch.uuid}"),
-            }
-            for ch in channels
-        ]
+        from apps.channels.managers import with_effective_values
+        from apps.channels.utils import format_channel_number
+
+        channels = (
+            with_effective_values(Channel.objects.all())
+            .exclude(hidden_from_output=True)
+            .order_by("effective_channel_number")
+        )
+        lineup = []
+        for ch in channels:
+            formatted = format_channel_number(ch.effective_channel_number, empty=None)
+            if formatted is None:
+                continue
+            formatted_channel_number = str(formatted)
+            lineup.append(
+                {
+                    "GuideNumber": formatted_channel_number,
+                    "GuideName": ch.effective_name,
+                    "URL": request.build_absolute_uri(f"/proxy/ts/stream/{ch.uuid}"),
+                }
+            )
         return JsonResponse(lineup, safe=False)
 
 

@@ -18,6 +18,54 @@ import {
 import API from '../../../api';
 import useChannelsTableStore from '../../../store/channelsTable';
 import useLogosStore from '../../../store/logos';
+import {
+  OVERRIDABLE_FIELDS,
+  normalizeFieldValue,
+} from '../../../utils/forms/ChannelUtils.js';
+import { showNotification } from '../../../utils/notificationUtils.js';
+
+// Surfaces server-side validation failures so the user knows the
+// inline edit was rejected (otherwise the cell silently reverts).
+// Exported so unit tests can verify the message composition without
+// mounting the component.
+export const notifyInlineSaveError = (columnId, error) => {
+  const detail =
+    error?.body?.detail ||
+    error?.body?.[columnId]?.[0] ||
+    error?.body?.error ||
+    error?.message ||
+    'Server rejected the change';
+  showNotification({
+    title: 'Edit not saved',
+    message: String(detail),
+    color: 'red',
+    autoClose: 5000,
+  });
+};
+
+// Inline edits on auto-synced channels route into the override row so
+// sync cannot overwrite them. If the new value matches the provider's,
+// clear that field's override instead of writing a duplicate. Manual
+// channels keep direct Channel.* writes.
+const buildInlinePatch = (rowOriginal, fieldId, newValue) => {
+  if (rowOriginal?.auto_created && OVERRIDABLE_FIELDS.includes(fieldId)) {
+    // Normalize both sides so a stringified form value compares
+    // cleanly against the typed provider value.
+    const formValue = normalizeFieldValue(fieldId, newValue);
+    const providerValue = normalizeFieldValue(fieldId, rowOriginal[fieldId]);
+    const overrideFieldValue = formValue === providerValue ? null : formValue;
+    return {
+      id: rowOriginal.id,
+      override: { [fieldId]: overrideFieldValue },
+    };
+  }
+  const normalized =
+    newValue === undefined || newValue === '' ? null : newValue;
+  return {
+    id: rowOriginal.id,
+    [fieldId]: normalized,
+  };
+};
 
 // Lightweight wrapper that only renders full editable cell when unlocked
 // This prevents 250+ heavy component instances when table is locked
@@ -103,10 +151,9 @@ const EditableTextCellInner = ({ row, column, getValue, onBlur }) => {
       }
 
       try {
-        const response = await API.updateChannel({
-          id: row.original.id,
-          [column.id]: newValue || null,
-        });
+        const response = await API.updateChannel(
+          buildInlinePatch(row.original, column.id, newValue)
+        );
         previousValue.current = newValue;
 
         // Update the table store to reflect the change
@@ -114,11 +161,13 @@ const EditableTextCellInner = ({ row, column, getValue, onBlur }) => {
           useChannelsTableStore.getState().updateChannel(response);
         }
       } catch (error) {
-        // Revert on error
+        // Surface server-side errors (e.g. max_length=512, validator
+        // rejection) so the user knows the change was not saved.
+        notifyInlineSaveError(column.id, error);
         setValue(previousValue.current || '');
       }
     },
-    [row.original.id, column.id]
+    [row.original, column.id]
   );
 
   useEffect(() => {
@@ -249,10 +298,9 @@ const EditableNumberCellInner = ({ row, column, getValue, onBlur }) => {
       }
 
       try {
-        const response = await API.updateChannel({
-          id: row.original.id,
-          [column.id]: newValue,
-        });
+        const response = await API.updateChannel(
+          buildInlinePatch(row.original, column.id, newValue)
+        );
         previousValue.current = newValue;
 
         // Update the table store to reflect the change
@@ -266,11 +314,13 @@ const EditableNumberCellInner = ({ row, column, getValue, onBlur }) => {
           }
         }
       } catch (error) {
-        // Revert on error
+        // Surface server-side errors (channel_number out-of-range,
+        // collision, etc.) so the user knows the change was not saved.
+        notifyInlineSaveError(column.id, error);
         setValue(previousValue.current);
       }
     },
-    [row.original.id, column.id, onBlur]
+    [row.original, column.id, onBlur]
   );
 
   useEffect(() => {
@@ -366,10 +416,13 @@ const EditableGroupCellInner = ({
       }
 
       try {
-        const response = await API.updateChannel({
-          id: row.original.id,
-          channel_group_id: parseInt(newGroupId, 10),
-        });
+        const response = await API.updateChannel(
+          buildInlinePatch(
+            row.original,
+            'channel_group_id',
+            parseInt(newGroupId, 10)
+          )
+        );
         previousGroupId.current = newGroupId;
 
         // Update the table store to reflect the change
@@ -378,9 +431,10 @@ const EditableGroupCellInner = ({
         }
       } catch (error) {
         console.error('Failed to update channel group:', error);
+        notifyInlineSaveError(column.id, error);
       }
     },
-    [row.original.id]
+    [row.original]
   );
 
   const handleChange = (newGroupId) => {
@@ -537,11 +591,13 @@ const EditableEPGCellInner = ({
       }
 
       try {
-        const response = await API.updateChannel({
-          id: row.original.id,
-          epg_data_id:
-            newEpgDataId === 'null' ? null : parseInt(newEpgDataId, 10),
-        });
+        const response = await API.updateChannel(
+          buildInlinePatch(
+            row.original,
+            'epg_data_id',
+            newEpgDataId === 'null' ? null : parseInt(newEpgDataId, 10)
+          )
+        );
         previousEpgDataId.current = newEpgDataId;
 
         // Update the table store to reflect the change
@@ -550,9 +606,10 @@ const EditableEPGCellInner = ({
         }
       } catch (error) {
         console.error('Failed to update EPG:', error);
+        notifyInlineSaveError(column.id, error);
       }
     },
-    [row.original.id]
+    [row.original]
   );
 
   const handleChange = (newEpgDataId) => {
@@ -704,10 +761,13 @@ const EditableLogoCellInner = ({ row, logoId, onBlur }) => {
       }
 
       try {
-        const response = await API.updateChannel({
-          id: row.original.id,
-          logo_id: newLogoId === 'null' ? null : parseInt(newLogoId, 10),
-        });
+        const response = await API.updateChannel(
+          buildInlinePatch(
+            row.original,
+            'logo_id',
+            newLogoId === 'null' ? null : parseInt(newLogoId, 10)
+          )
+        );
         previousLogoId.current = newLogoId;
 
         // Update the table store to reflect the change
@@ -716,9 +776,10 @@ const EditableLogoCellInner = ({ row, logoId, onBlur }) => {
         }
       } catch (error) {
         console.error('Failed to update logo:', error);
+        notifyInlineSaveError(column.id, error);
       }
     },
-    [row.original.id]
+    [row.original]
   );
 
   const handleChange = (newLogoId) => {

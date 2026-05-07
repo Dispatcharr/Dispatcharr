@@ -3,7 +3,10 @@ import { toTimeString } from '../dateTimeUtils.js';
 import dayjs from 'dayjs';
 
 export const getChannelOptions = (channels) => {
-  return Object.values(channels || {})
+  const list = Array.isArray(channels)
+    ? channels
+    : Object.values(channels || {});
+  return list
     .sort((a, b) => {
       const aNum = Number(a.channel_number) || 0;
       const bNum = Number(b.channel_number) || 0;

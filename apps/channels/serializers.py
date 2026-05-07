@@ -6,6 +6,7 @@ from .models import (
     Stream,
     Channel,
     ChannelGroup,
+    ChannelOverride,
     ChannelStream,
     ChannelGroupM3UAccount,
     Logo,
@@ -17,6 +18,7 @@ from .models import (
 from apps.epg.serializers import EPGDataSerializer
 from core.models import StreamProfile
 from apps.epg.models import EPGData
+from django.db import connection, transaction
 from django.urls import reverse
 from rest_framework import serializers
 from django.utils import timezone
@@ -154,12 +156,52 @@ class ChannelGroupM3UAccountSerializer(serializers.ModelSerializer):
     m3u_accounts = serializers.IntegerField(source="m3u_accounts.id", read_only=True)
     enabled = serializers.BooleanField()
     auto_channel_sync = serializers.BooleanField(default=False)
-    auto_sync_channel_start = serializers.FloatField(allow_null=True, required=False)
+    auto_sync_channel_start = serializers.FloatField(
+        allow_null=True, required=False, min_value=1
+    )
+    auto_sync_channel_end = serializers.FloatField(
+        allow_null=True, required=False, min_value=1
+    )
     custom_properties = serializers.JSONField(required=False)
+    # Provider stream count for this group+account. Lets users size an
+    # optional end-range without first running a blind sync.
+    stream_count = serializers.SerializerMethodField()
 
     class Meta:
         model = ChannelGroupM3UAccount
-        fields = ["m3u_accounts", "channel_group", "enabled", "auto_channel_sync", "auto_sync_channel_start", "custom_properties", "is_stale", "last_seen"]
+        fields = [
+            "m3u_accounts",
+            "channel_group",
+            "enabled",
+            "auto_channel_sync",
+            "auto_sync_channel_start",
+            "auto_sync_channel_end",
+            "custom_properties",
+            "is_stale",
+            "last_seen",
+            "stream_count",
+        ]
+
+    def get_stream_count(self, obj):
+        """
+        Return the number of streams for this (m3u_account, channel_group)
+        pair. A parent serializer (e.g. M3UAccountSerializer) may seed
+        ``context["stream_counts"]`` with a pre-aggregated dict keyed by
+        ``(m3u_account_id, channel_group_id)`` to avoid one COUNT per row;
+        when present, it is used as the source of truth. The per-row
+        COUNT fallback is correct for stand-alone serialization (rare,
+        low-volume) and exists so direct ChannelGroupM3UAccount queries
+        do not require callers to know the seeding pattern.
+        """
+        counts = self.context.get("stream_counts")
+        if counts is not None:
+            return counts.get((obj.m3u_account_id, obj.channel_group_id), 0)
+        from apps.channels.models import Stream
+
+        return Stream.objects.filter(
+            m3u_account_id=obj.m3u_account_id,
+            channel_group_id=obj.channel_group_id,
+        ).count()
 
     def to_representation(self, instance):
         data = super().to_representation(instance)
@@ -179,6 +221,26 @@ class ChannelGroupM3UAccountSerializer(serializers.ModelSerializer):
 
         return super().to_internal_value(data)
 
+    def validate(self, attrs):
+        # Partial PATCHes only carry submitted fields; fill missing
+        # start/end from the instance so the validator catches a PATCH
+        # that lowers end past the existing start.
+        start = attrs.get("auto_sync_channel_start")
+        end = attrs.get("auto_sync_channel_end")
+        if start is None and self.instance is not None:
+            start = self.instance.auto_sync_channel_start
+        if end is None and self.instance is not None:
+            end = self.instance.auto_sync_channel_end
+        if start is not None and end is not None and end < start:
+            raise serializers.ValidationError(
+                {
+                    "auto_sync_channel_end": (
+                        "End must be greater than or equal to start."
+                    )
+                }
+            )
+        return super().validate(attrs)
+
 #
 # Channel Group
 #
@@ -195,12 +257,14 @@ class ChannelGroupSerializer(serializers.ModelSerializer):
         fields = ["id", "name", "channel_count", "m3u_account_count", "m3u_accounts"]
 
     def get_channel_count(self, obj):
-        """Get count of channels in this group"""
-        return obj.channels.count()
+        # Use the queryset annotation when available (list path); fall back
+        # to a live query for retrieve/create/update where it isn't set.
+        v = getattr(obj, 'channel_count', None)
+        return v if v is not None else obj.channels.count()
 
     def get_m3u_account_count(self, obj):
-        """Get count of M3U accounts associated with this group"""
-        return obj.m3u_accounts.count()
+        v = getattr(obj, 'm3u_account_count', None)
+        return v if v is not None else obj.m3u_accounts.count()
 
 
 class ChannelProfileSerializer(serializers.ModelSerializer):
@@ -238,6 +302,62 @@ class BulkChannelProfileMembershipSerializer(serializers.Serializer):
         if not value:
             raise serializers.ValidationError("At least one channel must be provided.")
         return value
+
+
+#
+# Channel override
+#
+# Nullable per-field overrides resolved over the parent Channel in read
+# paths. Embedded in ChannelSerializer so clients can upsert/clear in the
+# same PATCH that targets direct channel fields.
+class ChannelOverrideSerializer(serializers.ModelSerializer):
+    # HDHR clients reject negative GuideNumber and zero is not a real
+    # provider value, so reject both at the API boundary.
+    channel_number = serializers.FloatField(
+        allow_null=True, required=False, min_value=0.0001
+    )
+    channel_group_id = serializers.PrimaryKeyRelatedField(
+        queryset=ChannelGroup.objects.all(),
+        source="channel_group",
+        allow_null=True,
+        required=False,
+    )
+    logo_id = serializers.PrimaryKeyRelatedField(
+        queryset=Logo.objects.all(),
+        source="logo",
+        allow_null=True,
+        required=False,
+    )
+    epg_data_id = serializers.PrimaryKeyRelatedField(
+        queryset=EPGData.objects.all(),
+        source="epg_data",
+        allow_null=True,
+        required=False,
+    )
+    stream_profile_id = serializers.PrimaryKeyRelatedField(
+        queryset=StreamProfile.objects.all(),
+        source="stream_profile",
+        allow_null=True,
+        required=False,
+    )
+
+    class Meta:
+        model = ChannelOverride
+        fields = [
+            "name",
+            "channel_number",
+            "channel_group_id",
+            "logo_id",
+            "tvg_id",
+            "tvc_guide_stationid",
+            "epg_data_id",
+            "stream_profile_id",
+        ]
+        extra_kwargs = {
+            "name": {"allow_null": True, "required": False},
+            "tvg_id": {"allow_null": True, "required": False},
+            "tvc_guide_stationid": {"allow_null": True, "required": False},
+        }
 
 
 #
@@ -280,6 +400,32 @@ class ChannelSerializer(serializers.ModelSerializer):
     )
 
     auto_created_by_name = serializers.SerializerMethodField()
+    override = ChannelOverrideSerializer(
+        required=False,
+        allow_null=True,
+        help_text=(
+            "Per-field overrides for an auto-created channel. "
+            'Send {"override": {"name": "ESPN"}} to upsert the listed '
+            'fields, {"override": {"name": null}} to clear specific fields '
+            'while leaving others, or {"override": null} to delete the '
+            "override row entirely. Omitting the key leaves any existing "
+            "override unchanged. Only valid for auto_created=True channels. "
+            "Duplicate channel_number values across channels are permitted; "
+            "downstream client behavior on duplicates varies by client."
+        ),
+    )
+    source_stream = serializers.SerializerMethodField()
+    # Effective fields coalesce override over channel column. Consumers
+    # display these; raw fields remain in the response so the edit form
+    # can show them as "Provider: X" subtext.
+    effective_name = serializers.SerializerMethodField()
+    effective_channel_number = serializers.SerializerMethodField()
+    effective_channel_group_id = serializers.SerializerMethodField()
+    effective_logo_id = serializers.SerializerMethodField()
+    effective_tvg_id = serializers.SerializerMethodField()
+    effective_tvc_guide_stationid = serializers.SerializerMethodField()
+    effective_epg_data_id = serializers.SerializerMethodField()
+    effective_stream_profile_id = serializers.SerializerMethodField()
 
     class Meta:
         model = Channel
@@ -297,10 +443,87 @@ class ChannelSerializer(serializers.ModelSerializer):
             "logo_id",
             "user_level",
             "is_adult",
+            "hidden_from_output",
             "auto_created",
             "auto_created_by",
             "auto_created_by_name",
+            "override",
+            "source_stream",
+            "effective_name",
+            "effective_channel_number",
+            "effective_channel_group_id",
+            "effective_logo_id",
+            "effective_tvg_id",
+            "effective_tvc_guide_stationid",
+            "effective_epg_data_id",
+            "effective_stream_profile_id",
         ]
+
+    def _effective_value(self, obj, field_name):
+        override = getattr(obj, "_channel_override_cache", None)
+        if override is None:
+            try:
+                override = obj.override
+            except ChannelOverride.DoesNotExist:
+                override = None
+            obj._channel_override_cache = override
+        if override is not None:
+            value = getattr(override, field_name, None)
+            if value is not None:
+                return value
+        return getattr(obj, field_name, None)
+
+    def get_effective_name(self, obj):
+        return self._effective_value(obj, "name")
+
+    def get_effective_channel_number(self, obj):
+        return self._effective_value(obj, "channel_number")
+
+    def get_effective_channel_group_id(self, obj):
+        return self._effective_value(obj, "channel_group_id")
+
+    def get_effective_logo_id(self, obj):
+        return self._effective_value(obj, "logo_id")
+
+    def get_effective_tvg_id(self, obj):
+        return self._effective_value(obj, "tvg_id")
+
+    def get_effective_tvc_guide_stationid(self, obj):
+        return self._effective_value(obj, "tvc_guide_stationid")
+
+    def get_effective_epg_data_id(self, obj):
+        return self._effective_value(obj, "epg_data_id")
+
+    def get_effective_stream_profile_id(self, obj):
+        return self._effective_value(obj, "stream_profile_id")
+
+    def get_source_stream(self, obj):
+        """
+        Return the originating provider stream for an auto-created channel.
+
+        Surfaces the provider stream's name and owning M3U account so the
+        frontend can render "Auto-created from: <provider> / <stream name>"
+        in the channel edit form. Returns None for manual channels.
+        """
+        if not self.context.get("include_source_stream", False):
+            return None
+        if not obj.auto_created:
+            return None
+        # Viewset prefetches `channelstream_set` ordered by `order`, so
+        # `.all()[0]` reuses the cache and returns the lowest-order entry.
+        prefetched_list = list(obj.channelstream_set.all())
+        if not prefetched_list:
+            return None
+        cs = prefetched_list[0]
+        if not cs.stream:
+            return None
+        stream = cs.stream
+        return {
+            "id": stream.id,
+            "name": stream.name,
+            "account_id": stream.m3u_account_id,
+            "account_name": getattr(stream.m3u_account, "name", None),
+        }
 
     def to_representation(self, instance):
         include_streams = self.context.get("include_streams", False)
@@ -309,14 +532,14 @@ class ChannelSerializer(serializers.ModelSerializer):
             self.fields["streams"] = serializers.SerializerMethodField()
             return super().to_representation(instance)
         else:
-            # Fix: For PATCH/PUT responses, ensure streams are ordered
+            # Read from the prefetched channelstream_set (ordered by the
+            # viewset's Prefetch); chaining .order_by() rebuilds the
+            # queryset and fires one SELECT per row in list responses.
             representation = super().to_representation(instance)
             if "streams" in representation:
-                representation["streams"] = list(
-                    instance.streams.all()
-                    .order_by("channelstream__order")
-                    .values_list("id", flat=True)
-                )
+                representation["streams"] = [
+                    cs.stream_id for cs in instance.channelstream_set.all()
+                ]
             return representation
 
     def get_logo(self, obj):
@@ -330,6 +553,7 @@ class ChannelSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         streams = validated_data.pop("streams", [])
+        override_data = validated_data.pop("override", None)
         channel_number = validated_data.pop(
             "channel_number", Channel.get_next_available_channel_number()
         )
@@ -341,60 +565,146 @@ class ChannelSerializer(serializers.ModelSerializer):
             default_group, _ = ChannelGroup.objects.get_or_create(name="Default Group")
             validated_data["channel_group"] = default_group
 
-        channel = Channel.objects.create(**validated_data)
+        # Atomic wrapper keeps the channel insert and its override row
+        # in the same transaction so a failure on either rolls both back.
+        with transaction.atomic():
+            channel = Channel.objects.create(**validated_data)
 
-        # Add streams in the specified order
-        for index, stream in enumerate(streams):
-            ChannelStream.objects.create(
-                channel=channel, stream_id=stream.id, order=index
-            )
+            # Add streams in the specified order
+            for index, stream in enumerate(streams):
+                ChannelStream.objects.create(
+                    channel=channel, stream_id=stream.id, order=index
+                )
+
+            if override_data:
+                # Manual channels (auto_created=False) have no provider
+                # value to override; reject the override payload here so a
+                # programmatic client can't write a semantically meaningless
+                # row that the frontend would then surface as "Overrides
+                # active".
+                if not channel.auto_created:
+                    raise serializers.ValidationError(
+                        {
+                            "override": (
+                                "Cannot set override on a manual channel; "
+                                "overrides only apply to auto-created channels."
+                            )
+                        }
+                    )
+                obj = ChannelOverride.objects.create(channel=channel, **override_data)
+                # Drop an all-null override row; an empty override would
+                # falsely surface as active in the UI.
+                if not obj.has_any_override():
+                    obj.delete()
 
         return channel
 
     def update(self, instance, validated_data):
+        """
+        PATCH handler for Channel rows. The ``override`` key carries
+        per-field user overrides for auto-created channels and follows
+        these rules:
+
+        * key absent from payload: no change to existing overrides
+        * ``{"override": {"field": value}}``: upsert those fields
+        * ``{"override": {"field": null}}``: clear those specific fields
+        * ``{"override": null}``: delete the override row entirely
+
+        Key presence is what distinguishes "no change" from "delete";
+        an explicit null means delete. Override mutations are rejected
+        on manual channels (auto_created=False) since there is no
+        provider value to override.
+        """
         streams = validated_data.pop("streams", None)
+        has_override_key = "override" in self.initial_data
+        override_data = validated_data.pop("override", None)
 
-        # Update standard fields
-        for attr, value in validated_data.items():
-            setattr(instance, attr, value)
-
-        instance.save()
-
-        if streams is not None:
-            # Normalize stream IDs
-            normalized_ids = [
-                stream.id if hasattr(stream, "id") else stream for stream in streams
-            ]
-
-            # Get current mapping of stream_id -> ChannelStream
-            current_links = {
-                cs.stream_id: cs for cs in instance.channelstream_set.all()
-            }
-
-            # Track existing stream IDs
-            existing_ids = set(current_links.keys())
-            new_ids = set(normalized_ids)
-
-            # Delete any links not in the new list
-            to_remove = existing_ids - new_ids
-            if to_remove:
-                instance.channelstream_set.filter(stream_id__in=to_remove).delete()
-
-            # Update or create with new order
-            to_update = []
-            for order, stream_id in enumerate(normalized_ids):
-                if stream_id in current_links:
-                    cs = current_links[stream_id]
-                    if cs.order != order:
-                        cs.order = order
-                        to_update.append(cs)
-                else:
-                    ChannelStream.objects.create(
-                        channel=instance, stream_id=stream_id, order=order
+        # Block override mutations on manual channels (no provider
+        # value to override). Clearing is a tolerated no-op.
+        if (
+            has_override_key
+            and override_data is not None
+            and override_data != {}
+            and not instance.auto_created
+        ):
+            raise serializers.ValidationError(
+                {
+                    "override": (
+                        "Cannot set override on a manual channel; "
+                        "overrides only apply to auto-created channels."
                     )
+                }
+            )
 
-            if to_update:
-                ChannelStream.objects.bulk_update(to_update, ["order"])
+        # Atomic so a failure on the override row rolls back the
+        # channel update too.
+        with transaction.atomic():
+            # Skip save() when only override keys were submitted; a
+            # no-op UPDATE would bump updated_at and bust caches.
+            if validated_data:
+                for attr, value in validated_data.items():
+                    setattr(instance, attr, value)
+                instance.save()
+
+            if has_override_key:
+                if override_data is None:
+                    # Explicit null: remove the override row.
+                    ChannelOverride.objects.filter(channel=instance).delete()
+                elif override_data == {}:
+                    # Empty dict has no field intent; no-op.
+                    pass
+                else:
+                    obj, _ = ChannelOverride.objects.update_or_create(
+                        channel=instance, defaults=override_data
+                    )
+                    # Drop an all-null override; would falsely surface
+                    # as active in the UI.
+                    if not obj.has_any_override():
+                        obj.delete()
+                # Queryset writes leave the reverse-OneToOne cache stale;
+                # clear it so to_representation reads the new state.
+                try:
+                    instance._state.fields_cache.pop("override", None)
+                except AttributeError:
+                    pass
+                if hasattr(instance, "_channel_override_cache"):
+                    delattr(instance, "_channel_override_cache")
+
+            if streams is not None:
+                # Normalize stream IDs
+                normalized_ids = [
+                    stream.id if hasattr(stream, "id") else stream for stream in streams
+                ]
+
+                # Get current mapping of stream_id -> ChannelStream
+                current_links = {
+                    cs.stream_id: cs for cs in instance.channelstream_set.all()
+                }
+
+                # Track existing stream IDs
+                existing_ids = set(current_links.keys())
+                new_ids = set(normalized_ids)
+
+                # Delete any links not in the new list
+                to_remove = existing_ids - new_ids
+                if to_remove:
+                    instance.channelstream_set.filter(stream_id__in=to_remove).delete()
+
+                # Update or create with new order
+                to_update = []
+                for order, stream_id in enumerate(normalized_ids):
+                    if stream_id in current_links:
+                        cs = current_links[stream_id]
+                        if cs.order != order:
+                            cs.order = order
+                            to_update.append(cs)
+                    else:
+                        ChannelStream.objects.create(
+                            channel=instance, stream_id=stream_id, order=order
+                        )
+
+                if to_update:
+                    ChannelStream.objects.bulk_update(to_update, ["order"])
 
         return instance
 

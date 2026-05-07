@@ -1686,6 +1686,113 @@ def delete_m3u_refresh_task_by_id(account_id):
         return False
 
 
+def _next_available_number(used_numbers, start, end=None):
+    """
+    Return the smallest integer >= start that is not present in `used_numbers`.
+
+    When `end` is provided (inclusive upper bound for range-constrained groups),
+    returns None if the search exceeds that bound instead of running
+    indefinitely. The search is O(cluster size) per call against the set;
+    maintaining the cursor monotonically across calls keeps the
+    "next_available" numbering mode from becoming O(N^2) on large groups.
+    """
+    n = start
+    while n in used_numbers:
+        n += 1
+        if end is not None and n > end:
+            return None
+    if end is not None and n > end:
+        return None
+    return n
+
+
+def _pick_target_number(
+    mode,
+    stream,
+    used_numbers,
+    fixed_cursor,
+    fallback_start,
+    end_number=None,
+    range_start=None,
+):
+    """
+    Return the channel number a given stream should claim under the group's
+    numbering mode, or None if the configured range is exhausted.
+
+    Shared by the existing-channel renumber pass and the new-channel create
+    pass so both honor identical mode semantics: provider-supplied number
+    when available and free, otherwise fall back; or always next-available;
+    or fixed-cursor sequential.
+
+    `range_start`, when provided, is the inclusive lower bound for the
+    group's configured numbering range. Provider-supplied numbers below
+    this bound fall back to the next-available picker so freshly-created
+    channels never land outside the configured range.
+    """
+    if mode == "provider":
+        chno = stream.stream_chno
+        if (
+            chno is not None
+            and chno not in used_numbers
+            and (range_start is None or chno >= range_start)
+            and (end_number is None or chno <= end_number)
+        ):
+            return chno
+        # No usable provider number: walk from fallback_start, bumped up
+        # to range_start when set so the fallback never lands below the
+        # configured range.
+        effective_start = (
+            max(fallback_start, range_start)
+            if range_start is not None
+            else fallback_start
+        )
+        return _next_available_number(used_numbers, effective_start, end=end_number)
+    if mode == "next_available":
+        return _next_available_number(used_numbers, 1, end=end_number)
+    return _next_available_number(used_numbers, fixed_cursor, end=end_number)
+
+
+def _custom_properties_as_dict(value):
+    """
+    Normalize a JSONField-backed custom_properties value into a dict.
+
+    Historical data has rows where the field holds a JSON-encoded string
+    instead of a dict. Django's JSONField serializes whatever it gets, so
+    `.get()` on one of those rows raises AttributeError and aborts the
+    entire sync. Treat string values as JSON to parse, and fall back to an
+    empty dict for anything that isn't a dict after parsing.
+    """
+    import json
+
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except (ValueError, TypeError):
+            logger.warning(
+                "custom_properties stored as non-JSON string; ignoring: %r",
+                value[:100],
+            )
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
+def _classify_sync_failure(exc):
+    """
+    Map an exception raised during per-stream sync to a coarse typed
+    reason used by the completion notification's grouped failure list.
+    Keeps the bucket count small so the modal stays readable; the
+    underlying exception text is preserved verbatim in ``error``.
+    """
+    from django.db import IntegrityError
+
+    if isinstance(exc, IntegrityError):
+        return "INTEGRITY_ERROR"
+    return "OTHER"
+
+
 @shared_task
 def sync_auto_channels(account_id, scan_start_time=None):
     """
@@ -1722,17 +1829,47 @@ def sync_auto_channels(account_id, scan_start_time=None):
         channels_created = 0
         channels_updated = 0
         channels_deleted = 0
+        channels_failed = 0
+        # Per-failure context for the completion notification. Each entry
+        # carries a typed ``reason`` so the modal can group counts by
+        # cause; the cap keeps the WebSocket payload bounded but is sized
+        # generously to cover realistic multi-provider failure sets.
+        # Full per-stream detail still goes to ``logger.warning`` for
+        # power-user diagnostics regardless of the cap.
+        failed_stream_details = []
+        FAILURE_LOG_LIMIT = 1000
 
-        # Get all channel numbers that are already in use by other channels (not auto-created by this account)
+        # Group range reservations (start+end) are advisory and NOT seeded
+        # here: two groups with overlapping ranges must cooperate, so only
+        # actually-occupied numbers constrain assignment.
+        # Hidden auto-created channels stay in the seed because the renumber
+        # loop iterates current provider streams (which excludes hidden
+        # ones); excluding them here would let sync reclaim their numbers.
         used_numbers = set(
             Channel.objects.exclude(
-                auto_created=True, auto_created_by=account
+                auto_created=True,
+                auto_created_by=account,
+                hidden_from_output=False,
             ).values_list("channel_number", flat=True)
         )
+        # Override pins are global reservations: effective_channel_number
+        # uses the override, so the picker must treat those numbers as
+        # taken or sync can produce duplicate effective channel numbers.
+        from apps.channels.models import ChannelOverride
+
+        used_numbers.update(
+            ChannelOverride.objects.filter(
+                channel_number__isnull=False
+            ).values_list("channel_number", flat=True)
+        )
+        used_numbers.discard(None)
 
         for group_relation in auto_sync_groups:
             channel_group = group_relation.channel_group
             start_number = group_relation.auto_sync_channel_start or 1.0
+            # Optional upper bound; _next_available_number returns None when
+            # exhausted, which the per-stream loop converts to a failure.
+            end_number = group_relation.auto_sync_channel_end
 
             # Get force_dummy_epg, group_override, and regex patterns from group custom_properties
             group_custom_props = {}
@@ -1741,6 +1878,7 @@ def sync_auto_channels(account_id, scan_start_time=None):
             name_regex_pattern = None
             name_replace_pattern = None
             name_match_regex = None
+            name_match_exclude_regex = None
             channel_profile_ids = None
             channel_sort_order = None
             channel_sort_reverse = False
@@ -1749,8 +1887,10 @@ def sync_auto_channels(account_id, scan_start_time=None):
             custom_epg_id = None  # New option: select specific EPG source (takes priority over force_dummy_epg)
             channel_numbering_mode = "fixed"  # Default mode
             channel_numbering_fallback = 1  # Default fallback for provider mode
-            if group_relation.custom_properties:
-                group_custom_props = group_relation.custom_properties
+            group_custom_props = _custom_properties_as_dict(
+                group_relation.custom_properties
+            )
+            if group_custom_props:
                 force_dummy_epg = group_custom_props.get("force_dummy_epg", False)
                 override_group_id = group_custom_props.get("group_override")
                 name_regex_pattern = group_custom_props.get("name_regex_pattern")
@@ -1758,6 +1898,9 @@ def sync_auto_channels(account_id, scan_start_time=None):
                     "name_replace_pattern"
                 )
                 name_match_regex = group_custom_props.get("name_match_regex")
+                name_match_exclude_regex = group_custom_props.get(
+                    "name_match_exclude_regex"
+                )
                 channel_profile_ids = group_custom_props.get("channel_profile_ids")
                 custom_epg_id = group_custom_props.get("custom_epg_id")
                 channel_sort_order = group_custom_props.get("channel_sort_order")
@@ -1793,15 +1936,30 @@ def sync_auto_channels(account_id, scan_start_time=None):
                 last_seen__gte=scan_start_time,
             )
 
-            # --- FILTER STREAMS BY NAME MATCH REGEX IF SPECIFIED ---
+            # Pre-compile with Python re so an invalid pattern fails here
+            # rather than as a Postgres exception inside the per-stream loop.
             if name_match_regex:
                 try:
+                    re.compile(name_match_regex)
                     current_streams = current_streams.filter(
                         name__iregex=name_match_regex
                     )
                 except re.error as e:
                     logger.warning(
                         f"Invalid name_match_regex '{name_match_regex}' for group '{channel_group.name}': {e}. Skipping name filter."
+                    )
+
+            # Exclude regex runs after the include filter so the two
+            # compose: include narrows, exclude removes from what's left.
+            if name_match_exclude_regex:
+                try:
+                    re.compile(name_match_exclude_regex)
+                    current_streams = current_streams.exclude(
+                        name__iregex=name_match_exclude_regex
+                    )
+                except re.error as e:
+                    logger.warning(
+                        f"Invalid name_match_exclude_regex '{name_match_exclude_regex}' for group '{channel_group.name}': {e}. Skipping exclude filter."
                     )
 
             # --- APPLY CHANNEL SORT ORDER ---
@@ -1834,27 +1992,27 @@ def sync_auto_channels(account_id, scan_start_time=None):
                 order_prefix = "-" if channel_sort_reverse else ""
                 current_streams = current_streams.order_by(f"{order_prefix}id")
 
-            # Get existing auto-created channels for this account (regardless of current group)
-            # We'll find them by their stream associations instead of just group location
-            existing_channels = Channel.objects.filter(
-                auto_created=True, auto_created_by=account
-            ).select_related("logo", "epg_data")
-
-            # Create mapping of existing channels by their associated stream
-            # This approach finds channels even if they've been moved to different groups
+            # Scoped to this group so the loop below runs in O(group size).
+            # Multi-stream channels are deduped by channel_id so every
+            # stream_id maps to the same in-memory Channel instance and
+            # post-loop bulk_update writes the merged state.
             existing_channel_map = {}
-            for channel in existing_channels:
-                # Get streams associated with this channel that belong to our M3U account and original group
-                channel_streams = ChannelStream.objects.filter(
-                    channel=channel,
+            existing_channels_by_id = {}
+            existing_channel_streams = (
+                ChannelStream.objects.filter(
+                    channel__auto_created=True,
+                    channel__auto_created_by=account,
                     stream__m3u_account=account,
-                    stream__channel_group=channel_group,  # Match streams from the original group
-                ).select_related("stream")
-
-                # Map each of our M3U account's streams to this channel
-                for channel_stream in channel_streams:
-                    if channel_stream.stream:
-                        existing_channel_map[channel_stream.stream.id] = channel
+                    stream__channel_group=channel_group,
+                )
+                .select_related("channel")
+            )
+            for cs in existing_channel_streams:
+                if cs.stream_id and cs.channel_id:
+                    canonical = existing_channels_by_id.setdefault(
+                        cs.channel_id, cs.channel
+                    )
+                    existing_channel_map[cs.stream_id] = canonical
 
             # Track which streams we've processed
             processed_stream_ids = set()
@@ -1866,10 +2024,142 @@ def sync_auto_channels(account_id, scan_start_time=None):
                 else current_streams.exists()
             )
 
+            # Bulk pre-fetch collapses N+1 Logo/EPGData lookups into a
+            # pair of in_bulk() calls.
+            from apps.channels.models import Logo
+            from apps.epg.models import EPGSource
+
+            # Resolve the group's custom EPG source once.
+            custom_epg_source = None
+            custom_dummy_epg_data = None
+            if custom_epg_id:
+                try:
+                    custom_epg_source = EPGSource.objects.get(id=custom_epg_id)
+                    if custom_epg_source.source_type == "dummy":
+                        custom_dummy_epg_data = (
+                            EPGData.objects.filter(
+                                epg_source=custom_epg_source
+                            ).first()
+                        )
+                        if not custom_dummy_epg_data:
+                            logger.warning(
+                                f"No EPGData found for dummy EPG source "
+                                f"{custom_epg_source.name} (ID: {custom_epg_id})"
+                            )
+                except EPGSource.DoesNotExist:
+                    logger.warning(
+                        f"Custom EPG source with ID {custom_epg_id} not found "
+                        f"for group '{channel_group.name}', falling back to "
+                        f"auto-match"
+                    )
+
+            # Resolve the group's custom logo once.
+            custom_logo = None
+            if custom_logo_id:
+                try:
+                    custom_logo = Logo.objects.get(id=custom_logo_id)
+                except Logo.DoesNotExist:
+                    logger.warning(
+                        f"Custom logo with ID {custom_logo_id} not found for "
+                        f"group '{channel_group.name}', falling back to stream "
+                        f"logos"
+                    )
+
+            logo_cache_by_url = {}
+            epg_cache_by_tvg_id = {}
+            if has_streams:
+                # Collect unique URLs / tvg_ids in one DB call each.
+                stream_iter = (
+                    current_streams
+                    if streams_is_list
+                    else list(current_streams.values("logo_url", "tvg_id"))
+                )
+                unique_logo_urls = {
+                    s.get("logo_url") if isinstance(s, dict) else getattr(s, "logo_url", None)
+                    for s in stream_iter
+                }
+                unique_logo_urls.discard(None)
+                unique_logo_urls.discard("")
+                if unique_logo_urls:
+                    logo_cache_by_url = {
+                        lg.url: lg
+                        for lg in Logo.objects.filter(url__in=unique_logo_urls)
+                    }
+
+                unique_tvg_ids = {
+                    s.get("tvg_id") if isinstance(s, dict) else getattr(s, "tvg_id", None)
+                    for s in stream_iter
+                }
+                unique_tvg_ids.discard(None)
+                unique_tvg_ids.discard("")
+                # Skip the EPG cache when force_dummy_epg with no
+                # custom source override; the resolver always returns None.
+                want_epg_cache = unique_tvg_ids and (
+                    not force_dummy_epg or custom_epg_id
+                )
+                if want_epg_cache:
+                    # Scope to the group's pinned source so foreign-source
+                    # tvg_id matches do not leak in.
+                    epg_q = EPGData.objects.filter(tvg_id__in=unique_tvg_ids)
+                    if (
+                        custom_epg_source is not None
+                        and custom_epg_source.source_type != "dummy"
+                    ):
+                        epg_q = epg_q.filter(epg_source=custom_epg_source)
+                    epg_cache_by_tvg_id = {d.tvg_id: d for d in epg_q}
+
+            def _resolve_logo_for_stream(stream):
+                """Return a Logo for stream.logo_url, creating it once if needed."""
+                url = getattr(stream, "logo_url", None)
+                if not url:
+                    return None
+                cached = logo_cache_by_url.get(url)
+                if cached is not None:
+                    return cached
+                created, _ = Logo.objects.get_or_create(
+                    url=url,
+                    defaults={"name": stream.name or stream.tvg_id or "Unknown"},
+                )
+                logo_cache_by_url[url] = created
+                return created
+
+            def _resolve_epg_for_stream(stream):
+                """Return the EPGData row that should be assigned to this
+                stream's channel. Encodes all four group-level EPG modes:
+
+                  1. custom dummy source:           single shared EPGData
+                  2. custom non-dummy source:       cache lookup, scoped to
+                                                    that source
+                  3. force_dummy_epg with no custom: None (clear EPG)
+                  4. default auto-match:            cache lookup, any source
+
+                The cache (epg_cache_by_tvg_id) is built once above with the
+                correct scope so the per-stream lookup is a dict access.
+                """
+                if custom_epg_source is not None:
+                    if custom_epg_source.source_type == "dummy":
+                        return custom_dummy_epg_data
+                    tvg_id = getattr(stream, "tvg_id", None)
+                    if not tvg_id:
+                        return None
+                    return epg_cache_by_tvg_id.get(tvg_id)
+                if force_dummy_epg:
+                    return None
+                tvg_id = getattr(stream, "tvg_id", None)
+                if not tvg_id:
+                    return None
+                return epg_cache_by_tvg_id.get(tvg_id)
+
             if not has_streams:
                 logger.debug(f"No streams found in group {channel_group.name}")
-                # Delete all existing auto channels if no streams
-                channels_to_delete = [ch for ch in existing_channel_map.values()]
+                # No streams left in the group: drop the visible auto
+                # channels. Hidden channels are preserved so the hide
+                # flag survives temporary provider drops (event/PPV).
+                channels_to_delete = [
+                    ch
+                    for ch in existing_channel_map.values()
+                    if not ch.hidden_from_output
+                ]
                 if channels_to_delete:
                     deleted_count = len(channels_to_delete)
                     Channel.objects.filter(
@@ -1915,43 +2205,37 @@ def sync_auto_channels(account_id, scan_start_time=None):
                     )
                     stream_profile_to_assign = None
 
-            # Process each current stream
             current_channel_number = start_number
 
-            # Always renumber all existing channels to match current sort order
-            # This ensures channels are always in the correct sequence
+            # Renumber existing channels to match sort order. Compact
+            # mode skips this; the end-of-iteration pack is the source
+            # of truth and would overwrite the renumber.
+            compact_mode = bool(group_custom_props.get("compact_numbering"))
             channels_to_renumber = []
             temp_channel_number = start_number
 
-            for stream in current_streams:
+            for stream in current_streams if not compact_mode else []:
                 if stream.id in existing_channel_map:
                     channel = existing_channel_map[stream.id]
 
-                    # Determine target number based on numbering mode
-                    if channel_numbering_mode == "provider":
-                        # Use provider number if available, otherwise use fallback with next available logic
-                        if stream.stream_chno is not None:
-                            target_number = stream.stream_chno
-                            # If provider number is already used, find next available
-                            if target_number in used_numbers:
-                                target_number = channel_numbering_fallback
-                                while target_number in used_numbers:
-                                    target_number += 1
-                        else:
-                            # No provider number, use fallback and find next available
-                            target_number = channel_numbering_fallback
-                            while target_number in used_numbers:
-                                target_number += 1
-                    elif channel_numbering_mode == "next_available":
-                        # Find next available starting from 1
-                        target_number = 1
-                        while target_number in used_numbers:
-                            target_number += 1
-                    else:  # fixed mode (default)
-                        # Find next available number starting from temp_channel_number
-                        target_number = temp_channel_number
-                        while target_number in used_numbers:
-                            target_number += 1
+                    target_number = _pick_target_number(
+                        channel_numbering_mode,
+                        stream,
+                        used_numbers,
+                        temp_channel_number,
+                        channel_numbering_fallback,
+                        end_number=end_number,
+                        range_start=start_number,
+                    )
+
+                    # Range exhausted: leave the channel at its existing
+                    # number. The renumber pass is sort-optimization only;
+                    # no failure record needed.
+                    if target_number is None:
+                        # Preserve the channel's current number in used_numbers
+                        if channel.channel_number is not None:
+                            used_numbers.add(channel.channel_number)
+                        continue
 
                     # Add this number to used_numbers so we don't reuse it in this batch
                     used_numbers.add(target_number)
@@ -1971,13 +2255,72 @@ def sync_auto_channels(account_id, scan_start_time=None):
 
             # Bulk update channel numbers if any need renumbering
             if channels_to_renumber:
-                Channel.objects.bulk_update(channels_to_renumber, ["channel_number"])
+                Channel.objects.bulk_update(
+                    channels_to_renumber, ["channel_number"], batch_size=500
+                )
                 logger.info(
                     f"Renumbered {len(channels_to_renumber)} channels to maintain sort order"
                 )
 
+            # When the group's configured range is narrower than its existing
+            # channels span, any non-hidden auto-created channel whose number
+            # falls outside [start, end] gets deleted. The new-channel
+            # creation loop below picks up the freed stream and re-creates
+            # the channel at a slot inside the new range, so the net user
+            # outcome is a renumber, not a failure. Counted in
+            # channels_deleted; the replacement counts in channels_created.
+            # Hidden channels are preserved. Runs BEFORE new-channel creation
+            # so slots freed by the deletions are available to incoming
+            # streams.
+            if end_number is not None:
+                overflow_delete_ids = []
+                for stream_id, ch in list(existing_channel_map.items()):
+                    if ch.hidden_from_output:
+                        continue
+                    num = ch.channel_number
+                    if num is None:
+                        continue
+                    if num < start_number or num > end_number:
+                        overflow_delete_ids.append(ch.id)
+                        existing_channel_map.pop(stream_id, None)
+                        used_numbers.discard(num)
+                if overflow_delete_ids:
+                    deleted = Channel.objects.filter(
+                        id__in=overflow_delete_ids
+                    ).delete()
+                    removed_count = (
+                        deleted[1].get("dispatcharr_channels.Channel", 0)
+                        if isinstance(deleted, tuple) and len(deleted) > 1
+                        else len(overflow_delete_ids)
+                    )
+                    channels_deleted += removed_count
+                    logger.info(
+                        f"Deleted {removed_count} channels outside the "
+                        f"range {int(start_number)}-{int(end_number)} for "
+                        f"group '{channel_group.name}'"
+                    )
+
             # Reset channel number counter for processing new channels
             current_channel_number = start_number
+
+            # Per-channel changes are buffered and bulk_update'd once after the
+            # loop. update_fields is set explicitly so post_save signals only
+            # fire for receivers whose tracked field actually changed.
+            existing_dirty_channels = []
+            existing_dirty_ids = set()
+            existing_dirty_field_set = set()
+            # Subset of channels whose epg_data actually changed in this
+            # pass. Used by the dispatcher below to fire the EPG parse
+            # task only for those, not for every channel in
+            # existing_dirty_channels.
+            epg_dirty_channel_ids = set()
+
+            # New channels are buffered and bulk_create'd after the loop.
+            # bulk_create skips post_save, so the EPG parse task is dispatched
+            # once per unique epg_data_id below rather than per channel.
+            # Pairs are (Channel(), Stream) so the post-loop step can attach
+            # ChannelStream rows using the IDs Postgres returns.
+            new_channels_pending = []
 
             for stream in current_streams:
                 processed_stream_ids.add(stream.id)
@@ -2012,305 +2355,132 @@ def sync_auto_channels(account_id, scan_start_time=None):
                     existing_channel = existing_channel_map.get(stream.id)
 
                     if existing_channel:
-                        # Update existing channel if needed (channel number already handled above)
-                        channel_updated = False
+                        # Track only the fields that actually changed, so the
+                        # eventual UPDATE writes one column per change instead
+                        # of every column on every channel. The dirty list is
+                        # accumulated and bulk_update'd after the loop -
+                        # which avoids issuing an UPDATE per channel and
+                        # avoids firing the EPG post_save signal on saves
+                        # that didn't touch epg_data.
+                        dirty_fields = []
 
-                        # Use new_name instead of stream.name
                         if existing_channel.name != new_name:
                             existing_channel.name = new_name
-                            channel_updated = True
+                            dirty_fields.append("name")
 
                         if existing_channel.tvg_id != stream.tvg_id:
                             existing_channel.tvg_id = stream.tvg_id
-                            channel_updated = True
+                            dirty_fields.append("tvg_id")
 
                         if existing_channel.tvc_guide_stationid != tvc_guide_stationid:
                             existing_channel.tvc_guide_stationid = tvc_guide_stationid
-                            channel_updated = True
+                            dirty_fields.append("tvc_guide_stationid")
 
-                        # Check if channel group needs to be updated (in case override was added/changed)
-                        if existing_channel.channel_group != target_group:
+                        # The group override may direct sync to a different
+                        # ChannelGroup than the one currently on the row.
+                        if existing_channel.channel_group_id != target_group.id:
                             existing_channel.channel_group = target_group
-                            channel_updated = True
-                            logger.info(
-                                f"Moved auto channel '{existing_channel.name}' from '{existing_channel.channel_group.name if existing_channel.channel_group else 'None'}' to '{target_group.name}'"
-                            )
+                            dirty_fields.append("channel_group")
 
-                        # Handle logo updates
-                        current_logo = None
-                        if custom_logo_id:
-                            # Use the custom logo specified in group settings
-                            from apps.channels.models import Logo
-                            try:
-                                current_logo = Logo.objects.get(id=custom_logo_id)
-                            except Logo.DoesNotExist:
-                                logger.warning(
-                                    f"Custom logo with ID {custom_logo_id} not found for existing channel, falling back to stream logo"
-                                )
-                                # Fall back to stream logo if custom logo not found
-                                if stream.logo_url:
-                                    current_logo, _ = Logo.objects.get_or_create(
-                                        url=stream.logo_url,
-                                        defaults={
-                                            "name": stream.name or stream.tvg_id or "Unknown"
-                                        },
-                                    )
-                        elif stream.logo_url:
-                            # No custom logo configured, use stream logo
-                            from apps.channels.models import Logo
-
-                            current_logo, _ = Logo.objects.get_or_create(
-                                url=stream.logo_url,
-                                defaults={
-                                    "name": stream.name or stream.tvg_id or "Unknown"
-                                },
-                            )
-
-                        if existing_channel.logo != current_logo:
+                        # Logo: custom group setting wins; otherwise stream logo
+                        current_logo = (
+                            custom_logo
+                            if custom_logo_id and custom_logo is not None
+                            else _resolve_logo_for_stream(stream)
+                        )
+                        current_logo_id = current_logo.id if current_logo else None
+                        if existing_channel.logo_id != current_logo_id:
                             existing_channel.logo = current_logo
-                            channel_updated = True
+                            dirty_fields.append("logo")
 
-                        # Handle EPG data updates
-                        current_epg_data = None
-                        if custom_epg_id:
-                            # Use the custom EPG specified in group settings (e.g., a dummy EPG)
-                            from apps.epg.models import EPGSource
-                            try:
-                                epg_source = EPGSource.objects.get(id=custom_epg_id)
-                                # For dummy EPGs, select the first (and typically only) EPGData entry from this source
-                                if epg_source.source_type == 'dummy':
-                                    current_epg_data = EPGData.objects.filter(
-                                        epg_source=epg_source
-                                    ).first()
-                                    if not current_epg_data:
-                                        logger.warning(
-                                            f"No EPGData found for dummy EPG source {epg_source.name} (ID: {custom_epg_id})"
-                                        )
-                                else:
-                                    # For non-dummy sources, try to find existing EPGData by tvg_id
-                                    if stream.tvg_id:
-                                        current_epg_data = EPGData.objects.filter(
-                                            tvg_id=stream.tvg_id,
-                                            epg_source=epg_source
-                                        ).first()
-                            except EPGSource.DoesNotExist:
-                                logger.warning(
-                                    f"Custom EPG source with ID {custom_epg_id} not found for existing channel, falling back to auto-match"
-                                )
-                                # Fall back to auto-match by tvg_id
-                                if stream.tvg_id and not force_dummy_epg:
-                                    current_epg_data = EPGData.objects.filter(
-                                        tvg_id=stream.tvg_id
-                                    ).first()
-                        elif stream.tvg_id and not force_dummy_epg:
-                            # Auto-match EPG by tvg_id (original behavior)
-                            current_epg_data = EPGData.objects.filter(
-                                tvg_id=stream.tvg_id
-                            ).first()
-                        # If force_dummy_epg is True and no custom_epg_id, current_epg_data stays None
-
-                        if existing_channel.epg_data != current_epg_data:
+                        # EPG: handled centrally by _resolve_epg_for_stream
+                        current_epg_data = _resolve_epg_for_stream(stream)
+                        current_epg_id = (
+                            current_epg_data.id if current_epg_data else None
+                        )
+                        if existing_channel.epg_data_id != current_epg_id:
                             existing_channel.epg_data = current_epg_data
-                            channel_updated = True
+                            dirty_fields.append("epg_data")
+                            if current_epg_id is not None:
+                                epg_dirty_channel_ids.add(existing_channel.id)
 
-                        # Handle stream profile updates for the channel
-                        if stream_profile_to_assign and existing_channel.stream_profile != stream_profile_to_assign:
+                        # Stream profile: only set if group has one configured
+                        if (
+                            stream_profile_to_assign is not None
+                            and existing_channel.stream_profile_id
+                            != stream_profile_to_assign.id
+                        ):
                             existing_channel.stream_profile = stream_profile_to_assign
-                            channel_updated = True
+                            dirty_fields.append("stream_profile")
 
-                        if channel_updated:
-                            existing_channel.save()
-                            channels_updated += 1
-                            logger.debug(
-                                f"Updated auto channel: {existing_channel.channel_number} - {existing_channel.name}"
-                            )
-
-                        # Update channel profile memberships for existing channels
-                        current_memberships = set(
-                            ChannelProfileMembership.objects.filter(
-                                channel=existing_channel, enabled=True
-                            ).values_list("channel_profile_id", flat=True)
-                        )
-
-                        target_profile_ids = set(
-                            profile.id for profile in profiles_to_assign
-                        )
-
-                        # Only update if memberships have changed
-                        if current_memberships != target_profile_ids:
-                            # Disable all current memberships
-                            ChannelProfileMembership.objects.filter(
-                                channel=existing_channel
-                            ).update(enabled=False)
-
-                            # Enable/create memberships for target profiles
-                            for profile in profiles_to_assign:
-                                membership, created = (
-                                    ChannelProfileMembership.objects.get_or_create(
-                                        channel_profile=profile,
-                                        channel=existing_channel,
-                                        defaults={"enabled": True},
-                                    )
-                                )
-                                if not created and not membership.enabled:
-                                    membership.enabled = True
-                                    membership.save()
-
-                            logger.debug(
-                                f"Updated profile memberships for auto channel: {existing_channel.name}"
-                            )
+                        if dirty_fields:
+                            # Multi-stream channels appear once per stream;
+                            # dedupe by id so bulk_update does not double-fire
+                            # and channels_updated does not double-count.
+                            if existing_channel.id not in existing_dirty_ids:
+                                existing_dirty_channels.append(existing_channel)
+                                existing_dirty_ids.add(existing_channel.id)
+                                channels_updated += 1
+                            existing_dirty_field_set.update(dirty_fields)
 
                     else:
-                        # Create new channel
-                        # Determine channel number based on numbering mode
-                        if channel_numbering_mode == "provider":
-                            # Use provider number if available, otherwise use fallback with next available logic
-                            if stream.stream_chno is not None:
-                                target_number = stream.stream_chno
-                                # If provider number is already used, find next available from fallback
-                                if target_number in used_numbers:
-                                    target_number = channel_numbering_fallback
-                                    while target_number in used_numbers:
-                                        target_number += 1
-                            else:
-                                # No provider number, use fallback and find next available
-                                target_number = channel_numbering_fallback
-                                while target_number in used_numbers:
-                                    target_number += 1
-                        elif channel_numbering_mode == "next_available":
-                            # Find next available starting from 1
-                            target_number = 1
-                            while target_number in used_numbers:
-                                target_number += 1
-                        else:  # fixed mode (default)
-                            # Find next available channel number starting from current_channel_number
-                            target_number = current_channel_number
-                            while target_number in used_numbers:
-                                target_number += 1
+                        # Range exhaustion is surfaced to the user via the
+                        # completion notification, not swallowed.
+                        target_number = _pick_target_number(
+                            channel_numbering_mode,
+                            stream,
+                            used_numbers,
+                            current_channel_number,
+                            channel_numbering_fallback,
+                            end_number=end_number,
+                            range_start=start_number,
+                        )
+
+                        if target_number is None:
+                            channels_failed += 1
+                            if len(failed_stream_details) < FAILURE_LOG_LIMIT:
+                                failed_stream_details.append({
+                                    "stream_name": stream.name,
+                                    "stream_id": stream.id,
+                                    "group": channel_group.name,
+                                    "reason": "RANGE_EXHAUSTED",
+                                    "error": (
+                                        f"Channel number range "
+                                        f"{int(start_number)}-{int(end_number)} is full"
+                                    ),
+                                })
+                            processed_stream_ids.add(stream.id)
+                            continue
 
                         # Add this number to used_numbers
                         used_numbers.add(target_number)
 
-                        channel = Channel.objects.create(
-                            channel_number=target_number,
-                            name=new_name,
-                            tvg_id=stream.tvg_id,
-                            tvc_guide_stationid=tvc_guide_stationid,
-                            channel_group=target_group,
-                            user_level=0,
-                            auto_created=True,
-                            auto_created_by=account,
+                        # Resolve every FK BEFORE the create call so the
+                        # initial INSERT carries the complete row.
+                        new_logo = (
+                            custom_logo
+                            if custom_logo_id and custom_logo is not None
+                            else _resolve_logo_for_stream(stream)
                         )
+                        new_epg_data = _resolve_epg_for_stream(stream)
 
-                        # Associate the stream with the channel
-                        ChannelStream.objects.create(
-                            channel=channel, stream=stream, order=0
-                        )
-
-                        # Assign to correct profiles
-                        memberships = [
-                            ChannelProfileMembership(
-                                channel_profile=profile, channel=channel, enabled=True
+                        new_channels_pending.append(
+                            (
+                                Channel(
+                                    channel_number=target_number,
+                                    name=new_name,
+                                    tvg_id=stream.tvg_id,
+                                    tvc_guide_stationid=tvc_guide_stationid,
+                                    channel_group=target_group,
+                                    user_level=0,
+                                    auto_created=True,
+                                    auto_created_by=account,
+                                    logo=new_logo,
+                                    epg_data=new_epg_data,
+                                    stream_profile=stream_profile_to_assign,
+                                ),
+                                stream,
                             )
-                            for profile in profiles_to_assign
-                        ]
-                        if memberships:
-                            ChannelProfileMembership.objects.bulk_create(memberships)
-
-                        # Try to match EPG data
-                        if custom_epg_id:
-                            # Use the custom EPG specified in group settings (e.g., a dummy EPG)
-                            from apps.epg.models import EPGSource
-                            try:
-                                epg_source = EPGSource.objects.get(id=custom_epg_id)
-                                # For dummy EPGs, select the first (and typically only) EPGData entry from this source
-                                if epg_source.source_type == 'dummy':
-                                    epg_data = EPGData.objects.filter(
-                                        epg_source=epg_source
-                                    ).first()
-                                    if epg_data:
-                                        channel.epg_data = epg_data
-                                        channel.save(update_fields=["epg_data"])
-                                    else:
-                                        logger.warning(
-                                            f"No EPGData found for dummy EPG source {epg_source.name} (ID: {custom_epg_id})"
-                                        )
-                                else:
-                                    # For non-dummy sources, try to find existing EPGData by tvg_id
-                                    if stream.tvg_id:
-                                        epg_data = EPGData.objects.filter(
-                                            tvg_id=stream.tvg_id,
-                                            epg_source=epg_source
-                                        ).first()
-                                        if epg_data:
-                                            channel.epg_data = epg_data
-                                            channel.save(update_fields=["epg_data"])
-                            except EPGSource.DoesNotExist:
-                                logger.warning(
-                                    f"Custom EPG source with ID {custom_epg_id} not found, falling back to auto-match"
-                                )
-                                # Fall back to auto-match by tvg_id
-                                if stream.tvg_id and not force_dummy_epg:
-                                    epg_data = EPGData.objects.filter(
-                                        tvg_id=stream.tvg_id
-                                    ).first()
-                                    if epg_data:
-                                        channel.epg_data = epg_data
-                                        channel.save(update_fields=["epg_data"])
-                        elif stream.tvg_id and not force_dummy_epg:
-                            # Auto-match EPG by tvg_id (original behavior)
-                            epg_data = EPGData.objects.filter(
-                                tvg_id=stream.tvg_id
-                            ).first()
-                            if epg_data:
-                                channel.epg_data = epg_data
-                                channel.save(update_fields=["epg_data"])
-                        elif force_dummy_epg:
-                            # Force dummy EPG with no custom EPG selected (set to None)
-                            channel.epg_data = None
-                            channel.save(update_fields=["epg_data"])
-
-                        # Handle logo
-                        if custom_logo_id:
-                            # Use the custom logo specified in group settings
-                            from apps.channels.models import Logo
-                            try:
-                                custom_logo = Logo.objects.get(id=custom_logo_id)
-                                channel.logo = custom_logo
-                                channel.save(update_fields=["logo"])
-                            except Logo.DoesNotExist:
-                                logger.warning(
-                                    f"Custom logo with ID {custom_logo_id} not found, falling back to stream logo"
-                                )
-                                # Fall back to stream logo if custom logo not found
-                                if stream.logo_url:
-                                    logo, _ = Logo.objects.get_or_create(
-                                        url=stream.logo_url,
-                                        defaults={
-                                            "name": stream.name or stream.tvg_id or "Unknown"
-                                        },
-                                    )
-                                    channel.logo = logo
-                                    channel.save(update_fields=["logo"])
-                        elif stream.logo_url:
-                            from apps.channels.models import Logo
-
-                            logo, _ = Logo.objects.get_or_create(
-                                url=stream.logo_url,
-                                defaults={
-                                    "name": stream.name or stream.tvg_id or "Unknown"
-                                },
-                            )
-                            channel.logo = logo
-                            channel.save(update_fields=["logo"])
-
-                        # Handle stream profile assignment
-                        if stream_profile_to_assign:
-                            channel.stream_profile = stream_profile_to_assign
-                            channel.save(update_fields=['stream_profile'])
-                        channels_created += 1
-                        logger.debug(
-                            f"Created auto channel: {channel.channel_number} - {channel.name}"
                         )
 
                     # Increment channel number for next iteration (only in fixed mode)
@@ -2323,12 +2493,171 @@ def sync_auto_channels(account_id, scan_start_time=None):
                     logger.error(
                         f"Error processing auto channel for stream {stream.name}: {str(e)}"
                     )
+                    channels_failed += 1
+                    if len(failed_stream_details) < FAILURE_LOG_LIMIT:
+                        failed_stream_details.append({
+                            "stream_name": stream.name,
+                            "stream_id": stream.id,
+                            "group": channel_group.name,
+                            "reason": _classify_sync_failure(e),
+                            "error": str(e),
+                        })
                     continue
 
-            # Delete channels for streams that no longer exist
-            channels_to_delete = []
+            # Bulk-create channels, then dependent rows using the IDs
+            # Postgres returns. bulk_create skips post_save, so the EPG
+            # parse task is dispatched explicitly per-epg_data_id below
+            # to avoid flooding Celery at scale.
+            if new_channels_pending:
+                channel_objs = [pair[0] for pair in new_channels_pending]
+                streams_for_new = [pair[1] for pair in new_channels_pending]
+                Channel.objects.bulk_create(channel_objs, batch_size=500)
+
+                ChannelStream.objects.bulk_create(
+                    [
+                        ChannelStream(
+                            channel_id=channel_objs[i].id,
+                            stream_id=streams_for_new[i].id,
+                            order=0,
+                        )
+                        for i in range(len(channel_objs))
+                    ],
+                    batch_size=500,
+                )
+
+                if profiles_to_assign:
+                    ChannelProfileMembership.objects.bulk_create(
+                        [
+                            ChannelProfileMembership(
+                                channel_id=ch.id,
+                                channel_profile_id=profile.id,
+                                enabled=True,
+                            )
+                            for ch in channel_objs
+                            for profile in profiles_to_assign
+                        ],
+                        ignore_conflicts=True,
+                        batch_size=500,
+                    )
+
+                channels_created += len(channel_objs)
+
+                # One EPG parse task per unique EPGData replaces the
+                # per-channel post_save dispatch bypassed by bulk_create.
+                from apps.epg.tasks import parse_programs_for_tvg_id
+
+                unique_epg_ids = {
+                    ch.epg_data_id for ch in channel_objs if ch.epg_data_id
+                }
+                for epg_id in unique_epg_ids:
+                    parse_programs_for_tvg_id.delay(epg_id)
+
+                logger.debug(
+                    f"Bulk created {len(channel_objs)} channels in group "
+                    f"'{channel_group.name}'; dispatched "
+                    f"{len(unique_epg_ids)} unique EPG parse task(s)"
+                )
+
+            # bulk_update writes only the columns named in `fields` and
+            # bypasses post_save, so the EPG refresh signal cannot fire here.
+            # Dispatch one parse task per unique EPGData id when epg_data was
+            # in the dirty set, mirroring the new-channel path above.
+            if existing_dirty_channels:
+                Channel.objects.bulk_update(
+                    existing_dirty_channels,
+                    fields=list(existing_dirty_field_set),
+                    batch_size=500,
+                )
+                if epg_dirty_channel_ids:
+                    from apps.epg.tasks import parse_programs_for_tvg_id
+
+                    # Dispatch only for channels whose epg_data_id changed.
+                    # Other dirty channels would queue redundant parses.
+                    unique_epg_ids = {
+                        ch.epg_data_id
+                        for ch in existing_dirty_channels
+                        if ch.id in epg_dirty_channel_ids and ch.epg_data_id
+                    }
+                    for epg_id in unique_epg_ids:
+                        parse_programs_for_tvg_id.delay(epg_id)
+                logger.debug(
+                    f"Bulk updated {len(existing_dirty_channels)} existing "
+                    f"channels (fields: {sorted(existing_dirty_field_set)})"
+                )
+
+            # Reconcile ChannelProfileMembership in two writes: one
+            # bulk_update for enable-flips, one bulk_create for missing
+            # rows. Avoids a per-channel save loop.
+            existing_channel_ids = [
+                c.id for c in existing_channel_map.values()
+            ]
+            target_profile_ids = {p.id for p in profiles_to_assign}
+            if existing_channel_ids:
+                membership_rows = list(
+                    ChannelProfileMembership.objects.filter(
+                        channel_id__in=existing_channel_ids
+                    ).only("id", "channel_id", "channel_profile_id", "enabled")
+                )
+                memberships_by_channel = {}
+                for m in membership_rows:
+                    memberships_by_channel.setdefault(m.channel_id, []).append(m)
+
+                rows_to_flip = []
+                rows_to_create = []
+                for ch_id in existing_channel_ids:
+                    rows = memberships_by_channel.get(ch_id, [])
+                    have_for_target = set()
+                    for m in rows:
+                        if m.channel_profile_id in target_profile_ids:
+                            have_for_target.add(m.channel_profile_id)
+                            if not m.enabled:
+                                m.enabled = True
+                                rows_to_flip.append(m)
+                        else:
+                            if m.enabled:
+                                m.enabled = False
+                                rows_to_flip.append(m)
+                    missing = target_profile_ids - have_for_target
+                    for pid in missing:
+                        rows_to_create.append(
+                            ChannelProfileMembership(
+                                channel_id=ch_id,
+                                channel_profile_id=pid,
+                                enabled=True,
+                            )
+                        )
+
+                if rows_to_flip:
+                    ChannelProfileMembership.objects.bulk_update(
+                        rows_to_flip, ["enabled"], batch_size=500
+                    )
+                if rows_to_create:
+                    ChannelProfileMembership.objects.bulk_create(
+                        rows_to_create, ignore_conflicts=True, batch_size=500
+                    )
+                if rows_to_flip or rows_to_create:
+                    logger.debug(
+                        f"Reconciled memberships for "
+                        f"{len(existing_channel_ids)} channels "
+                        f"({len(rows_to_flip)} flipped, "
+                        f"{len(rows_to_create)} created)"
+                    )
+
+            # Delete channels whose streams have all disappeared.
+            # Hidden channels are preserved so event/PPV holds across
+            # provider drops.
+            channel_streams_in_group = {}
             for stream_id, channel in existing_channel_map.items():
-                if stream_id not in processed_stream_ids:
+                channel_streams_in_group.setdefault(channel.id, []).append(
+                    (stream_id, channel)
+                )
+            channels_to_delete = []
+            for ch_id, pairs in channel_streams_in_group.items():
+                channel = pairs[0][1]
+                if channel.hidden_from_output:
+                    continue
+                stream_ids = {sid for sid, _ in pairs}
+                if not (stream_ids & processed_stream_ids):
                     channels_to_delete.append(channel)
 
             if channels_to_delete:
@@ -2341,34 +2670,98 @@ def sync_auto_channels(account_id, scan_start_time=None):
                     f"Deleted {deleted_count} auto channels for removed streams"
                 )
 
-        # Additional cleanup: Remove auto-created channels that no longer have any valid streams
-        # This handles the case where streams were deleted due to stale retention policy
-        orphaned_channels = Channel.objects.filter(
-            auto_created=True,
-            auto_created_by=account
-        ).exclude(
-            # Exclude channels that still have valid stream associations
-            id__in=ChannelStream.objects.filter(
-                stream__m3u_account=account,
-                stream__isnull=False
-            ).values_list('channel_id', flat=True)
-        )
+            # Compact-mode pack: hidden channels release their number and
+            # visible channels pack contiguously into [start, end]. Runs
+            # after create/update/delete so the channel set is stable.
+            if compact_mode:
+                from apps.channels.compact_numbering import repack_group
 
-        deleted_total, _ = orphaned_channels.delete()
-        if deleted_total:
-            channels_deleted += deleted_total
-            logger.info(
-                f"Deleted {deleted_total} orphaned auto channels with no valid streams"
+                pack_result = repack_group(group_relation)
+                if pack_result["failed"]:
+                    channels_failed += pack_result["failed"]
+                    if (
+                        len(failed_stream_details) < FAILURE_LOG_LIMIT
+                    ):
+                        failed_stream_details.append(
+                            {
+                                "stream_name": None,
+                                "stream_id": None,
+                                "group": channel_group.name,
+                                "reason": "RANGE_EXHAUSTED",
+                                "error": (
+                                    f"Compact pack: {pack_result['failed']} "
+                                    f"visible channel(s) could not fit in range "
+                                    f"{int(start_number)}"
+                                    + (
+                                        f"-{int(end_number)}"
+                                        if end_number
+                                        else "+"
+                                    )
+                                ),
+                            }
+                        )
+                logger.debug(
+                    f"Compact pack for group '{channel_group.name}': "
+                    f"{pack_result['assigned']} assigned, "
+                    f"{pack_result['released']} released, "
+                    f"{pack_result['failed']} failed"
+                )
+
+        # Cleanup mode read from account.custom_properties.orphan_channel_cleanup:
+        # "always" (default; key absent) removes every orphan auto channel;
+        # "preserve_customized" keeps those with a ChannelOverride row;
+        # "never" disables cleanup. Hidden channels are preserved across all
+        # modes so event/PPV channels that come and go are not silently lost.
+        cleanup_mode = (account.custom_properties or {}).get(
+            "orphan_channel_cleanup", "always"
+        )
+        if cleanup_mode != "never":
+            orphaned_channels = Channel.objects.filter(
+                auto_created=True,
+                auto_created_by=account,
+                hidden_from_output=False,
+            ).exclude(
+                id__in=ChannelStream.objects.filter(
+                    stream__m3u_account=account,
+                    stream__isnull=False,
+                ).values_list("channel_id", flat=True)
             )
+            if cleanup_mode == "preserve_customized":
+                orphaned_channels = orphaned_channels.filter(override__isnull=True)
+
+            _, per_model = orphaned_channels.delete()
+            deleted_channels = per_model.get("dispatcharr_channels.Channel", 0)
+            if deleted_channels:
+                channels_deleted += deleted_channels
+                logger.info(
+                    f"Deleted {deleted_channels} orphaned auto channels with no valid streams (mode={cleanup_mode})"
+                )
 
         logger.info(
-            f"Auto channel sync complete for account {account.name}: {channels_created} created, {channels_updated} updated, {channels_deleted} deleted"
+            f"Auto channel sync complete for account {account.name}: "
+            f"{channels_created} created, {channels_updated} updated, "
+            f"{channels_deleted} deleted, {channels_failed} failed"
         )
-        return f"Auto sync: {channels_created} channels created, {channels_updated} updated, {channels_deleted} deleted"
+        return {
+            "status": "ok",
+            "channels_created": channels_created,
+            "channels_updated": channels_updated,
+            "channels_deleted": channels_deleted,
+            "channels_failed": channels_failed,
+            "failed_stream_details": failed_stream_details,
+        }
 
     except Exception as e:
         logger.error(f"Error in auto channel sync for account {account_id}: {str(e)}")
-        return f"Auto sync error: {str(e)}"
+        return {
+            "status": "error",
+            "error": str(e),
+            "channels_created": 0,
+            "channels_updated": 0,
+            "channels_deleted": 0,
+            "channels_failed": 0,
+            "failed_stream_details": [],
+        }
 
 
 def get_transformed_credentials(account, profile=None):
@@ -3074,15 +3467,34 @@ def _refresh_single_m3u_account_impl(account_id):
 
         # Run auto channel sync after successful refresh
         auto_sync_message = ""
+        auto_sync_result = {}
         try:
-            sync_result = sync_auto_channels(
+            auto_sync_result = sync_auto_channels(
                 account_id, scan_start_time=str(refresh_start_timestamp)
-            )
+            ) or {}
             logger.info(
-                f"Auto channel sync result for account {account_id}: {sync_result}"
+                f"Auto channel sync result for account {account_id}: {auto_sync_result}"
             )
-            if sync_result and "created" in sync_result:
-                auto_sync_message = f" {sync_result}."
+            if auto_sync_result.get("status") == "ok":
+                created = auto_sync_result.get("channels_created", 0)
+                updated = auto_sync_result.get("channels_updated", 0)
+                deleted = auto_sync_result.get("channels_deleted", 0)
+                failed = auto_sync_result.get("channels_failed", 0)
+                if created or updated or deleted or failed:
+                    parts = []
+                    if created:
+                        parts.append(f"{created} channel(s) created")
+                    if updated:
+                        parts.append(f"{updated} updated")
+                    if deleted:
+                        parts.append(f"{deleted} deleted")
+                    if failed:
+                        parts.append(f"{failed} failed")
+                    auto_sync_message = f" Auto-sync: {', '.join(parts)}."
+            elif auto_sync_result.get("status") == "error":
+                auto_sync_message = (
+                    f" Auto-sync error: {auto_sync_result.get('error', 'unknown')}."
+                )
         except Exception as e:
             logger.error(
                 f"Error running auto channel sync for account {account_id}: {str(e)}"
@@ -3127,6 +3539,14 @@ def _refresh_single_m3u_account_impl(account_id):
             streams_created=streams_created,
             streams_updated=streams_updated,
             streams_deleted=streams_deleted,
+            # Structured auto-sync counts so the frontend can render a
+            # warning card when anything failed, without parsing the
+            # free-text last_message.
+            channels_created=auto_sync_result.get("channels_created", 0),
+            channels_updated=auto_sync_result.get("channels_updated", 0),
+            channels_deleted=auto_sync_result.get("channels_deleted", 0),
+            channels_failed=auto_sync_result.get("channels_failed", 0),
+            failed_stream_details=auto_sync_result.get("failed_stream_details", []),
             message=account.last_message,
         )
 

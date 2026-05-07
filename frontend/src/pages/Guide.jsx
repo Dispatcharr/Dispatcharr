@@ -116,6 +116,7 @@ export default function TVChannelGuide({ startDate, endDate }) {
   const [recordChoiceProgram, setRecordChoiceProgram] = useState(null);
   const [recordChoiceChannel, setRecordChoiceChannel] = useState(null);
   const [existingRuleMode, setExistingRuleMode] = useState(null);
+  const [existingRule, setExistingRule] = useState(null);
   const [rulesOpen, setRulesOpen] = useState(false);
   const [rules, setRules] = useState([]);
   const [initialScrollComplete, setInitialScrollComplete] = useState(false);
@@ -718,6 +719,7 @@ export default function TVChannelGuide({ startDate, endDate }) {
         const rules = await fetchRules();
         const rule = getRuleByProgram(rules, program);
         setExistingRuleMode(rule ? rule.mode : null);
+        setExistingRule(rule || null);
       } catch (error) {
         console.warn('Failed to fetch series rules metadata', error);
       }
@@ -727,22 +729,19 @@ export default function TVChannelGuide({ startDate, endDate }) {
     [recordingsByProgramId]
   );
 
-  const recordOne = useCallback(
-    async (program, channel) => {
-      if (!channel) {
-        showNotification({
-          title: 'Unable to schedule recording',
-          message: 'No channel found for this program.',
-          color: 'red.6',
-        });
-        return;
-      }
+  const recordOne = useCallback(async (program, channel) => {
+    if (!channel) {
+      showNotification({
+        title: 'Unable to schedule recording',
+        message: 'No channel found for this program.',
+        color: 'red.6',
+      });
+      return;
+    }
 
-      await createRecording(channel, program);
-      showNotification({ title: 'Recording scheduled' });
-    },
-    []
-  );
+    await createRecording(channel, program);
+    showNotification({ title: 'Recording scheduled' });
+  }, []);
 
   const saveSeriesRule = useCallback(async (program, mode) => {
     await createSeriesRule(program, mode);
@@ -1464,7 +1463,10 @@ export default function TVChannelGuide({ startDate, endDate }) {
               program={recordChoiceProgram}
               recording={recordingForProgram}
               existingRuleMode={existingRuleMode}
-              onRecordOne={() => recordOne(recordChoiceProgram, recordChoiceChannel)}
+              existingRule={existingRule}
+              onRecordOne={() =>
+                recordOne(recordChoiceProgram, recordChoiceChannel)
+              }
               onRecordSeriesAll={() =>
                 saveSeriesRule(recordChoiceProgram, 'all')
               }

@@ -100,7 +100,6 @@ class M3UAccount(models.Model):
         default=0,
         help_text="Priority for VOD provider selection (higher numbers = higher priority). Used when multiple providers offer the same content.",
     )
-
     def __str__(self):
         return self.name
 
