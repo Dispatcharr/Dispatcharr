@@ -210,6 +210,10 @@ const LogoForm = ({ logo = null, isOpen, onClose, onSuccess }) => {
       onClose={onClose}
       title={logo ? 'Edit Logo' : 'Add Logo'}
       size="md"
+      // Render above any other open modal (e.g. the per-group gear modal
+      // in LiveGroupFilter) when this is invoked from one. Default Mantine
+      // modal zIndex is 200; bumping to 1000 here keeps it on top.
+      zIndex={1000}
     >
       <form onSubmit={handleSubmit(onSubmit)}>
         <Stack spacing="md">

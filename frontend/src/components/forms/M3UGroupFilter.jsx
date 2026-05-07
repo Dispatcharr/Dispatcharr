@@ -20,6 +20,7 @@ import {
   buildGroupStates,
   saveAndRefreshPlaylist,
 } from '../../utils/forms/M3uGroupFilterUtils.js';
+import { detectGroupReservationOverlaps } from '../../utils/forms/GroupSyncUtils';
 
 const M3UGroupFilter = ({ playlist = null, isOpen, onClose }) => {
   const channelGroups = useChannelsStore((s) => s.channelGroups);
@@ -63,6 +64,21 @@ const M3UGroupFilter = ({ playlist = null, isOpen, onClose }) => {
   }, [isOpen, playlist, fetchCategories]);
 
   const submit = async () => {
+    // Advisory only: overlapping ranges are sometimes intentional (for
+    // example, two providers carrying the same category that should
+    // merge into one shared number range). The form already shows a
+    // warning triangle on each affected group with the specific overlap
+    // names on hover, so the toast just confirms the save proceeded.
+    const overlaps = detectGroupReservationOverlaps(groupStates);
+    if (overlaps.length > 0) {
+      showNotification({
+        title: 'Overlapping channel number ranges',
+        message: `Saved with ${overlaps.length} overlapping range pair${overlaps.length === 1 ? '' : 's'}. Hover the warning icon on each group for details. Sync will assign whichever numbers are free at run time.`,
+        color: 'yellow',
+        autoClose: 6000,
+      });
+    }
+
     setIsLoading(true);
     try {
       await saveAndRefreshPlaylist(

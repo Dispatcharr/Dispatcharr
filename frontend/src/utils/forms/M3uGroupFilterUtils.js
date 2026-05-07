@@ -21,6 +21,7 @@ export const buildGroupStates = (channelGroups, playlistChannelGroups) => {
       name: channelGroups[group.channel_group].name,
       auto_channel_sync: group.auto_channel_sync || false,
       auto_sync_channel_start: group.auto_sync_channel_start || 1.0,
+      auto_sync_channel_end: group.auto_sync_channel_end ?? null,
       custom_properties: parseCustomProperties(group.custom_properties),
     }));
 };
