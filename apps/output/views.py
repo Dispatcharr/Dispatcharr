@@ -184,6 +184,12 @@ def generate_m3u(request, profile_name=None, user=None):
     # Check if direct stream URLs should be used instead of proxy
     use_direct_urls = request.GET.get('direct', 'false').lower() == 'true'
 
+    # Output profile ID to append to proxy stream URLs (triggers pre-delivery transcode)
+    output_profile_id = request.GET.get('output_profile')
+
+    # Output format to append to proxy stream URLs (native ?output_format= or XC-style ?output=)
+    output_format_param = request.GET.get('output_format') or request.GET.get('output')
+
     # Prefetch streams only when direct URLs are requested (avoids N+1 per channel)
     if use_direct_urls:
         channels = channels.prefetch_related(
@@ -289,7 +295,17 @@ def generate_m3u(request, profile_name=None, user=None):
                 stream_url = build_absolute_uri_with_port(request, f"/proxy/ts/stream/{channel.uuid}")
         else:
             # Standard behavior - use proxy URL
-            stream_url = build_absolute_uri_with_port(request, f"/proxy/ts/stream/{channel.uuid}")
+            base_stream_url = build_absolute_uri_with_port(request, f"/proxy/ts/stream/{channel.uuid}")
+            qs_parts = {}
+            if output_profile_id:
+                qs_parts['output_profile'] = output_profile_id
+            if output_format_param:
+                qs_parts['output_format'] = output_format_param
+            if qs_parts:
+                from urllib.parse import urlencode
+                stream_url = f"{base_stream_url}?{urlencode(qs_parts)}"
+            else:
+                stream_url = base_stream_url
 
         m3u_content += extinf_line + stream_url + "\n"
 
@@ -1952,6 +1968,11 @@ def xc_get_user(request):
     return user
 
 
+def _xc_allowed_output_formats(user):
+    """Return the list of allowed output formats for the XC API user_info response."""
+    return ['ts', 'mp4']
+
+
 def xc_get_info(request, full=False):
     user = xc_get_user(request)
 
@@ -1982,9 +2003,7 @@ def xc_get_info(request, full=False):
             "exp_date": str(int(time.time()) + (90 * 24 * 60 * 60)),
             "active_cons": str(active_cons),
             "max_connections": str(max_connections),
-            "allowed_output_formats": [
-                "ts",
-            ],
+            "allowed_output_formats": _xc_allowed_output_formats(user),
         },
         "server_info": {
             "url": hostname,

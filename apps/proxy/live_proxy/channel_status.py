@@ -1,13 +1,11 @@
-import logging
 import time
-import re
 from .server import ProxyServer
 from .redis_keys import RedisKeys
 from .constants import TS_PACKET_SIZE, ChannelMetadataField
 from redis.exceptions import ConnectionError, TimeoutError
 from .utils import get_logger
 from .client_manager import ClientManager
-from django.db import DatabaseError  # Add import for error handling
+from django.db import DatabaseError
 
 logger = get_logger()
 
@@ -145,7 +143,14 @@ class ChannelStatus:
                 'worker_id': client_data.get('worker_id', 'unknown'),
                 'ip_address': client_data.get('ip_address', 'unknown'),
                 'user_id': client_data.get('user_id', '0'),
+                'output_format': client_data.get('output_format', 'mpegts'),
             }
+
+            raw_profile_id = client_data.get('output_profile_id')
+            if raw_profile_id and raw_profile_id not in ('None', '0', ''):
+                client_info['output_profile_id'] = int(raw_profile_id)
+            else:
+                client_info['output_profile_id'] = None
 
             if 'connected_at' in client_data:
                 client_info['connected_at'] = float(client_data['connected_at'])
@@ -244,7 +249,7 @@ class ChannelStatus:
                     all_buffer_keys = []
                     cursor = 0
 
-                    buffer_key_pattern = f"ts_proxy:channel:{channel_id}:buffer:chunk:*"
+                    buffer_key_pattern = f"live:channel:{channel_id}:input:buffer:chunk:*"
 
                     while True:
                         cursor, keys = proxy_server.redis_client.scan(cursor, match=buffer_key_pattern, count=100)
@@ -473,6 +478,15 @@ class ChannelStatus:
                     if user_id_bytes:
                         client_info['user_id'] = user_id_bytes
 
+                    output_format = proxy_server.redis_client.hget(client_key, 'output_format')
+                    client_info['output_format'] = output_format or 'mpegts'
+
+                    raw_profile_id = proxy_server.redis_client.hget(client_key, 'output_profile_id')
+                    if raw_profile_id and raw_profile_id not in ('None', '0', ''):
+                        client_info['output_profile_id'] = int(raw_profile_id)
+                    else:
+                        client_info['output_profile_id'] = None
+
                     clients.append(client_info)
 
             # Add clients to info
@@ -518,5 +532,5 @@ class ChannelStatus:
 
             return info
         except Exception as e:
-            logger.error(f"Error getting channel info: {e}", exc_info=True)  # Added exc_info for better debugging
+            logger.error(f"Error getting channel info: {e}", exc_info=True)
             return None

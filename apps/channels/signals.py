@@ -65,7 +65,7 @@ def stop_proxy_session_before_channel_delete(sender, instance, **kwargs):
     """
     When a Channel is deleted, stop any active TS proxy session for it first.
 
-    Without this, the proxy's Redis state (ts_proxy:channel:{uuid}:*) survives
+    Without this, the proxy's Redis state (live:channel:{uuid}:*) survives
     the Channel row and the connected clients' "Stop" button hits
     `ChannelService.stop_channel(uuid)`, which calls `Channel.objects.get(uuid=...)`
     and crashes with DoesNotExist (reported as 'Channel not found' in the UI).
@@ -74,7 +74,7 @@ def stop_proxy_session_before_channel_delete(sender, instance, **kwargs):
     via the same signal path.
     """
     try:
-        from apps.proxy.ts_proxy.services.channel_service import ChannelService
+        from apps.proxy.live_proxy.services.channel_service import ChannelService
 
         channel_uuid = str(instance.uuid) if instance.uuid else None
         if not channel_uuid:

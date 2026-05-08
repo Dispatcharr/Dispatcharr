@@ -12,8 +12,8 @@ def cleanup_proxy_servers(sender, **kwargs):
         proxy_app = apps.get_app_config('proxy')
         for channel_id in list(proxy_app.hls_proxy.stream_managers.keys()):
             proxy_app.hls_proxy.stop_channel(channel_id)
-        for channel_id in list(proxy_app.ts_proxy.stream_managers.keys()):
-            proxy_app.ts_proxy.stop_channel(channel_id)
+        for channel_id in list(proxy_app.live_proxy.stream_managers.keys()):
+            proxy_app.live_proxy.stop_channel(channel_id)
         logger.info("Proxy servers cleaned up successfully")
     except Exception as e:
         logger.error(f"Error during proxy server cleanup: {e}")

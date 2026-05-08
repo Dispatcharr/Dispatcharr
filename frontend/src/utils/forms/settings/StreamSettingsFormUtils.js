@@ -7,6 +7,7 @@ export const getStreamSettingsFormInitialValues = () => {
     preferred_region: '',
     auto_import_mapped_files: true,
     m3u_hash_key: [],
+    default_output_format: 'mpegts',
   };
 };
 

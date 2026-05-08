@@ -6,10 +6,7 @@ This separates business logic from HTTP handling in views.
 import logging
 import time
 import json
-import re
-from django.shortcuts import get_object_or_404
 from apps.channels.models import Channel, Stream
-from apps.proxy.config import TSConfig as Config
 from ..server import ProxyServer
 from ..redis_keys import RedisKeys
 from ..constants import EventType, ChannelState, ChannelMetadataField
@@ -17,7 +14,7 @@ from ..url_utils import get_stream_info_for_switch
 from core.utils import log_system_event
 from .log_parsers import LogParserFactory
 
-logger = logging.getLogger("ts_proxy")
+logger = logging.getLogger("live_proxy")
 
 class ChannelService:
     """Service class for channel operations"""
@@ -42,8 +39,6 @@ class ChannelService:
             bool: Success status
         """
         proxy_server = ProxyServer.get_instance()
-        # FIXED: First, ensure that Redis metadata including stream_id is set BEFORE channel initialization
-        # This ensures the stream ID is available when the StreamManager looks it up
         if stream_id and proxy_server.redis_client:
             metadata_key = RedisKeys.channel_metadata(channel_id)
             # Check if metadata already exists
@@ -151,7 +146,7 @@ class ChannelService:
         if proxy_server.redis_client:
             try:
                 # This is inefficient but used for diagnostics - in production would use more targeted checks
-                redis_keys = proxy_server.redis_client.keys(f"ts_proxy:*:{channel_id}*")
+                redis_keys = proxy_server.redis_client.keys(f"live:*:{channel_id}*")
                 redis_keys = [k for k in redis_keys] if redis_keys else []
             except Exception as e:
                 logger.error(f"Error checking Redis keys: {e}")

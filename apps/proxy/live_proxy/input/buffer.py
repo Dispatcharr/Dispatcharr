@@ -1,34 +1,30 @@
 """Buffer management for TS streams"""
 
 import threading
-import logging
 import time
-from collections import deque
-from typing import Optional, Deque
 import random
-from apps.proxy.config import TSConfig as Config
-from .redis_keys import RedisKeys
-from .config_helper import ConfigHelper
-from .constants import TS_PACKET_SIZE
-from .utils import get_logger
+from ..redis_keys import RedisKeys
+from ..config_helper import ConfigHelper
+from ..constants import TS_PACKET_SIZE
+from ..utils import get_logger
 import gevent.event
-import gevent  # Make sure this import is at the top
+import gevent
 
 logger = get_logger()
 
 class StreamBuffer:
     """Manages stream data buffering with optimized chunk storage"""
 
-    def __init__(self, channel_id=None, redis_client=None):
+    def __init__(self, channel_id=None, redis_client=None,
+                 buffer_index_key=None, buffer_chunk_prefix=None, chunk_timestamps_key=None):
         self.channel_id = channel_id
         self.redis_client = redis_client
         self.lock = threading.Lock()
         self.index = 0
         self.TS_PACKET_SIZE = TS_PACKET_SIZE
 
-        # STANDARDIZED KEYS: Use RedisKeys class instead of hardcoded patterns
-        self.buffer_index_key = RedisKeys.buffer_index(channel_id) if channel_id else ""
-        self.buffer_prefix = RedisKeys.buffer_chunk_prefix(channel_id) if channel_id else ""
+        self.buffer_index_key = buffer_index_key or (RedisKeys.buffer_index(channel_id) if channel_id else "")
+        self.buffer_prefix = buffer_chunk_prefix or (RedisKeys.buffer_chunk_prefix(channel_id) if channel_id else "")
 
         self.chunk_ttl = ConfigHelper.redis_chunk_ttl()
 
@@ -46,7 +42,7 @@ class StreamBuffer:
         self.target_chunk_size = ConfigHelper.get('BUFFER_CHUNK_SIZE', TS_PACKET_SIZE * 5644)  # ~1MB default
 
         # Sorted-set key for chunk receive-timestamps (time-based positioning)
-        self.chunk_timestamps_key = RedisKeys.chunk_timestamps(channel_id) if channel_id else ""
+        self.chunk_timestamps_key = chunk_timestamps_key or (RedisKeys.chunk_timestamps(channel_id) if channel_id else "")
 
         # Register Lua scripts once — subsequent calls use EVALSHA (just the
         # SHA hash) instead of sending the full script text on every invocation.
@@ -108,7 +104,7 @@ class StreamBuffer:
                     # remaining writes are pipelined into one round trip.
                     if self.redis_client:
                         chunk_index = self.redis_client.incr(self.buffer_index_key)
-                        chunk_key = RedisKeys.buffer_chunk(self.channel_id, chunk_index)
+                        chunk_key = f"{self.buffer_prefix}{chunk_index}"
 
                         pipe = self.redis_client.pipeline(transaction=False)
                         pipe.setex(chunk_key, self.chunk_ttl, bytes(chunk_data))
@@ -219,7 +215,7 @@ class StreamBuffer:
             # Directly fetch from Redis using pipeline for efficiency
             pipe = self.redis_client.pipeline()
             for idx in range(start_id, end_id):
-                chunk_key = RedisKeys.buffer_chunk(self.channel_id, idx)
+                chunk_key = f"{self.buffer_prefix}{idx}"
                 pipe.get(chunk_key)
 
             results = pipe.execute()
@@ -273,7 +269,7 @@ class StreamBuffer:
             # Directly fetch from Redis using pipeline
             pipe = self.redis_client.pipeline()
             for idx in range(start_id, end_id):
-                chunk_key = RedisKeys.buffer_chunk(self.channel_id, idx)
+                chunk_key = f"{self.buffer_prefix}{idx}"
                 pipe.get(chunk_key)
 
             results = pipe.execute()
@@ -394,7 +390,7 @@ class StreamBuffer:
             additional_size = sum(len(c) for c in more_chunks)
             if total_size + additional_size <= MAX_SIZE:
                 chunks.extend(more_chunks)
-                chunk_count += len(more_chunks)  # Fixed: count actual additional chunks retrieved
+                chunk_count += len(more_chunks)
 
         return chunks, client_index + chunk_count
 
@@ -404,7 +400,7 @@ class StreamBuffer:
     # Binary search finds the boundary in O(log N) EXISTS calls with zero
     # round-trips between steps and no TOCTOU races (Lua scripts are atomic).
     #
-    # ARGV[1] = key prefix  (e.g. "ts_proxy:channel:<id>:buffer:chunk:")
+    # ARGV[1] = key prefix  (e.g. "live:channel:<id>:input:buffer:chunk:")
     # ARGV[2] = low index   (client_index + 1, first chunk the client needs)
     # ARGV[3] = high index  (buffer head, most recent chunk)
     #
@@ -464,7 +460,7 @@ class StreamBuffer:
             # not the full script text, on every call after the first.
             result = self._find_oldest_chunk_sha(
                 args=[
-                    RedisKeys.buffer_chunk_prefix(self.channel_id),
+                    self.buffer_prefix,
                     low,
                     high,
                 ],
@@ -538,13 +534,11 @@ class StreamBuffer:
             logger.error(f"Error in find_chunk_index_by_time for channel {self.channel_id}: {e}")
             return None
 
-    # Add a new method to safely create timers
     def schedule_timer(self, delay, callback, *args, **kwargs):
         """Schedule a timer and track it for proper cleanup"""
         if self.stopping:
             return None
 
-        # Replace threading.Timer with gevent.spawn_later for better compatibility
         timer = gevent.spawn_later(delay, callback, *args, **kwargs)
         self.fill_timers.append(timer)
         return timer

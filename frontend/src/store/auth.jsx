@@ -4,6 +4,7 @@ import useChannelsStore from './channels';
 import usePlaylistsStore from './playlists';
 import useEPGsStore from './epgs';
 import useStreamProfilesStore from './streamProfiles';
+import useOutputProfilesStore from './outputProfiles';
 import useUserAgentsStore from './userAgents';
 import useUsersStore from './users';
 import API from '../api';
@@ -121,6 +122,7 @@ const useAuthStore = create((set, get) => ({
         useEPGsStore.getState().fetchEPGs(),
         useEPGsStore.getState().fetchEPGData(),
         useStreamProfilesStore.getState().fetchProfiles(),
+        useOutputProfilesStore.getState().fetchProfiles(),
         useUserAgentsStore.getState().fetchUserAgents(),
         useChannelsStore.getState().fetchChannelIds(),
       ]);

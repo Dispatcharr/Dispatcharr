@@ -11,9 +11,9 @@ from unittest.mock import MagicMock, patch
 
 from django.test import TestCase
 
-from apps.proxy.ts_proxy.constants import ChannelMetadataField, ChannelState
-from apps.proxy.ts_proxy.redis_keys import RedisKeys
-from apps.proxy.ts_proxy.stream_manager import StreamManager
+from apps.proxy.live_proxy.constants import ChannelMetadataField, ChannelState
+from apps.proxy.live_proxy.redis_keys import RedisKeys
+from apps.proxy.live_proxy.input.manager import StreamManager
 
 
 # ---------------------------------------------------------------------------
@@ -84,7 +84,7 @@ def _run_finally_block(sm, owner_value, current_state):
     redis.setex.reset_mock()
 
     with patch.object(threading, 'Thread', return_value=MagicMock()):
-        with patch('apps.proxy.ts_proxy.stream_manager.ConfigHelper') as mock_cfg:
+        with patch('apps.proxy.live_proxy.input.manager.ConfigHelper') as mock_cfg:
             mock_cfg.max_stream_switches.return_value = 0
             mock_cfg.max_retries.return_value = sm.max_retries
             sm.run()
