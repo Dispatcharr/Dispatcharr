@@ -33,6 +33,7 @@ export const saveChangedSettings = async (settings, changedSettings) => {
     'm3u_hash_key',
     'preferred_region',
     'auto_import_mapped_files',
+    'default_output_format',
   ];
   const epgFields = [
     'epg_match_mode',

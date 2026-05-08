@@ -3,7 +3,7 @@ import re
 from urllib.parse import urlparse
 import inspect
 
-logger = logging.getLogger("ts_proxy")
+logger = logging.getLogger("live_proxy")
 
 def detect_stream_type(url):
     """
@@ -90,7 +90,7 @@ def create_ts_packet(packet_type='null', message=None):
 
 def get_logger(component_name=None):
     """
-    Get a standardized logger with ts_proxy prefix and optional component name.
+    Get a standardized logger with live_proxy prefix and optional component name.
 
     Args:
         component_name (str, optional): Name of the component. If not provided,
@@ -100,7 +100,7 @@ def get_logger(component_name=None):
         logging.Logger: A configured logger with standardized naming.
     """
     if component_name:
-        logger_name = f"ts_proxy.{component_name}"
+        logger_name = f"live_proxy.{component_name}"
     else:
         # Try to get the calling module name if not explicitly specified
         frame = inspect.currentframe().f_back
@@ -108,9 +108,9 @@ def get_logger(component_name=None):
         if module:
             # Extract just the filename without extension
             module_name = module.__name__.split('.')[-1]
-            logger_name = f"ts_proxy.{module_name}"
+            logger_name = f"live_proxy.{module_name}"
         else:
             # Default if detection fails
-            logger_name = "ts_proxy"
+            logger_name = "live_proxy"
 
     return logging.getLogger(logger_name)

@@ -21,7 +21,12 @@ import { RotateCcwKey, X } from 'lucide-react';
 import { Copy, Key } from 'lucide-react';
 import { useForm } from '@mantine/form';
 import useChannelsStore from '../../store/channels';
-import { USER_LEVELS, USER_LEVEL_LABELS, NETWORK_ACCESS_OPTIONS } from '../../constants';
+import useOutputProfilesStore from '../../store/outputProfiles';
+import {
+  USER_LEVELS,
+  USER_LEVEL_LABELS,
+  NETWORK_ACCESS_OPTIONS,
+} from '../../constants';
 import useAuthStore from '../../store/auth';
 import { copyToClipboard } from '../../utils';
 import { IPV4_CIDR_REGEX, IPV6_CIDR_REGEX } from '../../utils/networkUtils';
@@ -36,6 +41,7 @@ const NETWORK_KEYS = Object.keys(NETWORK_ACCESS_OPTIONS);
 
 const User = ({ user = null, isOpen, onClose }) => {
   const profiles = useChannelsStore((s) => s.profiles);
+  const outputProfiles = useOutputProfilesStore((s) => s.profiles);
   const authUser = useAuthStore((s) => s.user);
   const setUser = useAuthStore((s) => s.setUser);
 
@@ -58,6 +64,8 @@ const User = ({ user = null, isOpen, onClose }) => {
       stream_limit: 0,
       password: '',
       xc_password: '',
+      output_format: '',
+      output_profile: '',
       channel_profiles: [],
       hide_adult_content: false,
       epg_days: 0,
@@ -80,7 +88,9 @@ const User = ({ user = null, isOpen, onClose }) => {
         values.xc_password && !values.xc_password.match(/^[a-z0-9]+$/i)
           ? 'XC password must be alphanumeric'
           : null,
-      allowed_ips: (values.allowed_ips || []).some((t) => !isValidNetworkEntry(t))
+      allowed_ips: (values.allowed_ips || []).some(
+        (t) => !isValidNetworkEntry(t)
+      )
         ? 'Invalid IP address or CIDR range'
         : null,
     }),
@@ -107,6 +117,14 @@ const User = ({ user = null, isOpen, onClose }) => {
     customProps.xc_password = values.xc_password || '';
     delete values.xc_password;
 
+    customProps.output_format = values.output_format || null;
+    delete values.output_format;
+
+    customProps.output_profile = values.output_profile
+      ? parseInt(values.output_profile, 10)
+      : null;
+    delete values.output_profile;
+
     customProps.hide_adult_content = values.hide_adult_content || false;
     delete values.hide_adult_content;
 
@@ -121,7 +139,10 @@ const User = ({ user = null, isOpen, onClose }) => {
     const joined = (values.allowed_ips || []).join(',');
     delete values.allowed_ips;
     const allowed_networks = {};
-    if (joined) NETWORK_KEYS.forEach((key) => { allowed_networks[key] = joined; });
+    if (joined)
+      NETWORK_KEYS.forEach((key) => {
+        allowed_networks[key] = joined;
+      });
     customProps.allowed_networks = allowed_networks;
 
     if (values.channel_profiles.includes('0')) {
@@ -172,14 +193,20 @@ const User = ({ user = null, isOpen, onClose }) => {
             ? user.channel_profiles.map((id) => `${id}`)
             : ['0'],
         xc_password: customProps.xc_password || '',
+        output_format: customProps.output_format || '',
+        output_profile: customProps.output_profile
+          ? `${customProps.output_profile}`
+          : '',
         hide_adult_content: customProps.hide_adult_content || false,
         epg_days: customProps.epg_days || 0,
         epg_prev_days: customProps.epg_prev_days || 0,
-        allowed_ips: [...new Set(
-          NETWORK_KEYS.flatMap((key) =>
-            networks[key] ? networks[key].split(',').filter(Boolean) : []
-          )
-        )],
+        allowed_ips: [
+          ...new Set(
+            NETWORK_KEYS.flatMap((key) =>
+              networks[key] ? networks[key].split(',').filter(Boolean) : []
+            )
+          ),
+        ],
       });
 
       if (customProps.xc_password) {
@@ -404,6 +431,36 @@ const User = ({ user = null, isOpen, onClose }) => {
                   </ActionIcon>
                 }
               />
+              {isAdmin && (
+                <Select
+                  label="Output Format Override"
+                  description="Override the system default output format for this user. Clear to use system default."
+                  clearable
+                  placeholder="System default"
+                  disabled={!isAdmin}
+                  data={[
+                    { value: 'mpegts', label: 'MPEG-TS' },
+                    { value: 'fmp4', label: 'fMP4 (fragmented MP4)' },
+                  ]}
+                  {...form.getInputProps('output_format')}
+                  key={form.key('output_format')}
+                />
+              )}
+              {isAdmin && (
+                <Select
+                  label="Output Profile Override"
+                  description="Pre-delivery transcode profile applied to streams for this user. Clear to use no transcoding."
+                  clearable
+                  searchable
+                  placeholder="No transcoding"
+                  disabled={!isAdmin}
+                  data={outputProfiles
+                    .filter((p) => p.is_active)
+                    .map((p) => ({ value: `${p.id}`, label: p.name }))}
+                  {...form.getInputProps('output_profile')}
+                  key={form.key('output_profile')}
+                />
+              )}
               {isAdmin && (
                 <TagsInput
                   label="Allowed IPs"

@@ -125,6 +125,7 @@ class StreamProfile(models.Model):
         return False
 
     def build_command(self, stream_url, user_agent):
+
         if self.is_proxy():
             return []
 
@@ -146,6 +147,43 @@ class StreamProfile(models.Model):
         for key, value in replacements.items():
             part = part.replace(key, value)
         return part
+
+
+class OutputProfile(models.Model):
+    """
+    Defines a pre-delivery transcode step applied to a channel's TS stream.
+
+    The command and parameters must accept raw MPEG-TS via pipe:0 (stdin) and
+    write the transcoded output to pipe:1 (stdout). One transcode process runs
+    per active (channel, OutputProfile) pair regardless of how many clients
+    request it; all clients share the same Redis-backed output buffer.
+
+    Example parameters for a 720p transcode:
+        -i pipe:0 -c:v libx264 -b:v 2000k -vf scale=-2:720 -c:a copy -f mpegts pipe:1
+    """
+
+    name = models.CharField(max_length=255, unique=True, help_text="Display name for this output profile")
+    command = models.CharField(
+        max_length=255,
+        help_text="Executable to run (e.g. 'ffmpeg')",
+    )
+    parameters = models.TextField(
+        help_text="Command-line parameters. Must read from pipe:0 (stdin) and write to pipe:1 (stdout).",
+    )
+    locked = models.BooleanField(
+        default=False, help_text="Protected - can't be deleted or modified"
+    )
+    is_active = models.BooleanField(
+        default=True, help_text="Whether this profile is available for use"
+    )
+
+    def __str__(self):
+        return self.name
+
+    def build_command(self):
+        """Return the full command as a list suitable for subprocess.Popen."""
+        from shlex import split as shlex_split
+        return [self.command] + shlex_split(self.parameters)
 
 
 # Setting group keys
@@ -207,6 +245,7 @@ class CoreSettings(models.Model):
             "m3u_hash_key": "",
             "preferred_region": None,
             "auto_import_mapped_files": None,
+            "default_output_format": "mpegts",
         })
 
     @classmethod
@@ -216,6 +255,10 @@ class CoreSettings(models.Model):
     @classmethod
     def get_default_stream_profile_id(cls):
         return cls.get_stream_settings().get("default_stream_profile")
+
+    @classmethod
+    def get_default_output_format(cls):
+        return cls.get_stream_settings().get("default_output_format", "mpegts")
 
     @classmethod
     def get_m3u_hash_key(cls):

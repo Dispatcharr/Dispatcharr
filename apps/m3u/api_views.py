@@ -278,7 +278,7 @@ class M3UAccountViewSet(viewsets.ModelViewSet):
         """
         instance = self.get_object()
         from apps.channels.models import Channel
-        from apps.proxy.ts_proxy.services.channel_service import (
+        from apps.proxy.live_proxy.services.channel_service import (
             ChannelService,
         )
 

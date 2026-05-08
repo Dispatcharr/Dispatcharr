@@ -22,7 +22,7 @@ class OwnerWorkerKeepaliveTests(TestCase):
     """Owner worker has a stream_manager; keepalive logic uses it directly."""
 
     def _make_generator(self, healthy, at_buffer_head, consecutive_empty):
-        from apps.proxy.ts_proxy.stream_generator import StreamGenerator
+        from apps.proxy.live_proxy.output.ts.generator import StreamGenerator
         gen = StreamGenerator.__new__(StreamGenerator)
         gen.channel_id = "00000000-0000-0000-0000-000000000001"
         gen.client_id = "test-client"
@@ -73,7 +73,7 @@ class NonOwnerWorkerKeepaliveTests(TestCase):
     """Non-owner worker has stream_manager=None; health determined from Redis."""
 
     def _make_generator(self, consecutive_empty=10):
-        from apps.proxy.ts_proxy.stream_generator import StreamGenerator
+        from apps.proxy.live_proxy.output.ts.generator import StreamGenerator
         gen = StreamGenerator.__new__(StreamGenerator)
         gen.channel_id = "00000000-0000-0000-0000-000000000002"
         gen.client_id = "test-client-nonowner"
@@ -108,7 +108,7 @@ class NonOwnerWorkerKeepaliveTests(TestCase):
         fresh_ts = str(time.time() - 2.0).encode()
         server = self._mock_proxy_server(fresh_ts)
 
-        with patch("apps.proxy.ts_proxy.stream_generator.ProxyServer") as MockPS:
+        with patch("apps.proxy.live_proxy.output.ts.generator.ProxyServer") as MockPS:
             MockPS.get_instance.return_value = server
             result = gen._should_send_keepalive(gen.local_index)
 
@@ -120,7 +120,7 @@ class NonOwnerWorkerKeepaliveTests(TestCase):
         stale_ts = str(time.time() - 12.0).encode()
         server = self._mock_proxy_server(stale_ts)
 
-        with patch("apps.proxy.ts_proxy.stream_generator.ProxyServer") as MockPS:
+        with patch("apps.proxy.live_proxy.output.ts.generator.ProxyServer") as MockPS:
             MockPS.get_instance.return_value = server
             result = gen._should_send_keepalive(gen.local_index)
 
@@ -132,7 +132,7 @@ class NonOwnerWorkerKeepaliveTests(TestCase):
         ts = str(time.time() - 10.0).encode()
         server = self._mock_proxy_server(ts)
 
-        with patch("apps.proxy.ts_proxy.stream_generator.ProxyServer") as MockPS:
+        with patch("apps.proxy.live_proxy.output.ts.generator.ProxyServer") as MockPS:
             MockPS.get_instance.return_value = server
             result = gen._should_send_keepalive(gen.local_index)
 
@@ -143,7 +143,7 @@ class NonOwnerWorkerKeepaliveTests(TestCase):
         gen = self._make_generator()
         server = self._mock_proxy_server(None)
 
-        with patch("apps.proxy.ts_proxy.stream_generator.ProxyServer") as MockPS:
+        with patch("apps.proxy.live_proxy.output.ts.generator.ProxyServer") as MockPS:
             MockPS.get_instance.return_value = server
             result = gen._should_send_keepalive(gen.local_index)
 
@@ -155,7 +155,7 @@ class NonOwnerWorkerKeepaliveTests(TestCase):
         server = MagicMock()
         server.redis_client = None
 
-        with patch("apps.proxy.ts_proxy.stream_generator.ProxyServer") as MockPS:
+        with patch("apps.proxy.live_proxy.output.ts.generator.ProxyServer") as MockPS:
             MockPS.get_instance.return_value = server
             result = gen._should_send_keepalive(gen.local_index)
 
@@ -165,7 +165,7 @@ class NonOwnerWorkerKeepaliveTests(TestCase):
         """Non-owner, Redis raises an exception -> conservative, no keepalive."""
         gen = self._make_generator()
 
-        with patch("apps.proxy.ts_proxy.stream_generator.ProxyServer") as MockPS:
+        with patch("apps.proxy.live_proxy.output.ts.generator.ProxyServer") as MockPS:
             MockPS.get_instance.side_effect = Exception("Redis error")
             result = gen._should_send_keepalive(gen.local_index)
 
@@ -177,7 +177,7 @@ class NonOwnerWorkerKeepaliveTests(TestCase):
         gen.buffer.index = 100  # far ahead of local_index=10
         server = self._mock_proxy_server(None)
 
-        with patch("apps.proxy.ts_proxy.stream_generator.ProxyServer") as MockPS:
+        with patch("apps.proxy.live_proxy.output.ts.generator.ProxyServer") as MockPS:
             MockPS.get_instance.return_value = server
             result = gen._should_send_keepalive(gen.local_index)
 
@@ -189,7 +189,7 @@ class NonOwnerWorkerKeepaliveTests(TestCase):
         stale_ts = str(time.time() - 30.0).encode()
         server = self._mock_proxy_server(stale_ts)
 
-        with patch("apps.proxy.ts_proxy.stream_generator.ProxyServer") as MockPS:
+        with patch("apps.proxy.live_proxy.output.ts.generator.ProxyServer") as MockPS:
             MockPS.get_instance.return_value = server
             result = gen._should_send_keepalive(gen.local_index)
 
@@ -204,7 +204,7 @@ class DoStatsUpdateTests(TestCase):
     """_do_stats_update runs the actual Redis scan + WebSocket call."""
 
     def _make_client_manager(self):
-        from apps.proxy.ts_proxy.client_manager import ClientManager
+        from apps.proxy.live_proxy.client_manager import ClientManager
         cm = ClientManager.__new__(ClientManager)
         cm.channel_id = "00000000-0000-0000-0000-000000000004"
         cm._heartbeat_running = False
@@ -217,7 +217,7 @@ class DoStatsUpdateTests(TestCase):
         mock_redis = MagicMock()
         mock_redis.scan.return_value = (0, [])
 
-        with patch("apps.proxy.ts_proxy.client_manager.send_websocket_update") as mock_ws, \
+        with patch("apps.proxy.live_proxy.client_manager.send_websocket_update") as mock_ws, \
              patch("redis.Redis.from_url", return_value=mock_redis):
             cm._do_stats_update()
 
@@ -238,18 +238,18 @@ class DoStatsUpdateTests(TestCase):
                 self.fail(f"_do_stats_update raised an exception: {e}")
 
     def test_do_stats_update_scans_channel_client_keys(self):
-        """Must scan for ts_proxy:channel:*:clients pattern."""
+        """Must scan for live:channel:*:clients pattern."""
         cm = self._make_client_manager()
 
         mock_redis = MagicMock()
         mock_redis.scan.return_value = (0, [])
 
-        with patch("apps.proxy.ts_proxy.client_manager.send_websocket_update"), \
+        with patch("apps.proxy.live_proxy.client_manager.send_websocket_update"), \
              patch("redis.Redis.from_url", return_value=mock_redis):
             cm._do_stats_update()
 
         scan_call = mock_redis.scan.call_args
-        self.assertIn("ts_proxy:channel:*:clients", str(scan_call))
+        self.assertIn("live:channel:*:clients", str(scan_call))
 
 
 # ---------------------------------------------------------------------------
@@ -261,7 +261,7 @@ class ClientRemoveIntegrationTests(TestCase):
 
     def test_remove_client_does_not_block_on_websocket(self):
         """remove_client() must return quickly even if WebSocket is slow."""
-        from apps.proxy.ts_proxy.client_manager import ClientManager
+        from apps.proxy.live_proxy.client_manager import ClientManager
 
         cm = ClientManager.__new__(ClientManager)
         cm.channel_id = "00000000-0000-0000-0000-000000000005"
@@ -269,7 +269,7 @@ class ClientRemoveIntegrationTests(TestCase):
         cm.clients = {"test-client-1"}
         cm.last_heartbeat_time = {"test-client-1": time.time()}
         cm.last_active_time = time.time()
-        cm.client_set_key = f"ts_proxy:channel:{cm.channel_id}:clients"
+        cm.client_set_key = f"live:channel:{cm.channel_id}:clients"
         cm.client_ttl = 60
         cm.worker_id = "worker-1"
         cm.proxy_server = MagicMock()
@@ -288,7 +288,7 @@ class ClientRemoveIntegrationTests(TestCase):
             slow_ws_called.set()
 
         start = time.time()
-        with patch("apps.proxy.ts_proxy.client_manager.send_websocket_update", side_effect=slow_websocket):
+        with patch("apps.proxy.live_proxy.client_manager.send_websocket_update", side_effect=slow_websocket):
             cm.remove_client("test-client-1")
         elapsed = time.time() - start
 

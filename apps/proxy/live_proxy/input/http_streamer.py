@@ -7,7 +7,7 @@ import threading
 import os
 import requests
 from requests.adapters import HTTPAdapter
-from .utils import get_logger
+from ..utils import get_logger
 
 logger = get_logger()
 

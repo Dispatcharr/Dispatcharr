@@ -195,6 +195,16 @@ const StreamSettingsForm = React.memo(({ active }) => {
             value: `${r.value}`,
           }))}
         />
+        <Select
+          {...form.getInputProps('default_output_format')}
+          id="default_output_format"
+          name="default_output_format"
+          label="Default Output Format"
+          data={[
+            { value: 'mpegts', label: 'MPEG-TS' },
+            { value: 'fmp4', label: 'fMP4 (fragmented MP4)' },
+          ]}
+        />
 
         <Group justify="space-between" pt={5}>
           <Text size="sm" fw={500}>

@@ -16,6 +16,7 @@ from drf_spectacular.types import OpenApiTypes
 from .models import (
     UserAgent,
     StreamProfile,
+    OutputProfile,
     CoreSettings,
     STREAM_SETTINGS_KEY,
     DVR_SETTINGS_KEY,
@@ -25,6 +26,7 @@ from .models import (
 from .serializers import (
     UserAgentSerializer,
     StreamProfileSerializer,
+    OutputProfileSerializer,
     CoreSettingsSerializer,
     ProxySettingsSerializer,
 )
@@ -67,6 +69,21 @@ class StreamProfileViewSet(viewsets.ModelViewSet):
 
     queryset = StreamProfile.objects.all()
     serializer_class = StreamProfileSerializer
+
+    def get_permissions(self):
+        try:
+            return [perm() for perm in permission_classes_by_action[self.action]]
+        except KeyError:
+            return [Authenticated()]
+
+
+class OutputProfileViewSet(viewsets.ModelViewSet):
+    """
+    API endpoint that allows output profiles to be viewed, created, edited, or deleted.
+    """
+
+    queryset = OutputProfile.objects.all()
+    serializer_class = OutputProfileSerializer
 
     def get_permissions(self):
         try:

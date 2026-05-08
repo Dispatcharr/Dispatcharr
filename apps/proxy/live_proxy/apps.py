@@ -1,10 +1,10 @@
 import sys
 from django.apps import AppConfig
 
-class TSProxyConfig(AppConfig):
+class LiveProxyConfig(AppConfig):
     default_auto_field = 'django.db.models.BigAutoField'
-    name = 'apps.proxy.ts_proxy'
-    verbose_name = "TS Stream Proxies"
+    name = 'apps.proxy.live_proxy'
+    verbose_name = "Live Stream Proxy"
 
     def ready(self):
         """Initialize proxy servers when Django starts"""

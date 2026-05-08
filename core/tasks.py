@@ -7,7 +7,7 @@ import re
 import time
 import os
 from core.utils import RedisClient, send_websocket_update, acquire_task_lock, release_task_lock
-from apps.proxy.ts_proxy.channel_status import ChannelStatus
+from apps.proxy.live_proxy.channel_status import ChannelStatus
 from apps.m3u.models import M3UAccount
 from apps.epg.models import EPGSource
 from apps.m3u.tasks import refresh_single_m3u_account
@@ -396,7 +396,7 @@ def fetch_channel_stats():
 
     try:
         # Basic info for all channels
-        channel_pattern = "ts_proxy:channel:*:metadata"
+        channel_pattern = "live:channel:*:metadata"
         all_channels = []
 
         # Extract channel IDs from keys
@@ -404,7 +404,7 @@ def fetch_channel_stats():
         while True:
             cursor, keys = redis_client.scan(cursor, match=channel_pattern)
             for key in keys:
-                channel_id_match = re.search(r"ts_proxy:channel:(.*):metadata", key)
+                channel_id_match = re.search(r"live:channel:(.*):metadata", key)
                 if channel_id_match:
                     ch_id = channel_id_match.group(1)
                     channel_info = ChannelStatus.get_basic_channel_info(ch_id)

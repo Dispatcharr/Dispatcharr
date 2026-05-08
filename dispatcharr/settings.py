@@ -79,7 +79,7 @@ INSTALLED_APPS = [
     "apps.m3u",
     "apps.output",
     "apps.proxy.apps.ProxyConfig",
-    "apps.proxy.ts_proxy",
+    "apps.proxy.live_proxy",
     "apps.vod.apps.VODConfig",
     "apps.connect.apps.ConnectConfig",
     "core",

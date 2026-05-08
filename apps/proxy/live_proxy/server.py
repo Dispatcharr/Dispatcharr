@@ -8,22 +8,21 @@ Handles live TS stream proxying with support for:
 """
 
 import threading
-import logging
 import socket
 import random
 import time
-import sys
 import os
 import json
-import gevent  # Add gevent import
-from typing import Dict, Optional, Set
+import gevent
 from apps.proxy.config import TSConfig as Config
 from apps.channels.models import Channel, Stream
 from core.utils import RedisClient, log_system_event
 from redis.exceptions import ConnectionError, TimeoutError
-from .stream_manager import StreamManager
-from .stream_buffer import StreamBuffer
+from .input.manager import StreamManager
+from .input.buffer import StreamBuffer
 from .client_manager import ClientManager
+from .output.fmp4.manager import FMP4RemuxManager
+from .output.profile.manager import OutputProfileManager, PROFILE_STATE_ACTIVE
 from .redis_keys import RedisKeys
 from .constants import ChannelState, EventType, StreamType
 from .config_helper import ConfigHelper
@@ -45,8 +44,8 @@ class ProxyServer:
             cls._instance = cls._INITIALIZING
             try:
                 from .server import ProxyServer
-                from .stream_manager import StreamManager
-                from .stream_buffer import StreamBuffer
+                from .input.manager import StreamManager
+                from .input.buffer import StreamBuffer
                 from .client_manager import ClientManager
                 real_instance = ProxyServer()
                 cls._instance = real_instance
@@ -66,11 +65,12 @@ class ProxyServer:
         self.stream_managers = {}
         self.stream_buffers = {}
         self.client_managers = {}
+        self.output_managers = {}  # {channel_id: {fmt: manager}}
+        self.profile_managers = {}  # {channel_id: {profile_id: OutputProfileManager}}
+        self.profile_buffers = {}   # {channel_id: {profile_id: StreamBuffer}}
         self._channel_names = {}
 
         # Generate a unique worker ID
-        import socket
-        import os
         pid = os.getpid()
         hostname = socket.gethostname()
         self.worker_id = f"{hostname}:{pid}"
@@ -188,7 +188,7 @@ class ProxyServer:
 
                     # Create a pubsub instance from the client
                     pubsub = pubsub_client.pubsub()
-                    pubsub.psubscribe("ts_proxy:events:*")
+                    pubsub.psubscribe("live:events:*")
 
                     logger.info(f"Started Redis event listener for client activity")
 
@@ -260,7 +260,7 @@ class ProxyServer:
                                                     "timestamp": time.time()
                                                 }
                                                 self.redis_client.publish(
-                                                    f"ts_proxy:events:{channel_id}",
+                                                    f"live:events:{channel_id}",
                                                     json.dumps(switch_result)
                                                 )
 
@@ -287,7 +287,7 @@ class ProxyServer:
                                                     "timestamp": time.time()
                                                 }
                                                 self.redis_client.publish(
-                                                    f"ts_proxy:events:{channel_id}",
+                                                    f"live:events:{channel_id}",
                                                     json.dumps(switch_result)
                                                 )
                                     elif event_type == EventType.CHANNEL_STOP:
@@ -316,7 +316,7 @@ class ProxyServer:
                                             "timestamp": time.time()
                                         }
                                         self.redis_client.publish(
-                                            f"ts_proxy:events:{channel_id}",
+                                            f"live:events:{channel_id}",
                                             json.dumps(stop_response)
                                         )
                                     elif event_type == EventType.CLIENT_STOP:
@@ -336,6 +336,19 @@ class ProxyServer:
                                                 stop_key = RedisKeys.client_stop(channel_id, client_id)
                                                 self.redis_client.setex(stop_key, 30, "true")  # 30 second TTL
                                                 logger.info(f"Set stop key for client {client_id}")
+
+                                    elif event_type == EventType.ENSURE_OUTPUT_FORMAT:
+                                        fmt = data.get("fmt")
+                                        if fmt:
+                                            logger.info(f"Owner received ENSURE_OUTPUT_FORMAT for channel {channel_id}, fmt={fmt}")
+                                            self.ensure_output_format(channel_id, fmt)
+
+                                    elif event_type == EventType.ENSURE_OUTPUT_PROFILE:
+                                        profile_id = data.get("profile_id")
+                                        command = data.get("command")
+                                        if profile_id is not None and command:
+                                            logger.info(f"Owner received ENSURE_OUTPUT_PROFILE for channel {channel_id}, profile={profile_id}")
+                                            self.ensure_output_profile(channel_id, profile_id, command)
                         except Exception as e:
                             logger.error(f"Error processing event message: {e}")
 
@@ -348,12 +361,12 @@ class ProxyServer:
                     final_delay = delay + jitter
 
                     logger.error(f"Error in event listener: {e}. Retrying in {final_delay:.1f}s (attempt {retry_count})")
-                    gevent.sleep(final_delay)  # REPLACE: time.sleep(final_delay)
+                    gevent.sleep(final_delay)
 
                 except Exception as e:
                     logger.error(f"Error in event listener: {e}")
                     # Add a short delay to prevent rapid retries on persistent errors
-                    gevent.sleep(5)  # REPLACE: time.sleep(5)
+                    gevent.sleep(5)
 
                 finally:
                     # Always clean up PubSub connections in all error paths
@@ -498,7 +511,6 @@ class ProxyServer:
     def initialize_channel(self, url, channel_id, user_agent=None, transcode=False, stream_id=None):
         """Initialize a channel without redundant active key"""
         try:
-            # IMPROVED: First check if channel is already being initialized by another process
             if self.redis_client:
                 metadata_key = RedisKeys.channel_metadata(channel_id)
                 if self.redis_client.exists(metadata_key):
@@ -533,7 +545,6 @@ class ProxyServer:
                 )
                 self.client_managers[channel_id] = client_manager
 
-            # IMPROVED: Set initializing state in Redis BEFORE any other operations
             if self.redis_client:
                 # Set early initialization state to prevent race conditions
                 metadata_key = RedisKeys.channel_metadata(channel_id)
@@ -761,7 +772,7 @@ class ProxyServer:
                 # If the channel is in a valid state, check if the owner is still active
                 if state in valid_states:
                     # Check if owner still exists by checking heartbeat
-                    owner_heartbeat_key = f"ts_proxy:worker:{owner}:heartbeat"
+                    owner_heartbeat_key = f"live:worker:{owner}:heartbeat"
                     owner_alive = self.redis_client.exists(owner_heartbeat_key)
 
                     if owner_alive:
@@ -859,41 +870,347 @@ class ProxyServer:
 
     def handle_client_disconnect(self, channel_id):
         """
-        Handle client disconnect event - check if channel should shut down.
-        Can be called directly by owner or via PubSub from non-owner workers.
+        Handle client disconnect event - check if channel should shut down and
+        whether any output profile managers can be stopped.
         """
         if channel_id not in self.client_managers:
             return
 
         try:
-            # VERIFY REDIS CLIENT COUNT DIRECTLY
             client_set_key = RedisKeys.clients(channel_id)
             total = self.redis_client.scard(client_set_key) or 0
 
+            # Check which output formats/profiles still have active clients
+            if self.output_managers.get(channel_id) or self.profile_managers.get(channel_id):
+                if total > 0:
+                    remaining_ids = self.redis_client.smembers(client_set_key)
+                    remaining_list = [
+                        cid.decode() if isinstance(cid, bytes) else cid
+                        for cid in remaining_ids
+                    ]
+                    pipe = self.redis_client.pipeline(transaction=False)
+                    for cid in remaining_list:
+                        pipe.hget(RedisKeys.client_metadata(channel_id, cid), "output_format")
+                        pipe.hget(RedisKeys.client_metadata(channel_id, cid), "output_profile_id")
+                    results = pipe.execute()
+                    active_formats = set()
+                    active_profiles = set()
+                    active_manager_keys = set()
+                    for i in range(0, len(results), 2):
+                        fmt = results[i]
+                        pid = results[i + 1]
+                        if fmt:
+                            fmt_str = fmt.decode() if isinstance(fmt, bytes) else fmt
+                            active_formats.add(fmt_str)
+                            pid_str = (pid.decode() if isinstance(pid, bytes) else pid) if pid else ''
+                            if pid_str:
+                                try:
+                                    active_manager_keys.add(f"{fmt_str}:p{int(pid_str)}")
+                                except ValueError:
+                                    pass
+                            else:
+                                active_manager_keys.add(fmt_str)
+                        if pid:
+                            pid_str = pid.decode() if isinstance(pid, bytes) else pid
+                            if pid_str:
+                                try:
+                                    active_profiles.add(int(pid_str))
+                                except ValueError:
+                                    pass
+                else:
+                    active_formats = set()
+                    active_profiles = set()
+                    active_manager_keys = set()
+
+                for fmt in list(self.output_managers.get(channel_id, {}).keys()):
+                    if fmt not in active_manager_keys:
+                        logger.info(f"[output:{fmt}] No clients remain, stopping manager for channel {channel_id}")
+                        self.stop_output_format(channel_id, fmt)
+
+                for pid in list(self.profile_managers.get(channel_id, {}).keys()):
+                    if pid not in active_profiles:
+                        logger.info(f"[Profile:{pid}] No clients remain, stopping transcode for channel {channel_id}")
+                        self.stop_output_profile(channel_id, pid)
+
             if total == 0:
                 logger.debug(f"No clients left after disconnect event - stopping channel {channel_id}")
-                # Set the disconnect timer for other workers to see
                 disconnect_key = RedisKeys.last_client_disconnect(channel_id)
                 self.redis_client.setex(disconnect_key, 60, str(time.time()))
 
-                # Get configured shutdown delay or default
                 shutdown_delay = ConfigHelper.channel_shutdown_delay()
 
                 if shutdown_delay > 0:
                     logger.info(f"Waiting {shutdown_delay}s before stopping channel...")
                     gevent.sleep(shutdown_delay)
 
-                    # Re-check client count before stopping
                     total = self.redis_client.scard(client_set_key) or 0
                     if total > 0:
                         logger.info(f"New clients connected during shutdown delay - aborting shutdown")
                         self.redis_client.delete(disconnect_key)
                         return
 
-                # Stop the channel directly
                 self.stop_channel(channel_id)
         except Exception as e:
             logger.error(f"Error handling client disconnect for channel {channel_id}: {e}")
+
+    # ------------------------------------------------------------------
+    # Output format lifecycle
+    # ------------------------------------------------------------------
+
+    def get_buffer(self, channel_id, profile=None):
+        """
+        Resolve the source buffer for a given channel and optional profile.
+
+        With no profile, returns the raw input StreamBuffer.
+        With a profile_id, returns that profile's transcoded output StreamBuffer.
+        Raises KeyError if the profile buffer is not yet active.
+        """
+        if profile is not None:
+            channel_profiles = self.profile_buffers.get(channel_id, {})
+            if profile not in channel_profiles:
+                raise KeyError(f"Profile '{profile}' not active for channel {channel_id}")
+            return channel_profiles[profile]
+        return self.stream_buffers.get(channel_id)
+
+    def ensure_output_format(self, channel_id, fmt, source_buffer=None) -> bool:
+        """
+        Start an output format manager for this channel if not already running.
+        Only the TS-owning worker starts the manager; non-owners read the shared buffer.
+        Returns True if a manager is active (locally or on another worker).
+        """
+        if channel_id in self.output_managers and fmt in self.output_managers[channel_id]:
+            return True
+
+        if not self.redis_client:
+            return False
+
+        state = self.redis_client.get(RedisKeys.output_state(channel_id, fmt))
+        if state == 'active':
+            owner_val = self.redis_client.get(RedisKeys.output_owner(channel_id, fmt))
+            if owner_val and owner_val != self.worker_id:
+                logger.info(f"[output:{fmt}] Channel {channel_id}: manager active on another worker")
+                return True
+            # State says active but we have no local manager - stale state from a dead manager.
+            # Fall through to restart if we can.
+            logger.warning(
+                f"[output:{fmt}] Channel {channel_id}: stale active state detected "
+                f"(owner={owner_val}), restarting manager"
+            )
+
+        if not self.am_i_owner(channel_id):
+            # Ask the TS-owning worker to start the manager, then poll until active.
+            logger.info(f"[output:{fmt}] Channel {channel_id}: requesting owner to start manager")
+            self.redis_client.publish(
+                f"live:events:{channel_id}",
+                json.dumps({
+                    "event": EventType.ENSURE_OUTPUT_FORMAT,
+                    "channel_id": channel_id,
+                    "fmt": fmt,
+                    "timestamp": time.time(),
+                })
+            )
+            deadline = time.time() + 5
+            while time.time() < deadline:
+                gevent.sleep(0.1)
+                state = self.redis_client.get(RedisKeys.output_state(channel_id, fmt))
+                if state == 'active':
+                    logger.info(f"[output:{fmt}] Channel {channel_id}: manager started by owner")
+                    return True
+            logger.warning(f"[output:{fmt}] Channel {channel_id}: owner did not start manager within 5s")
+            return False
+
+        ts_buffer = source_buffer
+        if ts_buffer is None:
+            _, profile_id = self._parse_output_key(fmt)
+            if profile_id is not None:
+                ts_buffer = self.profile_buffers.get(channel_id, {}).get(profile_id)
+        if ts_buffer is None:
+            ts_buffer = self.stream_buffers.get(channel_id)
+        if not ts_buffer:
+            logger.error(f"[output:{fmt}] Channel {channel_id}: no TS buffer, cannot start manager")
+            return False
+
+        _OUTPUT_FORMAT_MANAGERS = {
+            'fmp4': FMP4RemuxManager,
+        }
+        base_fmt, _ = self._parse_output_key(fmt)
+        manager_cls = _OUTPUT_FORMAT_MANAGERS.get(base_fmt)
+        if manager_cls is None:
+            logger.error(f"[output:{fmt}] Unknown output format '{base_fmt}'")
+            return False
+        manager = manager_cls(channel_id, ts_buffer, self.worker_id, fmt=fmt)
+
+        started = manager.start()
+        if started:
+            self.output_managers.setdefault(channel_id, {})[fmt] = manager
+            logger.info(f"[output:{fmt}] Channel {channel_id}: manager started")
+        return started
+
+    @staticmethod
+    def _parse_output_key(fmt):
+        """
+        Split a compound output manager key into (base_format, profile_id).
+        'fmp4'    -> ('fmp4', None)
+        'fmp4:p1' -> ('fmp4', 1)
+        'hls:p3' -> ('hls', 3)
+        """
+        if ':p' in fmt:
+            base, _, suffix = fmt.rpartition(':p')
+            try:
+                return base, int(suffix)
+            except ValueError:
+                pass
+        return fmt, None
+
+    def stop_output_format(self, channel_id, fmt):
+        """Stop and remove a specific output format manager for this channel."""
+        channel_managers = self.output_managers.get(channel_id, {})
+        manager = channel_managers.pop(fmt, None)
+        if not channel_managers:
+            self.output_managers.pop(channel_id, None)
+        if manager:
+            try:
+                manager.stop()
+                logger.info(f"[output:{fmt}] Channel {channel_id}: manager stopped")
+            except Exception as e:
+                logger.error(f"[output:{fmt}] Channel {channel_id}: error stopping manager: {e}")
+
+    def stop_all_output_formats(self, channel_id):
+        """Stop all output format managers for a channel."""
+        for fmt in list(self.output_managers.get(channel_id, {}).keys()):
+            self.stop_output_format(channel_id, fmt)
+
+    # ------------------------------------------------------------------
+    # Output profile lifecycle
+    # ------------------------------------------------------------------
+
+    def ensure_output_profile(self, channel_id, profile_id, command) -> bool:
+        """
+        Start an OutputProfileManager for this (channel, profile) pair if not
+        already running.  Only the TS-owning worker starts the process; all
+        workers (including non-owners) get a StreamBuffer wired to the same
+        Redis keys so they can serve clients.
+
+        Returns True once the profile buffer is available in self.profile_buffers.
+        """
+        channel_profiles = self.profile_buffers.get(channel_id, {})
+        if profile_id in channel_profiles:
+            return True
+
+        if not self.redis_client:
+            return False
+
+        # Check if another worker already owns the transcode
+        state = self.redis_client.get(RedisKeys.output_state(channel_id, f"mpegts:p{profile_id}"))
+        if state == PROFILE_STATE_ACTIVE:
+            owner_val = self.redis_client.get(RedisKeys.output_owner(channel_id, f"mpegts:p{profile_id}"))
+            if owner_val and owner_val != self.worker_id:
+                # Non-owner: create a reader buffer pointing at the same Redis keys
+                manager = OutputProfileManager(
+                    channel_id, profile_id, command,
+                    self.stream_buffers.get(channel_id), self.worker_id
+                )
+                # start() will fail to acquire lock, but sets manager.output_buffer
+                manager.start()
+                self.profile_buffers.setdefault(channel_id, {})[profile_id] = manager.output_buffer
+                logger.info(
+                    f"[Profile:{profile_id}:{channel_id[:8]}] "
+                    "Using transcode buffer from owning worker"
+                )
+                return True
+            # State is active but we own it (or owner missing) with no local manager - stale.
+            logger.warning(
+                f"[Profile:{profile_id}:{channel_id[:8]}] "
+                f"Stale active state detected (owner={owner_val}), restarting transcode"
+            )
+
+        if not self.am_i_owner(channel_id):
+            logger.info(
+                f"[Profile:{profile_id}:{channel_id[:8]}] "
+                "Not TS owner, requesting owner to start transcode"
+            )
+            self.redis_client.publish(
+                f"live:events:{channel_id}",
+                json.dumps({
+                    "event": EventType.ENSURE_OUTPUT_PROFILE,
+                    "channel_id": channel_id,
+                    "profile_id": profile_id,
+                    "command": command,
+                    "timestamp": time.time(),
+                })
+            )
+            state_key = RedisKeys.output_state(channel_id, f"mpegts:p{profile_id}")
+            deadline = time.time() + 5
+            while time.time() < deadline:
+                gevent.sleep(0.1)
+                state = self.redis_client.get(state_key)
+                if state == PROFILE_STATE_ACTIVE:
+                    # Non-owner: wire up a reader buffer pointing at the same Redis keys.
+                    manager = OutputProfileManager(
+                        channel_id, profile_id, command,
+                        self.stream_buffers.get(channel_id), self.worker_id
+                    )
+                    manager.start()
+                    self.profile_buffers.setdefault(channel_id, {})[profile_id] = manager.output_buffer
+                    logger.info(
+                        f"[Profile:{profile_id}:{channel_id[:8]}] "
+                        "Using transcode buffer from owning worker"
+                    )
+                    return True
+            logger.warning(
+                f"[Profile:{profile_id}:{channel_id[:8]}] "
+                "Owner did not start transcode within 5s"
+            )
+            return False
+
+        ts_buffer = self.stream_buffers.get(channel_id)
+        if not ts_buffer:
+            logger.error(
+                f"[Profile:{profile_id}:{channel_id[:8]}] "
+                "No TS buffer available, cannot start transcode"
+            )
+            return False
+
+        manager = OutputProfileManager(
+            channel_id, profile_id, command, ts_buffer, self.worker_id
+        )
+        started = manager.start()
+        if started or manager.output_buffer is not None:
+            self.profile_managers.setdefault(channel_id, {})[profile_id] = manager
+            self.profile_buffers.setdefault(channel_id, {})[profile_id] = manager.output_buffer
+            logger.info(
+                f"[Profile:{profile_id}:{channel_id[:8]}] "
+                f"Transcode {'started' if started else 'buffer created'}"
+            )
+            return True
+        return False
+
+    def stop_output_profile(self, channel_id, profile_id):
+        """Stop a profile transcode manager and remove its buffer."""
+        channel_managers = self.profile_managers.get(channel_id, {})
+        manager = channel_managers.pop(profile_id, None)
+        if not channel_managers:
+            self.profile_managers.pop(channel_id, None)
+
+        self.profile_buffers.get(channel_id, {}).pop(profile_id, None)
+        if not self.profile_buffers.get(channel_id):
+            self.profile_buffers.pop(channel_id, None)
+
+        if manager:
+            try:
+                manager.stop()
+                logger.info(
+                    f"[Profile:{profile_id}:{channel_id[:8]}] Transcode stopped"
+                )
+            except Exception as e:
+                logger.error(
+                    f"[Profile:{profile_id}:{channel_id[:8]}] Error stopping: {e}"
+                )
+
+    def stop_all_output_profiles(self, channel_id):
+        """Stop all profile transcode managers for a channel."""
+        for pid in list(self.profile_managers.get(channel_id, {}).keys()):
+            self.stop_output_profile(channel_id, pid)
 
     def stop_channel(self, channel_id):
         """Stop a channel with proper ownership handling"""
@@ -937,6 +1254,12 @@ class ProxyServer:
                             logger.warning(f"Stream thread did not terminate within timeout")
                     except RuntimeError:
                         logger.debug(f"Could not join stream thread (may be current thread)")
+
+                # Stop all output format managers before releasing ownership
+                self.stop_all_output_formats(channel_id)
+
+                # Stop all output profile transcodes before releasing ownership
+                self.stop_all_output_profiles(channel_id)
 
                 # Release ownership
                 self.release_ownership(channel_id)
@@ -1051,7 +1374,7 @@ class ProxyServer:
                 try:
                     # Send worker heartbeat first
                     if self.redis_client:
-                        worker_heartbeat_key = f"ts_proxy:worker:{self.worker_id}:heartbeat"
+                        worker_heartbeat_key = f"live:worker:{self.worker_id}:heartbeat"
                         self._execute_redis_command(
                             lambda: self.redis_client.setex(worker_heartbeat_key, 30, str(time.time()))
                         )
@@ -1223,7 +1546,7 @@ class ProxyServer:
                             else:
                                 # There are clients or we're still connecting - clear any disconnect timestamp
                                 if self.redis_client:
-                                    self.redis_client.delete(f"ts_proxy:channel:{channel_id}:last_client_disconnect_time")
+                                    self.redis_client.delete(f"live:channel:{channel_id}:last_client_disconnect_time")
 
                         else:
                             # === NON-OWNER CHANNEL HANDLING ===
@@ -1302,7 +1625,7 @@ class ProxyServer:
                 else:
                     self._last_orphan_check = time.time()
 
-                gevent.sleep(ConfigHelper.cleanup_check_interval())  # REPLACE: time.sleep(ConfigHelper.cleanup_check_interval())
+                gevent.sleep(ConfigHelper.cleanup_check_interval())
 
         thread = threading.Thread(target=cleanup_task, daemon=True)
         thread.name = "ts-proxy-cleanup"
@@ -1316,7 +1639,7 @@ class ProxyServer:
 
         try:
             # Get all active channel keys
-            channel_pattern = "ts_proxy:channel:*:metadata"
+            channel_pattern = "live:channel:*:metadata"
             channel_keys = self.redis_client.keys(channel_pattern)
 
             for key in channel_keys:
@@ -1361,7 +1684,7 @@ class ProxyServer:
 
         try:
             # Get all channel metadata keys
-            channel_pattern = "ts_proxy:channel:*:metadata"
+            channel_pattern = "live:channel:*:metadata"
             channel_keys = self.redis_client.keys(channel_pattern)
 
             for key in channel_keys:
@@ -1386,7 +1709,7 @@ class ProxyServer:
                     # Check if owner is still alive
                     owner_alive = False
                     if owner:
-                        owner_heartbeat_key = f"ts_proxy:worker:{owner}:heartbeat"
+                        owner_heartbeat_key = f"live:worker:{owner}:heartbeat"
                         owner_alive = self.redis_client.exists(owner_heartbeat_key)
 
                     # Check client count
@@ -1458,7 +1781,7 @@ class ProxyServer:
         try:
             # Define key patterns to scan for
             patterns = [
-                f"ts_proxy:channel:{channel_id}:*",  # All channel keys
+                f"live:channel:{channel_id}:*",  # All channel keys
                 RedisKeys.events_channel(channel_id)  # Event channel
             ]
 

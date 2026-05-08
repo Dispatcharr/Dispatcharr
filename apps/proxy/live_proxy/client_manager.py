@@ -3,7 +3,6 @@
 import threading
 import time
 import json
-from typing import Set, Optional
 from apps.proxy.config import TSConfig as Config
 from redis.exceptions import ConnectionError, TimeoutError
 from .constants import EventType, ChannelState, ChannelMetadataField
@@ -26,7 +25,6 @@ class ClientManager:
         self.worker_id = worker_id  # Store worker ID as instance variable
         self._heartbeat_running = True  # Flag to control heartbeat thread
 
-        # STANDARDIZED KEYS: Move client set under channel namespace
         self.client_set_key = RedisKeys.clients(channel_id)
         self.client_ttl = ConfigHelper.get('CLIENT_RECORD_TTL', 60)
         self.heartbeat_interval = ConfigHelper.get('CLIENT_HEARTBEAT_INTERVAL', 10)
@@ -51,18 +49,17 @@ class ClientManager:
     def _do_stats_update(self):
         """Perform the stats update in the background."""
         try:
-            from apps.proxy.ts_proxy.channel_status import ChannelStatus
-            import redis
-            from django.conf import settings
+            from apps.proxy.live_proxy.channel_status import ChannelStatus
+            from core.utils import RedisClient
 
-            redis_url = getattr(settings, 'REDIS_URL', 'redis://localhost:6379/0')
-            ssl_params = getattr(settings, 'REDIS_SSL_PARAMS', {})
-            redis_client = redis.Redis.from_url(redis_url, decode_responses=True, **ssl_params)
+            redis_client = RedisClient.get_client()
+            if not redis_client:
+                return
             all_channels = []
             cursor = 0
 
             while True:
-                cursor, keys = redis_client.scan(cursor, match="ts_proxy:channel:*:clients", count=100)
+                cursor, keys = redis_client.scan(cursor, match="live:channel:*:metadata", count=100)
                 for key in keys:
                     parts = key.split(':')
                     if len(parts) >= 4:
@@ -116,7 +113,7 @@ class ClientManager:
 
                         # First identify clients that should be removed
                         for client_id in self.clients:
-                            client_key = f"ts_proxy:channel:{self.channel_id}:clients:{client_id}"
+                            client_key = f"live:channel:{self.channel_id}:clients:{client_id}"
 
                             # Check if client exists in Redis at all
                             exists = self.redis_client.exists(client_key)
@@ -158,7 +155,7 @@ class ClientManager:
                                     continue
 
                             # Only refresh TTL - do NOT update last_active
-                            client_key = f"ts_proxy:channel:{self.channel_id}:clients:{client_id}"
+                            client_key = f"live:channel:{self.channel_id}:clients:{client_id}"
                             pipe.expire(client_key, self.client_ttl)
 
                             # Keep client in the set with TTL
@@ -214,21 +211,19 @@ class ClientManager:
         try:
             worker_id = self.worker_id or "unknown"
 
-            # STANDARDIZED KEY: Worker info under channel namespace
-            worker_key = f"ts_proxy:channel:{self.channel_id}:worker:{worker_id}"
+            worker_key = f"live:channel:{self.channel_id}:worker:{worker_id}"
             self._execute_redis_command(
                 lambda: self.redis_client.setex(worker_key, self.client_ttl, str(len(self.clients)))
             )
 
-            # STANDARDIZED KEY: Activity timestamp under channel namespace
-            activity_key = f"ts_proxy:channel:{self.channel_id}:activity"
+            activity_key = f"live:channel:{self.channel_id}:activity"
             self._execute_redis_command(
                 lambda: self.redis_client.setex(activity_key, self.client_ttl, str(time.time()))
             )
         except Exception as e:
             logger.error(f"Error notifying owner of client activity: {e}")
 
-    def add_client(self, client_id, client_ip, user_agent=None, user=None):
+    def add_client(self, client_id, client_ip, user_agent=None, user=None, output_format='mpegts', output_profile_id=None):
         """Add a client with duplicate prevention"""
         if client_id in self._registered_clients:
             logger.debug(f"Client {client_id} already registered, skipping")
@@ -237,7 +232,7 @@ class ClientManager:
         self._registered_clients.add(client_id)
 
         # Use a function to get the client key
-        client_key = f"ts_proxy:channel:{self.channel_id}:clients:{client_id}"
+        client_key = f"live:channel:{self.channel_id}:clients:{client_id}"
 
         # Prepare client data
         current_time = str(time.time())
@@ -248,7 +243,8 @@ class ClientManager:
             "last_active": current_time,
             "worker_id": self.worker_id or "unknown",
             "user_id": str(user.id) if user is not None else "0",
-            # "user_level": user.user_level if user is not None else 100, # default to a high value since no user means the non-user specific M3U/HDHR
+            "output_format": output_format,
+            "output_profile_id": str(output_profile_id) if output_profile_id is not None else "",
         }
 
         try:
@@ -258,7 +254,6 @@ class ClientManager:
 
                 # Store in Redis
                 if self.redis_client:
-                    # FIXED: Store client data just once with proper key
                     self.redis_client.hset(client_key, mapping=client_data)
                     self.redis_client.expire(client_key, self.client_ttl)
 
@@ -267,7 +262,7 @@ class ClientManager:
                     self.redis_client.expire(self.client_set_key, self.client_ttl)
 
                     # Clear any initialization timer
-                    init_key = f"ts_proxy:channel:{self.channel_id}:init_time"
+                    init_key = f"live:channel:{self.channel_id}:init_time"
                     self.redis_client.delete(init_key)
 
                     self._notify_owner_of_activity()
@@ -321,7 +316,7 @@ class ClientManager:
 
             if self.redis_client:
                 # Get client data before removing the data
-                client_key = f"ts_proxy:channel:{self.channel_id}:clients:{client_id}"
+                client_key = f"live:channel:{self.channel_id}:clients:{client_id}"
                 client_username = self.redis_client.hget(client_key, "username") or "unknown"
                 if isinstance(client_username, bytes):
                     client_username = client_username.decode("utf-8")
@@ -329,8 +324,7 @@ class ClientManager:
                 # Remove from channel's client set
                 self.redis_client.srem(self.client_set_key, client_id)
 
-                # STANDARDIZED KEY: Delete individual client keys
-                client_key = f"ts_proxy:channel:{self.channel_id}:clients:{client_id}"
+                client_key = f"live:channel:{self.channel_id}:clients:{client_id}"
                 self.redis_client.delete(client_key)
 
                 # Check if this was the last client
@@ -350,10 +344,9 @@ class ClientManager:
                 if am_i_owner:
                     # We're the owner - handle the disconnect directly
                     logger.debug(f"Owner handling CLIENT_DISCONNECTED for client {client_id} locally (not publishing)")
-                    if remaining == 0:
-                        # Trigger shutdown check directly via ProxyServer method
-                        logger.debug(f"No clients left - triggering immediate shutdown check")
-                        # Spawn greenlet to avoid blocking
+                    if (remaining == 0
+                            or self.proxy_server.output_managers.get(self.channel_id)
+                            or self.proxy_server.profile_managers.get(self.channel_id)):
                         import gevent
                         gevent.spawn(self.proxy_server.handle_client_disconnect, self.channel_id)
                 else:
@@ -404,7 +397,7 @@ class ClientManager:
             # Refresh TTL for all clients belonging to this worker
             for client_id in self.clients:
                 # STANDARDIZED: Use channel namespace for client keys
-                client_key = f"ts_proxy:channel:{self.channel_id}:clients:{client_id}"
+                client_key = f"live:channel:{self.channel_id}:clients:{client_id}"
                 self.redis_client.expire(client_key, self.client_ttl)
 
             # Refresh TTL on the set itself

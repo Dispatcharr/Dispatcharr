@@ -42,7 +42,7 @@ class Command(BaseCommand):
                 if proxy_type in ('hls', 'all'):
                     proxy_app.hls_proxy.initialize_channel(url, channel or 'default')
                 if proxy_type in ('ts', 'all'):
-                    proxy_app.ts_proxy.initialize_channel(url, channel or 'default')
+                    proxy_app.live_proxy.initialize_channel(url, channel or 'default')
                 self.stdout.write(self.style.SUCCESS('Started proxy servers'))
 
             elif action == 'stop':
@@ -53,9 +53,9 @@ class Command(BaseCommand):
                         proxy_app.hls_proxy.shutdown()
                 if proxy_type in ('ts', 'all'):
                     if channel:
-                        proxy_app.ts_proxy.stop_channel(channel)
+                        proxy_app.live_proxy.stop_channel(channel)
                     else:
-                        proxy_app.ts_proxy.shutdown()
+                        proxy_app.live_proxy.shutdown()
                 self.stdout.write(self.style.SUCCESS('Stopped proxy servers'))
 
             elif action == 'restart':

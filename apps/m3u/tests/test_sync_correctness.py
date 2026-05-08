@@ -291,7 +291,7 @@ class ChannelDeleteStopsProxyTests(TestCase):
         channel_uuid = str(channel.uuid)
 
         with patch(
-            "apps.proxy.ts_proxy.services.channel_service.ChannelService.stop_channel"
+            "apps.proxy.live_proxy.services.channel_service.ChannelService.stop_channel"
         ) as mock_stop:
             channel.delete()
 
@@ -312,7 +312,7 @@ class ChannelDeleteStopsProxyTests(TestCase):
         )
 
         with patch(
-            "apps.proxy.ts_proxy.services.channel_service.ChannelService.stop_channel",
+            "apps.proxy.live_proxy.services.channel_service.ChannelService.stop_channel",
             side_effect=Exception("proxy is down"),
         ):
             channel.delete()

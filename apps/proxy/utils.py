@@ -2,7 +2,7 @@ import logging
 from core.utils import RedisClient
 from apps.proxy.vod_proxy.multi_worker_connection_manager import MultiWorkerVODConnectionManager, get_vod_client_stop_key
 from core.models import CoreSettings
-from apps.proxy.ts_proxy.services.channel_service import ChannelService
+from apps.proxy.live_proxy.services.channel_service import ChannelService
 
 logger = logging.getLogger("proxy")
 
@@ -92,7 +92,7 @@ def get_user_active_connections(user_id):
 
     try:
         # Grab live streams
-        for key in redis_client.scan_iter(match="ts_proxy:channel:*:clients:*", count=1000):
+        for key in redis_client.scan_iter(match="live:channel:*:clients:*", count=1000):
             parts = key.split(':')
             if len(parts) >= 5:
                 channel_id = parts[2]

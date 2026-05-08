@@ -1,5 +1,4 @@
 import json
-import threading
 import time
 import random
 import re
@@ -7,13 +6,12 @@ import pathlib
 from django.http import StreamingHttpResponse, JsonResponse, HttpResponseRedirect, HttpResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.shortcuts import get_object_or_404
-from apps.proxy.config import TSConfig as Config
 from .server import ProxyServer
 from .channel_status import ChannelStatus
-from .stream_generator import create_stream_generator
+from .output.ts.generator import create_stream_generator
+from .output.fmp4.generator import create_fmp4_stream_generator
 from .utils import get_client_ip
 from .redis_keys import RedisKeys
-import logging
 from apps.channels.models import Channel, Stream
 from apps.m3u.models import M3UAccount, M3UAccountProfile
 from apps.accounts.models import User
@@ -46,9 +44,51 @@ from apps.proxy.utils import check_user_stream_limits
 logger = get_logger()
 
 
+def _resolve_output_format(user, force=None, request=None):
+    """Return the output format string to use for this client."""
+    _FORMAT_ALIASES = {
+        'mpegts': 'mpegts',
+        'ts':     'mpegts',
+        'fmp4':   'fmp4',
+        'mp4':    'fmp4',
+    }
+    if force:
+        return force
+    if request:
+        # Support both ?output_format= (native) and ?output= (XC-style)
+        param = request.GET.get('output_format') or request.GET.get('output')
+        if param in _FORMAT_ALIASES:
+            return _FORMAT_ALIASES[param]
+    if user:
+        custom = getattr(user, 'custom_properties', None) or {}
+        user_format = custom.get('output_format')
+        if user_format:
+            return user_format
+    return CoreSettings.get_default_output_format()
+
+
+def _resolve_output_profile(request, user):
+    from core.models import OutputProfile
+    param = request.GET.get('output_profile')
+    if param:
+        try:
+            return OutputProfile.objects.get(id=int(param), is_active=True)
+        except (OutputProfile.DoesNotExist, ValueError, TypeError):
+            return None
+    if user:
+        custom = getattr(user, 'custom_properties', None) or {}
+        profile_id = custom.get('output_profile')
+        if profile_id:
+            try:
+                return OutputProfile.objects.get(id=int(profile_id), is_active=True)
+            except (OutputProfile.DoesNotExist, ValueError, TypeError):
+                return None
+    return None
+
+
 @api_view(["GET"])
 @permission_classes([AllowAny])
-def stream_ts(request, channel_id, user=None):
+def stream_ts(request, channel_id, user=None, force_output_format=None):
     if not network_access_allowed(request, "STREAMS"):
         return JsonResponse({"error": "Forbidden"}, status=403)
 
@@ -135,7 +175,7 @@ def stream_ts(request, channel_id, user=None):
                         owner_field = ChannelMetadataField.OWNER
                         if owner_field in metadata:
                             owner = metadata[owner_field]
-                            owner_heartbeat_key = f"ts_proxy:worker:{owner}:heartbeat"
+                            owner_heartbeat_key = f"live:worker:{owner}:heartbeat"
                             if proxy_server.redis_client.exists(owner_heartbeat_key):
                                 # Owner is still active with unknown state - don't reinitialize
                                 needs_initialization = False
@@ -455,9 +495,7 @@ def stream_ts(request, channel_id, user=None):
                                 {"error": "Failed to connect"}, status=502
                             )
 
-                        gevent.sleep(
-                            0.1
-                        )  # FIXED: Using gevent.sleep instead of time.sleep
+                        gevent.sleep(0.1)
 
             logger.info(f"[{client_id}] Successfully initialized channel {channel_id}")
             channel_initializing = True
@@ -528,19 +566,53 @@ def stream_ts(request, channel_id, user=None):
             )
 
         # Register client
-        buffer = proxy_server.stream_buffers[channel_id]
-        client_manager = proxy_server.client_managers[channel_id]
-        client_manager.add_client(client_id, client_ip, client_user_agent, user)
-        logger.info(f"[{client_id}] Client registered with channel {channel_id}")
+        output_profile = _resolve_output_profile(request, user)
+        if output_profile:
+            cmd = output_profile.build_command()
+            if not proxy_server.ensure_output_profile(channel_id, output_profile.id, cmd):
+                return JsonResponse(
+                    {"error": "Failed to start output profile transcode"}, status=500
+                )
 
-        # Create a stream generator for this client
-        generate = create_stream_generator(
-            channel_id, client_id, client_ip, client_user_agent, channel_initializing, user=user
+        source_buffer = proxy_server.get_buffer(
+            channel_id,
+            profile=output_profile.id if output_profile else None
         )
+        client_manager = proxy_server.client_managers[channel_id]
+
+        output_format = _resolve_output_format(user, force_output_format, request)
+        # When an output profile is active, append :p{id} to the format key so each
+        # (format, profile) pair gets its own independent remux pipeline in Redis.
+        resolved_format = f'{output_format}:p{output_profile.id}' if output_profile else output_format
+        client_manager.add_client(
+            client_id, client_ip, client_user_agent, user,
+            output_format=output_format,
+            output_profile_id=output_profile.id if output_profile else None,
+        )
+        logger.info(
+            f"[{client_id}] Client registered with channel {channel_id} "
+            f"(output: {resolved_format}, profile: {output_profile.id if output_profile else None})"
+        )
+
+        if output_format == 'fmp4':
+            proxy_server.ensure_output_format(
+                channel_id, resolved_format,
+                source_buffer=source_buffer if output_profile else None,
+            )
+            generate = create_fmp4_stream_generator(
+                channel_id, client_id, client_ip, client_user_agent, channel_initializing, user=user,
+                fmt=resolved_format,
+            )
+            content_type = "video/mp4"
+        else:
+            generate = create_stream_generator(
+                channel_id, client_id, client_ip, client_user_agent, channel_initializing, user=user, buffer=source_buffer
+            )
+            content_type = "video/mp2t"
 
         # Return the StreamingHttpResponse from the main function
         response = StreamingHttpResponse(
-            streaming_content=generate(), content_type="video/mp2t"
+            streaming_content=generate(), content_type=content_type
         )
         response["Cache-Control"] = "no-cache"
         return response
@@ -601,8 +673,8 @@ def stream_xc(request, username, password, channel_id):
     else:
         channel = get_object_or_404(Channel, id=channel_id)
 
-    # @TODO: we've got the  file 'type' via extension, support this when we support multiple outputs
-    return stream_ts(request._request, str(channel.uuid), user)
+    force_format = 'fmp4' if extension.lower() == '.mp4' else 'mpegts'
+    return stream_ts(request._request, str(channel.uuid), user, force_output_format=force_format)
 
 
 @csrf_exempt
@@ -719,7 +791,7 @@ def channel_status(request, channel_id=None):
                 )
         else:
             # Basic info for all channels
-            channel_pattern = "ts_proxy:channel:*:metadata"
+            channel_pattern = "live:channel:*:metadata"
             all_channels = []
 
             # Extract channel IDs from keys
@@ -730,7 +802,7 @@ def channel_status(request, channel_id=None):
                 )
                 for key in keys:
                     channel_id_match = re.search(
-                        r"ts_proxy:channel:(.*):metadata", key
+                        r"live:channel:(.*):metadata", key
                     )
                     if channel_id_match:
                         ch_id = channel_id_match.group(1)
