@@ -99,7 +99,7 @@ def trigger_event(event_name, payload):
     logger.debug(f"Checking {len(plugins)} plugins for event '{event_name}'")
     for plugin in plugins:
         if not plugin["enabled"]:
-            logger.debug(f"Skipping disabled plugin id={plugin.key} name={plugin.name}")
+            logger.debug(f"Skipping disabled plugin id={plugin['key']} name={plugin['name']}")
             continue
 
         logger.debug(json.dumps(plugin))
