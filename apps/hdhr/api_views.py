@@ -63,28 +63,28 @@ class DiscoverAPIView(APIView):
     @extend_schema(
         description="Retrieve HDHomeRun device discovery information",
     )
-    def get(self, request, profile=None):
+    def get(self, request, channel_profile=None, output_profile_id=None):
         blocked = _hdhr_network_check(request)
         if blocked is not None:
             return blocked
 
         uri_parts = ["hdhr"]
-        if profile is not None:
-            uri_parts.append(profile)
+        if channel_profile is not None:
+            uri_parts.append(channel_profile)
+        if output_profile_id is not None:
+            uri_parts.append("output_profile")
+            uri_parts.append(str(output_profile_id))
 
         base_url = request.build_absolute_uri(f'/{"/".join(uri_parts)}/').rstrip("/")
         device = HDHRDevice.objects.first()
 
-        # Calculate tuner count using centralized function
         from apps.m3u.utils import calculate_tuner_count
         tuner_count = calculate_tuner_count(minimum=1, unlimited_default=10)
 
-        # Create a unique DeviceID for the HDHomeRun device based on profile ID or a default value
-        device_ID = "12345678"  # Default DeviceID
-        friendly_name = "Dispatcharr HDHomeRun"
-        if profile is not None:
-            device_ID = f"dispatcharr-hdhr-{profile}"
-            friendly_name = f"Dispatcharr HDHomeRun - {profile}"
+        slug_parts = [p for p in [channel_profile, str(output_profile_id) if output_profile_id is not None else None] if p]
+        device_ID = f"dispatcharr-hdhr-{'-'.join(slug_parts)}" if slug_parts else "12345678"
+        friendly_name = f"Dispatcharr HDHomeRun - {' / '.join(slug_parts)}" if slug_parts else "Dispatcharr HDHomeRun"
+
         if not device:
             data = {
                 "FriendlyName": friendly_name,
@@ -112,6 +112,24 @@ class DiscoverAPIView(APIView):
         return JsonResponse(data)
 
 
+def _resolve_hdhr_output_profile_id(output_profile_id):
+    """Return a validated output profile ID for HDHR lineup stream URLs.
+
+    Priority: URL path segment -> system default -> None (pass-through).
+    """
+    from core.models import OutputProfile, CoreSettings
+    candidate = output_profile_id if output_profile_id is not None else CoreSettings.get_hdhr_output_profile_id()
+    if candidate is None:
+        return None
+    try:
+        OutputProfile.objects.get(id=candidate, is_active=True)
+        return candidate
+    except OutputProfile.DoesNotExist:
+        source = "URL" if output_profile_id is not None else "system default"
+        logger.warning("HDHR output profile id=%s (%s) not found or inactive - serving without transcoding", candidate, source)
+        return None
+
+
 # 🔹 3) Lineup API
 class LineupAPIView(APIView):
     """Returns available channel lineup"""
@@ -120,7 +138,7 @@ class LineupAPIView(APIView):
     @extend_schema(
         description="Retrieve the available channel lineup",
     )
-    def get(self, request, profile=None):
+    def get(self, request, channel_profile=None, output_profile_id=None):
         blocked = _hdhr_network_check(request)
         if blocked is not None:
             return blocked
@@ -128,10 +146,13 @@ class LineupAPIView(APIView):
         from apps.channels.managers import with_effective_values
         from apps.channels.utils import format_channel_number
 
-        if profile is not None:
-            channel_profile = ChannelProfile.objects.get(name=profile)
+        if channel_profile is not None:
+            try:
+                cp = ChannelProfile.objects.get(name=channel_profile)
+            except ChannelProfile.DoesNotExist:
+                return JsonResponse([], safe=False)
             base_qs = Channel.objects.filter(
-                channelprofilemembership__channel_profile=channel_profile,
+                channelprofilemembership__channel_profile=cp,
                 channelprofilemembership__enabled=True,
             )
         else:
@@ -143,21 +164,24 @@ class LineupAPIView(APIView):
             .order_by("effective_channel_number")
         )
 
+        resolved_output_profile_id = _resolve_hdhr_output_profile_id(output_profile_id)
+
         lineup = []
         for ch in channels:
-            # HDHR clients reject lineup entries with empty/non-numeric
-            # GuideNumber and may drop the whole lineup. With nullable
-            # channel_number, skip rows that have no usable number.
             formatted = format_channel_number(ch.effective_channel_number, empty=None)
             if formatted is None:
                 continue
             formatted_channel_number = str(formatted)
 
+            stream_url = request.build_absolute_uri(f"/proxy/ts/stream/{ch.uuid}")
+            if resolved_output_profile_id is not None:
+                stream_url += f"?output_profile={resolved_output_profile_id}"
+
             lineup.append(
                 {
                     "GuideNumber": formatted_channel_number,
                     "GuideName": ch.effective_name,
-                    "URL": request.build_absolute_uri(f"/proxy/ts/stream/{ch.uuid}"),
+                    "URL": stream_url,
                     "Guide_ID": formatted_channel_number,
                     "Station": formatted_channel_number,
                 }
@@ -173,7 +197,7 @@ class LineupStatusAPIView(APIView):
     @extend_schema(
         description="Retrieve the HDHomeRun lineup status",
     )
-    def get(self, request, profile=None):
+    def get(self, request, channel_profile=None, output_profile_id=None):
         blocked = _hdhr_network_check(request)
         if blocked is not None:
             return blocked

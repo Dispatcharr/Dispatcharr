@@ -2,7 +2,7 @@ import useSettingsStore from '../../../store/settings.jsx';
 import useWarningsStore from '../../../store/warnings.jsx';
 import useUserAgentsStore from '../../../store/userAgents.jsx';
 import useStreamProfilesStore from '../../../store/streamProfiles.jsx';
-import { REGION_CHOICES } from '../../../constants.js';
+import useOutputProfilesStore from '../../../store/outputProfiles.jsx';
 import React, { useEffect, useState } from 'react';
 import {
   getChangedSettings,
@@ -10,16 +10,7 @@ import {
   rehashStreams,
   saveChangedSettings,
 } from '../../../utils/pages/SettingsUtils.js';
-import {
-  Alert,
-  Button,
-  Flex,
-  Group,
-  MultiSelect,
-  Select,
-  Switch,
-  Text,
-} from '@mantine/core';
+import { Alert, Button, Flex, MultiSelect, Select } from '@mantine/core';
 import ConfirmationDialog from '../../ConfirmationDialog.jsx';
 import { useForm } from '@mantine/form';
 import {
@@ -33,7 +24,7 @@ const StreamSettingsForm = React.memo(({ active }) => {
   const isWarningSuppressed = useWarningsStore((s) => s.isWarningSuppressed);
   const userAgents = useUserAgentsStore((s) => s.userAgents);
   const streamProfiles = useStreamProfilesStore((s) => s.profiles);
-  const regionChoices = REGION_CHOICES;
+  const outputProfiles = useOutputProfilesStore((s) => s.profiles);
 
   // Store pending changed settings when showing the dialog
   const [pendingChangedSettings, setPendingChangedSettings] = useState(null);
@@ -168,6 +159,7 @@ const StreamSettingsForm = React.memo(({ active }) => {
           id="default_user_agent"
           name="default_user_agent"
           label="Default User Agent"
+          description="User agent string sent when fetching streams. Some providers require a specific value to serve content."
           data={userAgents.map((option) => ({
             value: `${option.id}`,
             label: option.name,
@@ -179,20 +171,10 @@ const StreamSettingsForm = React.memo(({ active }) => {
           id="default_stream_profile"
           name="default_stream_profile"
           label="Default Stream Profile"
+          description="Stream profile applied when a channel has no profile assigned."
           data={streamProfiles.map((option) => ({
             value: `${option.id}`,
             label: option.name,
-          }))}
-        />
-        <Select
-          searchable
-          {...form.getInputProps('preferred_region')}
-          id="preferred_region"
-          name="preferred_region"
-          label="Preferred Region"
-          data={regionChoices.map((r) => ({
-            label: r.label,
-            value: `${r.value}`,
           }))}
         />
         <Select
@@ -200,28 +182,39 @@ const StreamSettingsForm = React.memo(({ active }) => {
           id="default_output_format"
           name="default_output_format"
           label="Default Output Format"
+          description="Container format used when proxying streams. MPEG-TS is broadly compatible with media players and devices; fMP4 has better support for modern codecs like AV1 and is preferred by some newer clients."
           data={[
             { value: 'mpegts', label: 'MPEG-TS' },
             { value: 'fmp4', label: 'fMP4 (fragmented MP4)' },
           ]}
         />
-
-        <Group justify="space-between" pt={5}>
-          <Text size="sm" fw={500}>
-            Auto-Import Mapped Files
-          </Text>
-          <Switch
-            {...form.getInputProps('auto_import_mapped_files', {
-              type: 'checkbox',
-            })}
-            id="auto_import_mapped_files"
-          />
-        </Group>
+        <Select
+          label="HDHR Default Output Profile"
+          description="Output profile applied to all HDHR stream URLs when no profile is specified in the URL path."
+          clearable
+          searchable
+          placeholder="No transcoding (pass-through)"
+          value={
+            form.values['hdhr_output_profile_id'] != null
+              ? `${form.values['hdhr_output_profile_id']}`
+              : null
+          }
+          onChange={(value) =>
+            form.setFieldValue(
+              'hdhr_output_profile_id',
+              value ? parseInt(value, 10) : null
+            )
+          }
+          data={outputProfiles
+            .filter((p) => p.is_active)
+            .map((p) => ({ value: `${p.id}`, label: p.name }))}
+        />
 
         <MultiSelect
           id="m3u_hash_key"
           name="m3u_hash_key"
           label="M3U Hash Key"
+          description="Fields used to generate a stable identifier for each stream. Changing this requires rehashing all streams."
           data={[
             {
               value: 'name',
