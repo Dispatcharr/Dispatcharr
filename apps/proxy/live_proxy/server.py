@@ -219,8 +219,9 @@ class ProxyServer:
                                         client_id = data.get("client_id")
                                         worker_id = data.get("worker_id")
                                         logger.debug(f"Owner received {EventType.CLIENT_DISCONNECTED} event for channel {channel_id}, client {client_id} from worker {worker_id}")
-                                        # Delegate to dedicated method
-                                        self.handle_client_disconnect(channel_id)
+                                        # Spawn to avoid blocking the pubsub listener thread
+                                        # during the full shutdown path (thread joins, Redis cleanup).
+                                        gevent.spawn(self.handle_client_disconnect, channel_id)
 
 
                                     elif event_type == EventType.STREAM_SWITCH:
@@ -1335,6 +1336,14 @@ class ProxyServer:
                     logger.info(f"Removed client manager for channel {channel_id}")
                 except KeyError:
                     logger.debug(f"Client manager for channel {channel_id} already removed")
+
+            # Clean up profile managers and buffers. Owner workers clean profile_managers
+            # (and their profile_buffers) via stop_all_output_profiles above. Non-owner
+            # workers only populate profile_buffers (not profile_managers), and that block
+            # is skipped for them, so we always clean both here to avoid stale entries on
+            # the next connect.
+            self.profile_managers.pop(channel_id, None)
+            self.profile_buffers.pop(channel_id, None)
 
             # Clean up Redis keys
             self._clean_redis_keys(channel_id)
