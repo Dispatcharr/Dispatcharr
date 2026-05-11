@@ -6,6 +6,7 @@ ENV VIRTUAL_ENV=/dispatcharrpy
 ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 ENV UV_COMPILE_BYTECODE=1
 ENV UV_LINK_MODE=copy
+ARG DISPATCHARR_INSTALL_ML=false
 
 # --- Install Python 3.13 and build dependencies ---
 # Note: Hardware acceleration (VA-API, VDPAU, NVENC) already included in base ffmpeg image
@@ -28,7 +29,9 @@ WORKDIR /tmp/build
 COPY pyproject.toml /tmp/build/
 COPY version.py /tmp/build/
 COPY README.md /tmp/build/
-RUN uv sync --python 3.13 --no-cache --no-install-project --no-dev && \
+RUN UV_EXTRA_ARGS="" && \
+    if [ "${DISPATCHARR_INSTALL_ML}" = "true" ]; then UV_EXTRA_ARGS="--extra ml"; fi && \
+    uv sync --python 3.13 --no-cache --no-install-project --no-dev ${UV_EXTRA_ARGS} && \
     rm -rf /tmp/build
 WORKDIR /
 

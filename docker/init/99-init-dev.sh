@@ -16,8 +16,12 @@ if [ ! -e "/tmp/init" ]; then
 
     # Install frontend dependencies
     cd /app/frontend && npm install
-    # Install Python dependencies using UV
-    cd /app && uv sync --python $UV_PROJECT_ENVIRONMENT/bin/python --no-install-project --no-dev
+    # Install Python dependencies using UV. ML deps are optional and heavy.
+    UV_EXTRA_ARGS=""
+    if [ "${DISPATCHARR_INSTALL_ML:-false}" = "true" ]; then
+        UV_EXTRA_ARGS="--extra ml"
+    fi
+    cd /app && uv sync --python $UV_PROJECT_ENVIRONMENT/bin/python --no-install-project --no-dev ${UV_EXTRA_ARGS}
 
     # Install debugpy for remote debugging
     if [ "$DISPATCHARR_DEBUG" = "true" ]; then

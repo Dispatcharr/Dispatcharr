@@ -81,6 +81,12 @@ uv run python manage.py migrate
 uv run python manage.py runserver
 ```
 
+If you need ML-enhanced channel matching locally, install the optional ML extra:
+
+```bash
+uv sync --extra ml
+```
+
 ### Frontend
 
 ```bash

@@ -192,7 +192,11 @@ setup_python_env() {
   env/bin/python -m ensurepip --upgrade
 
   export UV_PROJECT_ENVIRONMENT="$APP_DIR/env"
-  uv sync --no-dev
+  UV_EXTRA_ARGS=""
+  if [ "${DISPATCHARR_INSTALL_ML:-false}" = "true" ]; then
+    UV_EXTRA_ARGS="--extra ml"
+  fi
+  uv sync --no-dev ${UV_EXTRA_ARGS}
 
   env/bin/python -m pip install -q gunicorn
 EOSU

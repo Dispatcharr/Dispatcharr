@@ -27,8 +27,6 @@ dependencies = [
     "regex",
     "tzlocal",
     "pytz",
-    "torch==2.11.0+cpu",
-    "sentence-transformers==5.4.1",
     "channels",
     "channels-redis==4.3.0",
     "django-filter",
@@ -36,6 +34,12 @@ dependencies = [
     "lxml==6.1.0",
     "packaging",
     "python-gnupg",
+]
+
+[project.optional-dependencies]
+ml = [
+    "torch==2.11.0+cpu",
+    "sentence-transformers==5.4.1",
 ]
 
 [build-system]
