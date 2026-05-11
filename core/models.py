@@ -157,6 +157,14 @@ NETWORK_ACCESS_KEY = "network_access"
 SYSTEM_SETTINGS_KEY = "system_settings"
 EPG_SETTINGS_KEY = "epg_settings"
 USER_LIMITS_SETTINGS_KEY = "user_limit_settings"
+TIMESHIFT_SETTINGS_KEY = "timeshift_settings"
+
+TIMESHIFT_DEFAULTS = {
+    "default_timezone": "UTC",
+    "default_language": "en",
+    "xmltv_prev_days_override": 0,
+    "debug_logging": False,
+}
 
 
 class CoreSettings(models.Model):
@@ -371,6 +379,22 @@ class CoreSettings(models.Model):
             "ignore_same_channel_connections": False,
             "terminate_oldest": True,
         })
+
+    # Timeshift Settings (XC catch-up)
+    @classmethod
+    def get_timeshift_settings(cls):
+        """Return all timeshift-related settings, falling back to neutral defaults."""
+        stored = cls._get_group(TIMESHIFT_SETTINGS_KEY, {}) or {}
+        merged = dict(TIMESHIFT_DEFAULTS)
+        for key, value in stored.items():
+            if key in merged and value is not None:
+                merged[key] = value
+        return merged
+
+    @classmethod
+    def update_timeshift_settings(cls, updates):
+        clean = {k: v for k, v in (updates or {}).items() if k in TIMESHIFT_DEFAULTS}
+        return cls._update_group(TIMESHIFT_SETTINGS_KEY, "Timeshift Settings", clean)
 
 
 class SystemEvent(models.Model):

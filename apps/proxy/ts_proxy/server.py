@@ -1368,6 +1368,16 @@ class ProxyServer:
                 try:
                     channel_id = key.split(':')[2]
 
+                    # Skip channel ids that don't follow Dispatcharr's UUID
+                    # convention: those are managed by features outside of
+                    # ProxyServer (e.g. timeshift catch-up sessions, which
+                    # use a `timeshift_<channel>_<ts>_<sid>` virtual id and
+                    # are owned by the WSGI request that opened them — not
+                    # by a worker heartbeat). They expire naturally via the
+                    # CLIENT_RECORD_TTL on the clients-set key.
+                    if channel_id.startswith("timeshift_"):
+                        continue
+
                     # Get metadata first
                     metadata = self.redis_client.hgetall(key)
                     if not metadata:

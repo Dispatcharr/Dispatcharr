@@ -97,6 +97,7 @@ INSTALLED_APPS = [
     "django_filters",
     "django_celery_beat",
     "apps.plugins",
+    "apps.timeshift.apps.TimeshiftConfig",
 ]
 
 # EPG Processing optimization settings

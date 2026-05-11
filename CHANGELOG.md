@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **XC catch-up (timeshift) support, built-in**. Adds a native `/timeshift/{user}/{pass}/{stream_id}/{timestamp}/{duration}.ts` endpoint that proxies replay sessions from an Xtream Codes provider to clients such as iPlayTV (Apple TV) and TiviMate. Auth reuses the same `xc_password` custom-property the live `/live/.../{id}.ts` endpoint already uses. The new endpoint integrates with the existing `/stats` page (catch-up sessions appear with a violet `TIMESHIFT` badge alongside live sessions) and respects per-channel access rules.
+  - **`xc_get_live_streams` / `xc_get_epg` now expose catch-up flags** (`tv_archive`, `tv_archive_duration`) and emit the provider's `stream_id` *only when the channel actually has catch-up support* — for channels without catch-up, `stream_id` keeps its existing internal-id value so existing XC client favorites continue to resolve unchanged. The dual-resolution logic in `stream_xc` already handles both forms.
+  - **`xc_get_epg` JSON timestamps and timeshift URLs** are emitted in the provider's local timezone via a new `Settings → Timeshift` panel (timezone, language, debug logging, XMLTV prev_days override). Defaults are neutral: `UTC`, `en`, off. The `/epg.xml` XMLTV endpoint continues to emit UTC times for backward compatibility with Jellyfin / Plex / Channels DVR consumers — the timeshift timezone setting does NOT influence `/epg.xml`.
+  - **EPG XMLTV `prev_days` auto-detection** from the provider's largest `tv_archive_duration` (capped at 30 days), overridable via the new `xmltv_prev_days_override` setting or the `?prev_days=` URL parameter.
+  - **Byte path uses a dedicated producer thread + `os.pipe`** so the upstream socket read is decoupled from the WSGI yield, matching the pattern used by `apps.proxy.ts_proxy.http_streamer.HTTPStreamReader` for live streams. This delivers throughput comfortably above the typical 5 Mbps FHD bitrate so clients do not buffer.
+  - **Migration `apps/timeshift/0001`** ports settings forward from the legacy external `dispatcharr_timeshift` plugin (if installed) into the native `CoreSettings.timeshift_settings` group. Idempotent and a no-op on clean installs. The plugin record is left in place with `enabled=False` and a `migrated_to_native: True` marker so admins can verify the migration.
+
 ## [0.24.0] - 2026-05-03
 
 ### Security
