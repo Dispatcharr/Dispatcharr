@@ -1,7 +1,12 @@
 from core.utils import validate_flexible_url
 from rest_framework import serializers, status
 from rest_framework.response import Response
-from .models import M3UAccount, M3UFilter, ServerGroup, M3UAccountProfile
+from .models import (
+    M3UAccount,
+    M3UFilter,
+    ServerGroup,
+    M3UAccountProfile,
+)
 from core.models import UserAgent
 from apps.channels.models import ChannelGroup, ChannelGroupM3UAccount
 from apps.channels.serializers import (
@@ -374,7 +379,6 @@ class M3UAccountSerializer(serializers.ModelSerializer):
             }
             for p in profiles
         ]
-
 
 class ServerGroupSerializer(serializers.ModelSerializer):
     """Serializer for Server Group"""

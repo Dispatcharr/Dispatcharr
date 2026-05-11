@@ -2,6 +2,10 @@ from django.http import HttpResponse, JsonResponse, Http404, HttpResponseForbidd
 from rest_framework.response import Response
 from django.urls import reverse
 from apps.channels.models import Channel, ChannelProfile, ChannelGroup, Stream
+from apps.channels.utils import (
+    get_channel_catchup_info,
+    resolve_channel_by_provider_stream_id,
+)
 from django.db.models import Prefetch
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
@@ -11,6 +15,7 @@ from dispatcharr.utils import network_access_allowed
 from django.utils import timezone as django_timezone
 from django.shortcuts import get_object_or_404
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 import html
 import time
 from tzlocal import get_localzone
@@ -22,6 +27,7 @@ import os
 from apps.m3u.utils import calculate_tuner_count
 from apps.proxy.utils import get_user_active_connections
 import regex
+from core.models import CoreSettings
 from core.utils import log_system_event
 import hashlib
 
@@ -1286,16 +1292,50 @@ def generate_epg(request, profile_name=None, user=None):
         num_days = max(0, min(num_days, 365))
     except (ValueError, TypeError):
         num_days = 0
-    try:
-        prev_days = int(request.GET.get('prev_days', user_custom.get('epg_prev_days', 0)))
-        prev_days = max(0, min(prev_days, 30))
-    except (ValueError, TypeError):
-        prev_days = 0
+
+    # Timeshift: prev_days resolution order
+    #   1. URL ?prev_days= (explicit, even 0 means "no past")
+    #   2. user.custom_properties.epg_prev_days
+    #   3. CoreSettings.timeshift_settings.xmltv_prev_days_override (>0)
+    #   4. Auto-detect: max provider tv_archive_duration capped at 30
+    url_prev = request.GET.get('prev_days')
+    user_prev = user_custom.get('epg_prev_days') if user_custom else None
+    if url_prev is not None:
+        try:
+            prev_days = max(0, min(int(url_prev), 30))
+        except (ValueError, TypeError):
+            prev_days = 0
+    elif user_prev not in (None, ""):
+        try:
+            prev_days = max(0, min(int(user_prev), 30))
+        except (ValueError, TypeError):
+            prev_days = 0
+    else:
+        from apps.timeshift.helpers import compute_provider_archive_days_capped
+        timeshift_settings = CoreSettings.get_timeshift_settings()
+        try:
+            override = int(timeshift_settings.get("xmltv_prev_days_override", 0) or 0)
+        except (TypeError, ValueError):
+            override = 0
+        if override > 0:
+            prev_days = max(0, min(override, 30))
+        else:
+            prev_days = compute_provider_archive_days_capped()
     use_cached_logos = request.GET.get('cachedlogos', 'true').lower() != 'false'
     tvg_id_source = request.GET.get('tvg_id_source', 'channel_number').lower()
+
+    # Always emit XMLTV programme times in UTC. XMLTV consumers (Jellyfin,
+    # Plex, etc.) parse the `%z` offset correctly, so UTC is the safest
+    # interchange format. The catch-up URL builder + `xc_get_epg` handle the
+    # provider-local conversion separately using the timeshift `default_timezone`
+    # setting — that setting does NOT influence /epg.xml output.
+    local_tz = ZoneInfo("UTC")
+    xmltv_tz_name = "UTC"
+
     cache_params = (
         f"{profile_name or 'all'}:{user.username if user else 'anonymous'}"
         f":d={num_days}:p={prev_days}:logos={use_cached_logos}:tvgid={tvg_id_source}"
+        f":tz={xmltv_tz_name}"
     )
     content_cache_key = f"epg_content:{cache_params}"
 
@@ -1559,8 +1599,8 @@ def generate_epg(request, profile_name=None, user=None):
                 epg_source=epg_source
             )
             for program in dummy_programs:
-                start_str = program['start_time'].strftime("%Y%m%d%H%M%S %z")
-                stop_str = program['end_time'].strftime("%Y%m%d%H%M%S %z")
+                start_str = program['start_time'].astimezone(local_tz).strftime("%Y%m%d%H%M%S %z")
+                stop_str = program['end_time'].astimezone(local_tz).strftime("%Y%m%d%H%M%S %z")
                 yield f'  <programme start="{start_str}" stop="{stop_str}" channel="{html.escape(channel_id)}">\n'
                 yield f"    <title>{html.escape(program['title'])}</title>\n"
                 if program.get('sub_title'):
@@ -1652,8 +1692,8 @@ def generate_epg(request, profile_name=None, user=None):
 
                     # Build programme XML for primary channel_id
                     primary_cid = channel_ids_for_epg[0]
-                    start_str = prog['start_time'].strftime("%Y%m%d%H%M%S %z")
-                    stop_str = prog['end_time'].strftime("%Y%m%d%H%M%S %z")
+                    start_str = prog['start_time'].astimezone(local_tz).strftime("%Y%m%d%H%M%S %z")
+                    stop_str = prog['end_time'].astimezone(local_tz).strftime("%Y%m%d%H%M%S %z")
 
                     program_xml = [f'  <programme start="{start_str}" stop="{stop_str}" channel="{html.escape(primary_cid)}">']
                     program_xml.append(f'    <title>{html.escape(prog["title"])}</title>')
@@ -2220,12 +2260,32 @@ def xc_get_live_streams(request, user, category_id=None):
     for channel in channels:
         channel_num_int = channel_num_map[channel.id]
 
+        # Timeshift enrichment: for channels with catch-up (tv_archive=1) we
+        # emit the provider's stream_id as the XC `stream_id` so the same
+        # value works for both live and catch-up URLs (XC clients reuse
+        # `stream_id` to build /timeshift/.../{provider_stream_id}.ts).
+        # For channels without catch-up, we keep stream_id = channel.id so
+        # existing XC client favorites on non-catchup channels are unchanged.
+        # `stream_xc` accepts both forms (provider stream_id and internal id).
+        catchup = get_channel_catchup_info(channel)
+        if catchup is not None:
+            tv_archive = 1
+            tv_archive_duration = catchup["tv_archive_duration"]
+            try:
+                stream_id_value = int(catchup["provider_stream_id"])
+            except (TypeError, ValueError):
+                stream_id_value = channel.id
+        else:
+            tv_archive = 0
+            tv_archive_duration = 0
+            stream_id_value = channel.id
+
         streams.append(
             {
                 "num": channel_num_int,
                 "name": channel.name,
                 "stream_type": "live",
-                "stream_id": channel.id,
+                "stream_id": stream_id_value,
                 "stream_icon": (
                     None
                     if not channel.logo
@@ -2240,9 +2300,9 @@ def xc_get_live_streams(request, user, category_id=None):
                 "category_id": str(channel.channel_group.id if channel.channel_group else _get_default_group_id()),
                 "category_ids": [channel.channel_group.id if channel.channel_group else _get_default_group_id()],
                 "custom_sid": None,
-                "tv_archive": 0,
+                "tv_archive": tv_archive,
                 "direct_source": "",
-                "tv_archive_duration": 0,
+                "tv_archive_duration": tv_archive_duration,
             }
         )
 
@@ -2254,6 +2314,14 @@ def xc_get_epg(request, user, short=False):
     if not channel_id:
         raise Http404()
 
+    # Timeshift: clients address channels via the provider stream_id we expose
+    # in xc_get_live_streams. Resolve that to an internal Channel.id before
+    # running the existing access-control queries.
+    resolved_channel_id = channel_id
+    provider_channel, _ = resolve_channel_by_provider_stream_id(channel_id)
+    if provider_channel is not None:
+        resolved_channel_id = provider_channel.id
+
     channel = None
     if user.user_level < 10:
         user_profile_count = user.channel_profiles.count()
@@ -2262,7 +2330,7 @@ def xc_get_epg(request, user, short=False):
         if user_profile_count == 0:
             # No profile filtering - user sees all channels based on user_level
             filters = {
-                "id": channel_id,
+                "id": resolved_channel_id,
                 "user_level__lte": user.user_level
             }
             # Hide adult content if user preference is set
@@ -2272,7 +2340,7 @@ def xc_get_epg(request, user, short=False):
         else:
             # User has specific limited profiles assigned
             filters = {
-                "id": channel_id,
+                "id": resolved_channel_id,
                 "channelprofilemembership__enabled": True,
                 "user_level__lte": user.user_level,
                 "channelprofilemembership__channel_profile__in": user.channel_profiles.all()
@@ -2285,10 +2353,31 @@ def xc_get_epg(request, user, short=False):
         if not channel:
             raise Http404()
     else:
-        channel = get_object_or_404(Channel.objects.select_related('epg_data__epg_source'), id=channel_id)
+        channel = get_object_or_404(Channel.objects.select_related('epg_data__epg_source'), id=resolved_channel_id)
 
     if not channel:
         raise Http404()
+
+    # Timeshift: detect catch-up support and remember the provider's stream_id
+    # for the response (Issue #8 fallback chain — uses the first archive-enabled
+    # stream in channelstream__order).
+    catchup = get_channel_catchup_info(channel)
+    if catchup is not None:
+        timeshift_tv_archive = 1
+        timeshift_archive_days = catchup["tv_archive_duration"]
+        timeshift_provider_stream_id = catchup["provider_stream_id"]
+    else:
+        timeshift_tv_archive = 0
+        timeshift_archive_days = 0
+        timeshift_provider_stream_id = None
+
+    timeshift_settings = CoreSettings.get_timeshift_settings()
+    timeshift_timezone = timeshift_settings.get("default_timezone", "UTC")
+    timeshift_language = timeshift_settings.get("default_language", "en")
+    try:
+        local_tz = ZoneInfo(timeshift_timezone)
+    except Exception:
+        local_tz = ZoneInfo("UTC")
 
     # Calculate the collision-free integer channel number for this channel
     # This must match the logic in xc_get_live_streams to ensure consistency
@@ -2331,6 +2420,16 @@ def xc_get_epg(request, user, short=False):
         prev_days = max(0, min(prev_days, 30))
     except (ValueError, TypeError):
         prev_days = 0
+    # Timeshift: when the channel exposes catch-up and the client did not
+    # explicitly request a different lookback, expose the full archive window
+    # so XC clients see has_archive=1 on past programmes.
+    if (
+        timeshift_tv_archive
+        and timeshift_archive_days > 0
+        and request.GET.get('prev_days') is None
+        and not user_custom.get('epg_prev_days')
+    ):
+        prev_days = max(prev_days, min(timeshift_archive_days, 30))
     now = django_timezone.now()
     lookback_cutoff = now - timedelta(days=prev_days)
     forward_cutoff = now + timedelta(days=num_days) if num_days > 0 else None
@@ -2393,23 +2492,47 @@ def xc_get_epg(request, user, short=False):
         # Use the actual EPGData ID when available, otherwise fall back to 0
         epg_id = str(channel.epg_data.id) if channel.epg_data else "0"
 
+        # Timeshift: emit the start/end strings in the configured local
+        # timezone (XC clients display these verbatim) but keep the unix
+        # timestamps in UTC because XC clients expect that.
+        try:
+            start_local = start.astimezone(local_tz) if start.tzinfo else start.replace(tzinfo=ZoneInfo("UTC")).astimezone(local_tz)
+            end_local = end.astimezone(local_tz) if end.tzinfo else end.replace(tzinfo=ZoneInfo("UTC")).astimezone(local_tz)
+        except Exception:
+            start_local = start
+            end_local = end
+
+        # Use the provider's stream_id if we have one; XC clients use this for
+        # subsequent /timeshift/...ts requests.
+        stream_id_for_output = (
+            str(timeshift_provider_stream_id)
+            if timeshift_provider_stream_id is not None
+            else f"{channel_id}"
+        )
+
         program_output = {
             "id": program_id,
             "epg_id": epg_id,
             "title": base64.b64encode((title or "").encode()).decode(),
-            "lang": "",
-            "start": start.strftime("%Y-%m-%d %H:%M:%S"),
-            "end": end.strftime("%Y-%m-%d %H:%M:%S"),
+            "lang": timeshift_language,
+            "start": start_local.strftime("%Y-%m-%d %H:%M:%S"),
+            "end": end_local.strftime("%Y-%m-%d %H:%M:%S"),
             "description": base64.b64encode((description or "").encode()).decode(),
             "channel_id": str(channel_num_int),
             "start_timestamp": str(int(start.timestamp())),
             "stop_timestamp": str(int(end.timestamp())),
-            "stream_id": f"{channel_id}",
+            "stream_id": stream_id_for_output,
         }
 
         if short == False:
-            program_output["now_playing"] = 1 if start <= django_timezone.now() <= end else 0
-            program_output["has_archive"] = 0
+            now = django_timezone.now()
+            program_output["now_playing"] = 1 if start <= now <= end else 0
+            has_archive = 0
+            if timeshift_tv_archive and end < now:
+                days_ago = (now - end).days
+                if days_ago <= timeshift_archive_days:
+                    has_archive = 1
+            program_output["has_archive"] = has_archive
 
         output['epg_listings'].append(program_output)
 

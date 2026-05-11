@@ -572,6 +572,30 @@ def stream_xc(request, username, password, channel_id):
     if custom_properties["xc_password"] != password:
         return Response({"error": "Invalid credentials"}, status=401)
 
+    # Resolve the channel id. For channels with catch-up support
+    # xc_get_live_streams emits the provider's `stream_id` (from
+    # custom_properties) as the XC stream_id, so try that lookup first and
+    # fall back to the internal Channel.id path. The channel-profile filter
+    # below applies to whatever Channel we resolved — neither path bypasses
+    # access control.
+    from apps.channels.utils import resolve_channel_by_provider_stream_id
+    resolved_internal_id = None
+    try:
+        provider_lookup_value = str(int(channel_id))
+    except (TypeError, ValueError):
+        provider_lookup_value = None
+
+    if provider_lookup_value is not None:
+        provider_channel, _ = resolve_channel_by_provider_stream_id(provider_lookup_value)
+        if provider_channel is not None:
+            resolved_internal_id = provider_channel.id
+
+    if resolved_internal_id is None:
+        try:
+            resolved_internal_id = int(channel_id)
+        except (TypeError, ValueError):
+            return JsonResponse({"error": "Not found"}, status=404)
+
     if user.user_level < 10:
         user_profile_count = user.channel_profiles.count()
 
@@ -579,14 +603,14 @@ def stream_xc(request, username, password, channel_id):
         if user_profile_count == 0:
             # No profile filtering - user sees all channels based on user_level
             filters = {
-                "id": int(channel_id),
+                "id": resolved_internal_id,
                 "user_level__lte": user.user_level
             }
             channel = Channel.objects.filter(**filters).first()
         else:
             # User has specific limited profiles assigned
             filters = {
-                "id": int(channel_id),
+                "id": resolved_internal_id,
                 "channelprofilemembership__enabled": True,
                 "user_level__lte": user.user_level,
                 "channelprofilemembership__channel_profile__in": user.channel_profiles.all()
@@ -596,7 +620,7 @@ def stream_xc(request, username, password, channel_id):
         if not channel:
             return JsonResponse({"error": "Not found"}, status=404)
     else:
-        channel = get_object_or_404(Channel, id=channel_id)
+        channel = get_object_or_404(Channel, id=resolved_internal_id)
 
     # @TODO: we've got the  file 'type' via extension, support this when we support multiple outputs
     return stream_ts(request._request, str(channel.uuid), user)

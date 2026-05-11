@@ -7,6 +7,7 @@ from .routing import websocket_urlpatterns
 from apps.output.views import xc_player_api, xc_panel_api, xc_get, xc_xmltv
 from apps.proxy.ts_proxy.views import stream_xc
 from apps.proxy.vod_proxy.views import stream_xc_movie, stream_xc_episode
+from apps.timeshift.views import timeshift_proxy
 
 urlpatterns = [
     # API Routes
@@ -40,6 +41,13 @@ urlpatterns = [
         "<str:username>/<str:password>/<str:channel_id>",
         stream_xc,
         name="xc_stream_endpoint",
+    ),
+    # XC catch-up (timeshift). The "duration" slot is actually the provider's
+    # stream_id — matches what iPlayTV / TiviMate emit (see apps/timeshift/views).
+    path(
+        "timeshift/<str:username>/<str:password>/<str:stream_id>/<str:timestamp>/<str:duration>",
+        timeshift_proxy,
+        name="timeshift_proxy",
     ),
     # XC VOD endpoints
     path(
