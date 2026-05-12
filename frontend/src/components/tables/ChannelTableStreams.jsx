@@ -7,6 +7,7 @@ import React, {
 } from 'react';
 import API from '../../api';
 import { copyToClipboard } from '../../utils';
+import { buildLiveStreamUrl } from '../../utils/components/FloatingVideoUtils.js';
 import {
   GripHorizontal,
   SquareMinus,
@@ -508,7 +509,7 @@ const ChannelStreams = ({ channel }) => {
 
   const handleWatchStream = useCallback(
     (streamHash, streamName, streamId) => {
-      let vidUrl = `/proxy/ts/stream/${streamHash}`;
+      let vidUrl = buildLiveStreamUrl(`/proxy/ts/stream/${streamHash}`);
       if (env_mode === 'dev') {
         vidUrl = `${window.location.protocol}//${window.location.hostname}:5656${vidUrl}`;
       }

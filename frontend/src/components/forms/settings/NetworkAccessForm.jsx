@@ -177,18 +177,10 @@ const NetworkAccessForm = React.memo(({ active }) => {
           ))}
 
           <Flex mih={50} gap="xs" justify="space-between" align="flex-end">
-            <Button
-              variant="subtle"
-              color="gray"
-              onClick={resetNetworkAccessToDefaults}
-            >
+            <Button variant="subtle" color="gray" onClick={resetNetworkAccessToDefaults}>
               Reset to Defaults
             </Button>
-            <Button
-              type="submit"
-              disabled={networkAccessForm.submitting}
-              variant="default"
-            >
+            <Button type="submit" disabled={networkAccessForm.submitting} variant="default">
               Save
             </Button>
           </Flex>

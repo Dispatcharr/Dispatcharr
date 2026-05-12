@@ -4,18 +4,15 @@ This module handles generating and delivering video streams to clients.
 """
 
 import time
-import logging
-import threading
-import gevent  # Add this import at the top of your file
+import gevent
 from apps.proxy.config import TSConfig as Config
 from apps.channels.models import Channel, Stream
 from core.utils import log_system_event
-from .server import ProxyServer
-from .utils import create_ts_packet, get_logger
-from .redis_keys import RedisKeys
-from .utils import get_logger
-from .constants import ChannelMetadataField
-from .config_helper import ConfigHelper  # Add this import
+from ...server import ProxyServer
+from ...utils import create_ts_packet, get_logger
+from ...redis_keys import RedisKeys
+from ...constants import ChannelMetadataField
+from ...config_helper import ConfigHelper
 
 logger = get_logger()
 
@@ -25,7 +22,7 @@ class StreamGenerator:
     data delivery, and cleanup.
     """
 
-    def __init__(self, channel_id, client_id, client_ip, client_user_agent, channel_initializing=False, user=None):
+    def __init__(self, channel_id, client_id, client_ip, client_user_agent, channel_initializing=False, user=None, buffer=None):
         """
         Initialize the stream generator with client and channel details.
 
@@ -36,6 +33,8 @@ class StreamGenerator:
             client_user_agent: User agent string from client
             channel_initializing: Whether the channel is still initializing
             user: Authenticated user making the request
+            buffer: Source StreamBuffer to read from. Resolved via ProxyServer.get_buffer()
+                    before construction; passed in so the generator is buffer-agnostic.
         """
         self.channel_id = channel_id
         self.client_id = client_id
@@ -43,6 +42,7 @@ class StreamGenerator:
         self.client_user_agent = client_user_agent
         self.channel_initializing = channel_initializing
         self.user = user
+        self._source_buffer = buffer
         # Cache channel name once to avoid repeated DB queries for logging
         try:
             _name = Channel.objects.filter(uuid=channel_id).values_list('name', flat=True).first()
@@ -204,8 +204,7 @@ class StreamGenerator:
         """Setup streaming parameters and check resources."""
         proxy_server = ProxyServer.get_instance()
 
-        # Get buffer - stream manager may not exist in this worker
-        buffer = proxy_server.stream_buffers.get(self.channel_id)
+        buffer = self._source_buffer
         stream_manager = proxy_server.stream_managers.get(self.channel_id)
 
         if not buffer:
@@ -369,7 +368,7 @@ class StreamGenerator:
     def _check_resources(self):
         """Check if required resources still exist."""
         proxy_server = self.proxy_server or ProxyServer.get_instance()
-        if self.channel_id not in proxy_server.stream_buffers:
+        if self.buffer is None:
             logger.info(f"[{self.client_id}] Channel buffer no longer exists, terminating stream")
             return False
 
@@ -477,7 +476,7 @@ class StreamGenerator:
                                 # Refresh TTL on client key
                                 proxy_server.redis_client.expire(client_key, Config.CLIENT_RECORD_TTL)
                                 # Also refresh the client set TTL
-                                client_set_key = f"ts_proxy:channel:{self.channel_id}:clients"
+                                client_set_key = f"live:channel:{self.channel_id}:clients"
                                 proxy_server.redis_client.expire(client_set_key, Config.CLIENT_RECORD_TTL)
                                 self.last_ttl_refresh = current_time
                                 logger.debug(f"[{self.client_id}] Refreshed client TTL (active streaming)")
@@ -625,6 +624,14 @@ class StreamGenerator:
 
         # If no clients left and we're the owner, schedule shutdown using the config value
         if local_clients == 0 and proxy_server.am_i_owner(self.channel_id):
+            # When output/profile managers are present, remove_client already spawned
+            # handle_client_disconnect which will stop them and then stop the channel.
+            # Spawning a second shutdown greenlet here causes a redundant concurrent
+            # stop_channel call that can race against the first.
+            if (proxy_server.output_managers.get(self.channel_id) or
+                    proxy_server.profile_managers.get(self.channel_id)):
+                return
+
             logger.info(f"No local clients left for channel {self.channel_id}, scheduling shutdown")
 
             def delayed_shutdown():
@@ -644,10 +651,10 @@ class StreamGenerator:
 
             gevent.spawn(delayed_shutdown)
 
-def create_stream_generator(channel_id, client_id, client_ip, client_user_agent, channel_initializing=False, user=None):
+def create_stream_generator(channel_id, client_id, client_ip, client_user_agent, channel_initializing=False, user=None, buffer=None):
     """
     Factory function to create a new stream generator.
     Returns a function that can be passed to StreamingHttpResponse.
     """
-    generator = StreamGenerator(channel_id, client_id, client_ip, client_user_agent, channel_initializing, user=user)
+    generator = StreamGenerator(channel_id, client_id, client_ip, client_user_agent, channel_initializing, user=user, buffer=buffer)
     return generator.generate

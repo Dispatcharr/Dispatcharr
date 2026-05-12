@@ -29,13 +29,7 @@ def validate_logo_file(file):
 
 
 def get_client_ip(request):
-    x_forwarded_for = request.META.get("HTTP_X_REAL_IP")
-    if x_forwarded_for:
-        # X-Forwarded-For can be a comma-separated list of IPs
-        ip = x_forwarded_for.split(",")[0].strip()
-    else:
-        ip = request.META.get("REMOTE_ADDR")
-    return ip
+    return request.META.get("HTTP_X_REAL_IP") or request.META.get("REMOTE_ADDR")
 
 
 def network_access_allowed(request, settings_key, user=None):

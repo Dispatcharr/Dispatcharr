@@ -4,7 +4,7 @@ Centralizing constants makes it easier to maintain and modify them.
 """
 
 # Redis related constants
-REDIS_KEY_PREFIX = "ts_proxy"
+REDIS_KEY_PREFIX = "live"
 REDIS_TTL_DEFAULT = 3600  # 1 hour
 REDIS_TTL_SHORT = 60      # 1 minute
 REDIS_TTL_MEDIUM = 300    # 5 minutes
@@ -33,6 +33,8 @@ class EventType:
     CLIENT_CONNECTED = "client_connected"
     CLIENT_DISCONNECTED = "client_disconnected"
     CLIENT_STOP = "client_stop"
+    ENSURE_OUTPUT_FORMAT = "ensure_output_format"
+    ENSURE_OUTPUT_PROFILE = "ensure_output_profile"
 
 # Stream types
 class StreamType:
@@ -104,6 +106,7 @@ class ChannelMetadataField:
     # Client metadata fields
     CONNECTED_AT = "connected_at"
     LAST_ACTIVE = "last_active"
+    OUTPUT_FORMAT = "output_format"
     BYTES_SENT = "bytes_sent"
     AVG_RATE_KBPS = "avg_rate_KBps"
     CURRENT_RATE_KBPS = "current_rate_KBps"

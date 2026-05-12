@@ -3,8 +3,8 @@ from django.core.exceptions import ValidationError
 from django.conf import settings
 from core.models import StreamProfile, CoreSettings
 from core.utils import RedisClient
-from apps.proxy.ts_proxy.redis_keys import RedisKeys
-from apps.proxy.ts_proxy.constants import ChannelMetadataField
+from apps.proxy.live_proxy.redis_keys import RedisKeys
+from apps.proxy.live_proxy.constants import ChannelMetadataField
 import logging
 import uuid
 from django.utils import timezone
@@ -477,7 +477,7 @@ class Channel(models.Model):
         candidates = []
 
         # 1) Try to get active channel IDs for this profile from an index set if available
-        ch_set_key = f"ts_proxy:profile:{profile_id}:channels"
+        ch_set_key = f"live:profile:{profile_id}:channels"
         try:
             ch_ids = { (int(x) if not isinstance(x, int) else x) for x in (redis_client.smembers(ch_set_key) or set()) }
         except Exception:
@@ -489,7 +489,7 @@ class Channel(models.Model):
         # 2) Fallback: scan metadata keys and filter by m3u_profile == profile_id
         if not ch_ids:
             cursor = 0
-            pattern = "ts_proxy:channel:*:metadata"
+            pattern = "live:channel:*:metadata"
             while True:
                 cursor, keys = redis_client.scan(cursor=cursor, match=pattern, count=500)
                 if keys:
@@ -505,7 +505,7 @@ class Channel(models.Model):
                             pid = None
 
                         if pid == profile_id:
-                            parts = k.split(":")  # ts_proxy:channel:{id}:metadata
+                            parts = k.split(":")  # live:channel:{id}:metadata
                             if len(parts) >= 4:
                                 try:
                                     ch_ids.add(int(parts[2]))
@@ -526,7 +526,7 @@ class Channel(models.Model):
                 continue
 
             # Skip if recently preempted
-            last_preempt_key = f"ts_proxy:channel:{ch_id}:last_preempt"
+            last_preempt_key = f"live:channel:{ch_id}:last_preempt"
             try:
                 last_preempt = float(redis_client.get(last_preempt_key) or 0.0)
             except Exception:
@@ -535,14 +535,14 @@ class Channel(models.Model):
                 continue
 
             # Clients and their levels
-            clients_key = f"ts_proxy:channel:{ch_id}:clients"
+            clients_key = f"live:channel:{ch_id}:clients"
             member_ids = list(redis_client.smembers(clients_key) or [])
             viewer_count = len(member_ids)
             max_viewer_level = 0
             if viewer_count:
                 pipe = redis_client.pipeline()
                 for cid in member_ids:
-                    pipe.hget(f"ts_proxy:channel:{ch_id}:clients:{cid}", "user_level")
+                    pipe.hget(f"live:channel:{ch_id}:clients:{cid}", "user_level")
                 levels_raw = pipe.execute()
                 levels = []
                 for lv in levels_raw:
@@ -557,7 +557,7 @@ class Channel(models.Model):
                 continue
 
             # Metadata (protected/recording/started_at_ts)
-            meta_key = f"ts_proxy:channel:{ch_id}:metadata"
+            meta_key = f"live:channel:{ch_id}:metadata"
             try:
                 protected, recording, started_at_ts = redis_client.hmget(
                     meta_key, "protected", "recording", "started_at_ts"
@@ -593,7 +593,7 @@ class Channel(models.Model):
 
         # Mark preempt timestamp to avoid thrashing
         try:
-            redis_client.set(f"ts_proxy:channel:{victim_id}:last_preempt", str(time.time()), ex=3600)
+            redis_client.set(f"live:channel:{victim_id}:last_preempt", str(time.time()), ex=3600)
         except Exception:
             pass
 

@@ -42,6 +42,7 @@ import {
   Pencil,
 } from 'lucide-react';
 import { listOverriddenFields } from '../../utils/forms/ChannelUtils.js';
+import { buildLiveStreamUrl } from '../../utils/components/FloatingVideoUtils.js';
 import {
   Box,
   TextInput,
@@ -76,6 +77,7 @@ import { useChannelLogoSelection } from '../../hooks/useSmartLogos';
 import { CustomTable, useTable } from './CustomTable';
 import ChannelsTableOnboarding from './ChannelsTable/ChannelsTableOnboarding';
 import ChannelTableHeader from './ChannelsTable/ChannelTableHeader';
+import useOutputProfilesStore from '../../store/outputProfiles';
 import {
   EditableTextCell,
   EditableNumberCell,
@@ -311,6 +313,7 @@ const ChannelsTable = ({ onReady }) => {
 
   // store/settings
   const env_mode = useSettingsStore((s) => s.environment.env_mode);
+  const outputProfiles = useOutputProfilesStore((s) => s.profiles);
   const showVideo = useVideoStore((s) => s.showVideo);
 
   // store/warnings
@@ -341,6 +344,7 @@ const ChannelsTable = ({ onReady }) => {
   const [, setIsLoading] = useState(true);
 
   const [hdhrUrl, setHDHRUrl] = useState(hdhrUrlBase);
+  const [hdhrOutputProfileId, setHdhrOutputProfileId] = useState('');
   const [epgUrl, setEPGUrl] = useState(epgUrlBase);
   const [m3uUrl, setM3UUrl] = useState(m3uUrlBase);
 
@@ -376,6 +380,8 @@ const ChannelsTable = ({ onReady }) => {
     cachedlogos: true,
     direct: false,
     tvg_id_source: 'channel_number',
+    output_format: '',
+    output_profile: '',
   });
   const [epgParams, setEpgParams] = useState({
     cachedlogos: true,
@@ -684,7 +690,7 @@ const ChannelsTable = ({ onReady }) => {
         return '';
       }
 
-      const uri = `/proxy/ts/stream/${channel.uuid}`;
+      const uri = buildLiveStreamUrl(`/proxy/ts/stream/${channel.uuid}`);
       let channelUrl = `${window.location.protocol}//${window.location.host}${uri}`;
       if (env_mode == 'dev') {
         channelUrl = `${window.location.protocol}//${window.location.hostname}:5656${uri}`;
@@ -753,6 +759,10 @@ const ChannelsTable = ({ onReady }) => {
     if (m3uParams.direct) params.append('direct', 'true');
     if (m3uParams.tvg_id_source !== 'channel_number')
       params.append('tvg_id_source', m3uParams.tvg_id_source);
+    if (m3uParams.output_format)
+      params.append('output_format', m3uParams.output_format);
+    if (m3uParams.output_profile)
+      params.append('output_profile', m3uParams.output_profile);
 
     const baseUrl = m3uUrl;
     return params.toString() ? `${baseUrl}?${params.toString()}` : baseUrl;
@@ -786,7 +796,7 @@ const ChannelsTable = ({ onReady }) => {
   };
 
   const copyHDHRUrl = async () => {
-    await copyToClipboard(hdhrUrl, {
+    await copyToClipboard(buildHDHRUrl(), {
       successTitle: 'HDHR URL Copied!',
       successMessage: 'The HDHR URL has been copied to your clipboard.',
     });
@@ -872,6 +882,13 @@ const ChannelsTable = ({ onReady }) => {
     setEPGUrl(`${epgUrlBase}${profileString}`);
     setM3UUrl(`${m3uUrlBase}${profileString}`);
   }, [selectedProfileId, profiles]);
+
+  const buildHDHRUrl = () => {
+    if (!hdhrOutputProfileId) return hdhrUrl;
+    // Insert output_profile segment before the trailing slash (or at end)
+    const base = hdhrUrl.replace(/\/$/, '');
+    return `${base}/output_profile/${hdhrOutputProfileId}`;
+  };
 
   useEffect(() => {
     const startItem = pagination.pageIndex * pagination.pageSize + 1; // +1 to start from 1, not 0
@@ -1298,19 +1315,22 @@ const ChannelsTable = ({ onReady }) => {
                   <Stack
                     gap="sm"
                     style={{
-                      minWidth: 250,
-                      maxWidth: 'min(400px, 80vw)',
+                      minWidth: 300,
+                      maxWidth: 'min(500px, 90vw)',
                       width: 'max-content',
                     }}
+                    onClick={stopPropagation}
+                    onMouseDown={stopPropagation}
                   >
                     <Text size="sm" c="dimmed">
                       Use this URL in HDHomeRun-compatible apps and IPTV
                       clients.
                     </Text>
                     <TextInput
-                      value={hdhrUrl}
+                      value={buildHDHRUrl()}
                       size="sm"
                       readOnly
+                      label="Generated URL"
                       style={{ width: '100%' }}
                       rightSection={
                         <ActionIcon
@@ -1322,6 +1342,19 @@ const ChannelsTable = ({ onReady }) => {
                           <Copy size="16" />
                         </ActionIcon>
                       }
+                    />
+                    <Select
+                      label="Output Profile"
+                      description="Pre-delivery transcode profile. Overrides the system-wide HDHR default."
+                      clearable
+                      searchable
+                      placeholder="System default"
+                      value={hdhrOutputProfileId || null}
+                      onChange={(value) => setHdhrOutputProfileId(value || '')}
+                      comboboxProps={{ withinPortal: false }}
+                      data={outputProfiles
+                        .filter((p) => p.is_active)
+                        .map((p) => ({ value: `${p.id}`, label: p.name }))}
                     />
                   </Stack>
                 </Popover.Dropdown>
@@ -1419,6 +1452,42 @@ const ChannelsTable = ({ onReady }) => {
                         { value: 'tvg_id', label: 'TVG-ID' },
                         { value: 'gracenote', label: 'Gracenote Station ID' },
                       ]}
+                    />
+                    <Select
+                      label="Output Format"
+                      description="Container format for streams embedded in this M3U"
+                      clearable
+                      placeholder="Server default"
+                      value={m3uParams.output_format || null}
+                      onChange={(value) =>
+                        setM3uParams((prev) => ({
+                          ...prev,
+                          output_format: value || '',
+                        }))
+                      }
+                      comboboxProps={{ withinPortal: false }}
+                      data={[
+                        { value: 'mpegts', label: 'MPEG-TS' },
+                        { value: 'fmp4', label: 'fMP4 (fragmented MP4)' },
+                      ]}
+                    />
+                    <Select
+                      label="Output Profile"
+                      description="Pre-delivery transcode profile applied to all streams in this M3U"
+                      clearable
+                      searchable
+                      placeholder="No transcoding"
+                      value={m3uParams.output_profile || null}
+                      onChange={(value) =>
+                        setM3uParams((prev) => ({
+                          ...prev,
+                          output_profile: value || '',
+                        }))
+                      }
+                      comboboxProps={{ withinPortal: false }}
+                      data={outputProfiles
+                        .filter((p) => p.is_active)
+                        .map((p) => ({ value: `${p.id}`, label: p.name }))}
                     />
                   </Stack>
                 </Popover.Dropdown>

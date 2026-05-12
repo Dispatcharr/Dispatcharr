@@ -1,17 +1,33 @@
 import useSettingsStore from '../../../store/settings.jsx';
 import useLocalStorage from '../../../hooks/useLocalStorage.jsx';
 import useTablePreferences from '../../../hooks/useTablePreferences.jsx';
+import useOutputProfilesStore from '../../../store/outputProfiles.jsx';
+import {
+  getPlayerPrefs,
+  savePlayerPrefs,
+} from '../../../utils/components/FloatingVideoUtils.js';
 import {
   buildTimeZoneOptions,
   getDefaultTimeZone,
 } from '../../../utils/dateTimeUtils.js';
-import React, { useCallback, useEffect, useMemo, useRef } from 'react';
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { showNotification } from '../../../utils/notificationUtils.js';
 import { Select, Switch, Stack } from '@mantine/core';
 import { saveTimeZoneSetting } from '../../../utils/forms/settings/UiSettingsFormUtils.js';
 
 const UiSettingsForm = React.memo(() => {
   const settings = useSettingsStore((s) => s.settings);
+  const outputProfiles = useOutputProfilesStore((s) => s.profiles);
+
+  const [webPlayerProfileId, setWebPlayerProfileId] = useState(
+    () => getPlayerPrefs().webPlayerOutputProfileId ?? null
+  );
 
   const [timeFormat, setTimeFormat] = useLocalStorage('time-format', '12h');
   const [dateFormat, setDateFormat] = useLocalStorage('date-format', 'mdy');
@@ -81,6 +97,12 @@ const UiSettingsForm = React.memo(() => {
       case 'header-pinned':
         setHeaderPinned(value);
         break;
+      case 'web-player-profile': {
+        const id = value ? Number(value) : null;
+        setWebPlayerProfileId(id);
+        savePlayerPrefs({ webPlayerOutputProfileId: id });
+        break;
+      }
     }
   };
 
@@ -150,6 +172,18 @@ const UiSettingsForm = React.memo(() => {
         value={timeZone}
         onChange={(val) => onUISettingsChange('time-zone', val)}
         data={timeZoneOptions}
+      />
+      <Select
+        label="Web Player Output Profile"
+        description="Output profile applied when previewing streams in the browser player"
+        clearable
+        placeholder="None"
+        value={webPlayerProfileId ? String(webPlayerProfileId) : null}
+        onChange={(val) => onUISettingsChange('web-player-profile', val)}
+        data={outputProfiles.map((p) => ({
+          value: String(p.id),
+          label: p.name,
+        }))}
       />
     </Stack>
   );

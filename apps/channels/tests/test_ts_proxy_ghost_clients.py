@@ -11,9 +11,9 @@ from unittest.mock import MagicMock, patch, PropertyMock
 
 from django.test import TestCase
 
-from apps.proxy.ts_proxy.client_manager import ClientManager
-from apps.proxy.ts_proxy.constants import ChannelMetadataField, ChannelState
-from apps.proxy.ts_proxy.redis_keys import RedisKeys
+from apps.proxy.live_proxy.client_manager import ClientManager
+from apps.proxy.live_proxy.constants import ChannelMetadataField, ChannelState
+from apps.proxy.live_proxy.redis_keys import RedisKeys
 
 
 # ---------------------------------------------------------------------------
@@ -141,7 +141,7 @@ class RemoveGhostClientsTests(TestCase):
 # Detailed stats path: exercises get_detailed_channel_info()
 # ---------------------------------------------------------------------------
 
-@patch("apps.proxy.ts_proxy.channel_status.ProxyServer")
+@patch("apps.proxy.live_proxy.channel_status.ProxyServer")
 class DetailedStatsGhostClientTests(TestCase):
     """get_detailed_channel_info() should remove ghost clients whose metadata
     hash has expired from the Redis client SET."""
@@ -162,7 +162,7 @@ class DetailedStatsGhostClientTests(TestCase):
 
     def test_ghost_client_removed_from_set(self, mock_proxy_cls):
         """Ghost client should be SREM'd and excluded from result."""
-        from apps.proxy.ts_proxy.channel_status import ChannelStatus
+        from apps.proxy.live_proxy.channel_status import ChannelStatus
 
         def hgetall_side_effect(key):
             if "clients:" in key:
@@ -181,7 +181,7 @@ class DetailedStatsGhostClientTests(TestCase):
 
     def test_live_client_preserved(self, mock_proxy_cls):
         """Client with valid metadata should appear in results."""
-        from apps.proxy.ts_proxy.channel_status import ChannelStatus
+        from apps.proxy.live_proxy.channel_status import ChannelStatus
 
         def hgetall_side_effect(key):
             if "clients:" in key:
@@ -204,7 +204,7 @@ class DetailedStatsGhostClientTests(TestCase):
 
     def test_mixed_ghost_and_live(self, mock_proxy_cls):
         """Only ghost clients should be removed; live ones preserved."""
-        from apps.proxy.ts_proxy.channel_status import ChannelStatus
+        from apps.proxy.live_proxy.channel_status import ChannelStatus
 
         def hgetall_side_effect(key):
             if "clients:" in key:
@@ -231,7 +231,7 @@ class DetailedStatsGhostClientTests(TestCase):
 # Basic stats path: exercises get_basic_channel_info()
 # ---------------------------------------------------------------------------
 
-@patch("apps.proxy.ts_proxy.channel_status.ProxyServer")
+@patch("apps.proxy.live_proxy.channel_status.ProxyServer")
 class BasicStatsGhostClientTests(TestCase):
     """get_basic_channel_info() should call remove_ghost_clients(), skip
     ghosts from display, and correct client_count."""
@@ -260,7 +260,7 @@ class BasicStatsGhostClientTests(TestCase):
 
     def test_ghost_removed_and_count_corrected(self, mock_proxy_cls):
         """Ghost client should be cleaned and client_count decremented."""
-        from apps.proxy.ts_proxy.channel_status import ChannelStatus
+        from apps.proxy.live_proxy.channel_status import ChannelStatus
 
         redis = self._setup_redis(
             mock_proxy_cls,
@@ -276,7 +276,7 @@ class BasicStatsGhostClientTests(TestCase):
 
     def test_live_client_count_preserved(self, mock_proxy_cls):
         """Live clients should be counted correctly."""
-        from apps.proxy.ts_proxy.channel_status import ChannelStatus
+        from apps.proxy.live_proxy.channel_status import ChannelStatus
 
         redis = self._setup_redis(
             mock_proxy_cls,
@@ -295,7 +295,7 @@ class BasicStatsGhostClientTests(TestCase):
 # Orphaned channel cleanup: exercises _check_orphaned_metadata()
 # ---------------------------------------------------------------------------
 
-@patch("apps.proxy.ts_proxy.channel_status.ProxyServer")
+@patch("apps.proxy.live_proxy.channel_status.ProxyServer")
 class OrphanedChannelGhostValidationTests(TestCase):
     """_check_orphaned_metadata() should validate client SET entries when
     owner is dead and client_count > 0. If all clients are ghosts, it
@@ -334,7 +334,7 @@ class OrphanedChannelGhostValidationTests(TestCase):
 
     def test_all_ghosts_triggers_cleanup(self, mock_proxy_cls):
         """When all clients are ghosts, channel should be cleaned up."""
-        from apps.proxy.ts_proxy.server import ProxyServer
+        from apps.proxy.live_proxy.server import ProxyServer
 
         channel_id = "00000000-0000-0000-0000-000000000005"
         server, redis = self._make_server_for_orphan_check(

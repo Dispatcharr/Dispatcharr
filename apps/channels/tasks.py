@@ -2729,8 +2729,8 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
         # Try to get stream stats from TS proxy Redis metadata
         try:
             from core.utils import RedisClient
-            from apps.proxy.ts_proxy.redis_keys import RedisKeys
-            from apps.proxy.ts_proxy.constants import ChannelMetadataField
+            from apps.proxy.live_proxy.redis_keys import RedisKeys
+            from apps.proxy.live_proxy.constants import ChannelMetadataField
 
             r = RedisClient.get_client()
             if r is not None:

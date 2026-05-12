@@ -31,8 +31,8 @@ export const saveChangedSettings = async (settings, changedSettings) => {
     'default_user_agent',
     'default_stream_profile',
     'm3u_hash_key',
-    'preferred_region',
-    'auto_import_mapped_files',
+    'default_output_format',
+    'hdhr_output_profile_id',
   ];
   const epgFields = [
     'epg_match_mode',
@@ -60,7 +60,12 @@ export const saveChangedSettings = async (settings, changedSettings) => {
     'retention_count',
     'schedule_cron_expression',
   ];
-  const systemFields = ['time_zone', 'max_system_events'];
+  const systemFields = [
+    'time_zone',
+    'max_system_events',
+    'preferred_region',
+    'auto_import_mapped_files',
+  ];
 
   for (const formKey in changedSettings) {
     let value = changedSettings[formKey];
@@ -101,10 +106,14 @@ export const saveChangedSettings = async (settings, changedSettings) => {
     }
 
     if (
-      ['default_user_agent', 'default_stream_profile'].includes(formKey) &&
+      [
+        'default_user_agent',
+        'default_stream_profile',
+        'hdhr_output_profile_id',
+      ].includes(formKey) &&
       value != null
     ) {
-      value = parseInt(value, 10);
+      value = value === '' ? null : parseInt(value, 10) || null;
     }
 
     const numericFields = [
@@ -248,8 +257,14 @@ export const parseSettings = (settings) => {
       streamSettings.default_stream_profile != null
         ? String(streamSettings.default_stream_profile)
         : null;
-    parsed.preferred_region = streamSettings.preferred_region;
-    parsed.auto_import_mapped_files = streamSettings.auto_import_mapped_files;
+    parsed.default_output_format =
+      streamSettings.default_output_format != null
+        ? String(streamSettings.default_output_format)
+        : 'mpegts';
+    parsed.hdhr_output_profile_id =
+      streamSettings.hdhr_output_profile_id != null
+        ? String(streamSettings.hdhr_output_profile_id)
+        : null;
 
     // m3u_hash_key should be array
     const hashKey = streamSettings.m3u_hash_key;
@@ -334,6 +349,11 @@ export const parseSettings = (settings) => {
       typeof systemSettings.max_system_events === 'number'
         ? systemSettings.max_system_events
         : parseInt(systemSettings.max_system_events, 10) || 100;
+    parsed.preferred_region = systemSettings.preferred_region ?? null;
+    parsed.auto_import_mapped_files =
+      typeof systemSettings.auto_import_mapped_files === 'boolean'
+        ? systemSettings.auto_import_mapped_files
+        : true;
   }
 
   // Proxy and network access are already grouped objects

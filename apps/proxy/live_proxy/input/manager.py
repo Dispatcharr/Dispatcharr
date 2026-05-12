@@ -1,28 +1,22 @@
 """Stream connection management for TS proxy"""
 
 import threading
-import logging
 import time
 import socket
 import requests
 import subprocess
 import gevent
 import re
-from typing import Optional, List
 from django.db import connection
-from django.shortcuts import get_object_or_404
-from urllib3.exceptions import ReadTimeoutError
 from apps.proxy.config import TSConfig as Config
 from apps.channels.models import Channel, Stream
-from apps.m3u.models import M3UAccount, M3UAccountProfile
-from core.models import UserAgent, CoreSettings
 from core.utils import log_system_event
-from .stream_buffer import StreamBuffer
-from .utils import detect_stream_type, get_logger
-from .redis_keys import RedisKeys
-from .constants import ChannelState, EventType, StreamType, ChannelMetadataField, TS_PACKET_SIZE
-from .config_helper import ConfigHelper
-from .url_utils import get_alternate_streams, get_stream_info_for_switch, get_stream_object
+from .buffer import StreamBuffer
+from ..utils import detect_stream_type, get_logger
+from ..redis_keys import RedisKeys
+from ..constants import ChannelState, EventType, StreamType, ChannelMetadataField, TS_PACKET_SIZE
+from ..config_helper import ConfigHelper
+from ..url_utils import get_alternate_streams, get_stream_info_for_switch, get_stream_object
 
 logger = get_logger()
 
@@ -78,7 +72,6 @@ class StreamManager:
         self.current_stream_id = stream_id
         self.tried_stream_ids = set()
 
-        # IMPROVED LOGGING: Better handle and track stream ID
         if stream_id:
             self.tried_stream_ids.add(stream_id)
             logger.info(f"Initialized stream manager for channel {buffer.channel_id} with stream ID {stream_id}")
@@ -110,7 +103,6 @@ class StreamManager:
 
         logger.info(f"Initialized stream manager for channel {buffer.channel_id}")
 
-        # Add this flag for tracking transcoding process status
         self.transcode_process_active = False
 
         # Track stream command for efficient log parser routing
@@ -258,7 +250,7 @@ class StreamManager:
                 url_failed = False
                 if self.url_switching:
                     logger.debug(f"Skipping connection attempt during URL switch for channel {self.channel_id}")
-                    gevent.sleep(0.1)  # REPLACE time.sleep(0.1)
+                    gevent.sleep(0.1)
                     continue
                 # Connection retry loop for current URL
                 while self.running and self.retry_count < self.max_retries and not url_failed and not self.needs_stream_switch:
@@ -336,7 +328,7 @@ class StreamManager:
                             # Wait with exponential backoff before retrying
                             timeout = min(.25 * self.retry_count, 3)  # Cap at 3 seconds
                             logger.info(f"Reconnecting in {timeout} seconds... (attempt {self.retry_count}/{self.max_retries}) for channel: {self.channel_id}")
-                            gevent.sleep(timeout)  # REPLACE time.sleep(timeout)
+                            gevent.sleep(timeout)
 
                     except Exception as e:
                         logger.error(f"Connection error on channel: {self.channel_id}: {e}", exc_info=True)
@@ -363,7 +355,7 @@ class StreamManager:
                             # Wait with exponential backoff before retrying
                             timeout = min(.25 * self.retry_count, 3)  # Cap at 3 seconds
                             logger.info(f"Reconnecting in {timeout} seconds after error... (attempt {self.retry_count}/{self.max_retries}) for channel: {self.channel_id}")
-                            gevent.sleep(timeout)  # REPLACE time.sleep(timeout)
+                            gevent.sleep(timeout)
 
                 # If URL failed and we're still running, try switching to another stream
                 if url_failed and self.running:
@@ -698,8 +690,8 @@ class StreamManager:
                 self.ffmpeg_input_phase = False
 
             # Route to appropriate parser based on known command type
-            from .services.log_parsers import LogParserFactory
-            from .services.channel_service import ChannelService
+            from ..services.log_parsers import LogParserFactory
+            from ..services.channel_service import ChannelService
 
             parse_result = None
 
@@ -795,7 +787,7 @@ class StreamManager:
 
                         now = time.time()
                         if now - self._last_bitrate_db_save_time >= self._bitrate_db_save_interval:
-                            from .services.channel_service import ChannelService
+                            from ..services.channel_service import ChannelService
                             ChannelService._update_stream_stats_in_db(
                                 self.current_stream_id,
                                 ffmpeg_output_bitrate=round(self._smoothed_output_bitrate, 1)
@@ -1082,7 +1074,7 @@ class StreamManager:
         if self._smoothed_output_bitrate is not None and self.current_stream_id:
             final_bitrate = self._smoothed_output_bitrate
             try:
-                from .services.channel_service import ChannelService
+                from ..services.channel_service import ChannelService
                 ChannelService._update_stream_stats_in_db(
                     self.current_stream_id,
                     ffmpeg_output_bitrate=round(final_bitrate, 1)
@@ -1257,7 +1249,7 @@ class StreamManager:
             except Exception as e:
                 logger.error(f"Error in health monitor: {e}")
 
-            gevent.sleep(self.health_check_interval)  # REPLACE time.sleep(self.health_check_interval)
+            gevent.sleep(self.health_check_interval)
 
     def _attempt_reconnect(self):
         """Attempt to reconnect to the current stream"""
@@ -1671,7 +1663,6 @@ class StreamManager:
                     logger.warning(f"All {len(alternate_streams)} alternate streams have been tried for channel {self.channel_id}")
                 return False
 
-            # IMPROVED: Try multiple streams until we find one with a different URL
             for next_stream in untried_streams:
                 stream_id = next_stream['stream_id']
                 profile_id = next_stream['profile_id']  # This is the M3U profile ID we need

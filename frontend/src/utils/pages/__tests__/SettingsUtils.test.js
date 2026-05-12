@@ -82,6 +82,12 @@ describe('SettingsUtils', () => {
         value: {
           default_user_agent: 7,
           m3u_hash_key: 'channel_name',
+        },
+      });
+      expect(API.createSetting).toHaveBeenCalledWith({
+        key: 'system_settings',
+        name: 'System Settings',
+        value: {
           preferred_region: 'UK',
         },
       });
@@ -146,9 +152,9 @@ describe('SettingsUtils', () => {
           key: 'dvr_settings',
           value: {},
         },
-        stream_settings: {
-          id: 1,
-          key: 'stream_settings',
+        system_settings: {
+          id: 3,
+          key: 'system_settings',
           value: {},
         },
       };
@@ -162,6 +168,18 @@ describe('SettingsUtils', () => {
       await SettingsUtils.saveChangedSettings(settings, changedSettings);
 
       expect(API.updateSetting).toHaveBeenCalledTimes(2);
+      expect(API.updateSetting).toHaveBeenCalledWith(
+        expect.objectContaining({
+          key: 'dvr_settings',
+          value: { comskip_enabled: true },
+        })
+      );
+      expect(API.updateSetting).toHaveBeenCalledWith(
+        expect.objectContaining({
+          key: 'system_settings',
+          value: { auto_import_mapped_files: false },
+        })
+      );
     });
 
     it('should handle proxy_settings specially', async () => {
@@ -250,6 +268,12 @@ describe('SettingsUtils', () => {
             default_user_agent: 5,
             default_stream_profile: 3,
             m3u_hash_key: 'channel_name,channel_number',
+          },
+        },
+        system_settings: {
+          id: 3,
+          key: 'system_settings',
+          value: {
             preferred_region: 'US',
             auto_import_mapped_files: true,
           },

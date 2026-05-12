@@ -3161,8 +3161,8 @@ def _stop_dvr_clients(channel_uuid, recording_id=None):
     Returns the number of DVR clients stopped.
     """
     from core.utils import RedisClient
-    from apps.proxy.ts_proxy.redis_keys import RedisKeys
-    from apps.proxy.ts_proxy.services.channel_service import ChannelService
+    from apps.proxy.live_proxy.redis_keys import RedisKeys
+    from apps.proxy.live_proxy.services.channel_service import ChannelService
 
     r = RedisClient.get_client()
     if not r:
@@ -3688,8 +3688,8 @@ class RecordingViewSet(viewsets.ModelViewSet):
             channel_uuid = str(instance.channel.uuid)
             # Lazy imports to avoid module overhead if proxy isn't used
             from core.utils import RedisClient
-            from apps.proxy.ts_proxy.redis_keys import RedisKeys
-            from apps.proxy.ts_proxy.services.channel_service import ChannelService
+            from apps.proxy.live_proxy.redis_keys import RedisKeys
+            from apps.proxy.live_proxy.services.channel_service import ChannelService
 
             r = RedisClient.get_client()
             if r:

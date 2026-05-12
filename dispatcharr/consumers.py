@@ -46,7 +46,7 @@ class MyWebSocketConsumer(AsyncWebsocketConsumer):
         data = json.loads(text_data)
 
         if data["type"] == "m3u_profile_test":
-            from apps.proxy.ts_proxy.url_utils import transform_url
+            from apps.proxy.live_proxy.url_utils import transform_url
 
             def replace_with_mark(match):
                 # Wrap the match in <mark> tags

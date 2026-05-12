@@ -7,6 +7,7 @@ import usePlaylistsStore from './store/playlists';
 import useEPGsStore from './store/epgs';
 import useStreamsStore from './store/streams';
 import useStreamProfilesStore from './store/streamProfiles';
+import useOutputProfilesStore from './store/outputProfiles';
 import useSettingsStore from './store/settings';
 import { notifications } from '@mantine/notifications';
 import useChannelsTableStore from './store/channelsTable';
@@ -1716,6 +1717,53 @@ export default class API {
       useStreamProfilesStore.getState().removeStreamProfiles([id]);
     } catch (e) {
       errorNotification(`Failed to delete stream propfile ${id}`, e);
+    }
+  }
+
+  static async getOutputProfiles() {
+    try {
+      const response = await request(`${host}/api/core/outputprofiles/`);
+      return response;
+    } catch (e) {
+      errorNotification('Failed to retrieve output profiles', e);
+    }
+  }
+
+  static async addOutputProfile(values) {
+    try {
+      const response = await request(`${host}/api/core/outputprofiles/`, {
+        method: 'POST',
+        body: values,
+      });
+      useOutputProfilesStore.getState().addOutputProfile(response);
+      return response;
+    } catch (e) {
+      errorNotification('Failed to create output profile', e);
+    }
+  }
+
+  static async updateOutputProfile(values) {
+    const { id, ...payload } = values;
+    try {
+      const response = await request(`${host}/api/core/outputprofiles/${id}/`, {
+        method: 'PUT',
+        body: payload,
+      });
+      useOutputProfilesStore.getState().updateOutputProfile(response);
+      return response;
+    } catch (e) {
+      errorNotification(`Failed to update output profile ${id}`, e);
+    }
+  }
+
+  static async deleteOutputProfile(id) {
+    try {
+      await request(`${host}/api/core/outputprofiles/${id}/`, {
+        method: 'DELETE',
+      });
+      useOutputProfilesStore.getState().removeOutputProfiles([id]);
+    } catch (e) {
+      errorNotification(`Failed to delete output profile ${id}`, e);
     }
   }
 

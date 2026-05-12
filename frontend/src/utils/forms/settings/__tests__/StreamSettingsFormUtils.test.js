@@ -19,18 +19,17 @@ describe('StreamSettingsFormUtils', () => {
       expect(result).toEqual({
         default_user_agent: '',
         default_stream_profile: '',
-        preferred_region: '',
-        auto_import_mapped_files: true,
         m3u_hash_key: [],
+        default_output_format: 'mpegts',
+        hdhr_output_profile_id: null,
       });
     });
 
-    it('should return boolean true for auto-import-mapped-files', () => {
+    it('should return null for hdhr_output_profile_id', () => {
       const result =
         StreamSettingsFormUtils.getStreamSettingsFormInitialValues();
 
-      expect(result['auto_import_mapped_files']).toBe(true);
-      expect(typeof result['auto_import_mapped_files']).toBe('boolean');
+      expect(result['hdhr_output_profile_id']).toBeNull();
     });
 
     it('should return empty array for m3u-hash-key', () => {
@@ -68,7 +67,6 @@ describe('StreamSettingsFormUtils', () => {
       expect(Object.keys(result)).toEqual([
         'default_user_agent',
         'default_stream_profile',
-        'preferred_region',
       ]);
     });
 
@@ -84,10 +82,10 @@ describe('StreamSettingsFormUtils', () => {
       expect(isNotEmpty).toHaveBeenCalledWith('Select a stream profile');
     });
 
-    it('should use isNotEmpty validator for preferred_region', () => {
-      StreamSettingsFormUtils.getStreamSettingsFormValidation();
+    it('should not include validation for preferred_region', () => {
+      const result = StreamSettingsFormUtils.getStreamSettingsFormValidation();
 
-      expect(isNotEmpty).toHaveBeenCalledWith('Select a region');
+      expect(result).not.toHaveProperty('preferred_region');
     });
 
     it('should not include validation for auto-import-mapped-files', () => {
@@ -107,7 +105,7 @@ describe('StreamSettingsFormUtils', () => {
 
       expect(result['default_user_agent']).toBe('Select a user agent');
       expect(result['default_stream_profile']).toBe('Select a stream profile');
-      expect(result['preferred_region']).toBe('Select a region');
+      expect(result).not.toHaveProperty('preferred_region');
     });
   });
 });

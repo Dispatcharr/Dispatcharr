@@ -3,6 +3,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import usePlaylistsStore from '../../store/playlists.jsx';
 import useSettingsStore from '../../store/settings.jsx';
 import useUsersStore from '../../store/users.jsx';
+import useOutputProfilesStore from '../../store/outputProfiles.jsx';
 import {
   ActionIcon,
   Badge,
@@ -54,6 +55,7 @@ import {
   switchStream,
 } from '../../utils/cards/StreamConnectionCardUtils.js';
 import useVideoStore from '../../store/useVideoStore';
+import { buildLiveStreamUrl } from '../../utils/components/FloatingVideoUtils.js';
 
 const formatProgramTime = (seconds) => {
   const absSeconds = Math.abs(seconds);
@@ -454,9 +456,19 @@ const StreamConnectionCard = ({
       actions: renderBodyCell,
     },
     getExpandedRowHeight: (row) => {
-      return 20 + 28 * row.original.streams.length;
+      return (
+        20 +
+        28 * row.original.streams.length +
+        (row.original.output_format ? 28 : 0) +
+        (row.original.output_profile_id ? 28 : 0)
+      );
     },
     expandedRowRenderer: ({ row }) => {
+      const outputProfileId = row.original.output_profile_id;
+      const outputProfiles = useOutputProfilesStore.getState().profiles;
+      const outputProfileName = outputProfileId
+        ? (outputProfiles.find((p) => p.id === outputProfileId)?.name ?? null)
+        : null;
       return (
         <Box p="xs">
           <Group spacing="xs" align="flex-start">
@@ -465,6 +477,22 @@ const StreamConnectionCard = ({
             </Text>
             <Text size="xs">{row.original.user_agent || 'Unknown'}</Text>
           </Group>
+          {row.original.output_format && (
+            <Group spacing="xs" align="flex-start" mt={4}>
+              <Text size="xs" fw={500} color="dimmed">
+                Container:
+              </Text>
+              <Text size="xs">{row.original.output_format}</Text>
+            </Group>
+          )}
+          {outputProfileName && (
+            <Group spacing="xs" align="flex-start" mt={4}>
+              <Text size="xs" fw={500} color="dimmed">
+                Output Profile:
+              </Text>
+              <Text size="xs">{outputProfileName}</Text>
+            </Group>
+          )}
         </Box>
       );
     },
@@ -531,7 +559,7 @@ const StreamConnectionCard = ({
     const actualChannel = channels[channelDbId];
     if (!actualChannel?.uuid) return;
 
-    const uri = `/proxy/ts/stream/${actualChannel.uuid}`;
+    const uri = buildLiveStreamUrl(`/proxy/ts/stream/${actualChannel.uuid}`);
     let url = `${window.location.protocol}//${window.location.host}${uri}`;
     if (env_mode === 'dev') {
       url = `${window.location.protocol}//${window.location.hostname}:5656${uri}`;
