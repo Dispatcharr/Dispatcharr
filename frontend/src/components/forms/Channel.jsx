@@ -931,7 +931,10 @@ const ChannelForm = ({ channel: channelProp = null, isOpen, onClose }) => {
                     label="Hidden"
                     checked={watch('hidden_from_output')}
                     onChange={(event) =>
-                      setValue('hidden_from_output', event.currentTarget.checked)
+                      setValue(
+                        'hidden_from_output',
+                        event.currentTarget.checked
+                      )
                     }
                     size="md"
                   />

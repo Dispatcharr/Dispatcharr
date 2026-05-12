@@ -1,21 +1,24 @@
 // Modal.js
 import React, { useEffect } from 'react';
-import API from '../../api';
 import {
-  TextInput,
+  Box,
   Button,
-  Modal,
   Flex,
-  Select,
   Group,
+  Modal,
+  Select,
   Stack,
   Switch,
-  Box,
+  TextInput,
 } from '@mantine/core';
 import { useForm } from '@mantine/form';
 import { M3U_FILTER_TYPES } from '../../constants';
 import usePlaylistsStore from '../../store/playlists';
 import { setCustomProperty } from '../../utils';
+import {
+  addM3UFilter,
+  updateM3UFilter,
+} from '../../utils/forms/M3uFilterUtils.js';
 
 const M3UFilter = ({ filter = null, m3u, isOpen, onClose }) => {
   const fetchPlaylist = usePlaylistsStore((s) => s.fetchPlaylist);
@@ -59,9 +62,9 @@ const M3UFilter = ({ filter = null, m3u, isOpen, onClose }) => {
     if (!filter) {
       // By default, new rule will go at the end
       values.order = m3u.filters.length;
-      await API.addM3UFilter(m3u.id, values);
+      await addM3UFilter(m3u, values);
     } else {
-      await API.updateM3UFilter(m3u.id, filter.id, values);
+      await updateM3UFilter(m3u, filter, values);
     }
 
     const updatedPlaylist = await fetchPlaylist(m3u.id);

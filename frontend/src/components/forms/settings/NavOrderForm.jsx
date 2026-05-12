@@ -1,12 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import {
-  Box,
-  Button,
-  Text,
-  Group,
-  ActionIcon,
-  Stack,
-} from '@mantine/core';
+import { Box, Button, Text, Group, ActionIcon, Stack } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import { GripVertical, Eye, EyeOff } from 'lucide-react';
 import {
@@ -36,7 +29,14 @@ import {
 import { USER_LEVELS } from '../../../constants';
 
 const DraggableNavItem = ({ item, isHidden, canHide, onToggleVisibility }) => {
-  const { transform, transition, setNodeRef, isDragging, attributes, listeners } = useSortable({
+  const {
+    transform,
+    transition,
+    setNodeRef,
+    isDragging,
+    attributes,
+    listeners,
+  } = useSortable({
     id: item.id,
   });
 
@@ -73,7 +73,9 @@ const DraggableNavItem = ({ item, isHidden, canHide, onToggleVisibility }) => {
           >
             <GripVertical size={16} color="#888" />
           </ActionIcon>
-          {IconComponent && <IconComponent size={18} color={isHidden ? '#666' : '#ccc'} />}
+          {IconComponent && (
+            <IconComponent size={18} color={isHidden ? '#666' : '#ccc'} />
+          )}
           <Text size="sm" c={isHidden ? 'dimmed' : 'gray.3'}>
             {item.label}
           </Text>
@@ -140,45 +142,48 @@ const NavOrderForm = ({ active }) => {
   }, []);
 
   // Debounced save function
-  const debouncedSave = useCallback(async (newOrder) => {
-    // Clear any pending save
-    if (saveTimeoutRef.current) {
-      clearTimeout(saveTimeoutRef.current);
-    }
-
-    // Store the pending order
-    pendingOrderRef.current = newOrder;
-
-    // Schedule save after 800ms of inactivity
-    saveTimeoutRef.current = setTimeout(async () => {
-      const orderToSave = pendingOrderRef.current;
-      if (!orderToSave) return;
-
-      setIsSaving(true);
-      try {
-        await setNavOrder(orderToSave);
-        notifications.show({
-          title: 'Navigation',
-          message: 'Order saved successfully',
-          color: 'green',
-          autoClose: 2000,
-        });
-      } catch {
-        // Revert on failure
-        const savedOrder = getNavOrder();
-        const orderedItems = getOrderedNavItems(savedOrder, isAdmin);
-        setItems(orderedItems);
-        notifications.show({
-          title: 'Error',
-          message: 'Failed to save navigation order',
-          color: 'red',
-        });
-      } finally {
-        setIsSaving(false);
-        pendingOrderRef.current = null;
+  const debouncedSave = useCallback(
+    async (newOrder) => {
+      // Clear any pending save
+      if (saveTimeoutRef.current) {
+        clearTimeout(saveTimeoutRef.current);
       }
-    }, 800);
-  }, [setNavOrder, getNavOrder, isAdmin]);
+
+      // Store the pending order
+      pendingOrderRef.current = newOrder;
+
+      // Schedule save after 800ms of inactivity
+      saveTimeoutRef.current = setTimeout(async () => {
+        const orderToSave = pendingOrderRef.current;
+        if (!orderToSave) return;
+
+        setIsSaving(true);
+        try {
+          await setNavOrder(orderToSave);
+          notifications.show({
+            title: 'Navigation',
+            message: 'Order saved successfully',
+            color: 'green',
+            autoClose: 2000,
+          });
+        } catch {
+          // Revert on failure
+          const savedOrder = getNavOrder();
+          const orderedItems = getOrderedNavItems(savedOrder, isAdmin);
+          setItems(orderedItems);
+          notifications.show({
+            title: 'Error',
+            message: 'Failed to save navigation order',
+            color: 'red',
+          });
+        } finally {
+          setIsSaving(false);
+          pendingOrderRef.current = null;
+        }
+      }, 800);
+    },
+    [setNavOrder, getNavOrder, isAdmin]
+  );
 
   const handleDragEnd = ({ active, over }) => {
     if (!over || active.id === over.id) return;
@@ -196,23 +201,26 @@ const NavOrderForm = ({ active }) => {
   };
 
   // Wrapped visibility toggle with error handling
-  const handleToggleVisibility = useCallback(async (itemId) => {
-    try {
-      await toggleNavVisibility(itemId);
-      notifications.show({
-        title: 'Navigation',
-        message: 'Visibility updated',
-        color: 'green',
-        autoClose: 2000,
-      });
-    } catch {
-      notifications.show({
-        title: 'Error',
-        message: 'Failed to update visibility',
-        color: 'red',
-      });
-    }
-  }, [toggleNavVisibility]);
+  const handleToggleVisibility = useCallback(
+    async (itemId) => {
+      try {
+        await toggleNavVisibility(itemId);
+        notifications.show({
+          title: 'Navigation',
+          message: 'Visibility updated',
+          color: 'green',
+          autoClose: 2000,
+        });
+      } catch {
+        notifications.show({
+          title: 'Error',
+          message: 'Failed to update visibility',
+          color: 'red',
+        });
+      }
+    },
+    [toggleNavVisibility]
+  );
 
   const handleReset = async () => {
     // Cancel any pending debounced save

@@ -14,7 +14,13 @@ import {
   getNetworkAccessDefaults,
 } from '../../../utils/forms/settings/NetworkAccessFormUtils.js';
 
-const toTags = (str) => (str ? str.split(',').map((s) => s.trim()).filter(Boolean) : []);
+const toTags = (str) =>
+  str
+    ? str
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean)
+    : [];
 const toStr = (tags) => (tags || []).join(',');
 
 const NetworkAccessForm = React.memo(({ active }) => {
@@ -116,9 +122,14 @@ const NetworkAccessForm = React.memo(({ active }) => {
   const saveNetworkAccess = async () => {
     setSaved(false);
     setSaving(true);
-    const values = pendingSaveValuesRef.current || Object.fromEntries(
-      Object.entries(networkAccessForm.getValues()).map(([k, v]) => [k, toStr(v)])
-    );
+    const values =
+      pendingSaveValuesRef.current ||
+      Object.fromEntries(
+        Object.entries(networkAccessForm.getValues()).map(([k, v]) => [
+          k,
+          toStr(v),
+        ])
+      );
     try {
       await updateSetting({
         ...settings['network_access'],

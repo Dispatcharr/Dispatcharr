@@ -1,45 +1,36 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useForm } from 'react-hook-form';
-import { yupResolver } from '@hookform/resolvers/yup';
-import * as Yup from 'yup';
 import {
-  Modal,
-  TextInput,
-  Button,
-  Group,
-  Stack,
-  Image,
-  Text,
-  Center,
   Box,
+  Button,
+  Center,
   Divider,
+  Group,
+  Image,
+  Modal,
+  Stack,
+  Text,
+  TextInput,
 } from '@mantine/core';
-import { Dropzone } from '@mantine/dropzone';
-import { Upload, FileImage, X } from 'lucide-react';
-import { notifications } from '@mantine/notifications';
-import API from '../../api';
-
-const schema = Yup.object({
-  name: Yup.string().required('Name is required'),
-  url: Yup.string()
-    .required('URL is required')
-    .test(
-      'valid-url-or-path',
-      'Must be a valid URL or local file path',
-      (value) => {
-        if (!value) return false;
-        // Allow local file paths starting with /data/logos/
-        if (value.startsWith('/data/logos/')) return true;
-        // Allow valid URLs
-        try {
-          new URL(value);
-          return true;
-        } catch {
-          return false;
-        }
-      }
-    ),
-});
+import {
+  Dropzone,
+  DropzoneAccept,
+  DropzoneIdle,
+  DropzoneReject,
+} from '@mantine/dropzone';
+import { FileImage, Upload, X } from 'lucide-react';
+import { showNotification } from '../../utils/notificationUtils.js';
+import {
+  createLogo,
+  getFilenameWithoutExtension,
+  getResolver,
+  getUpdateLogoErrorMessage,
+  getUploadErrorMessage,
+  releaseUrl,
+  updateLogo,
+  uploadLogo,
+  validateFileSize,
+} from '../../utils/forms/LogoUtils.js';
 
 const LogoForm = ({ logo = null, isOpen, onClose, onSuccess }) => {
   const [logoPreview, setLogoPreview] = useState(null);
@@ -63,7 +54,7 @@ const LogoForm = ({ logo = null, isOpen, onClose, onSuccess }) => {
     watch,
   } = useForm({
     defaultValues,
-    resolver: yupResolver(schema),
+    resolver: getResolver(),
   });
 
   const onSubmit = async (values) => {
@@ -74,27 +65,14 @@ const LogoForm = ({ logo = null, isOpen, onClose, onSuccess }) => {
       // If we have a selected file, upload it first
       if (selectedFile) {
         try {
-          uploadResponse = await API.uploadLogo(selectedFile, values.name);
+          uploadResponse = await uploadLogo(selectedFile, values);
           // Use the uploaded file data instead of form values
           values.name = uploadResponse.name;
           values.url = uploadResponse.url;
         } catch (uploadError) {
-          let errorMessage = 'Failed to upload logo file';
-
-          if (
-            uploadError.code === 'NETWORK_ERROR' ||
-            uploadError.message?.includes('timeout')
-          ) {
-            errorMessage = 'Upload timed out. Please try again.';
-          } else if (uploadError.status === 413) {
-            errorMessage = 'File too large. Please choose a smaller file.';
-          } else if (uploadError.body?.error) {
-            errorMessage = uploadError.body.error;
-          }
-
-          notifications.show({
+          showNotification({
             title: 'Upload Error',
-            message: errorMessage,
+            message: getUploadErrorMessage(uploadError),
             color: 'red',
           });
           return; // Don't proceed with creation if upload fails
@@ -104,8 +82,8 @@ const LogoForm = ({ logo = null, isOpen, onClose, onSuccess }) => {
       // Now create or update the logo with the final values
       // Only proceed if we don't already have a logo from file upload
       if (logo) {
-        const updatedLogo = await API.updateLogo(logo.id, values);
-        notifications.show({
+        const updatedLogo = await updateLogo(logo, values);
+        showNotification({
           title: 'Success',
           message: 'Logo updated successfully',
           color: 'green',
@@ -114,8 +92,8 @@ const LogoForm = ({ logo = null, isOpen, onClose, onSuccess }) => {
       } else if (!selectedFile) {
         // Only create a new logo entry if we're not uploading a file
         // (file upload already created the logo entry)
-        const newLogo = await API.createLogo(values);
-        notifications.show({
+        const newLogo = await createLogo(values);
+        showNotification({
           title: 'Success',
           message: 'Logo created successfully',
           color: 'green',
@@ -123,7 +101,7 @@ const LogoForm = ({ logo = null, isOpen, onClose, onSuccess }) => {
         onSuccess?.({ type: 'create', logo: newLogo }); // Call onSuccess for creates
       } else {
         // File was uploaded and logo was already created
-        notifications.show({
+        showNotification({
           title: 'Success',
           message: 'Logo uploaded successfully',
           color: 'green',
@@ -132,23 +110,9 @@ const LogoForm = ({ logo = null, isOpen, onClose, onSuccess }) => {
       }
       onClose();
     } catch (error) {
-      let errorMessage = logo
-        ? 'Failed to update logo'
-        : 'Failed to create logo';
-
-      // Handle specific timeout errors
-      if (
-        error.code === 'NETWORK_ERROR' ||
-        error.message?.includes('timeout')
-      ) {
-        errorMessage = 'Request timed out. Please try again.';
-      } else if (error.response?.data?.error) {
-        errorMessage = error.response.data.error;
-      }
-
-      notifications.show({
+      showNotification({
         title: 'Error',
-        message: errorMessage,
+        message: getUpdateLogoErrorMessage(logo, error),
         color: 'red',
       });
     } finally {
@@ -163,14 +127,17 @@ const LogoForm = ({ logo = null, isOpen, onClose, onSuccess }) => {
   }, [defaultValues, logo, reset]);
 
   const handleFileSelect = (files) => {
-    if (files.length === 0) return;
+    if (files.length === 0) {
+      console.log('No files selected');
+      return;
+    }
 
     const file = files[0];
 
     // Validate file size on frontend first
-    if (file.size > 5 * 1024 * 1024) {
+    if (!validateFileSize(file)) {
       // 5MB
-      notifications.show({
+      showNotification({
         title: 'Error',
         message: 'File too large. Maximum size is 5MB.',
         color: 'red',
@@ -188,8 +155,7 @@ const LogoForm = ({ logo = null, isOpen, onClose, onSuccess }) => {
     // Auto-fill the name field if empty
     const currentName = watch('name');
     if (!currentName) {
-      const nameWithoutExtension = file.name.replace(/\.[^/.]+$/, '');
-      setValue('name', nameWithoutExtension);
+      setValue('name', getFilenameWithoutExtension(file.name));
     }
 
     // Set a placeholder URL (will be replaced after upload)
@@ -204,9 +170,7 @@ const LogoForm = ({ logo = null, isOpen, onClose, onSuccess }) => {
     if (selectedFile) {
       setSelectedFile(null);
       // Revoke the object URL to free memory
-      if (logoPreview && logoPreview.startsWith('blob:')) {
-        URL.revokeObjectURL(logoPreview);
-      }
+      releaseUrl(logoPreview);
     }
 
     // Update preview for remote URLs
@@ -224,7 +188,7 @@ const LogoForm = ({ logo = null, isOpen, onClose, onSuccess }) => {
         const url = new URL(urlValue);
         const pathname = url.pathname;
         const filename = pathname.substring(pathname.lastIndexOf('/') + 1);
-        const nameWithoutExtension = filename.replace(/\.[^/.]+$/, '');
+        const nameWithoutExtension = getFilenameWithoutExtension(filename);
         if (nameWithoutExtension) {
           setValue('name', nameWithoutExtension);
         }
@@ -237,11 +201,7 @@ const LogoForm = ({ logo = null, isOpen, onClose, onSuccess }) => {
 
   // Clean up object URLs when component unmounts or preview changes
   useEffect(() => {
-    return () => {
-      if (logoPreview && logoPreview.startsWith('blob:')) {
-        URL.revokeObjectURL(logoPreview);
-      }
-    };
+    return () => releaseUrl(logoPreview);
   }, [logoPreview]);
 
   return (
@@ -317,15 +277,15 @@ const LogoForm = ({ logo = null, isOpen, onClose, onSuccess }) => {
                 mih={120}
                 style={{ pointerEvents: 'none' }}
               >
-                <Dropzone.Accept>
+                <DropzoneAccept>
                   <Upload size={50} color="green" />
-                </Dropzone.Accept>
-                <Dropzone.Reject>
+                </DropzoneAccept>
+                <DropzoneReject>
                   <X size={50} color="red" />
-                </Dropzone.Reject>
-                <Dropzone.Idle>
+                </DropzoneReject>
+                <DropzoneIdle>
                   <FileImage size={50} />
-                </Dropzone.Idle>
+                </DropzoneIdle>
 
                 <div>
                   <Text size="xl" inline>

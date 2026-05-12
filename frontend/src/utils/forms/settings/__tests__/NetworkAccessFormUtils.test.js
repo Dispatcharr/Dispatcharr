@@ -109,9 +109,13 @@ describe('NetworkAccessFormUtils', () => {
         NetworkAccessFormUtils.getNetworkAccessFormValidation();
       const validator = validation['network-access-admin'];
 
-      expect(validator(['192.168.1.256.1/24'])).toBe('Invalid IP address or CIDR range');
+      expect(validator(['192.168.1.256.1/24'])).toBe(
+        'Invalid IP address or CIDR range'
+      );
       expect(validator(['invalid'])).toBe('Invalid IP address or CIDR range');
-      expect(validator(['192.168.1.0/256'])).toBe('Invalid IP address or CIDR range');
+      expect(validator(['192.168.1.0/256'])).toBe(
+        'Invalid IP address or CIDR range'
+      );
     });
 
     it('should return error when any entry in the list is invalid', () => {
@@ -119,8 +123,12 @@ describe('NetworkAccessFormUtils', () => {
         NetworkAccessFormUtils.getNetworkAccessFormValidation();
       const validator = validation['network-access-admin'];
 
-      expect(validator(['192.168.1.0/24', 'invalid'])).toBe('Invalid IP address or CIDR range');
-      expect(validator(['invalid', '192.168.1.0/24'])).toBe('Invalid IP address or CIDR range');
+      expect(validator(['192.168.1.0/24', 'invalid'])).toBe(
+        'Invalid IP address or CIDR range'
+      );
+      expect(validator(['invalid', '192.168.1.0/24'])).toBe(
+        'Invalid IP address or CIDR range'
+      );
       expect(validator(['192.168.1.0/24', '10.0.0.0/8', 'invalid'])).toBe(
         'Invalid IP address or CIDR range'
       );

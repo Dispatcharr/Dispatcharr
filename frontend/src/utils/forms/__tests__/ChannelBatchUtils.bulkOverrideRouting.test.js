@@ -30,7 +30,7 @@ describe('updateChannelsWithOverrideRouting (manual finding #4)', () => {
     await updateChannelsWithOverrideRouting(
       [1, 2],
       { name: 'BulkRename' },
-      channelsById,
+      channelsById
     );
 
     expect(API.bulkUpdateChannels).toHaveBeenCalledTimes(1);
@@ -48,7 +48,7 @@ describe('updateChannelsWithOverrideRouting (manual finding #4)', () => {
     await updateChannelsWithOverrideRouting(
       [1],
       { name: 'ManualRename' },
-      channelsById,
+      channelsById
     );
     const body = API.bulkUpdateChannels.mock.calls[0][0];
     expect(body).toEqual([{ id: 1, name: 'ManualRename' }]);
@@ -63,7 +63,7 @@ describe('updateChannelsWithOverrideRouting (manual finding #4)', () => {
     await updateChannelsWithOverrideRouting(
       [1, 2, 3],
       { name: 'Mixed', tvg_id: 'mixed.tvg' },
-      channelsById,
+      channelsById
     );
     const body = API.bulkUpdateChannels.mock.calls[0][0];
     expect(body).toEqual([
@@ -82,7 +82,7 @@ describe('updateChannelsWithOverrideRouting (manual finding #4)', () => {
     await updateChannelsWithOverrideRouting(
       [1],
       { hidden_from_output: true, name: 'Renamed' },
-      channelsById,
+      channelsById
     );
     const body = API.bulkUpdateChannels.mock.calls[0][0];
     expect(body).toEqual([
@@ -97,7 +97,7 @@ describe('updateChannelsWithOverrideRouting (manual finding #4)', () => {
     await updateChannelsWithOverrideRouting(
       [99],
       { name: 'Defensive' },
-      {}, // empty lookup
+      {} // empty lookup
     );
     const body = API.bulkUpdateChannels.mock.calls[0][0];
     expect(body).toEqual([{ id: 99, name: 'Defensive' }]);
