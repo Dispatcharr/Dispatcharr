@@ -221,7 +221,7 @@ const SettingsPage = () => {
               </AccordionItem>
 
               <AccordionItem value="timeshift-settings">
-                <AccordionControl>Timeshift (XC catch-up)</AccordionControl>
+                <AccordionControl>Timeshift</AccordionControl>
                 <AccordionPanel>
                   <ErrorBoundary>
                     <Suspense fallback={<Loader />}>

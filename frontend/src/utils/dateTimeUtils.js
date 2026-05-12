@@ -266,7 +266,11 @@ const formatOffset = (minutes) => {
 };
 
 export const buildTimeZoneOptions = (preferredZone) => {
-  const zones = getSupportedTimeZones();
+  // Some browsers / runtimes return an IANA list that does not include the
+  // plain `UTC` synonym (only `Etc/UTC`), which breaks the form's default
+  // value and prevents the user from selecting UTC. Dedupe-prepend ensures
+  // UTC is always reachable.
+  const zones = Array.from(new Set(['UTC', ...getSupportedTimeZones()]));
   const referenceYear = new Date().getUTCFullYear();
   const janDate = new Date(Date.UTC(referenceYear, 0, 1, 12, 0, 0));
   const julDate = new Date(Date.UTC(referenceYear, 6, 1, 12, 0, 0));
