@@ -191,7 +191,10 @@ export const buildSubmitValues = (
     values.is_adult = values.is_adult === 'true';
   }
 
-  if (values.hidden_from_output === '-1' || values.hidden_from_output === undefined) {
+  if (
+    values.hidden_from_output === '-1' ||
+    values.hidden_from_output === undefined
+  ) {
     delete values.hidden_from_output;
   } else {
     values.hidden_from_output = values.hidden_from_output === 'true';

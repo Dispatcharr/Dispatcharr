@@ -243,9 +243,8 @@ class CoreSettings(models.Model):
             "default_user_agent": None,
             "default_stream_profile": None,
             "m3u_hash_key": "",
-            "preferred_region": None,
-            "auto_import_mapped_files": None,
             "default_output_format": "mpegts",
+            "hdhr_output_profile_id": None,
         })
 
     @classmethod
@@ -266,11 +265,11 @@ class CoreSettings(models.Model):
 
     @classmethod
     def get_preferred_region(cls):
-        return cls.get_stream_settings().get("preferred_region")
+        return cls.get_system_settings().get("preferred_region")
 
     @classmethod
     def get_auto_import_mapped_files(cls):
-        return cls.get_stream_settings().get("auto_import_mapped_files")
+        return cls.get_system_settings().get("auto_import_mapped_files")
 
     # EPG Settings
     @classmethod
@@ -394,6 +393,8 @@ class CoreSettings(models.Model):
         return cls._get_group(SYSTEM_SETTINGS_KEY, {
             "time_zone": getattr(settings, "TIME_ZONE", "UTC") or "UTC",
             "max_system_events": 100,
+            "preferred_region": None,
+            "auto_import_mapped_files": True,
         })
 
     @classmethod
@@ -405,6 +406,14 @@ class CoreSettings(models.Model):
         value = (tz_name or "").strip() or getattr(settings, "TIME_ZONE", "UTC") or "UTC"
         cls._update_group(SYSTEM_SETTINGS_KEY, "System Settings", {"time_zone": value})
         return value
+
+    @classmethod
+    def get_hdhr_output_profile_id(cls):
+        raw = cls.get_stream_settings().get("hdhr_output_profile_id")
+        try:
+            return int(raw) if raw is not None else None
+        except (ValueError, TypeError):
+            return None
 
     @classmethod
     def get_user_limits_settings(cls):

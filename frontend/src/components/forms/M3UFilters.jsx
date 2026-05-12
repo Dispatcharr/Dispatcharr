@@ -1,19 +1,18 @@
-import React, { useState, useEffect } from 'react';
-import API from '../../api';
+import React, { useEffect, useState } from 'react';
 import usePlaylistsStore from '../../store/playlists';
 import ConfirmationDialog from '../ConfirmationDialog';
 import useWarningsStore from '../../store/warnings';
 import {
-  Flex,
-  Modal,
-  Button,
-  Box,
   ActionIcon,
+  Alert,
+  Box,
+  Button,
+  Center,
+  Flex,
+  Group,
+  Modal,
   Text,
   useMantineTheme,
-  Center,
-  Group,
-  Alert,
 } from '@mantine/core';
 import { GripHorizontal, Info, SquareMinus, SquarePen } from 'lucide-react';
 import M3UFilter from './M3UFilter';
@@ -36,6 +35,10 @@ import {
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import { restrictToVerticalAxis } from '@dnd-kit/modifiers';
+import {
+  deleteM3UFilter,
+  updateM3UFilter,
+} from '../../utils/forms/M3uFilterUtils.js';
 
 const RowDragHandleCell = ({ rowId }) => {
   const { attributes, listeners, setNodeRef } = useDraggable({
@@ -143,8 +146,6 @@ const DraggableRow = ({ filter, editFilter, onDelete }) => {
 };
 
 const M3UFilters = ({ playlist, isOpen, onClose }) => {
-  const theme = useMantineTheme();
-
   const [editorOpen, setEditorOpen] = useState(false);
   const [filter, setFilter] = useState(null);
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
@@ -195,7 +196,7 @@ const M3UFilters = ({ playlist, isOpen, onClose }) => {
     if (!playlist || !playlist.id) return;
     setDeleting(true);
     try {
-      await API.deleteM3UFilter(playlist.id, id);
+      await deleteM3UFilter(playlist, id);
       fetchPlaylist(playlist.id);
       setFilters(filters.filter((f) => f.id !== id));
     } catch (error) {
@@ -239,7 +240,7 @@ const M3UFilters = ({ playlist, isOpen, onClose }) => {
     try {
       await Promise.all(
         changedFilters.map((f) =>
-          API.updateM3UFilter(playlist.id, f.id, { ...f, order: f.newOrder })
+          updateM3UFilter(playlist, f, { ...f, order: f.newOrder })
         )
       );
       await fetchPlaylist(playlist.id);
@@ -330,8 +331,8 @@ const M3UFilters = ({ playlist, isOpen, onClose }) => {
             <div style={{ whiteSpace: 'pre-line' }}>
               {`Are you sure you want to delete the following filter?
 
-Type: ${filterToDelete.type}
-Patter: ${filterToDelete.regex_pattern}
+Type: ${filterToDelete.filter_type}
+Pattern: ${filterToDelete.regex_pattern}
 
 This action cannot be undone.`}
             </div>

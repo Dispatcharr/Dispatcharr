@@ -1,20 +1,13 @@
 // Modal.js
 import React from 'react';
-import API from '../../api';
-import { Flex, TextInput, Button, Modal, Alert } from '@mantine/core';
+import { Alert, Button, Flex, Modal, TextInput } from '@mantine/core';
 import { isNotEmpty, useForm } from '@mantine/form';
 import useChannelsStore from '../../store/channels';
 import { showNotification } from '../../utils/notificationUtils.js';
-
-const updateChannelGroup = (channelGroup, values) => {
-  return API.updateChannelGroup({
-    id: channelGroup.id,
-    ...values,
-  });
-};
-const addChannelGroup = (values) => {
-  return API.addChannelGroup(values);
-};
+import {
+  addChannelGroup,
+  updateChannelGroup,
+} from '../../utils/forms/ChannelGroupUtils.js';
 
 const ChannelGroup = ({ channelGroup = null, isOpen, onClose }) => {
   const canEditChannelGroup = useChannelsStore((s) => s.canEditChannelGroup);

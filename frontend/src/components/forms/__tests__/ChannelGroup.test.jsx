@@ -1,17 +1,15 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import ChannelGroup from '../ChannelGroup';
-import API from '../../../api';
 import useChannelsStore from '../../../store/channels';
 import { showNotification } from '../../../utils/notificationUtils.js';
 import { useForm } from '@mantine/form';
+import * as API from '../../../utils/forms/ChannelGroupUtils.js';
 
 // ── API mock ───────────────────────────────────────────────────────────────────
-vi.mock('../../../api', () => ({
-  default: {
-    addChannelGroup: vi.fn(),
-    updateChannelGroup: vi.fn(),
-  },
+vi.mock('../../../utils/forms/ChannelGroupUtils.js', () => ({
+  addChannelGroup: vi.fn(),
+  updateChannelGroup: vi.fn(),
 }));
 
 // ── Store mock ─────────────────────────────────────────────────────────────────
@@ -265,8 +263,7 @@ describe('ChannelGroup', () => {
       fireEvent.submit(screen.getByTestId('modal').querySelector('form'));
 
       await waitFor(() => {
-        expect(API.updateChannelGroup).toHaveBeenCalledWith({
-          id: 1,
+        expect(API.updateChannelGroup).toHaveBeenCalledWith(group, {
           name: 'Sports Updated',
         });
       });

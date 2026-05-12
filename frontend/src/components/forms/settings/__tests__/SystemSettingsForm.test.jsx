@@ -5,6 +5,14 @@ import SystemSettingsForm from '../SystemSettingsForm';
 // ── Store mocks ────────────────────────────────────────────────────────────────
 vi.mock('../../../../store/settings.jsx', () => ({ default: vi.fn() }));
 
+// ── Constants mock ─────────────────────────────────────────────────────────────
+vi.mock('../../../../constants.js', () => ({
+  REGION_CHOICES: [
+    { label: 'United States', value: 'US' },
+    { label: 'Europe', value: 'EU' },
+  ],
+}));
+
 // ── Utility mocks ──────────────────────────────────────────────────────────────
 vi.mock('../../../../utils/pages/SettingsUtils.js', () => ({
   getChangedSettings: vi.fn(),
@@ -52,6 +60,23 @@ vi.mock('@mantine/core', () => ({
     </div>
   ),
   Stack: ({ children }) => <div>{children}</div>,
+  Group: ({ children }) => <div>{children}</div>,
+  Select: ({ label, id, data, description }) => (
+    <div>
+      <label htmlFor={id}>{label}</label>
+      {description && <p>{description}</p>}
+      <select data-testid={id} id={id} aria-label={label}>
+        {data?.map((opt) => (
+          <option key={opt.value} value={opt.value}>
+            {opt.label}
+          </option>
+        ))}
+      </select>
+    </div>
+  ),
+  Switch: ({ id }) => (
+    <input data-testid={id} id={id} type="checkbox" onChange={() => {}} />
+  ),
   Text: ({ children }) => <span>{children}</span>,
   Divider: () => <hr />,
 }));
@@ -85,7 +110,11 @@ const setupMocks = ({
   settings = makeSettings(),
   environment = makeEnvironment(),
 } = {}) => {
-  const formValues = { max_system_events: settings?.max_system_events ?? 100 };
+  const formValues = {
+    max_system_events: settings?.max_system_events ?? 100,
+    preferred_region: '',
+    auto_import_mapped_files: true,
+  };
 
   const formMock = {
     values: formValues,
@@ -93,6 +122,12 @@ const setupMocks = ({
     setValues: vi.fn(),
     setFieldValue: vi.fn((key, value) => {
       formMock.values[key] = value;
+    }),
+    getInputProps: vi.fn((field, opts) => {
+      if (opts?.type === 'checkbox') {
+        return { checked: formValues[field] ?? false, onChange: vi.fn() };
+      }
+      return { value: formValues[field] ?? '', onChange: vi.fn() };
     }),
     onSubmit: vi.fn((handler) => handler),
     submitting: false,
@@ -146,16 +181,29 @@ describe('SystemSettingsForm', () => {
       render(<SystemSettingsForm active={true} />);
       expect(
         screen.getByText(
-          'Number of events to retain (minimum: 10, maximum: 1000)'
+          'Number of events to retain (minimum: 10, maximum: 1000). Events are displayed on the Stats page.'
         )
       ).toBeInTheDocument();
     });
 
-    it('renders descriptive text about system events', () => {
+    it('renders the Preferred Region select', () => {
+      setupMocks();
+      render(<SystemSettingsForm active={true} />);
+      expect(screen.getByLabelText('Preferred Region')).toBeInTheDocument();
+    });
+
+    it('populates region options from REGION_CHOICES', () => {
+      setupMocks();
+      render(<SystemSettingsForm active={true} />);
+      expect(screen.getByText('United States')).toBeInTheDocument();
+      expect(screen.getByText('Europe')).toBeInTheDocument();
+    });
+
+    it('renders the Auto-Import Mapped Files switch', () => {
       setupMocks();
       render(<SystemSettingsForm active={true} />);
       expect(
-        screen.getByText(/Configure how many system events/)
+        screen.getByTestId('auto_import_mapped_files')
       ).toBeInTheDocument();
     });
 
@@ -194,6 +242,12 @@ describe('SystemSettingsForm', () => {
         getValues: vi.fn().mockReturnValue(formValues),
         setValues: vi.fn(),
         setFieldValue: vi.fn(),
+        getInputProps: vi.fn((field, opts) => {
+          if (opts?.type === 'checkbox') {
+            return { checked: formValues[field] ?? false, onChange: vi.fn() };
+          }
+          return { value: formValues[field] ?? '', onChange: vi.fn() };
+        }),
         onSubmit: vi.fn((handler) => handler),
         submitting: false,
       };
@@ -230,22 +284,34 @@ describe('SystemSettingsForm', () => {
       render(<SystemSettingsForm active={true} />);
       expect(formMock.setValues).toHaveBeenCalledWith({
         max_system_events: 100,
+        preferred_region: '',
+        auto_import_mapped_files: true,
       });
     });
 
     it('does not call parseSettings when settings is null', () => {
+      const nullFormValues = { max_system_events: 100 };
       const formMock = {
-        values: { max_system_events: 100 },
-        getValues: vi.fn().mockReturnValue({ max_system_events: 100 }),
+        values: nullFormValues,
+        getValues: vi.fn().mockReturnValue(nullFormValues),
         setValues: vi.fn(),
         setFieldValue: vi.fn(),
+        getInputProps: vi.fn((field, opts) => {
+          if (opts?.type === 'checkbox') {
+            return {
+              checked: nullFormValues[field] ?? false,
+              onChange: vi.fn(),
+            };
+          }
+          return { value: nullFormValues[field] ?? '', onChange: vi.fn() };
+        }),
         onSubmit: vi.fn((handler) => handler),
         submitting: false,
       };
       vi.mocked(useForm).mockReturnValue(formMock);
-      vi.mocked(getSystemSettingsFormInitialValues).mockReturnValue({
-        max_system_events: 100,
-      });
+      vi.mocked(getSystemSettingsFormInitialValues).mockReturnValue(
+        nullFormValues
+      );
       vi.mocked(useSettingsStore).mockImplementation((sel) =>
         sel({ settings: null, environment: makeEnvironment() })
       );

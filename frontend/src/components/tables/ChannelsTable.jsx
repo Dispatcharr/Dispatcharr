@@ -344,6 +344,7 @@ const ChannelsTable = ({ onReady }) => {
   const [, setIsLoading] = useState(true);
 
   const [hdhrUrl, setHDHRUrl] = useState(hdhrUrlBase);
+  const [hdhrOutputProfileId, setHdhrOutputProfileId] = useState('');
   const [epgUrl, setEPGUrl] = useState(epgUrlBase);
   const [m3uUrl, setM3UUrl] = useState(m3uUrlBase);
 
@@ -795,7 +796,7 @@ const ChannelsTable = ({ onReady }) => {
   };
 
   const copyHDHRUrl = async () => {
-    await copyToClipboard(hdhrUrl, {
+    await copyToClipboard(buildHDHRUrl(), {
       successTitle: 'HDHR URL Copied!',
       successMessage: 'The HDHR URL has been copied to your clipboard.',
     });
@@ -881,6 +882,13 @@ const ChannelsTable = ({ onReady }) => {
     setEPGUrl(`${epgUrlBase}${profileString}`);
     setM3UUrl(`${m3uUrlBase}${profileString}`);
   }, [selectedProfileId, profiles]);
+
+  const buildHDHRUrl = () => {
+    if (!hdhrOutputProfileId) return hdhrUrl;
+    // Insert output_profile segment before the trailing slash (or at end)
+    const base = hdhrUrl.replace(/\/$/, '');
+    return `${base}/output_profile/${hdhrOutputProfileId}`;
+  };
 
   useEffect(() => {
     const startItem = pagination.pageIndex * pagination.pageSize + 1; // +1 to start from 1, not 0
@@ -1307,19 +1315,22 @@ const ChannelsTable = ({ onReady }) => {
                   <Stack
                     gap="sm"
                     style={{
-                      minWidth: 250,
-                      maxWidth: 'min(400px, 80vw)',
+                      minWidth: 300,
+                      maxWidth: 'min(500px, 90vw)',
                       width: 'max-content',
                     }}
+                    onClick={stopPropagation}
+                    onMouseDown={stopPropagation}
                   >
                     <Text size="sm" c="dimmed">
                       Use this URL in HDHomeRun-compatible apps and IPTV
                       clients.
                     </Text>
                     <TextInput
-                      value={hdhrUrl}
+                      value={buildHDHRUrl()}
                       size="sm"
                       readOnly
+                      label="Generated URL"
                       style={{ width: '100%' }}
                       rightSection={
                         <ActionIcon
@@ -1331,6 +1342,19 @@ const ChannelsTable = ({ onReady }) => {
                           <Copy size="16" />
                         </ActionIcon>
                       }
+                    />
+                    <Select
+                      label="Output Profile"
+                      description="Pre-delivery transcode profile. Overrides the system-wide HDHR default."
+                      clearable
+                      searchable
+                      placeholder="System default"
+                      value={hdhrOutputProfileId || null}
+                      onChange={(value) => setHdhrOutputProfileId(value || '')}
+                      comboboxProps={{ withinPortal: false }}
+                      data={outputProfiles
+                        .filter((p) => p.is_active)
+                        .map((p) => ({ value: `${p.id}`, label: p.name }))}
                     />
                   </Stack>
                 </Popover.Dropdown>

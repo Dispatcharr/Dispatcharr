@@ -5,7 +5,10 @@ import NetworkAccessForm from '../NetworkAccessForm';
 // ── Constants mock ─────────────────────────────────────────────────────────────
 vi.mock('../../../../constants.js', () => ({
   NETWORK_ACCESS_OPTIONS: {
-    M3U_EPG: { label: 'M3U / EPG Endpoints', description: 'Limit M3U/EPG access' },
+    M3U_EPG: {
+      label: 'M3U / EPG Endpoints',
+      description: 'Limit M3U/EPG access',
+    },
     STREAMS: { label: 'Stream Endpoints', description: 'Limit stream access' },
     XC_API: { label: 'XC API', description: 'Limit XC API access' },
     UI: { label: 'UI', description: 'Limit UI access' },
@@ -85,7 +88,12 @@ vi.mock('@mantine/core', () => ({
   ),
   TagsInput: ({ label, placeholder, error, ...rest }) => (
     <div>
-      <input aria-label={label} placeholder={placeholder} data-error={error} readOnly />
+      <input
+        aria-label={label}
+        placeholder={placeholder}
+        data-error={error}
+        readOnly
+      />
       {error && <span>{error}</span>}
     </div>
   ),

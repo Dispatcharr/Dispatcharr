@@ -624,6 +624,14 @@ class StreamGenerator:
 
         # If no clients left and we're the owner, schedule shutdown using the config value
         if local_clients == 0 and proxy_server.am_i_owner(self.channel_id):
+            # When output/profile managers are present, remove_client already spawned
+            # handle_client_disconnect which will stop them and then stop the channel.
+            # Spawning a second shutdown greenlet here causes a redundant concurrent
+            # stop_channel call that can race against the first.
+            if (proxy_server.output_managers.get(self.channel_id) or
+                    proxy_server.profile_managers.get(self.channel_id)):
+                return
+
             logger.info(f"No local clients left for channel {self.channel_id}, scheduling shutdown")
 
             def delayed_shutdown():
