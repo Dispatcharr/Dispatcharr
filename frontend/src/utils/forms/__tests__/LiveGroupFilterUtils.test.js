@@ -1,15 +1,23 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
   getEPGs,
-  getSelectedAdvancedOptions,
-  applyAdvancedOptionsChange,
-  getEpgSourceValue,
-  getEpgSourceData,
+  getChannelsInRange,
+  getStreamsRegexPreview,
+  isExpectedOccupantForGroup,
+  rangeFor,
+  abortTimers,
+  getRegexOptions,
+  computeAutoSyncStart,
+  isGroupVisible,
 } from '../LiveGroupFilterUtils.js';
 
 // ── API mock ─────────────────────────────────────────────────────────────────
 vi.mock('../../../api.js', () => ({
-  default: { getEPGs: vi.fn() },
+  default: {
+    getEPGs: vi.fn(),
+    getChannelsInRange: vi.fn(),
+    getStreamsRegexPreview: vi.fn(),
+  },
 }));
 
 import API from '../../../api.js';
@@ -22,9 +30,41 @@ const makeEpgSource = (overrides = {}) => ({
   ...overrides,
 });
 
-describe('LiveGroupFilterUtils', () => {
-  // ── getEPGs ────────────────────────────────────────────────────────────────
+const makeGroup = (overrides = {}) => ({
+  name: 'Group A',
+  enabled: true,
+  auto_channel_sync: true,
+  auto_sync_channel_start: 100,
+  auto_sync_channel_end: 200,
+  custom_properties: {},
+  channel_group: 1,
+  ...overrides,
+});
 
+const makeOccupant = (overrides = {}) => ({
+  auto_created: true,
+  has_channel_number_override: false,
+  channel_group_id: 1,
+  auto_created_by_account_id: 42,
+  ...overrides,
+});
+
+const makePlaylist = (overrides = {}) => ({
+  id: 42,
+  ...overrides,
+});
+
+const makeController = () => {
+  const controller = { signal: {} };
+  return controller;
+};
+
+describe('LiveGroupFilterUtils', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  // ── getEPGs ────────────────────────────────────────────────────────────────
   describe('getEPGs', () => {
     it('delegates to API.getEPGs', () => {
       const result = [makeEpgSource()];
@@ -34,289 +74,425 @@ describe('LiveGroupFilterUtils', () => {
     });
   });
 
-  // ── getSelectedAdvancedOptions ───────────────────────────────────────────────
+  // ── getChannelsInRange ─────────────────────────────────────────────────────
+  describe('getChannelsInRange', () => {
+    it('calls API.getChannelsInRange with start, end, and signal', () => {
+      const controller = makeController();
+      const result = [{ id: 1 }];
+      vi.mocked(API.getChannelsInRange).mockResolvedValue(result);
 
-  describe('getSelectedAdvancedOptions', () => {
-    it('returns empty array when custom_properties is empty', () => {
-      expect(getSelectedAdvancedOptions({})).toEqual([]);
-    });
+      getChannelsInRange(100, 200, controller);
 
-    it('returns empty array when custom_properties is nullish', () => {
-      expect(getSelectedAdvancedOptions(null)).toEqual([]);
-      expect(getSelectedAdvancedOptions(undefined)).toEqual([]);
-    });
-
-    it('detects force_epg via custom_epg_id', () => {
-      expect(getSelectedAdvancedOptions({ custom_epg_id: 5 })).toContain(
-        'force_epg'
-      );
-    });
-
-    it('detects force_epg via force_dummy_epg', () => {
-      expect(getSelectedAdvancedOptions({ force_dummy_epg: true })).toContain(
-        'force_epg'
-      );
-    });
-
-    it('detects force_epg via force_epg_selected', () => {
-      expect(
-        getSelectedAdvancedOptions({ force_epg_selected: true })
-      ).toContain('force_epg');
-    });
-
-    it('detects group_override', () => {
-      expect(getSelectedAdvancedOptions({ group_override: null })).toContain(
-        'group_override'
-      );
-    });
-
-    it('detects name_regex via name_regex_pattern', () => {
-      expect(getSelectedAdvancedOptions({ name_regex_pattern: '' })).toContain(
-        'name_regex'
-      );
-    });
-
-    it('detects name_regex via name_replace_pattern', () => {
-      expect(
-        getSelectedAdvancedOptions({ name_replace_pattern: '' })
-      ).toContain('name_regex');
-    });
-
-    it('detects name_match_regex', () => {
-      expect(getSelectedAdvancedOptions({ name_match_regex: '' })).toContain(
-        'name_match_regex'
-      );
-    });
-
-    it('detects profile_assignment via channel_profile_ids', () => {
-      expect(getSelectedAdvancedOptions({ channel_profile_ids: [] })).toContain(
-        'profile_assignment'
-      );
-    });
-
-    it('detects channel_sort_order', () => {
-      expect(
-        getSelectedAdvancedOptions({ channel_sort_order: 'name' })
-      ).toContain('channel_sort_order');
-    });
-
-    it('detects stream_profile_assignment', () => {
-      expect(getSelectedAdvancedOptions({ stream_profile_id: null })).toContain(
-        'stream_profile_assignment'
-      );
-    });
-
-    it('detects custom_logo', () => {
-      expect(getSelectedAdvancedOptions({ custom_logo_id: null })).toContain(
-        'custom_logo'
-      );
-    });
-
-    it('returns multiple active options', () => {
-      const result = getSelectedAdvancedOptions({
-        name_match_regex: '',
-        channel_sort_order: 'name',
+      expect(API.getChannelsInRange).toHaveBeenCalledWith(100, 200, {
+        signal: controller.signal,
       });
-      expect(result).toContain('name_match_regex');
-      expect(result).toContain('channel_sort_order');
-      expect(result).toHaveLength(2);
+    });
+
+    it('returns the API promise', () => {
+      const controller = makeController();
+      const result = [{ id: 1 }];
+      vi.mocked(API.getChannelsInRange).mockResolvedValue(result);
+
+      expect(getChannelsInRange(100, 200, controller)).resolves.toEqual(result);
     });
   });
 
-  // ── applyAdvancedOptionsChange ───────────────────────────────────────────────
+  // ── getStreamsRegexPreview ─────────────────────────────────────────────────
+  describe('getStreamsRegexPreview', () => {
+    it('calls API with correct params when all values provided', () => {
+      const group = { name: 'Group A' };
+      const controller = makeController();
+      const playlist = makePlaylist();
+      vi.mocked(API.getStreamsRegexPreview).mockResolvedValue([]);
 
-  describe('applyAdvancedOptionsChange', () => {
-    describe('adding options', () => {
-      it('adds force_epg defaults when newly selected', () => {
-        const result = applyAdvancedOptionsChange({}, ['force_epg']);
-        expect(result).toMatchObject({ force_dummy_epg: true });
-      });
+      getStreamsRegexPreview(
+        group,
+        'find',
+        'replace',
+        'match',
+        'exclude',
+        controller,
+        playlist
+      );
 
-      it('adds name_regex defaults when newly selected', () => {
-        const result = applyAdvancedOptionsChange({}, ['name_regex']);
-        expect(result).toMatchObject({
-          name_regex_pattern: '',
-          name_replace_pattern: '',
-        });
-      });
-
-      it('adds channel_sort_order defaults including channel_sort_reverse', () => {
-        const result = applyAdvancedOptionsChange({}, ['channel_sort_order']);
-        expect(result).toMatchObject({
-          channel_sort_order: '',
-          channel_sort_reverse: false,
-        });
-      });
-
-      it('adds profile_assignment defaults', () => {
-        const result = applyAdvancedOptionsChange({}, ['profile_assignment']);
-        expect(result).toMatchObject({ channel_profile_ids: [] });
-      });
-
-      it('adds custom_logo defaults', () => {
-        const result = applyAdvancedOptionsChange({}, ['custom_logo']);
-        expect(result).toMatchObject({ custom_logo_id: null });
-      });
-
-      it('does not overwrite existing keys when option is already active', () => {
-        const prev = { name_match_regex: 'existing' };
-        const result = applyAdvancedOptionsChange(prev, ['name_match_regex']);
-        expect(result.name_match_regex).toBe('existing');
-      });
-
-      it('adds defaults for multiple options at once', () => {
-        const result = applyAdvancedOptionsChange({}, [
-          'name_match_regex',
-          'custom_logo',
-        ]);
-        expect(result).toMatchObject({
-          name_match_regex: '',
-          custom_logo_id: null,
-        });
+      expect(API.getStreamsRegexPreview).toHaveBeenCalledWith('Group A', {
+        find: 'find',
+        replace: 'replace',
+        match: 'match',
+        exclude: 'exclude',
+        limit: 10,
+        signal: controller.signal,
+        m3uAccountId: 42,
       });
     });
 
-    describe('removing options', () => {
-      it('removes force_epg keys when deselected', () => {
-        const prev = {
-          force_dummy_epg: true,
-          custom_epg_id: 3,
-          force_epg_selected: true,
-        };
-        const result = applyAdvancedOptionsChange(prev, []);
-        expect(result).not.toHaveProperty('force_dummy_epg');
-        expect(result).not.toHaveProperty('custom_epg_id');
-        expect(result).not.toHaveProperty('force_epg_selected');
-      });
+    it('omits find/replace when find is falsy', () => {
+      const group = { name: 'Group A' };
+      const controller = makeController();
+      vi.mocked(API.getStreamsRegexPreview).mockResolvedValue([]);
 
-      it('removes name_regex keys when deselected', () => {
-        const prev = { name_regex_pattern: 'foo', name_replace_pattern: 'bar' };
-        const result = applyAdvancedOptionsChange(prev, []);
-        expect(result).not.toHaveProperty('name_regex_pattern');
-        expect(result).not.toHaveProperty('name_replace_pattern');
-      });
+      getStreamsRegexPreview(group, '', 'replace', '', '', controller, null);
 
-      it('removes channel_sort_order and channel_sort_reverse when deselected', () => {
-        const prev = { channel_sort_order: 'name', channel_sort_reverse: true };
-        const result = applyAdvancedOptionsChange(prev, []);
-        expect(result).not.toHaveProperty('channel_sort_order');
-        expect(result).not.toHaveProperty('channel_sort_reverse');
-      });
-
-      it('removes custom_logo_id when deselected', () => {
-        const prev = { custom_logo_id: 42 };
-        const result = applyAdvancedOptionsChange(prev, []);
-        expect(result).not.toHaveProperty('custom_logo_id');
-      });
-
-      it('does not remove keys for options that are still selected', () => {
-        const prev = { name_match_regex: 'foo', custom_logo_id: 1 };
-        const result = applyAdvancedOptionsChange(prev, ['name_match_regex']);
-        expect(result).toHaveProperty('name_match_regex', 'foo');
-        expect(result).not.toHaveProperty('custom_logo_id');
+      expect(API.getStreamsRegexPreview).toHaveBeenCalledWith('Group A', {
+        find: undefined,
+        replace: undefined,
+        match: undefined,
+        exclude: undefined,
+        limit: 10,
+        signal: controller.signal,
+        m3uAccountId: undefined,
       });
     });
 
-    it('does not mutate the original object', () => {
-      const prev = { name_match_regex: 'foo' };
-      applyAdvancedOptionsChange(prev, []);
-      expect(prev).toHaveProperty('name_match_regex', 'foo');
+    it('omits replace when find is falsy but keeps match/exclude if truthy', () => {
+      const group = { name: 'Group A' };
+      const controller = makeController();
+      vi.mocked(API.getStreamsRegexPreview).mockResolvedValue([]);
+
+      getStreamsRegexPreview(
+        group,
+        '',
+        '',
+        'match',
+        'exclude',
+        controller,
+        null
+      );
+
+      expect(API.getStreamsRegexPreview).toHaveBeenCalledWith('Group A', {
+        find: undefined,
+        replace: undefined,
+        match: 'match',
+        exclude: 'exclude',
+        limit: 10,
+        signal: controller.signal,
+        m3uAccountId: undefined,
+      });
     });
   });
 
-  // ── getEpgSourceValue ────────────────────────────────────────────────────────
-
-  describe('getEpgSourceValue', () => {
-    it('returns custom_epg_id as string when set', () => {
-      const group = { custom_properties: { custom_epg_id: 7 } };
-      expect(getEpgSourceValue(group)).toBe('7');
+  // ── isExpectedOccupantForGroup ─────────────────────────────────────────────
+  describe('isExpectedOccupantForGroup', () => {
+    it('returns false for null occupant', () => {
+      expect(isExpectedOccupantForGroup(null, 1, makePlaylist())).toBe(false);
     });
 
-    it('returns "0" when force_dummy_epg is true and no custom_epg_id', () => {
-      const group = { custom_properties: { force_dummy_epg: true } };
-      expect(getEpgSourceValue(group)).toBe('0');
+    it('returns false when occupant is not auto_created', () => {
+      const occupant = makeOccupant({ auto_created: false });
+      expect(isExpectedOccupantForGroup(occupant, 1, makePlaylist())).toBe(
+        false
+      );
     });
 
-    it('returns null when neither custom_epg_id nor force_dummy_epg is set', () => {
-      const group = { custom_properties: {} };
-      expect(getEpgSourceValue(group)).toBeNull();
+    it('returns false when occupant has a channel number override', () => {
+      const occupant = makeOccupant({ has_channel_number_override: true });
+      expect(isExpectedOccupantForGroup(occupant, 1, makePlaylist())).toBe(
+        false
+      );
     });
 
-    it('prefers custom_epg_id over force_dummy_epg', () => {
-      const group = {
-        custom_properties: { custom_epg_id: 3, force_dummy_epg: true },
+    it('returns false when occupant belongs to a different group', () => {
+      const occupant = makeOccupant({ channel_group_id: 99 });
+      expect(isExpectedOccupantForGroup(occupant, 1, makePlaylist())).toBe(
+        false
+      );
+    });
+
+    it('returns false when occupant was created by a different account', () => {
+      const occupant = makeOccupant({ auto_created_by_account_id: 99 });
+      expect(
+        isExpectedOccupantForGroup(occupant, 1, makePlaylist({ id: 42 }))
+      ).toBe(false);
+    });
+
+    it('returns true for a valid expected occupant', () => {
+      const occupant = makeOccupant();
+      expect(isExpectedOccupantForGroup(occupant, 1, makePlaylist())).toBe(
+        true
+      );
+    });
+
+    it('returns true when channel_group_id is undefined', () => {
+      const occupant = makeOccupant({ channel_group_id: undefined });
+      expect(isExpectedOccupantForGroup(occupant, 1, makePlaylist())).toBe(
+        true
+      );
+    });
+
+    it('returns true when auto_created_by_account_id is undefined', () => {
+      const occupant = makeOccupant({ auto_created_by_account_id: undefined });
+      expect(isExpectedOccupantForGroup(occupant, 1, makePlaylist())).toBe(
+        true
+      );
+    });
+  });
+
+  // ── rangeFor ──────────────────────────────────────────────────────────────
+  describe('rangeFor', () => {
+    it('returns null when group is disabled', () => {
+      expect(rangeFor(makeGroup({ enabled: false }))).toBeNull();
+    });
+
+    it('returns null when auto_channel_sync is off', () => {
+      expect(rangeFor(makeGroup({ auto_channel_sync: false }))).toBeNull();
+    });
+
+    it('returns null when mode is next_available', () => {
+      const group = makeGroup({
+        custom_properties: { channel_numbering_mode: 'next_available' },
+      });
+      expect(rangeFor(group)).toBeNull();
+    });
+
+    it('returns null when start is not finite', () => {
+      const group = makeGroup({ auto_sync_channel_start: 'abc' });
+      expect(rangeFor(group)).toBeNull();
+    });
+
+    it('returns correct range for fixed mode', () => {
+      const group = makeGroup({
+        auto_sync_channel_start: 100,
+        auto_sync_channel_end: 200,
+        custom_properties: { channel_numbering_mode: 'fixed' },
+      });
+      expect(rangeFor(group)).toEqual({ start: 100, end: 200, startRaw: 100 });
+    });
+
+    it('uses fallback start for provider mode', () => {
+      const group = makeGroup({
+        custom_properties: {
+          channel_numbering_mode: 'provider',
+          channel_numbering_fallback: 50,
+        },
+        auto_sync_channel_end: 150,
+      });
+      expect(rangeFor(group)).toEqual({ start: 50, end: 150, startRaw: 50 });
+    });
+
+    it('uses start as end when end is null', () => {
+      const group = makeGroup({
+        auto_sync_channel_start: 100,
+        auto_sync_channel_end: null,
+      });
+      expect(rangeFor(group)).toEqual({ start: 100, end: 100, startRaw: 100 });
+    });
+
+    it('uses start as end when end is empty string', () => {
+      const group = makeGroup({
+        auto_sync_channel_start: 100,
+        auto_sync_channel_end: '',
+      });
+      expect(rangeFor(group)).toEqual({ start: 100, end: 100, startRaw: 100 });
+    });
+
+    it('defaults start to 1 when auto_sync_channel_start is undefined', () => {
+      const group = makeGroup({
+        auto_sync_channel_start: undefined,
+        auto_sync_channel_end: 10,
+      });
+      expect(rangeFor(group)).toEqual({ start: 1, end: 10, startRaw: 1 });
+    });
+  });
+
+  // ── abortTimers ───────────────────────────────────────────────────────────
+  describe('abortTimers', () => {
+    it('clears all timeouts and aborts all controllers', () => {
+      const t1 = setTimeout(() => {}, 10000);
+      const clearSpy = vi.spyOn(globalThis, 'clearTimeout');
+
+      const abortFn = vi.fn();
+      const timerRef = { current: { a: t1 } };
+      const abortRef = { current: { b: { abort: abortFn } } };
+
+      abortTimers(timerRef, abortRef);
+
+      expect(clearSpy).toHaveBeenCalledWith(t1);
+      expect(abortFn).toHaveBeenCalledOnce();
+      expect(timerRef.current).toEqual({});
+      expect(abortRef.current).toEqual({});
+
+      clearSpy.mockRestore();
+    });
+
+    it('does not throw when abort throws', () => {
+      const timerRef = { current: {} };
+      const abortRef = {
+        current: {
+          a: {
+            abort: () => {
+              throw new Error('already aborted');
+            },
+          },
+        },
       };
-      expect(getEpgSourceValue(group)).toBe('3');
-    });
 
-    it('returns null when custom_epg_id is explicitly null', () => {
-      const group = { custom_properties: { custom_epg_id: null } };
-      expect(getEpgSourceValue(group)).toBeNull();
+      expect(() => abortTimers(timerRef, abortRef)).not.toThrow();
+      expect(abortRef.current).toEqual({});
     });
   });
 
-  // ── getEpgSourceData ─────────────────────────────────────────────────────────
-
-  describe('getEpgSourceData', () => {
-    it('always includes "No EPG (Disabled)" as the first entry', () => {
-      const result = getEpgSourceData([]);
-      expect(result[0]).toEqual({ value: '0', label: 'No EPG (Disabled)' });
-    });
-
-    it('maps an xmltv source correctly', () => {
-      const result = getEpgSourceData([
-        makeEpgSource({ id: 1, name: 'My XMLTV', source_type: 'xmltv' }),
-      ]);
-      expect(result).toContainEqual({ value: '1', label: 'My XMLTV (XMLTV)' });
-    });
-
-    it('maps a dummy source correctly', () => {
-      const result = getEpgSourceData([
-        makeEpgSource({ id: 2, name: 'Dummy', source_type: 'dummy' }),
-      ]);
-      expect(result).toContainEqual({ value: '2', label: 'Dummy (Dummy)' });
-    });
-
-    it('maps a schedules_direct source correctly', () => {
-      const result = getEpgSourceData([
-        makeEpgSource({ id: 3, name: 'SD', source_type: 'schedules_direct' }),
-      ]);
-      expect(result).toContainEqual({
-        value: '3',
-        label: 'SD (Schedules Direct)',
+  // ── getRegexOptions ───────────────────────────────────────────────────────
+  describe('getRegexOptions', () => {
+    it('returns an object with the four regex fields', () => {
+      expect(getRegexOptions('find', 'replace', 'filter', 'exclude')).toEqual({
+        find: 'find',
+        replace: 'replace',
+        match: 'filter',
+        exclude: 'exclude',
       });
     });
 
-    it('falls back to raw source_type for unknown types', () => {
-      const result = getEpgSourceData([
-        makeEpgSource({ id: 4, name: 'Other', source_type: 'iptv' }),
-      ]);
-      expect(result).toContainEqual({ value: '4', label: 'Other (iptv)' });
+    it('preserves empty string values', () => {
+      expect(getRegexOptions('', '', '', '')).toEqual({
+        find: '',
+        replace: '',
+        match: '',
+        exclude: '',
+      });
+    });
+  });
+
+  // ── computeAutoSyncStart ──────────────────────────────────────────────────
+  describe('computeAutoSyncStart', () => {
+    it('returns 1 when no other groups are active', () => {
+      expect(computeAutoSyncStart([], 1)).toBe(1);
     });
 
-    it('sorts sources alphabetically by name', () => {
-      const sources = [
-        makeEpgSource({ id: 1, name: 'Zebra' }),
-        makeEpgSource({ id: 2, name: 'Apple' }),
-        makeEpgSource({ id: 3, name: 'Mango' }),
+    it('skips groups with the same id', () => {
+      const groups = [
+        makeGroup({
+          channel_group: 1,
+          auto_sync_channel_start: 100,
+          auto_sync_channel_end: 200,
+        }),
       ];
-      const result = getEpgSourceData(sources);
-      const labels = result.slice(1).map((r) => r.label.split(' (')[0]);
-      expect(labels).toEqual(['Apple', 'Mango', 'Zebra']);
+      expect(computeAutoSyncStart(groups, 1)).toBe(1);
     });
 
-    it('does not mutate the original sources array', () => {
-      const sources = [
-        makeEpgSource({ id: 1, name: 'Zebra' }),
-        makeEpgSource({ id: 2, name: 'Apple' }),
+    it('skips disabled groups', () => {
+      const groups = [
+        makeGroup({
+          channel_group: 2,
+          enabled: false,
+          auto_sync_channel_start: 100,
+          auto_sync_channel_end: 200,
+        }),
       ];
-      const original = [...sources];
-      getEpgSourceData(sources);
-      expect(sources).toEqual(original);
+      expect(computeAutoSyncStart(groups, 1)).toBe(1);
     });
 
-    it('returns only the "No EPG" entry when sources array is empty', () => {
-      expect(getEpgSourceData([])).toHaveLength(1);
+    it('skips groups with auto_channel_sync off', () => {
+      const groups = [
+        makeGroup({
+          channel_group: 2,
+          auto_channel_sync: false,
+          auto_sync_channel_start: 100,
+          auto_sync_channel_end: 200,
+        }),
+      ];
+      expect(computeAutoSyncStart(groups, 1)).toBe(1);
+    });
+
+    it('skips groups with next_available mode', () => {
+      const groups = [
+        makeGroup({
+          channel_group: 2,
+          custom_properties: { channel_numbering_mode: 'next_available' },
+          auto_sync_channel_start: 100,
+          auto_sync_channel_end: 200,
+        }),
+      ];
+      expect(computeAutoSyncStart(groups, 1)).toBe(1);
+    });
+
+    it('returns upper + 1 of the highest active group range', () => {
+      const groups = [
+        makeGroup({
+          channel_group: 2,
+          auto_sync_channel_start: 100,
+          auto_sync_channel_end: 200,
+        }),
+      ];
+      expect(computeAutoSyncStart(groups, 1)).toBe(201);
+    });
+
+    it('handles multiple groups and picks the highest upper bound', () => {
+      const groups = [
+        makeGroup({
+          channel_group: 2,
+          auto_sync_channel_start: 100,
+          auto_sync_channel_end: 200,
+        }),
+        makeGroup({
+          channel_group: 3,
+          auto_sync_channel_start: 300,
+          auto_sync_channel_end: 400,
+        }),
+      ];
+      expect(computeAutoSyncStart(groups, 1)).toBe(401);
+    });
+
+    it('uses start as end when end is null', () => {
+      const groups = [
+        makeGroup({
+          channel_group: 2,
+          auto_sync_channel_start: 50,
+          auto_sync_channel_end: null,
+        }),
+      ];
+      expect(computeAutoSyncStart(groups, 1)).toBe(51);
+    });
+
+    it('uses provider fallback for provider mode', () => {
+      const groups = [
+        makeGroup({
+          channel_group: 2,
+          custom_properties: {
+            channel_numbering_mode: 'provider',
+            channel_numbering_fallback: 500,
+          },
+          auto_sync_channel_end: 600,
+        }),
+      ];
+      expect(computeAutoSyncStart(groups, 1)).toBe(601);
+    });
+  });
+
+  // ── isGroupVisible ────────────────────────────────────────────────────────
+  describe('isGroupVisible', () => {
+    it('returns true when text and status both match', () => {
+      const group = makeGroup({ name: 'Sports', enabled: true });
+      expect(isGroupVisible(group, 'sport', 'enabled')).toBe(true);
+    });
+
+    it('returns false when text does not match', () => {
+      const group = makeGroup({ name: 'Sports', enabled: true });
+      expect(isGroupVisible(group, 'news', 'all')).toBe(false);
+    });
+
+    it('returns false when status filter is enabled but group is disabled', () => {
+      const group = makeGroup({ name: 'Sports', enabled: false });
+      expect(isGroupVisible(group, 'sport', 'enabled')).toBe(false);
+    });
+
+    it('returns false when status filter is disabled but group is enabled', () => {
+      const group = makeGroup({ name: 'Sports', enabled: true });
+      expect(isGroupVisible(group, 'sport', 'disabled')).toBe(false);
+    });
+
+    it('returns true for disabled group with disabled filter', () => {
+      const group = makeGroup({ name: 'Sports', enabled: false });
+      expect(isGroupVisible(group, 'sport', 'disabled')).toBe(true);
+    });
+
+    it('matches regardless of case', () => {
+      const group = makeGroup({ name: 'Sports HD', enabled: true });
+      expect(isGroupVisible(group, 'SPORTS', 'all')).toBe(true);
+    });
+
+    it('returns true with empty text filter', () => {
+      const group = makeGroup({ name: 'Sports', enabled: true });
+      expect(isGroupVisible(group, '', 'all')).toBe(true);
     });
   });
 });
