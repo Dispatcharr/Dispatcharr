@@ -874,12 +874,24 @@ class ProxyServer:
         Handle client disconnect event - check if channel should shut down and
         whether any output profile managers can be stopped.
         """
-        if channel_id not in self.client_managers:
+        # We may have no local client_manager (the owner can run the stream/profile
+        # for clients connected to *other* workers). Only bail if we have nothing
+        # to manage for this channel at all.
+        if (channel_id not in self.client_managers
+                and channel_id not in self.stream_managers
+                and channel_id not in self.profile_managers
+                and channel_id not in self.output_managers):
             return
 
         try:
             client_set_key = RedisKeys.clients(channel_id)
             total = self.redis_client.scard(client_set_key) or 0
+
+            logger.debug(
+                f"handle_client_disconnect: channel={channel_id[:8]} total={total} "
+                f"profile_managers={list(self.profile_managers.get(channel_id, {}).keys())} "
+                f"output_managers={list(self.output_managers.get(channel_id, {}).keys())}"
+            )
 
             # Check which output formats/profiles still have active clients
             if self.output_managers.get(channel_id) or self.profile_managers.get(channel_id):
@@ -922,6 +934,11 @@ class ProxyServer:
                     active_formats = set()
                     active_profiles = set()
                     active_manager_keys = set()
+
+                logger.debug(
+                    f"handle_client_disconnect: channel={channel_id[:8]} "
+                    f"active_profiles={active_profiles} active_manager_keys={active_manager_keys}"
+                )
 
                 for fmt in list(self.output_managers.get(channel_id, {}).keys()):
                     if fmt not in active_manager_keys:
@@ -1095,8 +1112,44 @@ class ProxyServer:
         Returns True once the profile buffer is available in self.profile_buffers.
         """
         channel_profiles = self.profile_buffers.get(channel_id, {})
+        logger.debug(
+            f"[Profile:{profile_id}:{channel_id[:8]}] ensure_output_profile() called, "
+            f"already_buffered={profile_id in channel_profiles} "
+            f"is_owner={self.am_i_owner(channel_id)}"
+        )
         if profile_id in channel_profiles:
-            return True
+            existing = self.profile_managers.get(channel_id, {}).get(profile_id)
+            if existing is not None:
+                # Owner: verify the FFmpeg process is still running.
+                if existing._process is not None and existing._process.poll() is None:
+                    return True
+                logger.warning(
+                    f"[Profile:{profile_id}:{channel_id[:8]}] "
+                    "Transcode process exited, restarting"
+                )
+                self.profile_managers.get(channel_id, {}).pop(profile_id, None)
+                if not self.profile_managers.get(channel_id):
+                    self.profile_managers.pop(channel_id, None)
+                self.profile_buffers.get(channel_id, {}).pop(profile_id, None)
+                if not self.profile_buffers.get(channel_id):
+                    self.profile_buffers.pop(channel_id, None)
+                existing.stop()
+            else:
+                # Non-owner reader buffer: verify the owner's state is still active.
+                if not self.redis_client:
+                    return True
+                state = self.redis_client.get(
+                    RedisKeys.output_state(channel_id, f"mpegts:p{profile_id}")
+                )
+                if state == PROFILE_STATE_ACTIVE:
+                    return True
+                logger.warning(
+                    f"[Profile:{profile_id}:{channel_id[:8]}] "
+                    "Reader buffer exists but profile state not active, resetting"
+                )
+                self.profile_buffers.get(channel_id, {}).pop(profile_id, None)
+                if not self.profile_buffers.get(channel_id):
+                    self.profile_buffers.pop(channel_id, None)
 
         if not self.redis_client:
             return False
@@ -1176,18 +1229,16 @@ class ProxyServer:
             channel_id, profile_id, command, ts_buffer, self.worker_id
         )
         started = manager.start()
-        if started or manager.output_buffer is not None:
+        if started:
             self.profile_managers.setdefault(channel_id, {})[profile_id] = manager
             self.profile_buffers.setdefault(channel_id, {})[profile_id] = manager.output_buffer
-            logger.info(
-                f"[Profile:{profile_id}:{channel_id[:8]}] "
-                f"Transcode {'started' if started else 'buffer created'}"
-            )
+            logger.info(f"[Profile:{profile_id}:{channel_id[:8]}] Transcode started")
             return True
         return False
 
     def stop_output_profile(self, channel_id, profile_id):
         """Stop a profile transcode manager and remove its buffer."""
+        logger.debug(f"[Profile:{profile_id}:{channel_id[:8]}] stop_output_profile() called")
         channel_managers = self.profile_managers.get(channel_id, {})
         manager = channel_managers.pop(profile_id, None)
         if not channel_managers:
@@ -1634,6 +1685,50 @@ class ProxyServer:
                 else:
                     self._last_orphan_check = time.time()
 
+                # Fallback sweep: stop profile managers with no active clients.
+                # Only runs every 30s - the primary path (handle_client_disconnect)
+                # handles normal disconnects within milliseconds. This only fires if
+                # a pubsub event was dropped or the listener was restarting.
+                now = time.time()
+                if self.profile_managers and self.redis_client and (
+                    now - getattr(self, '_last_profile_sweep', 0) >= 30
+                ):
+                    self._last_profile_sweep = now
+                    for ch_id in list(self.profile_managers.keys()):
+                        ch_managers = self.profile_managers.get(ch_id, {})
+                        if not ch_managers:
+                            continue
+                        client_set_key = RedisKeys.clients(ch_id)
+                        remaining_ids = self.redis_client.smembers(client_set_key)
+                        if remaining_ids:
+                            remaining_list = [
+                                cid.decode() if isinstance(cid, bytes) else cid
+                                for cid in remaining_ids
+                            ]
+                            pipe = self.redis_client.pipeline(transaction=False)
+                            for cid in remaining_list:
+                                pipe.hget(RedisKeys.client_metadata(ch_id, cid), "output_profile_id")
+                            results = pipe.execute()
+                            active_profiles = set()
+                            for pid_raw in results:
+                                if pid_raw:
+                                    pid_str = pid_raw.decode() if isinstance(pid_raw, bytes) else pid_raw
+                                    if pid_str:
+                                        try:
+                                            active_profiles.add(int(pid_str))
+                                        except ValueError:
+                                            pass
+                        else:
+                            active_profiles = set()
+
+                        for pid in list(ch_managers.keys()):
+                            if pid not in active_profiles:
+                                logger.info(
+                                    f"[Profile:{pid}] Cleanup sweep: no active clients, "
+                                    f"stopping transcode for channel {ch_id}"
+                                )
+                                self.stop_output_profile(ch_id, pid)
+
                 gevent.sleep(ConfigHelper.cleanup_check_interval())
 
         thread = threading.Thread(target=cleanup_task, daemon=True)
@@ -1872,7 +1967,6 @@ class ProxyServer:
     def _cleanup_local_resources(self, channel_id):
         """Clean up local resources for a channel without affecting Redis keys"""
         try:
-            # Clean up local objects only
             if channel_id in self.stream_managers:
                 if hasattr(self.stream_managers[channel_id], 'stop'):
                     self.stream_managers[channel_id].stop()
@@ -1886,6 +1980,52 @@ class ProxyServer:
             if channel_id in self.client_managers:
                 del self.client_managers[channel_id]
                 logger.info(f"Non-owner cleanup: Removed client manager for channel {channel_id}")
+
+            # Stop profile managers owned by this worker, but only for profiles
+            # that no global client still needs. Other workers may read from this
+            # worker's FFmpeg output buffer, so we must check Redis before stopping.
+            if channel_id in self.profile_managers:
+                active_profiles = set()
+                if self.redis_client:
+                    client_set_key = RedisKeys.clients(channel_id)
+                    remaining_ids = self.redis_client.smembers(client_set_key)
+                    if remaining_ids:
+                        remaining_list = [
+                            cid.decode() if isinstance(cid, bytes) else cid
+                            for cid in remaining_ids
+                        ]
+                        pipe = self.redis_client.pipeline(transaction=False)
+                        for cid in remaining_list:
+                            pipe.hget(RedisKeys.client_metadata(channel_id, cid), "output_profile_id")
+                        results = pipe.execute()
+                        for pid_raw in results:
+                            if pid_raw:
+                                pid_str = pid_raw.decode() if isinstance(pid_raw, bytes) else pid_raw
+                                if pid_str:
+                                    try:
+                                        active_profiles.add(int(pid_str))
+                                    except ValueError:
+                                        pass
+
+                for pid in list(self.profile_managers[channel_id].keys()):
+                    if pid not in active_profiles:
+                        try:
+                            self.profile_managers[channel_id].pop(pid).stop()
+                        except Exception:
+                            pass
+
+                if not self.profile_managers.get(channel_id):
+                    self.profile_managers.pop(channel_id, None)
+                    logger.info(f"Non-owner cleanup: Removed profile managers for channel {channel_id}")
+                else:
+                    logger.debug(
+                        f"Non-owner cleanup: Kept profile managers for channel {channel_id} "
+                        f"(profiles still needed: {active_profiles})"
+                    )
+
+            if channel_id in self.profile_buffers:
+                del self.profile_buffers[channel_id]
+                logger.info(f"Non-owner cleanup: Removed profile buffers for channel {channel_id}")
 
             return True
         except Exception as e:

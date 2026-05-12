@@ -68,6 +68,9 @@ class OutputProfileManager:
         Returns True if this worker started the process, False if another
         worker already owns it (caller should still use output_buffer for reads).
         """
+        logger.debug(
+            f"[Profile:{self.profile_id}:{self.channel_id[:8]}] start() called"
+        )
         if not self._acquire_owner_lock():
             logger.info(
                 f"[Profile:{self.profile_id}:{self.channel_id[:8]}] "
