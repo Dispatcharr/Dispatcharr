@@ -73,6 +73,7 @@ describe('SettingsUtils', () => {
       };
 
       API.updateSetting.mockResolvedValue({});
+      API.createSetting.mockResolvedValue({});
 
       await SettingsUtils.saveChangedSettings(settings, changedSettings);
 
