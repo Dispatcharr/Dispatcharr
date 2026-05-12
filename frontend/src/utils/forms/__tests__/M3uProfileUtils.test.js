@@ -71,7 +71,10 @@ describe('M3uProfileUtils', () => {
 
       await updateM3UProfile(m3u.id, makeSubmitValues());
 
-      expect(API.updateM3UProfile).toHaveBeenCalledWith(m3u.id, expect.anything());
+      expect(API.updateM3UProfile).toHaveBeenCalledWith(
+        m3u.id,
+        expect.anything()
+      );
     });
 
     it('passes submitValues through unmodified', async () => {
@@ -153,9 +156,9 @@ describe('M3uProfileUtils', () => {
       vi.mocked(API.addM3UProfile).mockRejectedValue(new Error('Add failed'));
       const m3u = makeM3U();
 
-      await expect(
-        addM3UProfile(m3u.id, makeSubmitValues())
-      ).rejects.toThrow('Add failed');
+      await expect(addM3UProfile(m3u.id, makeSubmitValues())).rejects.toThrow(
+        'Add failed'
+      );
     });
 
     it('resolves without returning a value', async () => {
@@ -195,7 +198,10 @@ describe('M3uProfileUtils', () => {
 
       await deleteM3UProfile(playlist.id, 'profile-1');
 
-      expect(API.deleteM3UProfile).toHaveBeenCalledWith(playlist.id, expect.anything());
+      expect(API.deleteM3UProfile).toHaveBeenCalledWith(
+        playlist.id,
+        expect.anything()
+      );
     });
 
     it('passes the profile id through unmodified', async () => {

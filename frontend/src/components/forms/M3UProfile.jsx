@@ -285,8 +285,8 @@ const RegexFormAndView = ({ profile = null, m3u, isOpen, onClose }) => {
             >
               <Text size="sm">
                 These patterns are applied to every stream in this playlist. If
-                the search pattern doesn't match a stream URL, the original
-                URL is used as-is.
+                the search pattern doesn't match a stream URL, the original URL
+                is used as-is.
               </Text>
             </Alert>
             <TextInput
