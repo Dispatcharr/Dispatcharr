@@ -35,11 +35,13 @@ const TimeshiftSettingsForm = React.memo(({ active }) => {
   useEffect(() => {
     if (settings) {
       const parsed = parseSettings(settings);
+      // Fall back explicitly to the neutral defaults so the Select shows
+      // "UTC (now UTC+00:00)" when no setting has been saved yet.
       form.setValues({
-        timeshift_default_timezone: parsed.timeshift_default_timezone,
-        timeshift_default_language: parsed.timeshift_default_language,
-        xmltv_prev_days_override: parsed.xmltv_prev_days_override,
-        timeshift_debug_logging: parsed.timeshift_debug_logging,
+        timeshift_default_timezone: parsed.timeshift_default_timezone || 'UTC',
+        timeshift_default_language: parsed.timeshift_default_language || 'en',
+        xmltv_prev_days_override: parsed.xmltv_prev_days_override ?? 0,
+        timeshift_debug_logging: !!parsed.timeshift_debug_logging,
       });
     }
   }, [settings]);
@@ -68,6 +70,7 @@ const TimeshiftSettingsForm = React.memo(({ active }) => {
           description="IANA timezone used for XC EPG strings (start/end) and provider timeshift URLs."
           data={tzOptions}
           searchable
+          allowDeselect={false}
           {...form.getInputProps('timeshift_default_timezone')}
         />
         <TextInput
