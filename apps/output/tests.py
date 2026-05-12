@@ -1,3 +1,4 @@
+from django.core.cache import cache
 from django.test import TestCase, Client
 from django.urls import reverse
 from apps.channels.models import Channel, ChannelGroup
@@ -7,12 +8,15 @@ import xml.etree.ElementTree as ET
 class OutputM3UTest(TestCase):
     def setUp(self):
         self.client = Client()
+        # m3u_endpoint memoises its rendered response; clear so each test
+        # exercises the uncached path and isn't affected by sibling tests.
+        cache.clear()
     
     def test_generate_m3u_response(self):
         """
         Test that the M3U endpoint returns a valid M3U file.
         """
-        url = reverse('output:generate_m3u')
+        url = reverse('output:m3u_endpoint')
         response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
         content = response.content.decode()
@@ -22,7 +26,7 @@ class OutputM3UTest(TestCase):
         """
         Test that a POST request with an empty body returns 200 OK.
         """
-        url = reverse('output:generate_m3u')
+        url = reverse('output:m3u_endpoint')
 
         response = self.client.post(url, data=None, content_type='application/x-www-form-urlencoded')
         content = response.content.decode()
@@ -34,7 +38,7 @@ class OutputM3UTest(TestCase):
         """
         Test that a POST request with a non-empty body returns 403 Forbidden.
         """
-        url = reverse('output:generate_m3u')
+        url = reverse('output:m3u_endpoint')
 
         response = self.client.post(url, data={'evilstring': 'muhahaha'})
 
@@ -47,6 +51,9 @@ class OutputEPGXMLEscapingTest(TestCase):
 
     def setUp(self):
         self.client = Client()
+        # generate_epg memoises its rendered response; clear so each test
+        # exercises the uncached StreamingHttpResponse path.
+        cache.clear()
         self.group = ChannelGroup.objects.create(name="Test Group")
 
     def test_channel_id_with_ampersand(self):
@@ -58,11 +65,11 @@ class OutputEPGXMLEscapingTest(TestCase):
             channel_group=self.group
         )
 
-        url = reverse('output:generate_epg') + '?tvg_id_source=tvg_id'
+        url = reverse('output:epg_endpoint') + '?tvg_id_source=tvg_id'
         response = self.client.get(url)
 
         self.assertEqual(response.status_code, 200)
-        content = response.content.decode()
+        content = b"".join(response.streaming_content).decode()
 
         # Should contain escaped ampersand
         self.assertIn('id="News &amp; Sports"', content)
@@ -83,10 +90,10 @@ class OutputEPGXMLEscapingTest(TestCase):
             channel_group=self.group
         )
 
-        url = reverse('output:generate_epg') + '?tvg_id_source=tvg_id'
+        url = reverse('output:epg_endpoint') + '?tvg_id_source=tvg_id'
         response = self.client.get(url)
 
-        content = response.content.decode()
+        content = b"".join(response.streaming_content).decode()
         self.assertIn('id="Channel &lt;HD&gt;"', content)
 
         try:
@@ -103,16 +110,21 @@ class OutputEPGXMLEscapingTest(TestCase):
             channel_group=self.group
         )
 
-        url = reverse('output:generate_epg') + '?tvg_id_source=tvg_id'
+        url = reverse('output:epg_endpoint') + '?tvg_id_source=tvg_id'
         response = self.client.get(url)
 
-        content = response.content.decode()
+        content = b"".join(response.streaming_content).decode()
         self.assertIn('id="Test &amp; &quot;Special&quot; &lt;Chars&gt;"', content)
 
         try:
             tree = ET.fromstring(content)
-            # Verify we can find the channel with correct ID in parsed tree
-            channel_elem = tree.find('.//channel[@id="Test & \\"Special\\" <Chars>"]')
+            # ElementTree XPath cannot quote both `"` and `<>` in one selector,
+            # so walk channels by hand and compare the decoded id attribute.
+            expected_id = 'Test & "Special" <Chars>'
+            channel_elem = next(
+                (ch for ch in tree.findall('.//channel') if ch.get('id') == expected_id),
+                None,
+            )
             self.assertIsNotNone(channel_elem)
         except ET.ParseError as e:
             self.fail(f"Generated EPG with all special chars is not valid XML: {e}")
@@ -129,10 +141,10 @@ class OutputEPGXMLEscapingTest(TestCase):
             channel_group=self.group
         )
 
-        url = reverse('output:generate_epg') + '?tvg_id_source=tvg_id'
+        url = reverse('output:epg_endpoint') + '?tvg_id_source=tvg_id'
         response = self.client.get(url)
 
-        content = response.content.decode()
+        content = b"".join(response.streaming_content).decode()
 
         # Check programme elements have escaped channel attributes
         self.assertIn('channel="News &amp; Sports"', content)
