@@ -13,11 +13,12 @@ class PluginsConfig(AppConfig):
 
         - Skip during common management commands that don't need discovery.
         - Register post_migrate handler to sync plugin registry to DB after migrations.
-        - Do an in-memory discovery (no DB) so registry is available early
-          but only in the main uwsgi/daphne process.  Celery workers and
-          management commands skip the eager pass: the post_migrate handler
-          covers the DB sync, and `connect/utils.py` lazy-discovers on first
-          event using the loader's cache.
+        - Run in-memory discovery (no DB) in every non-Celery process so plugin
+          modules are imported and monkey-patches apply. This includes uWSGI workers
+          under lazy-apps=true, which each start cold and never inherit a warmed fork.
+          Celery workers skip here and discover via the worker_ready signal instead.
+        - One-shot startup tasks (schedule setup, repo refresh) are gated by
+          should_skip_initialization() so they only fire in the master/main process.
         """
         try:
             # Allow explicit opt-out via env var
@@ -47,13 +48,19 @@ class PluginsConfig(AppConfig):
                 _post_migrate_discover,
                 dispatch_uid="apps.plugins.post_migrate_discover",
             )
-            #
+
             from dispatcharr.app_initialization import should_skip_initialization
+            # Skip discovery for Celery (worker_ready signal handles it) and
+            # pure management commands that don't serve requests. Every other
+            # process - including each uWSGI worker under lazy-apps=true - runs
+            # discovery so plugin modules are imported and monkey-patches apply.
+            _no_discovery_cmds = {'celery', 'beat', 'migrate', 'dbshell', 'loaddata'}
+            if not any(cmd in sys.argv for cmd in _no_discovery_cmds):
+                from .loader import PluginManager
+                PluginManager.get().discover_plugins(sync_db=False)
+
             if should_skip_initialization():
                 return
-
-            from .loader import PluginManager
-            PluginManager.get().discover_plugins(sync_db=False)
         except Exception:
             # Avoid breaking startup due to plugin errors
             import logging
