@@ -9,6 +9,7 @@ tick after every worker restart — the worker logs
 `Received unregistered task` and beat advances `last_run_at` anyway,
 hiding the failure. See #1244.
 """
+import weakref
 from unittest.mock import MagicMock, patch
 
 from django.test import SimpleTestCase
@@ -67,8 +68,8 @@ class WorkerReadyPluginDiscoveryTests(SimpleTestCase):
         # The handler is registered with weak=False so the function appears
         # directly (not as a dead weakref).
         receivers = [r for _, r in worker_ready.receivers]
-        # Handle both weakref-wrapped and direct receiver shapes.
-        callables = [r() if hasattr(r, "__call__") and not callable(getattr(r, "__name__", None)) else r for r in receivers]
+        # Dereference weakrefs; pass direct references through as-is.
+        callables = [r() if isinstance(r, weakref.ref) else r for r in receivers]
         assert discover_plugins_on_worker_ready in receivers or \
             any(getattr(c, "__wrapped__", c) is discover_plugins_on_worker_ready for c in callables), (
             "discover_plugins_on_worker_ready was not connected to "

@@ -39,17 +39,9 @@ app.config_from_object("django.conf:settings", namespace="CELERY")
 app.autodiscover_tasks()
 
 
-# Plugins live in /data/plugins/<slug>/plugin.py — outside INSTALLED_APPS,
-# so `app.autodiscover_tasks()` never imports them. Any plugin using
-# module-level `@shared_task` for cron work would therefore have its task
-# go unregistered on the worker side after every restart, until something
-# else (a `trigger_event` call, etc.) lazily imported the plugin module.
-# Beat would fire the periodic task on time and the worker would reject it
-# with `Received unregistered task`. (#1244)
-#
-# Eagerly call `PluginManager.discover_plugins` on worker startup so every
-# plugin's `@shared_task` is registered with this worker's Celery app
-# before beat starts firing.
+# Plugins live outside INSTALLED_APPS, so autodiscover_tasks() never imports
+# them. Without an eager import, workers reject plugin @shared_tasks with
+# "Received unregistered task" until a lazy event import warms the module.
 @worker_ready.connect(weak=False)
 def discover_plugins_on_worker_ready(**_kwargs):
     try:
