@@ -35,6 +35,7 @@ def create_default_output_profiles(apps, schema_editor):
                 '-c:v copy '
                 '-c:a aac '
                 '-b:a 192k '
+                '-ac 2 '
                 '-max_muxing_queue_size 4096 '
                 '-mpegts_flags +pat_pmt_at_frames+resend_headers+initial_discontinuity '
                 '-f mpegts pipe:1'
