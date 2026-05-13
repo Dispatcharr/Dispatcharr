@@ -684,29 +684,32 @@ const ChannelsTable = ({ onReady }) => {
 
   const getChannelURL = useCallback(
     (channel) => {
-      // Make sure we're using the channel UUID consistently
       if (!channel || !channel.uuid) {
         console.error('Invalid channel object or missing UUID:', channel);
         return '';
       }
 
-      const uri = buildLiveStreamUrl(`/proxy/ts/stream/${channel.uuid}`);
-      let channelUrl = `${window.location.protocol}//${window.location.host}${uri}`;
+      const path = `/proxy/ts/stream/${channel.uuid}`;
       if (env_mode == 'dev') {
-        channelUrl = `${window.location.protocol}//${window.location.hostname}:5656${uri}`;
+        return `${window.location.protocol}//${window.location.hostname}:5656${path}`;
       }
-
-      return channelUrl;
+      return `${window.location.protocol}//${window.location.host}${path}`;
     },
     [env_mode]
   );
 
   const handleWatchStream = useCallback(
     (channel) => {
-      const url = getChannelURL(channel);
+      if (!channel || !channel.uuid) return;
+      const path = `/proxy/ts/stream/${channel.uuid}`;
+      const uri = buildLiveStreamUrl(path);
+      let url = `${window.location.protocol}//${window.location.host}${uri}`;
+      if (env_mode == 'dev') {
+        url = `${window.location.protocol}//${window.location.hostname}:5656${uri}`;
+      }
       showVideo(url, 'live', { name: channel.name, channelId: channel.id });
     },
-    [getChannelURL, showVideo]
+    [env_mode, showVideo]
   );
 
   const onRowSelectionChange = (newSelection) => {
