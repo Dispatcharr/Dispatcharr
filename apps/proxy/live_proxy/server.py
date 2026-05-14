@@ -17,6 +17,7 @@ import gevent
 from apps.proxy.config import TSConfig as Config
 from apps.channels.models import Channel, Stream
 from core.utils import RedisClient, log_system_event
+from django.db import close_old_connections
 from redis.exceptions import ConnectionError, TimeoutError
 from .input.manager import StreamManager
 from .input.buffer import StreamBuffer
@@ -1432,6 +1433,7 @@ class ProxyServer:
         def cleanup_task():
             while True:
                 try:
+                    close_old_connections()
                     # Send worker heartbeat first
                     if self.redis_client:
                         worker_heartbeat_key = f"live:worker:{self.worker_id}:heartbeat"

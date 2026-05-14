@@ -67,22 +67,28 @@ class LogoSerializer(serializers.ModelSerializer):
 
     def get_channel_count(self, obj):
         """Get the number of channels using this logo"""
+        # `channel_count` is provided as an annotation in LogoViewSet.get_queryset().
+        # Fall back to a query only when serializing a single un-annotated Logo
+        # (e.g. nested inside ChannelSerializer.get_logo()).
+        annotated = getattr(obj, "channel_count", None)
+        if annotated is not None:
+            return annotated
         return obj.channels.count()
 
     def get_is_used(self, obj):
         """Check if this logo is used by any channels"""
-        return obj.channels.exists()
+        return self.get_channel_count(obj) > 0
 
     def get_channel_names(self, obj):
         """Get the names of channels using this logo (limited to first 5)"""
         names = []
 
-        # Get channel names
-        channels = obj.channels.all()[:5]
+        # When LogoViewSet.get_queryset() prefetches `channels`, iterating
+        # obj.channels.all() reuses the cached set; slicing happens in Python.
+        channels = list(obj.channels.all()[:5])
         for channel in channels:
             names.append(f"Channel: {channel.name}")
 
-        # Calculate total count for "more" message
         total_count = self.get_channel_count(obj)
         if total_count > 5:
             names.append(f"...and {total_count - 5} more")
@@ -275,10 +281,15 @@ class ChannelProfileSerializer(serializers.ModelSerializer):
         fields = ["id", "name", "channels"]
 
     def get_channels(self, obj):
-        memberships = ChannelProfileMembership.objects.filter(
-            channel_profile=obj, enabled=True
+        # Use prefetched attr when available, fall back to a direct query.
+        memberships = getattr(obj, 'enabled_memberships', None)
+        if memberships is not None:
+            return [m.channel_id for m in memberships]
+        return list(
+            ChannelProfileMembership.objects.filter(
+                channel_profile=obj, enabled=True
+            ).values_list('channel_id', flat=True)
         )
-        return [membership.channel.id for membership in memberships]
 
 
 class ChannelProfileMembershipSerializer(serializers.ModelSerializer):

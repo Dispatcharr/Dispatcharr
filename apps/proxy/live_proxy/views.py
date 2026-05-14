@@ -189,6 +189,8 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
                                     f"[{client_id}] Channel {channel_id} owner {owner} is dead, will reinitialize"
                                 )
 
+        _client_pre_registered = False
+
         # Start initialization if needed
         if needs_initialization or not proxy_server.check_if_channel_exists(channel_id):
             logger.info(f"[{client_id}] Starting channel {channel_id} initialization")
@@ -430,6 +432,23 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
 
             # If we're the owner, wait for connection to establish
             if proxy_server.am_i_owner(channel_id):
+                # Register the client before waiting for the stream to connect.
+                # The cleanup watchdog stops channels in connecting state with 0
+                # clients after the grace period - registering early prevents that.
+                output_profile = _resolve_output_profile(request, user)
+                output_format = _resolve_output_format(user, force_output_format, request)
+                resolved_format = f'{output_format}:p{output_profile.id}' if output_profile else output_format
+                client_manager = proxy_server.client_managers[channel_id]
+                client_manager.add_client(
+                    client_id, client_ip, client_user_agent, user,
+                    output_format=output_format,
+                    output_profile_id=output_profile.id if output_profile else None,
+                )
+                logger.info(
+                    f"[{client_id}] Client registered with channel {channel_id} "
+                    f"(output: {resolved_format}, profile: {output_profile.id if output_profile else None})"
+                )
+                _client_pre_registered = True
                 manager = proxy_server.stream_managers.get(channel_id)
                 if manager:
                     wait_start = time.time()
@@ -570,6 +589,10 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
         if output_profile:
             cmd = output_profile.build_command()
             if not proxy_server.ensure_output_profile(channel_id, output_profile.id, cmd):
+                if _client_pre_registered:
+                    mgr = proxy_server.client_managers.get(channel_id)
+                    if mgr:
+                        mgr.remove_client(client_id)
                 return JsonResponse(
                     {"error": "Failed to start output profile transcode"}, status=500
                 )
@@ -584,15 +607,16 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
         # When an output profile is active, append :p{id} to the format key so each
         # (format, profile) pair gets its own independent remux pipeline in Redis.
         resolved_format = f'{output_format}:p{output_profile.id}' if output_profile else output_format
-        client_manager.add_client(
-            client_id, client_ip, client_user_agent, user,
-            output_format=output_format,
-            output_profile_id=output_profile.id if output_profile else None,
-        )
-        logger.info(
-            f"[{client_id}] Client registered with channel {channel_id} "
-            f"(output: {resolved_format}, profile: {output_profile.id if output_profile else None})"
-        )
+        if not _client_pre_registered:
+            client_manager.add_client(
+                client_id, client_ip, client_user_agent, user,
+                output_format=output_format,
+                output_profile_id=output_profile.id if output_profile else None,
+            )
+            logger.info(
+                f"[{client_id}] Client registered with channel {channel_id} "
+                f"(output: {resolved_format}, profile: {output_profile.id if output_profile else None})"
+            )
 
         if output_format == 'fmp4':
             proxy_server.ensure_output_format(

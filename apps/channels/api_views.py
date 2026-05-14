@@ -196,8 +196,7 @@ class StreamViewSet(viewsets.ModelViewSet):
         # Return only the IDs from the queryset
         stream_ids = queryset.values_list("id", flat=True)
 
-        # Return the response with the list of IDs
-        return Response(list(stream_ids))
+        return JsonResponse(list(stream_ids), safe=False)
 
     @extend_schema(
         parameters=[
@@ -461,6 +460,40 @@ class StreamViewSet(viewsets.ModelViewSet):
         Get available filter options based on current filter state.
         Uses a hierarchical approach: M3U is the parent filter, Group filters based on M3U.
         """
+        # Fast path: no filters supplied - skip DISTINCT over the full streams
+        # table and answer from parent tables via EXISTS semi-joins instead.
+        _group_filter_params = (
+            "name", "m3u_account", "m3u_account_name",
+            "m3u_account_is_active", "tvg_id",
+        )
+        _m3u_filter_params = (
+            "name", "m3u_account_name", "m3u_account_is_active", "tvg_id",
+        )
+        _has_group_filters = any(request.GET.get(p) for p in _group_filter_params)
+        _has_m3u_filters = any(request.GET.get(p) for p in _m3u_filter_params)
+
+        if not _has_group_filters and not _has_m3u_filters:
+            base_qs = Stream.objects.exclude(m3u_account__is_active=False)
+            group_names = list(
+                base_qs.exclude(channel_group__isnull=True)
+                .order_by("channel_group__name")
+                .values_list("channel_group__name", flat=True)
+                .distinct()
+            )
+            m3u_data = list(
+                base_qs.exclude(m3u_account__isnull=True)
+                .order_by("m3u_account__name")
+                .values("m3u_account__id", "m3u_account__name")
+                .distinct()
+            )
+            return Response({
+                "groups": group_names,
+                "m3u_accounts": [
+                    {"id": m["m3u_account__id"], "name": m["m3u_account__name"]}
+                    for m in m3u_data
+                ],
+            })
+
         # For group options: we need to bypass the channel_group custom queryset filtering
         # Store original request params
         original_params = request.query_params
@@ -940,7 +973,13 @@ class ChannelViewSet(viewsets.ModelViewSet):
         if q_filters:
             qs = qs.filter(q_filters)
 
-        return qs.distinct()
+        # DISTINCT is only needed when a filter joins to a one-to-many table
+        # and can produce duplicate channel rows. channel_profile_id joins
+        # channelprofilemembership; only_stale joins streams. All other
+        # filters use FK or one-to-one joins that cannot produce duplicates.
+        if channel_profile_id or only_stale:
+            return qs.distinct()
+        return qs
 
     def get_serializer_context(self):
         context = super().get_serializer_context()
@@ -1556,8 +1595,8 @@ class ChannelViewSet(viewsets.ModelViewSet):
         # Return only the IDs from the queryset
         channel_ids = queryset.values_list("id", flat=True)
 
-        # Return the response with the list of IDs
-        return Response(list(channel_ids))
+        # JsonResponse skips DRF's renderer pipeline for a flat int list.
+        return JsonResponse(list(channel_ids), safe=False)
 
     @action(detail=False, methods=["get"], url_path="summary")
     def summary(self, request, *args, **kwargs):
@@ -1574,27 +1613,29 @@ class ChannelViewSet(viewsets.ModelViewSet):
         queryset = with_effective_values(
             self.filter_queryset(self.get_queryset())
         )
-        data = [
-            {
-                "id": row["id"],
-                "uuid": row["uuid"],
-                "name": row["effective_name"],
-                "logo_id": row["effective_logo_id"],
-                "channel_number": row["effective_channel_number"],
-                "epg_data_id": row["effective_epg_data_id"],
-                "channel_group_id": row["effective_channel_group_id"],
-            }
-            for row in queryset.values(
-                "id",
-                "uuid",
-                "effective_name",
-                "effective_logo_id",
-                "effective_channel_number",
-                "effective_epg_data_id",
-                "effective_channel_group_id",
-            )
-        ]
-        return Response(data)
+        return JsonResponse(
+            [
+                {
+                    "id": row["id"],
+                    "uuid": row["uuid"],
+                    "name": row["effective_name"],
+                    "logo_id": row["effective_logo_id"],
+                    "channel_number": row["effective_channel_number"],
+                    "epg_data_id": row["effective_epg_data_id"],
+                    "channel_group_id": row["effective_channel_group_id"],
+                }
+                for row in queryset.values(
+                    "id",
+                    "uuid",
+                    "effective_name",
+                    "effective_logo_id",
+                    "effective_channel_number",
+                    "effective_epg_data_id",
+                    "effective_channel_group_id",
+                )
+            ],
+            safe=False,
+        )
 
     @extend_schema(
         parameters=[
@@ -2567,8 +2608,13 @@ class LogoViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         """Optimize queryset with prefetch and add filtering"""
-        # Start with basic prefetch for channels
-        queryset = Logo.objects.prefetch_related('channels').order_by('name')
+        # Annotate channel_count and prefetch channels to avoid N+1 in LogoSerializer.
+        queryset = (
+            Logo.objects
+            .annotate(channel_count=Count('channels'))
+            .prefetch_related('channels')
+            .order_by('name')
+        )
 
         # Filter by specific IDs
         ids = self.request.query_params.getlist('ids')
@@ -2585,11 +2631,9 @@ class LogoViewSet(viewsets.ModelViewSet):
         # Filter by usage
         used_filter = self.request.query_params.get('used', None)
         if used_filter == 'true':
-            # Logo is used if it has any channels
-            queryset = queryset.filter(channels__isnull=False).distinct()
+            queryset = queryset.filter(channel_count__gt=0)
         elif used_filter == 'false':
-            # Logo is unused if it has no channels
-            queryset = queryset.filter(channels__isnull=True)
+            queryset = queryset.filter(channel_count=0)
 
         # Filter by name
         name_filter = self.request.query_params.get('name', None)
@@ -2823,14 +2867,18 @@ class ChannelProfileViewSet(viewsets.ModelViewSet):
     serializer_class = ChannelProfileSerializer
 
     def get_queryset(self):
+        from django.db.models import Prefetch
+        enabled_memberships_prefetch = Prefetch(
+            'channelprofilemembership_set',
+            queryset=ChannelProfileMembership.objects.filter(enabled=True),
+            to_attr='enabled_memberships',
+        )
         user = self.request.user
 
-        # If user_level is 10, return all ChannelProfiles
         if hasattr(user, "user_level") and user.user_level == 10:
-            return ChannelProfile.objects.all()
+            return ChannelProfile.objects.prefetch_related(enabled_memberships_prefetch)
 
-        # Otherwise, return only ChannelProfiles related to the user
-        return self.request.user.channel_profiles.all()
+        return self.request.user.channel_profiles.prefetch_related(enabled_memberships_prefetch)
 
     def get_permissions(self):
         if self.action == "duplicate":
@@ -3449,9 +3497,7 @@ class RecordingViewSet(viewsets.ModelViewSet):
         instance.custom_properties = cp
         instance.save(update_fields=["custom_properties"])
 
-        # Send the WebSocket notification before returning the response.
-        # send_websocket_update is gevent-safe (offloads async_to_sync to a
-        # real OS thread when monkey-patching is active).
+        # send_websocket_update offloads async_to_sync to a real OS thread when gevent is active.
         channel_uuid = str(instance.channel.uuid)
         recording_id = instance.id
         task_id = instance.task_id

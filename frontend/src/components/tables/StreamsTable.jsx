@@ -1355,6 +1355,7 @@ const StreamsTable = ({ onReady }) => {
     })();
     return () => {
       cancelled = true;
+      lastFilterOptionsParamsRef.current = null;
     };
   }, [buildFilterParams]);
 

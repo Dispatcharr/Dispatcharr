@@ -7,7 +7,7 @@ import requests
 import subprocess
 import gevent
 import re
-from django.db import connection
+from django.db import connection, close_old_connections
 from apps.proxy.config import TSConfig as Config
 from apps.channels.models import Channel, Stream
 from core.utils import log_system_event
@@ -202,6 +202,7 @@ class StreamManager:
 
             # Main stream switching loop - we'll try different streams if needed
             while self.running and stream_switch_attempts <= max_stream_switches:
+                close_old_connections()
                 # Check for stuck switching state
                 if self.url_switching and time.time() - self.url_switch_start_time > self.url_switch_timeout:
                     logger.warning(f"URL switching state appears stuck for channel {self.channel_id} "
