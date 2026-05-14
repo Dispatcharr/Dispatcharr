@@ -2830,10 +2830,11 @@ def get_transformed_credentials(account, profile=None):
                     transformed_username = path_parts[-3]
                     transformed_password = path_parts[-2]
 
-                    # Rebuild server URL without the username/password path
-                    transformed_url = f"{parsed_url.scheme}://{parsed_url.netloc}"
-                    if parsed_url.port:
-                        transformed_url = f"{parsed_url.scheme}://{parsed_url.hostname}:{parsed_url.port}"
+                    # Rebuild server URL: preserve any sub-path that precedes
+                    # /live/username/password/1234.ts (path_parts[:-4]).
+                    base_path_parts = path_parts[:-4]
+                    base_path = ('/' + '/'.join(base_path_parts)) if base_path_parts else ''
+                    transformed_url = f"{parsed_url.scheme}://{parsed_url.netloc}{base_path}"
 
                     logger.debug(f"Extracted transformed credentials:")
                     logger.debug(f"  Server URL: {transformed_url}")
