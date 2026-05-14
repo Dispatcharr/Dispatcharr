@@ -18,6 +18,7 @@ dependencies = [
     "python-vlc",
     "yt-dlp",
     "gevent==26.4.0",
+    "psycogreen",
     "daphne",
     "uwsgi",
     "django-cors-headers",
