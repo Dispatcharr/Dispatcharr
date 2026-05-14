@@ -1,4 +1,5 @@
 from django.http import HttpResponse, JsonResponse, Http404, HttpResponseForbidden, StreamingHttpResponse
+import json
 from rest_framework.response import Response
 from django.urls import reverse
 from apps.channels.models import Channel, ChannelProfile, ChannelGroup, Stream
@@ -2037,7 +2038,10 @@ def xc_player_api(request, full=False):
     if action == "get_live_categories":
         return JsonResponse(xc_get_live_categories(user), safe=False)
     elif action == "get_live_streams":
-        return JsonResponse(xc_get_live_streams(request, user, request.GET.get("category_id")), safe=False)
+        return StreamingHttpResponse(
+            _xc_stream_live_streams(request, user, request.GET.get("category_id")),
+            content_type="application/json",
+        )
     elif action == "get_short_epg":
         return JsonResponse(xc_get_epg(request, user, short=True), safe=False)
     elif action == "get_simple_data_table":
@@ -2192,10 +2196,8 @@ def xc_get_live_categories(user):
     return response
 
 
-def xc_get_live_streams(request, user, category_id=None):
+def _xc_live_streams_setup(request, user, category_id):
     from apps.channels.managers import with_effective_values
-
-    streams = []
 
     if user.user_level < 10:
         user_profile_count = user.channel_profiles.count()
@@ -2237,7 +2239,6 @@ def xc_get_live_streams(request, user, category_id=None):
         .order_by("effective_channel_number")
     )
 
-    # Resolve the fallback group ID once to avoid a get_or_create query per null-group channel
     _default_group_id = None
 
     def _get_default_group_id():
@@ -2246,64 +2247,88 @@ def xc_get_live_streams(request, user, category_id=None):
             _default_group_id = ChannelGroup.objects.get_or_create(name="Default Group")[0].id
         return _default_group_id
 
-    # Build collision-free mapping for XC clients (which require integers)
-    # This ensures channels with float numbers don't conflict with existing integers
-    channel_num_map = {}  # Maps channel.id -> integer channel number for XC
-    used_numbers = set()  # Track all assigned integer channel numbers
+    # Build collision-free integer channel number mapping.
+    # Channels with integer effective numbers are assigned immediately; those with
+    # fractional numbers are deferred until all integers are known, then assigned
+    # the nearest available integer to avoid collisions.
+    channel_num_map = {}
+    used_numbers = set()
+    float_channels = []  # (channel.id, effective_num) for deferred resolution
 
-    # First pass: assign integers for channels that already have integer effective numbers
-    for channel in channels:
+    for channel in channels:  # evaluates and caches the queryset
         effective_num = channel.effective_channel_number
-        if effective_num is not None and effective_num == int(effective_num):
+        if effective_num is None:
+            pass
+        elif effective_num == int(effective_num):
             num = int(effective_num)
             channel_num_map[channel.id] = num
             used_numbers.add(num)
+        else:
+            float_channels.append((channel.id, effective_num))
 
-    # Second pass: assign integers for channels with float numbers
-    # Find next available number to avoid collisions
+    for channel_id, effective_num in float_channels:
+        candidate = int(effective_num)
+        while candidate in used_numbers:
+            candidate += 1
+        channel_num_map[channel_id] = candidate
+        used_numbers.add(candidate)
+
+    # Precompute base URL and logo path template once for the entire response
+    # to avoid calling reverse() + build_absolute_uri_with_port() per channel.
+    _base_url = build_absolute_uri_with_port(request, "")
+    _sample_logo_path = reverse("api:channels:logo-cache", args=[0])
+    _logo_prefix_raw, _, _logo_suffix_raw = _sample_logo_path.partition("/0/")
+    _logo_url_prefix = _base_url + _logo_prefix_raw + "/"
+    _logo_url_suffix = "/" + _logo_suffix_raw
+
+    return channels, channel_num_map, _get_default_group_id, _logo_url_prefix, _logo_url_suffix
+
+
+def _xc_channel_entry(channel, channel_num_map, _get_default_group_id, _logo_url_prefix, _logo_url_suffix):
+    channel_num_int = channel_num_map[channel.id]
+    effective_logo = channel.effective_logo_obj
+    effective_group = channel.effective_channel_group_obj
+    group_id = effective_group.id if effective_group else _get_default_group_id()
+    return {
+        "num": channel_num_int,
+        "name": channel.effective_name,
+        "stream_type": "live",
+        "stream_id": channel.id,
+        "stream_icon": (
+            f"{_logo_url_prefix}{effective_logo.id}{_logo_url_suffix}"
+            if effective_logo else None
+        ),
+        "epg_channel_id": str(channel_num_int),
+        "added": str(int(channel.created_at.timestamp())),
+        "is_adult": int(channel.is_adult),
+        "category_id": str(group_id),
+        "category_ids": [group_id],
+        "custom_sid": None,
+        "tv_archive": 0,
+        "direct_source": "",
+        "tv_archive_duration": 0,
+    }
+
+
+def xc_get_live_streams(request, user, category_id=None):
+    channels, channel_num_map, _get_default_group_id, _logo_url_prefix, _logo_url_suffix = \
+        _xc_live_streams_setup(request, user, category_id)
+    return [
+        _xc_channel_entry(ch, channel_num_map, _get_default_group_id, _logo_url_prefix, _logo_url_suffix)
+        for ch in channels
+    ]
+
+
+def _xc_stream_live_streams(request, user, category_id=None):
+    channels, channel_num_map, _get_default_group_id, _logo_url_prefix, _logo_url_suffix = \
+        _xc_live_streams_setup(request, user, category_id)
+    sep = "["
     for channel in channels:
-        effective_num = channel.effective_channel_number
-        if effective_num is not None and effective_num != int(effective_num):
-            # Has decimal component, need to find available integer
-            candidate = int(effective_num)
-            while candidate in used_numbers:
-                candidate += 1
-            channel_num_map[channel.id] = candidate
-            used_numbers.add(candidate)
-
-    # Build the streams list with the collision-free channel numbers
-    for channel in channels:
-        channel_num_int = channel_num_map[channel.id]
-        effective_logo = channel.effective_logo_obj
-        effective_group = channel.effective_channel_group_obj
-
-        streams.append(
-            {
-                "num": channel_num_int,
-                "name": channel.effective_name,
-                "stream_type": "live",
-                "stream_id": channel.id,
-                "stream_icon": (
-                    None
-                    if not effective_logo
-                    else build_absolute_uri_with_port(
-                        request,
-                        reverse("api:channels:logo-cache", args=[effective_logo.id])
-                    )
-                ),
-                "epg_channel_id": str(channel_num_int),
-                "added": str(int(channel.created_at.timestamp())),
-                "is_adult": int(channel.is_adult),
-                "category_id": str(effective_group.id if effective_group else _get_default_group_id()),
-                "category_ids": [effective_group.id if effective_group else _get_default_group_id()],
-                "custom_sid": None,
-                "tv_archive": 0,
-                "direct_source": "",
-                "tv_archive_duration": 0,
-            }
+        yield sep + json.dumps(
+            _xc_channel_entry(channel, channel_num_map, _get_default_group_id, _logo_url_prefix, _logo_url_suffix)
         )
-
-    return streams
+        sep = ","
+    yield "]"
 
 
 def xc_get_epg(request, user, short=False):
