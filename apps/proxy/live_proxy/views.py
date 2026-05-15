@@ -25,7 +25,6 @@ from apps.accounts.permissions import (
     permission_classes_by_action,
 )
 from .constants import ChannelState, EventType, StreamType, ChannelMetadataField
-from .config_helper import ConfigHelper
 from .services.channel_service import ChannelService
 from core.utils import send_websocket_update
 from .url_utils import (
@@ -430,11 +429,11 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
             # Channel initialized - cleanup lifecycle now owns the connection release
             connection_allocated = False
 
-            # If we're the owner, wait for connection to establish
+            # If we're the owner, register the client now so the watchdog
+            # doesn't stop the channel during connection (which can take
+            # longer than the grace period). The generator handles waiting
+            # with keepalive packets via _wait_for_initialization().
             if proxy_server.am_i_owner(channel_id):
-                # Register the client before waiting for the stream to connect.
-                # The cleanup watchdog stops channels in connecting state with 0
-                # clients after the grace period - registering early prevents that.
                 output_profile = _resolve_output_profile(request, user)
                 output_format = _resolve_output_format(user, force_output_format, request)
                 resolved_format = f'{output_format}:p{output_profile.id}' if output_profile else output_format
@@ -449,72 +448,6 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
                     f"(output: {resolved_format}, profile: {output_profile.id if output_profile else None})"
                 )
                 _client_pre_registered = True
-                manager = proxy_server.stream_managers.get(channel_id)
-                if manager:
-                    wait_start = time.time()
-                    timeout = ConfigHelper.connection_timeout()
-                    while not manager.connected:
-                        if time.time() - wait_start > timeout:
-                            proxy_server.stop_channel(channel_id)
-                            return JsonResponse(
-                                {"error": "Connection timeout"}, status=504
-                            )
-
-                        # Check if this manager should keep retrying or stop
-                        if not manager.should_retry():
-                            # Check channel state in Redis to make a better decision
-                            metadata_key = RedisKeys.channel_metadata(channel_id)
-                            current_state = None
-
-                            if proxy_server.redis_client:
-                                try:
-                                    state_bytes = proxy_server.redis_client.hget(
-                                        metadata_key, ChannelMetadataField.STATE
-                                    )
-                                    if state_bytes:
-                                        current_state = state_bytes
-                                        logger.debug(
-                                            f"[{client_id}] Current state of channel {channel_id}: {current_state}"
-                                        )
-                                except Exception as e:
-                                    logger.warning(
-                                        f"[{client_id}] Error getting channel state: {e}"
-                                    )
-
-                            # Allow normal transitional states to continue
-                            if current_state in [
-                                ChannelState.INITIALIZING,
-                                ChannelState.CONNECTING,
-                            ]:
-                                logger.info(
-                                    f"[{client_id}] Channel {channel_id} is in {current_state} state, continuing to wait"
-                                )
-                                # Reset wait timer to allow the transition to complete
-                                wait_start = time.time()
-                                continue
-
-                            # Check if we're switching URLs
-                            if (
-                                hasattr(manager, "url_switching")
-                                and manager.url_switching
-                            ):
-                                logger.info(
-                                    f"[{client_id}] Stream manager is currently switching URLs for channel {channel_id}"
-                                )
-                                # Reset wait timer to give the switch a chance
-                                wait_start = time.time()
-                                continue
-
-                            # If we reach here, we've exhausted retries and the channel isn't in a valid transitional state
-                            logger.warning(
-                                f"[{client_id}] Channel {channel_id} failed to connect and is not in transitional state"
-                            )
-                            proxy_server.stop_channel(channel_id)
-                            return JsonResponse(
-                                {"error": "Failed to connect"}, status=502
-                            )
-
-                        gevent.sleep(0.1)
 
             logger.info(f"[{client_id}] Successfully initialized channel {channel_id}")
             channel_initializing = True

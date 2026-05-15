@@ -529,13 +529,111 @@ class StreamManager:
 
             logger.debug(f"Starting transcode process: {self.transcode_cmd} for channel: {self.channel_id}")
 
-            # Modified to capture stderr instead of discarding it
-            self.transcode_process = subprocess.Popen(
-                self.transcode_cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,  # Capture stderr instead of discarding it
-                bufsize=188 * 64            # Buffer optimized for TS packets
-            )
+            import os as _os
+            import shutil as _shutil
+            import signal as _signal
+            import time as _time
+
+            relay_read, relay_write = _os.pipe()
+            self.socket = _os.fdopen(relay_read, 'rb', buffering=0)
+            stderr_read, stderr_write = _os.pipe()
+            _stderr_read_transferred = False
+            try:
+                _t0 = _time.monotonic()
+
+                # os.posix_spawn does not call pthread_atfork handlers, making
+                # it safe to call directly from the hub's greenlet.  All
+                # fork()-based approaches (subprocess.Popen, whether called
+                # from the greenlet or a threadpool thread) hang in gevent's
+                # _before_fork atfork handler indefinitely under gevent+uWSGI.
+                _executable = _shutil.which(self.transcode_cmd[0]) or self.transcode_cmd[0]
+                _pid = _os.posix_spawn(
+                    _executable,
+                    self.transcode_cmd,
+                    _os.environ,
+                    file_actions=[
+                        (_os.POSIX_SPAWN_OPEN, 0, '/dev/null', _os.O_RDONLY, 0),
+                        (_os.POSIX_SPAWN_DUP2, relay_write, 1),
+                        (_os.POSIX_SPAWN_DUP2, stderr_write, 2),
+                        (_os.POSIX_SPAWN_CLOSE, relay_write),
+                        (_os.POSIX_SPAWN_CLOSE, stderr_write),
+                    ],
+                )
+                logger.debug(
+                    f"posix_spawn completed in {_time.monotonic() - _t0:.3f}s "
+                    f"pid={_pid} for channel {self.channel_id}"
+                )
+
+                _stderr_file = _os.fdopen(stderr_read, 'rb', buffering=0)
+                _stderr_read_transferred = True
+
+                class _SpawnedProcess:
+                    """Minimal Popen-compatible wrapper for a posix_spawn'd process."""
+                    stdin = None
+                    stdout = None
+
+                    def __init__(self):
+                        self.pid = _pid
+                        self.returncode = None
+                        self.stderr = _stderr_file
+
+                    def _reap(self, status):
+                        if _os.WIFEXITED(status):
+                            self.returncode = _os.WEXITSTATUS(status)
+                        elif _os.WIFSIGNALED(status):
+                            self.returncode = -_os.WTERMSIG(status)
+                        else:
+                            self.returncode = -1
+
+                    def poll(self):
+                        if self.returncode is not None:
+                            return self.returncode
+                        try:
+                            rpid, status = _os.waitpid(self.pid, _os.WNOHANG)
+                            if rpid:
+                                self._reap(status)
+                        except ChildProcessError:
+                            self.returncode = -1
+                        return self.returncode
+
+                    def wait(self, timeout=None):
+                        if self.returncode is not None:
+                            return self.returncode
+                        import gevent as _gevent
+                        deadline = _time.monotonic() + timeout if timeout is not None else None
+                        while True:
+                            try:
+                                rpid, status = _os.waitpid(self.pid, _os.WNOHANG)
+                            except ChildProcessError:
+                                self.returncode = -1
+                                return self.returncode
+                            if rpid:
+                                self._reap(status)
+                                return self.returncode
+                            if deadline is not None and _time.monotonic() >= deadline:
+                                raise subprocess.TimeoutExpired(self.pid, timeout)
+                            _gevent.sleep(0.01)
+
+                    def kill(self):
+                        try:
+                            _os.kill(self.pid, _signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
+
+                    def terminate(self):
+                        try:
+                            _os.kill(self.pid, _signal.SIGTERM)
+                        except ProcessLookupError:
+                            pass
+
+                self.transcode_process = _SpawnedProcess()
+            except Exception:
+                if not _stderr_read_transferred:
+                    _os.close(stderr_read)
+                raise
+            finally:
+                _os.close(relay_write)
+                _os.close(stderr_write)
 
             # Start a thread to read stderr
             self._start_stderr_reader()
@@ -543,7 +641,6 @@ class StreamManager:
             # Set flag that transcoding process is active
             self.transcode_process_active = True
 
-            self.socket = self.transcode_process.stdout  # Read from std output
             self.connected = True
 
             # Set connection start time for stability tracking
@@ -570,105 +667,73 @@ class StreamManager:
 
     def _read_stderr(self):
         """Read and log ffmpeg stderr output with real-time stats parsing"""
+        import os as _os
+        import select as _select
+        import gevent
+
         try:
-            buffer = b""
-            last_stats_line = b""
+            stderr = self.transcode_process.stderr
+            if not stderr:
+                return
+            stderr_fd = stderr.fileno()
+            buf = b""
 
-            # Read byte by byte for immediate detection
-            while self.transcode_process and self.transcode_process.stderr:
+            while self.running and self.transcode_process and self.transcode_process.stderr:
                 try:
-                    # Read one byte at a time for immediate processing
-                    byte = self.transcode_process.stderr.read(1)
-                    if not byte:
-                        break
-
-                    buffer += byte
-
-                    # Check for frame= at the start of buffer (new stats line)
-                    if buffer == b"frame=":
-                        # We detected the start of a stats line, read until we get a complete line
-                        # or hit a carriage return (which overwrites the previous stats)
-                        while True:
-                            next_byte = self.transcode_process.stderr.read(1)
-                            if not next_byte:
-                                break
-
-                            buffer += next_byte
-
-                            # Break on carriage return (stats overwrite) or newline
-                            if next_byte in (b'\r', b'\n'):
-                                break
-
-                            # Also break if we have enough data for a typical stats line
-                            if len(buffer) > 200:  # Typical stats line length
-                                break
-
-                        # Process the stats line immediately
-                        if buffer.strip():
-                            try:
-                                stats_text = buffer.decode('utf-8', errors='ignore').strip()
-                                if stats_text and "frame=" in stats_text:
-                                    self._parse_ffmpeg_stats(stats_text)
-                                    self._log_stderr_content(stats_text)
-                            except Exception as e:
-                                logger.debug(f"Error parsing immediate stats line: {e}")
-
-                        # Clear buffer after processing
-                        buffer = b""
+                    ready, _, _ = _select.select([stderr_fd], [], [], 1.0)
+                    if not ready:
+                        if not self.running or not self.transcode_process:
+                            break
                         continue
 
-                    # Handle regular line breaks for non-stats content
-                    elif byte == b'\n':
-                        if buffer.strip():
-                            line_text = buffer.decode('utf-8', errors='ignore').strip()
-                            if line_text and not line_text.startswith("frame="):
-                                self._log_stderr_content(line_text)
-                        buffer = b""
+                    chunk = _os.read(stderr_fd, 4096)
+                    if not chunk:
+                        break
 
-                    # Handle carriage returns (potential stats overwrite)
-                    elif byte == b'\r':
-                        # Check if this might be a stats line
-                        if b"frame=" in buffer:
-                            try:
-                                stats_text = buffer.decode('utf-8', errors='ignore').strip()
-                                if stats_text and "frame=" in stats_text:
-                                    self._parse_ffmpeg_stats(stats_text)
-                                    self._log_stderr_content(stats_text)
-                            except Exception as e:
-                                logger.debug(f"Error parsing stats on carriage return: {e}")
-                        elif buffer.strip():
-                            # Regular content with carriage return
-                            line_text = buffer.decode('utf-8', errors='ignore').strip()
-                            if line_text:
-                                self._log_stderr_content(line_text)
-                        buffer = b""
+                    # Yield to the hub after each read so fetch_chunk and other
+                    # greenlets can run. Without this, the byte-at-a-time loop
+                    # monopolises the event loop during ffmpeg startup output,
+                    # starving the data reader and preventing the buffer from filling.
+                    gevent.sleep(0)
 
-                    # Prevent buffer from growing too large for non-stats content
-                    elif len(buffer) > 1024 and b"frame=" not in buffer:
-                        # Process whatever we have if it's not a stats line
-                        if buffer.strip():
-                            line_text = buffer.decode('utf-8', errors='ignore').strip()
-                            if line_text:
-                                self._log_stderr_content(line_text)
-                        buffer = b""
+                    buf += chunk
+
+                    while True:
+                        cr = buf.find(b'\r')
+                        nl = buf.find(b'\n')
+                        if cr == -1 and nl == -1:
+                            if len(buf) > 1024 and b"frame=" not in buf:
+                                line_text = buf.decode('utf-8', errors='ignore').strip()
+                                if line_text:
+                                    self._log_stderr_content(line_text)
+                                buf = b""
+                            break
+                        if cr != -1 and (nl == -1 or cr < nl):
+                            line, buf = buf[:cr], buf[cr + 1:]
+                        else:
+                            line, buf = buf[:nl], buf[nl + 1:]
+                        line_text = line.decode('utf-8', errors='ignore').strip()
+                        if not line_text:
+                            continue
+                        if "frame=" in line_text:
+                            self._parse_ffmpeg_stats(line_text)
+                        self._log_stderr_content(line_text)
 
                 except Exception as e:
-                    logger.error(f"Error reading stderr byte: {e}")
+                    logger.error(f"Error reading stderr for channel {self.channel_id}: {e}")
                     break
 
-            # Process any remaining buffer content
-            if buffer.strip():
+            if buf.strip():
                 try:
-                    remaining_text = buffer.decode('utf-8', errors='ignore').strip()
+                    remaining_text = buf.decode('utf-8', errors='ignore').strip()
                     if remaining_text:
                         if "frame=" in remaining_text:
                             self._parse_ffmpeg_stats(remaining_text)
                         self._log_stderr_content(remaining_text)
                 except Exception as e:
-                    logger.debug(f"Error processing remaining buffer: {e}")
+                    logger.debug(f"Error processing remaining stderr buffer: {e}")
 
         except Exception as e:
-            # Catch any other exceptions in the thread to prevent crashes
             try:
                 logger.error(f"Error in stderr reader thread for channel {self.channel_id}: {e}")
             except:
@@ -1469,16 +1534,33 @@ class StreamManager:
                     chunk = self.socket.recv(Config.CHUNK_SIZE)
                     self.socket.settimeout(original_timeout)  # Restore original timeout
                 else:
-                    # SocketIO object (transcode process stdout) - use select for timeout
-                    import select
-                    ready, _, _ = select.select([self.socket], [], [], chunk_timeout)
+                    # Non-socket file object (io.FileIO from os.fdopen) - use raw
+                    # fd + os.read to stay cooperative under gevent.
+                    import select as _select
+                    import os as _os
+
+                    try:
+                        fd = self.socket.fileno()
+                    except (ValueError, OSError):
+                        self.connected = False
+                        return False
+
+                    try:
+                        ready, _, _ = _select.select([fd], [], [], chunk_timeout)
+                    except (ValueError, OSError):
+                        self.connected = False
+                        return False
 
                     if not ready:
-                        # Timeout occurred
                         logger.debug(f"Chunk read timeout ({chunk_timeout}s) for channel {self.channel_id}")
                         return False
 
-                    chunk = self.socket.read(Config.CHUNK_SIZE)
+                    try:
+                        chunk = _os.read(fd, Config.CHUNK_SIZE)
+                    except OSError as e:
+                        logger.warning(f"Read error for channel {self.channel_id}: {e}")
+                        self.connected = False
+                        return False
 
             except socket.timeout:
                 # Socket timeout occurred

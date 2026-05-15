@@ -101,7 +101,7 @@ class StreamGenerator:
 
             # First handle initialization if needed
             if self.channel_initializing:
-                channel_ready = self._wait_for_initialization()
+                channel_ready = yield from self._wait_for_initialization()
                 if not channel_ready:
                     # If initialization failed or timed out, we've already sent error packets
                     return
@@ -147,9 +147,7 @@ class StreamGenerator:
         last_keepalive = 0
         proxy_server = ProxyServer.get_instance()
 
-        # While init is happening, send keepalive packets
         while time.time() - initialization_start < max_init_wait:
-            # Check if initialization has completed
             if proxy_server.redis_client:
                 metadata_key = RedisKeys.channel_metadata(self.channel_id)
                 metadata = proxy_server.redis_client.hgetall(metadata_key)
@@ -159,43 +157,29 @@ class StreamGenerator:
                     if state in ['waiting_for_clients', 'active']:
                         logger.info(f"[{self.client_id}] Channel {self.channel_id} now ready (state={state})")
                         return True
-                    elif state in ['error', 'stopped', 'stopping']:  # Added 'stopping' to error states
+                    elif state in ['error', 'stopped', 'stopping']:
                         error_message = metadata.get('error_message', 'Unknown error')
                         logger.error(f"[{self.client_id}] Channel {self.channel_id} in error state: {state}, message: {error_message}")
-                        # Send error packet before giving up
                         yield create_ts_packet('error', f"Error: {error_message}")
                         return False
-                    else:
-                        # Improved logging to track initialization progress
-                        init_time = "unknown"
-                        if 'init_time' in metadata:
-                            try:
-                                init_time_float = float(metadata['init_time'])
-                                init_duration = time.time() - init_time_float
-                                init_time = f"{init_duration:.1f}s ago"
-                            except:
-                                pass
 
-                        # Still initializing - send keepalive if needed
-                        if time.time() - last_keepalive >= keepalive_interval:
-                            status_msg = f"Initializing: {state} (started {init_time})"
-                            keepalive_packet = create_ts_packet('keepalive', status_msg)
-                            logger.debug(f"[{self.client_id}] Sending keepalive packet during initialization, state={state}")
-                            yield keepalive_packet
-                            self.bytes_sent += len(keepalive_packet)
-                            last_keepalive = time.time()
-
-                # Also check stopping key directly
                 stop_key = RedisKeys.channel_stopping(self.channel_id)
                 if proxy_server.redis_client.exists(stop_key):
                     logger.error(f"[{self.client_id}] Channel {self.channel_id} stopping flag detected during initialization")
                     yield create_ts_packet('error', "Error: Channel is stopping")
                     return False
 
-            # Wait a bit before checking again
-            gevent.sleep(0.1)
+            # Send PAT+PMT+null so clients recognise a valid TS program and keep
+            # buffering instead of timing out from missing program info.
+            if time.time() - last_keepalive >= keepalive_interval:
+                logger.debug(f"[{self.client_id}] Sending keepalive during initialization")
+                keepalive_data = create_ts_packet('null')
+                yield keepalive_data
+                self.bytes_sent += len(keepalive_data)
+                last_keepalive = time.time()
+            else:
+                gevent.sleep(0.1)
 
-        # Timed out waiting
         logger.warning(f"[{self.client_id}] Timed out waiting for initialization")
         yield create_ts_packet('error', "Error: Initialization timeout")
         return False

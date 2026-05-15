@@ -28,10 +28,16 @@ class HTTPStreamReader:
 
     def start(self):
         """Start the HTTP stream reader thread"""
-        # Create a pipe (works on Windows and Unix)
         self.pipe_read, self.pipe_write = os.pipe()
 
-        # Start the reader thread
+        # Make the write end non-blocking so that os.write() raises BlockingIOError
+        # instead of stalling the OS thread when the pipe buffer is full. Without
+        # this, a full pipe blocks the entire gevent worker (all greenlets freeze)
+        # because gevent does not patch os.write() on pipes.
+        import fcntl
+        flags = fcntl.fcntl(self.pipe_write, fcntl.F_GETFL)
+        fcntl.fcntl(self.pipe_write, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+
         self.running = True
         self.thread = threading.Thread(target=self._read_stream, daemon=True)
         self.thread.start()
@@ -71,6 +77,8 @@ class HTTPStreamReader:
 
             logger.info(f"HTTP reader connected successfully, streaming data...")
 
+            import select as _select
+
             # Stream chunks to pipe
             chunk_count = 0
             for chunk in self.response.iter_content(chunk_size=self.chunk_size):
@@ -78,17 +86,32 @@ class HTTPStreamReader:
                     break
 
                 if chunk:
-                    try:
-                        # Write binary data to pipe
-                        os.write(self.pipe_write, chunk)
-                        chunk_count += 1
-
-                        # Log progress periodically
-                        if chunk_count % 1000 == 0:
-                            logger.debug(f"HTTP reader streamed {chunk_count} chunks")
-                    except OSError as e:
-                        logger.error(f"Pipe write error: {e}")
+                    # Write the chunk in a non-blocking loop. The pipe write end is
+                    # set O_NONBLOCK in start(), so os.write() raises BlockingIOError
+                    # instead of stalling the OS thread. We use select.select on the
+                    # write fd (gevent-patched - yields to hub) to wait for space,
+                    # then retry. Partial writes are handled by advancing the offset.
+                    offset = 0
+                    write_error = False
+                    while offset < len(chunk) and self.running:
+                        try:
+                            n = os.write(self.pipe_write, chunk[offset:])
+                            offset += n
+                        except BlockingIOError:
+                            _, writable, _ = _select.select([], [self.pipe_write], [], 1.0)
+                            if not writable and not self.running:
+                                write_error = True
+                                break
+                        except OSError as e:
+                            logger.error(f"Pipe write error: {e}")
+                            write_error = True
+                            break
+                    if write_error:
                         break
+
+                    chunk_count += 1
+                    if chunk_count % 1000 == 0:
+                        logger.debug(f"HTTP reader streamed {chunk_count} chunks")
 
             logger.info("HTTP stream ended")
 

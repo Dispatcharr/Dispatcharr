@@ -13,7 +13,6 @@ create a read-only StreamBuffer pointing at the same Redis keys.
 """
 
 import select
-import subprocess
 import threading
 import time
 from core.utils import RedisClient
@@ -82,12 +81,8 @@ class OutputProfileManager:
         self.output_buffer = self._make_buffer()
 
         try:
-            self._process = subprocess.Popen(
-                self.command,
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-            )
+            from ...utils import posix_spawn_proc
+            self._process = posix_spawn_proc(self.command)
         except (FileNotFoundError, OSError) as e:
             logger.error(
                 f"[Profile:{self.profile_id}:{self.channel_id[:8]}] "
@@ -169,9 +164,13 @@ class OutputProfileManager:
             if not self.running:
                 return
             n = self._process.stdin.write(view[offset:])
-            if n is None or n <= 0:
+            if n is None:
+                # Pipe full (EAGAIN on non-blocking FD); yield cooperatively
+                select.select([], [self._process.stdin], [], 1.0)
+            elif n <= 0:
                 raise OSError("stdin write returned no bytes")
-            offset += n
+            else:
+                offset += n
 
     def _writer_loop(self):
         """Read TS chunks from Redis and write to the transcode process stdin."""
@@ -266,13 +265,28 @@ class OutputProfileManager:
 
     def _stderr_loop(self):
         """Log process stderr at WARNING level."""
+        import os as _os
+        import select as _select
         try:
-            for raw_line in self._process.stderr:
-                line = raw_line.decode(errors="replace").rstrip()
-                if line:
-                    logger.warning(
-                        f"[Profile:{self.profile_id}:{self.channel_id[:8]}] {line}"
-                    )
+            stderr_fd = self._process.stderr.fileno()
+            buf = b""
+            while self.running:
+                ready, _, _ = _select.select([stderr_fd], [], [], 1.0)
+                if not ready:
+                    if self._process.poll() is not None:
+                        break
+                    continue
+                chunk = _os.read(stderr_fd, 4096)
+                if not chunk:
+                    break
+                buf += chunk
+                while b'\n' in buf:
+                    line_bytes, buf = buf.split(b'\n', 1)
+                    line = line_bytes.decode(errors="replace").rstrip()
+                    if line:
+                        logger.warning(
+                            f"[Profile:{self.profile_id}:{self.channel_id[:8]}] {line}"
+                        )
         except Exception:
             pass
 

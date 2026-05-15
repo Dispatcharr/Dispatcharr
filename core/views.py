@@ -1,8 +1,8 @@
 # core/views.py
 import os
+import signal
 from shlex import split as shlex_split
 import sys
-import subprocess
 import logging
 import regex
 import redis
@@ -162,34 +162,53 @@ def stream_view(request, channel_uuid):
         logger.debug("Executing command: %s", cmd)
 
         try:
-            # Start the streaming process.
-            process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            stdout_r, stdout_w = os.pipe()
+            devnull_r = os.open(os.devnull, os.O_RDONLY)
+            devnull_w = os.open(os.devnull, os.O_WRONLY)
+            file_actions = [
+                (os.POSIX_SPAWN_DUP2, devnull_r, 0),
+                (os.POSIX_SPAWN_DUP2, stdout_w, 1),
+                (os.POSIX_SPAWN_DUP2, devnull_w, 2),
+                (os.POSIX_SPAWN_CLOSE, devnull_r),
+                (os.POSIX_SPAWN_CLOSE, devnull_w),
+                (os.POSIX_SPAWN_CLOSE, stdout_w),
+                (os.POSIX_SPAWN_CLOSE, stdout_r),
+            ]
+            proc_pid = os.posix_spawn(cmd[0], cmd, dict(os.environ), file_actions=file_actions)
+            for fd in (devnull_r, devnull_w, stdout_w):
+                os.close(fd)
+            proc_stdout = os.fdopen(stdout_r, 'rb')
         except Exception as e:
-            persistent_lock.release()  # Ensure the lock is released on error.
-            logger.exception("Error starting stream for channel ID=%s", stream_id)
+            persistent_lock.release()
+            logger.exception("Error starting stream for channel ID=%s", channel_uuid)
             return HttpResponseServerError(f"Error starting stream: {e}")
 
     except Exception as e:
-        logger.exception("Error preparing stream for channel ID=%s", stream_id)
+        logger.exception("Error preparing stream for channel ID=%s", channel_uuid)
         return HttpResponseServerError(f"Error preparing stream: {e}")
 
-    def stream_generator(proc, s, persistent_lock):
+    def stream_generator(stdout_file, pid, persistent_lock):
         try:
             while True:
-                chunk = proc.stdout.read(8192)
+                chunk = stdout_file.read(8192)
                 if not chunk:
                     break
                 yield chunk
         finally:
             try:
-                proc.terminate()
-                logger.debug("Streaming process terminated for stream ID=%s", s.id)
-            except Exception as e:
-                logger.error("Error terminating process for stream ID=%s: %s", s.id, e)
+                os.kill(pid, signal.SIGTERM)
+                logger.debug("Streaming process terminated for channel ID=%s", channel.id)
+            except OSError:
+                pass
+            try:
+                os.waitpid(pid, os.WNOHANG)
+            except ChildProcessError:
+                pass
+            stdout_file.close()
             persistent_lock.release()
             logger.debug("Persistent lock released for channel ID=%s", channel.id)
 
-        return StreamingHttpResponse(
-            stream_generator(process, stream, persistent_lock),
-            content_type="video/MP2T"
-        )
+    return StreamingHttpResponse(
+        stream_generator(proc_stdout, proc_pid, persistent_lock),
+        content_type="video/MP2T"
+    )

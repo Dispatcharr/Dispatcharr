@@ -9,7 +9,6 @@ One instance per channel per cluster - coordinated via Redis fmp4:owner lock.
 """
 
 import select
-import subprocess
 import threading
 import time
 import struct
@@ -123,12 +122,8 @@ class FMP4RemuxManager:
         self.running = True
         self._set_state(FMP4_STATE_INITIALIZING)
 
-        self._process = subprocess.Popen(
-            FFMPEG_REMUX_CMD,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
+        from ...utils import posix_spawn_proc
+        self._process = posix_spawn_proc(FFMPEG_REMUX_CMD)
 
         short_id = self.channel_id[:8]
         self._reader_thread = threading.Thread(
@@ -195,9 +190,13 @@ class FMP4RemuxManager:
             if not self.running:
                 return
             n = self._process.stdin.write(view[offset:])
-            if n is None or n <= 0:
+            if n is None:
+                # Pipe full (EAGAIN on non-blocking FD); yield cooperatively
+                select.select([], [self._process.stdin], [], 1.0)
+            elif n <= 0:
                 raise OSError("stdin write returned no bytes")
-            offset += n
+            else:
+                offset += n
 
     def _writer_loop(self):
         """Read TS chunks from Redis and write to FFmpeg stdin."""
@@ -347,17 +346,32 @@ class FMP4RemuxManager:
 
     def _stderr_loop(self):
         """Log FFmpeg stderr lines. Detect BSF codec mismatch and trigger a no-BSF retry."""
+        import os as _os
+        import select as _select
         try:
-            for raw_line in self._process.stderr:
-                line = raw_line.decode(errors="replace").rstrip()
-                if line:
-                    logger.warning(f"[fMP4Remux:{self.channel_id}] FFmpeg: {line}")
-                if "aac_adtstoasc" in line and "is not supported by the bitstream filter" in line:
-                    threading.Thread(
-                        target=self._handle_bsf_error, daemon=True,
-                        name=f"fmp4-bsf-retry-{self.channel_id[:8]}"
-                    ).start()
-                    return
+            stderr_fd = self._process.stderr.fileno()
+            buf = b""
+            while self.running:
+                ready, _, _ = _select.select([stderr_fd], [], [], 1.0)
+                if not ready:
+                    if self._process.poll() is not None:
+                        break
+                    continue
+                chunk = _os.read(stderr_fd, 4096)
+                if not chunk:
+                    break
+                buf += chunk
+                while b'\n' in buf:
+                    line_bytes, buf = buf.split(b'\n', 1)
+                    line = line_bytes.decode(errors="replace").rstrip()
+                    if line:
+                        logger.warning(f"[fMP4Remux:{self.channel_id}] FFmpeg: {line}")
+                    if "aac_adtstoasc" in line and "is not supported by the bitstream filter" in line:
+                        threading.Thread(
+                            target=self._handle_bsf_error, daemon=True,
+                            name=f"fmp4-bsf-retry-{self.channel_id[:8]}"
+                        ).start()
+                        return
         except Exception:
             pass
 
@@ -380,12 +394,8 @@ class FMP4RemuxManager:
                     pass
 
         self._set_state(FMP4_STATE_INITIALIZING)
-        self._process = subprocess.Popen(
-            FFMPEG_REMUX_CMD_NO_BSF,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
+        from ...utils import posix_spawn_proc
+        self._process = posix_spawn_proc(FFMPEG_REMUX_CMD_NO_BSF)
         self.running = True
 
         if not self.running:
