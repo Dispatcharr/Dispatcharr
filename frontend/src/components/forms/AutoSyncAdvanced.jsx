@@ -73,6 +73,7 @@ const RegexPreviewBox = ({ group, kind, regexPreviewState }) => {
         borderRadius: 6,
         padding: 8,
         backgroundColor: '#1E1E22',
+        overflow: 'hidden',
       }}
     >
       <Text size="xs" fw={600} mb={4}>
@@ -95,40 +96,48 @@ const RegexPreviewBox = ({ group, kind, regexPreviewState }) => {
             : emptyText}
         </Text>
       )}
-      {result?.matches?.map((row, idx) =>
-        kind === 'find' ? (
-          <Flex
-            key={`${row.before}-${idx}`}
-            gap="xs"
-            align="center"
-            style={{ fontFamily: 'monospace' }}
-          >
-            <Text size="xs" c="dimmed" style={{ flex: 1 }} truncate>
-              {row.before}
-            </Text>
-            <Text size="xs" c="gray.5">
-              {' -> '}
-            </Text>
-            <Text size="xs" c="teal.4" style={{ flex: 1 }} truncate>
-              {row.after}
-            </Text>
-          </Flex>
-        ) : (
-          <Flex
-            key={`${row.name}-${idx}`}
-            gap="xs"
-            align="center"
-            style={{ fontFamily: 'monospace' }}
-          >
-            <Text size="xs" c={markerColor} style={{ width: 18 }}>
-              {markerChar}
-            </Text>
-            <Text size="xs" c="gray.2" style={{ flex: 1 }} truncate>
-              {row.name}
-            </Text>
-          </Flex>
-        )
-      )}
+      <div style={{ overflowX: 'auto' }}>
+        {result?.matches?.map((row, idx) =>
+          kind === 'find' ? (
+            <Flex
+              key={`${row.before}-${idx}`}
+              gap="xs"
+              align="center"
+              wrap="nowrap"
+              style={{ fontFamily: 'monospace' }}
+            >
+              <Text size="xs" c="dimmed" style={{ whiteSpace: 'nowrap' }}>
+                {row.before}
+              </Text>
+              <Text size="xs" c="gray.5" style={{ whiteSpace: 'nowrap' }}>
+                {' -> '}
+              </Text>
+              <Text size="xs" c="teal.4" style={{ whiteSpace: 'nowrap' }}>
+                {row.after}
+              </Text>
+            </Flex>
+          ) : (
+            <Flex
+              key={`${row.name}-${idx}`}
+              gap="xs"
+              align="center"
+              wrap="nowrap"
+              style={{ fontFamily: 'monospace' }}
+            >
+              <Text
+                size="xs"
+                c={markerColor}
+                style={{ width: 18, flexShrink: 0 }}
+              >
+                {markerChar}
+              </Text>
+              <Text size="xs" c="gray.2" style={{ whiteSpace: 'nowrap' }}>
+                {row.name}
+              </Text>
+            </Flex>
+          )
+        )}
+      </div>
     </Box>
   );
 };
@@ -329,7 +338,7 @@ const AutoSyncAdvanced = ({
             w={280}
             openDelay={500}
           >
-            <Box style={{ flex: 1 }}>
+            <Box style={{ flex: 1, minWidth: 0 }}>
               <TextInput
                 label="Include if name matches (Regex)"
                 placeholder="e.g. ^Sports.*"
@@ -337,13 +346,6 @@ const AutoSyncAdvanced = ({
                 onChange={(e) => updateFilter(e.currentTarget.value)}
                 size="xs"
               />
-              {filterValue && (
-                <RegexPreviewBox
-                  group={group}
-                  kind="include"
-                  regexPreviewState={regexPreviewState}
-                />
-              )}
             </Box>
           </Tooltip>
           <Tooltip
@@ -353,7 +355,7 @@ const AutoSyncAdvanced = ({
             w={280}
             openDelay={500}
           >
-            <Box style={{ flex: 1 }}>
+            <Box style={{ flex: 1, minWidth: 0 }}>
               <TextInput
                 label="Exclude if name matches (Regex)"
                 placeholder="e.g. TEST|BACKUP"
@@ -361,16 +363,23 @@ const AutoSyncAdvanced = ({
                 onChange={(e) => updateExclude(e.currentTarget.value)}
                 size="xs"
               />
-              {excludeValue && (
-                <RegexPreviewBox
-                  group={group}
-                  kind="exclude"
-                  regexPreviewState={regexPreviewState}
-                />
-              )}
             </Box>
           </Tooltip>
         </Flex>
+        {filterValue && (
+          <RegexPreviewBox
+            group={group}
+            kind="include"
+            regexPreviewState={regexPreviewState}
+          />
+        )}
+        {excludeValue && (
+          <RegexPreviewBox
+            group={group}
+            kind="exclude"
+            regexPreviewState={regexPreviewState}
+          />
+        )}
       </Stack>
 
       <Stack gap="sm">
