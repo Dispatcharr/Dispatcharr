@@ -12,8 +12,8 @@ Two things happen here:
    gevent hub during I/O instead of blocking the OS thread.
 
 Without (1), `async_to_sync(channel_layer.group_send)` in send_websocket_update
-would call epoll_wait() directly, freezing every greenlet on the worker (the
-90s pile-up observed on Worker 9). With (1), select.epoll is removed by
+calls epoll_wait() directly, which blocks the OS thread and freezes all greenlets
+on the worker until the call returns. With (1), select.epoll is replaced by
 monkey-patching, which breaks asyncio event loop creation in threadpool threads.
 send_websocket_update therefore uses a synchronous Redis path in gevent workers
 instead of asyncio - see _gevent_ws_send() in core/utils.py.
