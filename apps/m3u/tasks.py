@@ -1936,15 +1936,18 @@ def sync_auto_channels(account_id, scan_start_time=None):
                 last_seen__gte=scan_start_time,
             )
 
-            # Pre-compile with Python re so an invalid pattern fails here
-            # rather than as a Postgres exception inside the per-stream loop.
+            # Filter streams in Python using the same `regex` module as the
+            # preview API. This ensures auto-sync accepts the same patterns
+            # the user tested in the frontend (e.g. `(?)` as a no-op inline
+            # modifier), and avoids passing potentially incompatible syntax
+            # to PostgreSQL's regex engine.
+            streams_is_list = False
             if name_match_regex:
                 try:
-                    re.compile(name_match_regex)
-                    current_streams = current_streams.filter(
-                        name__iregex=name_match_regex
-                    )
-                except re.error as e:
+                    match_re = regex.compile(name_match_regex, regex.IGNORECASE)
+                    current_streams = [s for s in current_streams if match_re.search(s.name)]
+                    streams_is_list = True
+                except regex.error as e:
                     logger.warning(
                         f"Invalid name_match_regex '{name_match_regex}' for group '{channel_group.name}': {e}. Skipping name filter."
                     )
@@ -1953,44 +1956,66 @@ def sync_auto_channels(account_id, scan_start_time=None):
             # compose: include narrows, exclude removes from what's left.
             if name_match_exclude_regex:
                 try:
-                    re.compile(name_match_exclude_regex)
-                    current_streams = current_streams.exclude(
-                        name__iregex=name_match_exclude_regex
-                    )
-                except re.error as e:
+                    exclude_re = regex.compile(name_match_exclude_regex, regex.IGNORECASE)
+                    current_streams = [s for s in current_streams if not exclude_re.search(s.name)]
+                    streams_is_list = True
+                except regex.error as e:
                     logger.warning(
                         f"Invalid name_match_exclude_regex '{name_match_exclude_regex}' for group '{channel_group.name}': {e}. Skipping exclude filter."
                     )
 
             # --- APPLY CHANNEL SORT ORDER ---
-            streams_is_list = False  # Track if we converted to list
             if channel_sort_order and channel_sort_order != "":
                 if channel_sort_order == "name":
-                    # Use natural sorting for names to handle numbers correctly
-                    current_streams = list(current_streams)
+                    if not streams_is_list:
+                        current_streams = list(current_streams)
+                        streams_is_list = True
                     current_streams.sort(
                         key=lambda stream: natural_sort_key(stream.name),
                         reverse=channel_sort_reverse,
                     )
-                    streams_is_list = True
                 elif channel_sort_order == "tvg_id":
-                    order_prefix = "-" if channel_sort_reverse else ""
-                    current_streams = current_streams.order_by(f"{order_prefix}tvg_id")
+                    if streams_is_list:
+                        current_streams.sort(
+                            key=lambda s: (s.tvg_id or ""),
+                            reverse=channel_sort_reverse,
+                        )
+                    else:
+                        order_prefix = "-" if channel_sort_reverse else ""
+                        current_streams = current_streams.order_by(f"{order_prefix}tvg_id")
                 elif channel_sort_order == "updated_at":
-                    order_prefix = "-" if channel_sort_reverse else ""
-                    current_streams = current_streams.order_by(
-                        f"{order_prefix}updated_at"
-                    )
+                    if streams_is_list:
+                        current_streams.sort(
+                            key=lambda s: (s.updated_at or ""),
+                            reverse=channel_sort_reverse,
+                        )
+                    else:
+                        order_prefix = "-" if channel_sort_reverse else ""
+                        current_streams = current_streams.order_by(
+                            f"{order_prefix}updated_at"
+                        )
                 else:
                     logger.warning(
                         f"Unknown channel_sort_order '{channel_sort_order}' for group '{channel_group.name}'. Using provider order."
                     )
-                    order_prefix = "-" if channel_sort_reverse else ""
-                    current_streams = current_streams.order_by(f"{order_prefix}id")
+                    if streams_is_list:
+                        current_streams.sort(
+                            key=lambda s: s.id,
+                            reverse=channel_sort_reverse,
+                        )
+                    else:
+                        order_prefix = "-" if channel_sort_reverse else ""
+                        current_streams = current_streams.order_by(f"{order_prefix}id")
             else:
                 # Provider order (default) - can still be reversed
-                order_prefix = "-" if channel_sort_reverse else ""
-                current_streams = current_streams.order_by(f"{order_prefix}id")
+                if streams_is_list:
+                    current_streams.sort(
+                        key=lambda s: s.id,
+                        reverse=channel_sort_reverse,
+                    )
+                else:
+                    order_prefix = "-" if channel_sort_reverse else ""
+                    current_streams = current_streams.order_by(f"{order_prefix}id")
 
             # Scoped to this group so the loop below runs in O(group size).
             # Multi-stream channels are deduped by channel_id so every
