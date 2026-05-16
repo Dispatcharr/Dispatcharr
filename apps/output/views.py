@@ -2322,7 +2322,8 @@ def xc_get_live_streams(request, user, category_id=None):
 def _xc_stream_live_streams(request, user, category_id=None):
     channels, channel_num_map, _get_default_group_id, _logo_url_prefix, _logo_url_suffix = \
         _xc_live_streams_setup(request, user, category_id)
-    sep = "["
+    yield "["
+    sep = ""
     for channel in channels:
         yield sep + json.dumps(
             _xc_channel_entry(channel, channel_num_map, _get_default_group_id, _logo_url_prefix, _logo_url_suffix)
