@@ -82,7 +82,7 @@ const SDLineupManager = ({ sourceId }) => {
   }, [sourceId]);
 
   useEffect(() => {
-    if (sourceId) {
+    if (sourceId && sourceType === 'schedules_direct') {
       fetchActiveLineups();
       // Fetch country list from SD API per their recommendation to not hardcode
       fetch('https://json.schedulesdirect.org/20141201/available/countries')
