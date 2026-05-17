@@ -5,10 +5,32 @@ import django.db.models.deletion
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('epg', '0024_alter_epgsource_api_key'),
+        ('epg', '0022_alter_epgdata_name'),
     ]
 
     operations = [
+        # Add username field to EPGSource
+        migrations.AddField(
+            model_name='epgsource',
+            name='username',
+            field=models.CharField(
+                max_length=255,
+                blank=True,
+                null=True,
+                help_text='Username for Schedules Direct authentication',
+            ),
+        ),
+        # Update api_key help_text to reflect SD password usage
+        migrations.AlterField(
+            model_name='epgsource',
+            name='api_key',
+            field=models.CharField(
+                max_length=255,
+                blank=True,
+                null=True,
+                help_text='Password for Schedules Direct authentication',
+            ),
+        ),
         # Add sd_changes_remaining to EPGSource
         migrations.AddField(
             model_name='epgsource',
