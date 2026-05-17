@@ -6,7 +6,7 @@ global.fetch = vi.fn().mockResolvedValue({
   json: () => Promise.resolve({}),
 });
 
-vi.mock('../../api.js', () => ({
+vi.mock('../../../api.js', () => ({
   default: {
     getSDLineups: vi.fn().mockResolvedValue([]),
     addSDLineup: vi.fn().mockResolvedValue({ success: true }),
