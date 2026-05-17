@@ -51,6 +51,7 @@ export const WebsocketProvider = ({ children }) => {
   const epgs = useEPGsStore((s) => s.epgs);
   const updateEPG = useEPGsStore((s) => s.updateEPG);
   const updateEPGProgress = useEPGsStore((s) => s.updateEPGProgress);
+  const fetchEPGsForProgress = useEPGsStore((s) => s.fetchEPGs);
 
   const updatePlaylist = usePlaylistsStore((s) => s.updatePlaylist);
 
@@ -642,18 +643,17 @@ export const WebsocketProvider = ({ children }) => {
                   parsedEvent.data.source || parsedEvent.data.account;
                 const epg = epgs[sourceId];
 
-                // Only update progress if the EPG still exists in the store
-                // This prevents crashes when receiving updates for deleted EPGs
-                if (epg) {
-                  // Update the store with progress information
-                  updateEPGProgress(parsedEvent.data);
-                } else {
-                  // EPG was deleted, ignore this update
-                  console.debug(
-                    `Ignoring EPG refresh update for deleted EPG ${sourceId}`
-                  );
+                // If EPG not in store yet (e.g. newly created and refresh started
+                // before the store was updated), fetch the EPG list and update progress.
+                if (!epg) {
+                  fetchEPGsForProgress().then(() => {
+                    updateEPGProgress(parsedEvent.data);
+                  });
                   break;
                 }
+
+                // Update the store with progress information
+                updateEPGProgress(parsedEvent.data);
 
                 if (epg) {
                   // Check for any indication of an error (either via status or error field)

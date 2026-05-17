@@ -22,6 +22,7 @@ class EPGSourceSerializer(serializers.ModelSerializer):
             'name',
             'source_type',
             'url',
+            'username',
             'api_key',
             'is_active',
             'file_path',

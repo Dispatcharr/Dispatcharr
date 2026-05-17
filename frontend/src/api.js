@@ -3817,4 +3817,49 @@ export default class API {
       errorNotification('Failed to fetch connect logs', e);
     }
   }
+
+  static async getSDLineups(sourceId) {
+    try {
+      const response = await request(`${host}/api/epg/sources/${sourceId}/sd-lineups/`);
+      return response;
+    } catch (e) {
+      errorNotification('Failed to retrieve Schedules Direct lineups', e);
+    }
+  }
+
+  static async addSDLineup(sourceId, lineup) {
+    try {
+      const response = await request(`${host}/api/epg/sources/${sourceId}/sd-lineups/`, {
+        method: 'POST',
+        body: { lineup },
+      });
+      return response;
+    } catch (e) {
+      errorNotification(`Failed to add lineup ${lineup}`, e);
+    }
+  }
+
+  static async deleteSDLineup(sourceId, lineup) {
+    try {
+      const response = await request(`${host}/api/epg/sources/${sourceId}/sd-lineups/`, {
+        method: 'DELETE',
+        body: { lineup },
+      });
+      return response;
+    } catch (e) {
+      errorNotification(`Failed to remove lineup ${lineup}`, e);
+    }
+  }
+
+  static async searchSDLineups(sourceId, country, postalcode) {
+    try {
+      const response = await request(`${host}/api/epg/sources/${sourceId}/sd-lineups/search/`, {
+        method: 'POST',
+        body: { country, postalcode },
+      });
+      return response;
+    } catch (e) {
+      errorNotification('Failed to search Schedules Direct lineups', e);
+    }
+  }
 }

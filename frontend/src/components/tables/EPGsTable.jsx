@@ -99,6 +99,127 @@ const RowActions = ({ tableSize, row, editEPG, deleteEPG, refreshEPG }) => {
   );
 };
 
+
+const EPGStatusCell = ({ epg }) => {
+  // Direct Zustand subscription scoped to this source only.
+  // This component re-renders whenever its source's progress changes,
+  // independent of the parent table's render cycle.
+  const progress = useEPGsStore((s) => s.refreshProgress[epg.id]);
+  const theme = useMantineTheme();
+
+  const isDummyEPG = epg.source_type === 'dummy';
+  if (isDummyEPG) return null;
+
+  // Show progress bar if an active fetch is in progress
+  if (
+    progress &&
+    (progress.progress < 100 ||
+      progress.status === 'in_progress' ||
+      (progress.action === 'parsing_channels' && epg.status === 'parsing'))
+  ) {
+    let label = '';
+    switch (progress.action) {
+      case 'downloading':
+        label = 'Downloading';
+        break;
+      case 'extracting':
+        label = 'Extracting';
+        break;
+      case 'parsing_channels':
+        label = 'Parsing Channels';
+        break;
+      case 'parsing_programs':
+        label = 'Parsing Programs';
+        break;
+      default:
+        return null;
+    }
+
+    let additionalInfo = '';
+    if (progress.message) {
+      additionalInfo = progress.message;
+    } else if (progress.processed !== undefined && progress.channels !== undefined) {
+      additionalInfo = `${progress.processed.toLocaleString()} programs for ${progress.channels} channels`;
+    } else if (progress.processed !== undefined && progress.total !== undefined) {
+      additionalInfo = `${progress.processed.toLocaleString()} / ${progress.total.toLocaleString()}`;
+    }
+
+    return (
+      <Stack spacing={2}>
+        <Text size="xs">
+          {label}: {parseInt(progress.progress)}%
+        </Text>
+        <Progress
+          value={parseInt(progress.progress)}
+          size="xs"
+          style={{ margin: '2px 0' }}
+        />
+        {progress.speed && (
+          <Text size="xs" c="dimmed">
+            Speed: {parseInt(progress.speed)} KB/s
+          </Text>
+        )}
+        {additionalInfo && (
+          <Text size="xs" c="dimmed" lineClamp={1}>
+            {additionalInfo}
+          </Text>
+        )}
+      </Stack>
+    );
+  }
+
+  // Show error message
+  if (epg.status === 'error' && epg.last_message) {
+    return (
+      <Tooltip label={epg.last_message} multiline width={300}>
+        <Text
+          c="dimmed"
+          size="xs"
+          lineClamp={2}
+          style={{ color: theme.colors.red[6], lineHeight: 1.3 }}
+        >
+          {epg.last_message}
+        </Text>
+      </Tooltip>
+    );
+  }
+
+  // Show success message
+  if (epg.status === 'success') {
+    const successMessage = epg.last_message || 'EPG data refreshed successfully';
+    return (
+      <Tooltip label={successMessage} multiline width={300}>
+        <Text
+          c="dimmed"
+          size="xs"
+          lineClamp={2}
+          style={{ color: theme.colors.green[6], lineHeight: 1.3 }}
+        >
+          {successMessage}
+        </Text>
+      </Tooltip>
+    );
+  }
+
+  // Show idle message
+  if (epg.status === 'idle' && epg.last_message) {
+    return (
+      <Tooltip label={epg.last_message} multiline width={300}>
+        <Text
+          c="dimmed"
+          size="xs"
+          lineClamp={2}
+          style={{ lineHeight: 1.3 }}
+        >
+          {epg.last_message}
+        </Text>
+      </Tooltip>
+    );
+  }
+
+  return null;
+};
+
 const EPGsTable = () => {
   const [epg, setEPG] = useState(null);
   const [epgModalOpen, setEPGModalOpen] = useState(false);
@@ -111,7 +232,6 @@ const EPGsTable = () => {
   const [deleting, setDeleting] = useState(false);
 
   const epgs = useEPGsStore((s) => s.epgs);
-  const refreshProgress = useEPGsStore((s) => s.refreshProgress);
 
   const theme = useMantineTheme();
   const { fullDateTimeFormat } = useDateTimeFormat();
@@ -140,69 +260,6 @@ const EPGsTable = () => {
     }
   };
 
-  const buildProgressDisplay = (data) => {
-    const progress = refreshProgress[data.id] || null;
-
-    if (!progress) return null;
-
-    let label = '';
-    switch (progress.action) {
-      case 'downloading':
-        label = 'Downloading';
-        break;
-      case 'extracting':
-        label = 'Extracting';
-        break;
-      case 'parsing_channels':
-        label = 'Parsing Channels';
-        break;
-      case 'parsing_programs':
-        label = 'Parsing Programs';
-        break;
-      default:
-        return null;
-    }
-
-    // Build additional info string from progress data
-    let additionalInfo = '';
-    if (progress.message) {
-      additionalInfo = progress.message;
-    } else if (
-      progress.processed !== undefined &&
-      progress.channels !== undefined
-    ) {
-      additionalInfo = `${progress.processed.toLocaleString()} programs for ${progress.channels} channels`;
-    } else if (
-      progress.processed !== undefined &&
-      progress.total !== undefined
-    ) {
-      additionalInfo = `${progress.processed.toLocaleString()} / ${progress.total.toLocaleString()}`;
-    }
-
-    return (
-      <Stack spacing={2}>
-        <Text size="xs">
-          {label}: {parseInt(progress.progress)}%
-        </Text>
-        <Progress
-          value={parseInt(progress.progress)}
-          size="xs"
-          style={{ margin: '2px 0' }}
-        />
-        {progress.speed && (
-          <Text size="xs" c="dimmed">
-            Speed: {parseInt(progress.speed)} KB/s
-          </Text>
-        )}
-        {additionalInfo && (
-          <Text size="xs" c="dimmed" lineClamp={1}>
-            {additionalInfo}
-          </Text>
-        )}
-      </Stack>
-    );
-  };
-
   const columns = useMemo(
     //column definitions...
     () => [
@@ -214,21 +271,42 @@ const EPGsTable = () => {
       {
         header: 'Type',
         accessorKey: 'source_type',
-        size: 100,
+        size: 130,
+        cell: ({ cell }) => {
+          const typeMap = {
+            'xmltv': 'XMLTV',
+            'schedules_direct': 'Schedules Direct',
+            'dummy': 'Custom Dummy',
+          };
+          return typeMap[cell.getValue()] || cell.getValue();
+        },
       },
       {
-        header: 'URL / API Key / File Path',
+        header: 'Source / Credentials / File Path',
         accessorKey: 'url',
         enableSorting: false,
         minSize: 250,
         cell: ({ cell, row }) => {
-          const value =
-            cell.getValue() ||
-            row.original.api_key ||
-            row.original.file_path ||
-            '';
+          const sourceType = row.original.source_type;
+          let value = '';
+          let tooltip = '';
+
+          if (sourceType === 'schedules_direct') {
+            // Never expose credentials — show username only
+            const username = row.original.username || '';
+            value = username ? `User: ${username}` : '(credentials set)';
+            tooltip = value;
+          } else {
+            value =
+              cell.getValue() ||
+              row.original.api_key ||
+              row.original.file_path ||
+              '';
+            tooltip = value;
+          }
+
           return (
-            <Tooltip label={value} disabled={!value}>
+            <Tooltip label={tooltip} disabled={!tooltip}>
               <div
                 style={{
                   whiteSpace: 'nowrap',
@@ -267,76 +345,7 @@ const EPGsTable = () => {
         enableSorting: false,
         minSize: 250,
         grow: true,
-        cell: ({ row }) => {
-          const data = row.original;
-          const isDummyEPG = data.source_type === 'dummy';
-
-          // Dummy EPGs don't have status messages
-          if (isDummyEPG) {
-            return null;
-          }
-
-          // Check if there's an active progress for this EPG - show progress first if active
-          if (
-            refreshProgress[data.id] &&
-            refreshProgress[data.id].progress < 100
-          ) {
-            return buildProgressDisplay(data);
-          }
-
-          // Show error message when status is error
-          if (data.status === 'error' && data.last_message) {
-            return (
-              <Tooltip label={data.last_message} multiline width={300}>
-                <Text
-                  c="dimmed"
-                  size="xs"
-                  lineClamp={2}
-                  style={{ color: theme.colors.red[6], lineHeight: 1.3 }}
-                >
-                  {data.last_message}
-                </Text>
-              </Tooltip>
-            );
-          }
-
-          // Show success message for successful sources
-          if (data.status === 'success') {
-            const successMessage =
-              data.last_message || 'EPG data refreshed successfully';
-            return (
-              <Tooltip label={successMessage} multiline width={300}>
-                <Text
-                  c="dimmed"
-                  size="xs"
-                  lineClamp={2}
-                  style={{ color: theme.colors.green[6], lineHeight: 1.3 }}
-                >
-                  {successMessage}
-                </Text>
-              </Tooltip>
-            );
-          }
-
-          // Show last_message for idle sources (from previous refresh)
-          if (data.status === 'idle' && data.last_message) {
-            return (
-              <Tooltip label={data.last_message} multiline width={300}>
-                <Text
-                  c="dimmed"
-                  size="xs"
-                  lineClamp={2}
-                  style={{ lineHeight: 1.3 }}
-                >
-                  {data.last_message}
-                </Text>
-              </Tooltip>
-            );
-          }
-
-          // Otherwise return empty cell
-          return null;
-        },
+        cell: ({ row }) => <EPGStatusCell epg={row.original} />,
       },
       {
         header: 'Updated',
@@ -380,7 +389,7 @@ const EPGsTable = () => {
         size: tableSize == 'compact' ? 75 : 100,
       },
     ],
-    [refreshProgress, fullDateTimeFormat]
+    [fullDateTimeFormat]
   );
 
   const [isLoading, setIsLoading] = useState(true);

@@ -30,7 +30,10 @@ class EPGSource(models.Model):
     name = models.CharField(max_length=255, unique=True)
     source_type = models.CharField(max_length=20, choices=SOURCE_TYPE_CHOICES)
     url = models.URLField(max_length=1000, blank=True, null=True)  # For XMLTV
-    api_key = models.CharField(max_length=255, blank=True, null=True)  # For Schedules Direct
+    username = models.CharField(max_length=255, blank=True, null=True,
+                               help_text='Username for Schedules Direct authentication')
+    api_key = models.CharField(max_length=255, blank=True, null=True,
+                               help_text='Password for Schedules Direct authentication')  # For Schedules Direct
     is_active = models.BooleanField(default=True)
     file_path = models.CharField(max_length=1024, blank=True, null=True)
     extracted_file_path = models.CharField(max_length=1024, blank=True, null=True,
@@ -48,6 +51,16 @@ class EPGSource(models.Model):
     priority = models.PositiveIntegerField(
         default=0,
         help_text="Priority for EPG matching (higher numbers = higher priority). Used when multiple EPG sources have matching entries for a channel."
+    )
+    sd_changes_remaining = models.IntegerField(
+        null=True,
+        blank=True,
+        help_text="Number of Schedules Direct lineup additions remaining today (resets at midnight UTC)"
+    )
+    sd_changes_reset_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="UTC datetime when the Schedules Direct daily lineup change counter resets"
     )
     status = models.CharField(
         max_length=20,
@@ -163,6 +176,47 @@ class ProgramData(models.Model):
     description = models.TextField(blank=True, null=True)
     tvg_id = models.CharField(max_length=255, null=True, blank=True)
     custom_properties = models.JSONField(default=dict, blank=True, null=True)
+    sd_program_md5 = models.CharField(
+        max_length=22,
+        null=True,
+        blank=True,
+        help_text="MD5 hash from Schedules Direct for delta detection"
+    )
 
     def __str__(self):
         return f"{self.title} ({self.start_time} - {self.end_time})"
+
+class SDScheduleMD5(models.Model):
+    """
+    Caches per-station per-date MD5 hashes from Schedules Direct.
+    Used to detect schedule changes and avoid unnecessary re-downloads,
+    minimizing API calls against SD's rate-limited endpoints.
+    """
+    epg_source = models.ForeignKey(
+        EPGSource,
+        on_delete=models.CASCADE,
+        related_name="sd_schedule_md5s",
+    )
+    station_id = models.CharField(
+        max_length=20,
+        help_text="Schedules Direct stationID"
+    )
+    date = models.DateField(
+        help_text="Schedule date (UTC)"
+    )
+    md5 = models.CharField(
+        max_length=22,
+        help_text="MD5 hash of the schedule for this station/date from Schedules Direct"
+    )
+    last_modified = models.DateTimeField(
+        help_text="Last modified timestamp from Schedules Direct"
+    )
+
+    class Meta:
+        unique_together = ('epg_source', 'station_id', 'date')
+        indexes = [
+            models.Index(fields=['epg_source', 'station_id']),
+        ]
+
+    def __str__(self):
+        return f"SDScheduleMD5: {self.station_id} / {self.date} ({self.epg_source.name})"

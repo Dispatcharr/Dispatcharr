@@ -29,6 +29,10 @@ from core.utils import acquire_task_lock, release_task_lock, TaskLockRenewer, se
 
 logger = logging.getLogger(__name__)
 
+SD_BASE_URL = 'https://json.schedulesdirect.org/20141201'
+SD_DAYS_TO_FETCH = 20
+SD_PROGRAM_BATCH_SIZE = 5000
+
 # DOCTYPE internal subset for XMLTV files.  Declares all 252 HTML 4 named
 # entities so lxml/libxml2 can resolve references like &eacute; correctly
 # instead of silently dropping them in recovery mode.
@@ -171,6 +175,64 @@ def send_epg_update(source_id, action, progress, **kwargs):
     # to prevent memory buildup
     if action == "parsing_programs" and progress % 50 == 0:
         gc.collect()
+
+
+def _sd_send_ws_sync(source_id, action, progress, **kwargs):
+    """
+    Sends a WebSocket progress update synchronously via Redis, bypassing gevent.spawn.
+
+    In Celery prefork workers that inherit gevent monkey-patching from uWSGI,
+    gevent.spawn schedules coroutines that never execute because there is no
+    running gevent hub in the worker process. This function writes directly to
+    Redis using the channels_redis 4.x wire format, guaranteeing delivery
+    regardless of the execution context.
+    """
+    try:
+        import msgpack
+        import redis as redis_lib
+        from django.conf import settings
+
+        data = {"progress": progress, "type": "epg_refresh", "source": source_id, "action": action}
+        data.update(kwargs)
+        message = {"type": "update", "data": data}
+
+        redis_url = getattr(settings, "CELERY_BROKER_URL", "redis://localhost:6379/0")
+        r = redis_lib.from_url(redis_url, decode_responses=False)
+
+        prefix = "asgi"
+        group_name = "updates"
+        group_key = f"{prefix}:group:{group_name}"
+        group_expiry = 86400
+        channel_expiry = 60
+        rand_len = 12
+        now = time.time()
+
+        r.zremrangebyscore(group_key, 0, now - group_expiry)
+        raw = r.zrange(group_key, 0, -1)
+        if not raw:
+            return
+
+        channels = [m.decode("utf-8") if isinstance(m, bytes) else m for m in raw]
+        nonlocal_map = {}
+        for ch in channels:
+            pos = ch.find("!")
+            nl = ch[:pos + 1] if pos >= 0 else ch
+            nonlocal_map.setdefault(nl, []).append(ch)
+
+        pipe = r.pipeline(transaction=False)
+        for nl, chs in nonlocal_map.items():
+            channel_key = prefix + nl
+            msg = dict(message)
+            msg["__asgi_channel__"] = chs
+            serialized = os.urandom(rand_len) + msgpack.packb(msg)
+            pipe.zadd(channel_key, {serialized: now})
+            pipe.expire(channel_key, channel_expiry)
+        pipe.execute()
+        r.close()
+    except Exception as e:
+        logger.warning(f"SD WebSocket sync send failed: {e}")
+        # Fall back to standard path
+        send_epg_update(source_id, action, progress, **kwargs)
 
 
 def delete_epg_refresh_task_by_id(epg_id):
@@ -1255,6 +1317,17 @@ def parse_channels_only(source):
 
 @shared_task(time_limit=3600, soft_time_limit=3500)
 def parse_programs_for_tvg_id(epg_id):
+    # Skip XMLTV file parsing for Schedules Direct sources — program data is
+    # fetched and persisted directly by fetch_schedules_direct().
+    try:
+        from apps.epg.models import EPGData
+        epg_obj = EPGData.objects.select_related('epg_source').filter(id=epg_id).first()
+        if epg_obj and epg_obj.epg_source and epg_obj.epg_source.source_type == 'schedules_direct':
+            logger.info(f"Skipping XMLTV parse for SD EPGData id={epg_id} (source: {epg_obj.epg_source.name})")
+            return "Skipped — Schedules Direct source"
+    except Exception as e:
+        logger.warning(f"Could not check EPG source type for id={epg_id}: {e}")
+
     if not acquire_task_lock('parse_epg_programs', epg_id):
         logger.info(f"Program parse for {epg_id} already in progress, skipping duplicate task")
         return "Task already running"
@@ -1885,75 +1958,845 @@ def parse_programs_for_source(epg_source, tvg_id=None):
             logger.info(f"[parse_programs_for_source] Final memory usage: {final_memory:.2f} MB difference: {final_memory - initial_memory:.2f} MB")
             # Explicitly clear the process object to prevent potential memory leaks
             process = None
-def fetch_schedules_direct(source):
-    logger.info(f"Fetching Schedules Direct data from source: {source.name}")
+@shared_task(bind=True)
+def fetch_schedules_direct_stations(self, source_id):
+    """
+    Lightweight Celery task that runs a stations-only Schedules Direct fetch.
+    Called on initial source creation so EPGData entries exist for auto-matching
+    before the user commits to a full schedule/program fetch.
+    """
     try:
-        # Get default user agent from settings
-        stream_settings = CoreSettings.get_stream_settings()
-        user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:138.0) Gecko/20100101 Firefox/138.0"  # Fallback default
-        default_user_agent_id = stream_settings.get('default_user_agent')
+        source = EPGSource.objects.get(id=source_id)
+    except EPGSource.DoesNotExist:
+        logger.error(f"EPGSource {source_id} not found for SD stations fetch")
+        return
+    fetch_schedules_direct(source, stations_only=True)
 
-        if default_user_agent_id:
-            try:
-                user_agent_obj = UserAgent.objects.filter(id=int(default_user_agent_id)).first()
-                if user_agent_obj and user_agent_obj.user_agent:
-                    user_agent = user_agent_obj.user_agent
-                    logger.debug(f"Using default user agent: {user_agent}")
-            except (ValueError, Exception) as e:
-                logger.warning(f"Error retrieving default user agent, using fallback: {e}")
 
-        api_url = ''
-        headers = {
-            'Content-Type': 'application/json',
-            'Authorization': f'Bearer {source.api_key}',
-            'User-Agent': user_agent
-        }
-        logger.debug(f"Requesting subscriptions from Schedules Direct using URL: {api_url}")
-        response = requests.get(api_url, headers=headers, timeout=30)
-        response.raise_for_status()
-        subscriptions = response.json()
-        logger.debug(f"Fetched subscriptions: {subscriptions}")
+def fetch_schedules_direct(source, stations_only=False):
+    """
+    Fetch EPG data from the Schedules Direct JSON API and persist it to the
+    EPGData / ProgramData models.
 
-        for sub in subscriptions:
-            tvg_id = sub.get('stationID')
-            logger.debug(f"Processing subscription for tvg_id: {tvg_id}")
-            schedules_url = f"/schedules/{tvg_id}"
-            logger.debug(f"Requesting schedules from URL: {schedules_url}")
-            sched_response = requests.get(schedules_url, headers=headers, timeout=30)
-            sched_response.raise_for_status()
-            schedules = sched_response.json()
-            logger.debug(f"Fetched schedules: {schedules}")
+    Authentication flow (as required by the SD API specification):
+      1. POST credentials to the token endpoint — password must be SHA1-hashed
+         as required by the Schedules Direct API specification.
+      2. Use the returned token for all subsequent requests via the 'token' header.
+      3. Tokens are valid for 24 hours; SD returns the current valid token if one
+         already exists for the account.
 
-            epg_data, created = EPGData.objects.get_or_create(
-                tvg_id=tvg_id,
-                defaults={'name': tvg_id}
-            )
-            if created:
-                logger.info(f"Created new EPGData for tvg_id '{tvg_id}'.")
-            else:
-                logger.debug(f"Found existing EPGData for tvg_id '{tvg_id}'.")
+    Data flow:
+      1. Fetch subscribed lineups for the account.
+      2. Fetch station metadata for each lineup.
+      3. Persist station metadata to EPGData.
+      4. If stations_only=True, stop here — used on initial source creation so
+         the user can run Auto-match EPG before the full program fetch.
+      5. Fetch schedule grids in 14-day date-batched requests per station.
+      6. Fetch program metadata in batched requests (up to 5000 programIDs per request).
+      7. Persist channels to EPGData and programs to ProgramData.
 
-            for sched in schedules.get('schedules', []):
-                title = sched.get('title', 'No Title')
-                desc = sched.get('description', '')
-                start_time = parse_schedules_direct_time(sched.get('startTime'))
-                end_time = parse_schedules_direct_time(sched.get('endTime'))
-                obj, created = ProgramData.objects.update_or_create(
-                    epg=epg_data,
-                    start_time=start_time,
-                    title=title,
-                    defaults={
-                        'end_time': end_time,
-                        'description': desc,
-                        'sub_title': ''
-                    }
+    Args:
+        source: EPGSource instance
+        stations_only: If True, only fetch and persist station metadata (no schedules/programs).
+                      Used on initial source creation to populate EPGData for auto-matching
+                      before channels are assigned.
+    """
+    import hashlib
+    from datetime import date
+
+
+    logger.info(f"Fetching Schedules Direct data for source: {source.name}")
+
+    # -------------------------------------------------------------------------
+    # Validate credentials
+    # -------------------------------------------------------------------------
+    username = (source.username or '').strip()
+    password = (source.api_key or '').strip()
+
+    if not username or not password:
+        msg = "Schedules Direct source requires both a username and password."
+        logger.error(msg)
+        source.status = EPGSource.STATUS_ERROR
+        source.last_message = msg
+        source.save(update_fields=['status', 'last_message'])
+        _sd_send_ws_sync(source.id, "refresh", 100, status="error", error=msg)
+        return
+
+    # -------------------------------------------------------------------------
+    # Enforce 2-hour minimum interval between full fetches (not stations-only).
+    # Schedules Direct enforces rate limits of ~200 requests per 2-hour window.
+    # This prevents automated abuse regardless of how the refresh was triggered.
+    #
+    # Exception: if no SDScheduleMD5 records exist yet, this is the first full
+    # refresh after initial source creation (stations-only runs first and updates
+    # updated_at, which would otherwise incorrectly trigger this guard). Always
+    # allow the first full refresh through so guide data is immediately available.
+    # -------------------------------------------------------------------------
+    if not stations_only and source.updated_at:
+        from apps.epg.models import SDScheduleMD5 as _SDScheduleMD5
+        has_prior_full_refresh = _SDScheduleMD5.objects.filter(epg_source=source).exists()
+        if has_prior_full_refresh:
+            elapsed = (timezone.now() - source.updated_at).total_seconds()
+            min_interval_seconds = 2 * 3600  # 2 hours
+            if elapsed < min_interval_seconds:
+                remaining_minutes = int((min_interval_seconds - elapsed) / 60)
+                msg = (
+                    f"Schedules Direct refresh skipped — minimum 2-hour interval not reached. "
+                    f"Last refreshed {int(elapsed / 60)} minutes ago. "
+                    f"Please wait {remaining_minutes} more minute(s)."
                 )
-                if created:
-                    logger.info(f"Created ProgramData '{title}' for tvg_id '{tvg_id}'.")
-                else:
-                    logger.info(f"Updated ProgramData '{title}' for tvg_id '{tvg_id}'.")
-    except Exception as e:
-        logger.error(f"Error fetching Schedules Direct data from {source.name}: {e}", exc_info=True)
+                logger.warning(f"SD source {source.id}: {msg}")
+                source.status = EPGSource.STATUS_IDLE
+                source.last_message = msg
+                source.save(update_fields=['status', 'last_message'])
+                _sd_send_ws_sync(source.id, "refresh", 100, status="idle", message=msg)
+                return
+        else:
+            logger.info(f"SD source {source.id}: No prior full refresh detected — skipping 2-hour guard for first full fetch.")
+
+    # -------------------------------------------------------------------------
+    # Resolve user agent
+    # -------------------------------------------------------------------------
+    stream_settings = CoreSettings.get_stream_settings()
+    user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:138.0) Gecko/20100101 Firefox/138.0"
+    default_user_agent_id = stream_settings.get('default_user_agent')
+    if default_user_agent_id:
+        try:
+            ua_obj = UserAgent.objects.filter(id=int(default_user_agent_id)).first()
+            if ua_obj and ua_obj.user_agent:
+                user_agent = ua_obj.user_agent
+        except (ValueError, Exception) as e:
+            logger.warning(f"Could not resolve default user agent, using fallback: {e}")
+
+    def _sd_headers(token=None):
+        h = {
+            'Content-Type': 'application/json',
+            'User-Agent': user_agent,
+        }
+        if token:
+            h['token'] = token
+        return h
+
+    # -------------------------------------------------------------------------
+    # Step 1 — Authenticate and obtain session token
+    # The SD API requires the password to be SHA1-hashed before transmission.
+    # This is a requirement of the Schedules Direct API specification, not an
+    # architectural choice.
+    # -------------------------------------------------------------------------
+    source.status = EPGSource.STATUS_FETCHING
+    source.last_message = "Authenticating with Schedules Direct..."
+    source.save(update_fields=['status', 'last_message'])
+    _sd_send_ws_sync(source.id, "parsing_programs", 2, message="Authenticating with Schedules Direct...")
+
+    try:
+        sha1_password = hashlib.sha1(password.encode('utf-8')).hexdigest()
+        token_response = requests.post(
+            f"{SD_BASE_URL}/token",
+            json={'username': username, 'password': sha1_password},
+            headers=_sd_headers(),
+            timeout=30,
+        )
+        token_response.raise_for_status()
+        token_data = token_response.json()
+
+        auth_code = token_data.get('code', 0)
+        if auth_code != 0:
+            if auth_code == 4007:
+                msg = "Schedules Direct: this application is not authorized. Please contact the Dispatcharr maintainers."
+            elif auth_code == 4004:
+                msg = "Schedules Direct: account locked due to too many failed login attempts. Try again in 15 minutes."
+            elif auth_code == 4009:
+                msg = "Schedules Direct: too many login attempts in 24 hours. Token is valid for 24 hours — check for misconfiguration."
+            elif auth_code == 4001:
+                msg = "Schedules Direct: account has expired. Please renew your subscription at schedulesdirect.org."
+            elif auth_code == 4008:
+                msg = "Schedules Direct: account is inactive. Please log in to schedulesdirect.org to reactivate."
+            else:
+                msg = f"Schedules Direct authentication failed (code {auth_code}): {token_data.get('message', 'Unknown error')}"
+            logger.error(msg)
+            source.status = EPGSource.STATUS_ERROR
+            source.last_message = msg
+            source.save(update_fields=['status', 'last_message'])
+            _sd_send_ws_sync(source.id, "refresh", 100, status="error", error=msg)
+            return
+
+        token = token_data.get('token')
+        if not token:
+            msg = "Schedules Direct returned no token."
+            logger.error(msg)
+            source.status = EPGSource.STATUS_ERROR
+            source.last_message = msg
+            source.save(update_fields=['status', 'last_message'])
+            _sd_send_ws_sync(source.id, "refresh", 100, status="error", error=msg)
+            return
+
+        logger.info("Schedules Direct authentication successful.")
+
+    except requests.exceptions.RequestException as e:
+        msg = f"Network error authenticating with Schedules Direct: {e}"
+        logger.error(msg, exc_info=True)
+        source.status = EPGSource.STATUS_ERROR
+        source.last_message = msg
+        source.save(update_fields=['status', 'last_message'])
+        _sd_send_ws_sync(source.id, "refresh", 100, status="error", error=msg)
+        return
+
+    # -------------------------------------------------------------------------
+    # Step 2 — Check account status (respect OFFLINE system status)
+    # -------------------------------------------------------------------------
+    try:
+        status_response = requests.get(
+            f"{SD_BASE_URL}/status",
+            headers=_sd_headers(token),
+            timeout=30,
+        )
+        status_response.raise_for_status()
+        status_data = status_response.json()
+        system_status = status_data.get('systemStatus', [{}])[0].get('status', 'Online')
+        if system_status == 'Offline':
+            # Per SD API spec: if system is offline, disconnect and do not
+            # retry for 1 hour. We set idle status rather than error since
+            # this is a temporary SD-side condition.
+            msg = "Schedules Direct system is currently offline. Per SD guidelines, retrying in 1 hour."
+            logger.warning(msg)
+            source.status = EPGSource.STATUS_IDLE
+            source.last_message = msg
+            source.save(update_fields=['status', 'last_message'])
+            _sd_send_ws_sync(source.id, "refresh", 100, status="idle", message=msg)
+            return
+        logger.debug(f"Schedules Direct system status: {system_status}")
+    except requests.exceptions.RequestException as e:
+        logger.warning(f"Could not fetch SD system status, proceeding anyway: {e}")
+
+    # -------------------------------------------------------------------------
+    # Step 3 — Fetch subscribed lineups and build station map
+    # -------------------------------------------------------------------------
+    _sd_send_ws_sync(source.id, "parsing_programs", 10, message="Fetching subscribed lineups...")
+    try:
+        lineups_response = requests.get(
+            f"{SD_BASE_URL}/lineups",
+            headers=_sd_headers(token),
+            timeout=30,
+        )
+        # SD returns 400 with code 4102 when no lineups are configured.
+        # This is a valid account state — the user needs to add lineups via
+        # the Manage Lineups UI. Treat as idle rather than error.
+        if lineups_response.status_code == 400:
+            sd_data = lineups_response.json()
+            if sd_data.get('code') == 4102:
+                msg = "No lineups configured. Use the Manage Lineups option in the EPG source settings to add a lineup."
+                logger.warning(f"SD source {source.id}: no lineups configured on account (4102).")
+                source.status = EPGSource.STATUS_IDLE
+                source.last_message = msg
+                source.save(update_fields=['status', 'last_message'])
+                _sd_send_ws_sync(source.id, "refresh", 100, status="idle", message=msg)
+                return
+        lineups_response.raise_for_status()
+        lineups_data = lineups_response.json()
+        lineups = [l for l in lineups_data.get('lineups', []) if not l.get('isDeleted', False)]
+        if not lineups:
+            msg = "No lineups configured. Use the Manage Lineups option in the EPG source settings to add a lineup."
+            logger.warning(f"SD source {source.id}: no active lineups found.")
+            source.status = EPGSource.STATUS_IDLE
+            source.last_message = msg
+            source.save(update_fields=['status', 'last_message'])
+            _sd_send_ws_sync(source.id, "refresh", 100, status="idle", message=msg)
+            return
+        logger.info(f"Found {len(lineups)} lineup(s) in SD account.")
+    except requests.exceptions.RequestException as e:
+        msg = f"Failed to fetch Schedules Direct lineups: {e}"
+        logger.error(msg, exc_info=True)
+        source.status = EPGSource.STATUS_ERROR
+        source.last_message = msg
+        source.save(update_fields=['status', 'last_message'])
+        _sd_send_ws_sync(source.id, "refresh", 100, status="error", error=msg)
+        return
+
+    # Build station metadata map: stationID -> {name, callsign, logo_url}
+    station_map = {}
+    _sd_send_ws_sync(source.id, "parsing_programs", 18, message=f"Fetching station metadata for {len(lineups)} lineup(s)...")
+    for lineup in lineups:
+        lineup_id = lineup.get('lineupID') or lineup.get('lineup')
+        if not lineup_id:
+            continue
+        try:
+            detail_response = requests.get(
+                f"{SD_BASE_URL}/lineups/{lineup_id}",
+                headers=_sd_headers(token),
+                timeout=30,
+            )
+            detail_response.raise_for_status()
+            detail_data = detail_response.json()
+            for station in detail_data.get('stations', []):
+                sid = station.get('stationID')
+                if not sid:
+                    continue
+                logo_url = None
+                logos = station.get('stationLogos') or station.get('logo') or []
+                if isinstance(logos, list) and logos:
+                    logo_url = logos[0].get('URL') or logos[0].get('url')
+                elif isinstance(logos, dict):
+                    logo_url = logos.get('URL') or logos.get('url')
+                station_map[sid] = {
+                    'name': station.get('name', sid),
+                    'callsign': station.get('callsign', ''),
+                    'logo_url': logo_url,
+                }
+            logger.debug(f"Fetched {len(detail_data.get('stations', []))} stations from lineup {lineup_id}")
+        except requests.exceptions.RequestException as e:
+            logger.warning(f"Failed to fetch lineup details for {lineup_id}: {e}")
+
+    if not station_map:
+        msg = "No stations found across all Schedules Direct lineups."
+        logger.warning(msg)
+        source.status = EPGSource.STATUS_ERROR
+        source.last_message = msg
+        source.save(update_fields=['status', 'last_message'])
+        _sd_send_ws_sync(source.id, "refresh", 100, status="error", error=msg)
+        return
+
+    logger.info(f"Built station map with {len(station_map)} stations.")
+
+    # -------------------------------------------------------------------------
+    # Step 4 — Persist station metadata to EPGData
+    # -------------------------------------------------------------------------
+    source.status = EPGSource.STATUS_PARSING
+    source.last_message = f"Syncing {len(station_map)} stations..."
+    source.save(update_fields=['status', 'last_message'])
+    _sd_send_ws_sync(source.id, "parsing_programs", 28, message=f"Syncing {len(station_map)} stations to database...")
+
+    existing_epg_map = {
+        epg.tvg_id: epg
+        for epg in EPGData.objects.filter(epg_source=source)
+    }
+
+    epgs_to_create = []
+    epgs_to_update = []
+    icon_max_length = EPGData._meta.get_field('icon_url').max_length
+    name_max_length = EPGData._meta.get_field('name').max_length
+
+    for sid, info in station_map.items():
+        display_name = (info['name'] or sid)[:name_max_length]
+        logo = info['logo_url']
+        if logo and len(logo) > icon_max_length:
+            logo = None
+
+        if sid in existing_epg_map:
+            epg_obj = existing_epg_map[sid]
+            needs_update = False
+            if epg_obj.name != display_name:
+                epg_obj.name = display_name
+                needs_update = True
+            if epg_obj.icon_url != logo:
+                epg_obj.icon_url = logo
+                needs_update = True
+            if needs_update:
+                epgs_to_update.append(epg_obj)
+        else:
+            epgs_to_create.append(EPGData(
+                tvg_id=sid,
+                name=display_name,
+                icon_url=logo,
+                epg_source=source,
+            ))
+
+    if epgs_to_create:
+        EPGData.objects.bulk_create(epgs_to_create, ignore_conflicts=True)
+        logger.info(f"Created {len(epgs_to_create)} new EPGData entries.")
+    if epgs_to_update:
+        EPGData.objects.bulk_update(epgs_to_update, ['name', 'icon_url'])
+        logger.info(f"Updated {len(epgs_to_update)} existing EPGData entries.")
+
+    gc.collect()
+
+    # Rebuild map with fresh DB ids for all stations
+    epg_id_map = {
+        epg.tvg_id: epg.id
+        for epg in EPGData.objects.filter(epg_source=source, tvg_id__in=list(station_map.keys()))
+    }
+
+    # Station sync complete — send progress continuing into programs phase
+    # We deliberately do NOT send parsing_channels at 100 with status=success here
+    # because that would cause the frontend to mark the source as complete and
+    # stop rendering progress updates for the subsequent program fetch phases.
+    _sd_send_ws_sync(source.id, "parsing_programs", 30,
+                    message=f"Stations synced ({len(station_map)} stations). Preparing schedule fetch...")
+
+    # -------------------------------------------------------------------------
+    # Stations-only mode — used on initial source creation.
+    # Stop here so the user can run Auto-match EPG before the full program fetch.
+    # -------------------------------------------------------------------------
+    if stations_only:
+        success_msg = (
+            f"{len(station_map)} stations loaded from Schedules Direct. "
+            f"Run Auto-match EPG to map your channels, then use the Refresh "
+            f"button to populate guide data."
+        )
+        source.status = EPGSource.STATUS_SUCCESS
+        source.last_message = success_msg
+        source.updated_at = timezone.now()
+        source.save(update_fields=['status', 'last_message', 'updated_at'])
+        _sd_send_ws_sync(source.id, "parsing_channels", 100, status="success",
+                        message=success_msg, channels_count=len(station_map))
+        logger.info(f"Stations-only fetch complete for source: {source.name} ({len(station_map)} stations)")
+        return
+
+    # -------------------------------------------------------------------------
+    # Step 5 — MD5-delta schedule fetch
+    # First fetch MD5 hashes for all stations/dates. Compare against our
+    # locally cached hashes to determine which schedules have changed.
+    # Only download schedules that have actually changed — this minimises
+    # API calls against SD's rate-limited endpoints.
+    # -------------------------------------------------------------------------
+    from apps.epg.models import SDScheduleMD5
+    from django.utils.dateparse import parse_datetime
+
+    _sd_send_ws_sync(source.id, "parsing_programs", 33, message=f"Checking schedule MD5s for {len(station_map)} stations over {SD_DAYS_TO_FETCH} days...")
+    station_ids = list(station_map.keys())
+    today = date.today()
+    date_list = [(today + timedelta(days=i)).strftime('%Y-%m-%d') for i in range(SD_DAYS_TO_FETCH)]
+
+    # Fetch MD5 hashes for all stations in batches of 5000
+    STATION_BATCH_SIZE = 5000
+    server_md5s = {}  # (station_id, date) -> {md5, last_modified}
+
+    logger.info(f"Fetching schedule MD5s for {len(station_ids)} stations over {SD_DAYS_TO_FETCH} days.")
+
+    station_batches = [station_ids[i:i + STATION_BATCH_SIZE] for i in range(0, len(station_ids), STATION_BATCH_SIZE)]
+    for batch in station_batches:
+        try:
+            md5_response = requests.post(
+                f"{SD_BASE_URL}/schedules/md5",
+                json=[{'stationID': sid, 'date': date_list} for sid in batch],
+                headers=_sd_headers(token),
+                timeout=120,
+            )
+            md5_response.raise_for_status()
+            md5_data = md5_response.json()
+            for sid, dates in md5_data.items():
+                for date_str, info in dates.items():
+                    if info.get('code', 0) == 0:
+                        server_md5s[(sid, date_str)] = {
+                            'md5': info.get('md5', ''),
+                            'last_modified': info.get('lastModified', ''),
+                        }
+        except requests.exceptions.RequestException as e:
+            logger.warning(f"Failed to fetch schedule MD5s: {e}")
+
+    # Load our cached MD5s from DB
+    cached_md5s = {
+        (r.station_id, r.date.strftime('%Y-%m-%d')): r.md5
+        for r in SDScheduleMD5.objects.filter(epg_source=source, station_id__in=station_ids)
+    }
+
+    # Determine which station/date combinations need downloading
+    changed_by_station = {}  # station_id -> [date_str, ...]
+    for (sid, date_str), server_info in server_md5s.items():
+        if date_str not in date_list:
+            continue
+        cached = cached_md5s.get((sid, date_str))
+        if cached != server_info['md5']:
+            changed_by_station.setdefault(sid, []).append(date_str)
+
+    total_changed = sum(len(v) for v in changed_by_station.items())
+    total_possible = len(station_ids) * len(date_list)
+    logger.info(f"Schedule MD5 check: {len(server_md5s)} hashes checked, {total_changed} station/date combinations changed (of {total_possible} possible).")
+    _sd_send_ws_sync(source.id, "parsing_programs", 38,
+                    message=f"MD5 check complete: {len(changed_by_station)} stations have schedule updates.")
+
+    # schedules_by_station: stationID -> list of {programID, airDateTime, duration, ...}
+    schedules_by_station = {sid: [] for sid in station_ids}
+    program_ids_needed = set()
+
+    # Existing cached program MD5s for delta detection in step 6
+    existing_program_md5s = {
+        p.tvg_id + '|' + p.title: p.sd_program_md5
+        for p in ProgramData.objects.filter(
+            epg__epg_source=source,
+            sd_program_md5__isnull=False,
+        ).only('tvg_id', 'title', 'sd_program_md5')
+    }
+
+    if not changed_by_station:
+        logger.info("No schedule changes detected — skipping schedule and program downloads.")
+        _sd_send_ws_sync(source.id, "parsing_programs", 100, status="success",
+                        message="No schedule changes detected since last refresh. Guide data is up to date.")
+        source.status = EPGSource.STATUS_SUCCESS
+        source.last_message = "No schedule changes detected. Guide data is up to date."
+        source.updated_at = timezone.now()
+        source.save(update_fields=['status', 'last_message', 'updated_at'])
+        return
+
+    # Download only changed schedules, batched by 7-day windows per station
+    SCHEDULE_BATCH_DAYS = 7
+    changed_station_ids = list(changed_by_station.keys())
+    date_batches = [date_list[i:i + SCHEDULE_BATCH_DAYS] for i in range(0, len(date_list), SCHEDULE_BATCH_DAYS)]
+    new_md5_records = []
+    updated_md5_records = []
+    existing_md5_map = {
+        (r.station_id, r.date.strftime('%Y-%m-%d')): r
+        for r in SDScheduleMD5.objects.filter(epg_source=source, station_id__in=changed_station_ids)
+    }
+
+    for batch_idx, date_batch in enumerate(date_batches):
+        # Notify frontend at the start of each batch so progress updates immediately
+        pre_progress = 38 + int((batch_idx / len(date_batches)) * 22)
+        logger.info(f"Fetching schedule batch {batch_idx + 1} of {len(date_batches)}...")
+        _sd_send_ws_sync(source.id, "parsing_programs", min(59, pre_progress),
+                        message=f"Fetching schedules: batch {batch_idx + 1} of {len(date_batches)}...")
+        # Yield to gevent hub so the WebSocket update is delivered before the blocking request
+        try:
+            import gevent; gevent.sleep(0)
+        except ImportError:
+            pass
+        # Only include stations that have changes in this date batch
+        request_body = [
+            {'stationID': sid, 'date': [d for d in date_batch if d in changed_by_station.get(sid, [])]}
+            for sid in changed_station_ids
+            if any(d in changed_by_station.get(sid, []) for d in date_batch)
+        ]
+        if not request_body:
+            continue
+        try:
+            sched_response = requests.post(
+                f"{SD_BASE_URL}/schedules",
+                json=request_body,
+                headers=_sd_headers(token),
+                timeout=120,
+            )
+            sched_response.raise_for_status()
+            sched_data = sched_response.json()
+
+            for station_sched in sched_data:
+                sid = station_sched.get('stationID')
+                if not sid:
+                    continue
+                programs = station_sched.get('programs', [])
+                schedules_by_station.setdefault(sid, []).extend(programs)
+                for prog in programs:
+                    pid = prog.get('programID')
+                    if pid:
+                        program_ids_needed.add(pid)
+
+                # Update MD5 cache for this station/date
+                meta = station_sched.get('metadata', {})
+                start_date = meta.get('startDate')
+                md5_val = meta.get('md5', '')
+                last_mod_str = meta.get('modified', '')
+                if start_date and md5_val:
+                    key = (sid, start_date)
+                    last_mod = parse_datetime(last_mod_str) if last_mod_str else timezone.now()
+                    if key in existing_md5_map:
+                        rec = existing_md5_map[key]
+                        rec.md5 = md5_val
+                        rec.last_modified = last_mod
+                        updated_md5_records.append(rec)
+                    else:
+                        import datetime as dt_module
+                        try:
+                            date_obj = dt_module.date.fromisoformat(start_date)
+                            new_md5_records.append(SDScheduleMD5(
+                                epg_source=source,
+                                station_id=sid,
+                                date=date_obj,
+                                md5=md5_val,
+                                last_modified=last_mod,
+                            ))
+                        except ValueError:
+                            pass
+
+            progress = 38 + int(((batch_idx + 1) / len(date_batches)) * 22)
+            _sd_send_ws_sync(source.id, "parsing_programs", min(60, progress),
+                            message=f"Fetching changed schedules: batch {batch_idx + 1}/{len(date_batches)} ({len(program_ids_needed):,} programs found)")
+
+        except requests.exceptions.RequestException as e:
+            logger.warning(f"Failed to fetch schedule batch {batch_idx + 1}: {e}")
+
+    # Persist updated MD5 cache
+    if new_md5_records:
+        SDScheduleMD5.objects.bulk_create(new_md5_records, ignore_conflicts=True)
+        logger.info(f"Cached {len(new_md5_records)} new schedule MD5s.")
+    if updated_md5_records:
+        SDScheduleMD5.objects.bulk_update(updated_md5_records, ['md5', 'last_modified'])
+        logger.info(f"Updated {len(updated_md5_records)} existing schedule MD5s.")
+
+    if not program_ids_needed:
+        msg = "No schedule data returned from Schedules Direct."
+        logger.warning(msg)
+        source.status = EPGSource.STATUS_ERROR
+        source.last_message = msg
+        source.save(update_fields=['status', 'last_message'])
+        _sd_send_ws_sync(source.id, "parsing_programs", 100, status="error", error=msg)
+        return
+
+    # -------------------------------------------------------------------------
+    # Step 6 — MD5-delta program metadata fetch
+    # The schedule response includes an MD5 hash per program airing.
+    # Compare against our cached program MD5s to only download programs
+    # whose metadata has changed since our last fetch.
+    # -------------------------------------------------------------------------
+
+    # Build map of programID -> md5 from schedule data
+    schedule_program_md5s = {}  # programID -> md5 from schedule
+    for sid, airings in schedules_by_station.items():
+        for airing in airings:
+            pid = airing.get('programID')
+            md5 = airing.get('md5')
+            if pid and md5:
+                schedule_program_md5s[pid] = md5
+
+    # Load cached program MD5s from DB keyed by programID via tvg_id
+    cached_prog_md5s = {
+        p.tvg_id: p.sd_program_md5
+        for p in ProgramData.objects.filter(
+            epg__epg_source=source,
+            sd_program_md5__isnull=False,
+        ).only('tvg_id', 'sd_program_md5').distinct('tvg_id')
+    }
+
+    # Only fetch programs where MD5 differs from our cache
+    programs_to_fetch = [
+        pid for pid in program_ids_needed
+        if schedule_program_md5s.get(pid) != cached_prog_md5s.get(pid)
+    ]
+
+    logger.info(
+        f"Program MD5 delta: {len(program_ids_needed)} programs in schedules, "
+        f"{len(programs_to_fetch)} need downloading ({len(program_ids_needed) - len(programs_to_fetch)} unchanged).")
+
+    program_metadata = {}
+    program_id_list = programs_to_fetch
+    total_batches = max(1, (len(program_id_list) + SD_PROGRAM_BATCH_SIZE - 1) // SD_PROGRAM_BATCH_SIZE)
+
+    if program_id_list:
+        logger.info(f"Fetching metadata for {len(program_id_list)} programs in {total_batches} batch(es).")
+        for batch_idx in range(total_batches):
+            # Notify frontend at the start of each batch so progress updates immediately
+            pre_progress = 60 + int((batch_idx / total_batches) * 20)
+            logger.info(f"Fetching program metadata batch {batch_idx + 1} of {total_batches} ({batch_idx * SD_PROGRAM_BATCH_SIZE:,} of {len(program_id_list):,} programs)...")
+            _sd_send_ws_sync(source.id, "parsing_programs", min(79, pre_progress),
+                            message=f"Fetching program data: batch {batch_idx + 1} of {total_batches} ({batch_idx * SD_PROGRAM_BATCH_SIZE:,} of {len(program_id_list):,} programs)")
+            # Yield to gevent hub so the WebSocket update is delivered before the blocking request
+            try:
+                import gevent; gevent.sleep(0)
+            except ImportError:
+                pass
+            batch = program_id_list[batch_idx * SD_PROGRAM_BATCH_SIZE:(batch_idx + 1) * SD_PROGRAM_BATCH_SIZE]
+            try:
+                prog_response = requests.post(
+                    f"{SD_BASE_URL}/programs",
+                    json=batch,
+                    headers=_sd_headers(token),
+                    timeout=120,
+                )
+                prog_response.raise_for_status()
+                prog_data = prog_response.json()
+                for prog in prog_data:
+                    pid = prog.get('programID')
+                    if pid:
+                        program_metadata[pid] = prog
+
+                progress = 60 + int(((batch_idx + 1) / total_batches) * 20)
+                _sd_send_ws_sync(source.id, "parsing_programs", min(80, progress),
+                                message=f"Fetching program details: batch {batch_idx + 1}/{total_batches} ({len(program_metadata):,} programs loaded)")
+                logger.debug(f"Fetched program metadata batch {batch_idx + 1}/{total_batches}")
+
+            except requests.exceptions.RequestException as e:
+                logger.warning(f"Failed to fetch program metadata batch {batch_idx + 1}: {e}")
+    else:
+        logger.info("All program metadata unchanged - skipping program download.")
+        _sd_send_ws_sync(source.id, "parsing_programs", 80, message="Program metadata unchanged - using cached data.")
+
+    gc.collect()
+
+    # -------------------------------------------------------------------------
+    # Step 7 — Build ProgramData records and persist atomically
+    # -------------------------------------------------------------------------
+    logger.info("Building program records...")
+    _sd_send_ws_sync(source.id, "parsing_programs", 80)
+
+    # Only process stations that are mapped to channels to match the existing
+    # XMLTV flow (parse_programs_for_source only processes mapped channels).
+    from apps.channels.models import Channel as ChannelModel
+    mapped_epg_ids = set(
+        ChannelModel.objects.filter(
+            epg_data__epg_source=source,
+            epg_data__isnull=False,
+        ).values_list('epg_data_id', flat=True)
+    )
+    mapped_tvg_ids = set(
+        EPGData.objects.filter(
+            id__in=mapped_epg_ids,
+            epg_source=source,
+        ).values_list('tvg_id', flat=True)
+    )
+
+    all_programs_to_create = []
+    total_programs = 0
+    skipped_unmapped = 0
+
+    for sid, airings in schedules_by_station.items():
+        if sid not in mapped_tvg_ids:
+            skipped_unmapped += len(airings)
+            continue
+
+        epg_db_id = epg_id_map.get(sid)
+        if not epg_db_id:
+            continue
+
+        for airing in airings:
+            pid = airing.get('programID')
+            air_time = airing.get('airDateTime')
+            duration_secs = airing.get('duration', 0)
+
+            if not pid or not air_time or not duration_secs:
+                continue
+
+            try:
+                start_dt = parse_schedules_direct_time(air_time)
+                end_dt = start_dt + timedelta(seconds=int(duration_secs))
+            except Exception as e:
+                logger.debug(f"Could not parse air time '{air_time}': {e}")
+                continue
+
+            meta = program_metadata.get(pid, {})
+            titles = meta.get('titles', [{}])
+            title = titles[0].get('title120', '') if titles else ''
+            if not title:
+                title = meta.get('episodeTitle150', '') or 'No Title'
+            title = title[:255]
+
+            descriptions = meta.get('descriptions', {})
+            desc = ''
+            for key in ('description1000', 'description255', 'description100'):
+                candidates = descriptions.get(key, [])
+                if candidates:
+                    desc = candidates[0].get('description', '')
+                    if desc:
+                        break
+
+            episode_title = meta.get('episodeTitle150', '')
+
+            # Build custom_properties following the same pattern as the XMLTV parser
+            custom_props = {}
+            metadata_block = meta.get('metadata', [{}])
+            if metadata_block:
+                m = metadata_block[0].get('Gracenote', {})
+                season = m.get('season')
+                episode = m.get('episode')
+                if season:
+                    custom_props['season'] = int(season)
+                if episode:
+                    custom_props['episode'] = int(episode)
+
+            content_rating = meta.get('contentRating', [])
+            if content_rating:
+                custom_props['rating'] = content_rating[0].get('code', '')
+                custom_props['rating_system'] = content_rating[0].get('body', '')
+
+            genres = meta.get('genres', [])
+            if genres:
+                custom_props['categories'] = genres
+
+            cast = meta.get('cast', [])
+            crew = meta.get('crew', [])
+            credits = {}
+            if cast:
+                credits['actor'] = [
+                    {'name': p.get('name', ''), 'role': p.get('role', '')}
+                    for p in cast if p.get('name')
+                ]
+            if crew:
+                for member in crew:
+                    role = member.get('role', '').lower()
+                    name = member.get('name', '')
+                    if not name:
+                        continue
+                    if 'director' in role:
+                        credits.setdefault('director', []).append(name)
+                    elif 'writer' in role or 'screenwriter' in role:
+                        credits.setdefault('writer', []).append(name)
+                    elif 'producer' in role:
+                        credits.setdefault('producer', []).append(name)
+            if credits:
+                custom_props['credits'] = credits
+
+            if airing.get('isLive'):
+                custom_props['live'] = True
+            if airing.get('isNew'):
+                custom_props['new'] = True
+            if airing.get('isPremiere'):
+                custom_props['premiere'] = True
+
+            year = meta.get('movie', {}).get('year') or meta.get('originalAirDate', '')[:4]
+            if year:
+                custom_props['date'] = str(year)
+
+            all_programs_to_create.append(ProgramData(
+                epg_id=epg_db_id,
+                start_time=start_dt,
+                end_time=end_dt,
+                title=title,
+                sub_title=episode_title or None,
+                description=desc or None,
+                tvg_id=sid,
+                custom_properties=custom_props or None,
+                sd_program_md5=schedule_program_md5s.get(pid),
+            ))
+            total_programs += 1
+
+    logger.info(f"Built {total_programs} program records "
+                f"({skipped_unmapped} skipped for unmapped stations).")
+
+    _sd_send_ws_sync(source.id, "parsing_programs", 88)
+
+    # Atomic delete + bulk insert — same pattern as parse_programs_for_source
+    BATCH_SIZE = 1000
+    try:
+        with transaction.atomic():
+            with connection.cursor() as cursor:
+                cursor.execute("SET LOCAL statement_timeout = '10min'")
+            deleted_count = ProgramData.objects.filter(epg_id__in=mapped_epg_ids).delete()[0]
+            logger.debug(f"Deleted {deleted_count} existing SD programs.")
+            for i in range(0, len(all_programs_to_create), BATCH_SIZE):
+                ProgramData.objects.bulk_create(all_programs_to_create[i:i + BATCH_SIZE])
+                progress = 88 + int(((i + BATCH_SIZE) / max(len(all_programs_to_create), 1)) * 10)
+                _sd_send_ws_sync(source.id, "parsing_programs", min(98, progress))
+
+        logger.info(f"Committed {total_programs} Schedules Direct programs to database.")
+    except Exception as db_error:
+        msg = f"Database error persisting Schedules Direct programs: {db_error}"
+        logger.error(msg, exc_info=True)
+        source.status = EPGSource.STATUS_ERROR
+        source.last_message = msg
+        source.save(update_fields=['status', 'last_message'])
+        _sd_send_ws_sync(source.id, "parsing_programs", 100, status="error", error=msg)
+        return
+    finally:
+        all_programs_to_create = None
+        gc.collect()
+
+    # -------------------------------------------------------------------------
+    # Done
+    # -------------------------------------------------------------------------
+    success_msg = (
+        f"Successfully fetched {total_programs:,} programs for "
+        f"{len(mapped_tvg_ids)} mapped stations from Schedules Direct "
+        f"({skipped_unmapped:,} programs skipped for unmapped stations)."
+    )
+    source.status = EPGSource.STATUS_SUCCESS
+    source.last_message = success_msg
+    source.updated_at = timezone.now()
+    source.save(update_fields=['status', 'last_message', 'updated_at'])
+    _sd_send_ws_sync(source.id, "parsing_programs", 100, status="success", message=success_msg)
+    log_system_event(
+        event_type='epg_refresh',
+        source_name=source.name,
+        programs=total_programs,
+        channels=len(mapped_tvg_ids),
+        skipped_programs=skipped_unmapped,
+    )
+    logger.info(f"Schedules Direct fetch complete for source: {source.name}")
 
 
 # -------------------------------
