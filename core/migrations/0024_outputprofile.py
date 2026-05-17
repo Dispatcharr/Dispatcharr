@@ -11,12 +11,15 @@ def create_default_output_profiles(apps, schema_editor):
             'command': 'ffmpeg',
             'parameters': (
                 '-fflags +discardcorrupt+genpts+nobuffer '
+                '-probesize 512K '
+                '-analyzeduration 0 '
                 '-i pipe:0 '
                 '-map 0 '
                 '-c:v copy '
                 '-c:a ac3 '
                 '-b:a 384k '
                 '-max_muxing_queue_size 4096 '
+                '-flush_packets 1 '
                 '-mpegts_flags +pat_pmt_at_frames+resend_headers+initial_discontinuity '
                 '-f mpegts pipe:1'
             ),
@@ -30,6 +33,8 @@ def create_default_output_profiles(apps, schema_editor):
             'command': 'ffmpeg',
             'parameters': (
                 '-fflags +discardcorrupt+genpts+nobuffer '
+                '-probesize 512K '
+                '-analyzeduration 0 '
                 '-i pipe:0 '
                 '-map 0 '
                 '-c:v copy '
@@ -37,6 +42,7 @@ def create_default_output_profiles(apps, schema_editor):
                 '-b:a 192k '
                 '-ac 2 '
                 '-max_muxing_queue_size 4096 '
+                '-flush_packets 1 '
                 '-mpegts_flags +pat_pmt_at_frames+resend_headers+initial_discontinuity '
                 '-f mpegts pipe:1'
             ),
