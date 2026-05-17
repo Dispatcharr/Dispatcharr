@@ -597,43 +597,6 @@ class StreamGenerator:
             except Exception as e:
                 logger.error(f"Could not log client disconnect event: {e}")
 
-            # Schedule channel shutdown if no clients left
-            self._schedule_channel_shutdown_if_needed(local_clients)
-
-    def _schedule_channel_shutdown_if_needed(self, local_clients):
-        """
-        Schedule channel shutdown if there are no clients left and we're the owner.
-        """
-        proxy_server = ProxyServer.get_instance()
-
-        # If no clients left and we're the owner, schedule shutdown using the config value
-        if local_clients == 0 and proxy_server.am_i_owner(self.channel_id):
-            # When output/profile managers are present, remove_client already spawned
-            # handle_client_disconnect which will stop them and then stop the channel.
-            # Spawning a second shutdown greenlet here causes a redundant concurrent
-            # stop_channel call that can race against the first.
-            if (proxy_server.output_managers.get(self.channel_id) or
-                    proxy_server.profile_managers.get(self.channel_id)):
-                return
-
-            logger.info(f"No local clients left for channel {self.channel_id}, scheduling shutdown")
-
-            def delayed_shutdown():
-                # Use the config setting instead of hardcoded value
-                shutdown_delay = ConfigHelper.channel_shutdown_delay()  # Use ConfigHelper
-                logger.info(f"Waiting {shutdown_delay}s before checking if channel should be stopped")
-                gevent.sleep(shutdown_delay)  # Replace time.sleep
-
-                # After delay, check global client count
-                if self.channel_id in proxy_server.client_managers:
-                    total = proxy_server.client_managers[self.channel_id].get_total_client_count()
-                    if total == 0:
-                        logger.info(f"Shutting down channel {self.channel_id} as no clients connected")
-                        proxy_server.stop_channel(self.channel_id)
-                    else:
-                        logger.info(f"Not shutting down channel {self.channel_id}, {total} clients still connected")
-
-            gevent.spawn(delayed_shutdown)
 
 def create_stream_generator(channel_id, client_id, client_ip, client_user_agent, channel_initializing=False, user=None, buffer=None):
     """

@@ -70,6 +70,7 @@ class ProxyServer:
         self.profile_managers = {}  # {channel_id: {profile_id: OutputProfileManager}}
         self.profile_buffers = {}   # {channel_id: {profile_id: StreamBuffer}}
         self._channel_names = {}
+        self._stopping_channels = set()  # channels with an active stop_channel call in progress
 
         # Generate a unique worker ID
         pid = os.getpid()
@@ -1267,6 +1268,10 @@ class ProxyServer:
 
     def stop_channel(self, channel_id):
         """Stop a channel with proper ownership handling"""
+        if channel_id in self._stopping_channels:
+            logger.debug(f"stop_channel already in progress for {channel_id}, ignoring duplicate call")
+            return
+        self._stopping_channels.add(channel_id)
         try:
             logger.info(f"Stopping channel {channel_id}")
 
@@ -1316,7 +1321,6 @@ class ProxyServer:
 
                 # Release ownership
                 self.release_ownership(channel_id)
-                logger.info(f"Released ownership of channel {channel_id}")
 
                 # Log channel stop event (after cleanup, before releasing ownership section ends)
                 try:
@@ -1404,6 +1408,8 @@ class ProxyServer:
         except Exception as e:
             logger.error(f"Error stopping channel {channel_id}: {e}")
             return False
+        finally:
+            self._stopping_channels.discard(channel_id)
 
     def check_inactive_channels(self):
         """Check for inactive channels (no clients) and stop them"""
@@ -1615,6 +1621,10 @@ class ProxyServer:
                             # Safety: if we have a stream_manager, we ARE the real owner
                             # but the Redis key may have expired. Try to re-acquire.
                             if channel_id in self.stream_managers:
+                                # Ownership was explicitly released by an active stop_channel call -
+                                # don't fight the shutdown by trying to re-acquire.
+                                if channel_id in self._stopping_channels:
+                                    continue
                                 logger.warning(
                                     f"Ownership gap for {channel_id}: this worker has stream_manager "
                                     f"but am_i_owner returned False. Attempting re-acquisition."
