@@ -2055,23 +2055,17 @@ def fetch_schedules_direct(source, stations_only=False):
             logger.info(f"SD source {source.id}: No prior full refresh detected — skipping 2-hour guard for first full fetch.")
 
     # -------------------------------------------------------------------------
-    # Resolve user agent
+    # Build SD-specific headers
+    # SD API spec requires the User-Agent to identify the application and version.
+    # SergeantPanda confirmed Dispatcharr should identify itself properly.
     # -------------------------------------------------------------------------
-    stream_settings = CoreSettings.get_stream_settings()
-    user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:138.0) Gecko/20100101 Firefox/138.0"
-    default_user_agent_id = stream_settings.get('default_user_agent')
-    if default_user_agent_id:
-        try:
-            ua_obj = UserAgent.objects.filter(id=int(default_user_agent_id)).first()
-            if ua_obj and ua_obj.user_agent:
-                user_agent = ua_obj.user_agent
-        except (ValueError, Exception) as e:
-            logger.warning(f"Could not resolve default user agent, using fallback: {e}")
+    from version import __version__ as dispatcharr_version
+    sd_user_agent = f"Dispatcharr/{dispatcharr_version}"
 
     def _sd_headers(token=None):
         h = {
             'Content-Type': 'application/json',
-            'User-Agent': user_agent,
+            'User-Agent': sd_user_agent,
         }
         if token:
             h['token'] = token
