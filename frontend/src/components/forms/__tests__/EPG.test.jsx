@@ -184,6 +184,32 @@ vi.mock('@mantine/core', async () => ({
       {error && <span data-testid="input-error">{error}</span>}
     </div>
   ),
+  Alert: ({ children, title, color, icon }) => (
+    <div data-testid="alert" data-color={color}>
+      {title && <div data-testid="alert-title">{title}</div>}
+      {children}
+    </div>
+  ),
+  Select: ({ label, value, onChange, data, placeholder }) => (
+    <select
+      aria-label={label}
+      data-testid={`select-${label?.toString().toLowerCase().replace(/\s+/g, '-')}`}
+      value={value ?? ''}
+      onChange={(e) => onChange?.(e.target.value)}
+    >
+      <option value="">{placeholder}</option>
+      {(data ?? []).map((opt) => {
+        const val = typeof opt === 'string' ? opt : opt.value;
+        const lbl = typeof opt === 'string' ? opt : opt.label;
+        return <option key={val} value={val}>{lbl}</option>;
+      })}
+    </select>
+  ),
+  Loader: ({ size }) => <div data-testid="loader" data-size={size} />,
+  Badge: ({ children, color }) => <span data-testid="badge" data-color={color}>{children}</span>,
+  ScrollArea: ({ children }) => <div data-testid="scroll-area">{children}</div>,
+  Table: ({ children }) => <table>{children}</table>,
+  Tooltip: ({ children }) => <div>{children}</div>,
 }));
 
 // ── Imports after mocks ────────────────────────────────────────────────────────
