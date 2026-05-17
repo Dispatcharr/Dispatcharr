@@ -2,6 +2,15 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // ── Utility mocks ──────────────────────────────────────────────────────────────
+vi.mock('../../api.js', () => ({
+  default: {
+    getSDLineups: vi.fn().mockResolvedValue([]),
+    addSDLineup: vi.fn().mockResolvedValue({ success: true }),
+    deleteSDLineup: vi.fn().mockResolvedValue({ success: true }),
+    searchSDLineups: vi.fn().mockResolvedValue([]),
+  },
+}));
+
 vi.mock('../../../utils/notificationUtils.js', () => ({
   showNotification: vi.fn(),
 }));
