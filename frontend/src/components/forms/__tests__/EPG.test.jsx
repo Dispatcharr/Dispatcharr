@@ -399,10 +399,11 @@ describe('EPG', () => {
       expect(screen.queryByTestId('input-api-key')).not.toBeInTheDocument();
     });
 
-    it('shows API key input when source type requires it', () => {
+    it('shows username and password inputs when source type is schedules_direct', () => {
       const epg = makeEPG({ source_type: 'schedules_direct' });
       render(<EPG {...defaultProps({ epg })} />);
-      expect(screen.getByTestId('input-api-key')).toBeInTheDocument();
+      expect(screen.getByTestId('input-username')).toBeInTheDocument();
+      expect(screen.getByTestId('input-password')).toBeInTheDocument();
     });
   });
 
