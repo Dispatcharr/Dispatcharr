@@ -33,6 +33,7 @@ dependencies = [
     "channels",
     "channels-redis==4.3.0",
     "django-filter",
+    "django-redis",
     "django-celery-beat>=2.9.0",
     "lxml==6.1.0",
     "packaging",
