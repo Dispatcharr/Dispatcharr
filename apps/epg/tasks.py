@@ -2365,7 +2365,7 @@ _PROGRAMME_TAG = b'<programme'
 _PROGRAMME_TAG_LEN = len(_PROGRAMME_TAG)
 _TAG_FOLLOW = b' \t\n\r>/'
 _MAX_START_TAG = 4096  # generous upper bound for a start tag with namespaces/extra attrs
-_OFFSET_CAP = 10  # max block-starts recorded per channel; exceeding this flags the file as interleaved
+_OFFSET_CAP = 10  # max block-starts recorded per channel; exceeding this flags the channel as interleaved
 
 
 def _find_programme_tag(buf, start):
@@ -2416,7 +2416,8 @@ def build_programme_index(source_id):
     Scan the XML file with raw binary I/O to build a {tvg_id: [byte_offset, ...]} map.
     Persists the result to EPGSource.programme_index. Most XMLTV files group programmes
     by channel, but some split a channel across multiple non-contiguous blocks, so we
-    record the start offset of every block.
+    record block starts up to _OFFSET_CAP and mark only channels that exceed the cap
+    as interleaved.
     """
     try:
         source = EPGSource.objects.get(id=source_id)
@@ -2437,7 +2438,7 @@ def build_programme_index(source_id):
     start = time.monotonic()
     index = {}
     prev_channel = None
-    interleaved = False
+    interleaved_channels = set()
 
     CHUNK = 8 * 1024 * 1024  # 8MB
 
@@ -2473,7 +2474,7 @@ def build_programme_index(source_id):
                         if len(index[channel_id]) < _OFFSET_CAP:
                             index[channel_id].append(abs_pos)
                         else:
-                            interleaved = True
+                            interleaved_channels.add(channel_id)
                     prev_channel = channel_id
 
                 search_from = (
@@ -2493,10 +2494,17 @@ def build_programme_index(source_id):
     elapsed = time.monotonic() - start
     logger.info(
         f'[build_programme_index] Indexed {len(index)} channels in {elapsed:.1f}s for source {source_id}'
-        + (' (interleaved)' if interleaved else '')
+        + (
+            f' ({len(interleaved_channels)} interleaved)'
+            if interleaved_channels
+            else ''
+        )
     )
 
-    result = {'channels': index, 'interleaved': interleaved}
+    result = {
+        'channels': index,
+        'interleaved_channels': sorted(interleaved_channels),
+    }
     EPGSource.objects.filter(id=source_id).update(programme_index=result)
 
 
@@ -2509,7 +2517,8 @@ def build_programme_index_task(source_id):
 def find_current_program_for_tvg_id(epg_or_id):
     """
     Look up the currently-airing program for an EPGData instance (or id) using
-    the byte-offset index. Falls back to sequential scan if no index exists.
+    the byte-offset index. If no index exists yet, queue an async build and let
+    the caller retry rather than doing a blocking scan.
 
     Returns dict, None, or "timeout".
     """
@@ -2547,7 +2556,7 @@ def find_current_program_for_tvg_id(epg_or_id):
             # Channel has no programmes in the file
             return None
         offsets = channels[tvg_id]
-        if index.get('interleaved'):
+        if tvg_id in (index.get('interleaved_channels') or ()):
             # Check all stored offsets first (cheap: one seek + one element parse each)
             result = _read_programs_at_offsets(file_path, tvg_id, offsets, now)
             if result is not None:
@@ -2564,15 +2573,13 @@ def find_current_program_for_tvg_id(epg_or_id):
             return result
         return _read_programs_at_offsets(file_path, tvg_id, offsets, now)
 
-    # No index yet, fall back to sequential scan
-    result = _sequential_scan_for_tvg_id(file_path, tvg_id, now, timeout_sec=10)
-    if result == 'timeout':
-        # Trigger background index build (Redis lock prevents duplicates)
-        redis_client = RedisClient.get_client()
-        lock_key = f'building_programme_index_{source.id}'
-        if redis_client.set(lock_key, '1', nx=True, ex=300):
-            build_programme_index_task.delay(source.id)
-    return result
+    # No index yet: dispatch a background build and let the frontend retry.
+    # A sync scan can block a worker for ~10s on SMB-hosted EPGs.
+    redis_client = RedisClient.get_client()
+    lock_key = f'building_programme_index_{source.id}'
+    if redis_client.set(lock_key, '1', nx=True, ex=300):
+        build_programme_index_task.delay(source.id)
+    return 'timeout'
 
 
 def _read_programs_at_offsets(file_path, tvg_id, offsets, now):
@@ -2667,7 +2674,7 @@ def _scan_from_offset_for_tvg_id(file_path, tvg_id, start_offset, now, timeout_s
     """
     Scan forward from start_offset for tvg_id, skipping other channels rather than
     stopping at a channel boundary. Used for interleaved/time-sorted XMLTV files where
-    the index holds only the first known offset per channel.
+    a channel exceeded the stored offset cap.
     Returns dict, None, or 'timeout'.
     """
     PROG_CLOSE = b'</programme>'
@@ -2750,45 +2757,5 @@ def _scan_from_offset_for_tvg_id(file_path, tvg_id, start_offset, now, timeout_s
 
             if not chunk:
                 break
-
-    return None
-
-
-def _sequential_scan_for_tvg_id(file_path, tvg_id, now, timeout_sec=10):
-    """Stream through the file with iterparse for *tvg_id*. Returns dict, None, or "timeout"."""
-    deadline = time.monotonic() + timeout_sec
-
-    try:
-        with open(file_path, 'rb') as f:
-            context = etree.iterparse(f, events=('end',), tag='programme')
-            for _, elem in context:
-                if time.monotonic() > deadline:
-                    return 'timeout'
-
-                if elem.get('channel') != tvg_id:
-                    elem.clear()
-                    continue
-
-                start_str = elem.get('start')
-                stop_str = elem.get('stop')
-                if not start_str or not stop_str:
-                    elem.clear()
-                    continue
-
-                start_time = parse_xmltv_time(start_str)
-                end_time = parse_xmltv_time(stop_str)
-                if start_time is None or end_time is None:
-                    elem.clear()
-                    continue
-
-                if start_time <= now < end_time:
-                    result = _programme_to_dict(elem, start_time, end_time)
-                    elem.clear()
-                    return result
-
-                elem.clear()
-    except Exception as e:
-        logger.error(f'[_sequential_scan_for_tvg_id] Error scanning for {tvg_id}: {e}')
-        return None
 
     return None

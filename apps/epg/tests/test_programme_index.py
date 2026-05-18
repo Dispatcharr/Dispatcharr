@@ -161,11 +161,8 @@ class FindCurrentProgramTests(TestCase):
         finally:
             os.unlink(tmp_path)
 
-    @patch("apps.epg.tasks._sequential_scan_for_tvg_id", return_value="timeout")
     @patch("apps.epg.tasks.build_programme_index_task")
-    def test_returns_timeout_when_no_index_and_scan_times_out(
-        self, mock_build_task, mock_scan
-    ):
+    def test_no_index_dispatches_build_and_returns_timeout(self, mock_build_task):
         # Source with no index and file on disk
         src = EPGSource.objects.create(
             name="No Index",
@@ -189,6 +186,34 @@ class FindCurrentProgramTests(TestCase):
 
         self.assertEqual(result, "timeout")
         mock_build_task.delay.assert_called_once_with(src.id)
+        mock_redis.set.assert_called_once()
+        lock_key = mock_redis.set.call_args.args[0]
+        self.assertEqual(lock_key, f"building_programme_index_{src.id}")
+
+    @patch("apps.epg.tasks.build_programme_index_task")
+    def test_no_index_skips_dispatch_when_lock_held(self, mock_build_task):
+        src = EPGSource.objects.create(
+            name="Lock Held",
+            source_type="xmltv",
+            file_path=FIXTURE_XML,
+            programme_index=None,
+        )
+        epg = EPGData.objects.create(
+            tvg_id="channel.current",
+            name="Current",
+            epg_source=src,
+        )
+
+        mock_redis = MagicMock()
+        mock_redis.set.return_value = False  # someone else already building
+        with patch(
+            "core.utils.RedisClient.get_client",
+            return_value=mock_redis,
+        ):
+            result = find_current_program_for_tvg_id(epg)
+
+        self.assertEqual(result, "timeout")
+        mock_build_task.delay.assert_not_called()
 
 
 class BuildProgrammeIndexTests(TestCase):
@@ -208,7 +233,65 @@ class BuildProgrammeIndexTests(TestCase):
         self.assertIn("channel.past", channels)
         # channel.empty has no programmes
         self.assertNotIn("channel.empty", channels)
+        # Small fixture has no interleaved channels
+        self.assertEqual(index["interleaved_channels"], [])
 
     def test_nonexistent_source_does_not_raise(self):
         # Should log error but not raise
         build_programme_index(99999)
+
+    def test_per_channel_interleaved_marking(self):
+        xml = (
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            "<tv>\n"
+            '  <channel id="A"/>\n'
+            '  <channel id="B"/>\n'
+            '  <programme start="20000101000000 +0000" '
+            'stop="20991231235959 +0000" channel="A">\n'
+            "    <title>A Current</title>\n"
+            "  </programme>\n"
+            '  <programme start="20000101000000 +0000" '
+            'stop="20991231235959 +0000" channel="B">\n'
+            "    <title>B Current</title>\n"
+            "  </programme>\n"
+            '  <programme start="19990101000000 +0000" '
+            'stop="19990102000000 +0000" channel="A">\n'
+            "    <title>A Old</title>\n"
+            "  </programme>\n"
+            "</tv>\n"
+        )
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".xml", delete=False
+        ) as f:
+            f.write(xml)
+            tmp_path = f.name
+
+        try:
+            src = EPGSource.objects.create(
+                name="Interleaved", source_type="xmltv", file_path=tmp_path
+            )
+            with patch("apps.epg.tasks._OFFSET_CAP", 1):
+                build_programme_index(src.id)
+            src.refresh_from_db()
+            index = src.programme_index
+            self.assertEqual(index["interleaved_channels"], ["A"])
+
+            epg_b = EPGData.objects.create(
+                tvg_id="B", name="B", epg_source=src
+            )
+            with patch(
+                "apps.epg.tasks._scan_from_offset_for_tvg_id"
+            ) as mock_scan:
+                result_b = find_current_program_for_tvg_id(epg_b)
+            self.assertIsNotNone(result_b)
+            self.assertEqual(result_b["title"], "B Current")
+            mock_scan.assert_not_called()
+
+            epg_a = EPGData.objects.create(
+                tvg_id="A", name="A", epg_source=src
+            )
+            result_a = find_current_program_for_tvg_id(epg_a)
+            self.assertIsNotNone(result_a)
+            self.assertEqual(result_a["title"], "A Current")
+        finally:
+            os.unlink(tmp_path)

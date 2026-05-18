@@ -4,7 +4,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('epg', '0021_epgsource_priority'),
+        ('epg', '0022_alter_epgdata_name'),
     ]
 
     operations = [
