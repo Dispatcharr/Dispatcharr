@@ -1990,7 +1990,9 @@ class ProxyServer:
                 logger.info(f"Non-owner cleanup: Removed stream buffer for channel {channel_id}")
 
             if channel_id in self.client_managers:
-                del self.client_managers[channel_id]
+                client_manager = self.client_managers.pop(channel_id)
+                if hasattr(client_manager, 'stop'):
+                    client_manager.stop()
                 logger.info(f"Non-owner cleanup: Removed client manager for channel {channel_id}")
 
             # Stop profile managers owned by this worker, but only for profiles
