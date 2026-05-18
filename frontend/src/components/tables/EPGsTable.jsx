@@ -299,7 +299,7 @@ const EPGsTable = () => {
           } else {
             value =
               cell.getValue() ||
-              row.original.api_key ||
+              row.original.password ||
               row.original.file_path ||
               '';
             tooltip = value;
@@ -702,8 +702,8 @@ Source Type: ${epgToDelete.source_type}
 ${
   epgToDelete.url
     ? `URL: ${epgToDelete.url}`
-    : epgToDelete.api_key
-      ? `API Key: ${epgToDelete.api_key}`
+    : epgToDelete.password
+      ? `API Key: ${epgToDelete.password}`
       : epgToDelete.file_path
         ? `File Path: ${epgToDelete.file_path}`
         : ''

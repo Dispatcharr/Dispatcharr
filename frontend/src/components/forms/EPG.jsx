@@ -347,7 +347,7 @@ const EPG = ({ epg = null, isOpen, onClose }) => {
       source_type: 'xmltv',
       url: '',
       username: '',
-      api_key: '',
+      password: '',
       is_active: true,
       refresh_interval: 24,
       cron_expression: '',
@@ -402,7 +402,7 @@ const EPG = ({ epg = null, isOpen, onClose }) => {
         source_type: epg.source_type,
         url: epg.url,
         username: epg.username || '',
-        api_key: epg.api_key,
+        password: epg.password || '',
         is_active: epg.is_active,
         refresh_interval: epg.refresh_interval,
         cron_expression: epg.cron_expression || '',
@@ -565,13 +565,13 @@ const EPG = ({ epg = null, isOpen, onClose }) => {
                     key={form.key('username')}
                   />
                   <TextInput
-                    id="api_key"
-                    name="api_key"
+                    id="password"
+                    name="password"
                     label="Password"
                     description="Your Schedules Direct account password"
                     type="password"
-                    {...form.getInputProps('api_key')}
-                    key={form.key('api_key')}
+                    {...form.getInputProps('password')}
+                    key={form.key('password')}
                   />
                 </>
               )}

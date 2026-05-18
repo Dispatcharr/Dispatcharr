@@ -108,6 +108,326 @@ class EPGSourceViewSet(viewsets.ModelViewSet):
         return super().partial_update(request, *args, **kwargs)
 
 
+    def _sd_authenticate(self, source):
+        """
+        Authenticate with Schedules Direct using stored credentials.
+        Returns (token, None) on success or (None, Response) on failure.
+        """
+        import hashlib
+        import requests as http_requests
+        from apps.epg.tasks import SD_BASE_URL
+        from version import __version__ as dispatcharr_version
+
+        username = (source.username or '').strip()
+        password = (source.password or '').strip()
+        if not username or not password:
+            return None, Response(
+                {"error": "Username and password are required."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        sha1_password = hashlib.sha1(password.encode('utf-8')).hexdigest()
+        try:
+            auth_response = http_requests.post(
+                f"{SD_BASE_URL}/token",
+                json={'username': username, 'password': sha1_password},
+                headers={'Content-Type': 'application/json', 'User-Agent': f'Dispatcharr/{dispatcharr_version}'},
+                timeout=15,
+            )
+            auth_response.raise_for_status()
+            token = auth_response.json().get('token')
+            if not token:
+                return None, Response(
+                    {"error": "Authentication failed. Check your credentials."},
+                    status=status.HTTP_401_UNAUTHORIZED
+                )
+            return token, None
+        except http_requests.exceptions.RequestException as e:
+            return None, Response(
+                {"error": f"Authentication failed: {str(e)}"},
+                status=status.HTTP_502_BAD_GATEWAY
+            )
+
+    def _get_sd_reset_at(self, source):
+        """Retrieve stored reset timestamp from EPGSource model field."""
+        reset_at_str = (source.custom_properties or {}).get('sd_changes_reset_at')
+        return reset_at_str
+
+    def _get_sd_changes_remaining(self, source):
+        """
+        Retrieve stored changesRemaining from EPGSource model field.
+        If a reset timestamp exists and has passed (midnight UTC), clears the
+        lockout automatically so the user can make adds again.
+        """
+        from django.utils import timezone
+
+        cp = source.custom_properties or {}
+        changes_remaining = cp.get('sd_changes_remaining')
+        reset_at_str = cp.get('sd_changes_reset_at')
+        from django.utils.dateparse import parse_datetime
+        reset_at = parse_datetime(reset_at_str) if reset_at_str else None
+
+        # If we have a reset timestamp and it has passed, clear the lockout
+        if changes_remaining == 0 and reset_at:
+            if timezone.now() >= reset_at:
+                cp = source.custom_properties or {}
+                cp.pop('sd_changes_remaining', None)
+                cp.pop('sd_changes_reset_at', None)
+                source.custom_properties = cp
+                source.save(update_fields=['custom_properties'])
+                return None
+
+        return changes_remaining
+
+    def _save_sd_changes_remaining(self, source, changes_remaining):
+        """Persist changesRemaining to EPGSource model field."""
+        cp = source.custom_properties or {}
+        cp['sd_changes_remaining'] = changes_remaining
+        source.custom_properties = cp
+        source.save(update_fields=['custom_properties'])
+
+    def _save_sd_lockout(self, source):
+        """
+        Persist a hard lockout to EPGSource model fields when SD returns
+        4100 MAX_LINEUP_CHANGES_REACHED. Lockout clears automatically at next
+        midnight UTC per SD's documented reset schedule.
+        """
+        from django.utils import timezone
+        from datetime import datetime, timedelta, timezone as dt_timezone
+
+        now = timezone.now()
+        # SD resets on a 24-hour rolling window from when the limit was hit.
+        # We use 24 hours from now rather than next midnight UTC to be safe.
+        reset_at = now + timedelta(hours=24)
+
+        cp = source.custom_properties or {}
+        cp['sd_changes_remaining'] = 0
+        cp['sd_changes_reset_at'] = reset_at.isoformat()
+        source.custom_properties = cp
+        source.save(update_fields=['custom_properties'])
+        logger.warning(
+            f"SD source {source.id}: daily add limit reached (4100). "
+            f"Lockout set until {reset_at.isoformat()}."
+        )
+
+    @action(detail=True, methods=["get", "post", "delete"], url_path="sd-lineups")
+    def sd_lineups(self, request, pk=None):
+        """
+        GET    — list lineups currently on the SD account
+        POST   — add a lineup (body: {"lineup": "USA-NJ29486-X"})
+        DELETE — remove a lineup (body: {"lineup": "USA-NJ29486-X"})
+        """
+        import requests as http_requests
+        from apps.epg.tasks import SD_BASE_URL
+        from version import __version__ as dispatcharr_version
+
+        source = self.get_object()
+        if source.source_type != 'schedules_direct':
+            return Response(
+                {"error": "This action is only available for Schedules Direct sources."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        token, error = self._sd_authenticate(source)
+        if error:
+            return error
+
+        headers = {
+            'Content-Type': 'application/json',
+            'User-Agent': f'Dispatcharr/{dispatcharr_version}',
+            'token': token,
+        }
+
+        if request.method == "GET":
+            try:
+                resp = http_requests.get(
+                    f"{SD_BASE_URL}/lineups",
+                    headers=headers,
+                    timeout=15,
+                )
+                if resp.status_code == 400:
+                    sd_data = resp.json()
+                    sd_code = sd_data.get('code')
+                    if sd_code == 4102:
+                        return Response({
+                            "lineups": [],
+                            "max_lineups": 4,
+                            "changes_remaining": self._get_sd_changes_remaining(source),
+                            "changes_reset_at": self._get_sd_reset_at(source),
+                            "notice": "No lineups are currently configured on this Schedules Direct account. Use the search below to add one.",
+                        })
+                resp.raise_for_status()
+                data = resp.json()
+                lineups = [l for l in data.get('lineups', []) if not l.get('isDeleted', False)]
+                return Response({
+                    "lineups": lineups,
+                    "max_lineups": 4,
+                    "changes_remaining": self._get_sd_changes_remaining(source),
+                    "changes_reset_at": self._get_sd_reset_at(source),
+                })
+            except http_requests.exceptions.RequestException as e:
+                return Response(
+                    {"error": f"Failed to fetch lineups: {str(e)}"},
+                    status=status.HTTP_502_BAD_GATEWAY
+                )
+
+        elif request.method == "POST":
+            lineup_id = request.data.get('lineup')
+            if not lineup_id:
+                return Response({"error": "lineup field is required."}, status=status.HTTP_400_BAD_REQUEST)
+            try:
+                resp = http_requests.put(
+                    f"{SD_BASE_URL}/lineups/{lineup_id}",
+                    headers=headers,
+                    timeout=15,
+                )
+                sd_data = resp.json()
+                sd_code = sd_data.get('code')
+
+                if resp.status_code == 400 or resp.status_code == 403:
+                    if sd_code == 4100:
+                        self._save_sd_lockout(source)
+                        return Response({
+                            "error": "daily_limit_reached",
+                            "message": "You have reached your daily Schedules Direct lineup addition limit. SD allows 6 adds per 24-hour period. Resets at midnight UTC.",
+                            "changes_remaining": 0,
+                            "docs_url": "https://github.com/SchedulesDirect/JSON-Service/wiki/API-20141201#tasks-your-client-must-perform",
+                        }, status=status.HTTP_200_OK)
+                    if sd_code == 4101:
+                        return Response({
+                            "error": "max_lineups_reached",
+                            "message": "Your Schedules Direct account has reached the maximum of 4 lineups. Remove one before adding another.",
+                            "changes_remaining": self._get_sd_changes_remaining(source),
+                        }, status=status.HTTP_200_OK)
+                    if sd_code == 2100:
+                        return Response({
+                            "error": "duplicate_lineup",
+                            "message": "This lineup is already on your Schedules Direct account.",
+                            "changes_remaining": self._get_sd_changes_remaining(source),
+                        }, status=status.HTTP_200_OK)
+                    return Response({
+                        "error": sd_data.get('message', 'Failed to add lineup.'),
+                        "changes_remaining": self._get_sd_changes_remaining(source),
+                    }, status=status.HTTP_200_OK)
+
+                resp.raise_for_status()
+
+                # Persist changesRemaining to custom_properties
+                changes_remaining = sd_data.get('changesRemaining')
+                if changes_remaining is not None:
+                    self._save_sd_changes_remaining(source, changes_remaining)
+
+                logger.info(
+                    f"SD lineup added for source {source.id}: {lineup_id}. "
+                    f"changesRemaining: {changes_remaining}"
+                )
+
+                # Re-fetch stations so the new lineup's stations are available for matching
+                from apps.epg.tasks import fetch_schedules_direct_stations
+                fetch_schedules_direct_stations.delay(source.id)
+
+                return Response({
+                    **sd_data,
+                    "changes_remaining": changes_remaining,
+                })
+            except http_requests.exceptions.RequestException as e:
+                return Response(
+                    {"error": f"Failed to add lineup: {str(e)}"},
+                    status=status.HTTP_502_BAD_GATEWAY
+                )
+
+        elif request.method == "DELETE":
+            lineup_id = request.data.get('lineup')
+            if not lineup_id:
+                return Response({"error": "lineup field is required."}, status=status.HTTP_400_BAD_REQUEST)
+            try:
+                resp = http_requests.delete(
+                    f"{SD_BASE_URL}/lineups/{lineup_id}",
+                    headers=headers,
+                    timeout=15,
+                )
+                if resp.status_code == 400:
+                    sd_data = resp.json()
+                    sd_code = sd_data.get('code')
+                    if sd_code == 2103:
+                        return Response({
+                            "response": "OK",
+                            "code": 0,
+                            "message": "Lineup not found on account — already removed.",
+                            "changes_remaining": self._get_sd_changes_remaining(source),
+                        })
+                resp.raise_for_status()
+                logger.info(f"SD lineup deleted for source {source.id}: {lineup_id}")
+                return Response({
+                    **resp.json(),
+                    "changes_remaining": self._get_sd_changes_remaining(source),
+                })
+            except http_requests.exceptions.RequestException as e:
+                return Response(
+                    {"error": f"Failed to remove lineup: {str(e)}"},
+                    status=status.HTTP_502_BAD_GATEWAY
+                )
+
+    @action(detail=True, methods=["post"], url_path="sd-lineups/search")
+    def sd_lineups_search(self, request, pk=None):
+        """
+        Search available headends/lineups by country and postal code.
+        Body: {"country": "USA", "postalcode": "07030"}
+        Returns a flat list of lineups across all matching headends.
+        """
+        import requests as http_requests
+        from apps.epg.tasks import SD_BASE_URL
+
+        source = self.get_object()
+        if source.source_type != 'schedules_direct':
+            return Response(
+                {"error": "This action is only available for Schedules Direct sources."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        country = request.data.get('country', '').strip()
+        postalcode = request.data.get('postalcode', '').strip()
+        if not country or not postalcode:
+            return Response(
+                {"error": "country and postalcode are required."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        token, error = self._sd_authenticate(source)
+        if error:
+            return error
+
+        headers = {
+            'Content-Type': 'application/json',
+            'User-Agent': f'Dispatcharr/{dispatcharr_version}',
+            'token': token,
+        }
+
+        try:
+            resp = http_requests.get(
+                f"{SD_BASE_URL}/headends",
+                params={'country': country, 'postalcode': postalcode},
+                headers=headers,
+                timeout=15,
+            )
+            resp.raise_for_status()
+            headends = resp.json()
+            lineups = []
+            for headend in headends:
+                for lineup in headend.get('lineups', []):
+                    lineups.append({
+                        'lineup': lineup.get('lineup'),
+                        'name': lineup.get('name'),
+                        'transport': headend.get('transport'),
+                        'location': headend.get('location'),
+                        'headend': headend.get('headend'),
+                    })
+            return Response({"lineups": lineups})
+        except http_requests.exceptions.RequestException as e:
+            return Response(
+                {"error": f"Failed to search headends: {str(e)}"},
+                status=status.HTTP_502_BAD_GATEWAY
+            )
 # ─────────────────────────────
 # 2) Program API (CRUD)
 # ─────────────────────────────

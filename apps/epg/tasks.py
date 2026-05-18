@@ -24,7 +24,7 @@ from core.models import UserAgent, CoreSettings
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 
-from .models import EPGSource, EPGData, ProgramData
+from .models import EPGSource, EPGData, ProgramData, SDScheduleMD5, SDProgramMD5
 from core.utils import acquire_task_lock, release_task_lock, TaskLockRenewer, send_websocket_update, cleanup_memory, log_system_event
 
 logger = logging.getLogger(__name__)
@@ -2011,7 +2011,7 @@ def fetch_schedules_direct(source, stations_only=False):
     # Validate credentials
     # -------------------------------------------------------------------------
     username = (source.username or '').strip()
-    password = (source.api_key or '').strip()
+    password = (source.password or '').strip()
 
     if not username or not password:
         msg = "Schedules Direct source requires both a username and password."
@@ -2392,7 +2392,7 @@ def fetch_schedules_direct(source, stations_only=False):
         if cached != server_info['md5']:
             changed_by_station.setdefault(sid, []).append(date_str)
 
-    total_changed = sum(len(v) for v in changed_by_station.items())
+    total_changed = sum(len(v) for v in changed_by_station.values())
     total_possible = len(station_ids) * len(date_list)
     logger.info(f"Schedule MD5 check: {len(server_md5s)} hashes checked, {total_changed} station/date combinations changed (of {total_possible} possible).")
     _sd_send_ws_sync(source.id, "parsing_programs", 38,
@@ -2401,15 +2401,6 @@ def fetch_schedules_direct(source, stations_only=False):
     # schedules_by_station: stationID -> list of {programID, airDateTime, duration, ...}
     schedules_by_station = {sid: [] for sid in station_ids}
     program_ids_needed = set()
-
-    # Existing cached program MD5s for delta detection in step 6
-    existing_program_md5s = {
-        p.tvg_id + '|' + p.title: p.sd_program_md5
-        for p in ProgramData.objects.filter(
-            epg__epg_source=source,
-            sd_program_md5__isnull=False,
-        ).only('tvg_id', 'title', 'sd_program_md5')
-    }
 
     if not changed_by_station:
         logger.info("No schedule changes detected — skipping schedule and program downloads.")
@@ -2539,16 +2530,16 @@ def fetch_schedules_direct(source, stations_only=False):
             if pid and md5:
                 schedule_program_md5s[pid] = md5
 
-    # Load cached program MD5s from DB keyed by programID via tvg_id
+    # Load cached program MD5s from SDProgramMD5 table, keyed by programID
     cached_prog_md5s = {
-        p.tvg_id: p.sd_program_md5
-        for p in ProgramData.objects.filter(
-            epg__epg_source=source,
-            sd_program_md5__isnull=False,
-        ).only('tvg_id', 'sd_program_md5').distinct('tvg_id')
+        r.program_id: r.md5
+        for r in SDProgramMD5.objects.filter(
+            epg_source=source,
+            program_id__in=program_ids_needed,
+        ).only('program_id', 'md5')
     }
 
-    # Only fetch programs where MD5 differs from our cache
+    # Only fetch programs where MD5 differs from our cached value
     programs_to_fetch = [
         pid for pid in program_ids_needed
         if schedule_program_md5s.get(pid) != cached_prog_md5s.get(pid)
@@ -2735,7 +2726,6 @@ def fetch_schedules_direct(source, stations_only=False):
                 description=desc or None,
                 tvg_id=sid,
                 custom_properties=custom_props or None,
-                sd_program_md5=schedule_program_md5s.get(pid),
             ))
             total_programs += 1
 
@@ -2758,6 +2748,28 @@ def fetch_schedules_direct(source, stations_only=False):
                 _sd_send_ws_sync(source.id, "parsing_programs", min(98, progress))
 
         logger.info(f"Committed {total_programs} Schedules Direct programs to database.")
+
+        # Upsert SDProgramMD5 records for programs we just downloaded
+        # This updates the cache so future fetches can skip unchanged programs
+        if schedule_program_md5s:
+            md5_records = [
+                SDProgramMD5(
+                    epg_source=source,
+                    program_id=pid,
+                    md5=md5,
+                )
+                for pid, md5 in schedule_program_md5s.items()
+                if pid in programs_to_fetch  # Only cache what we actually downloaded
+            ]
+            if md5_records:
+                SDProgramMD5.objects.bulk_create(
+                    md5_records,
+                    update_conflicts=True,
+                    unique_fields=['epg_source', 'program_id'],
+                    update_fields=['md5'],
+                )
+                logger.info(f"Cached {len(md5_records)} program MD5s for future delta detection.")
+
     except Exception as db_error:
         msg = f"Database error persisting Schedules Direct programs: {db_error}"
         logger.error(msg, exc_info=True)

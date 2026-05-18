@@ -34,7 +34,7 @@ class EPGSourceUsernameFieldTests(TestCase):
             name='SD Test',
             source_type='schedules_direct',
             username='testuser',
-            api_key='testpass',
+            password='testpass',
         )
         source.refresh_from_db()
         self.assertEqual(source.username, 'testuser')
@@ -64,20 +64,20 @@ class EPGSourceSerializerSDTests(TestCase):
             name='SD Serializer Test',
             source_type='schedules_direct',
             username='sduser',
-            api_key='sdpass',
+            password='sdpass',
         )
         data = EPGSourceSerializer(source).data
         self.assertIn('username', data)
         self.assertEqual(data['username'], 'sduser')
 
-    def test_api_key_in_serializer_fields(self):
+    def test_password_in_serializer_fields(self):
         source = EPGSource.objects.create(
             name='SD API Key Test',
             source_type='schedules_direct',
-            api_key='secret',
+            password='secret',
         )
         data = EPGSourceSerializer(source).data
-        self.assertIn('api_key', data)
+        self.assertIn('password', data)
 
 
 # ---------------------------------------------------------------------------
@@ -87,31 +87,31 @@ class EPGSourceSerializerSDTests(TestCase):
 class FetchSchedulesDirectCredentialTests(TestCase):
     """fetch_schedules_direct must reject sources missing credentials."""
 
-    def _make_source(self, username=None, api_key=None):
+    def _make_source(self, username=None, password=None):
         return EPGSource.objects.create(
             name='SD Cred Test',
             source_type='schedules_direct',
             username=username,
-            api_key=api_key,
+            password=password,
         )
 
     def test_missing_username_sets_error_status(self):
         from apps.epg.tasks import fetch_schedules_direct
-        source = self._make_source(username=None, api_key='pass')
+        source = self._make_source(username=None, password='pass')
         fetch_schedules_direct(source)
         source.refresh_from_db()
         self.assertEqual(source.status, EPGSource.STATUS_ERROR)
 
     def test_missing_password_sets_error_status(self):
         from apps.epg.tasks import fetch_schedules_direct
-        source = self._make_source(username='user', api_key=None)
+        source = self._make_source(username='user', password=None)
         fetch_schedules_direct(source)
         source.refresh_from_db()
         self.assertEqual(source.status, EPGSource.STATUS_ERROR)
 
     def test_empty_username_sets_error_status(self):
         from apps.epg.tasks import fetch_schedules_direct
-        source = self._make_source(username='   ', api_key='pass')
+        source = self._make_source(username='   ', password='pass')
         fetch_schedules_direct(source)
         source.refresh_from_db()
         self.assertEqual(source.status, EPGSource.STATUS_ERROR)
@@ -142,7 +142,7 @@ class FetchSchedulesDirectAuthTests(TestCase):
             name='SD Hash Test',
             source_type='schedules_direct',
             username='sduser',
-            api_key=plaintext,
+            password=plaintext,
         )
 
         with patch('apps.epg.tasks.send_epg_update'):
@@ -171,7 +171,7 @@ class FetchSchedulesDirectAuthTests(TestCase):
             name='SD Auth Fail',
             source_type='schedules_direct',
             username='baduser',
-            api_key='badpass',
+            password='badpass',
         )
 
         with patch('apps.epg.tasks.send_epg_update'):
@@ -191,7 +191,7 @@ class FetchSchedulesDirectAuthTests(TestCase):
             name='SD Network Error',
             source_type='schedules_direct',
             username='user',
-            api_key='pass',
+            password='pass',
         )
 
         with patch('apps.epg.tasks.send_epg_update'):
@@ -247,7 +247,7 @@ class SDSourceSignalTests(TestCase):
             name='SD Signal Test',
             source_type='schedules_direct',
             username='u',
-            api_key='p',
+            password='p',
         )
         epg_data = EPGData.objects.create(
             tvg_id='sd-test-station',
