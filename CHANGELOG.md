@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- Updated `Django` 6.0.4 → 6.0.5, resolving the following CVEs:
+  - **CVE-2026-6907**: Cache leak exposing sensitive information via `cache.get_or_set()` race condition.
+  - **CVE-2026-35192**: Persistent session cookies retaining sensitive information after logout.
+  - **CVE-2026-5766**: Improper handling of length parameter inconsistency in multipart form parsing.
+
 ### Added
 
 - **HDHR output profile URL support.** HDHomeRun lineup URLs now support an `output_profile` path segment so HDHR clients (Plex, Channels DVR, Emby, etc.) can request a specific transcode profile without any query-parameter support. URL formats accepted:
@@ -79,6 +86,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Channel-number duplicates are explicitly allowed.** Sync's `used_numbers` seed still avoids assigning the same number to two newly-created auto channels in the same run, so accidental duplication during sync remains impossible. Manual or override-driven duplication is permitted; downstream client behavior on duplicates varies by client.
 - **gevent cooperative multitasking enabled in all uWSGI workers.** `gevent-early-monkey-patch = true` and `import = dispatcharr.gevent_patch` are now set in all four uWSGI configuration files (`uwsgi.ini`, `uwsgi.modular.ini`, `uwsgi.dev.ini`, `uwsgi.debug.ini`). The new `dispatcharr/gevent_patch.py` module ensures gevent's stdlib monkey-patching is applied before application code loads (replacing blocking socket, threading, and OS primitives with cooperative gevent equivalents) and installs psycogreen's wait-callback so psycopg2 database I/O yields to the gevent hub instead of blocking the OS thread. Without these settings, any blocking psycopg2, `requests`, or DNS call froze every greenlet on the affected worker for the duration of the call.
 - **WebSocket group sends rewritten to bypass asyncio in gevent workers.** `gevent.monkey.patch_all()` removes `select.epoll` from the stdlib `select` module, which breaks asyncio event loop creation in threadpool threads. The previous `send_websocket_update` and `_send_async` paths dispatched via `async_to_sync(channel_layer.group_send)()` from a threadpool thread, which failed with `AttributeError: module 'select' has no attribute 'epoll'`; the exception was caught at WARNING level, so every WebSocket push from REST views was silently discarded. A new `_gevent_ws_send()` in `core/utils.py` replicates the channels_redis 4.x `group_send` wire format directly using the synchronous Redis client - group membership lookup from the `asgi:group:{name}` sorted set, msgpack serialization with a 12-byte random prefix, and `ZADD` to per-channel sorted sets. Both `send_websocket_update()` and `_send_async()` detect gevent patching at call time and dispatch via `gevent.spawn(_gevent_ws_send)` instead. Celery workers, which are not gevent-patched, continue to use the `async_to_sync` path unchanged.
+- Dependency updates:
+  - `Django` 6.0.4 → 6.0.5 (security patch; see Security section)
 
 ### Fixed
 
