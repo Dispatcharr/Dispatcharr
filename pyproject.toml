@@ -6,7 +6,7 @@ license = "AGPL-3.0-only"
 requires-python = ">=3.13"
 dynamic = ["version"]
 dependencies = [
-    "Django==6.0.4",
+    "Django==6.0.5",
     "psycopg2-binary==2.9.12",
     "celery[redis]==5.6.3",
     "djangorestframework==3.17.1",
