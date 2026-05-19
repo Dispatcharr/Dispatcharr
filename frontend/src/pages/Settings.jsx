@@ -48,6 +48,9 @@ const SystemSettingsForm = React.lazy(
 const NavOrderForm = React.lazy(
   () => import('../components/forms/settings/NavOrderForm.jsx')
 );
+const TimeshiftSettingsForm = React.lazy(
+  () => import('../components/forms/settings/TimeshiftSettingsForm.jsx')
+);
 
 const SettingsPage = () => {
   const authUser = useAuthStore((s) => s.user);
@@ -227,6 +230,19 @@ const SettingsPage = () => {
                     <Suspense fallback={<Loader />}>
                       <UserLimitsForm
                         active={accordianValue === 'user-limits'}
+                      />
+                    </Suspense>
+                  </ErrorBoundary>
+                </AccordionPanel>
+              </AccordionItem>
+
+              <AccordionItem value="timeshift-settings">
+                <AccordionControl>Timeshift</AccordionControl>
+                <AccordionPanel>
+                  <ErrorBoundary>
+                    <Suspense fallback={<Loader />}>
+                      <TimeshiftSettingsForm
+                        active={accordianValue === 'timeshift-settings'}
                       />
                     </Suspense>
                   </ErrorBoundary>

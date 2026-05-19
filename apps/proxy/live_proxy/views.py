@@ -601,6 +601,25 @@ def stream_xc(request, username, password, channel_id):
     if custom_properties["xc_password"] != password:
         return Response({"error": "Invalid credentials"}, status=401)
 
+    # Resolve the channel id.  Try the internal Channel.id first (most
+    # requests).  Fall back to provider stream_id lookup for catch-up
+    # channels whose xc_get_live_streams emits the provider's stream_id.
+    from apps.channels.utils import resolve_channel_by_provider_stream_id
+    resolved_internal_id = None
+    try:
+        candidate = int(channel_id)
+        if Channel.objects.filter(id=candidate).exists():
+            resolved_internal_id = candidate
+    except (TypeError, ValueError):
+        pass
+
+    if resolved_internal_id is None:
+        provider_channel, _ = resolve_channel_by_provider_stream_id(str(channel_id))
+        if provider_channel is not None:
+            resolved_internal_id = provider_channel.id
+        else:
+            return JsonResponse({"error": "Not found"}, status=404)
+
     if user.user_level < 10:
         user_profile_count = user.channel_profiles.count()
 
@@ -608,14 +627,14 @@ def stream_xc(request, username, password, channel_id):
         if user_profile_count == 0:
             # No profile filtering - user sees all channels based on user_level
             filters = {
-                "id": int(channel_id),
+                "id": resolved_internal_id,
                 "user_level__lte": user.user_level
             }
             channel = Channel.objects.filter(**filters).first()
         else:
             # User has specific limited profiles assigned
             filters = {
-                "id": int(channel_id),
+                "id": resolved_internal_id,
                 "channelprofilemembership__enabled": True,
                 "user_level__lte": user.user_level,
                 "channelprofilemembership__channel_profile__in": user.channel_profiles.all()
@@ -625,7 +644,7 @@ def stream_xc(request, username, password, channel_id):
         if not channel:
             return JsonResponse({"error": "Not found"}, status=404)
     else:
-        channel = get_object_or_404(Channel, id=channel_id)
+        channel = get_object_or_404(Channel, id=resolved_internal_id)
 
     if extension.lower() == '.mp4':
         force_format = 'fmp4'

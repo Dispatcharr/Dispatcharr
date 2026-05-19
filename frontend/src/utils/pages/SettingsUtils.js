@@ -24,6 +24,7 @@ export const saveChangedSettings = async (settings, changedSettings) => {
     dvr_settings: {},
     backup_settings: {},
     system_settings: {},
+    timeshift_settings: {},
   };
 
   // Map of field prefixes to their groups
@@ -67,6 +68,12 @@ export const saveChangedSettings = async (settings, changedSettings) => {
     'max_system_events',
     'preferred_region',
     'auto_import_mapped_files',
+  ];
+  const timeshiftFields = [
+    'timeshift_default_timezone',
+    'timeshift_default_language',
+    'xmltv_prev_days_override',
+    'timeshift_debug_logging',
   ];
 
   for (const formKey in changedSettings) {
@@ -124,6 +131,7 @@ export const saveChangedSettings = async (settings, changedSettings) => {
       'retention_count',
       'schedule_day_of_week',
       'max_system_events',
+      'xmltv_prev_days_override',
     ];
     if (numericFields.includes(formKey) && value != null) {
       value = typeof value === 'number' ? value : parseInt(value, 10);
@@ -133,10 +141,21 @@ export const saveChangedSettings = async (settings, changedSettings) => {
       'comskip_enabled',
       'schedule_enabled',
       'auto_import_mapped_files',
+      'timeshift_debug_logging',
     ];
     if (booleanFields.includes(formKey) && value != null) {
       value = typeof value === 'boolean' ? value : Boolean(value);
     }
+
+    // Map UI form keys (with timeshift_ prefix) to the storage subkeys used in
+    // CoreSettings.value. The prefix lets us share form keys across groups
+    // without ambiguity but the JSON storage uses short keys.
+    const timeshiftFormKeyToStorage = {
+      timeshift_default_timezone: 'default_timezone',
+      timeshift_default_language: 'default_language',
+      xmltv_prev_days_override: 'xmltv_prev_days_override',
+      timeshift_debug_logging: 'debug_logging',
+    };
 
     // Route to appropriate group
     if (streamFields.includes(formKey)) {
@@ -149,6 +168,9 @@ export const saveChangedSettings = async (settings, changedSettings) => {
       groupedChanges.backup_settings[formKey] = value;
     } else if (systemFields.includes(formKey)) {
       groupedChanges.system_settings[formKey] = value;
+    } else if (timeshiftFields.includes(formKey)) {
+      const storageKey = timeshiftFormKeyToStorage[formKey];
+      groupedChanges.timeshift_settings[storageKey] = value;
     }
   }
 
@@ -359,6 +381,27 @@ export const parseSettings = (settings) => {
         ? systemSettings.auto_import_mapped_files
         : true;
   }
+
+  // Timeshift settings - direct mapping with timeshift_ prefixed form keys
+  const timeshiftSettings = settings['timeshift_settings']?.value;
+  parsed.timeshift_default_timezone =
+    timeshiftSettings && timeshiftSettings.default_timezone
+      ? String(timeshiftSettings.default_timezone)
+      : 'UTC';
+  parsed.timeshift_default_language =
+    timeshiftSettings && timeshiftSettings.default_language
+      ? String(timeshiftSettings.default_language)
+      : 'en';
+  parsed.xmltv_prev_days_override =
+    timeshiftSettings && timeshiftSettings.xmltv_prev_days_override != null
+      ? typeof timeshiftSettings.xmltv_prev_days_override === 'number'
+        ? timeshiftSettings.xmltv_prev_days_override
+        : parseInt(timeshiftSettings.xmltv_prev_days_override, 10) || 0
+      : 0;
+  parsed.timeshift_debug_logging =
+    timeshiftSettings && timeshiftSettings.debug_logging != null
+      ? Boolean(timeshiftSettings.debug_logging)
+      : false;
 
   // Proxy and network access are already grouped objects
   if (settings['proxy_settings']?.value) {

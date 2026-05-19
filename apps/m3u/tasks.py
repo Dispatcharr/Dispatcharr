@@ -951,6 +951,16 @@ def process_xc_category_direct(account_id, batch, groups, hash_keys):
                             name, url, tvg_id, hash_keys, m3u_id=account_id, group=group_title,
                             account_type='XC', stream_id=provider_stream_id
                         )
+                        # Derive denormalized catch-up fields from the XC
+                        # API response at import time so output views can
+                        # read them as zero-cost column reads.
+                        _tv_archive = str(stream.get("tv_archive", "0"))
+                        _is_catchup = _tv_archive in ("1", "True")
+                        try:
+                            _catchup_days = int(stream.get("tv_archive_duration", 0) or 0)
+                        except (TypeError, ValueError):
+                            _catchup_days = 0
+
                         stream_props = {
                             "name": name,
                             "url": url,
@@ -964,6 +974,8 @@ def process_xc_category_direct(account_id, batch, groups, hash_keys):
                             "is_stale": False,
                             "stream_id": provider_stream_id,
                             "stream_chno": stream_chno,
+                            "is_catchup": _is_catchup,
+                            "catchup_days": _catchup_days,
                         }
 
                         if stream_hash not in stream_hashes:
@@ -1030,7 +1042,7 @@ def process_xc_category_direct(account_id, batch, groups, hash_keys):
                     # Simplified bulk update for better performance
                     Stream.objects.bulk_update(
                         streams_to_update,
-                        ['name', 'url', 'logo_url', 'tvg_id', 'custom_properties', 'is_adult', 'last_seen', 'updated_at', 'is_stale', 'stream_id', 'stream_chno'],
+                        ['name', 'url', 'logo_url', 'tvg_id', 'custom_properties', 'is_adult', 'last_seen', 'updated_at', 'is_stale', 'stream_id', 'stream_chno', 'is_catchup', 'catchup_days'],
                         batch_size=150  # Smaller batch size for XC processing
                     )
 
@@ -1176,6 +1188,16 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys):
                 account_type=account_type_for_hash, stream_id=provider_stream_id
             )
 
+            # Derive catch-up fields from stream attributes (M3U files
+            # may carry tv_archive via custom attributes).
+            _attrs = stream_info["attributes"]
+            _tv_archive_m3u = str(_attrs.get("tv_archive", "0"))
+            _is_catchup_m3u = _tv_archive_m3u in ("1", "True")
+            try:
+                _catchup_days_m3u = int(_attrs.get("tv_archive_duration", 0) or 0)
+            except (TypeError, ValueError):
+                _catchup_days_m3u = 0
+
             stream_props = {
                 "name": name,
                 "url": url,
@@ -1184,11 +1206,13 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys):
                 "m3u_account": account,
                 "channel_group_id": int(groups.get(group_title)),
                 "stream_hash": stream_hash,
-                "custom_properties": {**stream_info["attributes"], "vlc_opts": stream_info["vlc_opts"]} if "vlc_opts" in stream_info else stream_info["attributes"],
-                "is_adult": parse_is_adult(stream_info["attributes"].get("is_adult", 0)),
+                "custom_properties": {**_attrs, "vlc_opts": stream_info["vlc_opts"]} if "vlc_opts" in stream_info else _attrs,
+                "is_adult": parse_is_adult(_attrs.get("is_adult", 0)),
                 "is_stale": False,
                 "stream_id": provider_stream_id,
                 "stream_chno": channel_num,
+                "is_catchup": _is_catchup_m3u,
+                "catchup_days": _catchup_days_m3u,
             }
 
             if stream_hash not in stream_hashes:
@@ -1254,7 +1278,7 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys):
                 # Update all streams in a single bulk operation
                 Stream.objects.bulk_update(
                     streams_to_update,
-                    ['name', 'url', 'logo_url', 'tvg_id', 'custom_properties', 'is_adult', 'last_seen', 'updated_at', 'is_stale', 'stream_id', 'stream_chno'],
+                    ['name', 'url', 'logo_url', 'tvg_id', 'custom_properties', 'is_adult', 'last_seen', 'updated_at', 'is_stale', 'stream_id', 'stream_chno', 'is_catchup', 'catchup_days'],
                     batch_size=200
                 )
     except Exception as e:
@@ -2549,6 +2573,33 @@ def sync_auto_channels(account_id, scan_start_time=None):
                     ],
                     batch_size=500,
                 )
+
+                # Roll up denormalized catch-up fields from streams to
+                # channels.  bulk_create bypasses Django signals, so this
+                # explicit SQL is the only path that fires during import.
+                from django.db import connection as _conn
+                with _conn.cursor() as _cur:
+                    _cur.execute("""
+                        UPDATE dispatcharr_channels_channel c SET
+                            is_catchup = EXISTS (
+                                SELECT 1 FROM dispatcharr_channels_channelstream cs
+                                JOIN dispatcharr_channels_stream s ON s.id = cs.stream_id
+                                WHERE cs.channel_id = c.id AND s.is_catchup = TRUE
+                            ),
+                            catchup_days = COALESCE((
+                                SELECT MAX(s.catchup_days)
+                                FROM dispatcharr_channels_channelstream cs
+                                JOIN dispatcharr_channels_stream s ON s.id = cs.stream_id
+                                WHERE cs.channel_id = c.id AND s.is_catchup = TRUE
+                            ), 0),
+                            catchup_provider_stream_id = COALESCE((
+                                SELECT s.custom_properties->>'stream_id'
+                                FROM dispatcharr_channels_channelstream cs
+                                JOIN dispatcharr_channels_stream s ON s.id = cs.stream_id
+                                WHERE cs.channel_id = c.id AND s.is_catchup = TRUE
+                                ORDER BY cs."order" LIMIT 1
+                            ), '')
+                    """)
 
                 if profiles_to_assign:
                     ChannelProfileMembership.objects.bulk_create(

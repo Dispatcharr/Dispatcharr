@@ -47,6 +47,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **None** (default): software decode.
   - **NVIDIA NVDEC (`--cuvid`)**: requires the NVIDIA container toolkit and a supported GPU inside the container.
   - **Intel Quick Sync (`--qsv`)**: requires an Intel iGPU or ARC GPU with the i915 driver exposed to the container.
+- **XC catch-up (timeshift) support**. Adds a native `/timeshift/{user}/{pass}/{stream_id}/{timestamp}/{duration}.ts` endpoint that proxies replay sessions from an Xtream Codes provider to clients such as iPlayTV (Apple TV) and TiviMate. Auth reuses the same `xc_password` custom-property the live `/live/.../{id}.ts` endpoint already uses. Catch-up sessions appear on `/stats` with a violet `TIMESHIFT` badge alongside live sessions and respect per-channel access rules.
+  - **Catch-up flags** (`tv_archive`, `tv_archive_duration`) denormalized at import time for zero-cost output queries.
+  - **`Settings → Timeshift` panel** with four knobs (defaults: `UTC`, `en`, `0`, off): `default_timezone`, `default_language`, `xmltv_prev_days_override`, `debug_logging`.
+  - **EPG XMLTV `prev_days` auto-detection** from the provider's largest `tv_archive_duration` (capped at 30 days), overridable via setting or `?prev_days=` URL parameter.
+  - **Byte path uses a dedicated producer thread + `os.pipe`** matching the pattern in `apps/proxy/live_proxy/input/http_streamer.py:HTTPStreamReader`. Throughput stays comfortably above the typical 5 Mbps FHD bitrate so clients don't buffer.
 - **HDHR output profile URL support.** HDHomeRun lineup URLs now support an `output_profile` path segment so HDHR clients (Plex, Channels DVR, Emby, etc.) can request a specific transcode profile without any query-parameter support. URL formats accepted:
   - `/hdhr/output_profile/<id>/lineup.json` - output profile only
   - `/hdhr/<channel_profile>/output_profile/<id>/lineup.json` - channel profile + output profile

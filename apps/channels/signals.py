@@ -5,7 +5,7 @@ from django.dispatch import receiver
 from django.utils.timezone import now, is_aware, make_aware
 from celery.result import AsyncResult
 from django_celery_beat.models import ClockedSchedule, PeriodicTask
-from .models import Channel, Stream, ChannelProfile, ChannelProfileMembership, Recording
+from .models import Channel, Stream, ChannelStream, ChannelProfile, ChannelProfileMembership, Recording
 from apps.m3u.models import M3UAccount
 from apps.epg.tasks import parse_programs_for_tvg_id
 import json
@@ -365,3 +365,27 @@ def schedule_task_on_save(sender, instance, created, **kwargs):
 @receiver(post_delete, sender=Recording)
 def revoke_task_on_delete(sender, instance, **kwargs):
     revoke_task(instance.task_id)
+
+
+@receiver([post_save, post_delete], sender=ChannelStream)
+def update_channel_catchup_fields(sender, instance, **kwargs):
+    """Roll up denormalized catch-up fields from streams to the channel.
+
+    Covers the UI/API path (admin adds/removes a stream from a channel).
+    The bulk-import path bypasses signals and uses explicit SQL instead —
+    see apps/m3u/tasks.py after ChannelStream.objects.bulk_create().
+    """
+    channel = instance.channel
+    best = (
+        channel.streams
+        .filter(is_catchup=True)
+        .order_by("channelstream__order")
+        .first()
+    )
+    Channel.objects.filter(pk=channel.pk).update(
+        is_catchup=best is not None,
+        catchup_days=best.catchup_days if best else 0,
+        catchup_provider_stream_id=(
+            (best.custom_properties or {}).get("stream_id", "") if best else ""
+        ),
+    )
