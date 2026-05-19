@@ -615,7 +615,7 @@ const StreamConnectionCard = ({
 
           <Group mt={10}>
             <Box>
-              <Tooltip label={getStartDate(uptime)}>
+              <Tooltip label={getStartDate(channel.started_at)}>
                 <Center>
                   <Timer pr={5} />
                   {toFriendlyDuration(uptime, 'seconds')}

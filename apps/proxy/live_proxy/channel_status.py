@@ -399,7 +399,8 @@ class ChannelStatus:
                 'owner': metadata.get(ChannelMetadataField.OWNER),
                 'buffer_index': int(buffer_index_value) if buffer_index_value else 0,
                 'client_count': client_count,
-                'uptime': uptime
+                'uptime': uptime,
+                'started_at': created_at if created_at > 0 else None,
             }
 
             channel_name = metadata.get(ChannelMetadataField.CHANNEL_NAME)
