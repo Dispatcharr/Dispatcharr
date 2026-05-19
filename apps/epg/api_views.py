@@ -188,17 +188,22 @@ class EPGSourceViewSet(viewsets.ModelViewSet):
 
     def _save_sd_lockout(self, source):
         """
-        Persist a hard lockout to EPGSource model fields when SD returns
-        4100 MAX_LINEUP_CHANGES_REACHED. Lockout clears automatically at next
-        midnight UTC per SD's documented reset schedule.
+        Persist a hard lockout to EPGSource custom_properties when SD returns
+        4100 MAX_LINEUP_CHANGES_REACHED. SD lineup change counters reset at
+        00:00Z (midnight UTC) per SD's documented behavior — error 4100 states
+        "lineup changes for today" and all SD rate counters reset at midnight UTC.
+        Lockout clears automatically when the next midnight UTC passes.
         """
         from django.utils import timezone
         from datetime import datetime, timedelta, timezone as dt_timezone
 
         now = timezone.now()
-        # SD resets on a 24-hour rolling window from when the limit was hit.
-        # We use 24 hours from now rather than next midnight UTC to be safe.
-        reset_at = now + timedelta(hours=24)
+        # Calculate next midnight UTC — SD resets at 00:00Z not on a rolling window
+        tomorrow = (now + timedelta(days=1)).replace(
+            hour=0, minute=0, second=0, microsecond=0,
+            tzinfo=dt_timezone.utc
+        )
+        reset_at = tomorrow
 
         cp = source.custom_properties or {}
         cp['sd_changes_remaining'] = 0
@@ -357,9 +362,14 @@ class EPGSourceViewSet(viewsets.ModelViewSet):
                             "changes_remaining": self._get_sd_changes_remaining(source),
                         })
                 resp.raise_for_status()
+                sd_data = resp.json()
+                # SD returns changesRemaining on deletes — persist it
+                changes_remaining = sd_data.get('changesRemaining')
+                if changes_remaining is not None:
+                    self._save_sd_changes_remaining(source, changes_remaining)
                 logger.info(f"SD lineup deleted for source {source.id}: {lineup_id}")
                 return Response({
-                    **resp.json(),
+                    **sd_data,
                     "changes_remaining": self._get_sd_changes_remaining(source),
                 })
             except http_requests.exceptions.RequestException as e:
@@ -377,6 +387,7 @@ class EPGSourceViewSet(viewsets.ModelViewSet):
         """
         import requests as http_requests
         from apps.epg.tasks import SD_BASE_URL
+        from version import __version__ as dispatcharr_version
 
         source = self.get_object()
         if source.source_type != 'schedules_direct':

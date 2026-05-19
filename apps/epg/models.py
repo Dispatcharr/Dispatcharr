@@ -208,9 +208,6 @@ class SDProgramMD5(models.Model):
 
     class Meta:
         unique_together = ('epg_source', 'program_id')
-        indexes = [
-            models.Index(fields=['epg_source', 'program_id']),
-        ]
 
     def __str__(self):
         return f"SDProgramMD5: {self.program_id} ({self.epg_source.name})"
