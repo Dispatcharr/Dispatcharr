@@ -35,11 +35,14 @@ const MemoizedTableRow = React.memo(
         <Box
           key={`tr-${row.id}`}
           className={`tr ${index % 2 == 0 ? 'tr-even' : 'tr-odd'} ${customClassName}`}
+          onMouseDown={(e) => {
+            if (e.shiftKey) e.preventDefault();
+          }}
           style={{
             display: 'flex',
             width: '100%',
             minWidth: '100%',
-            ...(row.getIsSelected() && {
+            ...(isSelected && {
               backgroundColor: '#163632',
             }),
             ...customRowStyles,
