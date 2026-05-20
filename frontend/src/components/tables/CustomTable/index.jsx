@@ -34,6 +34,7 @@ const useTable = ({
   lastClickedIdRef.current = lastClickedId;
   const allRowIdsRef = useRef(allRowIds);
   allRowIdsRef.current = allRowIds;
+  const handleRowClickRef = useRef(null);
 
   // Use shared table preferences hook
   const { headerPinned, setHeaderPinned, tableSize, setTableSize } =
@@ -171,6 +172,29 @@ const useTable = ({
     return true; // Return true to indicate we've handled it
   };
 
+  const handleRowClick = (rowId, e) => {
+    if (
+      e.target.closest(
+        'button, a, input, select, textarea, [role="menuitem"], [role="option"], [role="button"]'
+      )
+    ) {
+      return;
+    }
+    if (e.shiftKey) {
+      handleShiftSelect(rowId, true);
+    } else if (e.ctrlKey || e.metaKey) {
+      const newSet = new Set(selectedTableIdsRef.current);
+      if (newSet.has(rowId)) {
+        newSet.delete(rowId);
+      } else {
+        newSet.add(rowId);
+        setLastClickedId(rowId);
+      }
+      updateSelectedTableIds([...newSet]);
+    }
+  };
+  handleRowClickRef.current = handleRowClick;
+
   const renderBodyCell = ({ row, cell }) => {
     if (bodyCellRenderFns[cell.column.id]) {
       return bodyCellRenderFns[cell.column.id]({ row, cell });
@@ -209,7 +233,8 @@ const useTable = ({
         return (
           <Center
             style={{ width: '100%', cursor: 'pointer' }}
-            onClick={() => {
+            onClick={(e) => {
+              e.stopPropagation();
               onRowExpansion(row);
             }}
           >
@@ -239,6 +264,7 @@ const useTable = ({
       expandedRowIds,
       expandedRowRenderer,
       setSelectedTableIds,
+      handleRowClickRef,
       headerPinned,
       setHeaderPinned,
       tableSize,

@@ -41,6 +41,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`POST /api/channels/series-rules/preview/`** returns up to 25 (configurable, max 100) upcoming programs that a candidate rule would match within the standard 7-day evaluation horizon, without persisting anything. Used by the new rule editor to give live feedback as the user types.
 - **`GET /api/epg/programs/search/?tvg_id=`** filter parameter for exact `epg.tvg_id` matches.
 - **Series rule editor modal** with form (title + match mode, description + match mode, episodes mode, pinned channel) and a debounced (500ms) preview pane backed by an `AbortController` so per-keystroke calls don't pile up. A "Customize rule..." link in the program record-choice modal opens the editor pre-filled with the program's `tvg_id` and title; the series rules modal gains an "Add rule" button and an "Edit" button per existing rule.
+- **Shift+click and Ctrl+click row selection in tables.** Clicking anywhere on a non-interactive area of a row now participates in selection:
+  - **Shift+click**: extends selection from the last-clicked row to the current row (range select), identical to shift+clicking the checkbox.
+  - **Ctrl+click** (Cmd+click on Mac): toggles the clicked row in or out of the current selection without disturbing other selected rows.
+  - Plain clicks on action buttons, checkboxes, inputs, links, and menus are unaffected. The expand chevron uses `stopPropagation` so expanding a row does not also trigger selection.
 
 ### Changed
 

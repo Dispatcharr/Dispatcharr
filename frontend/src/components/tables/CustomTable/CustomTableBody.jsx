@@ -17,6 +17,7 @@ const MemoizedTableRow = React.memo(
     isSelected,
     renderBodyCellRef,
     expandedRowRendererRef,
+    handleRowClickRef,
     getRowStyles,
     tableCellProps,
     enableDragDrop,
@@ -38,6 +39,7 @@ const MemoizedTableRow = React.memo(
           onMouseDown={(e) => {
             if (e.shiftKey) e.preventDefault();
           }}
+          onClick={(e) => handleRowClickRef?.current?.(row.original.id, e)}
           style={{
             display: 'flex',
             width: '100%',
@@ -101,6 +103,7 @@ const CustomTableBody = ({
   tableCellProps,
   enableDragDrop = false,
   selectedTableIdsSet,
+  handleRowClickRef,
 }) => {
   // Store callbacks in refs so memoized rows always access the latest versions
   // without the function references themselves triggering re-renders.
@@ -127,6 +130,7 @@ const CustomTableBody = ({
           }
           renderBodyCellRef={renderBodyCellRef}
           expandedRowRendererRef={expandedRowRendererRef}
+          handleRowClickRef={handleRowClickRef}
           getRowStyles={getRowStyles}
           tableCellProps={tableCellProps}
           enableDragDrop={enableDragDrop}
