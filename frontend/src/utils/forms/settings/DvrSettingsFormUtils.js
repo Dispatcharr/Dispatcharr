@@ -16,6 +16,8 @@ export const getDvrSettingsFormInitialValues = () => {
     movie_fallback_template: '',
     comskip_enabled: false,
     comskip_custom_path: '',
+    comskip_mode: 'cut',
+    comskip_hw_accel: 'none',
     pre_offset_minutes: 0,
     post_offset_minutes: 0,
   };

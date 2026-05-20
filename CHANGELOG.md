@@ -16,6 +16,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Comskip mode setting.** DVR Settings now includes a "Comskip mode" option:
+  - **Cut** (default): FFmpeg permanently removes commercial segments from the recording file in place. The EDL file is deleted after a successful cut.
+  - **Mark**: comskip analysis runs as normal but the recording file is left untouched. The EDL file is kept alongside the recording so players that support EDL-based commercial skipping (e.g. Kodi) can use it. The recording's `custom_properties` record the EDL filename, commercial count, and mode so the UI can surface this.
+- **Comskip hardware acceleration setting.** DVR Settings now includes a "Hardware acceleration" option that passes a hardware-decode flag to the comskip binary, reducing CPU load during commercial detection on capable hosts:
+  - **None** (default): software decode.
+  - **NVIDIA NVDEC (`--cuvid`)**: requires the NVIDIA container toolkit and a supported GPU inside the container.
+  - **Intel Quick Sync (`--qsv`)**: requires an Intel iGPU or ARC GPU with the i915 driver exposed to the container.
 - **HDHR output profile URL support.** HDHomeRun lineup URLs now support an `output_profile` path segment so HDHR clients (Plex, Channels DVR, Emby, etc.) can request a specific transcode profile without any query-parameter support. URL formats accepted:
   - `/hdhr/output_profile/<id>/lineup.json` - output profile only
   - `/hdhr/<channel_profile>/output_profile/<id>/lineup.json` - channel profile + output profile
@@ -37,6 +44,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Comskip `.ini` overhauled.** The shipped `docker/comskip.ini` was replaced with a fully documented configuration covering all tunable sections: Main Settings, Output, Commercial Break Timing, Black Frame Detection, Logo Detection, Silence Detection, and Live TV. Key defaults: `detect_method=127` (all seven detection methods, up from the comskip default of 107), `min_commercialbreak=25` (slightly stricter floor for US broadcast TV), `output_default=0` (suppresses the `.txt` stats file comskip writes by default), `edl_skip_field=3` (Kodi commercial-break action code). All values include inline source references and plain-language explanations.
+- **Comskip enable switch label updated.** The DVR settings switch was relabeled from "Enable Comskip (remove commercials after recording)" to "Enable Comskip (commercial detection after recording)" to remain accurate when mark mode is selected.
 - **Settings reorganization: Preferred Region and Auto-Import Mapped Files moved to System Settings.** These two settings were previously stored in the `stream_settings` database group and shown under Stream Settings in the UI. They are now stored in `system_settings` and displayed under System Settings, which better reflects that they are server-wide behavior settings rather than stream delivery settings. A data migration (0025) moves existing values from the old group to the new one for all existing installs.
 - **Stream Settings descriptions added.** Default User Agent, Default Stream Profile, Default Output Format, M3U Hash Key, and HDHR Default Output Profile all now have inline description text below their labels explaining their purpose and effect.
 - **System Settings descriptions added.** Maximum System Events, Preferred Region, and Auto-Import Mapped Files now have inline description text. The redundant description paragraph that duplicated the accordion header text has been removed.
@@ -91,6 +100,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **DVR settings form no longer flashes back to old values during save.** The comskip mode and hardware acceleration selects briefly showed stale values while the save was in flight because the Zustand settings store update (triggered by the API response) fired the `useEffect([settings])` re-hydration hook mid-save. An `isSavingRef` guard now suppresses the reactive re-hydration while a save is in progress; after a successful save the form is explicitly synced from the freshly-updated store state instead.
 - **`_cleanup_local_resources` skipped `ClientManager.stop()` on channel removal.** `ProxyServer._cleanup_local_resources` deleted each channel's `ClientManager` entry with `del`, which removed it from the dict but gave the object no signal to terminate. The per-channel heartbeat greenlet inside the manager continued running until it next checked its running flag and found the channel absent from Redis. The entry is now removed with `pop()` and `stop()` is called on the captured manager before it is discarded, terminating the heartbeat immediately on channel cleanup.
 - **XC profile `exp_date` not updating on account refresh.** `refresh_account_profiles` saved the freshly-fetched `custom_properties` with `update_fields=['custom_properties']`, which excluded `exp_date` from the SQL `UPDATE`. The model's `save()` method parses the new expiry from `custom_properties` and assigns it to `self.exp_date`, but that value was silently dropped because the column was not listed in `update_fields`. Added `'exp_date'` to the `update_fields` list so both columns are written together.
 - **~25-second transcode startup delay and worker freeze when starting ffmpeg under gevent+uWSGI.** Enabling gevent cooperative multitasking (see Changed above) exposed a deadlock: `fork()` hangs indefinitely in gevent's `_before_fork` pthread_atfork handler when called from any thread while gevent is running - including from real OS threads. `subprocess.Popen`, which all three ffmpeg spawn sites used, calls `fork()` internally, stalling the uWSGI worker for ~25 seconds or freezing it entirely and blocking all other clients on that worker.

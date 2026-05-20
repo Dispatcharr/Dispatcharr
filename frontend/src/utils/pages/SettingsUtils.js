@@ -48,6 +48,8 @@ export const saveChangedSettings = async (settings, changedSettings) => {
     'movie_fallback_template',
     'comskip_enabled',
     'comskip_custom_path',
+    'comskip_mode',
+    'comskip_hw_accel',
     'pre_offset_minutes',
     'post_offset_minutes',
     'series_rules',
@@ -306,6 +308,8 @@ export const parseSettings = (settings) => {
         ? dvrSettings.comskip_enabled
         : Boolean(dvrSettings.comskip_enabled);
     parsed.comskip_custom_path = dvrSettings.comskip_custom_path;
+    parsed.comskip_mode = dvrSettings.comskip_mode || 'cut';
+    parsed.comskip_hw_accel = dvrSettings.comskip_hw_accel || 'none';
     parsed.pre_offset_minutes =
       typeof dvrSettings.pre_offset_minutes === 'number'
         ? dvrSettings.pre_offset_minutes
