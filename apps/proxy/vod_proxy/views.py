@@ -178,6 +178,7 @@ def _get_m3u_profile(m3u_account, profile_id, session_id=None):
     """
     try:
         from core.utils import RedisClient
+        from apps.m3u.connection_pool import pool_has_capacity_for_profile
         redis_client = RedisClient.get_client()
 
         if not redis_client:
@@ -214,7 +215,11 @@ def _get_m3u_profile(m3u_account, profile_id, session_id=None):
                     except Exception as e:
                         logger.warning(f"[PROFILE-SELECTION] Error checking existing profile for session {session_id}: {e}")
                 else:
-                    logger.debug(f"[PROFILE-SELECTION] Session {session_id} exists but has no profile ID stored")            # If specific profile requested, try to use it
+                    logger.debug(
+                        f"[PROFILE-SELECTION] Session {session_id} exists but has no profile ID stored"
+                    )
+
+        # If specific profile requested, try to use it
         if profile_id:
             try:
                 profile = M3UAccountProfile.objects.get(
@@ -226,9 +231,11 @@ def _get_m3u_profile(m3u_account, profile_id, session_id=None):
                 profile_connections_key = f"profile_connections:{profile.id}"
                 current_connections = int(redis_client.get(profile_connections_key) or 0)
 
-                if profile.max_streams == 0 or current_connections < profile.max_streams:
+                if (profile.max_streams == 0 or current_connections < profile.max_streams) and pool_has_capacity_for_profile(profile, redis_client):
                     logger.info(f"[PROFILE-SELECTION] Using requested profile {profile.id}: {current_connections}/{profile.max_streams} connections")
                     return (profile, current_connections)
+                elif not pool_has_capacity_for_profile(profile, redis_client):
+                    logger.warning(f"[PROFILE-SELECTION] Shared credential pool at capacity for account {m3u_account.id}")
                 else:
                     logger.warning(f"[PROFILE-SELECTION] Requested profile {profile.id} is at capacity: {current_connections}/{profile.max_streams}")
             except M3UAccountProfile.DoesNotExist:
@@ -253,9 +260,15 @@ def _get_m3u_profile(m3u_account, profile_id, session_id=None):
             current_connections = int(redis_client.get(profile_connections_key) or 0)
 
             # Check if profile has available connection slots
-            if profile.max_streams == 0 or current_connections < profile.max_streams:
+            if (profile.max_streams == 0 or current_connections < profile.max_streams) and pool_has_capacity_for_profile(profile, redis_client):
                 logger.info(f"[PROFILE-SELECTION] Selected profile {profile.id} ({profile.name}): {current_connections}/{profile.max_streams} connections")
                 return (profile, current_connections)
+            elif not pool_has_capacity_for_profile(profile, redis_client):
+                logger.debug(
+                    f"[PROFILE-SELECTION] Credential pool at capacity for profile "
+                    f"{profile.id}, trying next profile"
+                )
+                continue
             else:
                 logger.debug(f"[PROFILE-SELECTION] Profile {profile.id} at capacity: {current_connections}/{profile.max_streams}")
 
@@ -791,17 +804,30 @@ def build_vod_stats_data(redis_client):
                         # Get M3U profile information
                         m3u_profile_info = {}
                         m3u_profile_id = combined_data.get('m3u_profile_id')
+                        stream_url_for_creds = (
+                            combined_data.get('final_url')
+                            or combined_data.get('stream_url')
+                            or ''
+                        )
                         if m3u_profile_id:
                             try:
                                 from apps.m3u.models import M3UAccountProfile
+                                from apps.m3u.connection_pool import extract_credentials_from_stream_url
+
                                 profile = M3UAccountProfile.objects.select_related('m3u_account').get(id=m3u_profile_id)
                                 m3u_profile_info = {
                                     'profile_name': profile.name,
                                     'account_name': profile.m3u_account.name,
                                     'account_id': profile.m3u_account.id,
                                     'max_streams': profile.m3u_account.max_streams,
-                                    'm3u_profile_id': int(m3u_profile_id)
+                                    'm3u_profile_id': int(m3u_profile_id),
                                 }
+                                if stream_url_for_creds:
+                                    provider_user, _ = extract_credentials_from_stream_url(
+                                        stream_url_for_creds
+                                    )
+                                    if provider_user:
+                                        m3u_profile_info['provider_username'] = provider_user
                             except Exception as e:
                                 logger.warning(f"Could not fetch M3U profile {m3u_profile_id}: {e}")
 

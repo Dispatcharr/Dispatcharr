@@ -735,67 +735,32 @@ class MultiWorkerVODConnectionManager:
         """Get Redis key for tracking connections per profile - STANDARDIZED with TS proxy"""
         return f"profile_connections:{profile_id}"
 
-    def _check_profile_limits(self, m3u_profile) -> bool:
-        """Check if profile has available connection slots"""
-        if m3u_profile.max_streams == 0:  # Unlimited
-            return True
-
-        try:
-            profile_connections_key = self._get_profile_connections_key(m3u_profile.id)
-            current_connections = int(self.redis_client.get(profile_connections_key) or 0)
-
-            logger.info(f"[PROFILE-CHECK] Profile {m3u_profile.id} has {current_connections}/{m3u_profile.max_streams} connections")
-            return current_connections < m3u_profile.max_streams
-
-        except Exception as e:
-            logger.error(f"Error checking profile limits: {e}")
-            return False
-
     def _check_and_reserve_profile_slot(self, m3u_profile) -> bool:
         """
         Atomically check and reserve a connection slot for the given profile.
 
-        Uses an INCR-first-then-check pattern to eliminate the TOCTOU race
-        condition where separate GET > check > INCR operations could allow
-        concurrent requests to both pass the capacity check.
-
-        For profiles with max_streams=0 (unlimited), no reservation is needed.
-
         Returns:
             bool: True if slot was reserved (or unlimited), False if at capacity
         """
-        if m3u_profile.max_streams == 0:  # Unlimited
-            return True
+        from apps.m3u.connection_pool import reserve_profile_slot
 
         try:
-            profile_connections_key = self._get_profile_connections_key(m3u_profile.id)
-
-            # Atomically increment first — single Redis command eliminates race window
-            new_count = self.redis_client.incr(profile_connections_key)
-
-            if new_count <= m3u_profile.max_streams:
-                logger.info(f"[PROFILE-RESERVE] Profile {m3u_profile.id} slot reserved: {new_count}/{m3u_profile.max_streams}")
-                return True
-
-            # Over capacity — roll back the increment
-            self.redis_client.decr(profile_connections_key)
-            logger.info(f"[PROFILE-RESERVE] Profile {m3u_profile.id} at capacity: {new_count - 1}/{m3u_profile.max_streams}")
-            return False
+            reserved, new_count = reserve_profile_slot(m3u_profile, self.redis_client)
+            if reserved:
+                logger.info(
+                    f"[PROFILE-RESERVE] Profile {m3u_profile.id} slot reserved: "
+                    f"{new_count}/{m3u_profile.max_streams}"
+                )
+            else:
+                logger.info(
+                    f"[PROFILE-RESERVE] Profile {m3u_profile.id} at capacity: "
+                    f"{new_count}/{m3u_profile.max_streams}"
+                )
+            return reserved
 
         except Exception as e:
             logger.error(f"Error reserving profile slot: {e}")
             return False
-
-    def _increment_profile_connections(self, m3u_profile):
-        """Increment profile connection count"""
-        try:
-            profile_connections_key = self._get_profile_connections_key(m3u_profile.id)
-            new_count = self.redis_client.incr(profile_connections_key)
-            logger.info(f"[PROFILE-INCR] Profile {m3u_profile.id} connections: {new_count}")
-            return new_count
-        except Exception as e:
-            logger.error(f"Error incrementing profile connections: {e}")
-            return None
 
     def _trigger_vod_stats_update(self):
         """Trigger a VOD stats WebSocket update in a background thread."""
@@ -859,21 +824,14 @@ class MultiWorkerVODConnectionManager:
             logger.error(f"Failed to trigger VOD stats update: {e}")
 
     def _decrement_profile_connections(self, m3u_profile_id: int):
-        """Decrement profile connection count.
+        """Decrement profile and shared pool connection counters."""
+        from apps.m3u.connection_pool import release_profile_slot
 
-        Uses a single atomic DECR (no GET-before-DECR) to avoid the race condition
-        where two concurrent decrements both pass a >0 guard and both fire, sending
-        the counter negative. If the counter would go below zero it is clamped to 0.
-        """
         try:
-            profile_connections_key = self._get_profile_connections_key(m3u_profile_id)
-            new_count = self.redis_client.decr(profile_connections_key)
-            if new_count < 0:
-                self.redis_client.set(profile_connections_key, 0)
-                new_count = 0
-                logger.warning(f"[PROFILE-DECR] Profile {m3u_profile_id} counter went negative, clamped to 0")
-            else:
-                logger.info(f"[PROFILE-DECR] Profile {m3u_profile_id} connections: {new_count}")
+            release_profile_slot(m3u_profile_id, self.redis_client)
+            profile_key = self._get_profile_connections_key(m3u_profile_id)
+            new_count = int(self.redis_client.get(profile_key) or 0)
+            logger.info(f"[PROFILE-DECR] Profile {m3u_profile_id} connections: {new_count}")
             return new_count
         except Exception as e:
             logger.error(f"Error decrementing profile connections: {e}")
