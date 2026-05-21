@@ -17,22 +17,9 @@ export const getBufferingSpeedThreshold = (proxySetting) => {
   return 1.0; // Default fallback
 };
 
-export const getStartDate = (uptime) => {
-  // Get the current date and time
-  const currentDate = new Date();
-  // Calculate the start date by subtracting uptime (in milliseconds)
-  const startDate = new Date(currentDate.getTime() - uptime * 1000);
-  // Format the date as a string (you can adjust the format as needed)
-  return startDate.toLocaleString({
-    weekday: 'short', // optional, adds day of the week
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hour12: true, // 12-hour format with AM/PM
-  });
+export const getStartDate = (startedAt) => {
+  if (!startedAt) return 'Unknown';
+  return new Date(startedAt * 1000).toLocaleString();
 };
 
 export const getM3uAccountsMap = (m3uAccounts) => {

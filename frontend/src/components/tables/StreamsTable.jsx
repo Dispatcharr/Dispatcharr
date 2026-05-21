@@ -10,6 +10,7 @@ import StreamForm from '../forms/Stream';
 import usePlaylistsStore from '../../store/playlists';
 import useChannelsStore from '../../store/channels';
 import { copyToClipboard, useDebounce } from '../../utils';
+import { buildLiveStreamUrl } from '../../utils/components/FloatingVideoUtils.js';
 import {
   SquarePlus,
   ListPlus,
@@ -1048,7 +1049,7 @@ const StreamsTable = ({ onReady }) => {
   };
 
   function handleWatchStream(streamHash, streamName) {
-    let vidUrl = `/proxy/ts/stream/${streamHash}`;
+    let vidUrl = buildLiveStreamUrl(`/proxy/ts/stream/${streamHash}`);
     if (env_mode == 'dev') {
       vidUrl = `${window.location.protocol}//${window.location.hostname}:5656${vidUrl}`;
     }
@@ -1354,6 +1355,7 @@ const StreamsTable = ({ onReady }) => {
     })();
     return () => {
       cancelled = true;
+      lastFilterOptionsParamsRef.current = null;
     };
   }, [buildFilterParams]);
 

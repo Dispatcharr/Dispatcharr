@@ -1282,10 +1282,22 @@ describe('guideUtils', () => {
   });
 
   describe('deleteSeriesRuleByTvgId', () => {
-    it('should delete series rule via API', async () => {
+    it('should delete series rule via API with tvg_id and title', async () => {
+      await guideUtils.deleteSeriesRuleByTvgId('tvg-1', 'My Show');
+
+      expect(API.deleteSeriesRule).toHaveBeenCalledWith('tvg-1', 'My Show');
+    });
+
+    it('should forward undefined title when not provided', async () => {
       await guideUtils.deleteSeriesRuleByTvgId('tvg-1');
 
-      expect(API.deleteSeriesRule).toHaveBeenCalledWith('tvg-1');
+      expect(API.deleteSeriesRule).toHaveBeenCalledWith('tvg-1', undefined);
+    });
+
+    it('should work with empty tvg_id for title-only rules', async () => {
+      await guideUtils.deleteSeriesRuleByTvgId('', 'Title-Only Show');
+
+      expect(API.deleteSeriesRule).toHaveBeenCalledWith('', 'Title-Only Show');
     });
   });
 

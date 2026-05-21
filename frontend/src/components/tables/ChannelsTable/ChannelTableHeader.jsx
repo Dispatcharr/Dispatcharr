@@ -118,6 +118,10 @@ const ChannelTableHeader = ({
   setShowOnlyStreamlessChannels,
   showOnlyStaleChannels,
   setShowOnlyStaleChannels,
+  showOnlyOverriddenChannels,
+  setShowOnlyOverriddenChannels,
+  visibilityFilter,
+  setVisibilityFilter,
 }) => {
   const theme = useMantineTheme();
 
@@ -237,6 +241,12 @@ const ChannelTableHeader = ({
     }
   };
 
+  const toggleShowOnlyOverriddenChannels = () => {
+    if (setShowOnlyOverriddenChannels) {
+      setShowOnlyOverriddenChannels(!showOnlyOverriddenChannels);
+    }
+  };
+
   const toggleHeaderPinned = () => {
     setHeaderPinned(!headerPinned);
   };
@@ -327,11 +337,55 @@ const ChannelTableHeader = ({
               <Menu.Item
                 onClick={toggleShowOnlyStaleChannels}
                 leftSection={
-                  showOnlyStaleChannels ? <SquareCheck size={18} /> : <Square size={18} />
+                  showOnlyStaleChannels ? (
+                    <SquareCheck size={18} />
+                  ) : (
+                    <Square size={18} />
+                  )
                 }
               >
                 <Text size="xs">Has Stale Streams</Text>
               </Menu.Item>
+
+              <Menu.Item
+                onClick={toggleShowOnlyOverriddenChannels}
+                leftSection={
+                  showOnlyOverriddenChannels ? (
+                    <SquareCheck size={18} />
+                  ) : (
+                    <Square size={18} />
+                  )
+                }
+              >
+                <Text size="xs">Has Overrides</Text>
+              </Menu.Item>
+
+              <Menu.Divider />
+              <Menu.Label>
+                <Text size="xs">Visibility</Text>
+              </Menu.Label>
+
+              {[
+                { value: 'active', label: 'Active Only' },
+                { value: 'hidden', label: 'Hidden Only' },
+                { value: 'all', label: 'Show All' },
+              ].map(({ value, label }) => (
+                <Menu.Item
+                  key={value}
+                  onClick={() =>
+                    setVisibilityFilter && setVisibilityFilter(value)
+                  }
+                  leftSection={
+                    visibilityFilter === value ? (
+                      <SquareCheck size={18} />
+                    ) : (
+                      <Square size={18} />
+                    )
+                  }
+                >
+                  <Text size="xs">{label}</Text>
+                </Menu.Item>
+              ))}
             </Menu.Dropdown>
           </Menu>
 

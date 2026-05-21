@@ -1,5 +1,5 @@
 import useSettingsStore from '../../../store/settings.jsx';
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   getChangedSettings,
   parseSettings,
@@ -13,6 +13,7 @@ import {
   Flex,
   Group,
   NumberInput,
+  Select,
   Stack,
   Switch,
   Text,
@@ -34,6 +35,7 @@ const DvrSettingsForm = React.memo(({ active }) => {
     path: '',
     exists: false,
   });
+  const isSavingRef = useRef(false);
 
   const form = useForm({
     mode: 'controlled',
@@ -45,7 +47,7 @@ const DvrSettingsForm = React.memo(({ active }) => {
   }, [active]);
 
   useEffect(() => {
-    if (settings) {
+    if (settings && !isSavingRef.current) {
       const formValues = parseSettings(settings);
 
       form.setValues(formValues);
@@ -114,17 +116,27 @@ const DvrSettingsForm = React.memo(({ active }) => {
 
   const onSubmit = async () => {
     setSaved(false);
+    isSavingRef.current = true;
 
     const changedSettings = getChangedSettings(form.getValues(), settings);
 
-    // Update each changed setting in the backend (create if missing)
     try {
       await saveChangedSettings(settings, changedSettings);
-
+      isSavingRef.current = false;
+      const latestSettings = useSettingsStore.getState().settings;
+      if (latestSettings) {
+        const formValues = parseSettings(latestSettings);
+        form.setValues(formValues);
+        if (formValues['comskip_custom_path']) {
+          setComskipConfig((prev) => ({
+            path: formValues['comskip_custom_path'],
+            exists: prev.exists,
+          }));
+        }
+      }
       setSaved(true);
     } catch (error) {
-      // Error notifications are already shown by API functions
-      // Just don't show the success message
+      isSavingRef.current = false;
       console.error('Error saving settings:', error);
     }
   };
@@ -136,12 +148,38 @@ const DvrSettingsForm = React.memo(({ active }) => {
           <Alert variant="light" color="green" title="Saved Successfully" />
         )}
         <Switch
-          label="Enable Comskip (remove commercials after recording)"
+          label="Enable Comskip (commercial detection after recording)"
           {...form.getInputProps('comskip_enabled', {
             type: 'checkbox',
           })}
           id="comskip_enabled"
           name="comskip_enabled"
+        />
+        <Select
+          label="Comskip mode"
+          description="Cut: permanently removes commercials from the file. Mark: keeps the file intact and writes an EDL file for players that support EDL-based commercial skipping."
+          data={[
+            { value: 'cut', label: 'Cut (remove commercials from file)' },
+            {
+              value: 'mark',
+              label: 'Mark (store timestamps, keep file intact)',
+            },
+          ]}
+          {...form.getInputProps('comskip_mode')}
+          id="comskip_mode"
+          name="comskip_mode"
+        />
+        <Select
+          label="Hardware acceleration"
+          description="Offloads video decoding to a hardware decoder. Requires the corresponding driver/device to be available inside the container."
+          data={[
+            { value: 'none', label: 'None (software decode)' },
+            { value: 'cuvid', label: 'NVIDIA NVDEC (--cuvid)' },
+            { value: 'qsv', label: 'Intel Quick Sync (--qsv)' },
+          ]}
+          {...form.getInputProps('comskip_hw_accel')}
+          id="comskip_hw_accel"
+          name="comskip_hw_accel"
         />
         <TextInput
           label="Custom comskip.ini path"

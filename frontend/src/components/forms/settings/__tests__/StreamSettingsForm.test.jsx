@@ -7,6 +7,7 @@ vi.mock('../../../../store/settings.jsx', () => ({ default: vi.fn() }));
 vi.mock('../../../../store/warnings.jsx', () => ({ default: vi.fn() }));
 vi.mock('../../../../store/userAgents.jsx', () => ({ default: vi.fn() }));
 vi.mock('../../../../store/streamProfiles.jsx', () => ({ default: vi.fn() }));
+vi.mock('../../../../store/outputProfiles.jsx', () => ({ default: vi.fn() }));
 
 // ── Constants mock ─────────────────────────────────────────────────────────────
 vi.mock('../../../../constants.js', () => ({
@@ -154,6 +155,7 @@ import useSettingsStore from '../../../../store/settings.jsx';
 import useWarningsStore from '../../../../store/warnings.jsx';
 import useUserAgentsStore from '../../../../store/userAgents.jsx';
 import useStreamProfilesStore from '../../../../store/streamProfiles.jsx';
+import useOutputProfilesStore from '../../../../store/outputProfiles.jsx';
 import { useForm } from '@mantine/form';
 import {
   getChangedSettings,
@@ -172,9 +174,8 @@ import {
 const mockFormValues = {
   default_user_agent: '1',
   default_stream_profile: '2',
-  preferred_region: 'us',
-  auto_import_mapped_files: false,
   m3u_hash_key: ['name'],
+  hdhr_output_profile_id: null,
 };
 
 const makeFormMock = (overrides = {}) => ({
@@ -184,6 +185,7 @@ const makeFormMock = (overrides = {}) => ({
     }
     return { value: mockFormValues[field] ?? '', onChange: vi.fn() };
   }),
+  values: mockFormValues,
   setValues: vi.fn(),
   getValues: vi.fn(() => mockFormValues),
   onSubmit: vi.fn((handler) => (e) => {
@@ -219,6 +221,7 @@ const setupMocks = ({
   warningSuppressed = false,
   userAgents = makeUserAgents(),
   streamProfiles = makeStreamProfiles(),
+  outputProfiles = [],
 } = {}) => {
   const formMock = makeFormMock(formOverrides);
 
@@ -226,7 +229,7 @@ const setupMocks = ({
   vi.mocked(getStreamSettingsFormInitialValues).mockReturnValue(mockFormValues);
   vi.mocked(getStreamSettingsFormValidation).mockReturnValue({});
   vi.mocked(parseSettings).mockReturnValue(mockFormValues);
-  vi.mocked(getChangedSettings).mockReturnValue({ preferred_region: 'eu' });
+  vi.mocked(getChangedSettings).mockReturnValue({ default_user_agent: '1' });
   vi.mocked(saveChangedSettings).mockResolvedValue(undefined);
   vi.mocked(rehashStreams).mockResolvedValue(undefined);
 
@@ -242,6 +245,9 @@ const setupMocks = ({
   );
   vi.mocked(useStreamProfilesStore).mockImplementation((sel) =>
     sel({ profiles: streamProfiles })
+  );
+  vi.mocked(useOutputProfilesStore).mockImplementation((sel) =>
+    sel({ profiles: outputProfiles })
   );
 
   return { formMock };
@@ -285,18 +291,6 @@ describe('StreamSettingsForm', () => {
       expect(screen.getByTestId('default_stream_profile')).toBeInTheDocument();
     });
 
-    it('renders the Preferred Region select', () => {
-      render(<StreamSettingsForm active={true} />);
-      expect(screen.getByTestId('preferred_region')).toBeInTheDocument();
-    });
-
-    it('renders the Auto-Import Mapped Files switch', () => {
-      render(<StreamSettingsForm active={true} />);
-      expect(
-        screen.getByTestId('auto_import_mapped_files')
-      ).toBeInTheDocument();
-    });
-
     it('renders the M3U Hash Key multiselect', () => {
       render(<StreamSettingsForm active={true} />);
       expect(screen.getByTestId('m3u_hash_key')).toBeInTheDocument();
@@ -312,12 +306,6 @@ describe('StreamSettingsForm', () => {
       render(<StreamSettingsForm active={true} />);
       expect(screen.getByText('Default')).toBeInTheDocument();
       expect(screen.getByText('HLS')).toBeInTheDocument();
-    });
-
-    it('populates region options from REGION_CHOICES', () => {
-      render(<StreamSettingsForm active={true} />);
-      expect(screen.getByText('US')).toBeInTheDocument();
-      expect(screen.getByText('EU')).toBeInTheDocument();
     });
 
     it('does not show success alert on initial render', () => {
@@ -410,7 +398,9 @@ describe('StreamSettingsForm', () => {
   describe('form submission (no M3U hash key change)', () => {
     beforeEach(() => {
       // Same hash key before and after → no dialog
-      vi.mocked(getChangedSettings).mockReturnValue({ preferred_region: 'eu' });
+      vi.mocked(getChangedSettings).mockReturnValue({
+        default_user_agent: '1',
+      });
       setupMocks();
       formMock = makeFormMock();
       vi.mocked(useForm).mockReturnValue(formMock);
@@ -783,16 +773,10 @@ describe('StreamSettingsForm', () => {
       );
     });
 
-    it('calls getInputProps for preferred_region', () => {
-      render(<StreamSettingsForm active={true} />);
-      expect(formMock.getInputProps).toHaveBeenCalledWith('preferred_region');
-    });
-
-    it('calls getInputProps for auto_import_mapped_files with checkbox type', () => {
+    it('calls getInputProps for default_output_format', () => {
       render(<StreamSettingsForm active={true} />);
       expect(formMock.getInputProps).toHaveBeenCalledWith(
-        'auto_import_mapped_files',
-        { type: 'checkbox' }
+        'default_output_format'
       );
     });
 

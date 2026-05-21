@@ -282,8 +282,8 @@ class StopDvrClientsTests(TestCase):
     def setUp(self):
         self.channel = Channel.objects.create(channel_number=95, name="DVR Clients Channel")
         self._redis = "core.utils.RedisClient"
-        self._sc = "apps.proxy.ts_proxy.services.channel_service.ChannelService.stop_client"
-        self._sch = "apps.proxy.ts_proxy.services.channel_service.ChannelService.stop_channel"
+        self._sc = "apps.proxy.live_proxy.services.channel_service.ChannelService.stop_client"
+        self._sch = "apps.proxy.live_proxy.services.channel_service.ChannelService.stop_channel"
 
     def _mock_redis(self, client_ids, ua_map):
         r = MagicMock()

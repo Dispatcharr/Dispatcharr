@@ -29,7 +29,7 @@ Use HDHomeRun emulation to add virtual tuners to **Plex**, **Emby**, or **Jellyf
 Merge live TV channels with custom EPG guides. Generate XMLTV schedules or use auto-matching to align channels with existing program data. Export as M3U, Xtream Codes API, or HDHomeRun device.
 
 🔧 **Transcode & Optimize Streams**\
-Configure output profiles with FFmpeg transcoding to optimize streams for different clients — reduce bandwidth, standardize formats, or add audio normalization.
+Configure output profiles with FFmpeg transcoding to optimize streams for different clients (reduce bandwidth, standardize formats, or add audio normalization).
 
 🔐 **Centralize VPN Access**\
 Run Dispatcharr through a VPN container (like Gluetun) so all streams route through a single VPN connection. Your clients access geo-blocked content without needing individual VPNs, reducing bandwidth overhead and simplifying network management.
@@ -53,8 +53,8 @@ Build custom integrations using Dispatcharr's robust plugin system. Automate tas
 ✅ **Video on Demand** — Stream movies and TV series with rich metadata and IMDB/TMDB integration\
 ✅ **Multi-Format Output** — Export as M3U, XMLTV EPG, Xtream Codes API, or HDHomeRun device\
 ✅ **Real-Time Monitoring** — Live connection stats, bandwidth tracking, and automatic failover\
-✅ **Stream Profiles** — Configure different stream profiles for various clients and bandwidth requirements\
-✅ **Flexible Streaming Backends** — VLC, FFmpeg, Streamlink, or custom backends for transcoding and streaming\
+✅ **Stream Profiles** — Configure how Dispatcharr connects to backend streams (VLC, FFmpeg, Streamlink, or custom commands)\
+✅ **Output Profiles** — Transcode what stream profiles deliver before it reaches the client (e.g. AC3 for media servers, AAC for browsers) with fMP4 or MPEG-TS container selection\
 ✅ **Multi-User & Access Control** — Granular permissions and network-based access restrictions\
 ✅ **Plugin System** — Extend functionality with custom plugins for automation and integrations\
 ✅ **Fully Self-Hosted** — Total control, no third-party dependencies
@@ -135,7 +135,6 @@ We welcome **PRs, issues, ideas, and suggestions**!
 - 🎬 **VOD Management Enhancements** — Granular metadata control and cleanup of unwanted VOD content
 - 📁 **Media Library** — Import local files and serve them over XC API
 - 👥 **Enhanced User Management** — Customizable XC API output per user account
-- 🔄 **Output Stream Profiles** — Different clients with different stream profiles (bandwidth control, quality tiers)
 - 🔌 **Fallback Videos** — Automatic fallback content when channels are unavailable
 
 ---

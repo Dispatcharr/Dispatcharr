@@ -1,23 +1,31 @@
 // Modal.js
-import React, { useState, useEffect } from 'react';
-import API from '../../api';
+import React, { useEffect, useState } from 'react';
 import {
-  LoadingOverlay,
   Button,
-  Modal,
   Flex,
+  LoadingOverlay,
+  Modal,
   Stack,
   Tabs,
+  TabsList,
+  TabsPanel,
+  TabsTab,
 } from '@mantine/core';
 import useChannelsStore from '../../store/channels';
 import useVODStore from '../../store/useVODStore';
-import { notifications } from '@mantine/notifications';
 import LiveGroupFilter from './LiveGroupFilter';
 import VODCategoryFilter from './VODCategoryFilter';
+import { showNotification } from '../../utils/notificationUtils.js';
+import {
+  buildGroupStates,
+  saveAndRefreshPlaylist,
+} from '../../utils/forms/M3uGroupFilterUtils.js';
+import { detectGroupReservationOverlaps } from '../../utils/forms/GroupSyncUtils';
 
 const M3UGroupFilter = ({ playlist = null, isOpen, onClose }) => {
   const channelGroups = useChannelsStore((s) => s.channelGroups);
   const fetchCategories = useVODStore((s) => s.fetchCategories);
+
   const [groupStates, setGroupStates] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
   const [movieCategoryStates, setMovieCategoryStates] = useState([]);
@@ -39,35 +47,8 @@ const M3UGroupFilter = ({ playlist = null, isOpen, onClose }) => {
   }, [playlist]);
 
   useEffect(() => {
-    if (Object.keys(channelGroups).length === 0) {
-      return;
-    }
-
-    setGroupStates(
-      playlist.channel_groups
-        .filter((group) => channelGroups[group.channel_group]) // Filter out groups that don't exist
-        .map((group) => {
-          // Parse custom_properties if present
-          let customProps = {};
-          if (group.custom_properties) {
-            try {
-              customProps =
-                typeof group.custom_properties === 'string'
-                  ? JSON.parse(group.custom_properties)
-                  : group.custom_properties;
-            } catch (e) {
-              customProps = {};
-            }
-          }
-          return {
-            ...group,
-            name: channelGroups[group.channel_group].name,
-            auto_channel_sync: group.auto_channel_sync || false,
-            auto_sync_channel_start: group.auto_sync_channel_start || 1.0,
-            custom_properties: customProps,
-          };
-        })
-    );
+    if (Object.keys(channelGroups).length === 0) return;
+    setGroupStates(buildGroupStates(channelGroups, playlist.channel_groups));
   }, [playlist, channelGroups]);
 
   // Fetch VOD categories when modal opens for XC accounts with VOD enabled
@@ -83,50 +64,43 @@ const M3UGroupFilter = ({ playlist = null, isOpen, onClose }) => {
   }, [isOpen, playlist, fetchCategories]);
 
   const submit = async () => {
+    // Advisory only: overlapping ranges are sometimes intentional (for
+    // example, two providers carrying the same category that should
+    // merge into one shared number range). The form already shows a
+    // warning triangle on each affected group with the specific overlap
+    // names on hover, so the toast just confirms the save proceeded.
+    const overlaps = detectGroupReservationOverlaps(groupStates);
+    if (overlaps.length > 0) {
+      showNotification({
+        title: 'Overlapping channel number ranges',
+        message: `Saved with ${overlaps.length} overlapping range pair${overlaps.length === 1 ? '' : 's'}. Hover the warning icon on each group for details. Sync will assign whichever numbers are free at run time.`,
+        color: 'yellow',
+        autoClose: 6000,
+      });
+    }
+
     setIsLoading(true);
     try {
-      // Prepare groupStates for API
-      // Send ALL group states like the original code did, don't filter by enabled changes
-      const groupSettings = groupStates.map((state) => ({
-        ...state,
-        custom_properties: state.custom_properties || undefined,
-      }));
-
-      const categorySettings = movieCategoryStates
-        .concat(seriesCategoryStates)
-        .map((state) => ({
-          ...state,
-          custom_properties: state.custom_properties || undefined,
-        }))
-        .filter((state) => state.enabled !== state.original_enabled);
-
-      // Update account-level settings via the proper account endpoint
-      await API.updatePlaylist({
-        id: playlist.id,
-        auto_enable_new_groups_live: autoEnableNewGroupsLive,
-        auto_enable_new_groups_vod: autoEnableNewGroupsVod,
-        auto_enable_new_groups_series: autoEnableNewGroupsSeries,
-      });
-
-      // Update group settings via API endpoint
-      await API.updateM3UGroupSettings(
-        playlist.id,
-        groupSettings,
-        categorySettings
+      await saveAndRefreshPlaylist(
+        playlist,
+        groupStates,
+        movieCategoryStates,
+        seriesCategoryStates,
+        {
+          auto_enable_new_groups_live: autoEnableNewGroupsLive,
+          auto_enable_new_groups_vod: autoEnableNewGroupsVod,
+          auto_enable_new_groups_series: autoEnableNewGroupsSeries,
+        }
       );
 
-      // Show notification about the refresh process
-      notifications.show({
+      showNotification({
         title: 'Group Settings Updated',
         message: 'Settings saved. Starting M3U refresh to apply changes...',
         color: 'green',
         autoClose: 3000,
       });
 
-      // Refresh the playlist - this will handle channel sync automatically at the end
-      await API.refreshPlaylist(playlist.id);
-
-      notifications.show({
+      showNotification({
         title: 'M3U Refresh Started',
         message:
           'The M3U account is being refreshed. Channel sync will occur automatically after parsing completes.',
@@ -161,13 +135,13 @@ const M3UGroupFilter = ({ playlist = null, isOpen, onClose }) => {
       <LoadingOverlay visible={isLoading} overlayBlur={2} />
       <Stack>
         <Tabs defaultValue="live">
-          <Tabs.List>
-            <Tabs.Tab value="live">Live</Tabs.Tab>
-            <Tabs.Tab value="vod-movie">VOD - Movies</Tabs.Tab>
-            <Tabs.Tab value="vod-series">VOD - Series</Tabs.Tab>
-          </Tabs.List>
+          <TabsList>
+            <TabsTab value="live">Live</TabsTab>
+            <TabsTab value="vod-movie">VOD - Movies</TabsTab>
+            <TabsTab value="vod-series">VOD - Series</TabsTab>
+          </TabsList>
 
-          <Tabs.Panel value="live">
+          <TabsPanel value="live">
             <LiveGroupFilter
               playlist={playlist}
               groupStates={groupStates}
@@ -175,9 +149,9 @@ const M3UGroupFilter = ({ playlist = null, isOpen, onClose }) => {
               autoEnableNewGroupsLive={autoEnableNewGroupsLive}
               setAutoEnableNewGroupsLive={setAutoEnableNewGroupsLive}
             />
-          </Tabs.Panel>
+          </TabsPanel>
 
-          <Tabs.Panel value="vod-movie">
+          <TabsPanel value="vod-movie">
             <VODCategoryFilter
               playlist={playlist}
               categoryStates={movieCategoryStates}
@@ -186,9 +160,9 @@ const M3UGroupFilter = ({ playlist = null, isOpen, onClose }) => {
               autoEnableNewGroups={autoEnableNewGroupsVod}
               setAutoEnableNewGroups={setAutoEnableNewGroupsVod}
             />
-          </Tabs.Panel>
+          </TabsPanel>
 
-          <Tabs.Panel value="vod-series">
+          <TabsPanel value="vod-series">
             <VODCategoryFilter
               playlist={playlist}
               categoryStates={seriesCategoryStates}
@@ -197,7 +171,7 @@ const M3UGroupFilter = ({ playlist = null, isOpen, onClose }) => {
               autoEnableNewGroups={autoEnableNewGroupsSeries}
               setAutoEnableNewGroups={setAutoEnableNewGroupsSeries}
             />
-          </Tabs.Panel>
+          </TabsPanel>
         </Tabs>
 
         <Flex mih={50} gap="xs" justify="flex-end" align="flex-end">

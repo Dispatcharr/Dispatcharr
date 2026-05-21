@@ -1,7 +1,15 @@
 import React, { useRef, useState, useMemo } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { copyToClipboard } from '../utils';
-import { Copy, LogOut, ChevronDown, ChevronRight, Heart } from 'lucide-react';
+import {
+  Copy,
+  LogOut,
+  ChevronDown,
+  ChevronRight,
+  Heart,
+  HelpCircle,
+} from 'lucide-react';
+import AboutModal from './AboutModal';
 import { getOrderedNavItems } from '../config/navigation';
 import {
   Avatar,
@@ -156,6 +164,7 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
   const publicIPRef = useRef(null);
 
   const [userFormOpen, setUserFormOpen] = useState(false);
+  const [aboutOpen, setAboutOpen] = useState(false);
 
   const closeUserForm = () => setUserFormOpen(false);
 
@@ -372,6 +381,15 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
             </Text>
           </Tooltip>
           <Group gap="xs" wrap="nowrap">
+            <Tooltip label="About" position="top">
+              <ActionIcon
+                variant="transparent"
+                color="gray"
+                onClick={() => setAboutOpen(true)}
+              >
+                <HelpCircle size={20} />
+              </ActionIcon>
+            </Tooltip>
             <DonateButton />
             {isAuthenticated && <NotificationCenter />}
           </Group>
@@ -389,10 +407,20 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
         >
           {isAuthenticated && <NotificationCenter />}
           <DonateButton tooltipPosition="right" />
+          <Tooltip label="About" position="right">
+            <ActionIcon
+              variant="transparent"
+              color="gray"
+              onClick={() => setAboutOpen(true)}
+            >
+              <HelpCircle size={20} />
+            </ActionIcon>
+          </Tooltip>
         </Box>
       )}
 
       <UserForm user={authUser} isOpen={userFormOpen} onClose={closeUserForm} />
+      <AboutModal isOpen={aboutOpen} onClose={() => setAboutOpen(false)} />
     </AppShellNavbar>
   );
 };

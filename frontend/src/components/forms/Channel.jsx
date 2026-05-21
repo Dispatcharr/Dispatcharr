@@ -33,7 +33,7 @@ import {
   UnstyledButton,
   useMantineTheme,
 } from '@mantine/core';
-import { ListOrdered, SquarePlus, X, Zap } from 'lucide-react';
+import { ListOrdered, SquarePlus, Undo2, X, Zap } from 'lucide-react';
 import useEPGsStore from '../../store/epgs';
 import { FixedSizeList as List } from 'react-window';
 import { USER_LEVEL_LABELS, USER_LEVELS } from '../../constants';
@@ -43,11 +43,18 @@ import {
 } from '../../utils/notificationUtils.js';
 import {
   addChannel,
+  clearChannelOverrides,
   createLogo,
   getChannelFormDefaultValues,
+  getFkProviderHint,
   getFormattedValues,
+  getProviderFormValue,
+  getProviderHint,
   handleEpgUpdate,
+  isFormFieldOverridden,
   matchChannelEpg,
+  OVERRIDABLE_FIELDS,
+  OVERRIDE_FIELD_LABELS,
   requeryChannels,
 } from '../../utils/forms/ChannelUtils.js';
 
@@ -56,12 +63,47 @@ const validationSchema = Yup.object({
   channel_group_id: Yup.string().required('Channel group is required'),
 });
 
-const ChannelForm = ({ channel = null, isOpen, onClose }) => {
+// Provider hint plus a reset-to-provider icon for auto-synced
+// channels; rendered as the field's `description` prop.
+const ProviderHintRow = ({ channel, field, formValue, hintText, onReset }) => {
+  if (!hintText) return null;
+  const overridden = isFormFieldOverridden(channel, field, formValue);
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+      <Text size="xs" c="dimmed" component="span">
+        {hintText}
+      </Text>
+      {overridden && (
+        <Tooltip label="Reset to provider value" withArrow>
+          <ActionIcon
+            size="xs"
+            variant="subtle"
+            color="orange"
+            onClick={onReset}
+            aria-label={`Reset ${field} to provider value`}
+          >
+            <Undo2 size={11} />
+          </ActionIcon>
+        </Tooltip>
+      )}
+    </span>
+  );
+};
+
+const ChannelForm = ({ channel: channelProp = null, isOpen, onClose }) => {
   const theme = useMantineTheme();
 
   const listRef = useRef(null);
   const logoListRef = useRef(null);
   const groupListRef = useRef(null);
+
+  // Local copy so in-modal mutations (clear overrides, etc.) update the
+  // form immediately. Reset on each open from `channelProp`; mutated in
+  // place with API responses.
+  const [channel, setChannel] = useState(channelProp);
+  useEffect(() => {
+    setChannel(channelProp);
+  }, [channelProp]);
 
   const channelGroups = useChannelsStore((s) => s.channelGroups);
 
@@ -309,7 +351,45 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
     resolver: yupResolver(validationSchema),
   });
 
+  const clearOverrides = async () => {
+    if (!channel) return;
+    try {
+      const updated = await clearChannelOverrides(channel.id);
+      // Update local state first so the form reflects the cleared
+      // overrides immediately; the table-store refresh is best-effort.
+      if (updated && typeof updated === 'object') {
+        setChannel(updated);
+      }
+      requeryChannels();
+      showNotification({
+        title: 'Overrides Cleared',
+        message: 'Channel values now follow the provider.',
+        color: 'green',
+      });
+    } catch (error) {
+      showNotification({
+        title: 'Clear Failed',
+        message:
+          error?.body?.detail || error?.message || 'Could not clear overrides.',
+        color: 'red',
+      });
+    }
+  };
+
+  // Computed from live form values so per-field resets update the
+  // Clear-all button immediately, before submit.
+  const watchedFormValues = watch();
+  const overriddenFieldLabels = useMemo(() => {
+    if (!channel) return [];
+    return OVERRIDABLE_FIELDS.filter((field) =>
+      isFormFieldOverridden(channel, field, watchedFormValues[field])
+    ).map((field) => OVERRIDE_FIELD_LABELS[field]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [channel, JSON.stringify(watchedFormValues)]);
+  const hasAnyOverride = overriddenFieldLabels.length > 0;
+
   const onSubmit = async (values) => {
+    let saveFailed = false;
     try {
       const formattedValues = getFormattedValues(values);
 
@@ -324,7 +404,28 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
       }
     } catch (error) {
       console.error('Error saving channel:', error);
+      saveFailed = true;
+      showNotification({
+        title: 'Save Failed',
+        message:
+          error?.body?.detail || error?.message || 'Failed to save channel.',
+        color: 'red',
+      });
     }
+
+    if (saveFailed) {
+      // Keep the form open with the user's edits intact so they can correct
+      // a validation error without retyping.
+      return;
+    }
+
+    showNotification({
+      title: 'Saved',
+      message: channel
+        ? `Channel "${values.name}" updated.`
+        : `Channel "${values.name}" created.`,
+      color: 'green',
+    });
 
     reset();
     requeryChannels();
@@ -408,6 +509,17 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
         styles={{ content: { '--mantine-color-body': '#27272A' } }}
       >
         <form onSubmit={handleSubmit(onSubmit)}>
+          {channel?.auto_created && channel?.source_stream && (
+            <Text size="xs" c="dimmed" mb="xs">
+              Auto-created from:{' '}
+              <Text component="span" fw={500} c="gray.3">
+                {channel.source_stream.account_name || 'Unknown provider'}
+              </Text>
+              {channel.source_stream.name
+                ? ` / ${channel.source_stream.name}`
+                : ''}
+            </Text>
+          )}
           <Group justify="space-between" align="top">
             <Stack gap="5" style={{ flex: 1 }}>
               <TextInput
@@ -430,6 +542,19 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
                     )}
                   </Group>
                 }
+                description={
+                  <ProviderHintRow
+                    channel={channel}
+                    field="name"
+                    formValue={watch('name')}
+                    hintText={getProviderHint(channel, 'name')}
+                    onReset={() =>
+                      setValue('name', getProviderFormValue(channel, 'name'), {
+                        shouldDirty: true,
+                      })
+                    }
+                  />
+                }
                 {...register('name')}
                 error={errors.name?.message}
                 size="xs"
@@ -448,6 +573,24 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
                       id="channel_group_id"
                       name="channel_group_id"
                       label="Channel Group"
+                      description={
+                        <ProviderHintRow
+                          channel={channel}
+                          field="channel_group_id"
+                          formValue={watch('channel_group_id')}
+                          hintText={getFkProviderHint(
+                            channel,
+                            'channel_group_id',
+                            channelGroups
+                          )}
+                          onReset={() =>
+                            setValue(
+                              'channel_group_id',
+                              getProviderFormValue(channel, 'channel_group_id')
+                            )
+                          }
+                        />
+                      }
                       readOnly
                       value={
                         channelGroups[watch('channel_group_id')]
@@ -535,6 +678,27 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
                 id="stream_profile_id"
                 label="Stream Profile"
                 name="stream_profile_id"
+                description={
+                  <ProviderHintRow
+                    channel={channel}
+                    field="stream_profile_id"
+                    formValue={watch('stream_profile_id')}
+                    hintText={getFkProviderHint(
+                      channel,
+                      'stream_profile_id',
+                      streamProfiles.reduce((acc, p) => {
+                        acc[p.id] = p;
+                        return acc;
+                      }, {})
+                    )}
+                    onReset={() =>
+                      setValue(
+                        'stream_profile_id',
+                        getProviderFormValue(channel, 'stream_profile_id')
+                      )
+                    }
+                  />
+                }
                 value={watch('stream_profile_id')}
                 onChange={(value) => {
                   setValue('stream_profile_id', value);
@@ -604,6 +768,24 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
                             </Button>
                           )}
                         </Group>
+                      }
+                      description={
+                        <ProviderHintRow
+                          channel={channel}
+                          field="logo_id"
+                          formValue={watch('logo_id')}
+                          hintText={getFkProviderHint(
+                            channel,
+                            'logo_id',
+                            channelLogos
+                          )}
+                          onReset={() =>
+                            setValue(
+                              'logo_id',
+                              getProviderFormValue(channel, 'logo_id')
+                            )
+                          }
+                        />
                       }
                       readOnly
                       value={channelLogos[watch('logo_id')]?.name || 'Default'}
@@ -738,6 +920,41 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
                   />
                 </Box>
               </Tooltip>
+              <Tooltip
+                label="Hides this channel from HDHR, M3U, EPG, and XC client output and preserves it from auto-cleanup. To hide channels per-user, use channel profiles instead."
+                withArrow
+                multiline
+                w={320}
+              >
+                <Box>
+                  <Switch
+                    label="Hidden"
+                    checked={watch('hidden_from_output')}
+                    onChange={(event) =>
+                      setValue(
+                        'hidden_from_output',
+                        event.currentTarget.checked
+                      )
+                    }
+                    size="md"
+                  />
+                </Box>
+              </Tooltip>
+              {channel?.auto_created && hasAnyOverride && (
+                <Tooltip
+                  label={`Currently overriding: ${overriddenFieldLabels.join(', ')}. Clear all overrides to follow the provider values again on the next refresh.`}
+                  withArrow
+                >
+                  <Button
+                    variant="light"
+                    color="orange"
+                    size="xs"
+                    onClick={clearOverrides}
+                  >
+                    Clear All Overrides ({overriddenFieldLabels.length})
+                  </Button>
+                </Tooltip>
+              )}
             </Stack>
 
             <Divider size="sm" orientation="vertical" />
@@ -747,6 +964,21 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
                 id="channel_number"
                 name="channel_number"
                 label="Channel # (blank to auto-assign)"
+                description={
+                  <ProviderHintRow
+                    channel={channel}
+                    field="channel_number"
+                    formValue={watch('channel_number')}
+                    hintText={getProviderHint(channel, 'channel_number')}
+                    onReset={() =>
+                      setValue(
+                        'channel_number',
+                        getProviderFormValue(channel, 'channel_number'),
+                        { shouldDirty: true }
+                      )
+                    }
+                  />
+                }
                 value={watch('channel_number')}
                 onChange={(value) => setValue('channel_number', value)}
                 error={errors.channel_number?.message}
@@ -775,6 +1007,21 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
                     )}
                   </Group>
                 }
+                description={
+                  <ProviderHintRow
+                    channel={channel}
+                    field="tvg_id"
+                    formValue={watch('tvg_id')}
+                    hintText={getProviderHint(channel, 'tvg_id')}
+                    onReset={() =>
+                      setValue(
+                        'tvg_id',
+                        getProviderFormValue(channel, 'tvg_id'),
+                        { shouldDirty: true }
+                      )
+                    }
+                  />
+                }
                 {...register('tvg_id')}
                 error={errors.tvg_id?.message}
                 size="xs"
@@ -784,6 +1031,21 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
                 id="tvc_guide_stationid"
                 name="tvc_guide_stationid"
                 label="Gracenote StationId"
+                description={
+                  <ProviderHintRow
+                    channel={channel}
+                    field="tvc_guide_stationid"
+                    formValue={watch('tvc_guide_stationid')}
+                    hintText={getProviderHint(channel, 'tvc_guide_stationid')}
+                    onReset={() =>
+                      setValue(
+                        'tvc_guide_stationid',
+                        getProviderFormValue(channel, 'tvc_guide_stationid'),
+                        { shouldDirty: true }
+                      )
+                    }
+                  />
+                }
                 {...register('tvc_guide_stationid')}
                 error={errors.tvc_guide_stationid?.message}
                 size="xs"
@@ -828,6 +1090,24 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
                           Auto Match
                         </Button>
                       </Group>
+                    }
+                    description={
+                      <ProviderHintRow
+                        channel={channel}
+                        field="epg_data_id"
+                        formValue={watch('epg_data_id')}
+                        hintText={getFkProviderHint(
+                          channel,
+                          'epg_data_id',
+                          tvgsById
+                        )}
+                        onReset={() =>
+                          setValue(
+                            'epg_data_id',
+                            getProviderFormValue(channel, 'epg_data_id')
+                          )
+                        }
+                      />
                     }
                     readOnly
                     value={(() => {

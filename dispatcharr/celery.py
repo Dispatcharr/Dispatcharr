@@ -38,6 +38,18 @@ app = Celery("dispatcharr")
 app.config_from_object("django.conf:settings", namespace="CELERY")
 app.autodiscover_tasks()
 
+
+# Plugins live outside INSTALLED_APPS, so autodiscover_tasks() never imports
+# them. Without an eager import, workers reject plugin @shared_tasks with
+# "Received unregistered task" until a lazy event import warms the module.
+@worker_ready.connect(weak=False)
+def discover_plugins_on_worker_ready(**_kwargs):
+    try:
+        from apps.plugins.loader import PluginManager
+        PluginManager.get().discover_plugins(sync_db=False)
+    except Exception:
+        logger.exception("plugin discovery on worker_ready failed")
+
 # Use environment variable for log level with fallback to INFO
 CELERY_LOG_LEVEL = os.environ.get('DISPATCHARR_LOG_LEVEL', 'INFO').upper()
 print(f"Celery using log level from environment: {CELERY_LOG_LEVEL}")

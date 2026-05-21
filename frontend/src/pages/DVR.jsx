@@ -301,7 +301,7 @@ const DVRPage = () => {
       </Flex>
       <Stack gap="lg">
         <div>
-          <Group justify="space-between" mb={8}>
+          <Group gap="xs" align="center" mb={8}>
             <Title order={4}>Currently Recording</Title>
             <Badge color="red.6">
               {hasActiveFilters
@@ -336,7 +336,7 @@ const DVRPage = () => {
         </div>
 
         <div>
-          <Group justify="space-between" mb={8}>
+          <Group gap="xs" align="center" mb={8}>
             <Title order={4}>Upcoming Recordings</Title>
             <Badge color="yellow.6">
               {hasActiveFilters
@@ -371,7 +371,7 @@ const DVRPage = () => {
         </div>
 
         <div>
-          <Group justify="space-between" mb={8}>
+          <Group gap="xs" align="center" mb={8}>
             <Title order={4}>Previously Recorded</Title>
             <Badge color="gray.6">
               {hasActiveFilters

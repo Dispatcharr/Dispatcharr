@@ -1,34 +1,40 @@
 // Modal.js
-import React, { useState, useEffect } from 'react';
-import API from '../../api';
+import React, { useEffect, useState } from 'react';
 import useUserAgentsStore from '../../store/userAgents';
 import M3UProfiles from './M3UProfiles';
 import {
-  LoadingOverlay,
-  TextInput,
+  Box,
   Button,
   Checkbox,
-  Modal,
-  Flex,
-  Select,
-  FileInput,
-  NumberInput,
   Divider,
-  Stack,
+  FileInput,
+  Flex,
   Group,
-  Switch,
-  Box,
+  LoadingOverlay,
+  Modal,
+  NumberInput,
   PasswordInput,
+  Select,
+  Stack,
+  Switch,
+  TextInput,
 } from '@mantine/core';
 import M3UGroupFilter from './M3UGroupFilter';
 import useChannelsStore from '../../store/channels';
-import { notifications } from '@mantine/notifications';
 import { isNotEmpty, useForm } from '@mantine/form';
 import useEPGsStore from '../../store/epgs';
 import useVODStore from '../../store/useVODStore';
 import M3UFilters from './M3UFilters';
 import ScheduleInput from './ScheduleInput';
 import { DateTimePicker } from '@mantine/dates';
+import { showNotification } from '../../utils/notificationUtils.js';
+import { addEPG } from '../../utils/forms/DummyEpgUtils.js';
+import {
+  addPlaylist,
+  getPlaylist,
+  prepareSubmitValues,
+  updatePlaylist,
+} from '../../utils/forms/M3uUtils.js';
 
 const M3U = ({
   m3uAccount = null,
@@ -47,8 +53,6 @@ const M3U = ({
   const [profileModalOpen, setProfileModalOpen] = useState(false);
   const [groupFilterModalOpen, setGroupFilterModalOpen] = useState(false);
   const [filterModalOpen, setFilterModalOpen] = useState(false);
-  const [loadingText, setLoadingText] = useState('');
-  const [showCredentialFields, setShowCredentialFields] = useState(false);
   const [scheduleType, setScheduleType] = useState('interval');
 
   const form = useForm({
@@ -109,12 +113,6 @@ const M3U = ({
           ? 'cron'
           : 'interval'
       );
-
-      if (m3uAccount.account_type == 'XC') {
-        setShowCredentialFields(true);
-      } else {
-        setShowCredentialFields(false);
-      }
     } else {
       setPlaylist(null);
       form.reset();
@@ -123,107 +121,53 @@ const M3U = ({
     }
   }, [m3uAccount]);
 
-  useEffect(() => {
-    if (form.values.account_type == 'XC') {
-      setShowCredentialFields(true);
-    }
-  }, [form.values.account_type]);
-
-  const onSubmit = async () => {
-    const { create_epg, ...values } = form.getValues();
-
-    // Convert exp_date (from controlled state) to ISO string for the API
-    if (values.account_type === 'XC') {
-      // XC accounts have exp_date auto-managed server-side; don't send it
-      delete values.exp_date;
-    } else if (expDate instanceof Date) {
-      values.exp_date = expDate.toISOString();
-    } else {
-      values.exp_date = null;
-    }
-
-    // Determine which schedule type is active based on field values
-    const hasCronExpression =
-      values.cron_expression && values.cron_expression.trim() !== '';
-
-    // Clear the field that isn't active based on actual field values
-    if (hasCronExpression) {
-      values.refresh_interval = 0;
-    } else {
-      values.cron_expression = '';
-    }
-
-    if (values.account_type == 'XC' && values.password == '') {
-      // If account XC and no password input, assuming no password change
-      // from previously stored value.
-      delete values.password;
-    }
-
-    if (values.user_agent == '0') {
-      values.user_agent = null;
-    }
-
-    let newPlaylist;
-    if (playlist?.id) {
-      await API.updatePlaylist({
-        id: playlist.id,
-        ...values,
-        file,
+  const handleNewPlaylist = async (newPlaylist, values, create_epg) => {
+    if (create_epg) {
+      addEPG({
+        name: values.name,
+        source_type: 'xmltv',
+        url: `${new URL(values.server_url).origin}/xmltv.php?username=${values.username}&password=${values.password}`,
+        api_key: '',
+        is_active: true,
+        refresh_interval: 24,
       });
-    } else {
-      newPlaylist = await API.addPlaylist({
-        ...values,
-        file,
+    }
+
+    if (values.account_type != 'XC') {
+      showNotification({
+        title: 'Fetching M3U Groups',
+        message:
+          'Configure group filters and auto sync settings once complete.',
       });
-
-      if (create_epg) {
-        API.addEPG({
-          name: values.name,
-          source_type: 'xmltv',
-          url: `${new URL(values.server_url).origin}/xmltv.php?username=${values.username}&password=${values.password}`,
-          api_key: '',
-          is_active: true,
-          refresh_interval: 24,
-        });
-      }
-
-      if (values.account_type != 'XC') {
-        notifications.show({
-          title: 'Fetching M3U Groups',
-          message:
-            'Configure group filters and auto sync settings once complete.',
-        });
-
-        // Don't prompt for group filters, but keeping this here
-        // in case we want to revive it
-        newPlaylist = null;
-        close();
-        return;
-      }
-
-      // Fetch the updated playlist details (this also updates the store via API)
-      const updatedPlaylist = await API.getPlaylist(newPlaylist.id);
-
-      // Note: We don't call fetchPlaylists() here because API.addPlaylist()
-      // already added the playlist to the store. Calling fetchPlaylists() creates
-      // a race condition where the store is temporarily cleared/replaced while
-      // websocket updates for the new playlist's refresh task are arriving.
-      await Promise.all([fetchChannelGroups(), fetchEPGs()]);
-
-      // If this is an XC account with VOD enabled, also fetch VOD categories
-      if (values.account_type === 'XC' && values.enable_vod) {
-        fetchCategories();
-      }
-
-      console.log('opening group options');
-      setPlaylist(updatedPlaylist);
-      setGroupFilterModalOpen(true);
+      close();
       return;
     }
 
-    form.reset();
-    setFile(null);
-    onClose(newPlaylist);
+    const updatedPlaylist = await getPlaylist(newPlaylist);
+    await Promise.all([fetchChannelGroups(), fetchEPGs()]);
+
+    if (values.enable_vod) {
+      fetchCategories();
+    }
+
+    setPlaylist(updatedPlaylist);
+    setGroupFilterModalOpen(true);
+  };
+
+  const onSubmit = async () => {
+    const { create_epg, ...rawValues } = form.getValues();
+    const values = prepareSubmitValues(rawValues, expDate);
+
+    if (playlist?.id) {
+      await updatePlaylist(playlist, values, file);
+      form.reset();
+      setFile(null);
+      onClose();
+      return;
+    }
+
+    const newPlaylist = await addPlaylist(values, file);
+    await handleNewPlaylist(newPlaylist, values, create_epg);
   };
 
   const close = () => {
@@ -269,15 +213,11 @@ const M3U = ({
         trapFocus={false}
         yOffset="2vh"
       >
-        <LoadingOverlay
-          visible={form.submitting}
-          overlayBlur={2}
-          loaderProps={loadingText ? { children: loadingText } : {}}
-        />
+        <LoadingOverlay visible={form.submitting} overlayBlur={2} />
 
         <form onSubmit={form.onSubmit(onSubmit)}>
           <Group justify="space-between" align="top">
-            <Stack gap="5" style={{ flex: 1 }}>
+            <Stack gap="5" style={{ flex: 1, minWidth: 0 }}>
               <TextInput
                 style={{ width: '100%' }}
                 id="name"
@@ -377,6 +317,14 @@ const M3U = ({
                     placeholder="Upload files"
                     description="Upload a local M3U file instead of using URL"
                     onChange={setFile}
+                    styles={{
+                      input: {
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                        display: 'block',
+                      },
+                    }}
                   />
 
                   <DateTimePicker
@@ -459,15 +407,19 @@ const M3U = ({
                 {...form.getInputProps('priority')}
                 key={form.key('priority')}
               />
-
-              <Checkbox
-                label="Is Active"
-                description="Enable or disable this M3U account"
-                {...form.getInputProps('is_active', { type: 'checkbox' })}
-                key={form.key('is_active')}
-              />
             </Stack>
           </Group>
+
+          <Divider my="md" />
+
+          <Flex gap="xl" wrap="wrap">
+            <Checkbox
+              label="Is Active"
+              description="Enable or disable this M3U account"
+              {...form.getInputProps('is_active', { type: 'checkbox' })}
+              key={form.key('is_active')}
+            />
+          </Flex>
 
           <Flex mih={50} gap="xs" justify="flex-end" align="flex-end">
             {playlist && (

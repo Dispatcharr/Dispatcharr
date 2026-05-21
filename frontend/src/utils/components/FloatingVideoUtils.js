@@ -1,5 +1,18 @@
 export const PLAYER_PREFS_KEY = 'dispatcharr-player-prefs';
 
+/**
+ * Build a live-stream preview URL that always forces mpegts output (required
+ * for mpegts.js) and optionally appends the browser-local web player output
+ * profile preference.
+ */
+export const buildLiveStreamUrl = (path) => {
+  const prefs = getPlayerPrefs();
+  const params = new URLSearchParams({ output_format: 'mpegts' });
+  const profileId = prefs.webPlayerOutputProfileId;
+  if (profileId) params.set('output_profile', String(profileId));
+  return `${path}?${params.toString()}`;
+};
+
 export const getPlayerPrefs = () => {
   try {
     return JSON.parse(localStorage.getItem(PLAYER_PREFS_KEY) || '{}');

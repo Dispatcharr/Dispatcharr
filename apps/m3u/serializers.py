@@ -193,6 +193,24 @@ class M3UAccountSerializer(serializers.ModelSerializer):
         }
 
     def to_representation(self, instance):
+        # When the list() view pre-aggregates stream counts for all accounts
+        # in a single query, it seeds "stream_counts" into the context before
+        # serialization. Avoid issuing a redundant per-instance COUNT in that
+        # case. The per-instance fallback handles direct serialization (e.g.
+        # retrieve, create) where only one account is in scope.
+        if "stream_counts" not in self.context:
+            from django.db.models import Count
+            from apps.channels.models import Stream
+
+            counts_qs = (
+                Stream.objects.filter(m3u_account_id=instance.id)
+                .values("channel_group_id")
+                .annotate(c=Count("id"))
+            )
+            self.context["stream_counts"] = {
+                (instance.id, row["channel_group_id"]): row["c"] for row in counts_qs
+            }
+
         data = super().to_representation(instance)
 
         # Parse custom_properties to get VOD preference and auto_enable_new_groups settings
@@ -247,10 +265,17 @@ class M3UAccountSerializer(serializers.ModelSerializer):
         auto_enable_new_groups_vod = validated_data.pop("auto_enable_new_groups_vod", None)
         auto_enable_new_groups_series = validated_data.pop("auto_enable_new_groups_series", None)
 
-        # Get existing custom_properties
-        custom_props = instance.custom_properties or {}
+        # Merge client-supplied custom_properties over the existing blob
+        # so unrelated keys persist. The dedicated preference fields below
+        # overwrite their corresponding keys; clients should set those via
+        # the typed top-level fields rather than the custom_properties
+        # payload.
+        incoming_custom = validated_data.get("custom_properties") or {}
+        custom_props = {
+            **(instance.custom_properties or {}),
+            **incoming_custom,
+        }
 
-        # Update preferences
         if enable_vod is not None:
             custom_props["enable_vod"] = enable_vod
         if auto_enable_new_groups_live is not None:
@@ -345,7 +370,9 @@ class M3UAccountSerializer(serializers.ModelSerializer):
         return instance
 
     def get_filters(self, obj):
-        filters = obj.filters.order_by("order")
+        # Sort over the prefetch cache; .order_by() would fire one SELECT
+        # per account (viewset prefetches "filters").
+        filters = sorted(obj.filters.all(), key=lambda f: f.order)
         return M3UFilterSerializer(filters, many=True).data
 
     def get_earliest_expiration(self, obj):

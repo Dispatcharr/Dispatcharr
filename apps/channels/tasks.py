@@ -1136,6 +1136,15 @@ def _evaluate_series_rules_locked(tvg_id, result):
     now = timezone.now()
     horizon = now + timedelta(days=7)
 
+    try:
+        pre_min = int(CoreSettings.get_dvr_pre_offset_minutes())
+    except Exception:
+        pre_min = 0
+    try:
+        post_min = int(CoreSettings.get_dvr_post_offset_minutes())
+    except Exception:
+        post_min = 0
+
     # Preload existing recordings keyed by stable program attributes that
     # survive EPG refreshes (tvg_id + original start/end times stored in
     # custom_properties).  ProgramData.id changes on every EPG refresh so
@@ -1160,37 +1169,74 @@ def _evaluate_series_rules_locked(tvg_id, result):
         rv_tvg = str(rule.get("tvg_id") or "").strip()
         mode = (rule.get("mode") or "all").lower()
         series_title = (rule.get("title") or "").strip()
-        norm_series = normalize_name(series_title) if series_title else None
-        if not rv_tvg:
+        title_mode = (rule.get("title_mode") or "exact").lower()
+        description = (rule.get("description") or "").strip()
+        description_mode = (rule.get("description_mode") or "contains").lower()
+        try:
+            pinned_channel_id = int(rule["channel_id"]) if rule.get("channel_id") not in (None, "") else None
+        except (TypeError, ValueError):
+            pinned_channel_id = None
+        if not series_title and not description:
             result["details"].append({"tvg_id": rv_tvg, "status": "invalid_rule"})
             continue
 
-        epg = EPGData.objects.filter(tvg_id=rv_tvg).first()
-        if not epg:
-            result["details"].append({"tvg_id": rv_tvg, "status": "no_epg_match"})
-            continue
-
-        programs_qs = ProgramData.objects.filter(
+        if rv_tvg:
+            epg = EPGData.objects.filter(tvg_id=rv_tvg).first()
+            if not epg:
+                result["details"].append({"tvg_id": rv_tvg, "status": "no_epg_match"})
+                continue
+            programs_qs = ProgramData.objects.filter(
                 epg=epg,
                 end_time__gt=now,
                 start_time__lte=horizon,
             )
-        if series_title:
-            programs_qs = programs_qs.filter(title__iexact=series_title)
-        programs = list(programs_qs.order_by("start_time"))
-        # Fallback: if no direct matches and we have a title, try normalized comparison in Python
-        if series_title and not programs:
-            all_progs = ProgramData.objects.filter(
-                epg=epg,
+        else:
+            epg = None
+            programs_qs = ProgramData.objects.select_related("epg").filter(
                 end_time__gt=now,
                 start_time__lte=horizon,
-            ).only("id", "title", "start_time", "end_time", "custom_properties", "tvg_id")
-            programs = [p for p in all_progs if normalize_name(p.title) == norm_series]
+            )
 
-        channel = Channel.objects.filter(epg_data=epg).order_by("channel_number").first()
-        if not channel:
-            result["details"].append({"tvg_id": rv_tvg, "status": "no_channel_for_epg"})
-            continue
+        from apps.epg.query_utils import parse_text_query
+
+        if series_title:
+            if title_mode == "exact":
+                programs_qs = programs_qs.filter(title__iexact=series_title)
+            else:
+                use_regex = title_mode == "regex"
+                whole_words = title_mode == "search"
+                programs_qs = programs_qs.filter(
+                    parse_text_query("title", series_title, use_regex=use_regex, whole_words=whole_words)
+                )
+
+        if description:
+            use_regex = description_mode == "regex"
+            whole_words = description_mode == "search"
+            programs_qs = programs_qs.filter(
+                parse_text_query("description", description, use_regex=use_regex, whole_words=whole_words)
+            )
+
+        programs = list(programs_qs.distinct().order_by("start_time"))
+
+        if pinned_channel_id is not None:
+            pinned_channel = Channel.objects.filter(id=pinned_channel_id).first()
+            if pinned_channel is None:
+                result["details"].append({"tvg_id": rv_tvg, "status": "pinned_channel_missing", "channel_id": pinned_channel_id})
+                continue
+            channels_by_epg_id = None
+        elif rv_tvg:
+            pinned_channel = Channel.objects.filter(epg_data=epg).order_by("channel_number").first()
+            if not pinned_channel:
+                result["details"].append({"tvg_id": rv_tvg, "status": "no_channel_for_epg"})
+                continue
+            channels_by_epg_id = None
+        else:
+            pinned_channel = None
+            epg_ids = {p.epg_id for p in programs}
+            channels_by_epg_id = {}
+            for ch in Channel.objects.filter(epg_data_id__in=epg_ids).order_by("channel_number"):
+                if ch.epg_data_id not in channels_by_epg_id:
+                    channels_by_epg_id[ch.epg_data_id] = ch
 
         #
         # Many providers list multiple future airings of the same episode
@@ -1247,6 +1293,12 @@ def _evaluate_series_rules_locked(tvg_id, result):
         created_here = 0
         for prog in unique_programs:
             try:
+                if pinned_channel is not None:
+                    rec_channel = pinned_channel
+                else:
+                    rec_channel = channels_by_epg_id.get(prog.epg_id)
+                    if rec_channel is None:
+                        continue
                 # Skip if a recording already exists for this exact airing
                 # (keyed by tvg_id + original program times, which are stable
                 # across EPG refreshes unlike ProgramData.id).
@@ -1266,16 +1318,6 @@ def _evaluate_series_rules_locked(tvg_id, result):
                 except Exception:
                     continue  # already scheduled/recorded
 
-                # Apply global DVR pre/post offsets (in minutes)
-                try:
-                    pre_min = int(CoreSettings.get_dvr_pre_offset_minutes())
-                except Exception:
-                    pre_min = 0
-                try:
-                    post_min = int(CoreSettings.get_dvr_post_offset_minutes())
-                except Exception:
-                    post_min = 0
-
                 adj_start = prog.start_time
                 adj_end = prog.end_time
                 try:
@@ -1290,7 +1332,7 @@ def _evaluate_series_rules_locked(tvg_id, result):
                     pass
 
                 rec = Recording.objects.create(
-                    channel=channel,
+                    channel=rec_channel,
                     start_time=adj_start,
                     end_time=adj_end,
                     custom_properties={
@@ -2687,8 +2729,8 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
         # Try to get stream stats from TS proxy Redis metadata
         try:
             from core.utils import RedisClient
-            from apps.proxy.ts_proxy.redis_keys import RedisKeys
-            from apps.proxy.ts_proxy.constants import ChannelMetadataField
+            from apps.proxy.live_proxy.redis_keys import RedisKeys
+            from apps.proxy.live_proxy.constants import ChannelMetadataField
 
             r = RedisClient.get_client()
             if r is not None:
@@ -3138,7 +3180,11 @@ def comskip_process_recording(recording_id: int):
     _ws('started', {"title": (cp.get('program') or {}).get('title') or os.path.basename(file_path)})
 
     try:
+        comskip_mode = CoreSettings.get_dvr_comskip_mode()
+        hw_accel = CoreSettings.get_dvr_comskip_hw_accel()
         cmd = [comskip_bin, "--output", os.path.dirname(file_path)]
+        if hw_accel != "none":
+            cmd.insert(1, f"--{hw_accel}")
         # Prefer user-specified INI, fall back to known defaults
         ini_candidates = []
         try:
@@ -3258,6 +3304,19 @@ def comskip_process_recording(recording_id: int):
         _ws('skipped', {"reason": "no_commercials", "commercials": 0})
         return "no_commercials"
 
+    if comskip_mode == "mark":
+        cp["comskip"] = {
+            "status": "completed",
+            "mode": "mark",
+            "edl": os.path.basename(edl_path),
+            "commercials": len(commercials),
+        }
+        if selected_ini:
+            cp["comskip"]["ini_path"] = selected_ini
+        _persist_custom_properties()
+        _ws('completed', {"commercials": len(commercials), "mode": "mark"})
+        return "ok"
+
     workdir = os.path.dirname(file_path)
     parts = []
     try:
@@ -3298,6 +3357,10 @@ def comskip_process_recording(recording_id: int):
         for pth in parts:
             try: os.remove(pth)
             except Exception: pass
+        try:
+            os.remove(edl_path)
+        except Exception:
+            pass
 
         cp["comskip"] = {
             "status": "completed",

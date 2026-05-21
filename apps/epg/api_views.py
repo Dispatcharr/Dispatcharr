@@ -1,11 +1,14 @@
-import logging, os
+import logging, os, re
 from rest_framework import viewsets, status, serializers
+from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework.decorators import action
 from drf_spectacular.utils import extend_schema, OpenApiParameter, inline_serializer
 from drf_spectacular.types import OpenApiTypes
+from django.db.models import Q
 from django.utils import timezone
+from django.utils.dateparse import parse_datetime
 from datetime import timedelta
 from .models import EPGSource, ProgramData, EPGData
 from .serializers import (
@@ -13,10 +16,13 @@ from .serializers import (
     ProgramDetailSerializer,
     EPGSourceSerializer,
     EPGDataSerializer,
+    ProgramSearchResultSerializer,
 )
 from .tasks import refresh_epg_data
+from .query_utils import parse_text_query
 from apps.accounts.permissions import (
     Authenticated,
+    IsStandardUser,
     permission_classes_by_action,
     permission_classes_by_method,
 )
@@ -105,6 +111,12 @@ class EPGSourceViewSet(viewsets.ModelViewSet):
 # ─────────────────────────────
 # 2) Program API (CRUD)
 # ─────────────────────────────
+class ProgramSearchPagination(PageNumberPagination):
+    page_size = 50
+    page_size_query_param = 'page_size'
+    max_page_size = 500
+
+
 class ProgramViewSet(viewsets.ModelViewSet):
     """Handles CRUD operations for EPG programs"""
 
@@ -130,6 +142,219 @@ class ProgramViewSet(viewsets.ModelViewSet):
     def list(self, request, *args, **kwargs):
         logger.debug("Listing all EPG programs.")
         return super().list(request, *args, **kwargs)
+
+    @extend_schema(
+        summary="Search EPG programs",
+        description="""
+**Advanced EPG program search with multiple filter types and complex query support.**
+
+### Text Search Features
+
+**Title and Description Search**:
+- Supports AND/OR logical operators (case-insensitive: `and`/`AND` both work)
+- Wrap phrases in double quotes to match them literally: `"Law and Order"`
+- Parenthetical grouping for complex queries: `(Newcastle OR NEW) AND (Villa OR AST)`
+- Regex pattern matching with `title_regex=true` (evaluated by the database engine)
+- Whole word matching with `title_whole_words=true` to avoid partial matches
+
+**Examples**:
+- Simple: `title=football`
+- AND operator: `title=premier AND league`
+- OR operator: `title=Newcastle OR Villa`
+- Quoted phrase: `title="Law and Order"` (matches the exact phrase; 'and' is literal)
+- Mixed: `title="Law and Order" AND crime`
+- Nested groups: `title=(Newcastle OR NEW) AND (Villa OR AST)`
+- Regex: `title=^Premier&title_regex=true` (programs starting with "Premier")
+- Whole words: `title=NEW&title_whole_words=true` (matches "NEW" but not "News")
+
+### Time Filtering
+
+**airing_at**: Find programs airing at a specific moment (start_time ≤ airing_at < end_time)
+
+**Time ranges**: Use combinations of start_after, start_before, end_after, end_before
+
+### Response Customization
+
+**fields**: Comma-separated list to include only specific fields in response
+- Available: id, title, sub_title, description, start_time, end_time, tvg_id, custom_properties, epg_source, epg_name, epg_icon_url, channels, streams
+
+### Pagination
+
+- Default: 50 results per page
+- Maximum: 500 results per page
+- Use `page` and `page_size` parameters to navigate results
+        """,
+        parameters=[
+            OpenApiParameter(
+                'title',
+                OpenApiTypes.STR,
+                description='Title search query. Supports AND/OR operators (case-insensitive), quoted phrases, and parentheses. Double-quote a phrase to match it literally: `"Law and Order"`. Unquoted space-separated terms are matched as a phrase; use AND/OR to combine separate terms.',
+            ),
+            OpenApiParameter('title_regex', OpenApiTypes.BOOL, description='Enable regex matching for title (case-insensitive, default: false). e.g. `^The` matches titles starting with "The".'),
+            OpenApiParameter('title_whole_words', OpenApiTypes.BOOL, description='Match whole words only in title (default: false). e.g. `new` matches "Newcastle" normally but not with whole words enabled.'),
+            OpenApiParameter(
+                'description',
+                OpenApiTypes.STR,
+                description='Description search query. Same syntax and features as title search.'
+            ),
+            OpenApiParameter('description_regex', OpenApiTypes.BOOL, description='Enable regex matching for description (case-insensitive, default: false).'),
+            OpenApiParameter('description_whole_words', OpenApiTypes.BOOL, description='Match whole words only in description (default: false). Same behaviour as title_whole_words.'),
+            OpenApiParameter('start_after', OpenApiTypes.DATETIME, description='Filter programs starting at or after this time. ISO 8601 format, e.g. `2026-02-14T18:00:00Z`.'),
+            OpenApiParameter('start_before', OpenApiTypes.DATETIME, description='Filter programs starting at or before this time. ISO 8601 format.'),
+            OpenApiParameter('end_after', OpenApiTypes.DATETIME, description='Filter programs ending at or after this time. ISO 8601 format.'),
+            OpenApiParameter('end_before', OpenApiTypes.DATETIME, description='Filter programs ending at or before this time. ISO 8601 format.'),
+            OpenApiParameter('airing_at', OpenApiTypes.DATETIME, description='Find programs airing at this exact moment (start_time ≤ airing_at < end_time). ISO 8601 format, e.g. `2026-02-14T20:00:00Z`.'),
+            OpenApiParameter('channel', OpenApiTypes.STR, description='Filter by channel name (case-insensitive substring match). e.g. `BBC One`, `Sky Sports`.'),
+            OpenApiParameter('channel_id', OpenApiTypes.INT, description='Filter by exact channel ID.'),
+            OpenApiParameter('tvg_id', OpenApiTypes.STR, description='Filter by EPG tvg_id (exact match). e.g. `bbcone.uk`.'),
+            OpenApiParameter('stream', OpenApiTypes.STR, description='Filter by stream name (case-insensitive substring match).'),
+            OpenApiParameter('group', OpenApiTypes.STR, description='Filter by channel group or stream group name (case-insensitive substring match). e.g. `Sports`, `UK Channels`.'),
+            OpenApiParameter('epg_source', OpenApiTypes.INT, description='Filter by EPG source ID.'),
+            OpenApiParameter('fields', OpenApiTypes.STR, description='Comma-separated list of fields to include. Omit to return all fields. e.g. `title,start_time,end_time`.'),
+            OpenApiParameter('page', OpenApiTypes.INT, description='Page number for pagination (default: 1).'),
+            OpenApiParameter('page_size', OpenApiTypes.INT, description='Results per page (default: 50, max: 500).'),
+        ],
+        responses={200: ProgramSearchResultSerializer(many=True)},
+        tags=['EPG'],
+    )
+    @action(detail=False, methods=['get'], url_path='search', permission_classes=[IsStandardUser])
+    def search(self, request):
+        params = request.query_params
+
+        # Build base queryset with prefetching
+        queryset = ProgramData.objects.select_related(
+            'epg', 'epg__epg_source'
+        ).prefetch_related(
+            'epg__channels', 'epg__channels__channel_group',
+            'epg__channels__streams', 'epg__channels__streams__channel_group',
+            'epg__channels__streams__m3u_account',
+        )
+
+        filters = Q()
+
+        # Text filters
+        title = params.get('title')
+        if title:
+            title_regex = params.get('title_regex', '').lower() in ('true', '1', 'yes')
+            title_whole_words = params.get('title_whole_words', '').lower() in ('true', '1', 'yes')
+            filters &= parse_text_query('title', title, use_regex=title_regex, whole_words=title_whole_words)
+
+        description = params.get('description')
+        if description:
+            desc_regex = params.get('description_regex', '').lower() in ('true', '1', 'yes')
+            desc_whole_words = params.get('description_whole_words', '').lower() in ('true', '1', 'yes')
+            filters &= parse_text_query('description', description, use_regex=desc_regex, whole_words=desc_whole_words)
+
+        # Time filters with validation
+        start_after = params.get('start_after')
+        if start_after:
+            dt = parse_datetime(start_after)
+            if dt is None:
+                return Response(
+                    {"error": f"Invalid datetime format for start_after: {start_after}. Use ISO 8601 format (e.g., 2026-02-14T18:00:00Z)"},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            filters &= Q(start_time__gte=dt)
+
+        start_before = params.get('start_before')
+        if start_before:
+            dt = parse_datetime(start_before)
+            if dt is None:
+                return Response(
+                    {"error": f"Invalid datetime format for start_before: {start_before}. Use ISO 8601 format."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            filters &= Q(start_time__lte=dt)
+
+        end_after = params.get('end_after')
+        if end_after:
+            dt = parse_datetime(end_after)
+            if dt is None:
+                return Response(
+                    {"error": f"Invalid datetime format for end_after: {end_after}. Use ISO 8601 format."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            filters &= Q(end_time__gte=dt)
+
+        end_before = params.get('end_before')
+        if end_before:
+            dt = parse_datetime(end_before)
+            if dt is None:
+                return Response(
+                    {"error": f"Invalid datetime format for end_before: {end_before}. Use ISO 8601 format."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            filters &= Q(end_time__lte=dt)
+
+        airing_at = params.get('airing_at')
+        if airing_at:
+            dt = parse_datetime(airing_at)
+            if dt is None:
+                return Response(
+                    {"error": f"Invalid datetime format for airing_at: {airing_at}. Use ISO 8601 format."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            filters &= Q(start_time__lte=dt, end_time__gt=dt)
+
+        # Channel/stream filters
+        channel = params.get('channel')
+        if channel:
+            filters &= Q(epg__channels__name__icontains=channel)
+
+        channel_id = params.get('channel_id')
+        if channel_id:
+            try:
+                filters &= Q(epg__channels__id=int(channel_id))
+            except (ValueError, TypeError):
+                pass
+
+        tvg_id = params.get('tvg_id')
+        if tvg_id:
+            filters &= Q(epg__tvg_id=tvg_id)
+
+        stream = params.get('stream')
+        if stream:
+            filters &= Q(epg__channels__streams__name__icontains=stream)
+
+        group = params.get('group')
+        if group:
+            filters &= (
+                Q(epg__channels__channel_group__name__icontains=group)
+                | Q(epg__channels__streams__channel_group__name__icontains=group)
+            )
+
+        epg_source = params.get('epg_source')
+        if epg_source:
+            try:
+                filters &= Q(epg__epg_source__id=int(epg_source))
+            except (ValueError, TypeError):
+                pass
+
+        queryset = queryset.filter(filters).distinct().order_by('start_time')
+
+        # Restrict results to programs on channels the user can access
+        user = request.user
+        if user.user_level < 10:
+            access_filter = Q(epg__channels__user_level__lte=user.user_level)
+            custom_props = user.custom_properties or {}
+            if custom_props.get('hide_adult_content', False):
+                access_filter &= Q(epg__channels__is_adult=False)
+            queryset = queryset.filter(access_filter).distinct()
+
+        # Resolve field selection before serialization so expensive methods can short-circuit
+        requested_fields = params.get('fields')
+        allowed = set(f.strip() for f in requested_fields.split(',')) if requested_fields else None
+
+        # Paginate
+        paginator = ProgramSearchPagination()
+        page = paginator.paginate_queryset(queryset, request)
+        serializer = ProgramSearchResultSerializer(page, many=True, context={'fields': allowed, 'user': request.user})
+        data = serializer.data
+
+        if allowed:
+            data = [{k: v for k, v in item.items() if k in allowed} for item in data]
+
+        return paginator.get_paginated_response(data)
 
 
 # ─────────────────────────────
@@ -548,6 +773,7 @@ class CurrentProgramsAPIView(APIView):
                 program_data = ProgramDataSerializer(program).data
                 program_data['channel_uuid'] = str(channel.uuid)
                 current_programs.append(program_data)
+
 
         return Response(current_programs, status=status.HTTP_200_OK)
 

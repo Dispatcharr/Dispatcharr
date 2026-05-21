@@ -17,6 +17,7 @@ const MemoizedTableRow = React.memo(
     isSelected,
     renderBodyCellRef,
     expandedRowRendererRef,
+    handleRowClickRef,
     getRowStyles,
     tableCellProps,
     enableDragDrop,
@@ -35,11 +36,15 @@ const MemoizedTableRow = React.memo(
         <Box
           key={`tr-${row.id}`}
           className={`tr ${index % 2 == 0 ? 'tr-even' : 'tr-odd'} ${customClassName}`}
+          onMouseDown={(e) => {
+            if (e.shiftKey) e.preventDefault();
+          }}
+          onClick={(e) => handleRowClickRef?.current?.(row.original.id, e)}
           style={{
             display: 'flex',
             width: '100%',
             minWidth: '100%',
-            ...(row.getIsSelected() && {
+            ...(isSelected && {
               backgroundColor: '#163632',
             }),
             ...customRowStyles,
@@ -98,6 +103,7 @@ const CustomTableBody = ({
   tableCellProps,
   enableDragDrop = false,
   selectedTableIdsSet,
+  handleRowClickRef,
 }) => {
   // Store callbacks in refs so memoized rows always access the latest versions
   // without the function references themselves triggering re-renders.
@@ -124,6 +130,7 @@ const CustomTableBody = ({
           }
           renderBodyCellRef={renderBodyCellRef}
           expandedRowRendererRef={expandedRowRendererRef}
+          handleRowClickRef={handleRowClickRef}
           getRowStyles={getRowStyles}
           tableCellProps={tableCellProps}
           enableDragDrop={enableDragDrop}

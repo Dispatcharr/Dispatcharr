@@ -420,8 +420,8 @@ export const formatSeasonEpisode = (season, episode) => {
   return null;
 };
 
-export const deleteSeriesRuleByTvgId = async (tvg_id) => {
-  await API.deleteSeriesRule(tvg_id);
+export const deleteSeriesRuleByTvgId = async (tvg_id, title) => {
+  await API.deleteSeriesRule(tvg_id, title);
 };
 
 export const evaluateSeriesRulesByTvgId = async (tvg_id) => {

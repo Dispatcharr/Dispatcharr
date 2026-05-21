@@ -20,12 +20,25 @@ vi.mock('../../../utils/notificationUtils.js', () => ({
 
 vi.mock('../../../utils/forms/ChannelUtils.js', () => ({
   addChannel: vi.fn(),
+  clearChannelOverrides: vi.fn(),
   createLogo: vi.fn(),
   getChannelFormDefaultValues: vi.fn(),
+  // Stubs return null so the form's `description` prop renders cleanly.
+  getProviderHint: vi.fn(() => null),
+  getFkProviderHint: vi.fn(() => null),
+  getProviderFormValue: vi.fn(() => ''),
   getFormattedValues: vi.fn(),
   handleEpgUpdate: vi.fn(),
+  isFormFieldOverridden: vi.fn(() => false),
   matchChannelEpg: vi.fn(),
+  normalizeFieldValue: vi.fn((field, value) => value),
+  OVERRIDABLE_FIELDS: ['name', 'channel_number'],
+  OVERRIDE_FIELD_LABELS: {
+    name: 'Name',
+    channel_number: 'Channel Number',
+  },
   requeryChannels: vi.fn(),
+  buildOverridePayload: vi.fn(() => null),
 }));
 
 // ── Child component mocks ──────────────────────────────────────────────────────
@@ -232,17 +245,29 @@ vi.mock('@mantine/core', async () => ({
       {children}
     </div>
   ),
-  Switch: ({ label, checked, onChange }) => (
-    <label>
-      <input
-        data-testid="switch-mature"
-        type="checkbox"
-        checked={checked}
-        onChange={onChange}
-      />
-      {label}
-    </label>
-  ),
+  Switch: ({ label, checked, onChange }) => {
+    // The form renders multiple switches (Mature Content, Hide from
+    // Clients, and future flags), so derive a unique testid per label.
+    // The Mature Content switch keeps "switch-mature" so tests that look
+    // it up by that legacy id continue to work.
+    const key =
+      typeof label === 'string' && label.toLowerCase().includes('mature')
+        ? 'switch-mature'
+        : `switch-${String(label || '')
+            .toLowerCase()
+            .replace(/\s+/g, '-')}`;
+    return (
+      <label>
+        <input
+          data-testid={key}
+          type="checkbox"
+          checked={checked}
+          onChange={onChange}
+        />
+        {label}
+      </label>
+    );
+  },
   Text: ({ children, size, c, style }) => (
     <span data-size={size} data-color={c} style={style}>
       {children}
@@ -1014,17 +1039,29 @@ describe('ChannelForm', () => {
       });
     });
 
-    it('still calls onClose when submission throws', async () => {
-      vi.mocked(ChannelUtils.addChannel).mockRejectedValue(
-        new Error('Server error')
-      );
+    it('does NOT close the form when submission throws (preserves user edits)', async () => {
+      // Regression guard: a save failure (validation error from the
+      // backend, network failure, etc.) must not call reset() + onClose()
+      // unconditionally; doing so drops the user's in-progress edits. The
+      // form early-returns on saveFailed and surfaces an error notification
+      // so the user can correct the error and retry without retyping.
+      const error = new Error('Server error');
+      error.body = { detail: 'channel_number must be unique' };
+      vi.mocked(ChannelUtils.addChannel).mockRejectedValue(error);
       setupMocks();
       const onClose = vi.fn();
       render(<ChannelForm {...defaultProps({ onClose })} />);
       fireEvent.click(screen.getByText('Submit'));
       await waitFor(() => {
-        expect(onClose).toHaveBeenCalled();
+        expect(vi.mocked(ChannelUtils.addChannel)).toHaveBeenCalled();
       });
+      expect(onClose).not.toHaveBeenCalled();
+      expect(showNotification).toHaveBeenCalledWith(
+        expect.objectContaining({
+          color: 'red',
+          message: 'channel_number must be unique',
+        })
+      );
     });
   });
 
@@ -1078,6 +1115,72 @@ describe('ChannelForm', () => {
       render(<ChannelForm {...defaultProps()} />);
       const epgInput = screen.getByTestId('text-input-epg_data_id');
       expect(epgInput).toHaveValue('EPG Source 1 - ESPN');
+    });
+  });
+
+  // ── Override reactivity ────────────────────────────────────────────────────
+  //
+  // The "Currently overriding" tooltip and "Clear All Overrides (N)" button
+  // are derived state computed from the form's watched values. The derivation
+  // must recompute when any watched value changes, otherwise the affordance
+  // becomes stale and the user loses both the override count and the clear
+  // action between edits.
+
+  describe('override reactivity', () => {
+    const autoCreatedChannel = () =>
+      makeChannel({ id: 'ch-auto', auto_created: true });
+
+    it('updates "Clear All Overrides" affordance when a watched value diverges from provider', () => {
+      const channel = autoCreatedChannel();
+      // Initial render: no field is overridden, so the Clear All button
+      // must NOT be visible.
+      vi.mocked(ChannelUtils.isFormFieldOverridden).mockReturnValue(false);
+      setupMocks({ channel });
+      const { rerender } = render(
+        <ChannelForm {...defaultProps()} channel={channel} />
+      );
+      expect(screen.queryByText(/Clear All Overrides/)).not.toBeInTheDocument();
+
+      // Simulate the user typing into the name field. The mocked watch()
+      // now returns a different name, AND isFormFieldOverridden now
+      // reports the name field as overridden. The derived state must
+      // recompute and surface the Clear All affordance.
+      vi.mocked(ChannelUtils.isFormFieldOverridden).mockImplementation(
+        (_ch, field) => field === 'name'
+      );
+      setupMocks({
+        channel,
+        formOverrides: { watchValues: { name: 'My Override' } },
+      });
+      rerender(<ChannelForm {...defaultProps()} channel={channel} />);
+
+      expect(screen.getByText(/Clear All Overrides \(1\)/)).toBeInTheDocument();
+    });
+
+    it('hides "Clear All Overrides" when the last divergent field reverts to provider', () => {
+      const channel = autoCreatedChannel();
+      vi.mocked(ChannelUtils.isFormFieldOverridden).mockImplementation(
+        (_ch, field) => field === 'name'
+      );
+      setupMocks({
+        channel,
+        formOverrides: { watchValues: { name: 'My Override' } },
+      });
+      const { rerender } = render(
+        <ChannelForm {...defaultProps()} channel={channel} />
+      );
+      expect(screen.getByText(/Clear All Overrides \(1\)/)).toBeInTheDocument();
+
+      // User types the provider value back into the field. No fields are
+      // overridden anymore, so the affordance must disappear.
+      vi.mocked(ChannelUtils.isFormFieldOverridden).mockReturnValue(false);
+      setupMocks({
+        channel,
+        formOverrides: { watchValues: { name: 'Test Channel' } },
+      });
+      rerender(<ChannelForm {...defaultProps()} channel={channel} />);
+
+      expect(screen.queryByText(/Clear All Overrides/)).not.toBeInTheDocument();
     });
   });
 });
