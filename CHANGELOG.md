@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **About modal.** A `?` button in the sidebar footer opens an About dialog showing the current version, links to Documentation, Discord, GitHub, and Open Collective, a contributors acknowledgment, and a memorial note for Jesse Mann. The button is visible in both expanded and collapsed sidebar states.
 - **Comskip mode setting.** DVR Settings now includes a "Comskip mode" option:
   - **Cut** (default): FFmpeg permanently removes commercial segments from the recording file in place. The EDL file is deleted after a successful cut.
   - **Mark**: comskip analysis runs as normal but the recording file is left untouched. The EDL file is kept alongside the recording so players that support EDL-based commercial skipping (e.g. Kodi) can use it. The recording's `custom_properties` record the EDL filename, commercial count, and mode so the UI can surface this.
@@ -47,6 +48,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Plain clicks on action buttons, checkboxes, inputs, links, and menus are unaffected. The expand chevron uses `stopPropagation` so expanding a row does not also trigger selection.
 
 ### Changed
+
+- **Custom SVG icons extracted to `icons.jsx`.** `DiscordIcon` and `GitHubIcon` were moved from `PluginDetailPanel.jsx` into a new shared `frontend/src/components/icons.jsx` module so they can be reused across components without cross-importing from an unrelated file.
 
 - **Comskip `.ini` overhauled.** The shipped `docker/comskip.ini` was replaced with a fully documented configuration covering all tunable sections: Main Settings, Output, Commercial Break Timing, Black Frame Detection, Logo Detection, Silence Detection, and Live TV. Key defaults: `detect_method=127` (all seven detection methods, up from the comskip default of 107), `min_commercialbreak=25` (slightly stricter floor for US broadcast TV), `output_default=0` (suppresses the `.txt` stats file comskip writes by default), `edl_skip_field=3` (Kodi commercial-break action code). All values include inline source references and plain-language explanations.
 - **Comskip enable switch label updated.** The DVR settings switch was relabeled from "Enable Comskip (remove commercials after recording)" to "Enable Comskip (commercial detection after recording)" to remain accurate when mark mode is selected.
