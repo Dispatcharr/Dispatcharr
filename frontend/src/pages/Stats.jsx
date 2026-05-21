@@ -239,11 +239,7 @@ const StatsPage = () => {
     }
   }, [refreshInterval, fetchChannelStats, fetchVODStats]);
 
-  // Fetch initial stats on component mount (for immediate data when navigating to page)
-  useEffect(() => {
-    fetchChannelStats();
-    fetchVODStats();
-  }, [fetchChannelStats, fetchVODStats]);
+  // Initial fetch is handled by the polling useEffect above (it fetches immediately on mount)
 
   useEffect(() => {
     console.log('Processing channel stats:', channelStats);
