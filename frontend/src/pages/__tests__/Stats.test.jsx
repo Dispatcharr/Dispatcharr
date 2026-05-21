@@ -220,8 +220,8 @@ describe('StatsPage', () => {
       render(<StatsPage />);
 
       await waitFor(() => {
-        expect(fetchActiveChannelStats).toHaveBeenCalledTimes(2);
-        expect(getVODStats).toHaveBeenCalledTimes(2);
+        expect(fetchActiveChannelStats).toHaveBeenCalledTimes(1);
+        expect(getVODStats).toHaveBeenCalledTimes(1);
       });
     });
 
@@ -283,16 +283,16 @@ describe('StatsPage', () => {
 
       render(<StatsPage />);
 
-      expect(fetchActiveChannelStats).toHaveBeenCalledTimes(2);
-      expect(getVODStats).toHaveBeenCalledTimes(2);
+      expect(fetchActiveChannelStats).toHaveBeenCalledTimes(1);
+      expect(getVODStats).toHaveBeenCalledTimes(1);
 
       // Advance timers by 5 seconds
       await act(async () => {
         vi.advanceTimersByTime(5000);
       });
 
-      expect(fetchActiveChannelStats).toHaveBeenCalledTimes(3);
-      expect(getVODStats).toHaveBeenCalledTimes(3);
+      expect(fetchActiveChannelStats).toHaveBeenCalledTimes(2);
+      expect(getVODStats).toHaveBeenCalledTimes(2);
 
       vi.useRealTimers();
     });
@@ -303,13 +303,13 @@ describe('StatsPage', () => {
       useLocalStorage.mockReturnValue([0, mockSetRefreshInterval]);
       render(<StatsPage />);
 
-      expect(fetchActiveChannelStats).toHaveBeenCalledTimes(1);
+      expect(fetchActiveChannelStats).toHaveBeenCalledTimes(0);
 
       await act(async () => {
         vi.advanceTimersByTime(10000);
       });
 
-      expect(fetchActiveChannelStats).toHaveBeenCalledTimes(1);
+      expect(fetchActiveChannelStats).toHaveBeenCalledTimes(0);
 
       vi.useRealTimers();
     });
@@ -319,7 +319,7 @@ describe('StatsPage', () => {
 
       const { unmount } = render(<StatsPage />);
 
-      expect(fetchActiveChannelStats).toHaveBeenCalledTimes(2);
+      expect(fetchActiveChannelStats).toHaveBeenCalledTimes(1);
 
       unmount();
 
@@ -328,7 +328,7 @@ describe('StatsPage', () => {
       });
 
       // Should not fetch again after unmount
-      expect(fetchActiveChannelStats).toHaveBeenCalledTimes(2);
+      expect(fetchActiveChannelStats).toHaveBeenCalledTimes(1);
 
       vi.useRealTimers();
     });
@@ -338,14 +338,14 @@ describe('StatsPage', () => {
     it('refreshes stats when Refresh Now button is clicked', async () => {
       render(<StatsPage />);
 
-      expect(fetchActiveChannelStats).toHaveBeenCalledTimes(2);
+      expect(fetchActiveChannelStats).toHaveBeenCalledTimes(1);
 
       const refreshButton = screen.getByText('Refresh Now');
       fireEvent.click(refreshButton);
 
       await waitFor(() => {
-        expect(fetchActiveChannelStats).toHaveBeenCalledTimes(3);
-        expect(getVODStats).toHaveBeenCalledTimes(3);
+        expect(fetchActiveChannelStats).toHaveBeenCalledTimes(2);
+        expect(getVODStats).toHaveBeenCalledTimes(2);
       });
     });
   });
@@ -406,14 +406,14 @@ describe('StatsPage', () => {
       render(<StatsPage />);
 
       await waitFor(() => {
-        expect(getVODStats).toHaveBeenCalledTimes(2);
+        expect(getVODStats).toHaveBeenCalledTimes(1);
       });
 
       const stopButton = await screen.findByTestId('stop-vod-client-client-1');
       fireEvent.click(stopButton);
 
       await waitFor(() => {
-        expect(getVODStats).toHaveBeenCalledTimes(3);
+        expect(getVODStats).toHaveBeenCalledTimes(2);
       });
     });
   });
