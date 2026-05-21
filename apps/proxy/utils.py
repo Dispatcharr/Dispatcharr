@@ -98,8 +98,7 @@ def get_user_active_connections(user_id):
                 channel_id = parts[2]
                 client_id = parts[4]
 
-                client_user_id = redis_client.hget(key, 'user_id')
-                connected_at = redis_client.hget(key, 'connected_at')
+                client_user_id, connected_at = redis_client.hmget(key, 'user_id', 'connected_at')
 
                 logger.debug(f"[stream limits] user_id = {user_id}")
                 logger.debug(f"[stream limits] channel_id = {channel_id}")
@@ -124,9 +123,9 @@ def get_user_active_connections(user_id):
             if len(parts) >= 2:
                 client_id = parts[1]
 
-                client_user_id = redis_client.hget(key, 'user_id')
-                connected_at = redis_client.hget(key, 'created_at')
-                content_uuid = redis_client.hget(key, 'content_uuid')
+                client_user_id, connected_at, content_uuid = redis_client.hmget(
+                    key, 'user_id', 'created_at', 'content_uuid'
+                )
 
                 logger.debug(f"[stream limits] user_id = {user_id}")
                 logger.debug(f"[stream limits] client_id = {client_id}")

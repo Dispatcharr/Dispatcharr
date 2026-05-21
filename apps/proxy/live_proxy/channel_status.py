@@ -463,13 +463,18 @@ class ChannelStatus:
 
                     # Fetch only the fields we need in one round-trip (hmget returns a list
                     # in the same order as the requested keys; values are None if absent)
-                    ua, ip, connected_at, user_id = proxy_server.redis_client.hmget(
-                        client_key, 'user_agent', 'ip_address', 'connected_at', 'user_id'
+                    ua, ip, connected_at, user_id, output_format, raw_profile_id = (
+                        proxy_server.redis_client.hmget(
+                            client_key,
+                            'user_agent', 'ip_address', 'connected_at', 'user_id',
+                            'output_format', 'output_profile_id',
+                        )
                     )
 
                     client_info = {
                         'client_id': client_id,
                         'user_agent': ua,
+                        'output_format': output_format or 'mpegts',
                     }
 
                     if ip:
@@ -481,10 +486,6 @@ class ChannelStatus:
                     if user_id:
                         client_info['user_id'] = user_id
 
-                    output_format = proxy_server.redis_client.hget(client_key, 'output_format')
-                    client_info['output_format'] = output_format or 'mpegts'
-
-                    raw_profile_id = proxy_server.redis_client.hget(client_key, 'output_profile_id')
                     if raw_profile_id and raw_profile_id not in ('None', '0', ''):
                         client_info['output_profile_id'] = int(raw_profile_id)
                     else:
