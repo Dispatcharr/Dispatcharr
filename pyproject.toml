@@ -37,7 +37,6 @@ dependencies = [
     "django-celery-beat>=2.9.0",
     "lxml==6.1.0",
     "packaging",
-    "python-gnupg",
 ]
 
 [build-system]
