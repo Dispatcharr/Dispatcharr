@@ -91,37 +91,45 @@ class HTTPStreamReader:
 
             # Stream chunks to pipe
             chunk_count = 0
-            for chunk in self.response.iter_content(chunk_size=self.chunk_size):
-                if not self.running or self.response is None:
-                    break
-
-                if chunk:
-                    # Write the chunk in a non-blocking loop. The pipe write end is
-                    # set O_NONBLOCK in start(), so os.write() raises BlockingIOError
-                    # instead of stalling the OS thread. We use select.select on the
-                    # write fd (gevent-patched - yields to hub) to wait for space,
-                    # then retry. Partial writes are handled by advancing the offset.
-                    offset = 0
-                    write_error = False
-                    while offset < len(chunk) and self.running:
-                        try:
-                            n = os.write(self.pipe_write, chunk[offset:])
-                            offset += n
-                        except BlockingIOError:
-                            _, writable, _ = _select.select([], [self.pipe_write], [], 1.0)
-                            if not writable and not self.running:
-                                write_error = True
-                                break
-                        except OSError as e:
-                            logger.error(f"Pipe write error: {e}")
-                            write_error = True
-                            break
-                    if write_error:
+            try:
+                for chunk in self.response.iter_content(chunk_size=self.chunk_size):
+                    if not self.running:
                         break
 
-                    chunk_count += 1
-                    if chunk_count % 1000 == 0:
-                        logger.debug(f"HTTP reader streamed {chunk_count} chunks")
+                    if chunk:
+                        # Write the chunk in a non-blocking loop. The pipe write end is
+                        # set O_NONBLOCK in start(), so os.write() raises BlockingIOError
+                        # instead of stalling the OS thread. We use select.select on the
+                        # write fd (gevent-patched - yields to hub) to wait for space,
+                        # then retry. Partial writes are handled by advancing the offset.
+                        offset = 0
+                        write_error = False
+                        while offset < len(chunk) and self.running:
+                            try:
+                                n = os.write(self.pipe_write, chunk[offset:])
+                                offset += n
+                            except BlockingIOError:
+                                _, writable, _ = _select.select([], [self.pipe_write], [], 1.0)
+                                if not writable and not self.running:
+                                    write_error = True
+                                    break
+                            except OSError as e:
+                                logger.error(f"Pipe write error: {e}")
+                                write_error = True
+                                break
+                        if write_error:
+                            break
+
+                        chunk_count += 1
+                        if chunk_count % 1000 == 0:
+                            logger.debug(f"HTTP reader streamed {chunk_count} chunks")
+
+            except (AttributeError, OSError) as e:
+                # Catch race condition when stop() closes response while iterating
+                if self.running:
+                    logger.error(f"HTTP reader stream error: {e}")
+                    self.error_occurred = True
+                # else: Normal shutdown, ignore the error
 
             logger.info("HTTP stream ended")
 
