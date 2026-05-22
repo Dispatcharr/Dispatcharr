@@ -1,8 +1,7 @@
 #!/bin/bash
 
-# CRITICAL: Install missing dependencies FIRST, before set -e
-# This must run before ANY other command that might trigger Django imports
-pip install --quiet django-redis 2>/dev/null || true
+# CRITICAL: Install missing dependencies FIRST using uv (not pip)
+/bin/uv pip install --python /dispatcharrpy/bin/python django-redis 2>/dev/null || true
 
 set -e  # Exit immediately if a command exits with a non-zero status
 
