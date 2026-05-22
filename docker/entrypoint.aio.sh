@@ -1,7 +1,6 @@
 #!/bin/bash
 
-# CRITICAL: Install missing dependencies BEFORE any Django commands
-echo "🔍 Installing missing dependencies..."
+# CRITICAL: Install missing dependencies FIRST
 pip install --quiet django-redis 2>/dev/null || true
 
 # Run Django migrations and collect static files

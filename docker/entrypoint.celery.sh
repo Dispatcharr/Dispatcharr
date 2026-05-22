@@ -1,9 +1,9 @@
 #!/bin/bash
-set -e
 
-# CRITICAL: Install missing dependencies BEFORE any Django commands
-echo "🔍 Installing missing dependencies..."
+# CRITICAL: Install missing dependencies FIRST
 pip install --quiet django-redis 2>/dev/null || true
+
+set -e
 
 cd /app
 source /dispatcharrpy/bin/activate

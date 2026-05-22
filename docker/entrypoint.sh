@@ -1,10 +1,10 @@
 #!/bin/bash
 
-set -e  # Exit immediately if a command exits with a non-zero status
-
-# CRITICAL: Install missing dependencies BEFORE any Django commands
-echo "🔍 Installing missing dependencies..."
+# CRITICAL: Install missing dependencies FIRST, before set -e
+# This must run before ANY other command that might trigger Django imports
 pip install --quiet django-redis 2>/dev/null || true
+
+set -e  # Exit immediately if a command exits with a non-zero status
 
 # Guard flag to prevent cleanup running twice (trap + explicit call)
 _cleanup_done=false
