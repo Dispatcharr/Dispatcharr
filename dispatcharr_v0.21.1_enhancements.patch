@@ -1749,3 +1749,61 @@ class Migration(migrations.Migration):
                  reserved, current_count = self._check_and_reserve_profile_slot(
 
 ################################################################################
+
+################################################################################
+# FEATURE 8: HTTP Proxy für M3U-Download und XC API
+################################################################################
+#
+# Problem: Der HTTP Proxy wurde nur fürs Streaming verwendet.
+# M3U-Downloads und XC API Authentifizierung ignorierten den Proxy.
+#
+# Betroffen:
+#   1. M3U Download (STD accounts): requests.get(account.server_url)
+#   2. XC API Session: Client.__init__() → session.proxies
+#   3. Alle XCClient Instanziierungen in tasks.py (5 Stellen)
+#
+# DATEI 1: apps/m3u/tasks.py → M3U Download
+# GREP: grep -n "Using HTTP proxy.*for M3U download" apps/m3u/tasks.py
+#
+# DATEI 2: core/xtream_codes.py → Client.__init__
+# GREP: grep -n "XC Client using HTTP proxy" core/xtream_codes.py
+#
+# DATEI 3: apps/m3u/tasks.py → alle XCClient() Aufrufe
+# GREP: grep -n "account.proxy or None" apps/m3u/tasks.py
+#       → muss 5 Treffer zurückgeben
+
+--- a/apps/m3u/tasks.py
++++ b/apps/m3u/tasks.py
+@@ M3U Download - requests.get @@
++                # Build proxy config if account has a proxy configured
++                proxies = None
++                if account.proxy:
++                    proxies = {'http': account.proxy, 'https': account.proxy}
++                    logger.info(f"Using HTTP proxy {account.proxy} for M3U download of account {account.name}")
++
+                 response = requests.get(
+                     account.server_url, headers=headers, stream=True,
+                     timeout=(30, 60),
++                    proxies=proxies,
+                 )
+
+@@ Alle XCClient() Aufrufe - proxy Parameter hinzufügen @@
+-        with XCClient(account.server_url, account.username, account.password, account.get_user_agent()) as xc_client:
++        with XCClient(account.server_url, account.username, account.password, account.get_user_agent(), account.proxy or None) as xc_client:
+# (5x in tasks.py - alle XCClient Instanziierungen)
+
+--- a/core/xtream_codes.py
++++ b/core/xtream_codes.py
+@@ Client.__init__ - proxy Parameter @@
+-    def __init__(self, server_url, username, password, user_agent=None):
++    def __init__(self, server_url, username, password, user_agent=None, proxy=None):
+         ...
+         self.session = requests.Session()
+         self.session.headers.update({'User-Agent': user_agent_string})
++
++        # Configure proxy if provided
++        if proxy:
++            self.session.proxies = {'http': proxy, 'https': proxy}
++            logger.info(f"XC Client using HTTP proxy: {proxy}")
+
+################################################################################

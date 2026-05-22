@@ -6,13 +6,22 @@ import {
   checkSetting,
   updateSetting,
 } from '../../../utils/pages/SettingsUtils.js';
-import { Alert, Button, Flex, Stack, Text, TextInput } from '@mantine/core';
+import { Alert, Button, Flex, Stack, TagsInput, Text } from '@mantine/core';
 import ConfirmationDialog from '../../ConfirmationDialog.jsx';
 import {
   getNetworkAccessFormInitialValues,
   getNetworkAccessFormValidation,
   getNetworkAccessDefaults,
 } from '../../../utils/forms/settings/NetworkAccessFormUtils.js';
+
+const toTags = (str) =>
+  str
+    ? str
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean)
+    : [];
+const toStr = (tags) => (tags || []).join(',');
 
 const NetworkAccessForm = React.memo(({ active }) => {
   const settings = useSettingsStore((s) => s.settings);
@@ -43,14 +52,12 @@ const NetworkAccessForm = React.memo(({ active }) => {
 
   useEffect(() => {
     const networkAccessSettings = settings['network_access']?.value || {};
-    // M3U/EPG endpoints default to local networks only
-    const m3uEpgDefaults =
-      '127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,::1/128,fc00::/7,fe80::/10';
+    const defaults = getNetworkAccessDefaults();
     networkAccessForm.setValues(
       Object.keys(NETWORK_ACCESS_OPTIONS).reduce((acc, key) => {
-        const defaultValue =
-          key === 'M3U_EPG' ? m3uEpgDefaults : '0.0.0.0/0,::/0';
-        acc[key] = networkAccessSettings[key] || defaultValue;
+        acc[key] = networkAccessSettings[key]
+          ? toTags(networkAccessSettings[key])
+          : defaults[key];
         return acc;
       }, {})
     );
@@ -65,23 +72,27 @@ const NetworkAccessForm = React.memo(({ active }) => {
     setNetworkAccessError(null);
     setRestoredDefaults([]);
 
-    // Check for blank fields and substitute defaults before saving
     const currentValues = networkAccessForm.getValues();
     const defaults = getNetworkAccessDefaults();
     const restoredLabels = [];
-    const submitValues = { ...currentValues };
+    const tagValues = { ...currentValues };
 
     Object.keys(currentValues).forEach((key) => {
-      if (!currentValues[key] || currentValues[key].trim() === '') {
-        submitValues[key] = defaults[key];
+      if (!currentValues[key] || currentValues[key].length === 0) {
+        tagValues[key] = defaults[key];
         restoredLabels.push(NETWORK_ACCESS_OPTIONS[key]?.label || key);
       }
     });
 
     if (restoredLabels.length > 0) {
-      networkAccessForm.setValues(submitValues);
+      networkAccessForm.setValues(tagValues);
       setRestoredDefaults(restoredLabels);
     }
+
+    // Backend expects comma-separated strings
+    const submitValues = Object.fromEntries(
+      Object.entries(tagValues).map(([k, v]) => [k, toStr(v)])
+    );
 
     pendingSaveValuesRef.current = submitValues;
 
@@ -112,7 +123,13 @@ const NetworkAccessForm = React.memo(({ active }) => {
     setSaved(false);
     setSaving(true);
     const values =
-      pendingSaveValuesRef.current || networkAccessForm.getValues();
+      pendingSaveValuesRef.current ||
+      Object.fromEntries(
+        Object.entries(networkAccessForm.getValues()).map(([k, v]) => [
+          k,
+          toStr(v),
+        ])
+      );
     try {
       await updateSetting({
         ...settings['network_access'],
@@ -136,11 +153,7 @@ const NetworkAccessForm = React.memo(({ active }) => {
       <form onSubmit={networkAccessForm.onSubmit(onNetworkAccessSubmit)}>
         <Stack gap="sm">
           {saved && (
-            <Alert
-              variant="light"
-              color="green"
-              title="Saved Successfully"
-            ></Alert>
+            <Alert variant="light" color="green" title="Saved Successfully" />
           )}
           {restoredDefaults.length > 0 && (
             <Alert variant="light" color="yellow" title="Defaults Restored">
@@ -149,35 +162,25 @@ const NetworkAccessForm = React.memo(({ active }) => {
             </Alert>
           )}
           {networkAccessError && (
-            <Alert
-              variant="light"
-              color="red"
-              title={networkAccessError}
-            ></Alert>
+            <Alert variant="light" color="red" title={networkAccessError} />
           )}
 
           {Object.entries(NETWORK_ACCESS_OPTIONS).map(([key, config]) => (
-            <TextInput
+            <TagsInput
               label={config.label}
+              description={config.description}
+              placeholder="e.g. 192.168.1.1 or 192.168.1.0/24"
+              splitChars={[',', ' ']}
               {...networkAccessForm.getInputProps(key)}
               key={networkAccessForm.key(key)}
-              description={config.description}
             />
           ))}
 
           <Flex mih={50} gap="xs" justify="space-between" align="flex-end">
-            <Button
-              variant="subtle"
-              color="gray"
-              onClick={resetNetworkAccessToDefaults}
-            >
+            <Button variant="subtle" color="gray" onClick={resetNetworkAccessToDefaults}>
               Reset to Defaults
             </Button>
-            <Button
-              type="submit"
-              disabled={networkAccessForm.submitting}
-              variant="default"
-            >
+            <Button type="submit" disabled={networkAccessForm.submitting} variant="default">
               Save
             </Button>
           </Flex>
@@ -188,7 +191,7 @@ const NetworkAccessForm = React.memo(({ active }) => {
         opened={networkAccessConfirmOpen}
         onClose={() => setNetworkAccessConfirmOpen(false)}
         onConfirm={saveNetworkAccess}
-        title={`Confirm Network Access Blocks`}
+        title="Confirm Network Access Blocks"
         loading={saving}
         message={
           <>
@@ -197,10 +200,9 @@ const NetworkAccessForm = React.memo(({ active }) => {
               included in the allowed networks for the web UI. Are you sure you
               want to proceed?
             </Text>
-
             <ul>
               {netNetworkAccessConfirmCIDRs.map((cidr) => (
-                <li>{cidr}</li>
+                <li key={cidr}>{cidr}</li>
               ))}
             </ul>
           </>

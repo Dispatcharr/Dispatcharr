@@ -1,3 +1,5 @@
+# Generated migration for adding proxy field to M3UAccount
+
 from django.db import migrations
 
 

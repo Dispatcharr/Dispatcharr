@@ -16,6 +16,7 @@ import { Box, Button, Stack, Alert, Group } from '@mantine/core';
 import API from './api';
 import useSettingsStore from './store/settings';
 import useAuthStore from './store/auth';
+import useUsersStore from './store/users';
 
 export const WebsocketContext = createContext([false, () => {}, null]);
 
@@ -211,13 +212,18 @@ export const WebsocketProvider = ({ children }) => {
                 scheduleRecordingFetch();
               } else if (status === 'skipped') {
                 const reasonMap = {
-                  no_commercials_detected: 'No commercials were detected in this recording',
-                  no_commercials: 'No commercials were detected in this recording',
+                  no_commercials_detected:
+                    'No commercials were detected in this recording',
+                  no_commercials:
+                    'No commercials were detected in this recording',
                 };
                 notifications.update({
                   id,
                   title: 'No commercials to remove',
-                  message: reasonMap[parsedEvent.data.reason] || parsedEvent.data.reason || '',
+                  message:
+                    reasonMap[parsedEvent.data.reason] ||
+                    parsedEvent.data.reason ||
+                    '',
                   color: 'teal',
                   loading: false,
                   autoClose: 3000,
@@ -310,6 +316,36 @@ export const WebsocketProvider = ({ children }) => {
             case 'channel_stats':
               setChannelStats(JSON.parse(parsedEvent.data.stats));
               break;
+
+            case 'vod_stats':
+              setVodStats(JSON.parse(parsedEvent.data.stats));
+              break;
+
+            case 'vod_started':
+            case 'vod_stopped': {
+              const { content_name, client_ip, user_id } = parsedEvent.data;
+              const isStart = parsedEvent.data.type === 'vod_started';
+              let identity = client_ip || 'unknown';
+              if (user_id && user_id !== '0') {
+                const allUsers = useUsersStore.getState().users;
+                const matched = allUsers.find(
+                  (u) => String(u.id) === String(user_id)
+                );
+                if (matched?.username)
+                  identity = `${matched.username} (${client_ip})`;
+              }
+              notifications.show({
+                title: isStart ? 'VOD started' : 'VOD ended',
+                message: (
+                  <>
+                    <div>{content_name}</div>
+                    <div style={{ marginTop: 2 }}>{identity}</div>
+                  </>
+                ),
+                color: 'blue.5',
+              });
+              break;
+            }
 
             case 'epg_channels':
               notifications.show({
@@ -559,7 +595,9 @@ export const WebsocketProvider = ({ children }) => {
 
             case 'recording_cancelled':
               notifications.show({
-                title: parsedEvent.data.was_in_progress ? 'Recording cancelled' : 'Recording deleted',
+                title: parsedEvent.data.was_in_progress
+                  ? 'Recording cancelled'
+                  : 'Recording deleted',
                 message: parsedEvent.data.was_in_progress
                   ? 'Recording cancelled and content removed.'
                   : 'Recording deleted.',
@@ -568,7 +606,9 @@ export const WebsocketProvider = ({ children }) => {
               // Surgical removal by ID avoids a full fetchRecordings() re-render.
               // Fall back to a full refresh if the ID is missing (e.g. older server).
               if (parsedEvent.data.recording_id != null) {
-                useChannelsStore.getState().removeRecording(parsedEvent.data.recording_id);
+                useChannelsStore
+                  .getState()
+                  .removeRecording(parsedEvent.data.recording_id);
               } else {
                 scheduleRecordingFetch();
               }
@@ -990,6 +1030,7 @@ export const WebsocketProvider = ({ children }) => {
   }, [connectWebSocket, clearReconnectTimer, isAuthenticated, accessToken]);
 
   const setChannelStats = useChannelsStore((s) => s.setChannelStats);
+  const setVodStats = useChannelsStore((s) => s.setVodStats);
   const fetchPlaylists = usePlaylistsStore((s) => s.fetchPlaylists);
   const setRefreshProgress = usePlaylistsStore((s) => s.setRefreshProgress);
   const setProfilePreview = usePlaylistsStore((s) => s.setProfilePreview);

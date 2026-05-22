@@ -67,4 +67,8 @@ NICE_LEVEL="${CELERY_NICE_LEVEL:-5}"
 if [ "$NICE_LEVEL" -lt 0 ] 2>/dev/null; then
     echo "Warning: CELERY_NICE_LEVEL=$NICE_LEVEL is negative, requires SYS_NICE capability"
 fi
-nice -n "$NICE_LEVEL" celery -A dispatcharr worker -l info --autoscale=6,1
+
+# DVR worker: thread pool for the long-running, I/O-bound run_recording task.
+nice -n "$NICE_LEVEL" celery -A dispatcharr worker -Q dvr -n dvr@%h --pool=threads --concurrency=20 -l info &
+# Default prefork worker: every queue except `dvr`.
+nice -n "$NICE_LEVEL" celery -A dispatcharr worker -Q celery -n default@%h --autoscale=6,1 -l info

@@ -8,7 +8,7 @@ logger = logging.getLogger(__name__)
 class Client:
     """Xtream Codes API Client with robust error handling"""
 
-    def __init__(self, server_url, username, password, user_agent=None):
+    def __init__(self, server_url, username, password, user_agent=None, proxy=None):
         self.server_url = self._normalize_url(server_url)
         self.username = username
         self.password = password
@@ -30,6 +30,11 @@ class Client:
         self.session = requests.Session()
         self.session.headers.update({'User-Agent': user_agent_string})
 
+        # Configure proxy if provided
+        if proxy:
+            self.session.proxies = {'http': proxy, 'https': proxy}
+            logger.info(f"XC Client using HTTP proxy: {proxy}")
+
         # Configure connection pooling
         adapter = requests.adapters.HTTPAdapter(
             pool_connections=1,
@@ -43,18 +48,22 @@ class Client:
         self.server_info = None
 
     def _normalize_url(self, url):
-        """Normalize server URL by removing trailing slashes and paths"""
+        """Normalize server URL: strip XC API endpoints and query params, preserve base path."""
         if not url:
             raise ValueError("Server URL cannot be empty")
 
-        url = url.rstrip('/')
-        # Remove any path after domain - we'll construct proper API URLs
-        # Split by protocol first to preserve it
-        if '://' in url:
-            protocol, rest = url.split('://', 1)
-            domain = rest.split('/', 1)[0]
-            return f"{protocol}://{domain}"
-        return url
+        from urllib.parse import urlparse, urlunparse
+
+        parsed = urlparse(url.strip())
+        path = parsed.path.rstrip('/')
+
+        # XC API endpoints are always .php files; legitimate base paths never are.
+        # Stripping the trailing segment when it ends in .php handles any pasted API URL.
+        last_segment = path.rsplit('/', 1)[-1]
+        if last_segment.endswith('.php'):
+            path = path[:-(len(last_segment) + 1)] if '/' in path else ''
+
+        return urlunparse((parsed.scheme, parsed.netloc, path, '', '', ''))
 
     def _make_request(self, endpoint, params=None):
         """Make request with detailed error handling"""

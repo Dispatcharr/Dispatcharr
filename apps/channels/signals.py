@@ -1,6 +1,6 @@
 # apps/channels/signals.py
 
-from django.db.models.signals import m2m_changed, pre_save, post_save, post_delete
+from django.db.models.signals import m2m_changed, pre_save, post_save, post_delete, pre_delete
 from django.dispatch import receiver
 from django.utils.timezone import now, is_aware, make_aware
 from celery.result import AsyncResult
@@ -59,6 +59,137 @@ def generate_custom_stream_hash(sender, instance, created, **kwargs):
         instance.stream_hash = hashlib.sha256(unique_string.encode()).hexdigest()
         # Use update to avoid triggering signals again
         Stream.objects.filter(id=instance.id).update(stream_hash=instance.stream_hash)
+
+@receiver(pre_delete, sender=Channel)
+def stop_proxy_session_before_channel_delete(sender, instance, **kwargs):
+    """
+    When a Channel is deleted, stop any active TS proxy session for it first.
+
+    Without this, the proxy's Redis state (live:channel:{uuid}:*) survives
+    the Channel row and the connected clients' "Stop" button hits
+    `ChannelService.stop_channel(uuid)`, which calls `Channel.objects.get(uuid=...)`
+    and crashes with DoesNotExist (reported as 'Channel not found' in the UI).
+    Users then cannot close the stream; source-side connection limits stay
+    consumed. Covers manual deletes, bulk deletes, and sync-driven deletes
+    via the same signal path.
+    """
+    try:
+        from apps.proxy.live_proxy.services.channel_service import ChannelService
+
+        channel_uuid = str(instance.uuid) if instance.uuid else None
+        if not channel_uuid:
+            return
+        # Best-effort: if the channel has no active session the service
+        # returns a benign 'Channel not found' result, which is ignored.
+        ChannelService.stop_channel(channel_uuid)
+    except Exception as e:
+        # Never block a channel delete on proxy cleanup failure. Log and
+        # continue so at least the DB row is removed.
+        logger.warning(
+            "Failed to stop proxy session before deleting channel %s: %s",
+            getattr(instance, "id", "<unknown>"),
+            e,
+        )
+
+
+@receiver(post_save, sender=Channel)
+def assign_compact_number_on_unhide(sender, instance, created, **kwargs):
+    """When a channel transitions from hidden to visible under compact
+    numbering, immediately assign the next available number from its
+    group's range. Without this, an unhide would leave the channel at
+    NULL until the next M3U refresh, which is too long a delay for what
+    is meant to feel like an instant action.
+
+    Bails out for the common cases where assignment is not appropriate:
+    a fresh channel (newly created), a channel that already has a
+    number, a hidden channel, a manual channel, or a channel whose group
+    is not in compact mode. The assignment helper does the same checks
+    defensively, but bailing here keeps the signal out of the helper
+    code path on every channel save.
+    """
+    if created:
+        return
+    # Skip the signal when update_fields proves hidden_from_output was not
+    # touched. Sync sets update_fields on every save, so this keeps the
+    # signal off the sync hot path.
+    update_fields = kwargs.get("update_fields")
+    if update_fields is not None and "hidden_from_output" not in update_fields:
+        return
+    if instance.hidden_from_output:
+        return
+    if instance.channel_number is not None:
+        return
+    if not instance.auto_created or not instance.auto_created_by_id:
+        return
+    try:
+        from .compact_numbering import assign_compact_numbers_for_channels
+
+        assign_compact_numbers_for_channels([instance.id])
+        # The helper writes via queryset .update() which skips
+        # in-memory state. Reload so a same-request serializer
+        # response carries the assigned number, not stale None.
+        try:
+            instance.refresh_from_db(fields=["channel_number"])
+        except Exception:
+            # Refresh failure (race with delete) is non-fatal.
+            pass
+    except Exception as e:
+        # Do not propagate. The save succeeded; the assignment is
+        # recoverable on next sync or manual repack.
+        logger.warning(
+            "Compact unhide assignment failed for channel %s: %s",
+            instance.id,
+            e,
+        )
+
+
+@receiver(post_save, sender=Channel)
+def release_compact_number_on_hide(sender, instance, created, **kwargs):
+    """When a channel transitions from visible to hidden under compact
+    numbering, immediately release its channel_number slot. Without
+    this, the slot stays occupied until the next sync's repack pass,
+    so the user sees their hidden channels still consuming numbers in
+    the table for an indeterminate window. Mirror image of
+    `assign_compact_number_on_unhide` above.
+
+    Bails out for the common cases where release is not appropriate:
+    a fresh channel (newly created), a non-hidden channel, a channel
+    that has no number to release, a manual channel, a channel without
+    a known auto_created_by, or a channel whose group is not in
+    compact mode.
+    """
+    if created:
+        return
+    update_fields = kwargs.get("update_fields")
+    if update_fields is not None and "hidden_from_output" not in update_fields:
+        return
+    if not instance.hidden_from_output:
+        return
+    if instance.channel_number is None:
+        return
+    if not instance.auto_created or not instance.auto_created_by_id:
+        return
+    try:
+        from .compact_numbering import (
+            get_group_relation_for_channel,
+            is_compact_group,
+        )
+
+        relation = get_group_relation_for_channel(instance)
+        if not relation or not is_compact_group(relation):
+            return
+    except Exception:
+        return
+    # Release the slot. Queryset .update() bypasses the post_save signal
+    # chain that this handler is itself running inside.
+    Channel.objects.filter(id=instance.id).update(channel_number=None)
+    # Refresh in-memory instance so the same-request serializer
+    # response surfaces channel_number=None instead of stale value.
+    try:
+        instance.refresh_from_db(fields=["channel_number"])
+    except Exception:
+        pass
+
 
 @receiver(post_save, sender=Channel)
 def refresh_epg_programs(sender, instance, created, **kwargs):

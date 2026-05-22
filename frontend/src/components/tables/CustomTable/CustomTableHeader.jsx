@@ -117,9 +117,9 @@ const CustomTableHeader = ({
                         }),
                       }
                     : {
-                        flex: `0 0 ${header.getSize ? header.getSize() : 150}px`,
-                        width: `${header.getSize ? header.getSize() : 150}px`,
-                        maxWidth: `${header.getSize ? header.getSize() : 150}px`,
+                        flex: `0 0 var(--header-${header.id}-size)`,
+                        width: `var(--header-${header.id}-size)`,
+                        maxWidth: `var(--header-${header.id}-size)`,
                       }),
                   position: 'relative',
                   // ...(tableCellProps && tableCellProps({ cell: header })),

@@ -310,7 +310,9 @@ describe('useChannelsStore', () => {
       });
 
       const newStats = {
-        channels: [{ channel_id: 'uuid-1', clients: [] }],
+        channels: [
+          { channel_id: 'uuid-1', clients: [{ client_id: 'client-1' }] },
+        ],
       };
 
       act(() => {

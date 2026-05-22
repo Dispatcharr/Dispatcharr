@@ -15,8 +15,9 @@ from .api_views import (
     RecordingViewSet,
     RecurringRecordingRuleViewSet,
     GetChannelStreamsAPIView,
+    GetChannelStreamStatsAPIView,
     SeriesRulesAPIView,
-    DeleteSeriesRuleAPIView,
+    SeriesRulePreviewAPIView,
     EvaluateSeriesRulesAPIView,
     BulkRemoveSeriesRecordingsAPIView,
     BulkDeleteUpcomingRecordingsAPIView,
@@ -41,14 +42,20 @@ urlpatterns = [
     path('logos/bulk-delete/', BulkDeleteLogosAPIView.as_view(), name='bulk_delete_logos'),
     path('logos/cleanup/', CleanupUnusedLogosAPIView.as_view(), name='cleanup_unused_logos'),
     path('channels/<int:channel_id>/streams/', GetChannelStreamsAPIView.as_view(), name='get_channel_streams'),
+    path('channels/<int:channel_id>/streams/stats/', GetChannelStreamStatsAPIView.as_view(), name='get_channel_stream_stats'),
     path('profiles/<int:profile_id>/channels/<int:channel_id>/', UpdateChannelMembershipAPIView.as_view(), name='update_channel_membership'),
     path('profiles/<int:profile_id>/channels/bulk-update/', BulkUpdateChannelMembershipAPIView.as_view(), name='bulk_update_channel_membership'),
     # DVR series rules (order matters: specific routes before catch-all slug)
     path('series-rules/', SeriesRulesAPIView.as_view(), name='series_rules'),
+    path('series-rules/preview/', SeriesRulePreviewAPIView.as_view(), name='series_rules_preview'),
     path('series-rules/evaluate/', EvaluateSeriesRulesAPIView.as_view(), name='evaluate_series_rules'),
     path('series-rules/bulk-remove/', BulkRemoveSeriesRecordingsAPIView.as_view(), name='bulk_remove_series_recordings'),
-    path('series-rules/<path:tvg_id>/', DeleteSeriesRuleAPIView.as_view(), name='delete_series_rule'),
     path('recordings/bulk-delete-upcoming/', BulkDeleteUpcomingRecordingsAPIView.as_view(), name='bulk_delete_upcoming_recordings'),
+    path(
+        'recordings/<int:pk>/hls/<path:seg_path>',
+        RecordingViewSet.as_view({'get': 'hls'}),
+        name='recording-hls',
+    ),
     path('dvr/comskip-config/', ComskipConfigAPIView.as_view(), name='comskip_config'),
 ]
 

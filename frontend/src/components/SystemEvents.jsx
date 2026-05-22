@@ -53,6 +53,10 @@ const getEventIcon = (eventType) => {
       return <Video size={16} />;
     case 'recording_end':
       return <Video size={16} />;
+    case 'vod_start':
+      return <CirclePlay size={16} />;
+    case 'vod_stop':
+      return <SquareX size={16} />;
     case 'stream_switch':
       return <HardDriveDownload size={16} />;
     case 'm3u_refresh':
@@ -83,6 +87,7 @@ const getEventColor = (eventType) => {
     case 'channel_start':
     case 'client_connect':
     case 'recording_start':
+    case 'vod_start':
     case 'login_success':
       return 'green';
     case 'channel_reconnect':
@@ -90,6 +95,7 @@ const getEventColor = (eventType) => {
     case 'channel_stop':
     case 'client_disconnect':
     case 'recording_end':
+    case 'vod_stop':
     case 'logout':
       return 'gray';
     case 'channel_buffering':
@@ -116,7 +122,7 @@ const getEventColor = (eventType) => {
 
 const getSystemEvents = (eventsLimit, offset) => {
   return API.getSystemEvents(eventsLimit, offset);
-}
+};
 
 const Event = ({ event }) => {
   const [dateFormatSetting] = useLocalStorage('date-format', 'mdy');
@@ -147,16 +153,14 @@ const Event = ({ event }) => {
                 </Text>
               )}
             </Group>
-            {event.details &&
-              Object.keys(event.details).length > 0 && (
-                <Text size="xs" c="dimmed">
-                  {Object.entries(event.details)
-                    .filter(([key]) =>
-                      !['stream_url', 'new_url'].includes(key))
-                    .map(([key, value]) => `${key}: ${value}`)
-                    .join(', ')}
-                </Text>
-              )}
+            {event.details && Object.keys(event.details).length > 0 && (
+              <Text size="xs" c="dimmed">
+                {Object.entries(event.details)
+                  .filter(([key]) => !['stream_url', 'new_url'].includes(key))
+                  .map(([key, value]) => `${key}: ${value}`)
+                  .join(', ')}
+              </Text>
+            )}
           </Stack>
         </Group>
         <Text size="xs" c="dimmed" style={{ whiteSpace: 'nowrap' }}>
@@ -321,9 +325,7 @@ const SystemEvents = () => {
                 No events recorded yet
               </Text>
             ) : (
-              events.map((event) => (
-                <Event key={event.id} event={event} />
-              ))
+              events.map((event) => <Event key={event.id} event={event} />)
             )}
           </Stack>
         </>

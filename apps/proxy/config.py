@@ -51,8 +51,7 @@ class BaseConfig:
                 "failover_grace_period": 20,
                 "chunk_timeout": 5,
                 "initial_behind_chunks": 4,
-                "stream_cooldown_enabled": False,
-                "stream_cooldown_minutes": 10,
+                "chunk_batch_size": 5,
                 "health_check_interval": 5,
             }
 
@@ -110,7 +109,7 @@ class TSConfig(BaseConfig):
     CLEANUP_CHECK_INTERVAL = 1  # How often to check for disconnected clients (seconds)
     CLIENT_HEARTBEAT_INTERVAL = 5  # How often to send client heartbeats (seconds)
     GHOST_CLIENT_MULTIPLIER = 10.0  # How many heartbeat intervals before client considered ghost (10 = 50s, must exceed STREAM_TIMEOUT + FAILOVER_GRACE_PERIOD = 40s)
-    CLIENT_WAIT_TIMEOUT = 30  # Seconds to wait for client to connect
+    CLIENT_WAIT_TIMEOUT = 60  # Seconds to wait for channel to become ready
 
     # Stream health and recovery settings
     MAX_HEALTH_RECOVERY_ATTEMPTS = 2     # Maximum times to attempt recovery for a single stream

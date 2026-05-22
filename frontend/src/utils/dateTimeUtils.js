@@ -43,6 +43,23 @@ export const getNow = () => dayjs();
 export const toFriendlyDuration = (dateTime, unit) =>
   dayjs.duration(dateTime, unit).humanize();
 
+export const formatExactDuration = (seconds) => {
+  if (seconds < 60) return `${seconds.toFixed(1)} seconds`;
+  if (seconds < 3600) {
+    const m = Math.floor(seconds / 60);
+    const s = Math.floor(seconds % 60);
+    return `${m} minute${m !== 1 ? 's' : ''}, ${s} second${s !== 1 ? 's' : ''}`;
+  }
+  if (seconds < 86400) {
+    const h = Math.floor(seconds / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    return `${h} hour${h !== 1 ? 's' : ''}, ${m} minute${m !== 1 ? 's' : ''}`;
+  }
+  const d = Math.floor(seconds / 86400);
+  const h = Math.floor((seconds % 86400) / 3600);
+  return `${d} day${d !== 1 ? 's' : ''}, ${h} hour${h !== 1 ? 's' : ''}`;
+};
+
 export const fromNow = (dateTime) => dayjs(dateTime).fromNow();
 
 export const setTz = (dateTime, timeZone) => dayjs(dateTime).tz(timeZone);

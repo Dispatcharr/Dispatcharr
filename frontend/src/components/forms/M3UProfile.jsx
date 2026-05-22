@@ -1,24 +1,38 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { yupResolver } from '@hookform/resolvers/yup';
-import * as Yup from 'yup';
-import API from '../../api';
 import {
-  Flex,
-  Modal,
-  TextInput,
-  Button,
-  Title,
-  Text,
-  Paper,
+  Alert,
   Badge,
+  Button,
+  Flex,
   Grid,
-  Textarea,
+  GridCol,
+  Modal,
   NumberInput,
+  Paper,
   SegmentedControl,
+  Text,
+  Textarea,
+  TextInput,
+  Title,
 } from '@mantine/core';
+import { TriangleAlert } from 'lucide-react';
 import { DateTimePicker } from '@mantine/dates';
 import { useWebSocket } from '../../WebSocket';
+import {
+  addM3UProfile,
+  applyRegex,
+  applyXcSimplePatterns,
+  buildProfileSchema,
+  buildSubmitValues,
+  fetchFirstStreamUrl,
+  getDetectedMode,
+  prepareExpDate,
+  splitByPattern,
+  updateM3UProfile,
+  validateXcSimple,
+} from '../../utils/forms/M3uProfileUtils.js';
 
 const RegexFormAndView = ({ profile = null, m3u, isOpen, onClose }) => {
   const [websocketReady, sendMessage] = useWebSocket();
@@ -47,20 +61,9 @@ const RegexFormAndView = ({ profile = null, m3u, isOpen, onClose }) => {
     [profile]
   );
 
-  const schema = Yup.object({
-    name: Yup.string().required('Name is required'),
-    search_pattern: Yup.string().when([], {
-      is: () => !isDefaultProfile && !isXC,
-      then: (schema) => schema.required('Search pattern is required'),
-      otherwise: (schema) => schema.notRequired(),
-    }),
-    replace_pattern: Yup.string().when([], {
-      is: () => !isDefaultProfile && !isXC,
-      then: (schema) => schema.required('Replace pattern is required'),
-      otherwise: (schema) => schema.notRequired(),
-    }),
-    notes: Yup.string(), // Optional field
-  });
+  const getResolver = () => {
+    return yupResolver(buildProfileSchema(isDefaultProfile, isXC));
+  };
 
   const {
     register,
@@ -72,38 +75,22 @@ const RegexFormAndView = ({ profile = null, m3u, isOpen, onClose }) => {
     setError,
   } = useForm({
     defaultValues,
-    resolver: yupResolver(schema),
+    resolver: getResolver(),
   });
 
   const onSubmit = async (values) => {
-    console.log('submiting');
+    const expDate = prepareExpDate(values.exp_date, isXC);
 
-    // Convert exp_date for submission
-    let expDateValue = values.exp_date;
-    if (isXC) {
-      // XC accounts have exp_date auto-managed; don't send it
-      expDateValue = undefined;
-    } else if (expDateValue instanceof Date) {
-      expDateValue = expDateValue.toISOString();
-    } else if (!expDateValue) {
-      expDateValue = null;
-    }
-
-    // For XC simple mode: validate simple inputs and build patterns from credentials
     if (isXC && xcMode === 'simple' && !isDefaultProfile) {
-      const errs = {};
-      if (!newUsername.trim()) errs.newUsername = 'New username is required';
-      if (!newPassword.trim()) errs.newPassword = 'New password is required';
+      const errs = validateXcSimple(newUsername, newPassword);
       if (Object.keys(errs).length > 0) {
         setSimpleErrors(errs);
         return;
       }
       setSimpleErrors({});
-      values.search_pattern = `${m3u?.username || ''}/${m3u?.password || ''}`;
-      values.replace_pattern = `${newUsername.trim()}/${newPassword.trim()}`;
+      values = applyXcSimplePatterns(values, m3u, newUsername, newPassword);
     }
 
-    // For XC advanced mode: validate regex pattern fields
     if (isXC && xcMode === 'advanced' && !isDefaultProfile) {
       if (!searchPattern.trim()) {
         setError('search_pattern', { message: 'Search pattern is required' });
@@ -115,74 +102,36 @@ const RegexFormAndView = ({ profile = null, m3u, isOpen, onClose }) => {
       }
     }
 
-    // For default profiles, only send name and custom_properties (notes)
-    let submitValues;
-    if (isDefaultProfile) {
-      submitValues = {
-        name: values.name,
-        custom_properties: {
-          // Preserve existing custom_properties and add/update notes
-          ...(profile?.custom_properties || {}),
-          notes: values.notes || '',
-        },
-      };
-    } else {
-      // For regular profiles, send all fields
-      submitValues = {
-        name: values.name,
-        max_streams: values.max_streams,
-        search_pattern: values.search_pattern,
-        replace_pattern: values.replace_pattern,
-        custom_properties: {
-          // Preserve existing custom_properties and add/update notes
-          ...(profile?.custom_properties || {}),
-          notes: values.notes || '',
-          ...(isXC ? { xcMode } : {}),
-        },
-      };
-    }
+    const submitValues = buildSubmitValues(
+      values,
+      profile,
+      isDefaultProfile,
+      isXC,
+      xcMode
+    );
+    if (expDate !== undefined) submitValues.exp_date = expDate;
 
-    // Add exp_date for non-XC accounts
-    if (expDateValue !== undefined) {
-      submitValues.exp_date = expDateValue;
-    }
-
-    if (profile?.id) {
-      await API.updateM3UProfile(m3u.id, {
-        id: profile.id,
-        ...submitValues,
-      });
-    } else {
-      await API.addM3UProfile(m3u.id, submitValues);
-    }
+    profile?.id
+      ? await updateM3UProfile(m3u.id, { ...submitValues, id: profile.id })
+      : await addM3UProfile(m3u.id, submitValues);
 
     reset();
-    // Reset local state to sync with form reset
     setSearchPattern('');
     setReplacePattern('');
     onClose();
   };
 
   useEffect(() => {
-    async function fetchStreamUrl() {
-      try {
-        if (!m3u?.id) return;
+    if (!m3u?.id) return;
 
-        const params = new URLSearchParams();
-        params.append('page', 1);
-        params.append('page_size', 1);
-        params.append('m3u_account', m3u.id);
-        const response = await API.queryStreams(params);
-
-        if (response?.results?.length > 0) {
-          setStreamUrl(response.results[0].url);
-          setSampleInput(response.results[0].url); // Initialize sample input with a real stream URL
+    fetchFirstStreamUrl(m3u.id)
+      .then((url) => {
+        if (url) {
+          setStreamUrl(url);
+          setSampleInput(url);
         }
-      } catch (error) {
-        console.error('Error fetching stream URL:', error);
-      }
-    }
-    fetchStreamUrl();
+      })
+      .catch((error) => console.error('Error fetching stream URL:', error));
   }, [m3u]);
 
   useEffect(() => {
@@ -235,19 +184,7 @@ const RegexFormAndView = ({ profile = null, m3u, isOpen, onClose }) => {
     setReplacePattern(profile?.replace_pattern || '');
     if (isXC && !isDefaultProfile) {
       const storedMode = profile?.custom_properties?.xcMode;
-      let detectedMode;
-      if (storedMode) {
-        detectedMode = storedMode;
-      } else if (
-        profile?.search_pattern &&
-        profile.search_pattern === `${m3u?.username}/${m3u?.password}`
-      ) {
-        detectedMode = 'simple';
-      } else if (profile?.search_pattern) {
-        detectedMode = 'advanced';
-      } else {
-        detectedMode = 'simple';
-      }
+      const detectedMode = getDetectedMode(storedMode, profile, m3u);
       setXcMode(detectedMode);
       if (detectedMode === 'simple') {
         const rp = profile?.replace_pattern || '';
@@ -290,39 +227,28 @@ const RegexFormAndView = ({ profile = null, m3u, isOpen, onClose }) => {
     setXcMode(mode);
   };
 
-  // Local regex for the live demo preview
   const getHighlightedSearchText = () => {
-    if (!searchPattern || !sampleInput) return sampleInput;
-    try {
-      const regex = new RegExp(searchPattern, 'g');
-      return sampleInput.replace(
-        regex,
-        (match) => `<mark style="background-color: #ffee58;">${match}</mark>`
-      );
-    } catch {
-      return sampleInput;
-    }
+    const segments = splitByPattern(sampleInput, searchPattern);
+    if (!segments) return sampleInput;
+    return segments.map((seg, i) =>
+      seg.matched ? (
+        <mark key={i} style={{ backgroundColor: '#ffee58' }}>
+          {seg.text}
+        </mark>
+      ) : (
+        seg.text
+      )
+    );
   };
 
-  const getLocalReplaceResult = () => {
-    if (!searchPattern || !sampleInput) return sampleInput;
-    try {
-      const regex = new RegExp(searchPattern, 'g');
-      return sampleInput.replace(regex, replacePattern);
-    } catch {
-      return sampleInput;
-    }
-  };
+  const getLocalReplaceResult = () =>
+    applyRegex(sampleInput, searchPattern, replacePattern);
 
   return (
     <Modal
       opened={isOpen}
       onClose={onClose}
-      title={
-        isDefaultProfile
-          ? 'Edit Default Profile (Name & Notes Only)'
-          : 'M3U Profile'
-      }
+      title={isDefaultProfile ? 'Edit Default Profile' : 'M3U Profile'}
       size="lg"
     >
       <form onSubmit={handleSubmit(onSubmit)}>
@@ -348,8 +274,39 @@ const RegexFormAndView = ({ profile = null, m3u, isOpen, onClose }) => {
           />
         )}
 
-        {/* Only show search/replace fields for non-default profiles */}
-        {!isDefaultProfile && (
+        {/* Search/replace fields */}
+        {isDefaultProfile ? (
+          <>
+            <Alert
+              icon={<TriangleAlert size={16} />}
+              color="yellow"
+              title="Default Profile"
+              mt="xs"
+            >
+              <Text size="sm">
+                These patterns are applied to every stream in this playlist. If
+                the search pattern doesn't match a stream URL, the original URL
+                is used as-is.
+              </Text>
+            </Alert>
+            <TextInput
+              label="Search Pattern (Regex)"
+              description="A regular expression matching the part of the stream URL you want to replace."
+              placeholder="e.g. 10\.0\.0\.10"
+              value={searchPattern}
+              onChange={onSearchPatternUpdate}
+              error={errors.search_pattern?.message}
+            />
+            <TextInput
+              label="Replace Pattern"
+              description="The value to substitute in place of the matched text. Use $1, $2, etc. to reference regex capture groups."
+              placeholder="e.g. 192.168.1.100"
+              value={replacePattern}
+              onChange={onReplacePatternUpdate}
+              error={errors.replace_pattern?.message}
+            />
+          </>
+        ) : (
           <>
             {isXC && (
               <SegmentedControl
@@ -438,23 +395,38 @@ const RegexFormAndView = ({ profile = null, m3u, isOpen, onClose }) => {
         <Flex
           mih={50}
           gap="xs"
-          justify="flex-end"
+          justify="space-between"
           align="flex-end"
           style={{ marginBottom: 5 }}
         >
+          {isDefaultProfile && (
+            <Button
+              variant="subtle"
+              color="gray"
+              size="xs"
+              onClick={() => {
+                setSearchPattern('^(.*)$');
+                setReplacePattern('$1');
+                setValue('search_pattern', '^(.*)$');
+                setValue('replace_pattern', '$1');
+              }}
+            >
+              Reset to Defaults
+            </Button>
+          )}
           <Button
             type="submit"
             disabled={isSubmitting}
             size="xs"
-            style={{ width: isSubmitting ? 'auto' : 'auto' }}
+            style={{ marginLeft: isDefaultProfile ? undefined : 'auto' }}
           >
             Submit
           </Button>
         </Flex>
       </form>
 
-      {/* Only show regex demonstration for non-default profiles in advanced mode */}
-      {!isDefaultProfile && (!isXC || xcMode === 'advanced') && (
+      {/* Show regex demonstration for default profiles and non-default profiles in advanced mode */}
+      {(isDefaultProfile || !isXC || xcMode === 'advanced') && (
         <>
           <Title order={4} mt={15} mb={10}>
             Live Regex Demonstration
@@ -473,7 +445,7 @@ const RegexFormAndView = ({ profile = null, m3u, isOpen, onClose }) => {
           </Paper>
 
           <Grid gutter="xs">
-            <Grid.Col span={12}>
+            <GridCol span={12}>
               <Paper shadow="sm" p="xs" radius="md" withBorder>
                 <Text size="sm" weight={500} mb={3} component="div">
                   Matched Text{' '}
@@ -483,15 +455,14 @@ const RegexFormAndView = ({ profile = null, m3u, isOpen, onClose }) => {
                 </Text>
                 <Text
                   size="sm"
-                  dangerouslySetInnerHTML={{
-                    __html: getHighlightedSearchText(),
-                  }}
                   sx={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}
-                />
+                >
+                  {getHighlightedSearchText()}
+                </Text>
               </Paper>
-            </Grid.Col>
+            </GridCol>
 
-            <Grid.Col span={12}>
+            <GridCol span={12}>
               <Paper shadow="sm" p="xs" radius="md" withBorder>
                 <Text size="sm" weight={500} mb={3}>
                   Result After Replace
@@ -503,7 +474,7 @@ const RegexFormAndView = ({ profile = null, m3u, isOpen, onClose }) => {
                   {getLocalReplaceResult()}
                 </Text>
               </Paper>
-            </Grid.Col>
+            </GridCol>
           </Grid>
         </>
       )}

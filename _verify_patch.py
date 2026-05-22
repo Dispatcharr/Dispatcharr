@@ -136,6 +136,13 @@ r.append(check(r'Pre-set stream ID.*and profile ID', 'apps/proxy/ts_proxy/servic
 r.append(check(r'COOLDOWN.*Skipping profile', 'apps/channels/models.py', 'BF7: cooldown check in Channel.get_stream() bei Neustart'))
 print()
 
+# Feature 8: Proxy für M3U-Download und XC API
+print('--- Feature 8: Proxy für M3U-Download und XC API ---')
+r.append(check(r'Using HTTP proxy.*for M3U download', 'apps/m3u/tasks.py', 'F8a: proxy in M3U download'))
+r.append(check(r'XC Client using HTTP proxy', 'core/xtream_codes.py', 'F8b: proxy in XC Client session'))
+r.append(check(r'account\.proxy or None', 'apps/m3u/tasks.py', 'F8c: proxy in XCClient calls (5x)'))
+print()
+
 # Frontend
 print('--- Frontend ---')
 r.append(check(r'max_retries', 'frontend/src/constants.js', 'FE1: max_retries in constants'))

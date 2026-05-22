@@ -17,13 +17,11 @@ import {
   verticalListSortingStrategy,
 } from '@dnd-kit/sortable';
 import useChannelsStore from '../../store/channels';
-import { notifications } from '@mantine/notifications';
 import API from '../../api';
 import ChannelForm from '../forms/Channel';
 import ChannelBatchForm from '../forms/ChannelBatch';
 import RecordingForm from '../forms/Recording';
 import { useDebounce, copyToClipboard } from '../../utils';
-import logo from '../../images/logo.png';
 import useVideoStore from '../../store/useVideoStore';
 import useSettingsStore from '../../store/settings';
 import {
@@ -40,7 +38,11 @@ import {
   ArrowUpDown,
   ArrowDownWideNarrow,
   Search,
+  EyeOff,
+  Pencil,
 } from 'lucide-react';
+import { listOverriddenFields } from '../../utils/forms/ChannelUtils.js';
+import { buildLiveStreamUrl } from '../../utils/components/FloatingVideoUtils.js';
 import {
   Box,
   TextInput,
@@ -65,7 +67,6 @@ import {
   Tooltip,
   Skeleton,
 } from '@mantine/core';
-import { getCoreRowModel, flexRender } from '@tanstack/react-table';
 import './table.css';
 import useChannelsTableStore from '../../store/channelsTable';
 import ChannelTableStreams from './ChannelTableStreams';
@@ -76,6 +77,7 @@ import { useChannelLogoSelection } from '../../hooks/useSmartLogos';
 import { CustomTable, useTable } from './CustomTable';
 import ChannelsTableOnboarding from './ChannelsTable/ChannelsTableOnboarding';
 import ChannelTableHeader from './ChannelsTable/ChannelTableHeader';
+import useOutputProfilesStore from '../../store/outputProfiles';
 import {
   EditableTextCell,
   EditableNumberCell,
@@ -243,7 +245,11 @@ const ChannelRowActions = React.memo(
         </Center>
       </Box>
     );
-  }
+  },
+  // Custom comparator: skip re-render when the channel's data object hasn't
+  // changed. row.original is stable when the underlying channel hasn't been
+  // updated; it becomes a new reference when the store replaces that channel.
+  (prevProps, nextProps) => prevProps.row.original === nextProps.row.original
 );
 
 const ChannelsTable = ({ onReady }) => {
@@ -285,44 +291,33 @@ const ChannelsTable = ({ onReady }) => {
   const setSelectedChannelIds = useChannelsTableStore(
     (s) => s.setSelectedChannelIds
   );
-  const selectedChannelIds = useChannelsTableStore((s) => s.selectedChannelIds);
+  const setExpandedChannelId = useChannelsTableStore(
+    (s) => s.setExpandedChannelId
+  );
   const pagination = useChannelsTableStore((s) => s.pagination);
   const setPagination = useChannelsTableStore((s) => s.setPagination);
   const sorting = useChannelsTableStore((s) => s.sorting);
   const setSorting = useChannelsTableStore((s) => s.setSorting);
   const totalCount = useChannelsTableStore((s) => s.totalCount);
-  const setChannelStreams = useChannelsTableStore((s) => s.setChannelStreams);
   const allRowIds = useChannelsTableStore((s) => s.allQueryIds);
   const setAllRowIds = useChannelsTableStore((s) => s.setAllQueryIds);
-  const isUnlocked = useChannelsTableStore((s) => s.isUnlocked);
 
   // store/channels
-  const channels = useChannelsStore((s) => s.channels);
-  const channelIds = useChannelsStore((s) => s.channelIds);
+  const hasChannels = useChannelsStore((s) => s.channelIds.length > 0);
   const profiles = useChannelsStore((s) => s.profiles);
   const selectedProfileId = useChannelsStore((s) => s.selectedProfileId);
-  const [tablePrefs, setTablePrefs] = useLocalStorage('channel-table-prefs', {
+  const [, setTablePrefs] = useLocalStorage('channel-table-prefs', {
     pageSize: 50,
   });
-  const selectedProfileChannels = useChannelsStore(
-    (s) => s.profiles[selectedProfileId]?.channels
-  );
 
   // store/settings
   const env_mode = useSettingsStore((s) => s.environment.env_mode);
+  const outputProfiles = useOutputProfilesStore((s) => s.profiles);
   const showVideo = useVideoStore((s) => s.showVideo);
 
   // store/warnings
   const isWarningSuppressed = useWarningsStore((s) => s.isWarningSuppressed);
   const suppressWarning = useWarningsStore((s) => s.suppressWarning);
-
-  /**
-   * useMemo
-   */
-  const selectedProfileChannelIds = useMemo(
-    () => new Set(selectedProfileChannels),
-    [selectedProfileChannels]
-  );
 
   /**
    * useState
@@ -331,13 +326,13 @@ const ChannelsTable = ({ onReady }) => {
   const [channelModalOpen, setChannelModalOpen] = useState(false);
   const [channelBatchModalOpen, setChannelBatchModalOpen] = useState(false);
   const [recordingModalOpen, setRecordingModalOpen] = useState(false);
-  const [selectedProfile, setSelectedProfile] = useState(
-    profiles[selectedProfileId]
-  );
   const [showDisabled, setShowDisabled] = useState(true);
   const [showOnlyStreamlessChannels, setShowOnlyStreamlessChannels] =
     useState(false);
   const [showOnlyStaleChannels, setShowOnlyStaleChannels] = useState(false);
+  const [showOnlyOverriddenChannels, setShowOnlyOverriddenChannels] =
+    useState(false);
+  const [visibilityFilter, setVisibilityFilter] = useState('active');
 
   const [paginationString, setPaginationString] = useState('');
   const [filters, setFilters] = useState({
@@ -345,9 +340,10 @@ const ChannelsTable = ({ onReady }) => {
     channel_group: '',
     epg: '',
   });
-  const [isLoading, setIsLoading] = useState(true);
+  const [, setIsLoading] = useState(true);
 
   const [hdhrUrl, setHDHRUrl] = useState(hdhrUrlBase);
+  const [hdhrOutputProfileId, setHdhrOutputProfileId] = useState('');
   const [epgUrl, setEPGUrl] = useState(epgUrlBase);
   const [m3uUrl, setM3UUrl] = useState(m3uUrlBase);
 
@@ -383,6 +379,8 @@ const ChannelsTable = ({ onReady }) => {
     cachedlogos: true,
     direct: false,
     tvg_id_source: 'channel_number',
+    output_format: '',
+    output_profile: '',
   });
   const [epgParams, setEpgParams] = useState({
     cachedlogos: true,
@@ -441,6 +439,14 @@ const ChannelsTable = ({ onReady }) => {
     if (showOnlyStaleChannels === true) {
       params.append('only_stale', true);
     }
+    if (showOnlyOverriddenChannels === true) {
+      params.append('only_has_overrides', true);
+    }
+    // The backend defaults to "active"; send other choices explicitly so
+    // hidden rows surface when the user opts into "Hidden Only" or "Show All".
+    if (visibilityFilter && visibilityFilter !== 'active') {
+      params.append('visibility_filter', visibilityFilter);
+    }
 
     // Apply sorting
     if (sorting.length > 0) {
@@ -490,7 +496,7 @@ const ChannelsTable = ({ onReady }) => {
     setIsLoading(true);
 
     try {
-      const [results, ids] = await Promise.all([
+      const [, ids] = await Promise.all([
         API.queryChannels(params),
         API.getAllChannelIds(params),
       ]);
@@ -537,6 +543,8 @@ const ChannelsTable = ({ onReady }) => {
     selectedProfileId,
     showOnlyStreamlessChannels,
     showOnlyStaleChannels,
+    showOnlyOverriddenChannels,
+    visibilityFilter,
   ]);
 
   const stopPropagation = useCallback((e) => {
@@ -571,36 +579,30 @@ const ChannelsTable = ({ onReady }) => {
     }));
   };
 
-  const editChannel = async (ch = null, opts = {}) => {
-    // If forceAdd is set, always open a blank form
+  const editChannel = useCallback(async (ch = null, opts = {}) => {
     if (opts.forceAdd) {
       setChannel(null);
       setChannelModalOpen(true);
       return;
     }
-    // Use table's selected state instead of store state to avoid stale selections
-    const currentSelection = table ? table.selectedTableIds : [];
-    console.log('editChannel called with:', {
-      ch,
-      currentSelection,
-      tableExists: !!table,
-    });
+    const currentSelection =
+      useChannelsTableStore.getState().selectedChannelIds;
+    console.log('editChannel called with:', { ch, currentSelection });
 
     if (currentSelection.length > 1) {
       setChannelBatchModalOpen(true);
     } else {
-      // If no channel object is passed but we have a selection, get the selected channel
       let channelToEdit = ch;
       if (!channelToEdit && currentSelection.length === 1) {
         const selectedId = currentSelection[0];
-
-        // Use table data since that's what's currently displayed
-        channelToEdit = data.find((d) => d.id === selectedId);
+        channelToEdit = useChannelsTableStore
+          .getState()
+          .channels.find((d) => d.id === selectedId);
       }
       setChannel(channelToEdit);
       setChannelModalOpen(true);
     }
-  };
+  }, []);
 
   const deleteChannel = async (id) => {
     console.log(`Deleting channel with ID: ${id}`);
@@ -610,7 +612,7 @@ const ChannelsTable = ({ onReady }) => {
 
     table.setSelectedTableIds([]);
 
-    if (selectedChannelIds.length > 0) {
+    if (table.selectedTableIds.length > 0) {
       // Use bulk delete for multiple selections
       setIsBulkDelete(true);
       setChannelToDelete(null);
@@ -673,41 +675,52 @@ const ChannelsTable = ({ onReady }) => {
     }
   };
 
-  const createRecording = (channel) => {
+  const createRecording = useCallback((channel) => {
     console.log(`Recording channel ID: ${channel.id}`);
     setChannel(channel);
     setRecordingModalOpen(true);
-  };
+  }, []);
 
-  const getChannelURL = (channel) => {
-    // Make sure we're using the channel UUID consistently
-    if (!channel || !channel.uuid) {
-      console.error('Invalid channel object or missing UUID:', channel);
-      return '';
-    }
+  const getChannelURL = useCallback(
+    (channel) => {
+      if (!channel || !channel.uuid) {
+        console.error('Invalid channel object or missing UUID:', channel);
+        return '';
+      }
 
-    const uri = `/proxy/ts/stream/${channel.uuid}`;
-    let channelUrl = `${window.location.protocol}//${window.location.host}${uri}`;
-    if (env_mode == 'dev') {
-      channelUrl = `${window.location.protocol}//${window.location.hostname}:5656${uri}`;
-    }
+      const path = `/proxy/ts/stream/${channel.uuid}`;
+      if (env_mode == 'dev') {
+        return `${window.location.protocol}//${window.location.hostname}:5656${path}`;
+      }
+      return `${window.location.protocol}//${window.location.host}${path}`;
+    },
+    [env_mode]
+  );
 
-    return channelUrl;
-  };
-
-  const handleWatchStream = (channel) => {
-    // Add additional logging to help debug issues
-    console.log(
-      `Watching stream for channel: ${channel.name} (${channel.id}), UUID: ${channel.uuid}`
-    );
-    const url = getChannelURL(channel);
-    console.log(`Stream URL: ${url}`);
-    showVideo(url, 'live', { name: channel.name });
-  };
+  const handleWatchStream = useCallback(
+    (channel) => {
+      if (!channel || !channel.uuid) return;
+      const path = `/proxy/ts/stream/${channel.uuid}`;
+      const uri = buildLiveStreamUrl(path);
+      let url = `${window.location.protocol}//${window.location.host}${uri}`;
+      if (env_mode == 'dev') {
+        url = `${window.location.protocol}//${window.location.hostname}:5656${uri}`;
+      }
+      showVideo(url, 'live', { name: channel.name, channelId: channel.id });
+    },
+    [env_mode, showVideo]
+  );
 
   const onRowSelectionChange = (newSelection) => {
     setSelectedChannelIds(newSelection);
   };
+
+  const onRowExpansionChange = useCallback(
+    (expandedIds) => {
+      setExpandedChannelId(expandedIds.length > 0 ? expandedIds[0] : null);
+    },
+    [setExpandedChannelId]
+  );
 
   const onPageSizeChange = (e) => {
     setPagination({
@@ -748,6 +761,10 @@ const ChannelsTable = ({ onReady }) => {
     if (m3uParams.direct) params.append('direct', 'true');
     if (m3uParams.tvg_id_source !== 'channel_number')
       params.append('tvg_id_source', m3uParams.tvg_id_source);
+    if (m3uParams.output_format)
+      params.append('output_format', m3uParams.output_format);
+    if (m3uParams.output_profile)
+      params.append('output_profile', m3uParams.output_profile);
 
     const baseUrl = m3uUrl;
     return params.toString() ? `${baseUrl}?${params.toString()}` : baseUrl;
@@ -781,7 +798,7 @@ const ChannelsTable = ({ onReady }) => {
   };
 
   const copyHDHRUrl = async () => {
-    await copyToClipboard(hdhrUrl, {
+    await copyToClipboard(buildHDHRUrl(), {
       successTitle: 'HDHR URL Copied!',
       successMessage: 'The HDHR URL has been copied to your clipboard.',
     });
@@ -861,14 +878,19 @@ const ChannelsTable = ({ onReady }) => {
   }, [fetchData]);
 
   useEffect(() => {
-    setSelectedProfile(profiles[selectedProfileId]);
-
     const profileString =
       selectedProfileId != '0' ? `/${profiles[selectedProfileId].name}` : '';
     setHDHRUrl(`${hdhrUrlBase}${profileString}`);
     setEPGUrl(`${epgUrlBase}${profileString}`);
     setM3UUrl(`${m3uUrlBase}${profileString}`);
   }, [selectedProfileId, profiles]);
+
+  const buildHDHRUrl = () => {
+    if (!hdhrOutputProfileId) return hdhrUrl;
+    // Insert output_profile segment before the trailing slash (or at end)
+    const base = hdhrUrl.replace(/\/$/, '');
+    return `${base}/output_profile/${hdhrOutputProfileId}`;
+  };
 
   useEffect(() => {
     const startItem = pagination.pageIndex * pagination.pageSize + 1; // +1 to start from 1, not 0
@@ -920,7 +942,10 @@ const ChannelsTable = ({ onReady }) => {
       },
       {
         id: 'channel_number',
-        accessorKey: 'channel_number',
+        // Prefer the backend-resolved effective_channel_number so overrides
+        // show through to the table. Inline save still writes to the
+        // override row via buildInlinePatch in EditableCell.
+        accessorFn: (row) => row.effective_channel_number ?? row.channel_number,
         size: columnSizing.channel_number || 40,
         minSize: 30,
         maxSize: 100,
@@ -928,16 +953,53 @@ const ChannelsTable = ({ onReady }) => {
       },
       {
         id: 'name',
-        accessorKey: 'name',
+        accessorFn: (row) => row.effective_name ?? row.name,
         size: columnSizing.name || 200,
         minSize: 100,
         grow: true,
-        cell: (props) => <EditableTextCell {...props} />,
+        cell: (props) => {
+          const row = props.row?.original || {};
+          const overriddenLabels = listOverriddenFields(row);
+          return (
+            <Flex align="center" gap={6} style={{ minWidth: 0 }}>
+              <Box style={{ minWidth: 0, flex: 1 }}>
+                <EditableTextCell {...props} />
+              </Box>
+              {overriddenLabels.length > 0 && (
+                <Tooltip
+                  label={`Overrides active: ${overriddenLabels.join(', ')}`}
+                >
+                  <Box
+                    component="span"
+                    role="img"
+                    aria-label={`Overrides active: ${overriddenLabels.join(', ')}`}
+                    style={{ display: 'inline-flex' }}
+                  >
+                    <Pencil size={14} color="#eab308" aria-hidden="true" />
+                  </Box>
+                </Tooltip>
+              )}
+              {row.hidden_from_output && (
+                <Tooltip label="Hidden from HDHR, M3U, EPG, and XC output.">
+                  <Box
+                    component="span"
+                    role="img"
+                    aria-label="Hidden from HDHR, M3U, EPG, and XC output"
+                    style={{ display: 'inline-flex' }}
+                  >
+                    <EyeOff size={14} color="#9ca3af" aria-hidden="true" />
+                  </Box>
+                </Tooltip>
+              )}
+            </Flex>
+          );
+        },
       },
       {
         id: 'epg',
         header: 'EPG',
-        accessorKey: 'epg_data_id',
+        // Effective EPG id so overridden EPG assignments show in the table.
+        accessorFn: (row) => row.effective_epg_data_id ?? row.epg_data_id,
         cell: (props) => (
           <EditableEPGCell
             {...props}
@@ -951,10 +1013,13 @@ const ChannelsTable = ({ onReady }) => {
       },
       {
         id: 'channel_group',
-        accessorFn: (row) =>
-          channelGroups[row.channel_group_id]
-            ? channelGroups[row.channel_group_id].name
-            : '',
+        accessorFn: (row) => {
+          const effectiveGroupId =
+            row.effective_channel_group_id ?? row.channel_group_id;
+          return channelGroups[effectiveGroupId]
+            ? channelGroups[effectiveGroupId].name
+            : '';
+        },
         cell: (props) => (
           <EditableGroupCell {...props} channelGroups={channelGroups} />
         ),
@@ -963,10 +1028,7 @@ const ChannelsTable = ({ onReady }) => {
       },
       {
         id: 'logo',
-        accessorFn: (row) => {
-          // Just pass the logo_id directly, not the full logo object
-          return row.logo_id;
-        },
+        accessorFn: (row) => row.effective_logo_id ?? row.logo_id,
         size: 75,
         minSize: 50,
         maxSize: 120,
@@ -1007,7 +1069,7 @@ const ChannelsTable = ({ onReady }) => {
     // from the store, so we don't need to recreate columns when logos load.
     // Note: tvgsLoaded is intentionally excluded - EditableEPGCell handles loading state internally
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [selectedProfileId, channelGroups, theme, tvgsById, epgs]
+    [selectedProfileId, channelGroups, theme, tvgsById, epgs, editChannel]
   );
 
   const renderHeaderCell = (header) => {
@@ -1152,6 +1214,7 @@ const ChannelsTable = ({ onReady }) => {
     enableRowSelection: true,
     enableDragDrop: true,
     onRowSelectionChange: onRowSelectionChange,
+    onRowExpansionChange: onRowExpansionChange,
     state: {
       pagination,
       sorting,
@@ -1167,7 +1230,7 @@ const ChannelsTable = ({ onReady }) => {
           className="tr"
           style={{ display: 'flex', width: '100%' }}
         >
-          <ChannelTableStreams channel={row.original} isExpanded={true} />
+          <ChannelTableStreams channel={row.original} />
         </Box>
       );
     },
@@ -1254,19 +1317,22 @@ const ChannelsTable = ({ onReady }) => {
                   <Stack
                     gap="sm"
                     style={{
-                      minWidth: 250,
-                      maxWidth: 'min(400px, 80vw)',
+                      minWidth: 300,
+                      maxWidth: 'min(500px, 90vw)',
                       width: 'max-content',
                     }}
+                    onClick={stopPropagation}
+                    onMouseDown={stopPropagation}
                   >
                     <Text size="sm" c="dimmed">
                       Use this URL in HDHomeRun-compatible apps and IPTV
                       clients.
                     </Text>
                     <TextInput
-                      value={hdhrUrl}
+                      value={buildHDHRUrl()}
                       size="sm"
                       readOnly
+                      label="Generated URL"
                       style={{ width: '100%' }}
                       rightSection={
                         <ActionIcon
@@ -1278,6 +1344,19 @@ const ChannelsTable = ({ onReady }) => {
                           <Copy size="16" />
                         </ActionIcon>
                       }
+                    />
+                    <Select
+                      label="Output Profile"
+                      description="Pre-delivery transcode profile. Overrides the system-wide HDHR default."
+                      clearable
+                      searchable
+                      placeholder="System default"
+                      value={hdhrOutputProfileId || null}
+                      onChange={(value) => setHdhrOutputProfileId(value || '')}
+                      comboboxProps={{ withinPortal: false }}
+                      data={outputProfiles
+                        .filter((p) => p.is_active)
+                        .map((p) => ({ value: `${p.id}`, label: p.name }))}
                     />
                   </Stack>
                 </Popover.Dropdown>
@@ -1375,6 +1454,42 @@ const ChannelsTable = ({ onReady }) => {
                         { value: 'tvg_id', label: 'TVG-ID' },
                         { value: 'gracenote', label: 'Gracenote Station ID' },
                       ]}
+                    />
+                    <Select
+                      label="Output Format"
+                      description="Container format for streams embedded in this M3U"
+                      clearable
+                      placeholder="Server default"
+                      value={m3uParams.output_format || null}
+                      onChange={(value) =>
+                        setM3uParams((prev) => ({
+                          ...prev,
+                          output_format: value || '',
+                        }))
+                      }
+                      comboboxProps={{ withinPortal: false }}
+                      data={[
+                        { value: 'mpegts', label: 'MPEG-TS' },
+                        { value: 'fmp4', label: 'fMP4 (fragmented MP4)' },
+                      ]}
+                    />
+                    <Select
+                      label="Output Profile"
+                      description="Pre-delivery transcode profile applied to all streams in this M3U"
+                      clearable
+                      searchable
+                      placeholder="No transcoding"
+                      value={m3uParams.output_profile || null}
+                      onChange={(value) =>
+                        setM3uParams((prev) => ({
+                          ...prev,
+                          output_profile: value || '',
+                        }))
+                      }
+                      comboboxProps={{ withinPortal: false }}
+                      data={outputProfiles
+                        .filter((p) => p.is_active)
+                        .map((p) => ({ value: `${p.id}`, label: p.name }))}
                     />
                   </Stack>
                 </Popover.Dropdown>
@@ -1520,16 +1635,20 @@ const ChannelsTable = ({ onReady }) => {
             setShowOnlyStreamlessChannels={setShowOnlyStreamlessChannels}
             showOnlyStaleChannels={showOnlyStaleChannels}
             setShowOnlyStaleChannels={setShowOnlyStaleChannels}
+            showOnlyOverriddenChannels={showOnlyOverriddenChannels}
+            setShowOnlyOverriddenChannels={setShowOnlyOverriddenChannels}
+            visibilityFilter={visibilityFilter}
+            setVisibilityFilter={setVisibilityFilter}
           />
 
           {/* Table or ghost empty state inside Paper */}
           <Box>
-            {channelsTableLength === 0 && channelIds.length === 0 && (
+            {channelsTableLength === 0 && !hasChannels && (
               <ChannelsTableOnboarding editChannel={editChannel} />
             )}
           </Box>
 
-          {(channelsTableLength > 0 || channelIds.length > 0) && (
+          {(channelsTableLength > 0 || hasChannels) && (
             <Box
               style={{
                 display: 'flex',
@@ -1606,7 +1725,7 @@ const ChannelsTable = ({ onReady }) => {
         />
 
         <ChannelBatchForm
-          channelIds={selectedChannelIds}
+          channelIds={table.selectedTableIds}
           isOpen={channelBatchModalOpen}
           onClose={closeChannelBatchForm}
         />

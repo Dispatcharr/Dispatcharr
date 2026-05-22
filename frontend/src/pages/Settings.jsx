@@ -17,6 +17,9 @@ const UserAgentsTable = React.lazy(
 const StreamProfilesTable = React.lazy(
   () => import('../components/tables/StreamProfilesTable.jsx')
 );
+const OutputProfilesTable = React.lazy(
+  () => import('../components/tables/OutputProfilesTable.jsx')
+);
 const BackupManager = React.lazy(
   () => import('../components/backups/BackupManager.jsx')
 );
@@ -152,6 +155,19 @@ const SettingsPage = () => {
                     <Suspense fallback={<Loader />}>
                       <StreamProfilesTable
                         active={accordianValue === 'stream-profiles'}
+                      />
+                    </Suspense>
+                  </ErrorBoundary>
+                </AccordionPanel>
+              </AccordionItem>
+
+              <AccordionItem value="output-profiles">
+                <AccordionControl>Output Profiles</AccordionControl>
+                <AccordionPanel>
+                  <ErrorBoundary>
+                    <Suspense fallback={<Loader />}>
+                      <OutputProfilesTable
+                        active={accordianValue === 'output-profiles'}
                       />
                     </Suspense>
                   </ErrorBoundary>

@@ -137,7 +137,7 @@ class EPGData(models.Model):
     # Removed the Channel foreign key. We now just store the original tvg_id
     # and a name (which might simply be the tvg_id if no real channel exists).
     tvg_id = models.CharField(max_length=255, null=True, blank=True, db_index=True)
-    name = models.CharField(max_length=255)
+    name = models.CharField(max_length=512)
     icon_url = models.URLField(max_length=500, null=True, blank=True)
     epg_source = models.ForeignKey(
         EPGSource,

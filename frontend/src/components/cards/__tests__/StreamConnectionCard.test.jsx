@@ -16,10 +16,14 @@ vi.mock('../../../store/settings.jsx', () => ({
 vi.mock('../../../store/useVideoStore', () => ({
   default: vi.fn(),
 }));
+vi.mock('../../../store/users.jsx', () => ({
+  default: vi.fn(),
+}));
 
 // ── dateTimeUtils ─────────────────────────────────────────────────────────────
 vi.mock('../../../utils/dateTimeUtils.js', () => ({
   toFriendlyDuration: vi.fn(() => '1h 23m'),
+  formatExactDuration: vi.fn((s) => `${s.toFixed(1)} seconds`),
   useDateTimeFormat: vi.fn(() => ({ fullDateTimeFormat: 'MM/DD/YYYY h:mm A' })),
 }));
 
@@ -167,7 +171,6 @@ vi.mock('lucide-react', () => ({
   SquareX: () => <svg data-testid="icon-square-x" />,
   Timer: () => <svg data-testid="icon-timer" />,
   Users: () => <svg data-testid="icon-users" />,
-  Video: () => <svg data-testid="icon-video" />,
   Package: () => <svg data-testid="icon-package" />,
   Download: () => <svg data-testid="icon-download" />,
 }));
@@ -177,6 +180,7 @@ import { useLocation } from 'react-router-dom';
 import usePlaylistsStore from '../../../store/playlists.jsx';
 import useSettingsStore from '../../../store/settings.jsx';
 import useVideoStore from '../../../store/useVideoStore';
+import useUsersStore from '../../../store/users.jsx';
 import { showNotification } from '../../../utils/notificationUtils.js';
 import {
   getChannelStreams,
@@ -216,8 +220,7 @@ const makeClients = (channelId = 'ch-uuid-1') => [
     client_id: 'client-1',
     channel: { channel_id: channelId, uuid: 'ch-uuid-1' },
     ip_address: '192.168.1.10',
-    connected_since: 330,
-    connection_duration: 330,
+    connected_at: Date.now() / 1000 - 330,
     user_agent: 'VLC/3.0',
     streams: [{ id: 1 }],
   },
@@ -254,18 +257,27 @@ const setupLocation = (pathname = '/stats') => {
   });
 };
 
+const mockShowVideo = vi.fn();
+const mockPlaylistsState = { playlists: [], profiles: {} };
+const mockSettingsState = {
+  settings: { proxy_settings: {} },
+  environment: { env_mode: 'production' },
+};
+const mockVideoState = { showVideo: mockShowVideo };
+const mockUsersState = { users: [] };
+
 const setupStores = () => {
   vi.mocked(usePlaylistsStore).mockImplementation((selector) =>
-    selector({ playlists: [] })
+    selector(mockPlaylistsState)
   );
   vi.mocked(useSettingsStore).mockImplementation((selector) =>
-    selector({
-      settings: { proxy_settings: {} },
-      environment: { env_mode: 'production' },
-    })
+    selector(mockSettingsState)
   );
   vi.mocked(useVideoStore).mockImplementation((selector) =>
-    selector({ showVideo: vi.fn() })
+    selector(mockVideoState)
+  );
+  vi.mocked(useUsersStore).mockImplementation((selector) =>
+    selector(mockUsersState)
   );
 };
 

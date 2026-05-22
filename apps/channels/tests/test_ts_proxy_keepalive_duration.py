@@ -12,7 +12,7 @@ from django.test import TestCase
 
 def _make_generator(consecutive_empty=10, local_index=10, buffer_index=10):
     """Minimal StreamGenerator stub for testing _stream_data_generator logic."""
-    from apps.proxy.ts_proxy.stream_generator import StreamGenerator
+    from apps.proxy.live_proxy.output.ts.generator import StreamGenerator
 
     gen = StreamGenerator.__new__(StreamGenerator)
     gen.channel_id = "00000000-0000-0000-0000-000000000099"
@@ -65,11 +65,11 @@ class KeepaliveDurationCapTests(TestCase):
              patch.object(gen, '_should_send_keepalive', return_value=True), \
              patch.object(gen, '_is_ghost_client', return_value=False), \
              patch.object(gen, '_is_timeout', return_value=False), \
-             patch('apps.proxy.ts_proxy.stream_generator.create_ts_packet', return_value=b'\x00' * 188), \
-             patch('apps.proxy.ts_proxy.stream_generator.ProxyServer') as MockPS, \
-             patch('apps.proxy.ts_proxy.stream_generator.Config') as MockConfig, \
-             patch('apps.proxy.ts_proxy.stream_generator.gevent') as mock_gevent, \
-             patch('apps.proxy.ts_proxy.stream_generator.time') as mock_time:
+             patch('apps.proxy.live_proxy.output.ts.generator.create_ts_packet', return_value=b'\x00' * 188), \
+             patch('apps.proxy.live_proxy.output.ts.generator.ProxyServer') as MockPS, \
+             patch('apps.proxy.live_proxy.output.ts.generator.Config') as MockConfig, \
+             patch('apps.proxy.live_proxy.output.ts.generator.gevent') as mock_gevent, \
+             patch('apps.proxy.live_proxy.output.ts.generator.time') as mock_time:
 
             MockPS.get_instance.return_value = None
             MockConfig.KEEPALIVE_INTERVAL = 0
@@ -105,11 +105,11 @@ class KeepaliveDurationCapTests(TestCase):
              patch.object(gen, '_should_send_keepalive', return_value=True), \
              patch.object(gen, '_is_ghost_client', return_value=False), \
              patch.object(gen, '_is_timeout', return_value=False), \
-             patch('apps.proxy.ts_proxy.stream_generator.create_ts_packet', return_value=b'\x00' * 188), \
-             patch('apps.proxy.ts_proxy.stream_generator.ProxyServer') as MockPS, \
-             patch('apps.proxy.ts_proxy.stream_generator.Config') as MockConfig, \
-             patch('apps.proxy.ts_proxy.stream_generator.gevent'), \
-             patch('apps.proxy.ts_proxy.stream_generator.time') as mock_time:
+             patch('apps.proxy.live_proxy.output.ts.generator.create_ts_packet', return_value=b'\x00' * 188), \
+             patch('apps.proxy.live_proxy.output.ts.generator.ProxyServer') as MockPS, \
+             patch('apps.proxy.live_proxy.output.ts.generator.Config') as MockConfig, \
+             patch('apps.proxy.live_proxy.output.ts.generator.gevent'), \
+             patch('apps.proxy.live_proxy.output.ts.generator.time') as mock_time:
 
             MockPS.get_instance.return_value = None
             MockConfig.KEEPALIVE_INTERVAL = 0
@@ -145,11 +145,11 @@ class KeepaliveDurationCapTests(TestCase):
              patch.object(gen, '_is_ghost_client', return_value=False), \
              patch.object(gen, '_is_timeout', return_value=False), \
              patch.object(gen, '_process_chunks', return_value=iter([chunk])), \
-             patch('apps.proxy.ts_proxy.stream_generator.create_ts_packet', return_value=b'\x00' * 188), \
-             patch('apps.proxy.ts_proxy.stream_generator.ProxyServer') as MockPS, \
-             patch('apps.proxy.ts_proxy.stream_generator.Config') as MockConfig, \
-             patch('apps.proxy.ts_proxy.stream_generator.gevent'), \
-             patch('apps.proxy.ts_proxy.stream_generator.time') as mock_time:
+             patch('apps.proxy.live_proxy.output.ts.generator.create_ts_packet', return_value=b'\x00' * 188), \
+             patch('apps.proxy.live_proxy.output.ts.generator.ProxyServer') as MockPS, \
+             patch('apps.proxy.live_proxy.output.ts.generator.Config') as MockConfig, \
+             patch('apps.proxy.live_proxy.output.ts.generator.gevent'), \
+             patch('apps.proxy.live_proxy.output.ts.generator.time') as mock_time:
 
             MockPS.get_instance.return_value = None
             MockConfig.KEEPALIVE_INTERVAL = 0
@@ -170,11 +170,11 @@ class KeepaliveDurationCapTests(TestCase):
              patch.object(gen, '_should_send_keepalive', return_value=True), \
              patch.object(gen, '_is_ghost_client', return_value=False), \
              patch.object(gen, '_is_timeout', return_value=False), \
-             patch('apps.proxy.ts_proxy.stream_generator.create_ts_packet', return_value=b'\x00' * 188), \
-             patch('apps.proxy.ts_proxy.stream_generator.ProxyServer') as MockPS, \
-             patch('apps.proxy.ts_proxy.stream_generator.Config') as MockConfig, \
-             patch('apps.proxy.ts_proxy.stream_generator.gevent'), \
-             patch('apps.proxy.ts_proxy.stream_generator.time') as mock_time:
+             patch('apps.proxy.live_proxy.output.ts.generator.create_ts_packet', return_value=b'\x00' * 188), \
+             patch('apps.proxy.live_proxy.output.ts.generator.ProxyServer') as MockPS, \
+             patch('apps.proxy.live_proxy.output.ts.generator.Config') as MockConfig, \
+             patch('apps.proxy.live_proxy.output.ts.generator.gevent'), \
+             patch('apps.proxy.live_proxy.output.ts.generator.time') as mock_time:
 
             MockPS.get_instance.return_value = None
             MockConfig.KEEPALIVE_INTERVAL = 0

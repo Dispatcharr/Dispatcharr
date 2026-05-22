@@ -9,6 +9,8 @@ describe('SystemSettingsFormUtils', () => {
 
       expect(result).toEqual({
         max_system_events: 100,
+        preferred_region: '',
+        auto_import_mapped_files: true,
       });
     });
 
@@ -35,6 +37,8 @@ describe('SystemSettingsFormUtils', () => {
         SystemSettingsFormUtils.getSystemSettingsFormInitialValues();
 
       expect(result).toHaveProperty('max_system_events');
+      expect(result).toHaveProperty('preferred_region');
+      expect(result).toHaveProperty('auto_import_mapped_files');
     });
   });
 });

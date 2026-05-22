@@ -797,6 +797,67 @@ class MultiWorkerVODConnectionManager:
             logger.error(f"Error incrementing profile connections: {e}")
             return None
 
+    def _trigger_vod_stats_update(self):
+        """Trigger a VOD stats WebSocket update in a background thread."""
+        threading.Thread(target=self._do_vod_stats_update, daemon=True).start()
+
+    def _send_vod_event(self, event_type, session_id, content_name, content_uuid, client_ip, user_id, username=None):
+        """Send a vod_started or vod_stopped WebSocket event, log a system event, then update stats."""
+        try:
+            from core.utils import send_websocket_update, log_system_event
+            if not self.redis_client:
+                return
+
+            send_websocket_update(
+                "updates",
+                "update",
+                {
+                    "type": event_type,
+                    "content_name": content_name,
+                    "content_uuid": content_uuid,
+                    "client_ip": client_ip,
+                    "user_id": user_id,
+                }
+            )
+
+            system_event_type = 'vod_start' if event_type == 'vod_started' else 'vod_stop'
+            try:
+                log_system_event(
+                    system_event_type,
+                    content_name=content_name,
+                    content_uuid=content_uuid,
+                    client_ip=client_ip,
+                    username=username,
+                )
+            except Exception as e:
+                logger.error(f"Could not log system event {system_event_type}: {e}")
+
+            self._trigger_vod_stats_update()
+
+        except Exception as e:
+            logger.error(f"Failed to send {event_type}: {e}")
+
+    def _do_vod_stats_update(self):
+        """Collect active VOD connections (with full DB metadata) and push via WebSocket."""
+        try:
+            from core.utils import send_websocket_update
+            from apps.proxy.vod_proxy.views import build_vod_stats_data
+            if not self.redis_client:
+                return
+
+            stats = build_vod_stats_data(self.redis_client)
+
+            send_websocket_update(
+                "updates",
+                "update",
+                {
+                    "type": "vod_stats",
+                    "stats": json.dumps(stats)
+                }
+            )
+        except Exception as e:
+            logger.error(f"Failed to trigger VOD stats update: {e}")
+
     def _decrement_profile_connections(self, m3u_profile_id: int):
         """Decrement profile connection count.
 
@@ -1005,6 +1066,16 @@ class MultiWorkerVODConnectionManager:
                     # to prevent cleanup race conditions with GeneratorExit.
                     if not existing_state:
                         redis_connection.increment_active_streams()
+                        threading.Thread(
+                            target=self._send_vod_event,
+                            args=(
+                                'vod_started', client_id, content_name,
+                                content_uuid, client_ip,
+                                str(user.id) if user else '0',
+                                user.username if user else None
+                            ),
+                            daemon=True
+                        ).start()
                     else:
                         logger.debug(f"[{client_id}] Active streams already incremented in connection reuse path")
 
@@ -1061,12 +1132,18 @@ class MultiWorkerVODConnectionManager:
 
                         def delayed_cleanup():
                             time.sleep(1)  # Wait 1 second
-                            # Smart cleanup: check active streams and ownership
+                            # Re-check active_streams: a seeking/reconnecting client may
+                            # have incremented it within the settle window.
+                            if not redis_connection.has_active_streams():
+                                self._send_vod_event(
+                                    'vod_stopped', client_id, content_name,
+                                    content_uuid, client_ip,
+                                    str(user.id) if user else '0',
+                                    user.username if user else None
+                                )
                             logger.info(f"[{client_id}] Worker {self.worker_id} - Checking for smart cleanup after normal completion")
-                            # No connection_manager — profile already decremented above
                             redis_connection.cleanup(current_worker_id=self.worker_id)
 
-                        import threading
                         cleanup_thread = threading.Thread(target=delayed_cleanup)
                         cleanup_thread.daemon = True
                         cleanup_thread.start()
@@ -1090,12 +1167,18 @@ class MultiWorkerVODConnectionManager:
 
                         def delayed_cleanup():
                             time.sleep(1)  # Wait 1 second
-                            # Smart cleanup: check active streams and ownership
+                            # Re-check active_streams: a seeking/reconnecting client may
+                            # have incremented it within the settle window.
+                            if not redis_connection.has_active_streams():
+                                self._send_vod_event(
+                                    'vod_stopped', client_id, content_name,
+                                    content_uuid, client_ip,
+                                    str(user.id) if user else '0',
+                                    user.username if user else None
+                                )
                             logger.info(f"[{client_id}] Worker {self.worker_id} - Checking for smart cleanup after client disconnect")
-                            # No connection_manager — profile already decremented above
                             redis_connection.cleanup(current_worker_id=self.worker_id)
 
-                        import threading
                         cleanup_thread = threading.Thread(target=delayed_cleanup)
                         cleanup_thread.daemon = True
                         cleanup_thread.start()
@@ -1142,7 +1225,6 @@ class MultiWorkerVODConnectionManager:
                                 # No connection_manager — profile already decremented above
                                 redis_connection.cleanup(current_worker_id=self.worker_id)
 
-                            import threading
                             cleanup_thread = threading.Thread(target=delayed_cleanup)
                             cleanup_thread.daemon = True
                             cleanup_thread.start()

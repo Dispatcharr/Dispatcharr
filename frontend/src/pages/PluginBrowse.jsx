@@ -26,6 +26,7 @@ import {
   KeyRound,
   ShieldCheck,
   ShieldAlert,
+  Package,
 } from 'lucide-react';
 import { usePluginStore } from '../store/plugins.jsx';
 import useSettingsStore from '../store/settings.jsx';
@@ -364,6 +365,18 @@ export default function PluginBrowsePage() {
           )}
         </Group>
         <Group>
+          <Button
+            size="xs"
+            variant="light"
+            color="teal"
+            component="a"
+            href="https://github.com/Dispatcharr/Plugins?tab=contributing-ov-file"
+            target="_blank"
+            rel="noopener noreferrer"
+            leftSection={<Package size={14} />}
+          >
+            Publish Your Plugin
+          </Button>
           <Button
             size="xs"
             variant="light"

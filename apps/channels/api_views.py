@@ -8,13 +8,12 @@ from drf_spectacular.utils import extend_schema, OpenApiParameter, inline_serial
 from drf_spectacular.types import OpenApiTypes
 from rest_framework import serializers
 from django.shortcuts import get_object_or_404, get_list_or_404
-from django.db import transaction
-from django.db.models import Count, F
+from django.db import connection, transaction
+from django.db.models import Count, F, Prefetch
 from django.db.models import Q
 import os, json, requests, logging, mimetypes, threading, time
 from datetime import timedelta
 from django.utils.http import http_date
-from urllib.parse import unquote
 from apps.accounts.permissions import (
     Authenticated,
     IsAdmin,
@@ -62,13 +61,14 @@ from rest_framework.filters import SearchFilter, OrderingFilter
 from apps.epg.models import EPGData
 from apps.vod.models import Movie, Series
 from django.db.models import Q
-from django.http import HttpResponse, StreamingHttpResponse, FileResponse, Http404
+from django.http import HttpResponse, StreamingHttpResponse, FileResponse, Http404, JsonResponse, HttpResponseRedirect
 from django.utils import timezone
 import mimetypes
 from django.conf import settings
 
 from rest_framework.pagination import PageNumberPagination
 
+from dispatcharr.utils import network_access_allowed
 
 
 logger = logging.getLogger(__name__)
@@ -196,8 +196,250 @@ class StreamViewSet(viewsets.ModelViewSet):
         # Return only the IDs from the queryset
         stream_ids = queryset.values_list("id", flat=True)
 
-        # Return the response with the list of IDs
-        return Response(list(stream_ids))
+        return JsonResponse(list(stream_ids), safe=False)
+
+    @extend_schema(
+        parameters=[
+            OpenApiParameter(
+                name="channel_group",
+                type=OpenApiTypes.STR,
+                location=OpenApiParameter.QUERY,
+                required=True,
+                description="Channel group name to scope the preview to.",
+            ),
+            OpenApiParameter(
+                name="find",
+                type=OpenApiTypes.STR,
+                location=OpenApiParameter.QUERY,
+                required=False,
+                description=(
+                    "Find regex for the rename preview. When supplied, "
+                    "the response includes find_matches and find_match_count."
+                ),
+            ),
+            OpenApiParameter(
+                name="replace",
+                type=OpenApiTypes.STR,
+                location=OpenApiParameter.QUERY,
+                required=False,
+                description=(
+                    "Replacement string used with the find pattern. "
+                    "Defaults to empty string when omitted."
+                ),
+            ),
+            OpenApiParameter(
+                name="match",
+                type=OpenApiTypes.STR,
+                location=OpenApiParameter.QUERY,
+                required=False,
+                description=(
+                    "Filter regex for the include preview. When supplied, "
+                    "the response includes filter_matches and filter_match_count."
+                ),
+            ),
+            OpenApiParameter(
+                name="exclude",
+                type=OpenApiTypes.STR,
+                location=OpenApiParameter.QUERY,
+                required=False,
+                description=(
+                    "Filter regex for the exclude preview. When supplied, "
+                    "the response includes exclude_matches and "
+                    "exclude_match_count."
+                ),
+            ),
+            OpenApiParameter(
+                name="limit",
+                type=OpenApiTypes.INT,
+                location=OpenApiParameter.QUERY,
+                required=False,
+                description="Max preview entries per match list (default 10, capped at 50).",
+            ),
+        ],
+        responses={
+            200: inline_serializer(
+                name="StreamRegexPreviewResponse",
+                fields={
+                    "total_in_group": serializers.IntegerField(),
+                    "total_scanned": serializers.IntegerField(),
+                    "scan_limit_hit": serializers.BooleanField(),
+                    "find_matches": serializers.ListField(
+                        child=serializers.DictField(), required=False
+                    ),
+                    "find_match_count": serializers.IntegerField(required=False),
+                    "filter_matches": serializers.ListField(
+                        child=serializers.DictField(), required=False
+                    ),
+                    "filter_match_count": serializers.IntegerField(required=False),
+                    "exclude_matches": serializers.ListField(
+                        child=serializers.DictField(), required=False
+                    ),
+                    "exclude_match_count": serializers.IntegerField(required=False),
+                    "find_error": serializers.CharField(required=False),
+                    "match_error": serializers.CharField(required=False),
+                    "exclude_error": serializers.CharField(required=False),
+                },
+            )
+        },
+        description=(
+            "Returns regex preview info for a group's streams. Used by the "
+            "auto-sync gear modal so users can see how their find/replace "
+            "or filter pattern affects real stream names before saving. "
+            "Caps in-memory iteration at SCAN_CAP streams per call so the "
+            "endpoint stays bounded even on groups with tens of thousands "
+            "of streams; the caller surfaces total_in_group and "
+            "scan_limit_hit so users know whether the preview is complete."
+        ),
+    )
+    @action(detail=False, methods=["get"], url_path="regex-preview")
+    def regex_preview(self, request, *args, **kwargs):
+        # `regex` (third-party) supports a per-call timeout that bounds
+        # catastrophic backtracking; paired with PATTERN_MAX_LEN to keep
+        # the endpoint safe under adversarial input.
+        import regex as re
+
+        SCAN_CAP = 5000
+        PATTERN_MAX_LEN = 512
+        REGEX_TIMEOUT = 0.1
+
+        group_name = request.query_params.get("channel_group")
+        if not group_name:
+            return Response(
+                {"detail": "channel_group is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Group names are not unique across M3U accounts (two providers
+        # can both publish a "Sports" group). Scope to the calling
+        # account so the sample reflects only the user's edits.
+        m3u_account_id = request.query_params.get("m3u_account_id")
+        if m3u_account_id is not None:
+            try:
+                m3u_account_id = int(m3u_account_id)
+            except (TypeError, ValueError):
+                return Response(
+                    {"detail": "m3u_account_id must be an integer"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        find_pat = request.query_params.get("find") or None
+        replace_pat = request.query_params.get("replace") or ""
+        match_pat = request.query_params.get("match") or None
+        exclude_pat = request.query_params.get("exclude") or None
+        for label, value in (
+            ("find", find_pat),
+            ("replace", replace_pat),
+            ("match", match_pat),
+            ("exclude", exclude_pat),
+        ):
+            if value is not None and len(value) > PATTERN_MAX_LEN:
+                return Response(
+                    {"detail": f"{label} exceeds {PATTERN_MAX_LEN} characters"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+        try:
+            limit = int(request.query_params.get("limit", 10))
+        except (TypeError, ValueError):
+            limit = 10
+        limit = max(1, min(limit, 50))
+
+        find_re = None
+        match_re = None
+        exclude_re = None
+        find_error = None
+        match_error = None
+        exclude_error = None
+        if find_pat:
+            try:
+                find_re = re.compile(find_pat)
+            except re.error as e:
+                find_error = str(e)
+        if match_pat:
+            try:
+                match_re = re.compile(match_pat)
+            except re.error as e:
+                match_error = str(e)
+        if exclude_pat:
+            try:
+                exclude_re = re.compile(exclude_pat)
+            except re.error as e:
+                exclude_error = str(e)
+
+        # Capped at SCAN_CAP to bound memory on huge groups; the
+        # separate COUNT lets the client surface scan_limit_hit when
+        # the preview covers only a sample.
+        base_qs = Stream.objects.filter(channel_group__name=group_name)
+        if m3u_account_id is not None:
+            base_qs = base_qs.filter(m3u_account_id=m3u_account_id)
+        names_iter = base_qs.values_list("name", flat=True)[:SCAN_CAP]
+        total_in_group = base_qs.count()
+
+        find_matches = []
+        filter_matches = []
+        exclude_matches = []
+        find_match_count = 0
+        filter_match_count = 0
+        exclude_match_count = 0
+        total_scanned = 0
+        # Abort a pattern on timeout to bound CPU; partial counts and
+        # an `*_error` field still flow back to the client.
+        for name in names_iter:
+            total_scanned += 1
+            if find_re is not None:
+                try:
+                    new_name = find_re.sub(replace_pat, name, timeout=REGEX_TIMEOUT)
+                except (TimeoutError, re.error) as e:
+                    find_error = find_error or f"Pattern timed out: {e}"
+                    find_re = None
+                    continue
+                if new_name != name:
+                    find_match_count += 1
+                    if len(find_matches) < limit:
+                        find_matches.append({"before": name, "after": new_name})
+            if match_re is not None:
+                try:
+                    matched = match_re.search(name, timeout=REGEX_TIMEOUT)
+                except (TimeoutError, re.error) as e:
+                    match_error = match_error or f"Pattern timed out: {e}"
+                    match_re = None
+                    continue
+                if matched:
+                    filter_match_count += 1
+                    if len(filter_matches) < limit:
+                        filter_matches.append({"name": name, "matches": True})
+            if exclude_re is not None:
+                try:
+                    matched = exclude_re.search(name, timeout=REGEX_TIMEOUT)
+                except (TimeoutError, re.error) as e:
+                    exclude_error = exclude_error or f"Pattern timed out: {e}"
+                    exclude_re = None
+                    continue
+                if matched:
+                    exclude_match_count += 1
+                    if len(exclude_matches) < limit:
+                        exclude_matches.append({"name": name, "matches": True})
+
+        response_payload = {
+            "total_in_group": total_in_group,
+            "total_scanned": total_scanned,
+            "scan_limit_hit": total_in_group > SCAN_CAP,
+        }
+        if find_pat:
+            response_payload["find_matches"] = find_matches
+            response_payload["find_match_count"] = find_match_count
+            if find_error:
+                response_payload["find_error"] = find_error
+        if match_pat:
+            response_payload["filter_matches"] = filter_matches
+            response_payload["filter_match_count"] = filter_match_count
+            if match_error:
+                response_payload["match_error"] = match_error
+        if exclude_pat:
+            response_payload["exclude_matches"] = exclude_matches
+            response_payload["exclude_match_count"] = exclude_match_count
+            if exclude_error:
+                response_payload["exclude_error"] = exclude_error
+        return Response(response_payload)
 
     @action(detail=False, methods=["get"], url_path="groups")
     def get_groups(self, request, *args, **kwargs):
@@ -218,6 +460,40 @@ class StreamViewSet(viewsets.ModelViewSet):
         Get available filter options based on current filter state.
         Uses a hierarchical approach: M3U is the parent filter, Group filters based on M3U.
         """
+        # Fast path: no filters supplied - skip DISTINCT over the full streams
+        # table and answer from parent tables via EXISTS semi-joins instead.
+        _group_filter_params = (
+            "name", "m3u_account", "m3u_account_name",
+            "m3u_account_is_active", "tvg_id",
+        )
+        _m3u_filter_params = (
+            "name", "m3u_account_name", "m3u_account_is_active", "tvg_id",
+        )
+        _has_group_filters = any(request.GET.get(p) for p in _group_filter_params)
+        _has_m3u_filters = any(request.GET.get(p) for p in _m3u_filter_params)
+
+        if not _has_group_filters and not _has_m3u_filters:
+            base_qs = Stream.objects.exclude(m3u_account__is_active=False)
+            group_names = list(
+                base_qs.exclude(channel_group__isnull=True)
+                .order_by("channel_group__name")
+                .values_list("channel_group__name", flat=True)
+                .distinct()
+            )
+            m3u_data = list(
+                base_qs.exclude(m3u_account__isnull=True)
+                .order_by("m3u_account__name")
+                .values("m3u_account__id", "m3u_account__name")
+                .distinct()
+            )
+            return Response({
+                "groups": group_names,
+                "m3u_accounts": [
+                    {"id": m["m3u_account__id"], "name": m["m3u_account__name"]}
+                    for m in m3u_data
+                ],
+            })
+
         # For group options: we need to bypass the channel_group custom queryset filtering
         # Store original request params
         original_params = request.query_params
@@ -321,8 +597,56 @@ class ChannelGroupViewSet(viewsets.ModelViewSet):
             return [Authenticated()]
 
     def get_queryset(self):
-        """Return channel groups with prefetched relations for efficient counting"""
-        return ChannelGroup.objects.prefetch_related('channels', 'm3u_accounts').all()
+        # Annotate both counts at the SQL level so the serializer methods
+        # can read them from the object rather than issuing a COUNT per row.
+        # `distinct=True` is required when multiple reverse-FK annotations
+        # share the same queryset to avoid row-multiplication artifacts.
+        # m3u_accounts is still prefetched for the nested serializer data.
+        return (
+            ChannelGroup.objects
+            .annotate(
+                channel_count=Count('channels', distinct=True),
+                m3u_account_count=Count('m3u_accounts', distinct=True),
+            )
+            .prefetch_related('m3u_accounts')
+            .all()
+        )
+
+    def list(self, request, *args, **kwargs):
+        queryset = self.filter_queryset(self.get_queryset())
+
+        # Evaluate the queryset once so the annotations and prefetch cache are
+        # populated together, then extract IDs from the in-memory objects.
+        # A second .values_list() call would fire a separate SQL query.
+        groups = list(queryset)
+        group_ids = [g.id for g in groups]
+
+        # Pre-aggregate stream counts for all (account, group) pairs in a
+        # single query so the nested ChannelGroupM3UAccountSerializer never
+        # fires a COUNT per row.
+        counts_qs = (
+            Stream.objects.filter(channel_group_id__in=group_ids)
+            .values('m3u_account_id', 'channel_group_id')
+            .annotate(c=Count('id'))
+        )
+        stream_counts = {
+            (row['m3u_account_id'], row['channel_group_id']): row['c']
+            for row in counts_qs
+        }
+
+        page = self.paginate_queryset(groups)
+        if page is not None:
+            serializer = self.get_serializer(
+                page, many=True,
+                context={**self.get_serializer_context(), 'stream_counts': stream_counts},
+            )
+            return self.get_paginated_response(serializer.data)
+
+        serializer = self.get_serializer(
+            groups, many=True,
+            context={**self.get_serializer_context(), 'stream_counts': stream_counts},
+        )
+        return Response(serializer.data)
 
     def update(self, request, *args, **kwargs):
         """Override update to check M3U associations"""
@@ -562,17 +886,31 @@ class ChannelViewSet(viewsets.ModelViewSet):
             return [Authenticated()]
 
     def get_queryset(self):
-        qs = (
-            super()
-            .get_queryset()
-            .select_related(
+        # get_ids and summary only need the filter conditions, not the full
+        # object graph. Skipping the 5 select_related joins and 2 prefetch
+        # queries for those actions cuts their DB cost significantly.
+        action = getattr(self, "action", None)
+        qs = super().get_queryset()
+
+        if action not in ("get_ids", "summary"):
+            qs = qs.select_related(
                 "channel_group",
                 "logo",
                 "epg_data",
                 "stream_profile",
+                "override",
+                "auto_created_by",
+            ).prefetch_related(
+                "streams",
+                # Default-attr prefetch shares the cache with M2M writes;
+                # a named `to_attr` would isolate it and trigger N+1.
+                Prefetch(
+                    "channelstream_set",
+                    queryset=ChannelStream.objects.select_related(
+                        "stream__m3u_account"
+                    ).order_by("order"),
+                ),
             )
-            .prefetch_related("streams")
-        )
 
         channel_group = self.request.query_params.get("channel_group")
         if channel_group:
@@ -586,6 +924,8 @@ class ChannelViewSet(viewsets.ModelViewSet):
         show_disabled_param = self.request.query_params.get("show_disabled", None)
         only_streamless = self.request.query_params.get("only_streamless", None)
         only_stale = self.request.query_params.get("only_stale", None)
+        only_has_overrides = self.request.query_params.get("only_has_overrides", None)
+        visibility_filter = self.request.query_params.get("visibility_filter", "active")
 
         if channel_profile_id:
             try:
@@ -608,6 +948,18 @@ class ChannelViewSet(viewsets.ModelViewSet):
         if only_stale:
             # Filter channels that have at least one related stream marked as stale
             q_filters &= Q(streams__is_stale=True)
+        if only_has_overrides:
+            q_filters &= Q(override__isnull=False)
+
+        # Visibility filter applies to list-style reads only; retrieve /
+        # update / delete must still reach a hidden channel by id so the
+        # frontend can unhide. Summary powers the TV Guide and follows
+        # the same hidden semantic as downstream clients.
+        if self.action in ("list", "get_ids", "summary"):
+            if visibility_filter == "hidden":
+                q_filters &= Q(hidden_from_output=True)
+            elif visibility_filter != "all":
+                q_filters &= Q(hidden_from_output=False)
 
         if self.request.user.user_level < 10:
             filters["user_level__lte"] = self.request.user.user_level
@@ -621,7 +973,13 @@ class ChannelViewSet(viewsets.ModelViewSet):
         if q_filters:
             qs = qs.filter(q_filters)
 
-        return qs.distinct()
+        # DISTINCT is only needed when a filter joins to a one-to-many table
+        # and can produce duplicate channel rows. channel_profile_id joins
+        # channelprofilemembership; only_stale joins streams. All other
+        # filters use FK or one-to-one joins that cannot produce duplicates.
+        if channel_profile_id or only_stale:
+            return qs.distinct()
+        return qs
 
     def get_serializer_context(self):
         context = super().get_serializer_context()
@@ -629,6 +987,14 @@ class ChannelViewSet(viewsets.ModelViewSet):
             self.request.query_params.get("include_streams", "false") == "true"
         )
         context["include_streams"] = include_streams
+        # source_stream is only needed by the channel edit form. For get_ids
+        # and summary the channelstream_set prefetch is skipped entirely, so
+        # source_stream cannot be computed without hitting the DB per channel.
+        # For list and write/retrieve paths the prefetch is present, so we
+        # can populate it from memory without extra queries.
+        context["include_source_stream"] = action not in (
+            "get_ids", "summary"
+        ) if (action := getattr(self, "action", None)) else False
         return context
 
     @extend_schema(
@@ -755,14 +1121,44 @@ class ChannelViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        # Capture override intent from the raw payload: presence of the
+        # key distinguishes "no change" from explicit null ("clear"),
+        # which `validated_data` would collapse.
+        override_intents = {}
+        for channel_data in data:
+            if "override" in channel_data:
+                cid = channel_data.get("id")
+                override_intents[cid] = channel_data["override"]
+
+        # Capture hide / unhide transitions before setattr overwrites
+        # the in-memory channels. bulk_update skips post_save, so the
+        # compact-mode assign / release runs explicitly below.
+        unhide_transition_ids = [
+            channel.id
+            for channel, validated_data in validated_updates
+            if validated_data.get("hidden_from_output") is False
+            and channel.hidden_from_output is True
+        ]
+        hide_transition_candidates = [
+            channel
+            for channel, validated_data in validated_updates
+            if validated_data.get("hidden_from_output") is True
+            and channel.hidden_from_output is False
+            and channel.channel_number is not None
+            and channel.auto_created
+            and channel.auto_created_by_id
+        ]
+
         # Apply all updates in a transaction
         with transaction.atomic():
             streams_updates = []
             for channel, validated_data in validated_updates:
-                # Pop streams before setattr loop — M2M fields can't be set via setattr
+                # Streams (M2M) and override (reverse OneToOne) cannot
+                # ride the setattr loop; handle each separately below.
                 streams = validated_data.pop("streams", None)
                 if streams is not None:
                     streams_updates.append((channel, streams))
+                validated_data.pop("override", None)
                 for key, value in validated_data.items():
                     setattr(channel, key, value)
 
@@ -782,6 +1178,179 @@ class ChannelViewSet(viewsets.ModelViewSet):
                         batch_size=100
                     )
 
+            # On unhide under compact mode, assign a number so the
+            # channel is immediately addressable by clients.
+            if unhide_transition_ids:
+                from .compact_numbering import (
+                    assign_compact_numbers_for_channels,
+                )
+                assign_compact_numbers_for_channels(unhide_transition_ids)
+
+            # On hide under compact mode, release the channel_number
+            # so the slot is reused. The bulk path bypasses the
+            # post_save signal that handles single-row hides.
+            if hide_transition_candidates:
+                from .compact_numbering import (
+                    get_group_relation_for_channel,
+                    is_compact_group,
+                )
+                ids_to_release = []
+                for ch in hide_transition_candidates:
+                    relation = get_group_relation_for_channel(ch)
+                    if relation and is_compact_group(relation):
+                        ids_to_release.append(ch.id)
+                if ids_to_release:
+                    Channel.objects.filter(id__in=ids_to_release).update(
+                        channel_number=None
+                    )
+                    # Refresh in-memory copies so the response shape
+                    # reflects the cleared numbers.
+                    for ch in channels_to_update:
+                        if ch.id in ids_to_release:
+                            ch.channel_number = None
+
+            # Override (reverse OneToOne) needs a separate write path.
+            if override_intents:
+                from apps.channels.models import ChannelOverride
+                from apps.channels.managers import OVERRIDABLE_FIELDS
+                override_fields = OVERRIDABLE_FIELDS
+                # Block override mutations on manual channels. Mixed
+                # selections with override:null are tolerated because
+                # clearing a non-existent row is a no-op.
+                manual_with_override = []
+                for channel, _ in validated_updates:
+                    if channel.id not in override_intents:
+                        continue
+                    intent = override_intents[channel.id]
+                    if (
+                        intent is not None
+                        and intent != {}
+                        and not channel.auto_created
+                    ):
+                        manual_with_override.append(channel.id)
+                if manual_with_override:
+                    return Response(
+                        {
+                            "errors": [
+                                {
+                                    "channel_id": cid,
+                                    "error": (
+                                        "Cannot set override on a manual channel; "
+                                        "overrides only apply to auto-created channels."
+                                    ),
+                                }
+                                for cid in manual_with_override
+                            ]
+                        },
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+
+                channels_to_clear = []
+                overrides_to_upsert = []
+                for channel, _ in validated_updates:
+                    if channel.id not in override_intents:
+                        continue
+                    intent = override_intents[channel.id]
+                    if intent is None:
+                        channels_to_clear.append(channel.id)
+                    elif intent == {}:
+                        # Empty dict means no override intent; treat as no-op.
+                        continue
+                    else:
+                        defaults = {
+                            f: intent.get(f)
+                            for f in override_fields
+                            if f in intent
+                        }
+                        # Coerce FK aliases (logo, channel_group, ...) to
+                        # the *_id columns ChannelOverride actually stores.
+                        for raw, mapped in (
+                            ("logo", "logo_id"),
+                            ("channel_group", "channel_group_id"),
+                            ("epg_data", "epg_data_id"),
+                            ("stream_profile", "stream_profile_id"),
+                        ):
+                            if raw in intent and mapped not in defaults:
+                                val = intent[raw]
+                                defaults[mapped] = (
+                                    val.id if hasattr(val, "id") else val
+                                )
+                        overrides_to_upsert.append((channel.id, defaults))
+
+                if channels_to_clear:
+                    ChannelOverride.objects.filter(
+                        channel_id__in=channels_to_clear
+                    ).delete()
+
+                # Bulk upsert keeps a 1000-channel batch to two
+                # statements (one INSERT, one UPDATE) instead of the
+                # per-row SELECT + INSERT-or-UPDATE that update_or_create
+                # would generate.
+                if overrides_to_upsert:
+                    existing_overrides = {
+                        o.channel_id: o
+                        for o in ChannelOverride.objects.filter(
+                            channel_id__in=[
+                                cid for cid, _ in overrides_to_upsert
+                            ]
+                        )
+                    }
+                    to_create = []
+                    to_update = []
+                    update_field_set = set()
+                    for channel_id, defaults in overrides_to_upsert:
+                        existing = existing_overrides.get(channel_id)
+                        if existing:
+                            for f, v in defaults.items():
+                                setattr(existing, f, v)
+                                update_field_set.add(f)
+                            to_update.append(existing)
+                        else:
+                            to_create.append(
+                                ChannelOverride(
+                                    channel_id=channel_id, **defaults
+                                )
+                            )
+                    if to_update:
+                        ChannelOverride.objects.bulk_update(
+                            to_update,
+                            fields=list(update_field_set),
+                            batch_size=200,
+                        )
+                    if to_create:
+                        ChannelOverride.objects.bulk_create(
+                            to_create, batch_size=200
+                        )
+
+                    # Drop override rows that ended up all-null; an empty
+                    # override would falsely surface as active in the UI.
+                    touched_ids = [cid for cid, _ in overrides_to_upsert]
+                    empty_overrides = [
+                        o for o in ChannelOverride.objects.filter(
+                            channel_id__in=touched_ids
+                        )
+                        if not o.has_any_override()
+                    ]
+                    if empty_overrides:
+                        ChannelOverride.objects.filter(
+                            id__in=[o.id for o in empty_overrides]
+                        ).delete()
+
+                # Queryset writes leave the reverse-OneToOne cache stale;
+                # clear it so the serializer reads the new override state.
+                touched_channel_ids = {cid for cid, _ in overrides_to_upsert}
+                touched_channel_ids.update(channels_to_clear)
+                if touched_channel_ids:
+                    for channel, _ in validated_updates:
+                        if channel.id not in touched_channel_ids:
+                            continue
+                        try:
+                            channel._state.fields_cache.pop("override", None)
+                        except AttributeError:
+                            pass
+                        if hasattr(channel, "_channel_override_cache"):
+                            delattr(channel, "_channel_override_cache")
+
             # Handle streams M2M updates separately
             for channel, streams in streams_updates:
                 normalized_ids = [
@@ -797,16 +1366,20 @@ class ChannelViewSet(viewsets.ModelViewSet):
                 if to_remove:
                     channel.channelstream_set.filter(stream_id__in=to_remove).delete()
 
+                to_update = []
                 for order, stream_id in enumerate(normalized_ids):
                     if stream_id in current_links:
                         cs = current_links[stream_id]
                         if cs.order != order:
                             cs.order = order
-                            cs.save(update_fields=["order"])
+                            to_update.append(cs)
                     else:
                         ChannelStream.objects.create(
                             channel=channel, stream_id=stream_id, order=order
                         )
+
+                if to_update:
+                    ChannelStream.objects.bulk_update(to_update, ["order"])
 
         # Return the updated objects (already in memory)
         serialized_channels = ChannelSerializer(
@@ -1022,25 +1595,164 @@ class ChannelViewSet(viewsets.ModelViewSet):
         # Return only the IDs from the queryset
         channel_ids = queryset.values_list("id", flat=True)
 
-        # Return the response with the list of IDs
-        return Response(list(channel_ids))
+        # JsonResponse skips DRF's renderer pipeline for a flat int list.
+        return JsonResponse(list(channel_ids), safe=False)
 
     @action(detail=False, methods=["get"], url_path="summary")
     def summary(self, request, *args, **kwargs):
-        """Return a lightweight list of channels with only the fields needed by the TV Guide."""
-        queryset = self.filter_queryset(self.get_queryset())
-        data = list(
-            queryset.values(
-                "id",
-                "name",
-                "logo_id",
-                "channel_number",
-                "uuid",
-                "epg_data_id",
-                "channel_group_id",
-            )
+        """Return a lightweight list of channels with only the fields needed by the TV Guide.
+
+        The TV Guide is a downstream output surface like HDHR / M3U / EPG /
+        XC and must reflect the user's overrides. Effective values are
+        coalesced at the SQL layer; the annotated columns are renamed
+        back to the raw field names on the way out so the response
+        shape stays unchanged for the frontend.
+        """
+        from .managers import with_effective_values
+
+        queryset = with_effective_values(
+            self.filter_queryset(self.get_queryset())
         )
-        return Response(data)
+        return JsonResponse(
+            [
+                {
+                    "id": row["id"],
+                    "uuid": row["uuid"],
+                    "name": row["effective_name"],
+                    "logo_id": row["effective_logo_id"],
+                    "channel_number": row["effective_channel_number"],
+                    "epg_data_id": row["effective_epg_data_id"],
+                    "channel_group_id": row["effective_channel_group_id"],
+                }
+                for row in queryset.values(
+                    "id",
+                    "uuid",
+                    "effective_name",
+                    "effective_logo_id",
+                    "effective_channel_number",
+                    "effective_epg_data_id",
+                    "effective_channel_group_id",
+                )
+            ],
+            safe=False,
+        )
+
+    @extend_schema(
+        parameters=[
+            OpenApiParameter(
+                name="start",
+                type=OpenApiTypes.NUMBER,
+                location=OpenApiParameter.QUERY,
+                required=True,
+                description="Inclusive lower bound of the range to scan.",
+            ),
+            OpenApiParameter(
+                name="end",
+                type=OpenApiTypes.NUMBER,
+                location=OpenApiParameter.QUERY,
+                required=False,
+                description=(
+                    "Inclusive upper bound. If omitted or equal to start, "
+                    "behaves as a single-number lookup."
+                ),
+            ),
+        ],
+        responses={
+            200: inline_serializer(
+                name="ChannelsInRangeResponse",
+                fields={
+                    "occupants": serializers.ListField(
+                        child=serializers.DictField()
+                    )
+                },
+            )
+        },
+        description=(
+            "Returns the channels (including those whose effective number is "
+            "set via override) currently occupying numbers within the given "
+            "range. Used by the group settings form to surface inline range "
+            "conflict warnings. Capped at 50 entries to bound the response "
+            "payload; the frontend only needs to know whether any conflicts "
+            "exist after filtering, not the entire list."
+        ),
+    )
+    @action(detail=False, methods=["get"], url_path="numbers-in-range")
+    def numbers_in_range(self, request, *args, **kwargs):
+        from .managers import with_effective_values
+
+        raw_start = request.query_params.get("start")
+        raw_end = request.query_params.get("end")
+        if raw_start is None or raw_start == "":
+            return Response({"occupants": []})
+        try:
+            start = float(raw_start)
+        except (TypeError, ValueError):
+            return Response(
+                {"detail": "Invalid start value"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            end = float(raw_end) if raw_end not in (None, "") else start
+        except (TypeError, ValueError):
+            return Response(
+                {"detail": "Invalid end value"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if end < start:
+            start, end = end, start
+
+        queryset = (
+            with_effective_values(
+                Channel.objects.all(), select_related_fks=True
+            )
+            .filter(
+                effective_channel_number__gte=start,
+                effective_channel_number__lte=end,
+            )
+            .order_by("effective_channel_number")[:50]
+        )
+
+        occupants = []
+        for occupant in queryset:
+            effective_group = getattr(
+                occupant, "effective_channel_group_obj", None
+            )
+            group_name = (
+                getattr(effective_group, "name", None)
+                if effective_group is not None
+                else None
+            )
+            effective_group_id = getattr(
+                occupant, "effective_channel_group_id", None
+            )
+            override = getattr(occupant, "override", None)
+            override_sets_number = bool(
+                override is not None and override.channel_number is not None
+            )
+            occupants.append(
+                {
+                    "id": occupant.id,
+                    "name": getattr(
+                        occupant, "effective_name", occupant.name
+                    ),
+                    "channel_number": getattr(
+                        occupant,
+                        "effective_channel_number",
+                        occupant.channel_number,
+                    ),
+                    "channel_group": group_name,
+                    "channel_group_id": effective_group_id,
+                    "auto_created": bool(occupant.auto_created),
+                    "auto_created_by_account_id": (
+                        occupant.auto_created_by_id
+                        if occupant.auto_created_by_id
+                        else None
+                    ),
+                    "has_channel_number_override": override_sets_number,
+                }
+            )
+
+        return Response({"occupants": occupants})
 
     @extend_schema(
         methods=["POST"],
@@ -1896,8 +2608,13 @@ class LogoViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         """Optimize queryset with prefetch and add filtering"""
-        # Start with basic prefetch for channels
-        queryset = Logo.objects.prefetch_related('channels').order_by('name')
+        # Annotate channel_count and prefetch channels to avoid N+1 in LogoSerializer.
+        queryset = (
+            Logo.objects
+            .annotate(channel_count=Count('channels'))
+            .prefetch_related('channels')
+            .order_by('name')
+        )
 
         # Filter by specific IDs
         ids = self.request.query_params.getlist('ids')
@@ -1914,11 +2631,9 @@ class LogoViewSet(viewsets.ModelViewSet):
         # Filter by usage
         used_filter = self.request.query_params.get('used', None)
         if used_filter == 'true':
-            # Logo is used if it has any channels
-            queryset = queryset.filter(channels__isnull=False).distinct()
+            queryset = queryset.filter(channel_count__gt=0)
         elif used_filter == 'false':
-            # Logo is unused if it has no channels
-            queryset = queryset.filter(channels__isnull=True)
+            queryset = queryset.filter(channel_count=0)
 
         # Filter by name
         name_filter = self.request.query_params.get('name', None)
@@ -2152,14 +2867,18 @@ class ChannelProfileViewSet(viewsets.ModelViewSet):
     serializer_class = ChannelProfileSerializer
 
     def get_queryset(self):
+        from django.db.models import Prefetch
+        enabled_memberships_prefetch = Prefetch(
+            'channelprofilemembership_set',
+            queryset=ChannelProfileMembership.objects.filter(enabled=True),
+            to_attr='enabled_memberships',
+        )
         user = self.request.user
 
-        # If user_level is 10, return all ChannelProfiles
         if hasattr(user, "user_level") and user.user_level == 10:
-            return ChannelProfile.objects.all()
+            return ChannelProfile.objects.prefetch_related(enabled_memberships_prefetch)
 
-        # Otherwise, return only ChannelProfiles related to the user
-        return self.request.user.channel_profiles.all()
+        return self.request.user.channel_profiles.prefetch_related(enabled_memberships_prefetch)
 
     def get_permissions(self):
         if self.action == "duplicate":
@@ -2230,6 +2949,99 @@ class GetChannelStreamsAPIView(APIView):
         streams = channel.streams.all().order_by("channelstream__order")
         serializer = StreamSerializer(streams, many=True)
         return Response(serializer.data)
+
+
+class GetChannelStreamStatsAPIView(APIView):
+    """Returns a stats delta for a channel's streams (id, stream_stats,
+    stream_stats_updated_at). Supports `since` (ISO 8601) and `ids`
+    (comma-separated) query params."""
+
+    def get_permissions(self):
+        try:
+            return [
+                perm() for perm in permission_classes_by_method[self.request.method]
+            ]
+        except KeyError:
+            return [Authenticated()]
+
+    @extend_schema(
+        description=(
+            "Return a minimal stats delta for the streams attached to a "
+            "channel. Used by the channel table to refresh `stream_stats` "
+            "on row expand and after a preview closes without re-pulling "
+            "full stream rows."
+        ),
+        parameters=[
+            OpenApiParameter(
+                name="since",
+                type=OpenApiTypes.DATETIME,
+                location=OpenApiParameter.QUERY,
+                required=False,
+                description=(
+                    "ISO 8601 timestamp. Returns only streams whose "
+                    "`stream_stats_updated_at` is strictly newer than this "
+                    "value. Omit to return all streams for the channel."
+                ),
+            ),
+            OpenApiParameter(
+                name="ids",
+                type=OpenApiTypes.STR,
+                location=OpenApiParameter.QUERY,
+                required=False,
+                description=(
+                    "Comma-separated stream IDs to restrict the response "
+                    "to. Combined with `since` via AND."
+                ),
+            ),
+        ],
+        responses={
+            200: inline_serializer(
+                name="ChannelStreamStatsDelta",
+                fields={
+                    "id": serializers.IntegerField(),
+                    "stream_stats": serializers.JSONField(allow_null=True),
+                    "stream_stats_updated_at": serializers.DateTimeField(allow_null=True),
+                },
+                many=True,
+            ),
+            400: inline_serializer(
+                name="ChannelStreamStatsErrorResponse",
+                fields={"detail": serializers.CharField()},
+            ),
+        },
+    )
+    def get(self, request, channel_id):
+        from django.utils.dateparse import parse_datetime
+
+        get_object_or_404(Channel, id=channel_id)
+
+        qs = Stream.objects.filter(channels=channel_id)
+
+        since_raw = request.query_params.get("since")
+        if since_raw:
+            since_dt = parse_datetime(since_raw)
+            if since_dt is None:
+                return Response(
+                    {"detail": "Invalid 'since' value. Expected ISO 8601."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            qs = qs.filter(stream_stats_updated_at__gt=since_dt)
+
+        ids_raw = request.query_params.get("ids")
+        if ids_raw:
+            try:
+                ids = [int(x) for x in ids_raw.split(",") if x.strip()]
+            except ValueError:
+                return Response(
+                    {"detail": "Invalid 'ids' value. Expected comma-separated integers."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            qs = qs.filter(id__in=ids)
+
+        data = list(
+            qs.values("id", "stream_stats", "stream_stats_updated_at")
+        )
+        return Response(data)
 
 
 class UpdateChannelMembershipAPIView(APIView):
@@ -2397,8 +3209,8 @@ def _stop_dvr_clients(channel_uuid, recording_id=None):
     Returns the number of DVR clients stopped.
     """
     from core.utils import RedisClient
-    from apps.proxy.ts_proxy.redis_keys import RedisKeys
-    from apps.proxy.ts_proxy.services.channel_service import ChannelService
+    from apps.proxy.live_proxy.redis_keys import RedisKeys
+    from apps.proxy.live_proxy.services.channel_service import ChannelService
 
     r = RedisClient.get_client()
     if not r:
@@ -2440,12 +3252,57 @@ class RecordingViewSet(viewsets.ModelViewSet):
 
     def get_permissions(self):
         # Allow unauthenticated playback of recording files (like other streaming endpoints)
-        if self.action == 'file':
+        if self.action in ('file', 'hls'):
             return [AllowAny()]
         try:
             return [perm() for perm in permission_classes_by_action[self.action]]
         except KeyError:
             return [Authenticated()]
+
+    def _user_can_play_recording(self, request, recording):
+        """Authorization gate for recording playback (file/hls actions).
+
+        Mirrors how live stream endpoints authorize non-admin users, but
+        unlike the XC-style endpoints these URLs carry no credentials of
+        their own, so we require an authenticated session/JWT:
+          * Unauthenticated requests → denied.
+          * Admins (user_level >= 10) → allowed.
+          * Authenticated non-admins → allowed only if the recording's
+            source channel is visible under their channel-profile
+            assignments and within their user_level.
+
+        The network_access_allowed(request, "STREAMS") check applied
+        before this is a network-perimeter gate (e.g. block external IPs
+        from streaming at all); it is not a substitute for per-user
+        authorization.
+        """
+        user = getattr(request, "user", None)
+        if not user or not getattr(user, "is_authenticated", False):
+            return False
+        if getattr(user, "user_level", 0) >= 10:
+            return True
+
+        channel = getattr(recording, "channel", None)
+        if channel is None:
+            # Recording with no source channel, only admins can play.
+            return False
+
+        try:
+            user_profile_count = user.channel_profiles.count()
+        except Exception:
+            user_profile_count = 0
+
+        filters = {
+            "id": channel.id,
+            "user_level__lte": user.user_level,
+        }
+        if user_profile_count > 0:
+            filters["channelprofilemembership__enabled"] = True
+            filters["channelprofilemembership__channel_profile__in"] = (
+                user.channel_profiles.all()
+            )
+            return Channel.objects.filter(**filters).distinct().exists()
+        return Channel.objects.filter(**filters).exists()
 
     @action(detail=True, methods=["post"], url_path="comskip")
     def comskip(self, request, pk=None):
@@ -2460,14 +3317,32 @@ class RecordingViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=["get"], url_path="file")
     def file(self, request, pk=None):
-        """Stream a recorded file with HTTP Range support for seeking."""
+        """Stream a completed recording file with HTTP Range support for seeking.
+
+        For in-progress recordings, file_url in custom_properties points to
+        /hls/index.m3u8.  If a client hits this endpoint while the recording
+        is still running (or the MKV is not yet produced), it is redirected to
+        the HLS playlist endpoint.
+        """
+        if not network_access_allowed(request, "STREAMS"):
+            return JsonResponse({"error": "Forbidden"}, status=403)
         recording = get_object_or_404(Recording, pk=pk)
+        if not self._user_can_play_recording(request, recording):
+            return JsonResponse({"error": "Forbidden"}, status=403)
         cp = recording.custom_properties or {}
         file_path = cp.get("file_path")
         file_name = cp.get("file_name") or "recording"
 
-        if not file_path or not os.path.exists(file_path):
-            raise Http404("Recording file not found")
+        if not file_path or not os.path.exists(file_path) or os.path.getsize(file_path) == 0:
+            # Redirect to HLS if recording is still in progress
+            hls_dir = cp.get("_hls_dir")
+            if hls_dir and os.path.isdir(hls_dir):
+                hls_url = request.build_absolute_uri(
+                    f"/api/channels/recordings/{pk}/hls/index.m3u8"
+                )
+                return HttpResponseRedirect(hls_url)
+            if not file_path or not os.path.exists(file_path):
+                raise Http404("Recording file not found")
 
         # Guess content type
         ext = os.path.splitext(file_path)[1].lower()
@@ -2528,6 +3403,74 @@ class RecordingViewSet(viewsets.ModelViewSet):
         response["Content-Disposition"] = f"inline; filename=\"{file_name}\""
         return response
 
+    @action(detail=True, methods=["get"], url_path="hls/(?P<seg_path>.+)")
+    def hls(self, request, pk=None, seg_path=None):
+        """Serve HLS playlist and segment files for an in-progress (or completed) recording.
+
+        Clients connecting during recording should use the m3u8 URL returned in
+        custom_properties.file_url.  Segment URLs inside the playlist are rewritten
+        to route through this endpoint so authentication and path isolation are
+        preserved.
+        """
+        if not network_access_allowed(request, "STREAMS"):
+            return JsonResponse({"error": "Forbidden"}, status=403)
+        recording = get_object_or_404(Recording, pk=pk)
+        if not self._user_can_play_recording(request, recording):
+            return JsonResponse({"error": "Forbidden"}, status=403)
+        cp = recording.custom_properties or {}
+        hls_dir = cp.get("_hls_dir")
+
+        if not hls_dir or not os.path.isdir(hls_dir):
+            # HLS dir is gone, recording is likely complete.  Redirect to the
+            # permanent MKV endpoint for .m3u8 requests so clients that still
+            # have the HLS URL bookmarked get a useful response.
+            cp = recording.custom_properties or {}
+            file_path = cp.get("file_path")
+            if seg_path.endswith(".m3u8") and file_path and os.path.exists(file_path) and os.path.getsize(file_path) > 0:
+                return HttpResponseRedirect(
+                    request.build_absolute_uri(f"/api/channels/recordings/{pk}/file/")
+                )
+            raise Http404("HLS content not available for this recording")
+
+        # Security: prevent path traversal outside the HLS directory
+        safe_dir = os.path.realpath(hls_dir)
+        requested = os.path.realpath(os.path.join(hls_dir, seg_path))
+        if not requested.startswith(safe_dir + os.sep) and requested != safe_dir:
+            return Response({"error": "Forbidden"}, status=403)
+
+        if not os.path.isfile(requested):
+            raise Http404(f"HLS file not found: {seg_path}")
+
+        if seg_path.endswith(".m3u8"):
+            # Rewrite relative segment lines to absolute URLs through this API
+            base_url = request.build_absolute_uri(
+                f"/api/channels/recordings/{pk}/hls/"
+            )
+            lines = []
+            with open(requested) as _f:
+                for line in _f:
+                    stripped = line.strip()
+                    if stripped and not stripped.startswith("#"):
+                        lines.append(f"{base_url}{stripped}\n")
+                    else:
+                        lines.append(line)
+            return HttpResponse("".join(lines), content_type="application/x-mpegURL")
+
+        if seg_path.endswith(".ts"):
+            # Refresh the viewer heartbeat in Redis so the Celery task knows an
+            # active client is still fetching segments.  TTL is 20 s, enough for
+            # three 4-second segments plus network margin.
+            try:
+                from core.utils import RedisClient
+                _rv = RedisClient.get_client(max_retries=1, retry_interval=0)
+                if _rv:
+                    _rv.set(f"dvr:hls_viewer:{pk}", "1", ex=20)
+            except Exception:
+                pass
+            return FileResponse(open(requested, "rb"), content_type="video/mp2t")
+
+        raise Http404("Unsupported HLS file type")
+
     @action(detail=True, methods=["post"], url_path="stop")
     def stop(self, request, pk=None):
         """Stop a recording early while retaining the partial content for playback."""
@@ -2554,9 +3497,7 @@ class RecordingViewSet(viewsets.ModelViewSet):
         instance.custom_properties = cp
         instance.save(update_fields=["custom_properties"])
 
-        # Send the WebSocket notification before returning the response.
-        # send_websocket_update is gevent-safe (offloads async_to_sync to a
-        # real OS thread when monkey-patching is active).
+        # send_websocket_update offloads async_to_sync to a real OS thread when gevent is active.
         channel_uuid = str(instance.channel.uuid)
         recording_id = instance.id
         task_id = instance.task_id
@@ -2793,8 +3734,8 @@ class RecordingViewSet(viewsets.ModelViewSet):
             channel_uuid = str(instance.channel.uuid)
             # Lazy imports to avoid module overhead if proxy isn't used
             from core.utils import RedisClient
-            from apps.proxy.ts_proxy.redis_keys import RedisKeys
-            from apps.proxy.ts_proxy.services.channel_service import ChannelService
+            from apps.proxy.live_proxy.redis_keys import RedisKeys
+            from apps.proxy.live_proxy.services.channel_service import ChannelService
 
             r = RedisClient.get_client()
             if r:
@@ -2834,7 +3775,7 @@ class RecordingViewSet(viewsets.ModelViewSet):
         cp = instance.custom_properties or {}
         rec_status = cp.get("status", "")
         file_path = cp.get("file_path")
-        temp_ts_path = cp.get("_temp_file_path")
+        hls_dir = cp.get("_hls_dir")
         channel_uuid = str(instance.channel.uuid)
 
         # 1. Delete the DB record (also fires post_delete → revoke_task_on_delete)
@@ -2867,6 +3808,41 @@ class RecordingViewSet(viewsets.ModelViewSet):
             except Exception as ex:
                 logger.warning(f"Failed to delete recording artifact {path}: {ex}")
 
+        def _safe_rmtree(path: str):
+            if not path or not isinstance(path, str):
+                return
+            try:
+                import shutil as _shutil
+                if any(path.startswith(root) for root in allowed_roots) and os.path.isdir(path):
+                    _shutil.rmtree(path)
+                    logger.info(f"Deleted recording HLS directory: {path}")
+            except Exception as ex:
+                logger.warning(f"Failed to delete HLS directory {path}: {ex}")
+
+        # Clean up empty parent directories up to the recordings root to prevent orphaned folders from accumulating over time.
+        recordings_root = os.path.normpath('/data/recordings')
+
+        def _prune_empty_parents(path: str):
+            if not path or not isinstance(path, str):
+                return
+            try:
+                parent = os.path.dirname(os.path.normpath(path))
+                while (
+                    parent
+                    and parent != recordings_root
+                    and parent.startswith(recordings_root + os.sep)
+                    and os.path.isdir(parent)
+                    and not os.listdir(parent)
+                ):
+                    try:
+                        os.rmdir(parent)
+                        logger.info(f"Removed empty recording directory: {parent}")
+                    except OSError:
+                        break
+                    parent = os.path.dirname(parent)
+            except Exception as ex:
+                logger.debug(f"Unable to prune empty parents for {path}: {ex}")
+
         def _background_cancel():
             # Only stop the DVR client if the recording was actively streaming.
             # Stopping for completed/upcoming recordings would kill an unrelated
@@ -2884,7 +3860,13 @@ class RecordingViewSet(viewsets.ModelViewSet):
             # Best-effort file cleanup in case run_recording already exited
             # before the DB delete.
             _safe_remove(file_path)
-            _safe_remove(temp_ts_path)
+            _safe_rmtree(hls_dir)
+
+            # If removing the file/HLS dir leaves the show/season folder
+            # empty, clean those up too.  Both paths share the same parent
+            # in normal layouts, but run the prune for each just in case.
+            _prune_empty_parents(file_path)
+            _prune_empty_parents(hls_dir)
 
             try:
                 from django.db import connection as _conn
@@ -2982,9 +3964,13 @@ class SeriesRulesAPIView(APIView):
         request=inline_serializer(
             name="SeriesRuleRequest",
             fields={
-                'tvg_id': serializers.CharField(help_text='Channel TVG ID'),
+                'tvg_id': serializers.CharField(required=False, allow_blank=True, help_text='Optional channel TVG ID. Omit to match across all channels.'),
                 'mode': serializers.ChoiceField(choices=['all', 'new'], default='all', help_text='all: record all episodes, new: record only new episodes'),
                 'title': serializers.CharField(help_text='Series title', required=False),
+                'title_mode': serializers.ChoiceField(choices=['exact', 'contains', 'search', 'regex'], default='exact', required=False, help_text='How to match the title field'),
+                'description': serializers.CharField(required=False, help_text='Optional description match expression'),
+                'description_mode': serializers.ChoiceField(choices=['contains', 'search', 'regex'], default='contains', required=False, help_text='How to match the description field'),
+                'channel_id': serializers.IntegerField(required=False, help_text='Optional channel to pin recordings to (defaults to lowest-numbered channel for the EPG)'),
             },
         ),
     )
@@ -2993,62 +3979,96 @@ class SeriesRulesAPIView(APIView):
         tvg_id = str(data.get("tvg_id") or "").strip()
         mode = (data.get("mode") or "all").lower()
         title = data.get("title") or ""
+        title_mode = (data.get("title_mode") or "exact").lower()
+        description = data.get("description") or ""
+        description_mode = (data.get("description_mode") or "contains").lower()
+        channel_id = data.get("channel_id")
         if mode not in ("all", "new"):
             return Response({"error": "mode must be 'all' or 'new'"}, status=status.HTTP_400_BAD_REQUEST)
-        if not tvg_id:
-            return Response({"error": "tvg_id is required"}, status=status.HTTP_400_BAD_REQUEST)
+        if title_mode not in ("exact", "contains", "search", "regex"):
+            return Response({"error": "title_mode must be one of exact, contains, search, regex"}, status=status.HTTP_400_BAD_REQUEST)
+        if description_mode not in ("contains", "search", "regex"):
+            return Response({"error": "description_mode must be one of contains, search, regex"}, status=status.HTTP_400_BAD_REQUEST)
+        if not title.strip() and not description.strip():
+            return Response({"error": "A title or description is required"}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Coerce / validate optional pinned channel
+        pinned_channel_id = None
+        if channel_id not in (None, ""):
+            try:
+                pinned_channel_id = int(channel_id)
+            except (TypeError, ValueError):
+                return Response({"error": "channel_id must be an integer"}, status=status.HTTP_400_BAD_REQUEST)
+            from .models import Channel
+            if not Channel.objects.filter(id=pinned_channel_id).exists():
+                return Response({"error": "channel_id does not exist"}, status=status.HTTP_400_BAD_REQUEST)
+
+        rule_record = {
+            "tvg_id": tvg_id,
+            "mode": mode,
+            "title": title,
+            "title_mode": title_mode,
+            "description": description,
+            "description_mode": description_mode,
+        }
+        if pinned_channel_id is not None:
+            rule_record["channel_id"] = pinned_channel_id
+
         rules = CoreSettings.get_dvr_series_rules()
-        # Upsert by tvg_id
-        existing = next((r for r in rules if str(r.get("tvg_id")) == tvg_id), None)
+        # Upsert by tvg_id + title so multiple rules can target the same channel
+        existing = next(
+            (r for r in rules if
+             str(r.get("tvg_id") or "") == tvg_id and
+             str(r.get("title") or "") == title),
+            None
+        )
         if existing:
-            existing.update({"mode": mode, "title": title})
+            existing.clear()
+            existing.update(rule_record)
         else:
-            rules.append({"tvg_id": tvg_id, "mode": mode, "title": title})
+            rules.append(rule_record)
         CoreSettings.set_dvr_series_rules(rules)
         # Note: frontend calls the evaluate endpoint explicitly after creating
         # the rule, so do NOT fire evaluate_series_rules.delay() here to
         # avoid a race that creates duplicate recordings.
         return Response({"success": True, "rules": rules})
 
-
-class DeleteSeriesRuleAPIView(APIView):
-    def get_permissions(self):
-        try:
-            return [perm() for perm in permission_classes_by_method[self.request.method]]
-        except KeyError:
-            return [Authenticated()]
-
     @extend_schema(
         summary="Delete a series rule",
-        description="Remove a series recording rule by TVG ID and clean up future scheduled recordings.",
+        description="Remove a series recording rule by tvg_id + title and clean up future scheduled recordings.",
         parameters=[
-            OpenApiParameter('tvg_id', str, OpenApiParameter.PATH, required=True, description='Channel TVG ID'),
+            OpenApiParameter('tvg_id', str, OpenApiParameter.QUERY, required=False, description='Channel TVG ID (may be blank for title-only rules)'),
+            OpenApiParameter('title', str, OpenApiParameter.QUERY, required=False, description='Series title'),
         ],
     )
-    def delete(self, request, tvg_id):
-        tvg_id = unquote(str(tvg_id or ""))
+    def delete(self, request):
+        tvg_id = str(request.query_params.get("tvg_id") or "").strip()
+        title = request.query_params.get("title")
 
-        # Find the rule before removing to retain the title for cleanup
         rules = CoreSettings.get_dvr_series_rules()
-        deleted_rule = next((r for r in rules if str(r.get("tvg_id")) == tvg_id), None)
-        remaining = [r for r in rules if str(r.get("tvg_id")) != tvg_id]
+
+        def _matches(r):
+            tvg_match = str(r.get("tvg_id") or "") == tvg_id
+            title_match = title is None or str(r.get("title") or "") == title
+            return tvg_match and title_match
+
+        deleted_rule = next((r for r in rules if _matches(r)), None)
+        remaining = [r for r in rules if not _matches(r)]
         CoreSettings.set_dvr_series_rules(remaining)
 
-        # Delete only FUTURE recordings — preserve previously recorded episodes
         removed = 0
         if deleted_rule:
             from .models import Recording
-            qs = Recording.objects.filter(
-                start_time__gte=timezone.now(),
-                custom_properties__program__tvg_id=tvg_id,
-            )
-            title = deleted_rule.get("title")
-            if title:
-                qs = qs.filter(custom_properties__program__title=title)
+            qs = Recording.objects.filter(start_time__gte=timezone.now())
+            rule_tvg_id = deleted_rule.get("tvg_id") or ""
+            if rule_tvg_id:
+                qs = qs.filter(custom_properties__program__tvg_id=rule_tvg_id)
+            rule_title = deleted_rule.get("title") or ""
+            if rule_title:
+                qs = qs.filter(custom_properties__program__title=rule_title)
             removed = qs.count()
             qs.delete()
 
-        # Notify frontend to refresh recordings list
         try:
             from core.utils import send_websocket_update
             send_websocket_update('updates', 'update', {
@@ -3058,6 +4078,118 @@ class DeleteSeriesRuleAPIView(APIView):
             pass
 
         return Response({"success": True, "rules": remaining, "removed": removed})
+
+
+class SeriesRulePreviewAPIView(APIView):
+    """Preview which upcoming programs a series rule would match.
+
+    Accepts the same payload as SeriesRulesAPIView.post but does not persist
+    anything. Returns up to `limit` upcoming programs (default 25, max 100)
+    within the standard 7-day evaluation horizon.
+    """
+    def get_permissions(self):
+        try:
+            return [perm() for perm in permission_classes_by_method[self.request.method]]
+        except KeyError:
+            return [Authenticated()]
+
+    @extend_schema(
+        summary="Preview series rule matches",
+        description="Return upcoming programs that the given rule would match without persisting the rule.",
+        request=inline_serializer(
+            name="SeriesRulePreviewRequest",
+            fields={
+                'tvg_id': serializers.CharField(required=False, allow_blank=True, help_text='Optional channel TVG ID. Omit to search across all channels.'),
+                'mode': serializers.ChoiceField(choices=['all', 'new'], default='all', required=False),
+                'title': serializers.CharField(required=False),
+                'title_mode': serializers.ChoiceField(choices=['exact', 'contains', 'search', 'regex'], default='exact', required=False),
+                'description': serializers.CharField(required=False),
+                'description_mode': serializers.ChoiceField(choices=['contains', 'search', 'regex'], default='contains', required=False),
+                'limit': serializers.IntegerField(required=False, help_text='Max programs to return (default 25, max 100)'),
+            },
+        ),
+    )
+    def post(self, request):
+        from apps.epg.models import EPGData, ProgramData
+        from apps.epg.query_utils import parse_text_query
+
+        data = request.data or {}
+        tvg_id = str(data.get("tvg_id") or "").strip()
+        mode = (data.get("mode") or "all").lower()
+        title = (data.get("title") or "").strip()
+        title_mode = (data.get("title_mode") or "exact").lower()
+        description = (data.get("description") or "").strip()
+        description_mode = (data.get("description_mode") or "contains").lower()
+        try:
+            limit = int(data.get("limit") or 25)
+        except (TypeError, ValueError):
+            limit = 25
+        limit = max(1, min(limit, 100))
+
+        if not title and not description:
+            return Response({"error": "A title or description is required"}, status=status.HTTP_400_BAD_REQUEST)
+
+        now = timezone.now()
+        horizon = now + timedelta(days=7)
+
+        if tvg_id:
+            epg = EPGData.objects.filter(tvg_id=tvg_id).first()
+            if not epg:
+                return Response({"matches": [], "total": 0, "epg_found": False})
+            qs = ProgramData.objects.filter(epg=epg, end_time__gt=now, start_time__lte=horizon)
+        else:
+            qs = ProgramData.objects.filter(end_time__gt=now, start_time__lte=horizon)
+
+        if title:
+            if title_mode == "exact":
+                qs = qs.filter(title__iexact=title)
+            else:
+                qs = qs.filter(parse_text_query(
+                    "title", title,
+                    use_regex=(title_mode == "regex"),
+                    whole_words=(title_mode == "search"),
+                ))
+        if description:
+            qs = qs.filter(parse_text_query(
+                "description", description,
+                use_regex=(description_mode == "regex"),
+                whole_words=(description_mode == "search"),
+            ))
+
+        qs = qs.distinct().order_by("start_time")
+
+        # Apply "new" filter in Python (custom_properties JSON lookup), but only
+        # over the bounded result set we already filtered down to.
+        candidates = list(qs[:limit * 4])  # small overshoot to allow new-only filtering
+        if mode == "new":
+            candidates = [p for p in candidates if (p.custom_properties or {}).get("new")]
+
+        total = len(candidates)
+        candidates = candidates[:limit]
+
+        matches = []
+        for p in candidates:
+            cp = p.custom_properties or {}
+            matches.append({
+                "id": p.id,
+                "tvg_id": p.tvg_id,
+                "title": p.title,
+                "sub_title": p.sub_title,
+                "description": p.description,
+                "start_time": p.start_time.isoformat(),
+                "end_time": p.end_time.isoformat(),
+                "season": cp.get("season"),
+                "episode": cp.get("episode"),
+                "is_new": bool(cp.get("new")),
+            })
+
+        return Response({
+            "matches": matches,
+            "total": total,
+            "limit": limit,
+            "epg_found": True,
+            "warn": total > 50,
+        })
 
 
 class EvaluateSeriesRulesAPIView(APIView):
@@ -3115,13 +4247,12 @@ class BulkRemoveSeriesRecordingsAPIView(APIView):
         tvg_id = str(request.data.get("tvg_id") or "").strip()
         title = request.data.get("title")
         scope = (request.data.get("scope") or "title").lower()
-        if not tvg_id:
-            return Response({"error": "tvg_id is required"}, status=status.HTTP_400_BAD_REQUEST)
+        if not tvg_id and not title:
+            return Response({"error": "tvg_id or title is required"}, status=status.HTTP_400_BAD_REQUEST)
 
-        qs = Recording.objects.filter(
-            start_time__gte=timezone.now(),
-            custom_properties__program__tvg_id=tvg_id,
-        )
+        qs = Recording.objects.filter(start_time__gte=timezone.now())
+        if tvg_id:
+            qs = qs.filter(custom_properties__program__tvg_id=tvg_id)
         if scope == "title" and title:
             qs = qs.filter(custom_properties__program__title=title)
 

@@ -716,3 +716,121 @@ class NonSeriesRecordingTests(SeriesRuleDedupBaseTestCase):
         prog = self._create_program(hours_from_now=2)
         result = evaluate_series_rules_impl()
         self.assertEqual(result["scheduled"], 1)
+
+
+# ---------------------------------------------------------------------------
+# Title-only rule tests: tvg_id is empty / omitted (cross-EPG matching)
+# ---------------------------------------------------------------------------
+
+@patch("apps.channels.tasks.prefetch_recording_artwork")
+@patch("apps.channels.signals.schedule_recording_task", return_value="mock-task-id")
+class TitleOnlyRuleTests(SeriesRuleDedupBaseTestCase):
+    """Tests for series rules where tvg_id is omitted (searches all EPG channels)."""
+
+    def setUp(self):
+        super().setUp()
+        _set_series_rules([{
+            "tvg_id": "",
+            "mode": "all",
+            "title": "Test Show",
+        }])
+
+    @patch("apps.channels.tasks.acquire_task_lock", return_value=True)
+    @patch("apps.channels.tasks.release_task_lock")
+    def test_title_only_rule_schedules_recording(self, mock_release, mock_lock,
+                                                  mock_schedule, mock_artwork):
+        """A rule with no tvg_id matches programs on any EPG channel by title."""
+        from apps.channels.tasks import evaluate_series_rules_impl
+
+        self._create_program(hours_from_now=2)
+        result = evaluate_series_rules_impl()
+        self.assertEqual(result["scheduled"], 1)
+        self.assertEqual(Recording.objects.count(), 1)
+        self.assertEqual(Recording.objects.first().channel, self.channel)
+
+    @patch("apps.channels.tasks.acquire_task_lock", return_value=True)
+    @patch("apps.channels.tasks.release_task_lock")
+    def test_title_only_rule_matches_across_multiple_epg_channels(
+        self, mock_release, mock_lock, mock_schedule, mock_artwork
+    ):
+        """Title-only rule creates a recording per matching EPG channel (distinct programs)."""
+        from apps.channels.tasks import evaluate_series_rules_impl
+
+        epg2 = EPGData.objects.create(
+            tvg_id="test.channel.2", name="Channel 2 EPG",
+            epg_source=self.epg_source,
+        )
+        Channel.objects.create(
+            channel_number=2, name="Test Channel 2", epg_data=epg2
+        )
+
+        start1 = self.now + timedelta(hours=2)
+        ProgramData.objects.create(
+            epg=self.epg, tvg_id="test.channel.1",
+            start_time=start1, end_time=start1 + timedelta(hours=1),
+            title="Test Show", sub_title="Episode 1",
+        )
+        start2 = self.now + timedelta(hours=3)
+        ProgramData.objects.create(
+            epg=epg2, tvg_id="test.channel.2",
+            start_time=start2, end_time=start2 + timedelta(hours=1),
+            title="Test Show", sub_title="Episode 2",
+        )
+
+        result = evaluate_series_rules_impl()
+        self.assertEqual(result["scheduled"], 2)
+        self.assertEqual(Recording.objects.count(), 2)
+
+    @patch("apps.channels.tasks.acquire_task_lock", return_value=True)
+    @patch("apps.channels.tasks.release_task_lock")
+    def test_title_only_rule_dedup_after_epg_refresh(self, mock_release, mock_lock,
+                                                      mock_schedule, mock_artwork):
+        """Dedup works for title-only rules after EPG refresh reassigns program IDs."""
+        from apps.channels.tasks import evaluate_series_rules_impl
+
+        prog = self._create_program(hours_from_now=2)
+        evaluate_series_rules_impl()
+        self.assertEqual(Recording.objects.count(), 1)
+
+        self._simulate_epg_refresh([self._program_data_for_refresh(prog)])
+        result = evaluate_series_rules_impl()
+        self.assertEqual(Recording.objects.count(), 1)
+        self.assertEqual(result["scheduled"], 0)
+
+    @patch("apps.channels.tasks.acquire_task_lock", return_value=True)
+    @patch("apps.channels.tasks.release_task_lock")
+    def test_invalid_rule_no_title_no_description_skipped(
+        self, mock_release, mock_lock, mock_schedule, mock_artwork
+    ):
+        """Rules with neither title nor description are skipped and flagged invalid."""
+        from apps.channels.tasks import evaluate_series_rules_impl
+
+        _set_series_rules([{"tvg_id": "", "mode": "all", "title": "", "description": ""}])
+        self._create_program(hours_from_now=2)
+        result = evaluate_series_rules_impl()
+        self.assertEqual(result["scheduled"], 0)
+        statuses = [d.get("status") for d in result["details"]]
+        self.assertIn("invalid_rule", statuses)
+
+    @patch("apps.channels.tasks.acquire_task_lock", return_value=True)
+    @patch("apps.channels.tasks.release_task_lock")
+    def test_program_on_epg_with_no_channel_skipped(
+        self, mock_release, mock_lock, mock_schedule, mock_artwork
+    ):
+        """Programs on an EPG source that has no Channel assigned are skipped gracefully."""
+        from apps.channels.tasks import evaluate_series_rules_impl
+
+        epg_orphan = EPGData.objects.create(
+            tvg_id="orphan.channel", name="Orphan EPG",
+            epg_source=self.epg_source,
+        )
+        start = self.now + timedelta(hours=2)
+        ProgramData.objects.create(
+            epg=epg_orphan, tvg_id="orphan.channel",
+            start_time=start, end_time=start + timedelta(hours=1),
+            title="Test Show", sub_title="Episode 1",
+        )
+
+        result = evaluate_series_rules_impl()
+        self.assertEqual(result["scheduled"], 0)
+        self.assertEqual(Recording.objects.count(), 0)

@@ -10,6 +10,7 @@ import StreamForm from '../forms/Stream';
 import usePlaylistsStore from '../../store/playlists';
 import useChannelsStore from '../../store/channels';
 import { copyToClipboard, useDebounce } from '../../utils';
+import { buildLiveStreamUrl } from '../../utils/components/FloatingVideoUtils.js';
 import {
   SquarePlus,
   ListPlus,
@@ -74,26 +75,24 @@ const StreamRowActions = ({
   editStream,
   deleteStream,
   handleWatchStream,
-  selectedChannelIds,
   createChannelFromStream,
   table,
 }) => {
   const tableSize = table?.tableSize ?? 'default';
+  const expandedChannelId = useChannelsTableStore((s) => s.expandedChannelId);
+  const selectedChannelIds = useChannelsTableStore((s) => s.selectedChannelIds);
+  const targetChannelId =
+    expandedChannelId ||
+    (selectedChannelIds.length === 1 ? selectedChannelIds[0] : null);
   const channelSelectionStreams = useChannelsTableStore(
     (state) =>
-      state.channels.find((chan) => chan.id === selectedChannelIds[0])?.streams
+      state.channels.find((chan) => chan.id === targetChannelId)?.streams
   );
 
   const addStreamToChannel = async () => {
-    await API.updateChannel({
-      id: selectedChannelIds[0],
-      streams: [
-        ...new Set(
-          channelSelectionStreams.map((s) => s.id).concat([row.original.id])
-        ),
-      ],
-    });
-    await API.requeryChannels();
+    await API.addStreamsToChannel(targetChannelId, channelSelectionStreams, [
+      row.original,
+    ]);
   };
 
   const onEdit = useCallback(() => {
@@ -129,7 +128,7 @@ const StreamRowActions = ({
           onClick={addStreamToChannel}
           style={{ background: 'none' }}
           disabled={
-            selectedChannelIds.length !== 1 ||
+            !targetChannelId ||
             (channelSelectionStreams &&
               channelSelectionStreams
                 .map((s) => s.id)
@@ -204,6 +203,9 @@ const StreamsTable = ({ onReady }) => {
   const fetchVersionRef = useRef(0); // Track fetch version to prevent stale updates
   const lastFetchParamsRef = useRef(null); // Track last fetch params to prevent duplicate requests
   const fetchInProgressRef = useRef(false); // Track if a fetch is currently in progress
+  const initialDataCountRef = useRef(null); // First page count, kept in a ref so the page fetcher doesn't recreate when set
+  const lastIdsParamsRef = useRef(null); // De-dupe StrictMode double-fire of the IDs fetch
+  const lastFilterOptionsParamsRef = useRef(null); // De-dupe StrictMode double-fire of the filter-options fetch
 
   // Channel creation modal state (bulk)
   const [channelNumberingModalOpen, setChannelNumberingModalOpen] =
@@ -331,10 +333,14 @@ const StreamsTable = ({ onReady }) => {
   const fetchChannelGroups = useChannelsStore((s) => s.fetchChannelGroups);
   const channelGroups = useChannelsStore((s) => s.channelGroups);
 
+  const expandedChannelId = useChannelsTableStore((s) => s.expandedChannelId);
   const selectedChannelIds = useChannelsTableStore((s) => s.selectedChannelIds);
+  const targetChannelId =
+    expandedChannelId ||
+    (selectedChannelIds.length === 1 ? selectedChannelIds[0] : null);
   const channelSelectionStreams = useChannelsTableStore(
     (state) =>
-      state.channels.find((chan) => chan.id === selectedChannelIds[0])?.streams
+      state.channels.find((chan) => chan.id === targetChannelId)?.streams
   );
   const channelProfiles = useChannelsStore((s) => s.profiles);
   const selectedProfileId = useChannelsStore((s) => s.selectedProfileId);
@@ -584,16 +590,30 @@ const StreamsTable = ({ onReady }) => {
     }));
   };
 
-  const fetchData = useCallback(
+  // Build a URLSearchParams object containing only the filter portion of the
+  // query. Page-rows fetches add page/page_size/ordering on top of this.
+  const buildFilterParams = useCallback(() => {
+    const params = new URLSearchParams();
+    Object.entries(debouncedFilters).forEach(([key, value]) => {
+      if (typeof value === 'boolean') {
+        if (value) params.append(key, 'true');
+      } else if (value !== null && value !== undefined && value !== '') {
+        params.append(key, String(value));
+      }
+    });
+    return params;
+  }, [debouncedFilters]);
+
+  // Fetch the visible page of stream rows. Depends on pagination, sorting,
+  // and filters.
+  const fetchPageData = useCallback(
     async ({ showLoader = true } = {}) => {
-      const params = new URLSearchParams();
+      const params = buildFilterParams();
       params.append('page', pagination.pageIndex + 1);
       params.append('page_size', pagination.pageSize);
 
-      // Apply sorting
       if (sorting.length > 0) {
         const columnId = sorting[0].id;
-        // Map frontend column IDs to backend field names
         const fieldMapping = {
           name: 'name',
           group: 'channel_group__name',
@@ -605,15 +625,6 @@ const StreamsTable = ({ onReady }) => {
         params.append('ordering', `${sortDirection}${sortField}`);
       }
 
-      // Apply debounced filters; send boolean filters as 'true' when set
-      Object.entries(debouncedFilters).forEach(([key, value]) => {
-        if (typeof value === 'boolean') {
-          if (value) params.append(key, 'true');
-        } else if (value !== null && value !== undefined && value !== '') {
-          params.append(key, String(value));
-        }
-      });
-
       const paramsString = params.toString();
 
       // Skip if same fetch is already in progress (prevents StrictMode double-fetch)
@@ -624,7 +635,6 @@ const StreamsTable = ({ onReady }) => {
         return;
       }
 
-      // Increment fetch version to track this specific fetch request
       const currentFetchVersion = ++fetchVersionRef.current;
       lastFetchParamsRef.current = paramsString;
       fetchInProgressRef.current = true;
@@ -634,45 +644,19 @@ const StreamsTable = ({ onReady }) => {
       }
 
       try {
-        const [result, ids, filterOptions] = await Promise.all([
-          API.queryStreamsTable(params),
-          API.getAllStreamIds(params),
-          API.getStreamFilterOptions(params),
-        ]);
+        const result = await API.queryStreamsTable(params);
 
         fetchInProgressRef.current = false;
 
-        // Skip state updates if a newer fetch has been initiated
         if (currentFetchVersion !== fetchVersionRef.current) {
           return;
         }
 
-        setAllRowIds(ids);
-
-        // Set filtered options based on current filters
-        // Ensure groupOptions is always an array of valid strings
-        if (filterOptions && typeof filterOptions === 'object') {
-          setGroupOptions(
-            (filterOptions.groups || [])
-              .filter((group) => group != null && group !== '')
-              .map((group) => String(group))
-          );
-          // Ensure m3uOptions is always an array of valid objects
-          setM3uOptions(
-            (filterOptions.m3u_accounts || [])
-              .filter((m3u) => m3u && m3u.id != null && m3u.name)
-              .map((m3u) => ({
-                label: String(m3u.name),
-                value: String(m3u.id),
-              }))
-          );
-        }
-
-        if (initialDataCount === null) {
+        if (initialDataCountRef.current === null) {
+          initialDataCountRef.current = result.count;
           setInitialDataCount(result.count);
         }
 
-        // Signal that initial data load is complete
         if (!hasSignaledReady.current && onReady) {
           hasSignaledReady.current = true;
           onReady();
@@ -680,14 +664,12 @@ const StreamsTable = ({ onReady }) => {
       } catch (error) {
         fetchInProgressRef.current = false;
 
-        // Skip logging if a newer fetch has been initiated
         if (currentFetchVersion !== fetchVersionRef.current) {
           return;
         }
         console.error('Error fetching data:', error);
       }
 
-      // Skip state updates if a newer fetch has been initiated
       if (currentFetchVersion !== fetchVersionRef.current) {
         return;
       }
@@ -697,7 +679,7 @@ const StreamsTable = ({ onReady }) => {
         setIsLoading(false);
       }
     },
-    [pagination, sorting, debouncedFilters, onReady]
+    [pagination, sorting, buildFilterParams, onReady]
   );
 
   // Bulk creation: create channels from selected streams asynchronously
@@ -1032,15 +1014,14 @@ const StreamsTable = ({ onReady }) => {
   };
 
   const addStreamsToChannel = async () => {
-    await API.updateChannel({
-      id: selectedChannelIds[0],
-      streams: [
-        ...new Set(
-          channelSelectionStreams.map((s) => s.id).concat(selectedStreamIds)
-        ),
-      ],
-    });
-    await API.requeryChannels();
+    // Look up full stream objects from the current page data
+    const selectedIdSet = new Set(selectedStreamIds);
+    const newStreams = data.filter((s) => selectedIdSet.has(s.id));
+    await API.addStreamsToChannel(
+      targetChannelId,
+      channelSelectionStreams,
+      newStreams
+    );
   };
 
   const onRowSelectionChange = (updatedIds) => {
@@ -1068,7 +1049,7 @@ const StreamsTable = ({ onReady }) => {
   };
 
   function handleWatchStream(streamHash, streamName) {
-    let vidUrl = `/proxy/ts/stream/${streamHash}`;
+    let vidUrl = buildLiveStreamUrl(`/proxy/ts/stream/${streamHash}`);
     if (env_mode == 'dev') {
       vidUrl = `${window.location.protocol}//${window.location.hostname}:5656${vidUrl}`;
     }
@@ -1267,20 +1248,12 @@ const StreamsTable = ({ onReady }) => {
               editStream={editStream}
               deleteStream={deleteStream}
               handleWatchStream={handleWatchStream}
-              selectedChannelIds={selectedChannelIds}
               createChannelFromStream={createChannelFromStream}
             />
           );
       }
     },
-    [
-      selectedChannelIds,
-      channelSelectionStreams,
-      theme,
-      editStream,
-      deleteStream,
-      handleWatchStream,
-    ]
+    [theme, editStream, deleteStream, handleWatchStream]
   );
 
   const table = useTable({
@@ -1327,19 +1300,74 @@ const StreamsTable = ({ onReady }) => {
    * useEffects
    */
   useEffect(() => {
-    // Load data independently, don't wait for logos or other data
-    fetchData();
-  }, [fetchData]);
+    // Load page rows independently, don't wait for logos or other data
+    fetchPageData();
+  }, [fetchPageData]);
 
-  // Refetch data when video player closes to update stream stats
+  // The full ID list and filter options only depend on filters, not pagination
+  // or sort order, so they get their own effects to avoid refetching on every
+  // page change or sort toggle.
+  useEffect(() => {
+    const params = buildFilterParams();
+    const paramsString = params.toString();
+    if (lastIdsParamsRef.current === paramsString) {
+      return;
+    }
+    lastIdsParamsRef.current = paramsString;
+    let cancelled = false;
+    (async () => {
+      const ids = await API.getAllStreamIds(params);
+      if (!cancelled && ids) {
+        setAllRowIds(ids);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [buildFilterParams, setAllRowIds]);
+
+  useEffect(() => {
+    const params = buildFilterParams();
+    const paramsString = params.toString();
+    if (lastFilterOptionsParamsRef.current === paramsString) {
+      return;
+    }
+    lastFilterOptionsParamsRef.current = paramsString;
+    let cancelled = false;
+    (async () => {
+      const filterOptions = await API.getStreamFilterOptions(params);
+      if (cancelled || !filterOptions || typeof filterOptions !== 'object') {
+        return;
+      }
+      setGroupOptions(
+        (filterOptions.groups || [])
+          .filter((group) => group != null && group !== '')
+          .map((group) => String(group))
+      );
+      setM3uOptions(
+        (filterOptions.m3u_accounts || [])
+          .filter((m3u) => m3u && m3u.id != null && m3u.name)
+          .map((m3u) => ({
+            label: String(m3u.name),
+            value: String(m3u.id),
+          }))
+      );
+    })();
+    return () => {
+      cancelled = true;
+      lastFilterOptionsParamsRef.current = null;
+    };
+  }, [buildFilterParams]);
+
+  // Refetch page rows when video player closes to update stream stats
   const prevVideoVisible = useRef(false);
   useEffect(() => {
     if (prevVideoVisible.current && !videoIsVisible) {
       // Video was closed, refetch to get updated stream stats
-      fetchData({ showLoader: false });
+      fetchPageData({ showLoader: false });
     }
     prevVideoVisible.current = videoIsVisible;
-  }, [videoIsVisible, fetchData]);
+  }, [videoIsVisible, fetchPageData]);
 
   useEffect(() => {
     if (
@@ -1462,14 +1490,13 @@ const StreamsTable = ({ onReady }) => {
         >
           <Flex gap={6} wrap="nowrap" style={{ flexShrink: 0 }}>
             <Tooltip
-              label="Add selected stream(s) to the selected channel"
+              label="Add selected stream(s) to the target channel"
               openDelay={500}
             >
               <Button
                 leftSection={<SquarePlus size={18} />}
                 variant={
-                  selectedStreamIds.length > 0 &&
-                  selectedChannelIds.length === 1
+                  selectedStreamIds.length > 0 && targetChannelId
                     ? 'light'
                     : 'default'
                 }
@@ -1477,14 +1504,12 @@ const StreamsTable = ({ onReady }) => {
                 onClick={addStreamsToChannel}
                 p={5}
                 color={
-                  selectedStreamIds.length > 0 &&
-                  selectedChannelIds.length === 1
+                  selectedStreamIds.length > 0 && targetChannelId
                     ? theme.tailwind.green[5]
                     : undefined
                 }
                 style={
-                  selectedStreamIds.length > 0 &&
-                  selectedChannelIds.length === 1
+                  selectedStreamIds.length > 0 && targetChannelId
                     ? {
                         borderWidth: '1px',
                         borderColor: theme.tailwind.green[5],
@@ -1492,12 +1517,7 @@ const StreamsTable = ({ onReady }) => {
                       }
                     : undefined
                 }
-                disabled={
-                  !(
-                    selectedStreamIds.length > 0 &&
-                    selectedChannelIds.length === 1
-                  )
-                }
+                disabled={!(selectedStreamIds.length > 0 && targetChannelId)}
               >
                 Add to Channel
               </Button>

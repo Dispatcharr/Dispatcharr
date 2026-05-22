@@ -312,14 +312,64 @@ class TaskLockRenewer:
         return False
 
 
+def _gevent_ws_send(group_name, message):
+    """
+    Publishes a WebSocket group message synchronously through Redis.
+
+    gevent's monkey-patching removes select.epoll, which breaks asyncio event
+    loop creation in threadpool threads. This function replicates channels_redis
+    4.x group_send directly via a sync Redis client, avoiding asyncio entirely.
+
+    Matches channels_redis 4.x defaults: prefix="asgi", expiry=60,
+    group_expiry=86400, msgpack serializer with 12-byte random prefix.
+    """
+    try:
+        import msgpack
+        redis = RedisClient.get_buffer()  # decode_responses=False for binary values
+
+        prefix = "asgi"
+        group_expiry = 86400
+        channel_expiry = 60
+        rand_len = 12
+
+        group_key = f"{prefix}:group:{group_name}"
+        now = time.time()
+
+        redis.zremrangebyscore(group_key, 0, now - group_expiry)
+        raw = redis.zrange(group_key, 0, -1)
+        if not raw:
+            return
+
+        channels = [m.decode('utf-8') if isinstance(m, bytes) else m for m in raw]
+
+        # Group channels by non-local name (prefix up to and including "!") so
+        # specific channels sharing a prefix share one Redis sorted-set key.
+        nonlocal_map = {}
+        for ch in channels:
+            pos = ch.find("!")
+            nl = ch[:pos + 1] if pos >= 0 else ch
+            nonlocal_map.setdefault(nl, []).append(ch)
+
+        pipe = redis.pipeline(transaction=False)
+        for nl, chs in nonlocal_map.items():
+            channel_key = prefix + nl
+            msg = dict(message)
+            msg["__asgi_channel__"] = chs
+            serialized = os.urandom(rand_len) + msgpack.packb(msg)
+            pipe.zadd(channel_key, {serialized: now})
+            pipe.expire(channel_key, channel_expiry)
+        pipe.execute()
+    except Exception as e:
+        logger.warning(f"Failed to send WebSocket update: {e}")
+
+
 def send_websocket_update(group_name, event_type, data, collect_garbage=False):
     """
-    Standardized function to send WebSocket updates with proper memory management.
+    Sends a WebSocket group message.
 
-    In uWSGI + gevent deployments, async_to_sync creates an asyncio event loop
-    whose native EpollSelector blocks the entire OS thread, freezing all gevent
-    greenlets in the worker.  To avoid this, the actual send is offloaded to a
-    real OS thread from gevent's native threadpool when monkey-patching is active.
+    In gevent-patched uWSGI workers, asyncio event loop creation fails because
+    monkey-patching removes select.epoll. For those contexts a synchronous Redis
+    path is used instead, matching the channels_redis 4.x wire format.
     """
     channel_layer = get_channel_layer()
     message = {'type': event_type, 'data': data}
@@ -333,13 +383,13 @@ def send_websocket_update(group_name, event_type, data, collect_garbage=False):
     try:
         import gevent.monkey
         if gevent.monkey.is_module_patched('threading'):
-            from gevent import get_hub
-            get_hub().threadpool.spawn(_do_send)
+            import gevent
+            gevent.spawn(_gevent_ws_send, group_name, message)
             return
     except Exception:
         pass
 
-    # Not in a gevent-patched environment — call directly
+    # Not in a gevent-patched environment (Celery, tests) — use asyncio path
     _do_send()
 
     if collect_garbage:
@@ -635,6 +685,25 @@ def log_system_event(event_type, channel_id=None, channel_name=None, **details):
         logger.error(f"Failed to log system event {event_type}: {e}")
 
 
+def _send_async(channel_layer, group, message):
+    """Send a channel layer group message without blocking the gevent hub."""
+    def _do():
+        try:
+            async_to_sync(channel_layer.group_send)(group, message)
+        except Exception as e:
+            logger.warning(f"Failed WebSocket group_send to '{group}': {e}")
+
+    try:
+        import gevent.monkey
+        if gevent.monkey.is_module_patched("threading"):
+            import gevent
+            gevent.spawn(_gevent_ws_send, group, message)
+            return
+    except Exception:
+        pass
+    _do()
+
+
 def send_websocket_notification(notification):
     """
     Send a system notification to all connected WebSocket clients.
@@ -667,7 +736,8 @@ def send_websocket_notification(notification):
         else:
             notification_data = notification
 
-        async_to_sync(channel_layer.group_send)(
+        _send_async(
+            channel_layer,
             'updates',
             {
                 'type': 'update',
@@ -693,7 +763,8 @@ def send_notification_dismissed(notification_key):
     try:
         channel_layer = get_channel_layer()
 
-        async_to_sync(channel_layer.group_send)(
+        _send_async(
+            channel_layer,
             'updates',
             {
                 'type': 'update',

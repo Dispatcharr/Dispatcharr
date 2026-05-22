@@ -135,6 +135,12 @@ const M3UTable = () => {
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [playlistToDelete, setPlaylistToDelete] = useState(null);
+  // Auto-created channel preview shown in the delete confirmation so the
+  // user sees what cascades along with the account.
+  const [autoChannelsInfo, setAutoChannelsInfo] = useState({
+    count: 0,
+    sample_names: [],
+  });
   const [data, setData] = useState([]);
   const [sorting, setSorting] = useState([{ id: 'name', desc: '' }]);
   const [deleting, setDeleting] = useState(false);
@@ -404,8 +410,32 @@ const M3UTable = () => {
     setPlaylistToDelete(playlist);
     setDeleteTarget(id);
 
-    // Skip warning if it's been suppressed
-    if (isWarningSuppressed('delete-m3u')) {
+    // Fetch how many auto-created channels this playlist owns. Populates the
+    // confirmation message so the user can decide whether to also delete
+    // them. On failure, surface "unknown" so the user is not misled into
+    // thinking there are zero auto-created channels.
+    let info;
+    try {
+      const result = await API.getPlaylistAutoCreatedChannelsCount(id);
+      info = result || { count: 0, sample_names: [] };
+    } catch {
+      info = {
+        count: null,
+        sample_names: [],
+        countUnavailable: true,
+      };
+    }
+    setAutoChannelsInfo(info);
+
+    // Skip the warning when it has been suppressed AND the account has
+    // no auto-created channels. When the account did create channels (or
+    // the count could not be resolved), the dialog still opens so the
+    // user sees and confirms what cascades.
+    if (
+      isWarningSuppressed('delete-m3u') &&
+      info.count === 0 &&
+      !info.countUnavailable
+    ) {
       return executeDeletePlaylist(id);
     }
 
@@ -421,6 +451,7 @@ const M3UTable = () => {
       setDeleting(false);
       setIsLoading(false);
       setConfirmDeleteOpen(false);
+      setAutoChannelsInfo({ count: 0, sample_names: [] });
     }
   };
 
@@ -1028,15 +1059,49 @@ const M3UTable = () => {
         title="Confirm M3U Account Deletion"
         message={
           playlistToDelete ? (
-            <div style={{ whiteSpace: 'pre-line' }}>
-              {`Are you sure you want to delete the following M3U account?
+            <div>
+              <div style={{ whiteSpace: 'pre-line', marginBottom: 12 }}>
+                {`Delete the following M3U account?
 
 Name: ${playlistToDelete.name}
 Type: ${playlistToDelete.account_type === 'XC' ? 'Xtream Codes' : 'Standard'}
 Server: ${playlistToDelete.server_url || 'Local file'}
 
-This will remove all related streams and may affect channels using these streams.
+Streams owned by this provider will be removed. Manual channels that include those streams will lose them, but the channels and any other streams on them survive.
+
 This action cannot be undone.`}
+              </div>
+              {autoChannelsInfo.countUnavailable ? (
+                <div
+                  style={{
+                    background: 'rgba(234,179,8,0.08)',
+                    border: '1px solid rgba(234,179,8,0.3)',
+                    borderRadius: 4,
+                    padding: 10,
+                    marginTop: 6,
+                  }}
+                >
+                  <Text size="sm" fw={600}>
+                    Auto-synced channel count is unavailable; any channels
+                    auto-created by this provider will be deleted with the
+                    account.
+                  </Text>
+                </div>
+              ) : autoChannelsInfo.count > 0 ? (
+                <div
+                  style={{
+                    background: 'rgba(234,179,8,0.08)',
+                    border: '1px solid rgba(234,179,8,0.3)',
+                    borderRadius: 4,
+                    padding: 10,
+                    marginTop: 6,
+                  }}
+                >
+                  <Text size="sm" fw={600}>
+                    {`${autoChannelsInfo.count} auto-synced channel${autoChannelsInfo.count === 1 ? '' : 's'} created by this provider will also be deleted.`}
+                  </Text>
+                </div>
+              ) : null}
             </div>
           ) : (
             'Are you sure you want to delete this M3U account? This action cannot be undone.'

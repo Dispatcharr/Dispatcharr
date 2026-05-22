@@ -4,6 +4,7 @@ import Draggable from 'react-draggable';
 import useVideoStore from '../store/useVideoStore';
 import useAuthStore from '../store/auth';
 import mpegts from 'mpegts.js';
+import Hls from 'hls.js';
 import { CloseButton, Flex, Loader, Text, Box } from '@mantine/core';
 import {
   applyConstraints,
@@ -118,7 +119,6 @@ export default function FloatingVideo() {
   const contentType = useVideoStore((s) => s.contentType);
   const metadata = useVideoStore((s) => s.metadata);
   const hideVideo = useVideoStore((s) => s.hideVideo);
-  const accessToken = useAuthStore((s) => s.accessToken);
 
   const videoRef = useRef(null);
   const playerRef = useRef(null);
@@ -241,10 +241,46 @@ export default function FloatingVideo() {
     const { volume: savedVolume, muted: savedMuted } = getPlayerPrefs();
     if (typeof savedVolume === 'number') video.volume = savedVolume;
     if (typeof savedMuted === 'boolean') video.muted = savedMuted;
+    // Always start playback from the beginning of the seekable range.
+    let hasSeekedToStart = false;
+    const seekToStart = () => {
+      if (hasSeekedToStart) return;
+      try {
+        let target = 0;
+        if (video.seekable && video.seekable.length > 0) {
+          target = video.seekable.start(0);
+        }
+        // Only apply if we're not already at/near the start.  Avoid
+        // setting currentTime when the video has no duration yet.
+        if (
+          Number.isFinite(target) &&
+          Math.abs((video.currentTime || 0) - target) > 0.25
+        ) {
+          video.currentTime = target;
+        }
+        hasSeekedToStart = true;
+      } catch {
+        // ignore
+      }
+    };
+
     const handleLoadStart = () => setIsLoading(true);
-    const handleLoadedData = () => setIsLoading(false);
+    const handleLoadedMetadata = () => {
+      seekToStart();
+    };
+    const handleLoadedData = () => {
+      setIsLoading(false);
+      // hls.js applies its `startPosition` after MEDIA_ATTACHED, which can
+      // run later than `loadedmetadata`. Re-seek here as a safety net so a
+      // hls.js live playlist doesn't snap to the live edge after our first
+      // seek attempt happened against an empty seekable range.
+      seekToStart();
+    };
     const handleCanPlay = () => {
       setIsLoading(false);
+      // Final fallback for the Safari native-HLS path where seekable.start(0)
+      // is sometimes only valid by the time `canplay` fires.
+      seekToStart();
       // Auto-play for VOD content
       video.play().catch((e) => {
         console.log('Auto-play prevented:', e);
@@ -274,23 +310,114 @@ export default function FloatingVideo() {
 
     // Add event listeners
     video.addEventListener('loadstart', handleLoadStart);
+    video.addEventListener('loadedmetadata', handleLoadedMetadata);
     video.addEventListener('loadeddata', handleLoadedData);
     video.addEventListener('canplay', handleCanPlay);
     video.addEventListener('error', handleError);
     video.addEventListener('progress', handleProgress);
 
-    // Set the source
-    video.src = streamUrl;
-    video.load();
+    // HLS handling: in-progress recordings expose .m3u8 playlists (and ended
+    // recordings whose MKV concat hasn't completed yet still serve via /hls/).
+    // Native <video src="*.m3u8"> only works on Safari/iOS, and even there it
+    // cannot follow a growing playlist with a useful seekable window.  Use
+    // hls.js when supported so the user gets a full DVR/timeshift window
+    // across all browsers.  The HLS playlist uses #EXT-X-PLAYLIST-TYPE=EVENT-
+    // style growth (omit_endlist + hls_list_size 0), so hls.js will treat the
+    // entire recorded duration as the seekable range while the recording is
+    // still in progress and as a complete VOD once it ends.
+    const isHls =
+      typeof streamUrl === 'string' &&
+      (streamUrl.includes('.m3u8') ||
+        streamUrl.includes('/hls/index') ||
+        streamUrl.includes('application/vnd.apple.mpegurl'));
+    let hls = null;
+
+    if (isHls && Hls.isSupported()) {
+      hls = new Hls({
+        // Open at the very beginning of the recording rather than the live
+        // edge.  Without this, an in-progress recording would start at "now"
+        // and hide everything already recorded.  hls.js applies this AFTER
+        // MEDIA_ATTACHED, so the listener-driven `seekToStart()` above is
+        // also kept as a safety net for the Safari native-HLS path and for
+        // edge cases where this initial-position logic loses to the user's
+        // first interaction.
+        startPosition: 0,
+        // Allow seeking back to the start of the recording, regardless of
+        // current playhead position.  Recordings can be hours long and the
+        // user may want to scrub anywhere; we explicitly disable buffer
+        // eviction by setting a very large back-buffer length.
+        backBufferLength: 90 * 60, // 90 minutes
+        maxBufferLength: 60,
+        maxMaxBufferLength: 600,
+        // For an in-progress recording, hls.js refreshes the playlist on
+        // its target-duration cadence; let it follow the live edge but keep
+        // the full DVR window seekable.
+        liveSyncDurationCount: 3,
+        liveMaxLatencyDurationCount: 10,
+        enableWorker: true,
+        lowLatencyMode: false,
+        // Inject the JWT into every playlist + segment XHR.  Read the token
+        // from the auth store at request time rather than capturing the
+        // closure value at hls.js init, so a refreshed access token mid-
+        // playback is picked up on the next segment fetch.
+        xhrSetup: (xhr) => {
+          const token = useAuthStore.getState().accessToken;
+          if (token) {
+            xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+          }
+        },
+      });
+      hls.on(Hls.Events.ERROR, (_evt, data) => {
+        if (data.fatal) {
+          // eslint-disable-next-line no-console
+          console.error('HLS fatal error:', data.type, data.details);
+          if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
+            try {
+              hls.startLoad();
+            } catch {
+              // ignore
+            }
+          } else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
+            try {
+              hls.recoverMediaError();
+            } catch {
+              // ignore
+            }
+          } else {
+            setLoadError(`HLS playback error: ${data.details || data.type}`);
+          }
+        }
+      });
+      hls.attachMedia(video);
+      hls.on(Hls.Events.MEDIA_ATTACHED, () => {
+        hls.loadSource(streamUrl);
+      });
+    } else if (isHls && video.canPlayType('application/vnd.apple.mpegurl')) {
+      // Safari path: native HLS support, including seekable DVR windows.
+      video.src = streamUrl;
+      video.load();
+    } else {
+      // Plain progressive file (MKV/MP4): native HTML5.
+      video.src = streamUrl;
+      video.load();
+    }
 
     // Store cleanup function
     playerRef.current = {
       destroy: () => {
         video.removeEventListener('loadstart', handleLoadStart);
+        video.removeEventListener('loadedmetadata', handleLoadedMetadata);
         video.removeEventListener('loadeddata', handleLoadedData);
         video.removeEventListener('canplay', handleCanPlay);
         video.removeEventListener('error', handleError);
         video.removeEventListener('progress', handleProgress);
+        if (hls) {
+          try {
+            hls.destroy();
+          } catch {
+            // ignore
+          }
+        }
         video.removeAttribute('src');
         video.load();
       },
@@ -321,6 +448,14 @@ export default function FloatingVideo() {
           ? `${window.location.origin}${streamUrl}`
           : streamUrl;
 
+      // Read the JWT from the auth store at player-creation time rather than
+      // relying on the closure-captured `accessToken` value.  mpegts.js has
+      // no per-request setup hook (unlike hls.js's xhrSetup), so this header
+      // is baked into the IO loader for the life of the player; we just want
+      // to be sure we use the freshest token available at the moment of
+      // connection rather than whatever React-render snapshot we closed over.
+      const liveAccessToken = useAuthStore.getState().accessToken;
+
       const player = mpegts.createPlayer(
         {
           type: 'mpegts',
@@ -337,8 +472,8 @@ export default function FloatingVideo() {
           autoCleanupMaxBackwardDuration: 120,
           autoCleanupMinBackwardDuration: 60,
           reuseRedirectedURL: true,
-          headers: accessToken
-            ? { Authorization: `Bearer ${accessToken}` }
+          headers: liveAccessToken
+            ? { Authorization: `Bearer ${liveAccessToken}` }
             : undefined,
         }
       );

@@ -159,12 +159,14 @@ describe('StatsPage', () => {
 
   let mockSetChannelStats;
   let mockSetRefreshInterval;
+  let mockSetVodStats;
 
   beforeEach(() => {
     vi.clearAllMocks();
 
     mockSetChannelStats = vi.fn();
     mockSetRefreshInterval = vi.fn();
+    mockSetVodStats = vi.fn();
 
     // Setup store mocks
     useChannelsStore.mockImplementation((selector) => {
@@ -173,6 +175,8 @@ describe('StatsPage', () => {
         channelsByUUID: mockChannelsByUUID,
         stats: { channels: mockChannelStats.channels },
         setChannelStats: mockSetChannelStats,
+        activeVodConnections: mockVODStats.vod_connections,
+        setVodStats: mockSetVodStats,
       };
       return selector ? selector(state) : state;
     });
@@ -504,6 +508,18 @@ describe('StatsPage', () => {
         ],
       };
       getVODStats.mockResolvedValue(multiVODStats);
+
+      useChannelsStore.mockImplementation((selector) => {
+        const state = {
+          channels: mockChannels,
+          channelsByUUID: mockChannelsByUUID,
+          stats: { channels: mockChannelStats.channels },
+          setChannelStats: mockSetChannelStats,
+          activeVodConnections: multiVODStats.vod_connections,
+          setVodStats: mockSetVodStats,
+        };
+        return selector ? selector(state) : state;
+      });
 
       render(<StatsPage />);
 

@@ -17,7 +17,7 @@ import {
   Text,
   Tooltip,
 } from '@mantine/core';
-import { Ban, Check, FlaskConical, Info, RefreshCw, Settings, Trash2, Zap } from 'lucide-react';
+import { Ban, Check, Download, FlaskConical, Info, RefreshCw, Settings, Trash2, Zap } from 'lucide-react';
 import { getConfirmationDetails } from '../../utils/cards/PluginCardUtils.js';
 import { SUBSCRIPTION_EVENTS } from '../../constants.js';
 import useSettingsStore from '../../store/settings.jsx';
@@ -25,6 +25,11 @@ import { usePluginStore } from '../../store/plugins.jsx';
 import API from '../../api';
 import PluginDetailPanel from '../PluginDetailPanel.jsx';
 import { compareVersions } from '../pluginUtils.js';
+import {
+  PluginDowngradeWarning,
+  PluginSecurityWarning,
+  PluginSupportDisclaimer,
+} from '../PluginWarnings.jsx';
 
 const PluginFieldList = ({ plugin, settings, updateField }) => {
   return plugin.fields.map((f) => (
@@ -128,6 +133,8 @@ const PluginCard = ({
   const [selectedVersion, setSelectedVersion] = useState(null);
   const [installing, setInstalling] = useState(false);
   const [uninstalling] = useState(false);
+  const [installConfirmOpen, setInstallConfirmOpen] = useState(false);
+  const [pendingInstallParams, setPendingInstallParams] = useState(null);
 
   const installPlugin = usePluginStore((s) => s.installPlugin);
 
@@ -177,6 +184,7 @@ const PluginCard = ({
             min_dispatcharr_version: avail.min_dispatcharr_version,
             max_dispatcharr_version: avail.max_dispatcharr_version,
             build_timestamp: avail.last_updated,
+            size: avail.latest_size,
           }] : [],
           latest: avail.latest_version ? { version: avail.latest_version } : null,
         },
@@ -310,14 +318,18 @@ const PluginCard = ({
   };
 
   const handleDetailInstall = async (params) => {
+    setPendingInstallParams(params);
+    setInstallConfirmOpen(true);
+  };
+
+  const confirmAndInstall = async () => {
+    if (!pendingInstallParams) return;
+    const params = pendingInstallParams;
     const selVer = params.version;
     const isDown = plugin.version && compareVersions(selVer, plugin.version) < 0;
     const action = isDown ? 'downgrade' : 'update';
-    const confirmed = await onRequestConfirm(
-      `${isDown ? 'Downgrade' : 'Update'} ${plugin.name}?`,
-      `${isDown ? 'Downgrade' : 'Update'} from v${plugin.version} to v${selVer}?`
-    );
-    if (!confirmed) return;
+    setInstallConfirmOpen(false);
+    setPendingInstallParams(null);
     setInstalling(true);
     try {
       const result = await installPlugin(params);
@@ -363,6 +375,7 @@ const PluginCard = ({
               alt={`${plugin.name} logo`}
               onClick={isManaged ? () => openModal('details') : undefined}
               style={isManaged ? { cursor: 'pointer' } : undefined}
+              imageProps={{ draggable: false }}
             >
               {plugin.name?.[0]?.toUpperCase()}
             </Avatar>
@@ -529,7 +542,7 @@ const PluginCard = ({
         onClose={() => setModalOpen(false)}
         title={
           <Group gap="xs" align="center">
-            <Avatar src={plugin.logo_url} radius="sm" size={28} alt={`${plugin.name} logo`}>
+            <Avatar src={plugin.logo_url} radius="sm" size={28} alt={`${plugin.name} logo`} imageProps={{ draggable: false }}>
               {plugin.name?.[0]?.toUpperCase()}
             </Avatar>
             <Text fw={600}>{plugin.name}</Text>
@@ -614,6 +627,71 @@ const PluginCard = ({
           )}
         </Tabs>
       </Modal>
+
+      {/* Install confirmation modal */}
+      {(() => {
+        const selVer = pendingInstallParams?.version;
+        const isDown = plugin.version && selVer && compareVersions(selVer, plugin.version) < 0;
+        const actionLabel = isDown ? 'Downgrade' : 'Update';
+        return (
+          <Modal
+            opened={installConfirmOpen}
+            onClose={() => {
+              setInstallConfirmOpen(false);
+              setPendingInstallParams(null);
+            }}
+            zIndex={300}
+            title={
+              <Group gap="xs" align="center">
+                {isDown
+                  ? <Download size={18} color="var(--mantine-color-orange-6)" />
+                  : <Download size={18} />}
+                <Text fw={600}>Confirm {actionLabel}</Text>
+              </Group>
+            }
+            size="sm"
+          >
+            <Stack gap="md">
+              <Text size="sm">
+                You are about to {actionLabel.toLowerCase()} <b>{plugin.name}</b>{' '}
+                from <b>v{plugin.version}</b> to <b>v{selVer}</b>.
+              </Text>
+              <PluginSecurityWarning>
+                Plugins run server-side code with full access to your Dispatcharr
+                instance and its data. Only install plugins from developers you
+                trust. Malicious plugins could read or modify data, call internal
+                APIs, or perform unwanted actions.
+              </PluginSecurityWarning>
+              <PluginSupportDisclaimer />
+              {isDown && (
+                <PluginDowngradeWarning>
+                  Downgrading may cause issues with saved settings or data.
+                </PluginDowngradeWarning>
+              )}
+              <Text size="sm" fw={500}>Are you sure you want to proceed?</Text>
+              <Group justify="flex-end" gap="xs">
+                <Button
+                  size="xs"
+                  variant="default"
+                  onClick={() => {
+                    setInstallConfirmOpen(false);
+                    setPendingInstallParams(null);
+                  }}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  size="xs"
+                  color={isDown ? 'orange' : undefined}
+                  onClick={confirmAndInstall}
+                >
+                  {actionLabel}
+                </Button>
+              </Group>
+            </Stack>
+          </Modal>
+        );
+      })()}
     </div>
   );
 };

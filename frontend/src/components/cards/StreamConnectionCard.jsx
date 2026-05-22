@@ -3,6 +3,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import usePlaylistsStore from '../../store/playlists.jsx';
 import useSettingsStore from '../../store/settings.jsx';
 import useUsersStore from '../../store/users.jsx';
+import useOutputProfilesStore from '../../store/outputProfiles.jsx';
 import {
   ActionIcon,
   Badge,
@@ -32,6 +33,7 @@ import {
 } from 'lucide-react';
 import {
   toFriendlyDuration,
+  formatExactDuration,
   useDateTimeFormat,
 } from '../../utils/dateTimeUtils.js';
 import { CustomTable, useTable } from '../tables/CustomTable/index.jsx';
@@ -53,6 +55,7 @@ import {
   switchStream,
 } from '../../utils/cards/StreamConnectionCardUtils.js';
 import useVideoStore from '../../store/useVideoStore';
+import { buildLiveStreamUrl } from '../../utils/components/FloatingVideoUtils.js';
 
 const formatProgramTime = (seconds) => {
   const absSeconds = Math.abs(seconds);
@@ -123,6 +126,7 @@ const StreamConnectionCard = ({
 
   // Get M3U account data from the playlists store
   const m3uAccounts = usePlaylistsStore((s) => s.playlists);
+  const m3uProfiles = usePlaylistsStore((s) => s.profiles);
   // Get users for resolving user_id → username on client rows
   const users = useUsersStore((s) => s.users);
   // Get settings for speed threshold and environment mode
@@ -134,6 +138,19 @@ const StreamConnectionCard = ({
 
   // Get user's date/time format preferences
   const { fullDateTimeFormat } = useDateTimeFormat();
+
+  // Flat map of profile id -> profile for quick lookup
+  const m3uProfilesById = useMemo(() => {
+    const map = {};
+    Object.values(m3uProfiles).forEach((profileList) => {
+      if (Array.isArray(profileList)) {
+        profileList.forEach((p) => {
+          map[p.id] = p;
+        });
+      }
+    });
+    return map;
+  }, [m3uProfiles]);
 
   // Create a map of M3U account IDs to names for quick lookup
   const m3uAccountsMap = useMemo(() => {
@@ -151,16 +168,29 @@ const StreamConnectionCard = ({
 
   // Update M3U profile information when channel data changes
   useEffect(() => {
-    // If the channel data includes M3U profile information, update our state
-    if (channel.m3u_profile || channel.m3u_profile_name) {
+    if (
+      channel.m3u_profile ||
+      channel.m3u_profile_name ||
+      channel.m3u_profile_id
+    ) {
+      const profileFromStore = channel.m3u_profile_id
+        ? m3uProfilesById[channel.m3u_profile_id]
+        : null;
       setCurrentM3UProfile({
         name:
           channel.m3u_profile?.name ||
+          profileFromStore?.name ||
           channel.m3u_profile_name ||
           'Default M3U',
       });
     }
-  }, [channel.m3u_profile, channel.m3u_profile_name, channel.stream_id]);
+  }, [
+    channel.m3u_profile,
+    channel.m3u_profile_name,
+    channel.m3u_profile_id,
+    channel.stream_id,
+    m3uProfilesById,
+  ]);
 
   // Fetch available streams for this channel
   useEffect(() => {
@@ -376,13 +406,14 @@ const StreamConnectionCard = ({
         minSize: 60,
         accessorFn: durationAccessor(),
         cell: ({ cell, row }) => {
-          const exactDuration =
-            row.original.connected_since || row.original.connection_duration;
+          const exactDuration = row.original.connected_at
+            ? Date.now() / 1000 - row.original.connected_at
+            : null;
           return (
             <Tooltip
               label={
                 exactDuration
-                  ? `${exactDuration.toFixed(1)} seconds`
+                  ? formatExactDuration(exactDuration)
                   : 'Unknown duration'
               }
             >
@@ -425,9 +456,19 @@ const StreamConnectionCard = ({
       actions: renderBodyCell,
     },
     getExpandedRowHeight: (row) => {
-      return 20 + 28 * row.original.streams.length;
+      return (
+        20 +
+        28 * row.original.streams.length +
+        (row.original.output_format ? 28 : 0) +
+        (row.original.output_profile_id ? 28 : 0)
+      );
     },
     expandedRowRenderer: ({ row }) => {
+      const outputProfileId = row.original.output_profile_id;
+      const outputProfiles = useOutputProfilesStore.getState().profiles;
+      const outputProfileName = outputProfileId
+        ? (outputProfiles.find((p) => p.id === outputProfileId)?.name ?? null)
+        : null;
       return (
         <Box p="xs">
           <Group spacing="xs" align="flex-start">
@@ -436,6 +477,22 @@ const StreamConnectionCard = ({
             </Text>
             <Text size="xs">{row.original.user_agent || 'Unknown'}</Text>
           </Group>
+          {row.original.output_format && (
+            <Group spacing="xs" align="flex-start" mt={4}>
+              <Text size="xs" fw={500} color="dimmed">
+                Container:
+              </Text>
+              <Text size="xs">{row.original.output_format}</Text>
+            </Group>
+          )}
+          {outputProfileName && (
+            <Group spacing="xs" align="flex-start" mt={4}>
+              <Text size="xs" fw={500} color="dimmed">
+                Output Profile:
+              </Text>
+              <Text size="xs">{outputProfileName}</Text>
+            </Group>
+          )}
         </Box>
       );
     },
@@ -502,7 +559,7 @@ const StreamConnectionCard = ({
     const actualChannel = channels[channelDbId];
     if (!actualChannel?.uuid) return;
 
-    const uri = `/proxy/ts/stream/${actualChannel.uuid}`;
+    const uri = buildLiveStreamUrl(`/proxy/ts/stream/${actualChannel.uuid}`);
     let url = `${window.location.protocol}//${window.location.host}${uri}`;
     if (env_mode === 'dev') {
       url = `${window.location.protocol}//${window.location.hostname}:5656${uri}`;
@@ -558,7 +615,7 @@ const StreamConnectionCard = ({
 
           <Group mt={10}>
             <Box>
-              <Tooltip label={getStartDate(uptime)}>
+              <Tooltip label={getStartDate(channel.started_at)}>
                 <Center>
                   <Timer pr={5} />
                   {toFriendlyDuration(uptime, 'seconds')}

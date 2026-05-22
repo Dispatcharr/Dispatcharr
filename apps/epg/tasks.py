@@ -966,6 +966,7 @@ def parse_channels_only(source):
         batch_size = 500  # Process in batches to limit memory usage
         progress = 0  # Initialize progress variable here
         icon_url_max_length = EPGData._meta.get_field('icon_url').max_length  # Get max length for icon_url field
+        name_max_length = EPGData._meta.get_field('name').max_length  # Get max length for name field
 
         # Track memory at key points
         if process:
@@ -1021,6 +1022,10 @@ def parse_channels_only(source):
 
                         if not display_name:
                             display_name = tvg_id
+
+                        if display_name and len(display_name) > name_max_length:
+                            logger.warning(f"EPG display name too long ({len(display_name)} > {name_max_length}), truncating: {display_name[:80]}...")
+                            display_name = display_name[:name_max_length]
 
                         # Use lazy loading approach to reduce memory usage
                         if tvg_id in existing_tvg_ids:

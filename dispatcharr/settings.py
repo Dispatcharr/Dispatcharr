@@ -79,7 +79,7 @@ INSTALLED_APPS = [
     "apps.m3u",
     "apps.output",
     "apps.proxy.apps.ProxyConfig",
-    "apps.proxy.ts_proxy",
+    "apps.proxy.live_proxy",
     "apps.vod.apps.VODConfig",
     "apps.connect.apps.ConnectConfig",
     "core",
@@ -111,25 +111,10 @@ XC_PROFILE_REFRESH_DELAY = float(os.environ.get('XC_PROFILE_REFRESH_DELAY', '2.5
 
 # Database optimization settings
 DATABASE_STATEMENT_TIMEOUT = 300  # Seconds before timing out long-running queries
-DATABASE_CONN_MAX_AGE = (
-    60  # Connection max age in seconds, helps with frequent reconnects
-)
+DATABASE_CONN_MAX_AGE = 0  # Close after each request; gevent makes per-greenlet connections
 
 # Disable atomic requests for performance-sensitive views
 ATOMIC_REQUESTS = False
-
-# Cache settings - add caching for EPG operations
-CACHES = {
-    "default": {
-        "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
-        "LOCATION": "dispatcharr-epg-cache",
-        "TIMEOUT": 3600,  # 1 hour cache timeout
-        "OPTIONS": {
-            "MAX_ENTRIES": 10000,
-            "CULL_FREQUENCY": 3,  # Purge 1/3 of entries when max is reached
-        },
-    }
-}
 
 # Timeouts for external connections
 REQUESTS_TIMEOUT = 30  # Seconds for external API requests
@@ -198,6 +183,25 @@ CHANNEL_LAYERS = {
             "hosts": [_channels_host],
         },
     },
+}
+
+_django_redis_opts = {
+    "CLIENT_CLASS": "django_redis.client.DefaultClient",
+}
+if REDIS_SSL:
+    # rediss:// in the URL already enables SSL; pass cert paths and verify
+    # settings separately via CONNECTION_POOL_KWARGS.
+    _django_redis_opts["CONNECTION_POOL_KWARGS"] = {
+        k: v for k, v in REDIS_SSL_PARAMS.items() if k != "ssl"
+    }
+
+CACHES = {
+    "default": {
+        "BACKEND": "django_redis.cache.RedisCache",
+        "LOCATION": _channels_redis_url,
+        "TIMEOUT": 3600,
+        "OPTIONS": _django_redis_opts,
+    }
 }
 
 # PostgreSQL TLS configuration (defined before DATABASES for module-level access)

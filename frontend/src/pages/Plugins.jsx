@@ -41,6 +41,11 @@ import {
 } from '../utils/pages/PluginsUtils.js';
 import { RefreshCcw, Search } from 'lucide-react';
 import ErrorBoundary from '../components/ErrorBoundary.jsx';
+import {
+  PluginRestartWarning,
+  PluginSecurityWarning,
+  PluginSupportDisclaimer,
+} from '../components/PluginWarnings.jsx';
 const PluginCard = React.lazy(
   () => import('../components/cards/PluginCard.jsx')
 );
@@ -426,11 +431,8 @@ export default function PluginsPage() {
           <Text size="sm" c="dimmed">
             Upload a ZIP containing your plugin folder or package.
           </Text>
-          <Alert color="yellow" variant="light" title="Heads up">
-            Importing a plugin may briefly restart the backend (you might see a
-            temporary disconnect). Please wait a few seconds and the app will
-            reconnect automatically.
-          </Alert>
+          <PluginRestartWarning />
+          <PluginSupportDisclaimer />
           <Dropzone
             onDrop={(files) => files[0] && setImportFile(files[0])}
             onReject={() => {}}
@@ -536,16 +538,14 @@ export default function PluginsPage() {
         zIndex={300}
       >
         <Stack>
-          <Text size="sm">
+          <PluginSecurityWarning>
             Plugins run server-side code with full access to your Dispatcharr
             instance and its data. Only enable plugins from developers you
-            trust.
-          </Text>
-          <Text size="sm" c="dimmed">
-            Why: Malicious plugins could read or modify data, call internal
+            trust. Malicious plugins could read or modify data, call internal
             APIs, or perform unwanted actions. Review the source or trust the
             author before enabling.
-          </Text>
+          </PluginSecurityWarning>
+          <PluginSupportDisclaimer />
           <Group justify="flex-end">
             <Button
               variant="default"

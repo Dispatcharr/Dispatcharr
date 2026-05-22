@@ -1,9 +1,7 @@
 import API from '../../api.js';
 import {
   format,
-  getNow,
   initializeTime,
-  subtract,
   toFriendlyDuration,
 } from '../dateTimeUtils.js';
 
@@ -19,22 +17,9 @@ export const getBufferingSpeedThreshold = (proxySetting) => {
   return 1.0; // Default fallback
 };
 
-export const getStartDate = (uptime) => {
-  // Get the current date and time
-  const currentDate = new Date();
-  // Calculate the start date by subtracting uptime (in milliseconds)
-  const startDate = new Date(currentDate.getTime() - uptime * 1000);
-  // Format the date as a string (you can adjust the format as needed)
-  return startDate.toLocaleString({
-    weekday: 'short', // optional, adds day of the week
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hour12: true, // 12-hour format with AM/PM
-  });
+export const getStartDate = (startedAt) => {
+  if (!startedAt) return 'Unknown';
+  return new Date(startedAt * 1000).toLocaleString();
 };
 
 export const getM3uAccountsMap = (m3uAccounts) => {
@@ -70,33 +55,24 @@ export const switchStream = (channel, streamId) => {
 
 export const connectedAccessor = (fullDateTimeFormat) => {
   return (row) => {
-    // Check for connected_since (which is seconds since connection)
-    if (row.connected_since) {
-      // Calculate the actual connection time by subtracting the seconds from current time
-      const connectedTime = subtract(getNow(), row.connected_since, 'second');
-      return format(connectedTime, fullDateTimeFormat);
-    }
-
-    // Fallback to connected_at if it exists
     if (row.connected_at) {
-      const connectedTime = initializeTime(row.connected_at * 1000);
-      return format(connectedTime, fullDateTimeFormat);
+      return format(
+        initializeTime(row.connected_at * 1000),
+        fullDateTimeFormat
+      );
     }
-
     return 'Unknown';
   };
 };
 
 export const durationAccessor = () => {
   return (row) => {
-    if (row.connected_since) {
-      return toFriendlyDuration(row.connected_since, 'seconds');
+    if (row.connected_at) {
+      return toFriendlyDuration(
+        Date.now() / 1000 - row.connected_at,
+        'seconds'
+      );
     }
-
-    if (row.connection_duration) {
-      return toFriendlyDuration(row.connection_duration, 'seconds');
-    }
-
     return '-';
   };
 };

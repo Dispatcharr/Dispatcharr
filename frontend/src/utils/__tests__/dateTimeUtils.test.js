@@ -203,6 +203,52 @@ describe('dateTimeUtils', () => {
     });
   });
 
+  describe('formatExactDuration', () => {
+    it('should show seconds with one decimal place under a minute', () => {
+      expect(dateTimeUtils.formatExactDuration(45.6)).toBe('45.6 seconds');
+    });
+
+    it('should use singular second when exactly 1 second', () => {
+      expect(dateTimeUtils.formatExactDuration(1.0)).toBe('1.0 seconds');
+    });
+
+    it('should show minutes and seconds between 1 and 60 minutes', () => {
+      expect(dateTimeUtils.formatExactDuration(5 * 60 + 23)).toBe(
+        '5 minutes, 23 seconds'
+      );
+    });
+
+    it('should use singular minute/second at exactly 1m 1s', () => {
+      expect(dateTimeUtils.formatExactDuration(61)).toBe('1 minute, 1 second');
+    });
+
+    it('should show hours and minutes between 1 and 24 hours', () => {
+      expect(dateTimeUtils.formatExactDuration(2 * 3600 + 15 * 60)).toBe(
+        '2 hours, 15 minutes'
+      );
+    });
+
+    it('should use singular hour/minute at exactly 1h 1m', () => {
+      expect(dateTimeUtils.formatExactDuration(3660)).toBe('1 hour, 1 minute');
+    });
+
+    it('should show days and hours at 24 hours or more', () => {
+      expect(dateTimeUtils.formatExactDuration(2 * 86400 + 4 * 3600)).toBe(
+        '2 days, 4 hours'
+      );
+    });
+
+    it('should use singular day/hour at exactly 1d 1h', () => {
+      expect(dateTimeUtils.formatExactDuration(86400 + 3600)).toBe(
+        '1 day, 1 hour'
+      );
+    });
+
+    it('should show 0 seconds correctly', () => {
+      expect(dateTimeUtils.formatExactDuration(0)).toBe('0.0 seconds');
+    });
+  });
+
   describe('fromNow', () => {
     it('should return relative time from now', () => {
       const pastDate = dayjs().subtract(1, 'hour').toISOString();

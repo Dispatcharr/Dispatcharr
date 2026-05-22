@@ -7,6 +7,7 @@ import usePlaylistsStore from './store/playlists';
 import useEPGsStore from './store/epgs';
 import useStreamsStore from './store/streams';
 import useStreamProfilesStore from './store/streamProfiles';
+import useOutputProfilesStore from './store/outputProfiles';
 import useSettingsStore from './store/settings';
 import { notifications } from '@mantine/notifications';
 import useChannelsTableStore from './store/channelsTable';
@@ -268,6 +269,77 @@ export default class API {
     } catch (e) {
       errorNotification('Failed to retrieve channel summary', e);
       return [];
+    }
+  }
+
+  // Repack visible auto-created channels into [start, end]; override
+  // pins are reservations and hidden non-pinned channels release their
+  // number.
+  static async repackGroupChannels(accountId, channelGroupId) {
+    try {
+      const params = new URLSearchParams({
+        channel_group_id: String(channelGroupId),
+      });
+      const url = `${host}/api/m3u/accounts/${accountId}/repack-group/?${params.toString()}`;
+      return await request(url, { method: 'POST' });
+    } catch (e) {
+      errorNotification('Failed to re-pack group channels', e);
+      return null;
+    }
+  }
+
+  // Returns occupants whose effective channel_number falls in [start, end].
+  // Pass `signal` from an AbortController on per-keystroke calls so an
+  // out-of-order response cannot overwrite newer state.
+  static async getChannelsInRange(start, end, { signal } = {}) {
+    try {
+      const params = new URLSearchParams({ start: String(start) });
+      if (end !== undefined && end !== null && end !== '') {
+        params.set('end', String(end));
+      }
+      const url = `${host}/api/channels/channels/numbers-in-range/?${params.toString()}`;
+      return await request(url, { signal });
+    } catch (e) {
+      if (e?.name === 'AbortError') {
+        throw e;
+      }
+      // Silent failure is correct here: the warning is purely advisory and
+      // should not block the user from saving when the server is flaky.
+      return { occupants: [] };
+    }
+  }
+
+  // Server-side regex preview for a group's streams. Returns find_matches,
+  // filter_matches, and exclude_matches plus accurate counts across the
+  // whole group (capped at 5000 scanned streams server-side). Used by the
+  // auto-sync gear modal so the user sees real matches and totals rather
+  // than a small client-side sample. The three patterns are independent;
+  // any combination can be supplied per call.
+  static async getStreamsRegexPreview(
+    channelGroupName,
+    { find, replace, match, exclude, limit = 10, signal, m3uAccountId } = {}
+  ) {
+    try {
+      const params = new URLSearchParams({
+        channel_group: channelGroupName,
+      });
+      if (m3uAccountId !== undefined && m3uAccountId !== null) {
+        params.set('m3u_account_id', String(m3uAccountId));
+      }
+      if (find) params.set('find', find);
+      if (replace !== undefined && replace !== null) {
+        params.set('replace', replace);
+      }
+      if (match) params.set('match', match);
+      if (exclude) params.set('exclude', exclude);
+      params.set('limit', String(limit));
+      const url = `${host}/api/channels/streams/regex-preview/?${params.toString()}`;
+      return await request(url, { signal });
+    } catch (e) {
+      if (e?.name === 'AbortError') {
+        throw e;
+      }
+      return null;
     }
   }
 
@@ -637,6 +709,77 @@ export default class API {
     }
   }
 
+  /**
+   * PATCHes only the stream order for a channel
+   * without triggering requeryStreams or requeryChannels. The caller is
+   * responsible for optimistic UI updates.
+   */
+  static async reorderChannelStreams(channelId, streamIds) {
+    try {
+      await request(`${host}/api/channels/channels/${channelId}/`, {
+        method: 'PATCH',
+        body: { id: channelId, streams: streamIds },
+      });
+      // Update the channelsTable store in-place with the new stream order
+      const store = useChannelsTableStore.getState();
+      const channel = store.channels.find((c) => c.id === channelId);
+      if (channel) {
+        // Reorder the existing stream objects to match streamIds
+        const streamMap = new Map(channel.streams.map((s) => [s.id, s]));
+        const reorderedStreams = streamIds
+          .map((id) => streamMap.get(id))
+          .filter(Boolean);
+        store.updateChannel({ ...channel, streams: reorderedStreams });
+      }
+    } catch (e) {
+      errorNotification('Failed to reorder streams', e);
+      // On failure, requery to restore correct state
+      await API.requeryChannels();
+    }
+  }
+
+  /**
+   * PATCHes the channel with the
+   * combined stream list and updates the channelsTable store in-place
+   * using the stream objects the caller already has. Skips requeryStreams
+   * (stream data doesn't change) and requeryChannels (we build the
+   * result locally).
+   *
+   * @param {number} channelId
+   * @param {Array} existingStreams - current channel.streams (full objects)
+   * @param {Array} newStreams      - stream objects to append
+   */
+  static async addStreamsToChannel(channelId, existingStreams, newStreams) {
+    try {
+      const existing = existingStreams || [];
+      // Deduplicate by ID, preserving order (existing first, new appended)
+      const seen = new Set(existing.map((s) => s.id));
+      const merged = [...existing];
+      for (const s of newStreams) {
+        if (!seen.has(s.id)) {
+          seen.add(s.id);
+          merged.push(s);
+        }
+      }
+
+      await request(`${host}/api/channels/channels/${channelId}/`, {
+        method: 'PATCH',
+        body: { id: channelId, streams: merged.map((s) => s.id) },
+      });
+
+      // Update the channelsTable store in-place with the merged streams
+      const store = useChannelsTableStore.getState();
+      const channel = store.channels.find((c) => c.id === channelId);
+      if (channel) {
+        store.updateChannel({ ...channel, streams: merged });
+      }
+    } catch (e) {
+      errorNotification('Failed to add streams to channel', e);
+      // On failure, requery to restore correct state
+      await API.requeryChannels();
+    }
+  }
+
   static async updateChannels(ids, values) {
     const body = [];
     for (const id of ids) {
@@ -869,7 +1012,6 @@ export default class API {
         useChannelsStore.getState().addChannel(response);
       }
 
-      await API.requeryStreams();
       return response;
     } catch (e) {
       errorNotification('Failed to create channel', e);
@@ -934,6 +1076,27 @@ export default class API {
       return response;
     } catch (e) {
       errorNotification('Failed to retrieve channel streams', e);
+    }
+  }
+
+  /**
+   * Fetches a stats delta for a channel's streams. Errors are swallowed
+   * since this is a background refresh.
+   */
+  static async getChannelStreamStats(channelId, since, ids) {
+    try {
+      const params = new URLSearchParams();
+      if (since) params.set('since', since);
+      if (Array.isArray(ids) && ids.length > 0) {
+        params.set('ids', ids.join(','));
+      }
+      const qs = params.toString();
+      const response = await request(
+        `${host}/api/channels/channels/${channelId}/streams/stats/${qs ? `?${qs}` : ''}`
+      );
+      return Array.isArray(response) ? response : [];
+    } catch (e) {
+      return [];
     }
   }
 
@@ -1250,14 +1413,34 @@ export default class API {
   }
 
   static async deletePlaylist(id) {
+    // Cascade-deletes auto-created channels owned by the account; the
+    // response includes the deleted count for the confirmation toast.
     try {
-      await request(`${host}/api/m3u/accounts/${id}/`, {
+      const response = await request(`${host}/api/m3u/accounts/${id}/`, {
         method: 'DELETE',
       });
-
       usePlaylistsStore.getState().removePlaylists([id]);
+      return response || {};
     } catch (e) {
       errorNotification(`Failed to delete playlist ${id}`, e);
+      throw e;
+    }
+  }
+
+  // Used by the Delete Playlist confirmation dialog to render an accurate
+  // "Also delete N auto-created channels?" option before the user commits.
+  static async getPlaylistAutoCreatedChannelsCount(id) {
+    try {
+      const response = await request(
+        `${host}/api/m3u/accounts/${id}/auto-created-channels-count/`
+      );
+      return response;
+    } catch (e) {
+      console.error(
+        `Failed to fetch auto-created channel count for playlist ${id}`,
+        e
+      );
+      return { count: 0, sample_names: [] };
     }
   }
 
@@ -1534,6 +1717,53 @@ export default class API {
       useStreamProfilesStore.getState().removeStreamProfiles([id]);
     } catch (e) {
       errorNotification(`Failed to delete stream propfile ${id}`, e);
+    }
+  }
+
+  static async getOutputProfiles() {
+    try {
+      const response = await request(`${host}/api/core/outputprofiles/`);
+      return response;
+    } catch (e) {
+      errorNotification('Failed to retrieve output profiles', e);
+    }
+  }
+
+  static async addOutputProfile(values) {
+    try {
+      const response = await request(`${host}/api/core/outputprofiles/`, {
+        method: 'POST',
+        body: values,
+      });
+      useOutputProfilesStore.getState().addOutputProfile(response);
+      return response;
+    } catch (e) {
+      errorNotification('Failed to create output profile', e);
+    }
+  }
+
+  static async updateOutputProfile(values) {
+    const { id, ...payload } = values;
+    try {
+      const response = await request(`${host}/api/core/outputprofiles/${id}/`, {
+        method: 'PUT',
+        body: payload,
+      });
+      useOutputProfilesStore.getState().updateOutputProfile(response);
+      return response;
+    } catch (e) {
+      errorNotification(`Failed to update output profile ${id}`, e);
+    }
+  }
+
+  static async deleteOutputProfile(id) {
+    try {
+      await request(`${host}/api/core/outputprofiles/${id}/`, {
+        method: 'DELETE',
+      });
+      useOutputProfilesStore.getState().removeOutputProfiles([id]);
+    } catch (e) {
+      errorNotification(`Failed to delete output profile ${id}`, e);
     }
   }
 
@@ -2892,10 +3122,12 @@ export default class API {
     }
   }
 
-  static async deleteSeriesRule(tvgId) {
+  static async deleteSeriesRule(tvgId, title) {
     try {
-      const encodedTvgId = encodeURIComponent(tvgId);
-      await request(`${host}/api/channels/series-rules/${encodedTvgId}/`, {
+      const params = new URLSearchParams();
+      if (tvgId) params.set('tvg_id', tvgId);
+      if (title) params.set('title', title);
+      await request(`${host}/api/channels/series-rules/?${params}`, {
         method: 'DELETE',
       });
       notifications.show({ title: 'Series rule removed' });
@@ -2931,6 +3163,15 @@ export default class API {
     } catch (e) {
       errorNotification('Failed to evaluate series rules', e);
     }
+  }
+
+  static async previewSeriesRule(values, { signal } = {}) {
+    // Throws on error so callers can ignore aborted requests vs real failures.
+    return request(`${host}/api/channels/series-rules/preview/`, {
+      method: 'POST',
+      body: values,
+      signal,
+    });
   }
 
   static async bulkRemoveSeriesRecordings({

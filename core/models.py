@@ -125,14 +125,16 @@ class StreamProfile(models.Model):
         return False
 
     def build_command(self, stream_url, user_agent, proxy=None):
+
         if self.is_proxy():
+            # Proxy type doesn't use external commands
             return []
 
         replacements = {
             "{streamUrl}": stream_url,
             "{userAgent}": user_agent,
         }
-
+        
         # Add proxy to replacements if provided
         if proxy:
             replacements["{proxy}"] = proxy
@@ -150,6 +152,43 @@ class StreamProfile(models.Model):
         for key, value in replacements.items():
             part = part.replace(key, value)
         return part
+
+
+class OutputProfile(models.Model):
+    """
+    Defines a pre-delivery transcode step applied to a channel's TS stream.
+
+    The command and parameters must accept raw MPEG-TS via pipe:0 (stdin) and
+    write the transcoded output to pipe:1 (stdout). One transcode process runs
+    per active (channel, OutputProfile) pair regardless of how many clients
+    request it; all clients share the same Redis-backed output buffer.
+
+    Example parameters for a 720p transcode:
+        -i pipe:0 -c:v libx264 -b:v 2000k -vf scale=-2:720 -c:a copy -f mpegts pipe:1
+    """
+
+    name = models.CharField(max_length=255, unique=True, help_text="Display name for this output profile")
+    command = models.CharField(
+        max_length=255,
+        help_text="Executable to run (e.g. 'ffmpeg')",
+    )
+    parameters = models.TextField(
+        help_text="Command-line parameters. Must read from pipe:0 (stdin) and write to pipe:1 (stdout).",
+    )
+    locked = models.BooleanField(
+        default=False, help_text="Protected - can't be deleted or modified"
+    )
+    is_active = models.BooleanField(
+        default=True, help_text="Whether this profile is available for use"
+    )
+
+    def __str__(self):
+        return self.name
+
+    def build_command(self):
+        """Return the full command as a list suitable for subprocess.Popen."""
+        from shlex import split as shlex_split
+        return [self.command] + shlex_split(self.parameters)
 
 
 # Setting group keys
@@ -209,8 +248,8 @@ class CoreSettings(models.Model):
             "default_user_agent": None,
             "default_stream_profile": None,
             "m3u_hash_key": "",
-            "preferred_region": None,
-            "auto_import_mapped_files": None,
+            "default_output_format": "mpegts",
+            "hdhr_output_profile_id": None,
         })
 
     @classmethod
@@ -222,16 +261,20 @@ class CoreSettings(models.Model):
         return cls.get_stream_settings().get("default_stream_profile")
 
     @classmethod
+    def get_default_output_format(cls):
+        return cls.get_stream_settings().get("default_output_format", "mpegts")
+
+    @classmethod
     def get_m3u_hash_key(cls):
         return cls.get_stream_settings().get("m3u_hash_key", "")
 
     @classmethod
     def get_preferred_region(cls):
-        return cls.get_stream_settings().get("preferred_region")
+        return cls.get_system_settings().get("preferred_region")
 
     @classmethod
     def get_auto_import_mapped_files(cls):
-        return cls.get_stream_settings().get("auto_import_mapped_files")
+        return cls.get_system_settings().get("auto_import_mapped_files")
 
     # EPG Settings
     @classmethod
@@ -275,6 +318,8 @@ class CoreSettings(models.Model):
             "movie_fallback_template": "Movies/{start}.mkv",
             "comskip_enabled": False,
             "comskip_custom_path": "",
+            "comskip_mode": "cut",
+            "comskip_hw_accel": "none",
             "pre_offset_minutes": 0,
             "post_offset_minutes": 0,
             "series_rules": [],
@@ -303,6 +348,16 @@ class CoreSettings(models.Model):
     @classmethod
     def get_dvr_comskip_enabled(cls):
         return bool(cls.get_dvr_settings().get("comskip_enabled", False))
+
+    @classmethod
+    def get_dvr_comskip_mode(cls):
+        mode = cls.get_dvr_settings().get("comskip_mode", "cut")
+        return mode if mode in ("cut", "mark") else "cut"
+
+    @classmethod
+    def get_dvr_comskip_hw_accel(cls):
+        hw = cls.get_dvr_settings().get("comskip_hw_accel", "none")
+        return hw if hw in ("none", "cuvid", "qsv") else "none"
 
     @classmethod
     def get_dvr_comskip_custom_path(cls):
@@ -355,6 +410,8 @@ class CoreSettings(models.Model):
         return cls._get_group(SYSTEM_SETTINGS_KEY, {
             "time_zone": getattr(settings, "TIME_ZONE", "UTC") or "UTC",
             "max_system_events": 100,
+            "preferred_region": None,
+            "auto_import_mapped_files": True,
         })
 
     @classmethod
@@ -366,6 +423,14 @@ class CoreSettings(models.Model):
         value = (tz_name or "").strip() or getattr(settings, "TIME_ZONE", "UTC") or "UTC"
         cls._update_group(SYSTEM_SETTINGS_KEY, "System Settings", {"time_zone": value})
         return value
+
+    @classmethod
+    def get_hdhr_output_profile_id(cls):
+        raw = cls.get_stream_settings().get("hdhr_output_profile_id")
+        try:
+            return int(raw) if raw is not None else None
+        except (ValueError, TypeError):
+            return None
 
     @classmethod
     def get_user_limits_settings(cls):
@@ -403,6 +468,8 @@ class SystemEvent(models.Model):
         ('logout', 'User Logged Out'),
         ('m3u_blocked', 'M3U Download Blocked'),
         ('epg_blocked', 'EPG Download Blocked'),
+        ('vod_start', 'VOD Started'),
+        ('vod_stop', 'VOD Stopped'),
     ]
 
     event_type = models.CharField(max_length=50, choices=EVENT_TYPES, db_index=True)

@@ -443,4 +443,6 @@ export const SUBSCRIPTION_EVENTS = {
   login_failed: 'Login Failed',
   epg_blocked: 'EPG Blocked',
   m3u_blocked: 'M3U Blocked',
+  vod_start: 'VOD Started',
+  vod_stop: 'VOD Stopped',
 };

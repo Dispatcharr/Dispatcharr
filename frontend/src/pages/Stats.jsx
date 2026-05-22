@@ -99,10 +99,11 @@ const Connections = ({
 const StatsPage = () => {
   const channelStats = useChannelsStore((s) => s.stats);
   const setChannelStats = useChannelsStore((s) => s.setChannelStats);
+  const vodConnections = useChannelsStore((s) => s.activeVodConnections);
+  const setVodStats = useChannelsStore((s) => s.setVodStats);
   const streamProfiles = useStreamProfilesStore((s) => s.profiles);
 
   const [clients, setClients] = useState([]);
-  const [vodConnections, setVodConnections] = useState([]);
   const [channelHistory, setChannelHistory] = useState({});
   const [isPollingActive, setIsPollingActive] = useState(false);
   const [currentPrograms, setCurrentPrograms] = useState({});
@@ -197,7 +198,7 @@ const StatsPage = () => {
     try {
       const response = await getVODStats();
       if (response) {
-        setVodConnections(response.vod_connections || []);
+        setVodStats(response);
       } else {
         console.log('VOD API response was empty or null');
       }
@@ -209,7 +210,7 @@ const StatsPage = () => {
         body: error.body,
       });
     }
-  }, []);
+  }, [setVodStats]);
 
   // Set up polling for stats when on stats page
   useEffect(() => {

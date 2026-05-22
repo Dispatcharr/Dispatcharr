@@ -11,7 +11,7 @@ VALID_NAV_ITEM_IDS = {
     'channels', 'vods', 'sources', 'guide', 'dvr',
     'stats', 'plugins', 'integrations', 'system', 'settings'
 }
-MAX_CUSTOM_PROPS_SIZE = 10240  # 10KB limit
+MAX_CUSTOM_PROPS_SIZE = 102400  # 100KB limit
 
 
 def validate_nav_array(value, field_name):
@@ -116,12 +116,16 @@ class UserSerializer(serializers.ModelSerializer):
         channel_profiles = validated_data.pop("channel_profiles", None)
 
         # Merge custom_properties instead of replacing (prevents data loss)
-        # Strip null values — sending null for a key omits it rather than overwriting with null
+        # null values are explicit deletions; all other values overwrite existing
         custom_properties = validated_data.pop("custom_properties", None)
         if custom_properties is not None:
             existing = instance.custom_properties or {}
-            cleaned = {k: v for k, v in custom_properties.items() if v is not None}
-            merged = {**existing, **cleaned}
+            merged = dict(existing)
+            for k, v in custom_properties.items():
+                if v is None:
+                    merged.pop(k, None)
+                else:
+                    merged[k] = v
             # Scrub stale nav IDs so the DB self-heals on next save
             for nav_field in ('navOrder', 'hiddenNav'):
                 if nav_field in merged and isinstance(merged[nav_field], list):

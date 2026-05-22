@@ -54,6 +54,7 @@ class PluginManager:
         self._alias_names: Dict[str, str] = {}
         self._reload_token_path = os.path.join(self.plugins_dir, ".reload_token")
         self._last_reload_token = 0.0
+        self._discovery_completed = False
         self._lock = threading.RLock()
 
         # Ensure plugins directory exists
@@ -71,7 +72,7 @@ class PluginManager:
         token = self._get_reload_token()
         if use_cache and not force_reload:
             with self._lock:
-                if self._registry and token <= self._last_reload_token:
+                if self._discovery_completed and token <= self._last_reload_token:
                     return self._registry
         if token > self._last_reload_token:
             force_reload = True
@@ -231,6 +232,7 @@ class PluginManager:
                 self._alias_names = new_aliases
                 if token > self._last_reload_token:
                     self._last_reload_token = token
+                self._discovery_completed = True
 
             logger.info(f"Discovered {len(new_registry)} plugin(s)")
         except FileNotFoundError:
