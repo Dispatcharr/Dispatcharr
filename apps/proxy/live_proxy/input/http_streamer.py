@@ -26,6 +26,7 @@ class HTTPStreamReader:
         self.pipe_read = None
         self.pipe_write = None
         self.running = False
+        self.error_occurred = False  # NEW: Track if an error occurred
 
     def start(self):
         """Start the HTTP stream reader thread"""
@@ -91,7 +92,7 @@ class HTTPStreamReader:
             # Stream chunks to pipe
             chunk_count = 0
             for chunk in self.response.iter_content(chunk_size=self.chunk_size):
-                if not self.running:
+                if not self.running or self.response is None:
                     break
 
                 if chunk:
@@ -126,8 +127,12 @@ class HTTPStreamReader:
 
         except requests.exceptions.RequestException as e:
             logger.error(f"HTTP reader request error: {e}")
+            # Signal error to StreamManager so it can trigger failover
+            self.error_occurred = True
         except Exception as e:
             logger.error(f"HTTP reader unexpected error: {e}", exc_info=True)
+            # Signal error to StreamManager so it can trigger failover
+            self.error_occurred = True
         finally:
             self.running = False
             # Close write end of pipe to signal EOF

@@ -1322,6 +1322,16 @@ class StreamManager:
                 now = time.time()
                 inactivity_duration = now - self.last_data_time
 
+                # NEW: Check if HTTP reader encountered an error (timeout, connection error, etc.)
+                if hasattr(self, 'http_reader') and self.http_reader and hasattr(self.http_reader, 'error_occurred') and self.http_reader.error_occurred:
+                    logger.warning(f"HTTP reader error detected for channel {self.channel_id} - triggering stream switch")
+                    self.healthy = False
+                    if not self.needs_stream_switch:
+                        self.needs_stream_switch = True
+                        self.last_health_action_time = now
+                    # Reset the error flag
+                    self.http_reader.error_occurred = False
+
                 # Adaptive thresholds based on time since last switch
                 last_switch_time = getattr(self, 'last_stream_switch_time', 0)
                 time_since_switch = now - last_switch_time if last_switch_time > 0 else float('inf')
