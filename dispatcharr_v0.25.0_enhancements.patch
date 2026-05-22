@@ -1239,14 +1239,15 @@ def stop(self):
 ### Additional Files Modified (Bugfixes 7 & 8)
 - `apps/proxy/live_proxy/input/http_streamer.py` - Error tracking + race condition fix
 - `apps/proxy/live_proxy/input/manager.py` - HTTP error monitoring
+- `core/xtream_codes.py` - HTTP proxy timeout fix (60s → 120s)
 
 ### Updated Statistics
 
 **Backend:**
-- **Files Modified:** 11 (was 9)
+- **Files Modified:** 12 (was 11)
 - **Features:** 6/6 (100%)
 - **Sub-Features:** 57/57 (100%) - was 55
-- **Bugfixes:** 6 (4 Profile Failover + 2 HTTP Proxy)
+- **Bugfixes:** 7 (4 Profile Failover + 3 HTTP Proxy)
 - **XCClient Instanziierungen:** 9/9 (5 M3U + 4 VOD)
 - **Migrations:** 1
 - **Syntax Errors:** 0

@@ -5,6 +5,10 @@ from datetime import timedelta
 from urllib.parse import quote_plus
 from django.core.exceptions import ImproperlyConfigured
 
+# Allow synchronous DB operations in async context (gevent/uWSGI)
+# This is required for JWT authentication and other DRF operations
+os.environ["DJANGO_ALLOW_ASYNC_UNSAFE"] = "true"
+
 
 def _validate_tls_cert_paths(paths, service_name):
     """Validate that configured TLS certificate file paths exist on disk.
