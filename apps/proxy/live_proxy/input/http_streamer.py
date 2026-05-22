@@ -148,7 +148,7 @@ class HTTPStreamReader:
         logger.info("Stopping HTTP stream reader")
         self.running = False
 
-        # Close response
+        # Close response (but don't set to None - thread may still be iterating)
         if self.response:
             try:
                 self.response.close()
@@ -170,6 +170,6 @@ class HTTPStreamReader:
             except:
                 pass
 
-        # Wait for thread
+        # Wait for thread to finish
         if self.thread and self.thread.is_alive():
             self.thread.join(timeout=2.0)

@@ -29,7 +29,6 @@ COPY pyproject.toml /tmp/build/
 COPY version.py /tmp/build/
 COPY README.md /tmp/build/
 RUN uv sync --python 3.13 --no-cache --no-install-project --no-dev && \
-    uv pip install --python $UV_PROJECT_ENVIRONMENT/bin/python psycogreen && \
     rm -rf /tmp/build
 WORKDIR /
 

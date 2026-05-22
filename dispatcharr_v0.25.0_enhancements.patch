@@ -1177,23 +1177,60 @@ while self.running:
 
 **Problem:** When stopping a channel, HTTPStreamReader can encounter a race condition where `self.response` becomes `None` while still iterating chunks, causing `AttributeError: 'NoneType' object has no attribute 'read'`.
 
-**Solution:** Check if response is still valid before continuing iteration.
+**Root Cause:** In `stop()`, setting `self.response = None` while the thread is still in `iter_content()` causes the iterator to crash when trying to read from the underlying socket.
+
+**Solution:** Never set `self.response` to `None` in `stop()`. Only call `close()` and let the `self.running` flag stop the iteration naturally.
 
 ### File: apps/proxy/live_proxy/input/http_streamer.py
 
-**Line ~93 - Add None check in iteration loop:**
+**Line ~93 - Check running flag in iteration loop:**
 ```python
 # Stream chunks to pipe
 chunk_count = 0
 for chunk in self.response.iter_content(chunk_size=self.chunk_size):
-    if not self.running or self.response is None:  # NEW: Check response is still valid
+    if not self.running or self.response is None:  # Check if stop() was called
         break
+```
+
+**Line ~165 - Fix stop() method to NOT set response to None:**
+```python
+def stop(self):
+    """Stop the HTTP stream reader"""
+    logger.info("Stopping HTTP stream reader")
+    self.running = False
+
+    # Close response (but don't set to None - thread may still be iterating)
+    if self.response:
+        try:
+            self.response.close()
+        except:
+            pass
+
+    # Close session
+    if self.session:
+        try:
+            self.session.close()
+        except:
+            pass
+
+    # Close write end of pipe
+    if self.pipe_write is not None:
+        try:
+            os.close(self.pipe_write)
+            self.pipe_write = None
+        except:
+            pass
+
+    # Wait for thread to finish
+    if self.thread and self.thread.is_alive():
+        self.thread.join(timeout=2.0)
 ```
 
 **Impact:**
 - ✅ No more AttributeError on channel shutdown
 - ✅ Clean shutdown without exceptions
 - ✅ Prevents log spam during normal operations
+- ✅ Thread-safe cleanup sequence
 
 ---
 
