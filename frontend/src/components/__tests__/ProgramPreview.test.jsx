@@ -4,7 +4,6 @@ import ProgramPreview from '../ProgramPreview';
 
 // Mock Mantine components as lightweight stubs
 vi.mock('@mantine/core', () => {
-  const React = require('react');
   return {
     ActionIcon: ({ children, onClick, ...props }) => (
       <button onClick={onClick} {...props}>

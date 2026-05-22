@@ -11,7 +11,7 @@ vi.mock('../../../api', () => ({
 }));
 
 import API from '../../../api';
-import { useEpgPreview } from '../Channel';
+import { useEpgPreview } from '../../../hooks/useEpgPreview';
 
 describe('Channel EPG preview hook', () => {
   beforeEach(() => {
