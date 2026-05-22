@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **XC stream URLs with no file extension now respect output format defaults.** `stream_xc` previously treated any extension other than `.mp4` as a forced `mpegts` request, including the empty-extension URLs that XC-compatible M3U playlists produce via `get.php`. Requests with no extension now pass `force_format=None` so the standard resolution chain (request param, user default, server default) applies correctly.
+- **XC M3U stream URLs now carry output profile and output format parameters.** The `get.php` M3U playlist previously emitted bare `/live/user/pass/id` URLs with no query string, causing per-user and server-wide output profile and output format settings to be silently ignored for XC clients. When `output_profile` or `output_format` parameters are present on the playlist request, they are now appended to every stream URL in the playlist so the proxy honours them on playback.
+
+### Performance
+
+- **M3U playlist URL building moved outside the channel loop.** `generate_m3u` previously rebuilt the query-string suffix (and for XC requests, called `build_absolute_uri_with_port`) on every channel iteration even though both inputs are request-level constants. The XC base URL and both query-string suffixes (`xc_qs_suffix`, `proxy_qs_suffix`) are now computed once before the channel loop; per-channel URL assembly is a single f-string interpolation.
+
 ## [0.25.0] - 2026-05-21
 
 ### Security
