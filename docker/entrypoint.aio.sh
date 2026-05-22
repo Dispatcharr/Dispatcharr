@@ -1,11 +1,8 @@
 #!/bin/bash
 
-# Ensure critical dependencies are installed (safety check)
-echo "🔍 Checking critical dependencies..."
-python -c "import django_redis" 2>/dev/null || {
-    echo "⚠️  django-redis not found, installing..."
-    pip install django-redis
-}
+# CRITICAL: Install missing dependencies BEFORE any Django commands
+echo "🔍 Installing missing dependencies..."
+pip install --quiet django-redis 2>/dev/null || true
 
 # Run Django migrations and collect static files
 python manage.py collectstatic --noinput

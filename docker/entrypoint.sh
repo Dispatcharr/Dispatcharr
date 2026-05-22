@@ -2,6 +2,10 @@
 
 set -e  # Exit immediately if a command exits with a non-zero status
 
+# CRITICAL: Install missing dependencies BEFORE any Django commands
+echo "🔍 Installing missing dependencies..."
+pip install --quiet django-redis 2>/dev/null || true
+
 # Guard flag to prevent cleanup running twice (trap + explicit call)
 _cleanup_done=false
 
