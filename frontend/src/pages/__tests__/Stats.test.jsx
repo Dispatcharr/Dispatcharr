@@ -297,19 +297,23 @@ describe('StatsPage', () => {
       vi.useRealTimers();
     });
 
-    it('does not poll when interval is 0', async () => {
+    it('does not poll when interval is 0 but still fetches once on mount', async () => {
       vi.useFakeTimers();
 
       useLocalStorage.mockReturnValue([0, mockSetRefreshInterval]);
       render(<StatsPage />);
 
-      expect(fetchActiveChannelStats).toHaveBeenCalledTimes(0);
+      // Should still fetch once on mount even with interval = 0
+      expect(fetchActiveChannelStats).toHaveBeenCalledTimes(1);
+      expect(getVODStats).toHaveBeenCalledTimes(1);
 
       await act(async () => {
         vi.advanceTimersByTime(10000);
       });
 
-      expect(fetchActiveChannelStats).toHaveBeenCalledTimes(0);
+      // Should not have polled — count stays at 1
+      expect(fetchActiveChannelStats).toHaveBeenCalledTimes(1);
+      expect(getVODStats).toHaveBeenCalledTimes(1);
 
       vi.useRealTimers();
     });

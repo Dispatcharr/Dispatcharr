@@ -212,19 +212,19 @@ const StatsPage = () => {
     }
   }, [setVodStats]);
 
+  // Always fetch once on mount, regardless of polling interval setting
+  useEffect(() => {
+    fetchChannelStats();
+    fetchVODStats();
+  }, [fetchChannelStats, fetchVODStats]);
+
   // Set up polling for stats when on stats page
   useEffect(() => {
-    const location = window.location;
-    const isOnStatsPage = location.pathname === '/stats';
+    const isOnStatsPage = window.location.pathname === '/stats';
 
     if (isOnStatsPage && refreshInterval > 0) {
       setIsPollingActive(true);
 
-      // Initial fetch
-      fetchChannelStats();
-      fetchVODStats();
-
-      // Set up interval
       const interval = setInterval(() => {
         fetchChannelStats();
         fetchVODStats();
@@ -238,8 +238,6 @@ const StatsPage = () => {
       setIsPollingActive(false);
     }
   }, [refreshInterval, fetchChannelStats, fetchVODStats]);
-
-  // Initial fetch is handled by the polling useEffect above (it fetches immediately on mount)
 
   useEffect(() => {
     console.log('Processing channel stats:', channelStats);
