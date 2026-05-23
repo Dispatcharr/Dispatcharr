@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.25.1] - 2026-05-23
+
 ### Fixed
 
 - **`SynchronousOnlyOperation` and permanent loading state in series rules save.** `_evaluate_series_rules_locked` and `reschedule_upcoming_recordings_for_offset_change_impl` called `async_to_sync(channel_layer.group_send)` directly from WSGI views. In a uWSGI/gevent worker this has two effects: (1) it sets Python 3.10+'s C-level OS-thread-local running-loop flag, causing Django's `@async_unsafe` guard to raise `SynchronousOnlyOperation` on any ORM call made by another greenlet on the same thread; (2) the asyncio event loop it creates cannot make progress because the gevent hub is blocked waiting for the request greenlet to complete, so the request hangs and the frontend spinner never clears. Both functions now use `send_websocket_update` - the same gevent-aware helper used elsewhere - which takes a direct Redis path (no asyncio) in gevent workers. (Fixes #1260)
