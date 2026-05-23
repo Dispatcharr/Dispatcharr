@@ -630,7 +630,12 @@ def stream_xc(request, username, password, channel_id):
     else:
         channel = get_object_or_404(Channel, id=channel_id)
 
-    force_format = 'fmp4' if extension.lower() == '.mp4' else 'mpegts'
+    if extension.lower() == '.mp4':
+        force_format = 'fmp4'
+    elif extension.lower() == '.ts':
+        force_format = 'mpegts'
+    else:
+        force_format = None
     return stream_ts(request._request, str(channel.uuid), user, force_output_format=force_format)
 
 

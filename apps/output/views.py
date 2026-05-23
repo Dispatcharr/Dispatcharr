@@ -1,6 +1,5 @@
 from django.http import HttpResponse, JsonResponse, Http404, HttpResponseForbidden, StreamingHttpResponse
 import json
-from rest_framework.response import Response
 from django.urls import reverse
 from apps.channels.models import Channel, ChannelProfile, ChannelGroup, Stream
 from apps.channels.utils import format_channel_number
@@ -16,7 +15,7 @@ from datetime import datetime, timedelta
 import html
 import time
 from tzlocal import get_localzone
-from urllib.parse import urlparse
+from urllib.parse import urlencode
 import base64
 import logging
 from django.db.models.functions import Lower
@@ -211,7 +210,21 @@ def generate_m3u(request, profile_name=None, user=None):
         # This is an XC API request - use XC-style EPG URL
         base_url = build_absolute_uri_with_port(request, '')
         epg_url = f"{base_url}/xmltv.php?username={xc_username}&password={xc_password}"
+        # Build the query-string suffix for stream URLs once - it's the same for every channel
+        xc_qs = {}
+        if output_profile_id:
+            xc_qs['output_profile'] = output_profile_id
+        if output_format_param:
+            xc_qs['output_format'] = output_format_param
+        xc_qs_suffix = f"?{urlencode(xc_qs)}" if xc_qs else ""
     else:
+        # Pre-compute proxy query-string suffix (same for every channel in this request)
+        proxy_qs = {}
+        if output_profile_id:
+            proxy_qs['output_profile'] = output_profile_id
+        if output_format_param:
+            proxy_qs['output_format'] = output_format_param
+        proxy_qs_suffix = f"?{urlencode(proxy_qs)}" if proxy_qs else ""
         # Regular request - use standard EPG endpoint
         epg_base_url = build_absolute_uri_with_port(request, reverse('output:epg_endpoint', args=[profile_name]) if profile_name else reverse('output:epg_endpoint'))
 
@@ -219,7 +232,6 @@ def generate_m3u(request, profile_name=None, user=None):
         preserved_params = ['tvg_id_source', 'cachedlogos', 'days', 'prev_days']
         query_params = {k: v for k, v in request.GET.items() if k in preserved_params}
         if query_params:
-            from urllib.parse import urlencode
             epg_url = f"{epg_base_url}?{urlencode(query_params)}"
         else:
             epg_url = epg_base_url
@@ -281,9 +293,7 @@ def generate_m3u(request, profile_name=None, user=None):
 
         # Determine the stream URL based on request type
         if is_xc_request:
-            # XC API request - use XC-style stream URL format
-            base_url = build_absolute_uri_with_port(request, '')
-            stream_url = f"{base_url}/live/{xc_username}/{xc_password}/{channel.id}"
+            stream_url = f"{base_url}/live/{xc_username}/{xc_password}/{channel.id}{xc_qs_suffix}"
         elif use_direct_urls:
             # Try to get the first stream's direct URL
             all_streams = channel.streams.all()
@@ -297,16 +307,7 @@ def generate_m3u(request, profile_name=None, user=None):
         else:
             # Standard behavior - use proxy URL
             base_stream_url = build_absolute_uri_with_port(request, f"/proxy/ts/stream/{channel.uuid}")
-            qs_parts = {}
-            if output_profile_id:
-                qs_parts['output_profile'] = output_profile_id
-            if output_format_param:
-                qs_parts['output_format'] = output_format_param
-            if qs_parts:
-                from urllib.parse import urlencode
-                stream_url = f"{base_stream_url}?{urlencode(qs_parts)}"
-            else:
-                stream_url = base_stream_url
+            stream_url = f"{base_stream_url}{proxy_qs_suffix}"
 
         m3u_content += extinf_line + stream_url + "\n"
 
