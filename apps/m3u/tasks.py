@@ -808,12 +808,14 @@ def collect_xc_streams(account_id, enabled_groups):
             }
 
     try:
+        # Only use proxy if it's configured (not empty or None)
+        proxy = account.proxy if account.proxy and account.proxy.strip() else None
         with XCClient(
             account.server_url,
             account.username,
             account.password,
             account.get_user_agent(),
-            account.proxy,
+            proxy,
         ) as xc_client:
 
             # Fetch ALL live streams in a single API call (much more efficient)
@@ -890,12 +892,14 @@ def process_xc_category_direct(account_id, batch, groups, hash_keys):
     stream_hashes = {}
 
     try:
+        # Only use proxy if it's configured (not empty or None)
+        proxy = account.proxy if account.proxy and account.proxy.strip() else None
         with XCClient(
             account.server_url,
             account.username,
             account.password,
             account.get_user_agent(),
-            account.proxy,
+            proxy,
         ) as xc_client:
             # Log the batch details to help with debugging
             logger.debug(f"Processing XC batch: {batch}")
@@ -1451,8 +1455,10 @@ def refresh_m3u_groups(account_id, use_cache=False, full_refresh=False, scan_sta
 
             # Create XCClient with explicit error handling
             try:
+                # Only use proxy if it's configured (not empty or None)
+                proxy = account.proxy if account.proxy and account.proxy.strip() else None
                 with XCClient(
-                    account.server_url, account.username, account.password, user_agent_string, account.proxy
+                    account.server_url, account.username, account.password, user_agent_string, proxy
                 ) as xc_client:
                     logger.info(f"XCClient instance created successfully")
 
@@ -2948,13 +2954,15 @@ def refresh_account_profiles(account_id):
                 # Get transformed credentials for this specific profile
                 profile_url, profile_username, profile_password = get_transformed_credentials(account, profile)
 
+                # Only use proxy if it's configured (not empty or None)
+                proxy = account.proxy if account.proxy and account.proxy.strip() else None
                 # Create a separate XC client for this profile's credentials
                 with XCClient(
                     profile_url,
                     profile_username,
                     profile_password,
                     user_agent_string,
-                    account.proxy,
+                    proxy,
                 ) as profile_client:
                     # Authenticate with this profile's credentials
                     if profile_client.authenticate():
@@ -3012,13 +3020,15 @@ def refresh_account_info(profile_id):
         # Get transformed credentials using the helper function
         transformed_url, transformed_username, transformed_password = get_transformed_credentials(account, profile)
 
+        # Only use proxy if it's configured (not empty or None)
+        proxy = account.proxy if account.proxy and account.proxy.strip() else None
         # Initialize XtreamCodes client with extracted/transformed credentials
         client = XCClient(
             transformed_url,
             transformed_username,
             transformed_password,
             account.get_user_agent(),
-            account.proxy,
+            proxy,
         )        # Authenticate and get account info
         auth_result = client.authenticate()
         if not auth_result:
