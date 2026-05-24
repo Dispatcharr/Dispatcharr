@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Restoring a backup from an older version left the database with missing schema.** The restore task ran `pg_restore` which replaced the entire database (including the `django_migrations` table) but did not run migrations afterward. If the backup predated a schema migration, the restored database was missing tables and columns added by those migrations, causing 500 errors on every API call. `migrate --noinput` now runs automatically after every restore. The success notification also now recommends a restart to clear stale service state.
+
 ## [0.25.1] - 2026-05-23
 
 ### Fixed

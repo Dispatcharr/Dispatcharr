@@ -439,12 +439,12 @@ export default function BackupManager() {
     try {
       await API.restoreBackup(selectedBackup.name);
       notifications.show({
-        title: 'Success',
+        title: 'Restore Complete',
         message:
-          'Backup restored successfully. You may need to refresh the page.',
+          'Backup restored successfully. A restart is recommended to ensure all services are running against the restored data.',
         color: 'green',
       });
-      setTimeout(() => window.location.reload(), 2000);
+      setTimeout(() => window.location.reload(), 4000);
     } catch (error) {
       notifications.show({
         title: 'Error',
