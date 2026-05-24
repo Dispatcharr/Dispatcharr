@@ -37,6 +37,7 @@ class EPGSourceSerializer(serializers.ModelSerializer):
             'epg_data_count',
             'has_channels',
         ]
+        extra_kwargs = {'password': {'write_only': True}}
 
     def get_epg_data_count(self, obj):
         """Return the count of EPG data entries instead of all IDs to prevent large payloads"""

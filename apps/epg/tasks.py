@@ -2540,17 +2540,17 @@ def fetch_schedules_direct(source, stations_only=False):
     }
 
     # Only fetch programs where MD5 differs from our cached value
-    programs_to_fetch = [
+    programs_to_fetch = {
         pid for pid in program_ids_needed
         if schedule_program_md5s.get(pid) != cached_prog_md5s.get(pid)
-    ]
+    }
 
     logger.info(
         f"Program MD5 delta: {len(program_ids_needed)} programs in schedules, "
         f"{len(programs_to_fetch)} need downloading ({len(program_ids_needed) - len(programs_to_fetch)} unchanged).")
 
     program_metadata = {}
-    program_id_list = programs_to_fetch
+    program_id_list = list(programs_to_fetch)
     total_batches = max(1, (len(program_id_list) + SD_PROGRAM_BATCH_SIZE - 1) // SD_PROGRAM_BATCH_SIZE)
 
     if program_id_list:
