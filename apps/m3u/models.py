@@ -203,14 +203,6 @@ class ServerGroup(models.Model):
         default=0,
         help_text="Maximum number of concurrent streams shared across all accounts in this group (0 for unlimited)",
     )
-    credential_fingerprint = models.CharField(
-        max_length=64,
-        null=True,
-        blank=True,
-        unique=True,
-        db_index=True,
-        help_text="Auto-assigned hash for accounts sharing the same IPTV credentials",
-    )
 
     def __str__(self):
         return self.name
@@ -344,26 +336,6 @@ class M3UAccountProfile(models.Model):
                 pass
 
         return None
-
-
-@receiver(models.signals.post_save, sender=M3UAccount)
-def assign_credential_pool_for_m3u_account(sender, instance, **kwargs):
-    """Link accounts with identical credentials into a shared connection pool."""
-    if kwargs.get("raw"):
-        return
-    from apps.m3u.connection_pool import sync_account_credential_pool
-
-    sync_account_credential_pool(instance)
-
-
-@receiver(models.signals.post_save, sender=M3UAccountProfile)
-def assign_credential_pool_for_m3u_profile(sender, instance, **kwargs):
-    """Re-sync pools when profile URL transforms change."""
-    if kwargs.get("raw"):
-        return
-    from apps.m3u.connection_pool import sync_account_credential_pool
-
-    sync_account_credential_pool(instance.m3u_account)
 
 
 @receiver(models.signals.post_save, sender=M3UAccount)

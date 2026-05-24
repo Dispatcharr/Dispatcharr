@@ -178,7 +178,10 @@ def _get_m3u_profile(m3u_account, profile_id, session_id=None):
     """
     try:
         from core.utils import RedisClient
-        from apps.m3u.connection_pool import pool_has_capacity_for_profile
+        from apps.m3u.connection_pool import (
+            get_profile_connection_count,
+            profile_has_capacity_for_selection,
+        )
         redis_client = RedisClient.get_client()
 
         if not redis_client:
@@ -229,15 +232,12 @@ def _get_m3u_profile(m3u_account, profile_id, session_id=None):
                 )
                 # Check Redis-based current connections
                 profile_connections_key = f"profile_connections:{profile.id}"
-                current_connections = int(redis_client.get(profile_connections_key) or 0)
+                current_connections = get_profile_connection_count(profile, redis_client)
 
-                if (profile.max_streams == 0 or current_connections < profile.max_streams) and pool_has_capacity_for_profile(profile, redis_client):
+                if profile_has_capacity_for_selection(profile, redis_client):
                     logger.info(f"[PROFILE-SELECTION] Using requested profile {profile.id}: {current_connections}/{profile.max_streams} connections")
                     return (profile, current_connections)
-                elif not pool_has_capacity_for_profile(profile, redis_client):
-                    logger.warning(f"[PROFILE-SELECTION] Shared credential pool at capacity for account {m3u_account.id}")
-                else:
-                    logger.warning(f"[PROFILE-SELECTION] Requested profile {profile.id} is at capacity: {current_connections}/{profile.max_streams}")
+                logger.warning(f"[PROFILE-SELECTION] Requested profile {profile.id} is at capacity: {current_connections}/{profile.max_streams}")
             except M3UAccountProfile.DoesNotExist:
                 logger.warning(f"[PROFILE-SELECTION] Requested profile {profile_id} not found")
 
@@ -256,19 +256,11 @@ def _get_m3u_profile(m3u_account, profile_id, session_id=None):
         profiles = [default_profile] + list(m3u_profiles.filter(is_default=False))
 
         for profile in profiles:
-            profile_connections_key = f"profile_connections:{profile.id}"
-            current_connections = int(redis_client.get(profile_connections_key) or 0)
+            current_connections = get_profile_connection_count(profile, redis_client)
 
-            # Check if profile has available connection slots
-            if (profile.max_streams == 0 or current_connections < profile.max_streams) and pool_has_capacity_for_profile(profile, redis_client):
+            if profile_has_capacity_for_selection(profile, redis_client):
                 logger.info(f"[PROFILE-SELECTION] Selected profile {profile.id} ({profile.name}): {current_connections}/{profile.max_streams} connections")
                 return (profile, current_connections)
-            elif not pool_has_capacity_for_profile(profile, redis_client):
-                logger.debug(
-                    f"[PROFILE-SELECTION] Credential pool at capacity for profile "
-                    f"{profile.id}, trying next profile"
-                )
-                continue
             else:
                 logger.debug(f"[PROFILE-SELECTION] Profile {profile.id} at capacity: {current_connections}/{profile.max_streams}")
 

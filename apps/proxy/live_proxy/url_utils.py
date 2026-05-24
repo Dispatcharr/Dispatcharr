@@ -8,7 +8,7 @@ from typing import Optional, Tuple, List
 from django.shortcuts import get_object_or_404
 from apps.channels.models import Channel, Stream
 from apps.m3u.models import M3UAccount, M3UAccountProfile
-from apps.m3u.connection_pool import pool_has_capacity_for_profile
+from apps.m3u.connection_pool import profile_connections_key
 from core.models import UserAgent, CoreSettings, StreamProfile
 from .utils import get_logger
 from uuid import UUID
@@ -54,15 +54,12 @@ def get_stream_object(id: str):
         logger.info(f"Fetching stream hash {id}")
         return get_object_or_404(Stream, stream_hash=id)
 
-def generate_stream_url(channel_id: str) -> Tuple[str, str, bool, Optional[int]]:
+def generate_stream_url(channel_id: str) -> Tuple[str, str, bool, Optional[int], bool]:
     """
     Generate the appropriate stream URL for a channel or stream based on its profile settings.
 
-    Args:
-        channel_id: The UUID of the channel or stream hash
-
     Returns:
-        Tuple[str, str, bool, Optional[int]]: (stream_url, user_agent, transcode_flag, profile_id)
+        Tuple: (stream_url, user_agent, transcode_flag, profile_id, slot_reserved)
     """
     try:
         channel_or_stream = get_stream_object(channel_id)
@@ -74,15 +71,12 @@ def generate_stream_url(channel_id: str) -> Tuple[str, str, bool, Optional[int]]
 
             if not stream.m3u_account:
                 logger.error(f"Stream {stream.id} has no M3U account")
-                return None, None, False, None
+                return None, None, False, None, False
 
-            # Use get_stream() to atomically reserve a slot and write the
-            # channel_stream / stream_profile Redis keys, matching the channel
-            # path so stream_name and stream_stats work correctly.
-            stream_id, profile_id, error_reason = stream.get_stream()
+            stream_id, profile_id, error_reason, slot_reserved = stream.get_stream()
             if not stream_id or not profile_id:
                 logger.error(f"No profile available for stream {stream.id}: {error_reason}")
-                return None, None, False, None
+                return None, None, False, None, False
 
             try:
                 profile = M3UAccountProfile.objects.get(id=profile_id)
@@ -101,11 +95,12 @@ def generate_stream_url(channel_id: str) -> Tuple[str, str, bool, Optional[int]]
                 transcode = not stream_profile.is_proxy()
                 stream_profile_id = stream_profile.id
 
-                return stream_url, stream_user_agent, transcode, stream_profile_id
+                return stream_url, stream_user_agent, transcode, stream_profile_id, slot_reserved
             except Exception as e:
                 logger.error(f"Error generating stream URL for stream {stream.id}: {e}")
-                stream.release_stream()
-                return None, None, False, None
+                if slot_reserved:
+                    stream.release_stream()
+                return None, None, False, None, False
 
 
         # Handle channel preview (existing logic)
@@ -113,11 +108,11 @@ def generate_stream_url(channel_id: str) -> Tuple[str, str, bool, Optional[int]]
 
         # Get stream and profile for this channel
         # Note: get_stream now returns 3 values (stream_id, profile_id, error_reason)
-        stream_id, profile_id, error_reason = channel.get_stream()
+        stream_id, profile_id, error_reason, slot_reserved = channel.get_stream()
 
         if not stream_id or not profile_id:
             logger.error(f"No stream available for channel {channel_id}: {error_reason}")
-            return None, None, False, None
+            return None, None, False, None, False
 
         # get_stream() allocated a connection slot - ensure it's released on any error
         try:
@@ -147,15 +142,16 @@ def generate_stream_url(channel_id: str) -> Tuple[str, str, bool, Optional[int]]
 
             stream_profile_id = stream_profile.id
 
-            return stream_url, stream_user_agent, transcode, stream_profile_id
+            return stream_url, stream_user_agent, transcode, stream_profile_id, slot_reserved
         except Exception as e:
             logger.error(f"Error generating stream URL for channel {channel_id}: {e}")
-            if not channel.release_stream():
-                logger.warning(f"Failed to release stream for channel {channel_id} after URL generation error")
-            return None, None, False, None
+            if slot_reserved:
+                if not channel.release_stream():
+                    logger.warning(f"Failed to release stream for channel {channel_id} after URL generation error")
+            return None, None, False, None, False
     except Exception as e:
         logger.error(f"Error generating stream URL: {e}")
-        return None, None, False, None
+        return None, None, False, None, False
 
 def transform_url(input_url: str, search_pattern: str, replace_pattern: str) -> str:
     """
@@ -233,14 +229,9 @@ def get_stream_info_for_switch(channel_id: str, target_stream_id: Optional[int] 
             selected_profile = None
             for profile in profiles:
                 if redis_client:
-                    if not pool_has_capacity_for_profile(profile, redis_client):
-                        logger.debug(
-                            f"Profile {profile.id} credential pool at capacity for stream switch"
-                        )
-                        continue
-
-                    profile_connections_key = f"profile_connections:{profile.id}"
-                    current_connections = int(redis_client.get(profile_connections_key) or 0)
+                    current_connections = int(
+                        redis_client.get(profile_connections_key(profile.id)) or 0
+                    )
 
                     channel_using_profile = False
                     existing_stream_id = redis_client.get(f"channel_stream:{channel.id}")
@@ -275,7 +266,7 @@ def get_stream_info_for_switch(channel_id: str, target_stream_id: Optional[int] 
 
             m3u_profile_id = selected_profile.id
         else:
-            stream_id, m3u_profile_id, error_reason = channel.get_stream()
+            stream_id, m3u_profile_id, error_reason, _slot_reserved = channel.get_stream()
             if stream_id is None or m3u_profile_id is None:
                 return {'error': error_reason or 'No stream assigned to channel'}
 
@@ -398,14 +389,12 @@ def get_alternate_streams(channel_id: str, current_stream_id: Optional[int] = No
 
                         # Check if profile has available slots
                         if profile.max_streams == 0 or effective_connections < profile.max_streams:
-                            if not pool_has_capacity_for_profile(profile, redis_client):
-                                logger.debug(
-                                    f"Credential pool at capacity for profile "
-                                    f"{profile.id} (account {m3u_account.id})"
-                                )
-                                continue
                             selected_profile = profile
-                            logger.debug(f"Found available profile {profile.id} for stream {stream.id}: {effective_connections}/{profile.max_streams} effective (current: {current_connections}, already using: {channel_using_profile})")
+                            logger.debug(
+                                f"Found available profile {profile.id} for stream {stream.id}: "
+                                f"{effective_connections}/{profile.max_streams} effective "
+                                f"(current: {current_connections}, already using: {channel_using_profile})"
+                            )
                             break
                         else:
                             logger.debug(f"Profile {profile.id} at max connections: {effective_connections}/{profile.max_streams} (current: {current_connections}, already using: {channel_using_profile})")

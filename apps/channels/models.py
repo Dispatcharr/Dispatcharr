@@ -210,13 +210,14 @@ class Stream(models.Model):
         Finds an available profile for this stream and reserves a connection slot.
 
         Returns:
-            Tuple[Optional[int], Optional[int], Optional[str]]: (stream_id, profile_id, error_reason)
+            Tuple[Optional[int], Optional[int], Optional[str], bool]:
+            (stream_id, profile_id, error_reason, slot_reserved)
         """
         redis_client = RedisClient.get_client()
         profile_id = redis_client.get(f"stream_profile:{self.id}")
         if profile_id:
             profile_id = int(profile_id)
-            return self.id, profile_id, None
+            return self.id, profile_id, None, False
 
         # Retrieve the M3U account associated with the stream.
         m3u_account = self.m3u_account
@@ -238,9 +239,9 @@ class Stream(models.Model):
             if reserved:
                 redis_client.set(f"channel_stream:{self.id}", self.id)
                 redis_client.set(f"stream_profile:{self.id}", profile.id)
-                return self.id, profile.id, None
+                return self.id, profile.id, None, True
 
-        return None, None, "All active M3U profiles have reached maximum connection limits"
+        return None, None, "All active M3U profiles have reached maximum connection limits", False
 
     def release_stream(self):
         """
@@ -615,7 +616,8 @@ class Channel(models.Model):
         Finds an available stream for the requested channel and returns the selected stream and profile.
 
         Returns:
-            Tuple[Optional[int], Optional[int], Optional[str]]: (stream_id, profile_id, error_reason)
+            Tuple[Optional[int], Optional[int], Optional[str], bool]:
+            (stream_id, profile_id, error_reason, slot_reserved)
         """
         redis_client = RedisClient.get_client()
         error_reason = None
@@ -623,11 +625,11 @@ class Channel(models.Model):
         # Check if this channel has any streams
         if not self.streams.exists():
             error_reason = "No streams assigned to channel"
-            return None, None, error_reason
+            return None, None, error_reason, False
 
         # Reuse assignment only when this channel is still active in the proxy.
-        # Stale channel_stream keys after stop/disconnect caused every tune to
-        # reuse the default profile without re-running rotation or INCR.
+        # Stale channel_stream keys after stop/disconnect skip INCR and break pool
+        # accounting, which lets a second stream reach the provider and fail validation.
         stream_id_bytes = redis_client.get(f"channel_stream:{self.id}")
         if stream_id_bytes:
             try:
@@ -648,7 +650,7 @@ class Channel(models.Model):
                                 f"Channel {self.uuid}: reusing active assignment "
                                 f"stream={stream_id} profile={profile_id}"
                             )
-                            return stream_id, profile_id, None
+                            return stream_id, profile_id, None, False
                         except (ValueError, TypeError):
                             logger.debug(
                                 f"Invalid profile ID retrieved from Redis: {profile_id_bytes}"
@@ -707,6 +709,7 @@ class Channel(models.Model):
                         stream.id,
                         profile.id,
                         None,
+                        True,
                     )  # Return newly assigned stream and matched profile
                 else:
                     # At capacity: try to preempt a lower-impact channel on this profile
@@ -735,7 +738,7 @@ class Channel(models.Model):
         else:
             error_reason = "No active profiles found for any assigned stream"
 
-        return None, None, error_reason
+        return None, None, error_reason, False
 
     def release_stream(self):
         """
@@ -779,10 +782,6 @@ class Channel(models.Model):
                     ChannelMetadataField.M3U_PROFILE,
                 )
 
-                stream = Stream.objects.select_related("m3u_account").filter(
-                    id=stream_id
-                ).first()
-                m3u_account = stream.m3u_account if stream else None
                 release_profile_slot(profile_id, redis_client)
                 return True
 
@@ -874,10 +873,27 @@ class Channel(models.Model):
         if current_profile_id == new_profile_id:
             return True
 
+        from apps.m3u.models import M3UAccountProfile
+        from apps.m3u.connection_pool import (
+            get_enforced_server_group_for_profile,
+            profile_connections_key,
+        )
+
+        new_profile = M3UAccountProfile.objects.get(id=new_profile_id)
+        if get_enforced_server_group_for_profile(new_profile):
+            # Shared group pool: one active stream uses one group slot regardless
+            # of which profile supplies the URL.
+            redis_client.set(f"stream_profile:{stream_id}", new_profile_id)
+            logger.info(
+                f"Updated stream {stream_id} profile from {current_profile_id} to "
+                f"{new_profile_id} (shared group pool unchanged)"
+            )
+            return True
+
         # Use pipeline for atomic profile switch to prevent counter drift
         # if an exception occurs between DECR and INCR
-        old_profile_connections_key = f"profile_connections:{current_profile_id}"
-        new_profile_connections_key = f"profile_connections:{new_profile_id}"
+        old_profile_connections_key = profile_connections_key(current_profile_id)
+        new_profile_connections_key = profile_connections_key(new_profile_id)
         old_count = int(redis_client.get(old_profile_connections_key) or 0)
 
         pipe = redis_client.pipeline()

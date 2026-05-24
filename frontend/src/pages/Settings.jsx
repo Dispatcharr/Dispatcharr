@@ -14,6 +14,9 @@ import {
 const UserAgentsTable = React.lazy(
   () => import('../components/tables/UserAgentsTable.jsx')
 );
+const ServerGroupsTable = React.lazy(
+  () => import('../components/tables/ServerGroupsTable.jsx')
+);
 const StreamProfilesTable = React.lazy(
   () => import('../components/tables/StreamProfilesTable.jsx')
 );
@@ -129,6 +132,19 @@ const SettingsPage = () => {
                     <Suspense fallback={<Loader />}>
                       <SystemSettingsForm
                         active={accordianValue === 'system-settings'}
+                      />
+                    </Suspense>
+                  </ErrorBoundary>
+                </AccordionPanel>
+              </AccordionItem>
+
+              <AccordionItem value="server-groups">
+                <AccordionControl>Server Groups</AccordionControl>
+                <AccordionPanel>
+                  <ErrorBoundary>
+                    <Suspense fallback={<Loader />}>
+                      <ServerGroupsTable
+                        active={accordianValue === 'server-groups'}
                       />
                     </Suspense>
                   </ErrorBoundary>

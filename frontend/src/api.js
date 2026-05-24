@@ -3,6 +3,7 @@ import useAuthStore from './store/auth';
 import useChannelsStore from './store/channels';
 import useLogosStore from './store/logos';
 import useUserAgentsStore from './store/userAgents';
+import useServerGroupsStore from './store/serverGroups';
 import usePlaylistsStore from './store/playlists';
 import useEPGsStore from './store/epgs';
 import useStreamsStore from './store/streams';
@@ -1302,6 +1303,59 @@ export default class API {
       useUserAgentsStore.getState().removeUserAgents([id]);
     } catch (e) {
       errorNotification('Failed to delete user-agent', e);
+    }
+  }
+
+  static async getServerGroups() {
+    try {
+      const response = await request(`${host}/api/m3u/server-groups/`);
+
+      return response;
+    } catch (e) {
+      errorNotification('Failed to retrieve server groups', e);
+    }
+  }
+
+  static async addServerGroup(values) {
+    try {
+      const response = await request(`${host}/api/m3u/server-groups/`, {
+        method: 'POST',
+        body: values,
+      });
+
+      useServerGroupsStore.getState().addServerGroup(response);
+
+      return response;
+    } catch (e) {
+      errorNotification('Failed to create server group', e);
+    }
+  }
+
+  static async updateServerGroup(values) {
+    try {
+      const { id, ...payload } = values;
+      const response = await request(`${host}/api/m3u/server-groups/${id}/`, {
+        method: 'PUT',
+        body: payload,
+      });
+
+      useServerGroupsStore.getState().updateServerGroup(response);
+
+      return response;
+    } catch (e) {
+      errorNotification('Failed to update server group', e);
+    }
+  }
+
+  static async deleteServerGroup(id) {
+    try {
+      await request(`${host}/api/m3u/server-groups/${id}/`, {
+        method: 'DELETE',
+      });
+
+      useServerGroupsStore.getState().removeServerGroups([id]);
+    } catch (e) {
+      errorNotification('Failed to delete server group', e);
     }
   }
 

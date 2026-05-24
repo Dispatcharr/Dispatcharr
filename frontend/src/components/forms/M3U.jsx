@@ -1,6 +1,7 @@
 // Modal.js
 import React, { useEffect, useState } from 'react';
 import useUserAgentsStore from '../../store/userAgents';
+import useServerGroupsStore from '../../store/serverGroups';
 import M3UProfiles from './M3UProfiles';
 import {
   Box,
@@ -43,6 +44,7 @@ const M3U = ({
   playlistCreated = false,
 }) => {
   const userAgents = useUserAgentsStore((s) => s.userAgents);
+  const serverGroups = useServerGroupsStore((s) => s.serverGroups);
   const fetchChannelGroups = useChannelsStore((s) => s.fetchChannelGroups);
   const fetchEPGs = useEPGsStore((s) => s.fetchEPGs);
   const fetchCategories = useVODStore((s) => s.fetchCategories);
@@ -61,6 +63,7 @@ const M3U = ({
       name: '',
       server_url: '',
       user_agent: '0',
+      server_group: '0',
       is_active: true,
       max_streams: 0,
       refresh_interval: 24,
@@ -88,6 +91,9 @@ const M3U = ({
         server_url: m3uAccount.server_url,
         max_streams: m3uAccount.max_streams,
         user_agent: m3uAccount.user_agent ? `${m3uAccount.user_agent}` : '0',
+        server_group: m3uAccount.server_group
+          ? `${m3uAccount.server_group}`
+          : '0',
         is_active: m3uAccount.is_active,
         refresh_interval: m3uAccount.refresh_interval,
         cron_expression: m3uAccount.cron_expression || '',
@@ -353,6 +359,24 @@ const M3U = ({
                 min={0}
                 {...form.getInputProps('max_streams')}
                 key={form.key('max_streams')}
+              />
+
+              <Select
+                id="server_group"
+                name="server_group"
+                label="Server Group"
+                description="Share a connection limit across multiple accounts (e.g. XC + M3U on the same subscription)"
+                {...form.getInputProps('server_group')}
+                key={form.key('server_group')}
+                data={[{ value: '0', label: '(None)' }].concat(
+                  serverGroups.map((group) => ({
+                    label:
+                      group.max_streams > 0
+                        ? `${group.name} (max: ${group.max_streams})`
+                        : `${group.name} (unlimited)`,
+                    value: `${group.id}`,
+                  }))
+                )}
               />
 
               <Select

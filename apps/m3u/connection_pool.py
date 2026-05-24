@@ -1,8 +1,10 @@
 """
-Shared connection pool enforcement for M3U accounts with identical credentials.
+Shared connection pool enforcement for M3U accounts in the same ServerGroup.
 
-All Redis INCR/DECR for profile and server-group limits should go through this
-module so live TV and VOD stay consistent.
+Profile selection rotates across M3UAccountProfile rows using each profile's own
+Redis counter (the pre-pool behavior). When an account belongs to a ServerGroup
+with max_streams > 0, the group counter is scoped by provider login fingerprint
+so profiles that rewrite to different IPTV credentials keep independent limits.
 """
 
 from __future__ import annotations
@@ -15,8 +17,7 @@ from typing import Optional, Tuple
 logger = logging.getLogger(__name__)
 
 PROFILE_CONNECTIONS_KEY = "profile_connections:{profile_id}"
-SERVER_GROUP_CONNECTIONS_KEY = "server_group_connections:{group_id}"
-EXCLUDE_FROM_POOL_KEY = "exclude_from_credential_pool"
+SERVER_GROUP_CONNECTIONS_KEY = "server_group_connections:{group_id}:{fingerprint}"
 
 _XC_URL_CREDENTIALS_RE = re.compile(
     r"/(?:live|movie|series)/([^/]+)/([^/]+)/",
@@ -28,8 +29,10 @@ def profile_connections_key(profile_id: int) -> str:
     return PROFILE_CONNECTIONS_KEY.format(profile_id=profile_id)
 
 
-def server_group_connections_key(group_id: int) -> str:
-    return SERVER_GROUP_CONNECTIONS_KEY.format(group_id=group_id)
+def server_group_connections_key(group_id: int, fingerprint: Optional[str] = None) -> str:
+    """Redis key for a manual ServerGroup slot, scoped by provider login."""
+    fp = (fingerprint or "unknown")[:16]
+    return SERVER_GROUP_CONNECTIONS_KEY.format(group_id=group_id, fingerprint=fp)
 
 
 def compute_credential_fingerprint(username: str, password: str) -> Optional[str]:
@@ -113,53 +116,58 @@ def get_profile_credential_fingerprint(profile) -> Optional[str]:
     )
 
 
-def account_excluded_from_pool(m3u_account) -> bool:
-    props = m3u_account.custom_properties or {}
-    return bool(props.get(EXCLUDE_FROM_POOL_KEY))
-
-
-def _get_pool_for_fingerprint(fingerprint: str):
-    """Return the auto credential pool ServerGroup for a fingerprint, if configured."""
-    if not fingerprint:
-        return None
-    from apps.m3u.models import ServerGroup
-
-    group = ServerGroup.objects.filter(credential_fingerprint=fingerprint).first()
-    if not group or group.max_streams == 0:
-        return None
-    return group
-
-
 def get_enforced_server_group_for_profile(profile):
-    """Return the shared pool for this profile's effective provider login."""
-    if account_excluded_from_pool(profile.m3u_account):
-        return None
-
-    group = _get_pool_for_fingerprint(get_profile_credential_fingerprint(profile))
-    if group:
+    """Return the shared ServerGroup limit for this profile's account, if configured."""
+    group = profile.m3u_account.server_group
+    if group and group.max_streams > 0:
         return group
-
-    manual = profile.m3u_account.server_group
-    if manual and not manual.credential_fingerprint and manual.max_streams > 0:
-        return manual
     return None
 
 
-def pool_has_capacity_for_profile(profile, redis_client) -> bool:
-    """Non-mutating check for the profile's credential pool."""
+def _group_counter_key(profile, group) -> str:
+    return server_group_connections_key(
+        group.id,
+        get_profile_credential_fingerprint(profile),
+    )
+
+
+def get_profile_connection_count(profile, redis_client) -> int:
+    return int(redis_client.get(profile_connections_key(profile.id)) or 0)
+
+
+def get_group_connection_count(profile, redis_client) -> int:
+    group = get_enforced_server_group_for_profile(profile)
+    if not group:
+        return 0
+    return int(redis_client.get(_group_counter_key(profile, group)) or 0)
+
+
+def profile_has_capacity_for_selection(profile, redis_client) -> bool:
+    """Per-profile capacity check used when rotating across profiles on one account."""
+    if profile.max_streams == 0:
+        return True
+    return get_profile_connection_count(profile, redis_client) < profile.max_streams
+
+
+def group_has_capacity_for_profile(profile, redis_client) -> bool:
     group = get_enforced_server_group_for_profile(profile)
     if not group:
         return True
-    key = server_group_connections_key(group.id)
-    current = int(redis_client.get(key) or 0)
-    return current < group.max_streams
+    return get_group_connection_count(profile, redis_client) < group.max_streams
+
+
+def pool_has_capacity_for_profile(profile, redis_client) -> bool:
+    """Non-mutating check before reserve: profile slot and group slot if applicable."""
+    return profile_has_capacity_for_selection(profile, redis_client) and group_has_capacity_for_profile(
+        profile, redis_client
+    )
 
 
 def _reserve_server_group_slot_for_profile(profile, redis_client) -> bool:
     group = get_enforced_server_group_for_profile(profile)
     if not group:
         return True
-    key = server_group_connections_key(group.id)
+    key = _group_counter_key(profile, group)
     group_count = redis_client.incr(key)
     if group_count <= group.max_streams:
         return True
@@ -171,7 +179,10 @@ def _release_server_group_slot_for_profile(profile, redis_client) -> None:
     group = get_enforced_server_group_for_profile(profile)
     if not group:
         return
-    key = server_group_connections_key(group.id)
+    key = _group_counter_key(profile, group)
+    current = int(redis_client.get(key) or 0)
+    if current <= 0:
+        return
     new_count = redis_client.decr(key)
     if new_count < 0:
         redis_client.set(key, 0)
@@ -179,30 +190,29 @@ def _release_server_group_slot_for_profile(profile, redis_client) -> None:
 
 def reserve_profile_slot(profile, redis_client) -> Tuple[bool, int]:
     """
-    Atomically reserve profile + shared pool slots (INCR-first).
+    Atomically reserve profile + optional group slots (INCR-first).
 
     Returns (reserved, profile_count_after_attempt).
     """
-    if profile.max_streams == 0:
-        if _reserve_server_group_slot_for_profile(profile, redis_client):
-            return True, 0
-        return False, 0
-
     profile_key = profile_connections_key(profile.id)
-    new_count = redis_client.incr(profile_key)
+    profile_count = 0
 
-    if new_count <= profile.max_streams:
-        if _reserve_server_group_slot_for_profile(profile, redis_client):
-            return True, new_count
-        redis_client.decr(profile_key)
-        return False, new_count - 1
+    if profile.max_streams > 0:
+        profile_count = redis_client.incr(profile_key)
+        if profile_count > profile.max_streams:
+            redis_client.decr(profile_key)
+            return False, profile_count - 1
 
-    redis_client.decr(profile_key)
-    return False, new_count - 1
+    if not _reserve_server_group_slot_for_profile(profile, redis_client):
+        if profile.max_streams > 0:
+            redis_client.decr(profile_key)
+        return False, profile_count - 1 if profile.max_streams > 0 else 0
+
+    return True, profile_count
 
 
 def release_profile_slot(profile_id: int, redis_client) -> None:
-    """Release profile and shared pool slots after a stream ends."""
+    """Release profile and shared group slots after a stream ends."""
     from apps.m3u.models import M3UAccountProfile
 
     try:
@@ -218,82 +228,3 @@ def release_profile_slot(profile_id: int, redis_client) -> None:
 
     if profile:
         _release_server_group_slot_for_profile(profile, redis_client)
-
-
-def recompute_pool_max_streams(server_group) -> None:
-    """Set pool max_streams to the minimum positive limit across members and profiles."""
-    from apps.m3u.models import M3UAccount, M3UAccountProfile, ServerGroup
-
-    if not server_group.credential_fingerprint:
-        return
-
-    fp = server_group.credential_fingerprint
-    limits = list(
-        M3UAccount.objects.filter(
-            server_group=server_group, max_streams__gt=0
-        ).values_list("max_streams", flat=True)
-    )
-
-    for profile in M3UAccountProfile.objects.filter(is_active=True).select_related(
-        "m3u_account"
-    ):
-        if account_excluded_from_pool(profile.m3u_account):
-            continue
-        if get_profile_credential_fingerprint(profile) != fp:
-            continue
-        if profile.max_streams > 0:
-            limits.append(profile.max_streams)
-
-    new_max = min(limits) if limits else 0
-    if server_group.max_streams != new_max:
-        ServerGroup.objects.filter(pk=server_group.pk).update(max_streams=new_max)
-
-
-def _ensure_pool_for_fingerprint(fingerprint: str):
-    from apps.m3u.models import ServerGroup
-
-    group, _created = ServerGroup.objects.get_or_create(
-        credential_fingerprint=fingerprint,
-        defaults={
-            "name": f"credential-pool-{fingerprint[:16]}",
-            "max_streams": 0,
-        },
-    )
-    recompute_pool_max_streams(group)
-    return group
-
-
-def sync_account_credential_pool(m3u_account) -> None:
-    """
-    Ensure auto credential pools exist for each distinct login on this account.
-
-    Sets M3UAccount.server_group only when every active profile shares one login.
-    """
-    from apps.m3u.models import M3UAccount, M3UAccountProfile
-
-    if account_excluded_from_pool(m3u_account):
-        return
-
-    if m3u_account.server_group_id:
-        existing = m3u_account.server_group
-        if existing and not existing.credential_fingerprint:
-            return
-
-    profile_fps = set()
-    for profile in M3UAccountProfile.objects.filter(
-        m3u_account=m3u_account, is_active=True
-    ):
-        fp = get_profile_credential_fingerprint(profile)
-        if not fp:
-            continue
-        profile_fps.add(fp)
-        _ensure_pool_for_fingerprint(fp)
-
-    if len(profile_fps) == 1:
-        group = _get_pool_for_fingerprint(next(iter(profile_fps)))
-        if group and m3u_account.server_group_id != group.id:
-            M3UAccount.objects.filter(pk=m3u_account.pk).update(server_group=group)
-    elif m3u_account.server_group_id:
-        existing = m3u_account.server_group
-        if existing and existing.credential_fingerprint:
-            M3UAccount.objects.filter(pk=m3u_account.pk).update(server_group=None)

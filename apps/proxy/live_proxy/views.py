@@ -213,6 +213,7 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
             stream_user_agent = None
             transcode = False
             profile_value = None
+            slot_reserved = False
             error_reason = None
             attempt = 0
             should_retry = True
@@ -220,7 +221,7 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
             # Try to get a stream with fixed interval retries
             while should_retry and time.time() - wait_start_time < retry_timeout:
                 attempt += 1
-                stream_url, stream_user_agent, transcode, profile_value = (
+                stream_url, stream_user_agent, transcode, profile_value, slot_reserved = (
                     generate_stream_url(channel_id)
                 )
 
@@ -232,7 +233,7 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
 
                 # On first failure, check if the error is retryable
                 if attempt == 1:
-                    _, _, error_reason = channel.get_stream()
+                    _, _, error_reason, _ = channel.get_stream()
                     if error_reason and "maximum connection limits" not in error_reason:
                         logger.warning(
                             f"[{client_id}] Can't retry - error not related to connection limits: {error_reason}"
@@ -265,7 +266,7 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
                 logger.info(
                     f"[{client_id}] Making final attempt {attempt} at timeout boundary"
                 )
-                stream_url, stream_user_agent, transcode, profile_value = (
+                stream_url, stream_user_agent, transcode, profile_value, slot_reserved = (
                     generate_stream_url(channel_id)
                 )
                 if stream_url is not None:
@@ -274,9 +275,7 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
                     )
 
             if stream_url is None:
-                # Release any connection slot that may have been allocated
-                # by the error-checking get_stream() call during retries
-                if not channel.release_stream():
+                if slot_reserved and not channel.release_stream():
                     logger.debug(f"[{client_id}] release_stream found no keys during failed init cleanup")
 
                 # Get the specific error message if available
@@ -295,7 +294,7 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
 
             # generate_stream_url() called get_stream() which allocated a connection
             # slot (INCR'd profile_connections) - track this for cleanup on error
-            if needs_initialization:
+            if needs_initialization and slot_reserved:
                 connection_allocated = True
 
             # Read stream assignment from Redis (already set by generate_stream_url → get_stream).
@@ -378,8 +377,8 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
                             logger.warning(
                                 f"[{client_id}] Alternate stream #{alt['stream_id']} failed validation: {message}"
                             )
-                # Release stream lock before redirecting
-                if not channel.release_stream():
+                # Release stream lock before redirecting only if we reserved a slot
+                if connection_allocated and not channel.release_stream():
                     logger.warning(f"[{client_id}] Failed to release stream before redirect")
                 connection_allocated = False
                 # Final decision based on validation results
