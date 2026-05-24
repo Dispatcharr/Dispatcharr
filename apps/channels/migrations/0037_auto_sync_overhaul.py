@@ -62,6 +62,9 @@ def backfill_auto_created_by_null(apps, schema_editor):
         f"(ambiguous/no streams): {demoted}"
     )
 
+    with schema_editor.connection.cursor() as cursor:
+        cursor.execute("SET CONSTRAINTS ALL IMMEDIATE")
+
 
 def reverse_auto_created_by_null(apps, schema_editor):
     # Forward decisions cannot be cleanly reverted (no record of the
@@ -100,6 +103,9 @@ def reverse_backfill_channel_number_nulls(apps, schema_editor):
         ch.channel_number = next_num
         ch.save(update_fields=["channel_number"])
         next_num += 1.0
+
+    with schema_editor.connection.cursor() as cursor:
+        cursor.execute("SET CONSTRAINTS ALL IMMEDIATE")
 
 
 class Migration(migrations.Migration):

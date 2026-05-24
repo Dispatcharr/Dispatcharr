@@ -1361,11 +1361,8 @@ def _evaluate_series_rules_locked(tvg_id, result):
 
     # Notify frontend to refresh
     try:
-        channel_layer = get_channel_layer()
-        async_to_sync(channel_layer.group_send)(
-            'updates',
-            {'type': 'update', 'data': {"success": True, "type": "recordings_refreshed", "scheduled": result["scheduled"]}},
-        )
+        from core.utils import send_websocket_update
+        send_websocket_update('updates', 'update', {"success": True, "type": "recordings_refreshed", "scheduled": result["scheduled"]})
     except Exception:
         pass
 
@@ -1440,11 +1437,8 @@ def reschedule_upcoming_recordings_for_offset_change_impl():
 
     # Notify frontend to refresh
     try:
-        channel_layer = get_channel_layer()
-        async_to_sync(channel_layer.group_send)(
-            'updates',
-            {'type': 'update', 'data': {"success": True, "type": "recordings_refreshed", "rescheduled": changed}},
-        )
+        from core.utils import send_websocket_update
+        send_websocket_update('updates', 'update', {"success": True, "type": "recordings_refreshed", "rescheduled": changed})
     except Exception:
         pass
 

@@ -81,6 +81,7 @@ This is the simplest valid repo manifest - one plugin with enough info to show i
 Dispatcharr accepts two top-level shapes:
 
 **Wrapped (supports signing):**
+
 ```json
 {
   "manifest": { "plugins": [...], ... },
@@ -89,6 +90,7 @@ Dispatcharr accepts two top-level shapes:
 ```
 
 **Flat (no signing):**
+
 ```json
 {
   "plugins": [...],
@@ -118,36 +120,36 @@ If the name contains any of these, the repo will be rejected on add and skipped 
 
 ### Top-Level Metadata
 
-| Field | Required | Description |
-|-------|----------|-------------|
-| `registry_name` | **Yes** | Display name for the repo. Must not contain words like "official" or "dispatcharr" that could be mistaken for an official repo (see [Name Restrictions](#name-restrictions)). |
-| `registry_url` | No | URL to the repo's home page (e.g. GitHub). Used as a fallback for generating icon URLs. |
-| `root_url` | No | Base URL for resolving relative URLs in plugin entries. Trailing slashes are stripped. |
-| `plugins` | **Yes** | Array of plugin entry objects. |
+| Field           | Required | Description                                                                                                                                                                   |
+| --------------- | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `registry_name` | **Yes**  | Display name for the repo. Must not contain words like "official" or "dispatcharr" that could be mistaken for an official repo (see [Name Restrictions](#name-restrictions)). |
+| `registry_url`  | No       | URL to the repo's home page (e.g. GitHub). Used as a fallback for generating icon URLs.                                                                                       |
+| `root_url`      | No       | Base URL for resolving relative URLs in plugin entries. Trailing slashes are stripped.                                                                                        |
+| `plugins`       | **Yes**  | Array of plugin entry objects.                                                                                                                                                |
 
 ### Plugin Entry Fields
 
-| Field | Required | Description |
-|-------|----------|-------------|
-| `slug` | **Yes** | Unique identifier. Alphanumeric, dashes, and underscores. Used as the install directory name (lowercased, dashes converted to underscores). |
-| `name` | **Yes** | Human-readable display name. |
-| `description` | No | Short description shown on the plugin card. |
-| `author` | No | Author or organization name. |
-| `maintainers` | No | Array of maintainer GitHub usernames (e.g. `["alice", "bob"]`). Shown in the detail view. |
-| `license` | No | SPDX license identifier (e.g. `MIT`, `GPL-3.0`). Displayed as a link to the SPDX license page. |
-| `deprecated` | No | Boolean. When `true`, marks the plugin as deprecated in the store UI. Omit or set to `false` for active plugins. |
-| `repo_url` | No | URL to the plugin's source code repository (e.g. GitHub). |
-| `discord_thread` | No | URL to a Discord thread or channel for plugin support. Must start with `http://` or `https://`. |
-| `latest_version` | No | Current latest version string (semver: `1.2.3` or `v1.2.3`). Drives update detection. |
-| `last_updated` | No | ISO 8601 timestamp of the latest release. Shown as "Built" date in the detail view. |
-| `manifest_url` | No | URL (or relative path) to the per-plugin manifest with full version history. See [Per-Plugin Manifest](#per-plugin-manifest). |
-| `latest_url` | No | Direct download URL (or relative path) to the latest release zip. |
-| `latest_sha256` | No | SHA256 checksum of the latest release zip (lowercase hex, 64 chars). |
-| `latest_md5` | No | MD5 checksum of the latest release zip. Informational only - not validated by Dispatcharr. |
-| `latest_size` | No | Size of the latest release zip in kilobytes. Informational only. |
-| `icon_url` | No | URL (or relative path) to a logo image (PNG recommended). |
-| `min_dispatcharr_version` | No | Minimum Dispatcharr version required. Install is blocked if the running version is older. |
-| `max_dispatcharr_version` | No | Maximum Dispatcharr version supported. Install is blocked if the running version is newer. |
+| Field                     | Required | Description                                                                                                                                 |
+| ------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `slug`                    | **Yes**  | Unique identifier. Alphanumeric, dashes, and underscores. Used as the install directory name (lowercased, dashes converted to underscores). |
+| `name`                    | **Yes**  | Human-readable display name.                                                                                                                |
+| `description`             | No       | Short description shown on the plugin card.                                                                                                 |
+| `author`                  | No       | Author or organization name.                                                                                                                |
+| `maintainers`             | No       | Array of maintainer GitHub usernames (e.g. `["alice", "bob"]`). Shown in the detail view.                                                   |
+| `license`                 | No       | SPDX license identifier (e.g. `MIT`, `GPL-3.0`). Displayed as a link to the SPDX license page.                                              |
+| `deprecated`              | No       | Boolean. When `true`, marks the plugin as deprecated in the store UI. Omit or set to `false` for active plugins.                            |
+| `repo_url`                | No       | URL to the plugin's source code repository (e.g. GitHub).                                                                                   |
+| `discord_thread`          | No       | URL to a Discord thread or channel for plugin support. Must start with `http://` or `https://`.                                             |
+| `latest_version`          | No       | Current latest version string (semver: `1.2.3` or `v1.2.3`). Drives update detection.                                                       |
+| `last_updated`            | No       | ISO 8601 timestamp of the latest release. Shown as "Built" date in the detail view.                                                         |
+| `manifest_url`            | No       | URL (or relative path) to the per-plugin manifest with full version history. See [Per-Plugin Manifest](#per-plugin-manifest).               |
+| `latest_url`              | No       | Direct download URL (or relative path) to the latest release zip.                                                                           |
+| `latest_sha256`           | No       | SHA256 checksum of the latest release zip (lowercase hex, 64 chars).                                                                        |
+| `latest_md5`              | No       | MD5 checksum of the latest release zip. Informational only - not validated by Dispatcharr.                                                  |
+| `latest_size`             | No       | Size of the latest release zip in kilobytes. Informational only.                                                                            |
+| `icon_url`                | No       | URL (or relative path) to a logo image (PNG recommended).                                                                                   |
+| `min_dispatcharr_version` | No       | Minimum Dispatcharr version required. Install is blocked if the running version is older.                                                   |
+| `max_dispatcharr_version` | No       | Maximum Dispatcharr version supported. Install is blocked if the running version is newer.                                                  |
 
 Extra fields in a plugin entry are passed through to the frontend as-is, so you can include custom metadata (e.g. `homepage`, `tags`) without breaking anything.
 
@@ -160,6 +162,7 @@ If `root_url` is set and a URL field (`manifest_url`, `latest_url`, `icon_url`) 
 ```
 
 This lets you keep plugin entries compact:
+
 ```json
 {
   "root_url": "https://raw.githubusercontent.com/myorg/my-plugins/releases",
@@ -175,6 +178,7 @@ This lets you keep plugin entries compact:
 ```
 
 **Icon fallback:** If `icon_url` is missing and `registry_url` is set, Dispatcharr generates a fallback URL by converting the GitHub URL to a raw content URL:
+
 ```
 {registry_url => raw.githubusercontent.com}/refs/heads/main/plugins/{slug}/logo.png
 ```
@@ -186,6 +190,7 @@ This lets you keep plugin entries compact:
 The per-plugin manifest provides full version history. It is fetched on-demand when a user clicks "More Info" on a plugin card. It is **not required** - if `manifest_url` is absent, the UI builds a detail view from the repo-level fields instead.
 
 Include a per-plugin manifest if you want to:
+
 - Offer multiple downloadable versions
 - Show per-version compatibility ranges
 - Display build timestamps and commit links for each version
@@ -196,6 +201,7 @@ Include a per-plugin manifest if you want to:
 Same as the root manifest - both flat and wrapped formats are accepted:
 
 **Flat (no signing):**
+
 ```json
 {
   "slug": "...",
@@ -204,6 +210,7 @@ Same as the root manifest - both flat and wrapped formats are accepted:
 ```
 
 **Wrapped (supports signing):**
+
 ```json
 {
   "manifest": {
@@ -272,33 +279,33 @@ Use the wrapped format if you want to GPG-sign the per-plugin manifest.
 
 ### Per-Plugin Manifest Fields
 
-| Field | Required | Description |
-|-------|----------|-------------|
-| `slug` | No | Plugin identifier (should match the repo entry). |
-| `name` | No | Display name. |
-| `description` | No | Full description shown in the detail modal. |
-| `author` | No | Author/org name shown in the detail modal. |
-| `license` | No | SPDX license identifier. |
-| `latest_version` | No | Latest version string. |
-| `registry_name` | No | Registry name inherited from the parent repo manifest. Injected automatically by the official publish tooling. |
-| `registry_url` | No | Registry URL inherited from the parent repo manifest. Used by the store to build commit links. Injected automatically by the official publish tooling. |
-| `versions` | No | Array of version objects (newest first recommended). |
-| `latest` | No | Object mirroring the latest version entry for quick access. Accepts all the same fields as a version object. Additionally, `latest_url` may appear here pointing to a stable symlink (e.g. `plugin-latest.zip`) that always resolves to the newest release. |
+| Field            | Required | Description                                                                                                                                                                                                                                                 |
+| ---------------- | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `slug`           | No       | Plugin identifier (should match the repo entry).                                                                                                                                                                                                            |
+| `name`           | No       | Display name.                                                                                                                                                                                                                                               |
+| `description`    | No       | Full description shown in the detail modal.                                                                                                                                                                                                                 |
+| `author`         | No       | Author/org name shown in the detail modal.                                                                                                                                                                                                                  |
+| `license`        | No       | SPDX license identifier.                                                                                                                                                                                                                                    |
+| `latest_version` | No       | Latest version string.                                                                                                                                                                                                                                      |
+| `registry_name`  | No       | Registry name inherited from the parent repo manifest. Injected automatically by the official publish tooling.                                                                                                                                              |
+| `registry_url`   | No       | Registry URL inherited from the parent repo manifest. Used by the store to build commit links. Injected automatically by the official publish tooling.                                                                                                      |
+| `versions`       | No       | Array of version objects (newest first recommended).                                                                                                                                                                                                        |
+| `latest`         | No       | Object mirroring the latest version entry for quick access. Accepts all the same fields as a version object. Additionally, `latest_url` may appear here pointing to a stable symlink (e.g. `plugin-latest.zip`) that always resolves to the newest release. |
 
 ### Version Object Fields
 
-| Field | Required | Description |
-|-------|----------|-------------|
-| `version` | **Yes** | Version string (`1.2.3` or `v1.2.3`). |
-| `url` | **Yes** | Download URL for the zip. Relative URLs are resolved against the repo's `root_url`. |
-| `checksum_sha256` | No | SHA256 hex checksum. **Strongly recommended.** Validated on install - mismatch blocks the install. |
-| `prerelease` | No | Boolean. When `true`, marks this version as a pre-release (alpha, beta, RC, etc.). If the installed version is a prerelease, Dispatcharr will not suggest updating to the latest stable version - the user must install a new version manually. The latest version in the root manifest is always assumed to be stable, so this field only needs to appear in the per-plugin manifest. Omit or set to `false` for stable releases. |
-| `build_timestamp` | No | ISO 8601 build timestamp. Shown as "Built" in the version detail. |
-| `commit_sha` | No | Full Git commit SHA. Used to build a commit link if `registry_url` is set. |
-| `commit_sha_short` | No | Abbreviated commit SHA. Displayed in the version detail table as a clickable link. |
-| `size` | No | Size of this version's zip in kilobytes. Informational only. |
-| `min_dispatcharr_version` | No | Minimum compatible Dispatcharr version. |
-| `max_dispatcharr_version` | No | Maximum compatible Dispatcharr version. |
+| Field                     | Required | Description                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| ------------------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `version`                 | **Yes**  | Version string (`1.2.3` or `v1.2.3`).                                                                                                                                                                                                                                                                                                                                                                                              |
+| `url`                     | **Yes**  | Download URL for the zip. Relative URLs are resolved against the repo's `root_url`.                                                                                                                                                                                                                                                                                                                                                |
+| `checksum_sha256`         | No       | SHA256 hex checksum. **Strongly recommended.** Validated on install - mismatch blocks the install.                                                                                                                                                                                                                                                                                                                                 |
+| `prerelease`              | No       | Boolean. When `true`, marks this version as a pre-release (alpha, beta, RC, etc.). If the installed version is a prerelease, Dispatcharr will not suggest updating to the latest stable version - the user must install a new version manually. The latest version in the root manifest is always assumed to be stable, so this field only needs to appear in the per-plugin manifest. Omit or set to `false` for stable releases. |
+| `build_timestamp`         | No       | ISO 8601 build timestamp. Shown as "Built" in the version detail.                                                                                                                                                                                                                                                                                                                                                                  |
+| `commit_sha`              | No       | Full Git commit SHA. Used to build a commit link if `registry_url` is set.                                                                                                                                                                                                                                                                                                                                                         |
+| `commit_sha_short`        | No       | Abbreviated commit SHA. Displayed in the version detail table as a clickable link.                                                                                                                                                                                                                                                                                                                                                 |
+| `size`                    | No       | Size of this version's zip in kilobytes. Informational only.                                                                                                                                                                                                                                                                                                                                                                       |
+| `min_dispatcharr_version` | No       | Minimum compatible Dispatcharr version.                                                                                                                                                                                                                                                                                                                                                                                            |
+| `max_dispatcharr_version` | No       | Maximum compatible Dispatcharr version.                                                                                                                                                                                                                                                                                                                                                                                            |
 
 Relative `url` values in versions are resolved the same way as repo-level URLs: `{root_url}/{url}`.
 
@@ -348,6 +355,7 @@ jq -c '.manifest' manifest.json | gpg --armor --detach-sign
 ```
 
 In code terms:
+
 ```python
 import json
 canonical = json.dumps(manifest_obj, separators=(",", ":")) + "\n"
@@ -371,11 +379,11 @@ Use the wrapped format so the signature sits alongside the manifest:
 
 ### Verification Results
 
-| Result | Meaning | UI Badge |
-|--------|---------|----------|
-| `true` | Valid signature | Green checkmark |
-| `false` | Invalid signature or verification error | Red X |
-| `null` | Not attempted (no signature, no key, or `python-gnupg` not installed) | Gray/neutral |
+| Result  | Meaning                                                             | UI Badge        |
+| ------- | ------------------------------------------------------------------- | --------------- |
+| `true`  | Valid signature                                                     | Green checkmark |
+| `false` | Invalid signature or verification error                             | Red X           |
+| `null`  | Not attempted (no signature, no key, or `gpg` binary not installed) | Gray/neutral    |
 
 ### Signing Workflow Example
 
@@ -446,6 +454,7 @@ my_plugin-1.0.0.zip
 ```
 
 Or with a subdirectory:
+
 ```
 my_plugin-1.0.0.zip
   my_plugin/
@@ -477,6 +486,7 @@ The plugin is installed **disabled** by default. The user can enable it from the
 Dispatcharr detects updates by comparing `installed_version` (stored in the database) against `latest_version` from the repo manifest. This uses repo-level fields only - per-plugin manifests are not needed for update detection.
 
 A plugin shows "Update Available" when:
+
 - It is managed (installed from a repo)
 - Its `installed_version` differs from `latest_version`
 - It was installed from the same repo
@@ -488,7 +498,9 @@ A plugin shows "Update Available" when:
 A plugin repo manifest is just a JSON file served over HTTPS. Some options:
 
 ### GitHub Pages / Raw Content
+
 Host your manifest and release zips in a GitHub repo. Use raw.githubusercontent.com URLs:
+
 ```
 https://raw.githubusercontent.com/myorg/my-plugins/main/manifest.json
 ```
@@ -496,9 +508,11 @@ https://raw.githubusercontent.com/myorg/my-plugins/main/manifest.json
 Use `root_url` pointing to your releases branch/path so version URLs stay relative.
 
 ### Static File Server
+
 Any web server that serves JSON works. Dispatcharr fetches manifests server-side, so CORS is not needed.
 
 ### GitHub Releases
+
 You can host release zips as GitHub Release assets and reference them with absolute URLs in your manifest. The manifest itself can live in the repo's default branch.
 
 ---

@@ -169,8 +169,7 @@ class StreamGenerator:
                     yield create_ts_packet('error', "Error: Channel is stopping")
                     return False
 
-            # Send PAT+PMT+null so clients recognise a valid TS program and keep
-            # buffering instead of timing out from missing program info.
+            # Send null packets to keep the connection alive during initialization.
             if time.time() - last_keepalive >= keepalive_interval:
                 logger.debug(f"[{self.client_id}] Sending keepalive during initialization")
                 keepalive_data = create_ts_packet('null')

@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Restoring a backup from an older version left the database with missing schema.** The restore task ran `pg_restore` which replaced the entire database (including the `django_migrations` table) but did not run migrations afterward. If the backup predated a schema migration, the restored database was missing tables and columns added by those migrations, causing 500 errors on every API call. `migrate --noinput` now runs automatically after every restore. The success notification also now recommends a restart to clear stale service state.
+
+## [0.25.1] - 2026-05-23
+
+### Fixed
+
+- **`SynchronousOnlyOperation` and permanent loading state in series rules save.** `_evaluate_series_rules_locked` and `reschedule_upcoming_recordings_for_offset_change_impl` called `async_to_sync(channel_layer.group_send)` directly from WSGI views. In a uWSGI/gevent worker this has two effects: (1) it sets Python 3.10+'s C-level OS-thread-local running-loop flag, causing Django's `@async_unsafe` guard to raise `SynchronousOnlyOperation` on any ORM call made by another greenlet on the same thread; (2) the asyncio event loop it creates cannot make progress because the gevent hub is blocked waiting for the request greenlet to complete, so the request hangs and the frontend spinner never clears. Both functions now use `send_websocket_update` - the same gevent-aware helper used elsewhere - which takes a direct Redis path (no asyncio) in gevent workers. (Fixes #1260)
+- **Migration 0037 fails on PostgreSQL when channels have been orphaned from their M3U account.** Channels created by auto-sync retain `auto_created=True` but get `auto_created_by=NULL` when the originating M3U account is deleted (`on_delete=SET_NULL`). The data migration step that re-attributes or demotes those channels updates the FK column via ORM `.save()` calls, which queues deferred constraint trigger events in PostgreSQL. The subsequent `ALTER TABLE ... DROP NOT NULL` on the same table then fails with `ObjectInUse: cannot ALTER TABLE because it has pending trigger events`. Fixed by issuing `SET CONSTRAINTS ALL IMMEDIATE` at the end of the data migration function to flush those pending events before the DDL runs. (Fixes #1259)
+- **XC stream URLs with no file extension now respect output format defaults.** `stream_xc` previously treated any extension other than `.mp4` as a forced `mpegts` request, including the empty-extension URLs that XC-compatible M3U playlists produce via `get.php`. Requests with no extension now pass `force_format=None` so the standard resolution chain (request param, user default, server default) applies correctly.
+- **XC M3U stream URLs now carry output profile and output format parameters.** The `get.php` M3U playlist previously emitted bare `/live/user/pass/id` URLs with no query string, causing per-user and server-wide output profile and output format settings to be silently ignored for XC clients. When `output_profile` or `output_format` parameters are present on the playlist request, they are now appended to every stream URL in the playlist so the proxy honours them on playback.
+
+### Performance
+
+- **M3U playlist URL building moved outside the channel loop.** `generate_m3u` previously rebuilt the query-string suffix (and for XC requests, called `build_absolute_uri_with_port`) on every channel iteration even though both inputs are request-level constants. The XC base URL and both query-string suffixes (`xc_qs_suffix`, `proxy_qs_suffix`) are now computed once before the channel loop; per-channel URL assembly is a single f-string interpolation.
+
+## [0.25.0] - 2026-05-21
+
 ### Security
 
 - Updated `Django` 6.0.4 → 6.0.5, resolving the following CVEs:
@@ -16,6 +35,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **About modal.** A `?` button in the sidebar footer opens an About dialog showing the current version, links to Documentation, Discord, GitHub, and Open Collective, a contributors acknowledgment, and a memorial note for Jesse Mann. The button is visible in both expanded and collapsed sidebar states.
 - **Comskip mode setting.** DVR Settings now includes a "Comskip mode" option:
   - **Cut** (default): FFmpeg permanently removes commercial segments from the recording file in place. The EDL file is deleted after a successful cut.
   - **Mark**: comskip analysis runs as normal but the recording file is left untouched. The EDL file is kept alongside the recording so players that support EDL-based commercial skipping (e.g. Kodi) can use it. The recording's `custom_properties` record the EDL filename, commercial count, and mode so the UI can surface this.
@@ -47,6 +67,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Plain clicks on action buttons, checkboxes, inputs, links, and menus are unaffected. The expand chevron uses `stopPropagation` so expanding a row does not also trigger selection.
 
 ### Changed
+
+- **Custom SVG icons extracted to `icons.jsx`.** `DiscordIcon` and `GitHubIcon` were moved from `PluginDetailPanel.jsx` into a new shared `frontend/src/components/icons.jsx` module so they can be reused across components without cross-importing from an unrelated file.
 
 - **Comskip `.ini` overhauled.** The shipped `docker/comskip.ini` was replaced with a fully documented configuration covering all tunable sections: Main Settings, Output, Commercial Break Timing, Black Frame Detection, Logo Detection, Silence Detection, and Live TV. Key defaults: `detect_method=127` (all seven detection methods, up from the comskip default of 107), `min_commercialbreak=25` (slightly stricter floor for US broadcast TV), `output_default=0` (suppresses the `.txt` stats file comskip writes by default), `edl_skip_field=3` (Kodi commercial-break action code). All values include inline source references and plain-language explanations.
 - **Comskip enable switch label updated.** The DVR settings switch was relabeled from "Enable Comskip (remove commercials after recording)" to "Enable Comskip (commercial detection after recording)" to remain accurate when mark mode is selected.
@@ -102,6 +124,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Dependency updates:
   - `Django` 6.0.4 → 6.0.5 (security patch; see Security section)
 
+### Removed
+
+- **`python-gnupg` dependency dropped.** GPG manifest signature verification now calls the `gpg` binary directly via `os.posix_spawn` (see Fixed below). The `python-gnupg` Python library was the only consumer and has been removed from `pyproject.toml`. The `gpg` binary itself is still required on the host (it was always required since `python-gnupg` is just a wrapper around it).
+
 ### Fixed
 
 - **DVR settings form no longer flashes back to old values during save.** The comskip mode and hardware acceleration selects briefly showed stale values while the save was in flight because the Zustand settings store update (triggered by the API response) fired the `useEffect([settings])` re-hydration hook mid-save. An `isSavingRef` guard now suppresses the reactive re-hydration while a save is in progress; after a successful save the form is explicitly synced from the freshly-updated store state instead.
@@ -113,6 +139,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `input/http_streamer.py`: set `O_NONBLOCK` on the HTTP-to-pipe relay write-end with an EAGAIN retry loop for the same reason.
   - `core/views.py` (`stream_view`): replaced `subprocess.Popen` with `os.posix_spawn`; also fixed a pre-existing indentation bug where the `return StreamingHttpResponse(...)` was accidentally nested inside `stream_generator` (making every successful response return `None` and raise a Django error). Also corrected two `NameError` references to the undefined `stream_id` variable in log messages.
   - `apps/connect/handlers/script.py` (`ScriptHandler`): replaced `subprocess.run` with a `_posix_run` helper that uses `os.posix_spawn` + cooperative `select.select` reads + non-blocking `waitpid` polling. Without this fix, any script-type connect integration configured for events fired from a uWSGI worker (e.g. `client_connect`) would deadlock the serving greenlet. Note: `cwd` is no longer set to the script's directory during execution (it inherits the worker's cwd); this was a minor convenience, not a documented guarantee.
+- **`POST /api/plugins/repos/plugin-detail/` hung for up to 105 seconds under gevent+uWSGI.** The plugin detail endpoint called GPG via `subprocess.Popen` to verify per-plugin manifest signatures, triggering the same `fork()` atfork deadlock described above. Replaced with a `_gpg_run()` helper that uses `os.posix_spawn`, matching the pattern used by the ffmpeg and script-handler fixes. `select.select()` drains stdout/stderr cooperatively (gevent-patched) and `os.waitpid(WNOHANG)` with `time.sleep(0.01)` reaps the child without blocking the hub. Results are cached in Redis for 5 minutes per manifest URL so repeat detail fetches skip GPG entirely. The cache is also invalidated per-plugin when the owning repo's hub manifest is refreshed, so a newly released version is visible immediately after a manual hub refresh.
 - **XC server sub-path URLs now work correctly.** When a provider serves its XC API from a sub-path (e.g. `http://server/Pluto/gb/player_api.php`), Dispatcharr was stripping the path entirely and hitting the root (`/player_api.php`) instead. `_normalize_url` now preserves sub-path components and only strips any trailing `.php` segment (covering `player_api.php`, `get.php`, `xmltv.php`, and any future endpoint without a maintained list). The same fix is applied to `get_transformed_credentials` in the M3U profile transformation path. (Fixes #1218)
 - **M3U filter delete confirmation showed wrong field name and had a typo.** The confirmation dialog for deleting an M3U filter read `filter.type` (always `undefined`) instead of `filter.filter_type`, leaving the "Type:" line blank, and displayed "Patter:" instead of "Pattern:". Both are corrected. — Thanks [@nick4810](https://github.com/nick4810)
 - **M3U form FileInput expanded the modal width on long filenames.** Uploading a local M3U file with a long name caused the `FileInput` to expand beyond the modal's layout bounds. The input now clips overflow with `textOverflow: ellipsis`. — Thanks [@nick4810](https://github.com/nick4810)

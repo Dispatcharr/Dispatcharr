@@ -22,6 +22,10 @@ vi.mock('../NotificationCenter', () => ({
   ),
 }));
 
+vi.mock('../AboutModal', () => ({
+  default: () => null,
+}));
+
 // Mock lucide-react icons
 vi.mock('lucide-react', () => ({
   ListOrdered: ({ onClick }) => (
@@ -59,6 +63,7 @@ vi.mock('lucide-react', () => ({
   Heart: () => <div data-testid="heart-icon" />,
   Package: () => <div data-testid="package-icon" />,
   Download: () => <div data-testid="download-icon" />,
+  HelpCircle: () => <div data-testid="help-circle-icon" />,
 }));
 
 // Mock UserForm component
