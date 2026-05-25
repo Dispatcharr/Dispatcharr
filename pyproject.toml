@@ -19,6 +19,7 @@ dependencies = [
     "yt-dlp",
     "gevent==26.4.0",
     "psycogreen",
+    "django-db-geventpool",
     "daphne",
     "uwsgi",
     "django-cors-headers",
