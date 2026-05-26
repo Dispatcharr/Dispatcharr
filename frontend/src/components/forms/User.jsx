@@ -1,43 +1,41 @@
-import React, { useState, useEffect } from 'react';
-import API from '../../api';
+import React, { useEffect, useState } from 'react';
 import {
-  TextInput,
-  Button,
-  Modal,
-  Select,
-  PasswordInput,
-  Group,
-  Stack,
-  MultiSelect,
   ActionIcon,
-  Switch,
+  Button,
+  Group,
+  Modal,
+  MultiSelect,
   NumberInput,
+  PasswordInput,
+  Select,
+  Stack,
+  Switch,
   Tabs,
+  TabsList,
+  TabsPanel,
+  TabsTab,
   TagsInput,
   Text,
+  TextInput,
   useMantineTheme,
 } from '@mantine/core';
-import { RotateCcwKey, X } from 'lucide-react';
-import { Copy, Key } from 'lucide-react';
+import { Copy, Key, RotateCcwKey, X } from 'lucide-react';
 import { useForm } from '@mantine/form';
 import useChannelsStore from '../../store/channels';
 import useOutputProfilesStore from '../../store/outputProfiles';
-import {
-  USER_LEVELS,
-  USER_LEVEL_LABELS,
-  NETWORK_ACCESS_OPTIONS,
-} from '../../constants';
+import { USER_LEVEL_LABELS, USER_LEVELS, } from '../../constants';
 import useAuthStore from '../../store/auth';
 import { copyToClipboard } from '../../utils';
-import { IPV4_CIDR_REGEX, IPV6_CIDR_REGEX } from '../../utils/networkUtils';
-
-const isValidNetworkEntry = (entry) =>
-  entry.match(IPV4_CIDR_REGEX) ||
-  entry.match(IPV6_CIDR_REGEX) ||
-  (entry + '/32').match(IPV4_CIDR_REGEX) ||
-  (entry + '/128').match(IPV6_CIDR_REGEX);
-
-const NETWORK_KEYS = Object.keys(NETWORK_ACCESS_OPTIONS);
+import {
+  createUser,
+  formValuesToPayload,
+  generateApiKey,
+  getFormInitialValues,
+  getFormValidators,
+  revokeApiKey,
+  updateUser,
+  userToFormValues,
+} from '../../utils/forms/UserUtils.js';
 
 const User = ({ user = null, isOpen, onClose }) => {
   const profiles = useChannelsStore((s) => s.profiles);
@@ -48,52 +46,15 @@ const User = ({ user = null, isOpen, onClose }) => {
   const [, setEnableXC] = useState(false);
   const [selectedProfiles, setSelectedProfiles] = useState(new Set());
   const [generating, setGenerating] = useState(false);
-  const [generatedKey, setGeneratedKey] = useState(null);
+  const [_generatedKey, setGeneratedKey] = useState(null);
   const [userAPIKey, setUserAPIKey] = useState(user?.api_key || null);
 
   const theme = useMantineTheme();
 
   const form = useForm({
     mode: 'uncontrolled',
-    initialValues: {
-      username: '',
-      first_name: '',
-      last_name: '',
-      email: '',
-      user_level: '0',
-      stream_limit: 0,
-      password: '',
-      xc_password: '',
-      output_format: '',
-      output_profile: '',
-      channel_profiles: [],
-      hide_adult_content: false,
-      epg_days: 0,
-      epg_prev_days: 0,
-      allowed_ips: [],
-    },
-
-    validate: (values) => ({
-      username: !values.username
-        ? 'Username is required'
-        : values.user_level == USER_LEVELS.STREAMER &&
-            !values.username.match(/^[a-z0-9]+$/i)
-          ? 'Streamer username must be alphanumeric'
-          : null,
-      password:
-        !user && !values.password && values.user_level != USER_LEVELS.STREAMER
-          ? 'Password is required'
-          : null,
-      xc_password:
-        values.xc_password && !values.xc_password.match(/^[a-z0-9]+$/i)
-          ? 'XC password must be alphanumeric'
-          : null,
-      allowed_ips: (values.allowed_ips || []).some(
-        (t) => !isValidNetworkEntry(t)
-      )
-        ? 'Invalid IP address or CIDR range'
-        : null,
-    }),
+    initialValues: getFormInitialValues(),
+    validate: getFormValidators(user),
   });
 
   const onChannelProfilesChange = (values) => {
@@ -110,65 +71,18 @@ const User = ({ user = null, isOpen, onClose }) => {
   };
 
   const onSubmit = async () => {
-    const values = form.getValues();
+    const payload = formValuesToPayload(form.getValues(), user);
 
-    const customProps = user?.custom_properties || {};
-
-    customProps.xc_password = values.xc_password || '';
-    delete values.xc_password;
-
-    customProps.output_format = values.output_format || null;
-    delete values.output_format;
-
-    customProps.output_profile = values.output_profile
-      ? parseInt(values.output_profile, 10)
-      : null;
-    delete values.output_profile;
-
-    customProps.hide_adult_content = values.hide_adult_content || false;
-    delete values.hide_adult_content;
-
-    customProps.epg_days = values.epg_days || 0;
-    delete values.epg_days;
-    customProps.epg_prev_days = values.epg_prev_days || 0;
-    delete values.epg_prev_days;
-
-    values.custom_properties = customProps;
-
-    // Serialize per-user network restrictions into custom_properties (same list for all types)
-    const joined = (values.allowed_ips || []).join(',');
-    delete values.allowed_ips;
-    const allowed_networks = {};
-    if (joined)
-      NETWORK_KEYS.forEach((key) => {
-        allowed_networks[key] = joined;
-      });
-    customProps.allowed_networks = allowed_networks;
-
-    if (values.channel_profiles.includes('0')) {
-      values.channel_profiles = [];
-    }
-
-    if (!user && values.user_level == USER_LEVELS.STREAMER) {
-      values.password = Math.random().toString(36).slice(2);
+    if (!user && payload.user_level == USER_LEVELS.STREAMER) {
+      payload.password = Math.random().toString(36).slice(2);
     }
 
     if (!user) {
-      await API.createUser(values);
+      await createUser(payload);
     } else {
-      if (!values.password) {
-        delete values.password;
-      }
-
-      const response = await API.updateUser(
-        user.id,
-        values,
-        isAdmin ? false : authUser.id === user.id
-      );
-
-      if (user.id == authUser.id) {
-        setUser(response);
-      }
+      if (!payload.password) delete payload.password;
+      const response = await updateUser(user.id, payload, isAdmin, authUser);
+      if (user.id == authUser.id) setUser(response);
     }
 
     form.reset();
@@ -178,38 +92,9 @@ const User = ({ user = null, isOpen, onClose }) => {
 
   useEffect(() => {
     if (user?.id) {
-      const customProps = user.custom_properties || {};
-      const networks = customProps.allowed_networks || {};
+      form.setValues(userToFormValues(user));
 
-      form.setValues({
-        username: user.username,
-        first_name: user.first_name || '',
-        last_name: user.last_name || '',
-        email: user.email,
-        user_level: `${user.user_level}`,
-        stream_limit: user.stream_limit || 0,
-        channel_profiles:
-          user.channel_profiles.length > 0
-            ? user.channel_profiles.map((id) => `${id}`)
-            : ['0'],
-        xc_password: customProps.xc_password || '',
-        output_format: customProps.output_format || '',
-        output_profile: customProps.output_profile
-          ? `${customProps.output_profile}`
-          : '',
-        hide_adult_content: customProps.hide_adult_content || false,
-        epg_days: customProps.epg_days || 0,
-        epg_prev_days: customProps.epg_prev_days || 0,
-        allowed_ips: [
-          ...new Set(
-            NETWORK_KEYS.flatMap((key) =>
-              networks[key] ? networks[key].split(',').filter(Boolean) : []
-            )
-          ),
-        ],
-      });
-
-      if (customProps.xc_password) {
+      if (user.custom_properties?.xc_password) {
         setEnableXC(true);
       }
 
@@ -248,13 +133,13 @@ const User = ({ user = null, isOpen, onClose }) => {
         payload.user_id = user.id;
       }
 
-      const resp = await API.generateApiKey(payload);
+      const resp = await generateApiKey(payload);
       const newKey = resp && (resp.key || resp.raw_key);
       if (newKey) {
         setGeneratedKey(newKey);
-        setUserAPIKey(newKey);
+        console.log(setUserAPIKey(newKey));
       }
-    } catch (e) {
+    } catch {
       // API shows notifications
     } finally {
       setGenerating(false);
@@ -271,7 +156,8 @@ const User = ({ user = null, isOpen, onClose }) => {
         payload.user_id = user.id;
       }
 
-      const resp = await API.revokeApiKey(payload);
+      const resp = await revokeApiKey(payload);
+      // backend returns { success: true } - clear local state
       if (resp && resp.success) {
         setGeneratedKey(null);
         setUserAPIKey(null);
@@ -280,7 +166,7 @@ const User = ({ user = null, isOpen, onClose }) => {
           setUser({ ...authUser, api_key: null });
         }
       }
-    } catch (e) {
+    } catch {
       // API shows notifications
     } finally {
       setGenerating(false);
@@ -291,16 +177,16 @@ const User = ({ user = null, isOpen, onClose }) => {
     <Modal opened={isOpen} onClose={onClose} title="User" size="xl">
       <form onSubmit={form.onSubmit(onSubmit)}>
         <Tabs defaultValue="account">
-          <Tabs.List mb="md">
-            <Tabs.Tab value="account">Account</Tabs.Tab>
+          <TabsList mb="md">
+            <TabsTab value="account">Account</TabsTab>
             {showPermissions && (
-              <Tabs.Tab value="permissions">Permissions</Tabs.Tab>
+              <TabsTab value="permissions">Permissions</TabsTab>
             )}
-            <Tabs.Tab value="epg">EPG Defaults</Tabs.Tab>
-            <Tabs.Tab value="api">API &amp; XC</Tabs.Tab>
-          </Tabs.List>
+            <TabsTab value="epg">EPG Defaults</TabsTab>
+            <TabsTab value="api">API &amp; XC</TabsTab>
+          </TabsList>
 
-          <Tabs.Panel value="account">
+          <TabsPanel value="account">
             <Stack gap="sm">
               <Group grow align="flex-start">
                 <TextInput
@@ -335,10 +221,10 @@ const User = ({ user = null, isOpen, onClose }) => {
                 disabled={form.getValues().user_level == USER_LEVELS.STREAMER}
               />
             </Stack>
-          </Tabs.Panel>
+          </TabsPanel>
 
           {showPermissions && (
-            <Tabs.Panel value="permissions">
+            <TabsPanel value="permissions">
               <Stack gap="sm">
                 <Group grow align="flex-start">
                   <Select
@@ -375,10 +261,10 @@ const User = ({ user = null, isOpen, onClose }) => {
                   key={form.key('hide_adult_content')}
                 />
               </Stack>
-            </Tabs.Panel>
+            </TabsPanel>
           )}
 
-          <Tabs.Panel value="epg">
+          <TabsPanel value="epg">
             <Stack gap="sm">
               <Text size="sm" c="dimmed">
                 These defaults apply when no URL parameters are specified and
@@ -404,9 +290,9 @@ const User = ({ user = null, isOpen, onClose }) => {
                 />
               </Group>
             </Stack>
-          </Tabs.Panel>
+          </TabsPanel>
 
-          <Tabs.Panel value="api">
+          <TabsPanel value="api">
             <Stack gap="sm">
               <TextInput
                 label="XC Password"
@@ -524,7 +410,7 @@ const User = ({ user = null, isOpen, onClose }) => {
                 </Stack>
               )}
             </Stack>
-          </Tabs.Panel>
+          </TabsPanel>
         </Tabs>
 
         <Group justify="flex-end" mt="md">

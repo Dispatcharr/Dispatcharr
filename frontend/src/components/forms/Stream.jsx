@@ -1,17 +1,14 @@
 // Modal.js
 import React, { useEffect, useMemo } from 'react';
 import { useForm } from 'react-hook-form';
-import { yupResolver } from '@hookform/resolvers/yup';
-import * as Yup from 'yup';
-import API from '../../api';
 import useStreamProfilesStore from '../../store/streamProfiles';
-import { Modal, TextInput, Select, Button, Flex } from '@mantine/core';
+import { Button, Flex, Modal, Select, TextInput } from '@mantine/core';
 import useChannelsStore from '../../store/channels';
-
-const schema = Yup.object({
-  name: Yup.string().required('Name is required'),
-  url: Yup.string().required('URL is required').min(0),
-});
+import {
+  addStream,
+  getResolver,
+  updateStream,
+} from '../../utils/forms/StreamUtils.js';
 
 const Stream = ({ stream = null, isOpen, onClose }) => {
   const streamProfiles = useStreamProfilesStore((state) => state.profiles);
@@ -40,7 +37,7 @@ const Stream = ({ stream = null, isOpen, onClose }) => {
     watch,
   } = useForm({
     defaultValues,
-    resolver: yupResolver(schema),
+    resolver: getResolver(),
   });
 
   const onSubmit = async (values) => {
@@ -58,9 +55,9 @@ const Stream = ({ stream = null, isOpen, onClose }) => {
     };
 
     if (stream?.id) {
-      await API.updateStream({ id: stream.id, ...payload });
+      await updateStream(stream.id, payload);
     } else {
-      await API.addStream(payload);
+      await addStream(payload);
     }
 
     reset();
