@@ -1,25 +1,12 @@
 import API from '../../api.js';
-import { toTimeString } from '../dateTimeUtils.js';
-import dayjs from 'dayjs';
-
-export const getChannelOptions = (channels) => {
-  const list = Array.isArray(channels)
-    ? channels
-    : Object.values(channels || {});
-  return list
-    .sort((a, b) => {
-      const aNum = Number(a.channel_number) || 0;
-      const bNum = Number(b.channel_number) || 0;
-      if (aNum === bNum) {
-        return (a.name || '').localeCompare(b.name || '');
-      }
-      return aNum - bNum;
-    })
-    .map((item) => ({
-      value: `${item.id}`,
-      label: item.name || `Channel ${item.id}`,
-    }));
-};
+import {
+  getNow,
+  isAfter,
+  parseDate,
+  toDate,
+  toTimeString,
+} from '../dateTimeUtils.js';
+import { buildRecurringPayload } from './RecordingUtils.js';
 
 export const getUpcomingOccurrences = (
   recordings,
@@ -35,7 +22,7 @@ export const getUpcomingOccurrences = (
     .filter(
       (rec) =>
         rec?.custom_properties?.rule?.id === ruleId &&
-        toUserTime(rec.start_time).isAfter(now)
+        isAfter(toUserTime(rec.start_time), now)
     )
     .sort(
       (a, b) =>
@@ -45,17 +32,7 @@ export const getUpcomingOccurrences = (
 
 export const updateRecurringRule = async (ruleId, values) => {
   await API.updateRecurringRule(ruleId, {
-    channel: values.channel_id,
-    days_of_week: (values.days_of_week || []).map((d) => Number(d)),
-    start_time: toTimeString(values.start_time),
-    end_time: toTimeString(values.end_time),
-    start_date: values.start_date
-      ? dayjs(values.start_date).format('YYYY-MM-DD')
-      : null,
-    end_date: values.end_date
-      ? dayjs(values.end_date).format('YYYY-MM-DD')
-      : null,
-    name: values.rule_name?.trim() || '',
+    ...buildRecurringPayload(values),
     enabled: Boolean(values.enabled),
   });
 };
@@ -66,4 +43,17 @@ export const deleteRecurringRuleById = async (ruleId) => {
 
 export const updateRecurringRuleEnabled = async (ruleId, checked) => {
   await API.updateRecurringRule(ruleId, { enabled: checked });
+};
+
+export const getFormDefaults = (rule) => {
+  return {
+    channel_id: `${rule.channel}`,
+    days_of_week: (rule.days_of_week || []).map((d) => String(d)),
+    rule_name: rule.name || '',
+    start_time: toTimeString(rule.start_time),
+    end_time: toTimeString(rule.end_time),
+    start_date: parseDate(rule.start_date) || toDate(getNow()),
+    end_date: parseDate(rule.end_date),
+    enabled: Boolean(rule.enabled),
+  };
 };

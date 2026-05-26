@@ -1,3 +1,5 @@
+import API from '../../api.js';
+
 export const getStatRows = (stats) => {
   return [
     ['Video Codec', stats.video_codec],
@@ -85,4 +87,23 @@ export const getUpcomingEpisodes = (
   return dedupeByProgram(filtered).sort(
     (a, b) => toUserTime(a.start_time) - toUserTime(b.start_time)
   );
+};
+
+export const getChannel = (id) => {
+  return API.getChannel(id);
+};
+
+export const updateRecordingMetadata = (
+  recording,
+  editTitle,
+  editDescription
+) => {
+  return API.updateRecordingMetadata(recording.id, {
+    title: editTitle || 'Custom Recording',
+    description: editDescription,
+  });
+};
+
+export const refreshArtwork = (id) => {
+  return API.refreshArtwork(id);
 };
