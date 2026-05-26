@@ -11,7 +11,6 @@ vi.mock('../../../api.js', () => ({
   },
 }));
 
-
 describe('RecordingDetailsModalUtils', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -653,7 +652,9 @@ describe('RecordingDetailsModalUtils', () => {
     it('should propagate API errors', async () => {
       API.getChannel.mockRejectedValue(new Error('Not found'));
 
-      await expect(RecordingDetailsModalUtils.getChannel(99)).rejects.toThrow('Not found');
+      await expect(RecordingDetailsModalUtils.getChannel(99)).rejects.toThrow(
+        'Not found'
+      );
     });
   });
 
@@ -680,7 +681,11 @@ describe('RecordingDetailsModalUtils', () => {
       API.updateRecordingMetadata.mockResolvedValue({});
 
       const recording = { id: 5 };
-      await RecordingDetailsModalUtils.updateRecordingMetadata(recording, '', 'Some description');
+      await RecordingDetailsModalUtils.updateRecordingMetadata(
+        recording,
+        '',
+        'Some description'
+      );
 
       expect(API.updateRecordingMetadata).toHaveBeenCalledWith(5, {
         title: 'Custom Recording',
@@ -692,7 +697,11 @@ describe('RecordingDetailsModalUtils', () => {
       API.updateRecordingMetadata.mockResolvedValue({});
 
       const recording = { id: 5 };
-      await RecordingDetailsModalUtils.updateRecordingMetadata(recording, null, 'desc');
+      await RecordingDetailsModalUtils.updateRecordingMetadata(
+        recording,
+        null,
+        'desc'
+      );
 
       expect(API.updateRecordingMetadata).toHaveBeenCalledWith(5, {
         title: 'Custom Recording',
@@ -704,7 +713,11 @@ describe('RecordingDetailsModalUtils', () => {
       API.updateRecordingMetadata.mockRejectedValue(new Error('Server error'));
 
       await expect(
-        RecordingDetailsModalUtils.updateRecordingMetadata({ id: 1 }, 'Title', 'Desc')
+        RecordingDetailsModalUtils.updateRecordingMetadata(
+          { id: 1 },
+          'Title',
+          'Desc'
+        )
       ).rejects.toThrow('Server error');
     });
   });
@@ -723,9 +736,9 @@ describe('RecordingDetailsModalUtils', () => {
     it('should propagate API errors', async () => {
       API.refreshArtwork.mockRejectedValue(new Error('Artwork fetch failed'));
 
-      await expect(RecordingDetailsModalUtils.refreshArtwork(7)).rejects.toThrow(
-        'Artwork fetch failed'
-      );
+      await expect(
+        RecordingDetailsModalUtils.refreshArtwork(7)
+      ).rejects.toThrow('Artwork fetch failed');
     });
   });
 });

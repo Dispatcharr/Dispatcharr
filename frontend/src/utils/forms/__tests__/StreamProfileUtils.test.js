@@ -54,7 +54,9 @@ describe('StreamProfileUtils', () => {
 
   describe('COMMAND_EXAMPLES', () => {
     it('has an entry for each non-custom built-in command', () => {
-      const nonCustom = BUILT_IN_COMMANDS.filter((c) => c.value !== '__custom__');
+      const nonCustom = BUILT_IN_COMMANDS.filter(
+        (c) => c.value !== '__custom__'
+      );
       for (const cmd of nonCustom) {
         expect(COMMAND_EXAMPLES).toHaveProperty(cmd.value);
         expect(typeof COMMAND_EXAMPLES[cmd.value]).toBe('string');

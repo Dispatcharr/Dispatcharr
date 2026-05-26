@@ -47,7 +47,10 @@ describe('UserUtils', () => {
     it('calls API.createUser with the provided values', () => {
       API.createUser.mockResolvedValueOnce({ id: 1 });
       createUser({ username: 'alice', password: 'pass' });
-      expect(API.createUser).toHaveBeenCalledWith({ username: 'alice', password: 'pass' });
+      expect(API.createUser).toHaveBeenCalledWith({
+        username: 'alice',
+        password: 'pass',
+      });
     });
 
     it('returns the promise from API.createUser', () => {
@@ -57,7 +60,7 @@ describe('UserUtils', () => {
     });
   });
 
-// ─── updateUser ───────────────────────────────────────────────────────────────
+  // ─── updateUser ───────────────────────────────────────────────────────────────
 
   describe('updateUser', () => {
     beforeEach(() => vi.clearAllMocks());
@@ -65,19 +68,31 @@ describe('UserUtils', () => {
     it('calls API.updateUser with selfEdit=false when isAdmin is true', () => {
       API.updateUser.mockResolvedValueOnce({});
       updateUser(1, { username: 'bob' }, true, { id: 1 });
-      expect(API.updateUser).toHaveBeenCalledWith(1, { username: 'bob' }, false);
+      expect(API.updateUser).toHaveBeenCalledWith(
+        1,
+        { username: 'bob' },
+        false
+      );
     });
 
     it('calls API.updateUser with selfEdit=true when not admin and userId matches authUser', () => {
       API.updateUser.mockResolvedValueOnce({});
       updateUser(5, { username: 'carol' }, false, { id: 5 });
-      expect(API.updateUser).toHaveBeenCalledWith(5, { username: 'carol' }, true);
+      expect(API.updateUser).toHaveBeenCalledWith(
+        5,
+        { username: 'carol' },
+        true
+      );
     });
 
     it('calls API.updateUser with selfEdit=false when not admin and userId does not match authUser', () => {
       API.updateUser.mockResolvedValueOnce({});
       updateUser(5, { username: 'dave' }, false, { id: 99 });
-      expect(API.updateUser).toHaveBeenCalledWith(5, { username: 'dave' }, false);
+      expect(API.updateUser).toHaveBeenCalledWith(
+        5,
+        { username: 'dave' },
+        false
+      );
     });
 
     it('returns the promise from API.updateUser', () => {
@@ -87,7 +102,7 @@ describe('UserUtils', () => {
     });
   });
 
-// ─── generateApiKey ───────────────────────────────────────────────────────────
+  // ─── generateApiKey ───────────────────────────────────────────────────────────
 
   describe('generateApiKey', () => {
     beforeEach(() => vi.clearAllMocks());
@@ -105,7 +120,7 @@ describe('UserUtils', () => {
     });
   });
 
-// ─── revokeApiKey ─────────────────────────────────────────────────────────────
+  // ─── revokeApiKey ─────────────────────────────────────────────────────────────
 
   describe('revokeApiKey', () => {
     beforeEach(() => vi.clearAllMocks());
@@ -123,7 +138,7 @@ describe('UserUtils', () => {
     });
   });
 
-// ─── userToFormValues ─────────────────────────────────────────────────────────
+  // ─── userToFormValues ─────────────────────────────────────────────────────────
 
   describe('userToFormValues', () => {
     const makeUser = (overrides = {}) => ({
@@ -149,7 +164,9 @@ describe('UserUtils', () => {
     });
 
     it('defaults first_name and last_name to empty string when absent', () => {
-      const result = userToFormValues(makeUser({ first_name: null, last_name: null }));
+      const result = userToFormValues(
+        makeUser({ first_name: null, last_name: null })
+      );
       expect(result.first_name).toBe('');
       expect(result.last_name).toBe('');
     });
@@ -160,7 +177,9 @@ describe('UserUtils', () => {
     });
 
     it('uses channel_profiles when non-empty', () => {
-      const result = userToFormValues(makeUser({ channel_profiles: ['3', '4'] }));
+      const result = userToFormValues(
+        makeUser({ channel_profiles: ['3', '4'] })
+      );
       expect(result.channel_profiles).toEqual(['3', '4']);
     });
 
@@ -217,7 +236,7 @@ describe('UserUtils', () => {
     });
   });
 
-// ─── formValuesToPayload ──────────────────────────────────────────────────────
+  // ─── formValuesToPayload ──────────────────────────────────────────────────────
 
   describe('formValuesToPayload', () => {
     const makeValues = (overrides = {}) => ({
@@ -253,7 +272,10 @@ describe('UserUtils', () => {
     });
 
     it('sets output_profile to null when empty string', () => {
-      const result = formValuesToPayload(makeValues({ output_profile: '' }), null);
+      const result = formValuesToPayload(
+        makeValues({ output_profile: '' }),
+        null
+      );
       expect(result.custom_properties.output_profile).toBeNull();
     });
 
@@ -272,11 +294,20 @@ describe('UserUtils', () => {
     });
 
     it('populates allowed_networks for all NETWORK_KEYS when allowed_ips present', () => {
-      const result = formValuesToPayload(makeValues({ allowed_ips: ['192.168.1.0/24', '10.0.0.1/32'] }), null);
+      const result = formValuesToPayload(
+        makeValues({ allowed_ips: ['192.168.1.0/24', '10.0.0.1/32'] }),
+        null
+      );
       expect(result.allowed_ips).toBeUndefined();
-      expect(result.custom_properties.allowed_networks.m3u).toBe('192.168.1.0/24,10.0.0.1/32');
-      expect(result.custom_properties.allowed_networks.xc).toBe('192.168.1.0/24,10.0.0.1/32');
-      expect(result.custom_properties.allowed_networks.mpegts).toBe('192.168.1.0/24,10.0.0.1/32');
+      expect(result.custom_properties.allowed_networks.m3u).toBe(
+        '192.168.1.0/24,10.0.0.1/32'
+      );
+      expect(result.custom_properties.allowed_networks.xc).toBe(
+        '192.168.1.0/24,10.0.0.1/32'
+      );
+      expect(result.custom_properties.allowed_networks.mpegts).toBe(
+        '192.168.1.0/24,10.0.0.1/32'
+      );
     });
 
     it('sets empty allowed_networks when allowed_ips is empty', () => {
@@ -285,17 +316,25 @@ describe('UserUtils', () => {
     });
 
     it('sets channel_profiles to empty array when it includes "0"', () => {
-      const result = formValuesToPayload(makeValues({ channel_profiles: ['0'] }), null);
+      const result = formValuesToPayload(
+        makeValues({ channel_profiles: ['0'] }),
+        null
+      );
       expect(result.channel_profiles).toEqual([]);
     });
 
     it('preserves channel_profiles when it does not include "0"', () => {
-      const result = formValuesToPayload(makeValues({ channel_profiles: ['1', '2'] }), null);
+      const result = formValuesToPayload(
+        makeValues({ channel_profiles: ['1', '2'] }),
+        null
+      );
       expect(result.channel_profiles).toEqual(['1', '2']);
     });
 
     it('merges existing custom_properties from existingUser', () => {
-      const existingUser = { custom_properties: { some_other_prop: 'keep_me' } };
+      const existingUser = {
+        custom_properties: { some_other_prop: 'keep_me' },
+      };
       const result = formValuesToPayload(makeValues(), existingUser);
       expect(result.custom_properties.some_other_prop).toBe('keep_me');
     });
@@ -305,7 +344,7 @@ describe('UserUtils', () => {
     });
   });
 
-// ─── getFormInitialValues ─────────────────────────────────────────────────────
+  // ─── getFormInitialValues ─────────────────────────────────────────────────────
 
   describe('getFormInitialValues', () => {
     it('returns the expected default structure', () => {
@@ -336,95 +375,149 @@ describe('UserUtils', () => {
     });
   });
 
-// ─── getFormValidators ────────────────────────────────────────────────────────
+  // ─── getFormValidators ────────────────────────────────────────────────────────
 
   describe('getFormValidators', () => {
     const validate = (user, values) => getFormValidators(user)(values);
 
     describe('username', () => {
       it('returns error when username is empty', () => {
-        const result = validate(null, { ...getFormInitialValues(), username: '' });
+        const result = validate(null, {
+          ...getFormInitialValues(),
+          username: '',
+        });
         expect(result.username).toBe('Username is required');
       });
 
       it('returns null for a valid non-streamer username', () => {
-        const result = validate(null, { ...getFormInitialValues(), username: 'alice', user_level: '0' });
+        const result = validate(null, {
+          ...getFormInitialValues(),
+          username: 'alice',
+          user_level: '0',
+        });
         expect(result.username).toBeNull();
       });
 
       it('returns null for a valid alphanumeric streamer username', () => {
-        const result = validate(null, { ...getFormInitialValues(), username: 'alice123', user_level: '2' });
+        const result = validate(null, {
+          ...getFormInitialValues(),
+          username: 'alice123',
+          user_level: '2',
+        });
         expect(result.username).toBeNull();
       });
 
       it('returns error for streamer username with non-alphanumeric characters', () => {
-        const result = validate(null, { ...getFormInitialValues(), username: 'alice_123', user_level: '2' });
+        const result = validate(null, {
+          ...getFormInitialValues(),
+          username: 'alice_123',
+          user_level: '2',
+        });
         expect(result.username).toBe('Streamer username must be alphanumeric');
       });
     });
 
     describe('password', () => {
       it('returns error when creating a non-streamer user without a password', () => {
-        const result = validate(null, { ...getFormInitialValues(), user_level: '0', password: '' });
+        const result = validate(null, {
+          ...getFormInitialValues(),
+          user_level: '0',
+          password: '',
+        });
         expect(result.password).toBe('Password is required');
       });
 
       it('returns null when creating a streamer user without a password', () => {
-        const result = validate(null, { ...getFormInitialValues(), user_level: '2', password: '' });
+        const result = validate(null, {
+          ...getFormInitialValues(),
+          user_level: '2',
+          password: '',
+        });
         expect(result.password).toBeNull();
       });
 
       it('returns null when editing an existing user without a password', () => {
-        const result = validate({ id: 1 }, { ...getFormInitialValues(), user_level: '0', password: '' });
+        const result = validate(
+          { id: 1 },
+          { ...getFormInitialValues(), user_level: '0', password: '' }
+        );
         expect(result.password).toBeNull();
       });
 
       it('returns null when password is provided for new user', () => {
-        const result = validate(null, { ...getFormInitialValues(), user_level: '0', password: 'secret' });
+        const result = validate(null, {
+          ...getFormInitialValues(),
+          user_level: '0',
+          password: 'secret',
+        });
         expect(result.password).toBeNull();
       });
     });
 
     describe('xc_password', () => {
       it('returns null when xc_password is empty', () => {
-        const result = validate(null, { ...getFormInitialValues(), xc_password: '' });
+        const result = validate(null, {
+          ...getFormInitialValues(),
+          xc_password: '',
+        });
         expect(result.xc_password).toBeNull();
       });
 
       it('returns null for a valid alphanumeric xc_password', () => {
-        const result = validate(null, { ...getFormInitialValues(), xc_password: 'abc123' });
+        const result = validate(null, {
+          ...getFormInitialValues(),
+          xc_password: 'abc123',
+        });
         expect(result.xc_password).toBeNull();
       });
 
       it('returns error for xc_password with non-alphanumeric characters', () => {
-        const result = validate(null, { ...getFormInitialValues(), xc_password: 'abc!@#' });
+        const result = validate(null, {
+          ...getFormInitialValues(),
+          xc_password: 'abc!@#',
+        });
         expect(result.xc_password).toBe('XC password must be alphanumeric');
       });
     });
 
     describe('allowed_ips', () => {
       it('returns null for an empty allowed_ips array', () => {
-        const result = validate(null, { ...getFormInitialValues(), allowed_ips: [] });
+        const result = validate(null, {
+          ...getFormInitialValues(),
+          allowed_ips: [],
+        });
         expect(result.allowed_ips).toBeNull();
       });
 
       it('returns null for a valid IPv4 CIDR', () => {
-        const result = validate(null, { ...getFormInitialValues(), allowed_ips: ['192.168.1.0/24'] });
+        const result = validate(null, {
+          ...getFormInitialValues(),
+          allowed_ips: ['192.168.1.0/24'],
+        });
         expect(result.allowed_ips).toBeNull();
       });
 
       it('returns null for a bare IPv4 address (auto-appends /32)', () => {
-        const result = validate(null, { ...getFormInitialValues(), allowed_ips: ['10.0.0.1'] });
+        const result = validate(null, {
+          ...getFormInitialValues(),
+          allowed_ips: ['10.0.0.1'],
+        });
         expect(result.allowed_ips).toBeNull();
       });
 
       it('returns error for an invalid IP entry', () => {
-        const result = validate(null, { ...getFormInitialValues(), allowed_ips: ['not-an-ip'] });
+        const result = validate(null, {
+          ...getFormInitialValues(),
+          allowed_ips: ['not-an-ip'],
+        });
         expect(result.allowed_ips).toBe('Invalid IP address or CIDR range');
       });
 
       it('returns error when any entry in the list is invalid', () => {
-        const result = validate(null, { ...getFormInitialValues(), allowed_ips: ['192.168.1.0/24', 'bad-entry'] });
+        const result = validate(null, {
+          ...getFormInitialValues(),
+          allowed_ips: ['192.168.1.0/24', 'bad-entry'],
+        });
         expect(result.allowed_ips).toBe('Invalid IP address or CIDR range');
       });
     });

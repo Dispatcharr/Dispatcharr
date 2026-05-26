@@ -8,11 +8,10 @@ vi.mock('../../../api.js', () => ({
 }));
 
 vi.mock('../RecordingUtils.js', () => ({
-  numberedChannelLabel: vi.fn(
-    (item) =>
-      item.channel_number
-        ? `${item.channel_number} - ${item.name || `Channel ${item.id}`}`
-        : item.name || `Channel ${item.id}`
+  numberedChannelLabel: vi.fn((item) =>
+    item.channel_number
+      ? `${item.channel_number} - ${item.name || `Channel ${item.id}`}`
+      : item.name || `Channel ${item.id}`
   ),
   sortedChannelOptions: vi.fn((channels) =>
     (Array.isArray(channels) ? channels : []).map((c) => ({
@@ -33,7 +32,10 @@ import {
   getChannelOptions,
   previewSeriesRule,
 } from '../SeriesRuleEditorModalUtils.js';
-import { sortedChannelOptions, numberedChannelLabel } from '../RecordingUtils.js';
+import {
+  sortedChannelOptions,
+  numberedChannelLabel,
+} from '../RecordingUtils.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -112,7 +114,7 @@ describe('SeriesRuleEditorModalUtils', () => {
   describe('formatRange', () => {
     it('formats same-day range as "date startTime - endTime"', () => {
       const start = '2024-06-01T10:00:00';
-      const end   = '2024-06-01T11:30:00';
+      const end = '2024-06-01T11:30:00';
       const result = formatRange(start, end);
       // Must include a dash separating start and end times (not "->")
       expect(result).toMatch(/-(?!>)/);
@@ -121,7 +123,7 @@ describe('SeriesRuleEditorModalUtils', () => {
 
     it('formats cross-day range with "->" separator', () => {
       const start = '2024-06-01T23:00:00';
-      const end   = '2024-06-02T01:00:00';
+      const end = '2024-06-02T01:00:00';
       const result = formatRange(start, end);
       expect(result).toMatch(/->/);
     });
@@ -133,7 +135,7 @@ describe('SeriesRuleEditorModalUtils', () => {
 
     it('includes a date string component in the output', () => {
       const start = '2024-06-01T10:00:00';
-      const end   = '2024-06-01T11:00:00';
+      const end = '2024-06-01T11:00:00';
       const result = formatRange(start, end);
       // toLocaleDateString produces something non-empty
       expect(result.length).toBeGreaterThan(5);
@@ -141,7 +143,7 @@ describe('SeriesRuleEditorModalUtils', () => {
 
     it('handles ISO strings with timezone offsets', () => {
       const start = '2024-06-01T10:00:00Z';
-      const end   = '2024-06-01T11:00:00Z';
+      const end = '2024-06-01T11:00:00Z';
       // Should not throw
       expect(() => formatRange(start, end)).not.toThrow();
     });
@@ -227,15 +229,15 @@ describe('SeriesRuleEditorModalUtils', () => {
 
   describe('getChannelOptions', () => {
     const makeChannels = () => [
-      { id: 1, name: 'ESPN',  channel_number: 5,  epg_data_id: 'epg-1' },
-      { id: 2, name: 'HBO',   channel_number: 10, epg_data_id: 'epg-2' },
-      { id: 3, name: 'CNN',   channel_number: 20, epg_data_id: 'epg-3' },
+      { id: 1, name: 'ESPN', channel_number: 5, epg_data_id: 'epg-1' },
+      { id: 2, name: 'HBO', channel_number: 10, epg_data_id: 'epg-2' },
+      { id: 3, name: 'CNN', channel_number: 20, epg_data_id: 'epg-3' },
     ];
 
     const makeTvgsById = () => ({
       'epg-1': { tvg_id: 'tvg-espn' },
-      'epg-2': { tvg_id: 'tvg-hbo'  },
-      'epg-3': { tvg_id: 'tvg-cnn'  },
+      'epg-2': { tvg_id: 'tvg-hbo' },
+      'epg-3': { tvg_id: 'tvg-cnn' },
     });
 
     it('calls sortedChannelOptions with allChannels and numberedChannelLabel', () => {
@@ -262,9 +264,9 @@ describe('SeriesRuleEditorModalUtils', () => {
     it('places matching channels before non-matching when tvgId set', () => {
       // Override sortedChannelOptions to return deterministic output
       vi.mocked(sortedChannelOptions).mockReturnValueOnce([
-        { value: '1', label: 'ESPN'  },
-        { value: '2', label: 'HBO'   },
-        { value: '3', label: 'CNN'   },
+        { value: '1', label: 'ESPN' },
+        { value: '2', label: 'HBO' },
+        { value: '3', label: 'CNN' },
       ]);
 
       const channels = makeChannels();
@@ -273,15 +275,15 @@ describe('SeriesRuleEditorModalUtils', () => {
       // tvgId matches ESPN (epg-1 → tvg-espn)
       const result = getChannelOptions(channels, tvgsById, 'tvg-espn');
 
-      expect(result[0].value).toBe('1');   // ESPN first (matching)
-      expect(result[1].value).toBe('2');   // HBO second (non-matching)
-      expect(result[2].value).toBe('3');   // CNN third  (non-matching)
+      expect(result[0].value).toBe('1'); // ESPN first (matching)
+      expect(result[1].value).toBe('2'); // HBO second (non-matching)
+      expect(result[2].value).toBe('3'); // CNN third  (non-matching)
     });
 
     it('returns all in sorted order when no channel matches tvgId', () => {
       vi.mocked(sortedChannelOptions).mockReturnValueOnce([
         { value: '1', label: 'ESPN' },
-        { value: '2', label: 'HBO'  },
+        { value: '2', label: 'HBO' },
       ]);
 
       const channels = makeChannels();
@@ -292,7 +294,9 @@ describe('SeriesRuleEditorModalUtils', () => {
     });
 
     it('handles channel with no epg_data_id (cTvg is null)', () => {
-      const channels = [{ id: 9, name: 'NoEPG', channel_number: 1, epg_data_id: null }];
+      const channels = [
+        { id: 9, name: 'NoEPG', channel_number: 1, epg_data_id: null },
+      ];
       vi.mocked(sortedChannelOptions).mockReturnValueOnce([
         { value: '9', label: 'NoEPG' },
       ]);
@@ -305,7 +309,14 @@ describe('SeriesRuleEditorModalUtils', () => {
     });
 
     it('handles missing epg_data_id entry in tvgsById', () => {
-      const channels = [{ id: 5, name: 'Unknown', channel_number: 1, epg_data_id: 'epg-missing' }];
+      const channels = [
+        {
+          id: 5,
+          name: 'Unknown',
+          channel_number: 1,
+          epg_data_id: 'epg-missing',
+        },
+      ];
       vi.mocked(sortedChannelOptions).mockReturnValueOnce([
         { value: '5', label: 'Unknown' },
       ]);
@@ -333,20 +344,20 @@ describe('SeriesRuleEditorModalUtils', () => {
 
     it('places multiple matching channels before non-matching', () => {
       vi.mocked(sortedChannelOptions).mockReturnValueOnce([
-        { value: '1', label: 'ESPN'  },
+        { value: '1', label: 'ESPN' },
         { value: '2', label: 'ESPN2' },
-        { value: '3', label: 'CNN'   },
+        { value: '3', label: 'CNN' },
       ]);
 
       const channels = [
-        { id: 1, name: 'ESPN',  channel_number: 5,  epg_data_id: 'epg-1' },
-        { id: 2, name: 'ESPN2', channel_number: 6,  epg_data_id: 'epg-4' },
-        { id: 3, name: 'CNN',   channel_number: 20, epg_data_id: 'epg-3' },
+        { id: 1, name: 'ESPN', channel_number: 5, epg_data_id: 'epg-1' },
+        { id: 2, name: 'ESPN2', channel_number: 6, epg_data_id: 'epg-4' },
+        { id: 3, name: 'CNN', channel_number: 20, epg_data_id: 'epg-3' },
       ];
       const tvgsById = {
         'epg-1': { tvg_id: 'tvg-espn' },
         'epg-4': { tvg_id: 'tvg-espn' }, // both ESPN channels share tvg_id
-        'epg-3': { tvg_id: 'tvg-cnn'  },
+        'epg-3': { tvg_id: 'tvg-cnn' },
       };
 
       const result = getChannelOptions(channels, tvgsById, 'tvg-espn');
@@ -385,9 +396,13 @@ describe('SeriesRuleEditorModalUtils', () => {
     });
 
     it('propagates rejection from API.previewSeriesRule', async () => {
-      vi.mocked(API.previewSeriesRule).mockRejectedValue(new Error('Network error'));
+      vi.mocked(API.previewSeriesRule).mockRejectedValue(
+        new Error('Network error')
+      );
       const controller = new AbortController();
-      await expect(previewSeriesRule({}, controller)).rejects.toThrow('Network error');
+      await expect(previewSeriesRule({}, controller)).rejects.toThrow(
+        'Network error'
+      );
     });
 
     it('propagates AbortError when signal is aborted', async () => {
@@ -397,7 +412,9 @@ describe('SeriesRuleEditorModalUtils', () => {
       const controller = new AbortController();
       controller.abort();
 
-      await expect(previewSeriesRule({}, controller)).rejects.toThrow('Aborted');
+      await expect(previewSeriesRule({}, controller)).rejects.toThrow(
+        'Aborted'
+      );
     });
 
     it('passes through all fields of the preview key', async () => {
@@ -422,4 +439,3 @@ describe('SeriesRuleEditorModalUtils', () => {
     });
   });
 });
-

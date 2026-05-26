@@ -31,7 +31,9 @@ vi.mock('@mantine/core', () => ({
     opened ? (
       <div data-testid="modal">
         <div data-testid="modal-title">{title}</div>
-        <button data-testid="modal-close" onClick={onClose}>×</button>
+        <button data-testid="modal-close" onClick={onClose}>
+          ×
+        </button>
         {children}
       </div>
     ) : null,
@@ -105,23 +107,37 @@ describe('UserAgent', () => {
 
     it('pre-fills fields from userAgent prop', () => {
       render(
-        <UserAgent isOpen={true} onClose={vi.fn()} userAgent={makeUserAgent()} />
+        <UserAgent
+          isOpen={true}
+          onClose={vi.fn()}
+          userAgent={makeUserAgent()}
+        />
       );
       expect(screen.getByTestId('input-Name')).toHaveValue('Chrome');
       expect(screen.getByTestId('input-User-Agent')).toHaveValue('Mozilla/5.0');
-      expect(screen.getByTestId('input-Description')).toHaveValue('Chrome browser');
+      expect(screen.getByTestId('input-Description')).toHaveValue(
+        'Chrome browser'
+      );
     });
 
     it('checks Is Active checkbox when userAgent.is_active is true', () => {
       render(
-        <UserAgent isOpen={true} onClose={vi.fn()} userAgent={makeUserAgent({ is_active: true })} />
+        <UserAgent
+          isOpen={true}
+          onClose={vi.fn()}
+          userAgent={makeUserAgent({ is_active: true })}
+        />
       );
       expect(screen.getByTestId('checkbox-is-active')).toBeChecked();
     });
 
     it('unchecks Is Active checkbox when userAgent.is_active is false', () => {
       render(
-        <UserAgent isOpen={true} onClose={vi.fn()} userAgent={makeUserAgent({ is_active: false })} />
+        <UserAgent
+          isOpen={true}
+          onClose={vi.fn()}
+          userAgent={makeUserAgent({ is_active: false })}
+        />
       );
       expect(screen.getByTestId('checkbox-is-active')).not.toBeChecked();
     });
@@ -137,7 +153,11 @@ describe('UserAgent', () => {
   describe('field interactions', () => {
     it('toggles Is Active checkbox', () => {
       render(
-        <UserAgent isOpen={true} onClose={vi.fn()} userAgent={makeUserAgent({ is_active: true })} />
+        <UserAgent
+          isOpen={true}
+          onClose={vi.fn()}
+          userAgent={makeUserAgent({ is_active: true })}
+        />
       );
       const checkbox = screen.getByTestId('checkbox-is-active');
       fireEvent.click(checkbox);
@@ -158,7 +178,11 @@ describe('UserAgent', () => {
 
     it('calls updateUserAgent with the id when editing an existing userAgent', async () => {
       render(
-        <UserAgent isOpen={true} onClose={vi.fn()} userAgent={makeUserAgent()} />
+        <UserAgent
+          isOpen={true}
+          onClose={vi.fn()}
+          userAgent={makeUserAgent()}
+        />
       );
       fireEvent.click(screen.getByText('Submit'));
       await waitFor(() => {
@@ -171,7 +195,11 @@ describe('UserAgent', () => {
 
     it('does not call addUserAgent when updating', async () => {
       render(
-        <UserAgent isOpen={true} onClose={vi.fn()} userAgent={makeUserAgent()} />
+        <UserAgent
+          isOpen={true}
+          onClose={vi.fn()}
+          userAgent={makeUserAgent()}
+        />
       );
       fireEvent.click(screen.getByText('Submit'));
       await waitFor(() => {
@@ -214,7 +242,11 @@ describe('UserAgent', () => {
   describe('form reset on userAgent change', () => {
     it('resets form values when userAgent prop changes', () => {
       const { rerender } = render(
-        <UserAgent isOpen={true} onClose={vi.fn()} userAgent={makeUserAgent()} />
+        <UserAgent
+          isOpen={true}
+          onClose={vi.fn()}
+          userAgent={makeUserAgent()}
+        />
       );
       expect(screen.getByTestId('input-Name')).toHaveValue('Chrome');
 
@@ -222,7 +254,11 @@ describe('UserAgent', () => {
         <UserAgent
           isOpen={true}
           onClose={vi.fn()}
-          userAgent={makeUserAgent({ id: 2, name: 'Firefox', user_agent: 'Gecko/20100101' })}
+          userAgent={makeUserAgent({
+            id: 2,
+            name: 'Firefox',
+            user_agent: 'Gecko/20100101',
+          })}
         />
       );
       expect(screen.getByTestId('input-Name')).toHaveValue('Firefox');
@@ -230,7 +266,11 @@ describe('UserAgent', () => {
 
     it('resets to empty when userAgent prop is removed', () => {
       const { rerender } = render(
-        <UserAgent isOpen={true} onClose={vi.fn()} userAgent={makeUserAgent()} />
+        <UserAgent
+          isOpen={true}
+          onClose={vi.fn()}
+          userAgent={makeUserAgent()}
+        />
       );
       rerender(<UserAgent isOpen={true} onClose={vi.fn()} userAgent={null} />);
       expect(screen.getByTestId('input-Name')).toHaveValue('');

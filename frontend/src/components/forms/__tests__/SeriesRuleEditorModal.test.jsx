@@ -90,14 +90,7 @@ vi.mock('@mantine/core', () => ({
       ))}
     </div>
   ),
-  Select: ({
-    label,
-    placeholder,
-    data,
-    value,
-    onChange,
-    description,
-  }) => (
+  Select: ({ label, placeholder, data, value, onChange, description }) => (
     <div>
       <label>{label}</label>
       {description && (
@@ -156,7 +149,10 @@ import useEPGsStore from '../../../store/epgs.jsx';
 import { useDebounce } from '../../../utils.js';
 import { showNotification } from '../../../utils/notificationUtils.js';
 import { getChannelsSummary } from '../../../utils/forms/RecordingUtils.js';
-import { createSeriesRule, evaluateSeriesRulesByTvgId } from '../../../utils/guideUtils.js';
+import {
+  createSeriesRule,
+  evaluateSeriesRulesByTvgId,
+} from '../../../utils/guideUtils.js';
 import {
   getTvgOptions,
   previewSeriesRule,
@@ -216,7 +212,11 @@ const setupMocks = () => {
 
   vi.mocked(getTvgOptions).mockReturnValue(mockTvgOptions);
   vi.mocked(getChannelsSummary).mockResolvedValue(mockChannels);
-  vi.mocked(previewSeriesRule).mockResolvedValue({ matches: [], total: 0, epg_found: true });
+  vi.mocked(previewSeriesRule).mockResolvedValue({
+    matches: [],
+    total: 0,
+    epg_found: true,
+  });
   vi.mocked(createSeriesRule).mockResolvedValue({ id: 'rule-1' });
   vi.mocked(evaluateSeriesRulesByTvgId).mockResolvedValue(undefined);
   vi.mocked(useDebounce).mockImplementation((val) => val);
@@ -260,7 +260,9 @@ describe('SeriesRuleEditorModal', () => {
 
     it('shows "New Series Rule" title when initialRule is null', () => {
       render(<SeriesRuleEditorModal {...defaultProps} />);
-      expect(screen.getByTestId('modal-title')).toHaveTextContent('New Series Rule');
+      expect(screen.getByTestId('modal-title')).toHaveTextContent(
+        'New Series Rule'
+      );
     });
 
     it('shows "Edit Series Rule" title when initialRule is provided', () => {
@@ -270,7 +272,9 @@ describe('SeriesRuleEditorModal', () => {
           initialRule={{ tvg_id: 'tvg-1', mode: 'all', title: 'Test' }}
         />
       );
-      expect(screen.getByTestId('modal-title')).toHaveTextContent('Edit Series Rule');
+      expect(screen.getByTestId('modal-title')).toHaveTextContent(
+        'Edit Series Rule'
+      );
     });
 
     it('renders the title input', () => {
@@ -325,21 +329,29 @@ describe('SeriesRuleEditorModal', () => {
     };
 
     it('pre-fills title from initialRule', () => {
-      render(<SeriesRuleEditorModal {...defaultProps} initialRule={initialRule} />);
+      render(
+        <SeriesRuleEditorModal {...defaultProps} initialRule={initialRule} />
+      );
       expect(screen.getByTestId('input-title')).toHaveValue('Pre-filled Title');
     });
 
     it('pre-fills description from initialRule', () => {
-      render(<SeriesRuleEditorModal {...defaultProps} initialRule={initialRule} />);
-      expect(screen.getByTestId('textarea-description')).toHaveValue('Pre-filled description');
+      render(
+        <SeriesRuleEditorModal {...defaultProps} initialRule={initialRule} />
+      );
+      expect(screen.getByTestId('textarea-description')).toHaveValue(
+        'Pre-filled description'
+      );
     });
 
     it('uses default mode "all" when initialRule has no mode', () => {
-      render(<SeriesRuleEditorModal {...defaultProps} initialRule={{ title: 'X' }} />);
-      // "All" segmented button should be active (data-active=true)
-      const allBtn = screen.getAllByText('All').find(
-        (el) => el.closest('[data-testid="segmented-control"]')
+      render(
+        <SeriesRuleEditorModal {...defaultProps} initialRule={{ title: 'X' }} />
       );
+      // "All" segmented button should be active (data-active=true)
+      const allBtn = screen
+        .getAllByText('All')
+        .find((el) => el.closest('[data-testid="segmented-control"]'));
       expect(allBtn).toBeTruthy();
     });
 
@@ -348,10 +360,18 @@ describe('SeriesRuleEditorModal', () => {
         <SeriesRuleEditorModal {...defaultProps} initialRule={initialRule} />
       );
       rerender(
-        <SeriesRuleEditorModal {...defaultProps} opened={false} initialRule={null} />
+        <SeriesRuleEditorModal
+          {...defaultProps}
+          opened={false}
+          initialRule={null}
+        />
       );
       rerender(
-        <SeriesRuleEditorModal {...defaultProps} opened={true} initialRule={null} />
+        <SeriesRuleEditorModal
+          {...defaultProps}
+          opened={true}
+          initialRule={null}
+        />
       );
       expect(screen.getByTestId('input-title')).toHaveValue('');
       expect(screen.getByTestId('textarea-description')).toHaveValue('');
@@ -374,7 +394,9 @@ describe('SeriesRuleEditorModal', () => {
     });
 
     it('handles getChannelsSummary rejection gracefully', async () => {
-      vi.mocked(getChannelsSummary).mockRejectedValue(new Error('Network error'));
+      vi.mocked(getChannelsSummary).mockRejectedValue(
+        new Error('Network error')
+      );
       render(<SeriesRuleEditorModal {...defaultProps} />);
       // Should not throw; channel options just empty
       await waitFor(() => {
@@ -439,7 +461,11 @@ describe('SeriesRuleEditorModal', () => {
     });
 
     it('renders preview badge with match count', async () => {
-      vi.mocked(previewSeriesRule).mockResolvedValue({ matches: [{ id: 'p1', title: 'X' }], total: 5, epg_found: true });
+      vi.mocked(previewSeriesRule).mockResolvedValue({
+        matches: [{ id: 'p1', title: 'X' }],
+        total: 5,
+        epg_found: true,
+      });
       render(<SeriesRuleEditorModal {...defaultProps} />);
       fireEvent.change(screen.getByTestId('input-title'), {
         target: { value: 'X' },
@@ -450,7 +476,9 @@ describe('SeriesRuleEditorModal', () => {
     });
 
     it('shows preview error alert when previewSeriesRule rejects', async () => {
-      vi.mocked(previewSeriesRule).mockRejectedValue(new Error('Preview failed'));
+      vi.mocked(previewSeriesRule).mockRejectedValue(
+        new Error('Preview failed')
+      );
       render(<SeriesRuleEditorModal {...defaultProps} />);
       fireEvent.change(screen.getByTestId('input-title'), {
         target: { value: 'Boom' },
@@ -467,9 +495,16 @@ describe('SeriesRuleEditorModal', () => {
         total: 0,
         epg_found: false,
       });
-      render(<SeriesRuleEditorModal {...defaultProps} initialRule={{ tvg_id: 'tvg-999', title: 'X' }} />);
+      render(
+        <SeriesRuleEditorModal
+          {...defaultProps}
+          initialRule={{ tvg_id: 'tvg-999', title: 'X' }}
+        />
+      );
       await waitFor(() => {
-        expect(screen.getByText(/No EPG channel matches this tvg_id/)).toBeInTheDocument();
+        expect(
+          screen.getByText(/No EPG channel matches this tvg_id/)
+        ).toBeInTheDocument();
       });
     });
 
@@ -485,7 +520,9 @@ describe('SeriesRuleEditorModal', () => {
         target: { value: 'X' },
       });
       await waitFor(() => {
-        expect(screen.getByText(/This rule matches many programs/)).toBeInTheDocument();
+        expect(
+          screen.getByText(/This rule matches many programs/)
+        ).toBeInTheDocument();
       });
     });
 
@@ -603,7 +640,9 @@ describe('SeriesRuleEditorModal', () => {
     });
 
     it('does not crash when evaluateSeriesRulesByTvgId throws', async () => {
-      vi.mocked(evaluateSeriesRulesByTvgId).mockRejectedValue(new Error('eval fail'));
+      vi.mocked(evaluateSeriesRulesByTvgId).mockRejectedValue(
+        new Error('eval fail')
+      );
       renderWithTitle();
       await expect(
         waitFor(() => {
@@ -626,7 +665,12 @@ describe('SeriesRuleEditorModal', () => {
 
     it('includes channel_id in payload when channelId is set', async () => {
       vi.mocked(getChannelsSummary).mockResolvedValue(mockChannels);
-      render(<SeriesRuleEditorModal {...defaultProps} initialRule={{ channel_id: 10, title: 'Show' }} />);
+      render(
+        <SeriesRuleEditorModal
+          {...defaultProps}
+          initialRule={{ channel_id: 10, title: 'Show' }}
+        />
+      );
       fireEvent.click(screen.getByText('Save rule'));
       await waitFor(() => {
         expect(createSeriesRule).toHaveBeenCalledWith(
@@ -660,7 +704,11 @@ describe('SeriesRuleEditorModal', () => {
   describe('SegmentedControl', () => {
     it('changes title mode when SegmentedControl is clicked', () => {
       render(<SeriesRuleEditorModal {...defaultProps} />);
-      fireEvent.click(screen.getAllByText('Contains').find((el) => el.closest('[data-testid="segmented-control"]')));
+      fireEvent.click(
+        screen
+          .getAllByText('Contains')
+          .find((el) => el.closest('[data-testid="segmented-control"]'))
+      );
       // No error thrown; state updated without crash
     });
 

@@ -1,6 +1,6 @@
-import {NETWORK_ACCESS_OPTIONS, USER_LEVELS} from "../../constants.js";
+import { NETWORK_ACCESS_OPTIONS, USER_LEVELS } from '../../constants.js';
 import { IPV4_CIDR_REGEX, IPV6_CIDR_REGEX } from '../networkUtils.js';
-import API from "../../api.js";
+import API from '../../api.js';
 
 const isValidNetworkEntry = (entry) =>
   entry.match(IPV4_CIDR_REGEX) ||
@@ -123,14 +123,14 @@ export const getFormInitialValues = () => {
     epg_prev_days: 0,
     allowed_ips: [],
   };
-}
+};
 
 export const getFormValidators = (user) => {
   return (values) => ({
     username: !values.username
       ? 'Username is required'
       : values.user_level == USER_LEVELS.STREAMER &&
-      !values.username.match(/^[a-z0-9]+$/i)
+          !values.username.match(/^[a-z0-9]+$/i)
         ? 'Streamer username must be alphanumeric'
         : null,
     password:
@@ -141,10 +141,8 @@ export const getFormValidators = (user) => {
       values.xc_password && !values.xc_password.match(/^[a-z0-9]+$/i)
         ? 'XC password must be alphanumeric'
         : null,
-    allowed_ips: (values.allowed_ips || []).some(
-      (t) => !isValidNetworkEntry(t)
-    )
+    allowed_ips: (values.allowed_ips || []).some((t) => !isValidNetworkEntry(t))
       ? 'Invalid IP address or CIDR range'
       : null,
   });
-}
+};

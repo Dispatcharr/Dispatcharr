@@ -257,7 +257,9 @@ describe('Stream', () => {
   describe('default values', () => {
     it('pre-fills name from stream prop', () => {
       render(<Stream {...defaultProps({ stream: makeStream() })} />);
-      expect(screen.getByTestId('input-stream-name')).toHaveValue('Test Stream');
+      expect(screen.getByTestId('input-stream-name')).toHaveValue(
+        'Test Stream'
+      );
     });
 
     it('pre-fills url from stream prop', () => {
@@ -289,7 +291,9 @@ describe('Stream', () => {
 
     it('renders empty group when stream has no channel_group', () => {
       render(
-        <Stream {...defaultProps({ stream: makeStream({ channel_group: null }) })} />
+        <Stream
+          {...defaultProps({ stream: makeStream({ channel_group: null }) })}
+        />
       );
       expect(screen.getByTestId('select-group')).toHaveValue('');
     });
@@ -317,7 +321,9 @@ describe('Stream', () => {
         target: { value: 'http://new.stream/live' },
       });
 
-      fireEvent.submit(screen.getByRole('button', { name: 'Submit' }).closest('form'));
+      fireEvent.submit(
+        screen.getByRole('button', { name: 'Submit' }).closest('form')
+      );
 
       await waitFor(() => {
         expect(StreamUtils.addStream).toHaveBeenCalledWith(

@@ -59,7 +59,9 @@ vi.mock('@mantine/core', () => ({
     </button>
   ),
   Badge: ({ children, color }) => (
-    <span data-testid="badge" data-color={color}>{children}</span>
+    <span data-testid="badge" data-color={color}>
+      {children}
+    </span>
   ),
   Button: ({ children, onClick, disabled, loading, size, variant, color }) => (
     <button
@@ -74,24 +76,30 @@ vi.mock('@mantine/core', () => ({
     </button>
   ),
   Card: ({ children, onClick, style }) => (
-    <div data-testid="card" onClick={onClick} style={style}>{children}</div>
+    <div data-testid="card" onClick={onClick} style={style}>
+      {children}
+    </div>
   ),
   Flex: ({ children }) => <div>{children}</div>,
   Group: ({ children }) => <div>{children}</div>,
   Image: ({ src, alt, fallbackSrc }) => (
     <img src={src} alt={alt} data-fallback={fallbackSrc} />
   ),
-  Modal: ({ children, opened, onClose, title, size }) =>
+  Modal: ({ children, opened, onClose, title }) =>
     opened ? (
       <div data-testid="modal">
         <div data-testid="modal-title">{title}</div>
-        <button data-testid="modal-close" onClick={onClose}>×</button>
+        <button data-testid="modal-close" onClick={onClose}>
+          ×
+        </button>
         {children}
       </div>
     ) : null,
   Stack: ({ children }) => <div>{children}</div>,
   Text: ({ children, size, c, fw, style }) => (
-    <span data-size={size} data-color={c} data-fw={fw} style={style}>{children}</span>
+    <span data-size={size} data-color={c} data-fw={fw} style={style}>
+      {children}
+    </span>
   ),
   Textarea: ({ label, value, onChange, placeholder, ...props }) => (
     <div>
@@ -207,7 +215,9 @@ const setupMocks = ({ recording = makeRecording(), now = NOW } = {}) => {
 
   vi.mocked(RecordingCardUtils.getPosterUrl).mockReturnValue('/poster.jpg');
   vi.mocked(RecordingCardUtils.getChannelLogoUrl).mockReturnValue('/logo.png');
-  vi.mocked(RecordingCardUtils.getRecordingUrl).mockReturnValue('/recordings/test.ts');
+  vi.mocked(RecordingCardUtils.getRecordingUrl).mockReturnValue(
+    '/recordings/test.ts'
+  );
   vi.mocked(RecordingCardUtils.getSeasonLabel).mockReturnValue('');
   vi.mocked(RecordingCardUtils.getShowVideoUrl).mockReturnValue('/live/ch-1');
 
@@ -234,10 +244,16 @@ describe('RecordingDetailsModal', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     setupMocks();
-    vi.mocked(RecordingDetailsModalUtils.updateRecordingMetadata).mockResolvedValue(undefined);
-    vi.mocked(RecordingDetailsModalUtils.refreshArtwork).mockResolvedValue(undefined);
+    vi.mocked(
+      RecordingDetailsModalUtils.updateRecordingMetadata
+    ).mockResolvedValue(undefined);
+    vi.mocked(RecordingDetailsModalUtils.refreshArtwork).mockResolvedValue(
+      undefined
+    );
     vi.mocked(RecordingCardUtils.runComSkip).mockResolvedValue(undefined);
-    vi.mocked(RecordingCardUtils.deleteRecordingById).mockResolvedValue(undefined);
+    vi.mocked(RecordingCardUtils.deleteRecordingById).mockResolvedValue(
+      undefined
+    );
   });
 
   // ── Visibility ───────────────────────────────────────────────────────────────
@@ -294,14 +310,19 @@ describe('RecordingDetailsModal', () => {
 
     it('renders the poster image', () => {
       render(<RecordingDetailsModal {...defaultProps()} />);
-      expect(screen.getByAltText('Test Show')).toHaveAttribute('src', '/poster.jpg');
+      expect(screen.getByAltText('Test Show')).toHaveAttribute(
+        'src',
+        '/poster.jpg'
+      );
     });
 
     it('renders the season/episode label when present', () => {
       const seriesRecording = makeRecording({ _group_count: 2 });
       const mockEpisode = makeRecording({ id: 'ep-1', _group_count: 1 });
 
-      vi.mocked(RecordingDetailsModalUtils.getUpcomingEpisodes).mockReturnValue([mockEpisode]);
+      vi.mocked(RecordingDetailsModalUtils.getUpcomingEpisodes).mockReturnValue(
+        [mockEpisode]
+      );
       vi.mocked(RecordingCardUtils.getSeasonLabel).mockReturnValue('S01E02');
 
       render(
@@ -412,7 +433,10 @@ describe('RecordingDetailsModal', () => {
 
   describe('Edit button', () => {
     it('renders the Edit button', () => {
-      const futureRecording = makeRecording({ start_time: FUTURE, end_time: FUTURE });
+      const futureRecording = makeRecording({
+        start_time: FUTURE,
+        end_time: FUTURE,
+      });
       setupMocks({ recording: futureRecording });
       render(
         <RecordingDetailsModal
@@ -424,7 +448,10 @@ describe('RecordingDetailsModal', () => {
     });
 
     it('calls onEdit when Edit is clicked', () => {
-      const futureRecording = makeRecording({ start_time: FUTURE, end_time: FUTURE });
+      const futureRecording = makeRecording({
+        start_time: FUTURE,
+        end_time: FUTURE,
+      });
       setupMocks({ recording: futureRecording });
       const onEdit = vi.fn();
       render(
@@ -445,27 +472,37 @@ describe('RecordingDetailsModal', () => {
     it('shows edit inputs when pencil icon is clicked', () => {
       render(<RecordingDetailsModal {...defaultProps()} />);
       fireEvent.click(screen.getByTestId('icon-pencil').closest('button'));
-      expect(screen.getByTestId('textinput-Recording title')).toBeInTheDocument();
+      expect(
+        screen.getByTestId('textinput-Recording title')
+      ).toBeInTheDocument();
     });
 
     it('pre-fills title input with current title', () => {
       render(<RecordingDetailsModal {...defaultProps()} />);
       fireEvent.click(screen.getByTestId('icon-pencil').closest('button'));
-      expect(screen.getByTestId('textinput-Recording title')).toHaveValue('Test Show');
+      expect(screen.getByTestId('textinput-Recording title')).toHaveValue(
+        'Test Show'
+      );
     });
 
     it('pre-fills description input with current description', () => {
       render(<RecordingDetailsModal {...defaultProps()} />);
       fireEvent.click(screen.getByTestId('icon-pencil').closest('button'));
-      expect(screen.getByTestId('textarea-Description (optional)')).toHaveValue('A test description');
+      expect(screen.getByTestId('textarea-Description (optional)')).toHaveValue(
+        'A test description'
+      );
     });
 
     it('cancels editing when X icon is clicked', () => {
       render(<RecordingDetailsModal {...defaultProps()} />);
       fireEvent.click(screen.getByTestId('icon-pencil').closest('button'));
-      expect(screen.getByTestId('textinput-Recording title')).toBeInTheDocument();
+      expect(
+        screen.getByTestId('textinput-Recording title')
+      ).toBeInTheDocument();
       fireEvent.click(screen.getByTestId('icon-x').closest('button'));
-      expect(screen.queryByTestId('textinput-Recording title')).not.toBeInTheDocument();
+      expect(
+        screen.queryByTestId('textinput-Recording title')
+      ).not.toBeInTheDocument();
     });
 
     it('calls updateRecordingMetadata with new title and description on save', async () => {
@@ -753,16 +790,15 @@ describe('RecordingDetailsModal', () => {
         target: { value: 'Custom' },
       });
       fireEvent.click(screen.getByTestId('icon-check').closest('button'));
-      await waitFor(() => expect(screen.getByText('Custom')).toBeInTheDocument());
+      await waitFor(() =>
+        expect(screen.getByText('Custom')).toBeInTheDocument()
+      );
 
       // Switch to a different recording
       const newRecording = makeRecording({ id: 'rec-2' });
       setupMocks({ recording: newRecording });
       rerender(
-        <RecordingDetailsModal
-          {...defaultProps()}
-          recording={newRecording}
-        />
+        <RecordingDetailsModal {...defaultProps()} recording={newRecording} />
       );
       expect(screen.getByText(/Test Show/i)).toBeInTheDocument();
     });

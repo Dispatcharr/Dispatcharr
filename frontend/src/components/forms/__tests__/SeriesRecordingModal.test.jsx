@@ -63,9 +63,15 @@ vi.mock('../SeriesRuleEditorModal', () => ({
   default: ({ opened, onClose, initialRule, onSaved }) =>
     opened ? (
       <div data-testid="series-rule-editor">
-        <span data-testid="editor-rule">{initialRule ? initialRule.title : 'new'}</span>
-        <button data-testid="editor-close" onClick={onClose}>Close</button>
-        <button data-testid="editor-save" onClick={onSaved}>Save</button>
+        <span data-testid="editor-rule">
+          {initialRule ? initialRule.title : 'new'}
+        </span>
+        <button data-testid="editor-close" onClick={onClose}>
+          Close
+        </button>
+        <button data-testid="editor-save" onClick={onSaved}>
+          Save
+        </button>
       </div>
     ) : null,
 }));
@@ -73,7 +79,10 @@ vi.mock('../SeriesRuleEditorModal', () => ({
 // ──────────────────────────────────────────────────────────────────────────────
 import useChannelsStore from '../../../store/channels.jsx';
 import { deleteSeriesAndRule } from '../../../utils/cards/RecordingCardUtils.js';
-import { evaluateSeriesRulesByTvgId, fetchRules } from '../../../utils/guideUtils.js';
+import {
+  evaluateSeriesRulesByTvgId,
+  fetchRules,
+} from '../../../utils/guideUtils.js';
 import { showNotification } from '../../../utils/notificationUtils.js';
 
 const makeRule = (overrides = {}) => ({
@@ -126,7 +135,9 @@ describe('SeriesRecordingModal', () => {
 
     it('renders modal title "Series Recording Rules"', () => {
       render(<SeriesRecordingModal {...defaultProps()} />);
-      expect(screen.getByTestId('modal-title')).toHaveTextContent('Series Recording Rules');
+      expect(screen.getByTestId('modal-title')).toHaveTextContent(
+        'Series Recording Rules'
+      );
     });
 
     it('calls onClose when modal close button is clicked', () => {
@@ -142,17 +153,23 @@ describe('SeriesRecordingModal', () => {
   describe('empty state', () => {
     it('shows "No series rules configured" when rules is empty', () => {
       render(<SeriesRecordingModal {...defaultProps({ rules: [] })} />);
-      expect(screen.getByText('No series rules configured')).toBeInTheDocument();
+      expect(
+        screen.getByText('No series rules configured')
+      ).toBeInTheDocument();
     });
 
     it('shows "No series rules configured" when rules is null', () => {
       render(<SeriesRecordingModal {...defaultProps({ rules: null })} />);
-      expect(screen.getByText('No series rules configured')).toBeInTheDocument();
+      expect(
+        screen.getByText('No series rules configured')
+      ).toBeInTheDocument();
     });
 
     it('does not show "No series rules configured" when rules are present', () => {
       render(<SeriesRecordingModal {...defaultProps()} />);
-      expect(screen.queryByText('No series rules configured')).not.toBeInTheDocument();
+      expect(
+        screen.queryByText('No series rules configured')
+      ).not.toBeInTheDocument();
     });
   });
 
@@ -167,7 +184,9 @@ describe('SeriesRecordingModal', () => {
     it('falls back to tvg_id when rule has no title', () => {
       render(
         <SeriesRecordingModal
-          {...defaultProps({ rules: [makeRule({ title: '', tvg_id: 'tvg-fallback' })] })}
+          {...defaultProps({
+            rules: [makeRule({ title: '', tvg_id: 'tvg-fallback' })],
+          })}
         />
       );
       expect(screen.getByText('tvg-fallback')).toBeInTheDocument();
@@ -214,19 +233,29 @@ describe('SeriesRecordingModal', () => {
 
   describe('rule summary', () => {
     it('shows "New episodes" for mode new', () => {
-      render(<SeriesRecordingModal {...defaultProps({ rules: [makeRule({ mode: 'new' })] })} />);
+      render(
+        <SeriesRecordingModal
+          {...defaultProps({ rules: [makeRule({ mode: 'new' })] })}
+        />
+      );
       expect(screen.getByText(/New episodes/)).toBeInTheDocument();
     });
 
     it('shows "Every episode" for mode all', () => {
-      render(<SeriesRecordingModal {...defaultProps({ rules: [makeRule({ mode: 'all' })] })} />);
+      render(
+        <SeriesRecordingModal
+          {...defaultProps({ rules: [makeRule({ mode: 'all' })] })}
+        />
+      );
       expect(screen.getByText(/Every episode/)).toBeInTheDocument();
     });
 
     it('shows exact title label in summary', () => {
       render(
         <SeriesRecordingModal
-          {...defaultProps({ rules: [makeRule({ title_mode: 'exact', title: 'Test Show' })] })}
+          {...defaultProps({
+            rules: [makeRule({ title_mode: 'exact', title: 'Test Show' })],
+          })}
         />
       );
       expect(screen.getByText(/Exact title: "Test Show"/)).toBeInTheDocument();
@@ -235,7 +264,9 @@ describe('SeriesRecordingModal', () => {
     it('shows contains label in summary', () => {
       render(
         <SeriesRecordingModal
-          {...defaultProps({ rules: [makeRule({ title_mode: 'contains', title: 'Test' })] })}
+          {...defaultProps({
+            rules: [makeRule({ title_mode: 'contains', title: 'Test' })],
+          })}
         />
       );
       expect(screen.getByText(/Title contains: "Test"/)).toBeInTheDocument();
@@ -244,7 +275,9 @@ describe('SeriesRecordingModal', () => {
     it('shows regex label in summary', () => {
       render(
         <SeriesRecordingModal
-          {...defaultProps({ rules: [makeRule({ title_mode: 'regex', title: '^Test' })] })}
+          {...defaultProps({
+            rules: [makeRule({ title_mode: 'regex', title: '^Test' })],
+          })}
         />
       );
       expect(screen.getByText(/Title regex: "\^Test"/)).toBeInTheDocument();
@@ -289,7 +322,10 @@ describe('SeriesRecordingModal', () => {
       fireEvent.click(screen.getByText('Evaluate Now'));
       await waitFor(() => {
         expect(showNotification).toHaveBeenCalledWith(
-          expect.objectContaining({ title: 'Evaluated', message: 'Checked for episodes' })
+          expect.objectContaining({
+            title: 'Evaluated',
+            message: 'Checked for episodes',
+          })
         );
       });
     });
@@ -377,7 +413,9 @@ describe('SeriesRecordingModal', () => {
       render(<SeriesRecordingModal {...defaultProps()} />);
       fireEvent.click(screen.getByText('Add rule'));
       fireEvent.click(screen.getByTestId('editor-close'));
-      expect(screen.queryByTestId('series-rule-editor')).not.toBeInTheDocument();
+      expect(
+        screen.queryByTestId('series-rule-editor')
+      ).not.toBeInTheDocument();
     });
   });
 

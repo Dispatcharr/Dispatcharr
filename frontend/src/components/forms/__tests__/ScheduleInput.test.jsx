@@ -4,7 +4,15 @@ import ScheduleInput from '../ScheduleInput';
 
 // ── Mantine core ───────────────────────────────────────────────────────────────
 vi.mock('@mantine/core', () => ({
-  TextInput: ({ label, placeholder, description, value, onChange, error, disabled }) => (
+  TextInput: ({
+    label,
+    placeholder,
+    description,
+    value,
+    onChange,
+    error,
+    disabled,
+  }) => (
     <div>
       <label>{typeof label === 'string' ? label : 'Cron Expression'}</label>
       <input
@@ -30,11 +38,17 @@ vi.mock('@mantine/core', () => ({
         min={min}
         disabled={disabled}
       />
-      {description && <span data-testid="interval-description">{description}</span>}
+      {description && (
+        <span data-testid="interval-description">{description}</span>
+      )}
     </div>
   ),
   Anchor: ({ children, onClick }) => (
-    <a data-testid={`anchor-${String(children).replace(/\s+/g, '-').toLowerCase()}`} onClick={onClick} href="#">
+    <a
+      data-testid={`anchor-${String(children).replace(/\s+/g, '-').toLowerCase()}`}
+      onClick={onClick}
+      href="#"
+    >
       {children}
     </a>
   ),
@@ -44,9 +58,13 @@ vi.mock('@mantine/core', () => ({
   Group: ({ children }) => <div>{children}</div>,
   Popover: ({ children }) => <div>{children}</div>,
   PopoverTarget: ({ children }) => <div>{children}</div>,
-  PopoverDropdown: ({ children }) => <div data-testid="popover-dropdown">{children}</div>,
+  PopoverDropdown: ({ children }) => (
+    <div data-testid="popover-dropdown">{children}</div>
+  ),
   ActionIcon: ({ children, onClick }) => (
-    <button data-testid="action-icon-info" onClick={onClick}>{children}</button>
+    <button data-testid="action-icon-info" onClick={onClick}>
+      {children}
+    </button>
   ),
 }));
 
@@ -66,7 +84,10 @@ vi.mock('../CronBuilder', () => ({
     opened ? (
       <div data-testid="cron-builder">
         <span data-testid="cron-builder-value">{currentValue}</span>
-        <button data-testid="cron-builder-apply" onClick={() => onApply('0 3 * * *')}>
+        <button
+          data-testid="cron-builder-apply"
+          onClick={() => onApply('0 3 * * *')}
+        >
           Apply
         </button>
         <button data-testid="cron-builder-close" onClick={onClose}>
@@ -122,7 +143,12 @@ describe('ScheduleInput', () => {
     });
 
     it('renders custom intervalLabel', () => {
-      render(<ScheduleInput {...defaultIntervalProps()} intervalLabel="My Custom Label" />);
+      render(
+        <ScheduleInput
+          {...defaultIntervalProps()}
+          intervalLabel="My Custom Label"
+        />
+      );
       expect(screen.getByText('My Custom Label')).toBeInTheDocument();
     });
 
@@ -144,7 +170,9 @@ describe('ScheduleInput', () => {
 
     it('shows "Use cron schedule" link in interval mode', () => {
       render(<ScheduleInput {...defaultIntervalProps()} />);
-      expect(screen.getByTestId('anchor-use-cron-schedule')).toBeInTheDocument();
+      expect(
+        screen.getByTestId('anchor-use-cron-schedule')
+      ).toBeInTheDocument();
     });
 
     it('calls onScheduleTypeChange("cron") when "Use cron schedule" is clicked', () => {
@@ -156,7 +184,9 @@ describe('ScheduleInput', () => {
 
     it('does not show cron switch link when disabled', () => {
       render(<ScheduleInput {...defaultIntervalProps()} disabled />);
-      expect(screen.queryByTestId('anchor-use-cron-schedule')).not.toBeInTheDocument();
+      expect(
+        screen.queryByTestId('anchor-use-cron-schedule')
+      ).not.toBeInTheDocument();
     });
 
     it('disables the NumberInput when disabled prop is true', () => {
@@ -166,7 +196,10 @@ describe('ScheduleInput', () => {
 
     it('renders custom switchToCronLabel', () => {
       render(
-        <ScheduleInput {...defaultIntervalProps()} switchToCronLabel="Use custom cron schedule" />
+        <ScheduleInput
+          {...defaultIntervalProps()}
+          switchToCronLabel="Use custom cron schedule"
+        />
       );
       expect(screen.getByText('Use custom cron schedule')).toBeInTheDocument();
     });
@@ -182,7 +215,9 @@ describe('ScheduleInput', () => {
         </ScheduleInput>
       );
       expect(screen.getByTestId('custom-child')).toBeInTheDocument();
-      expect(screen.queryByTestId('numberinput-interval')).not.toBeInTheDocument();
+      expect(
+        screen.queryByTestId('numberinput-interval')
+      ).not.toBeInTheDocument();
     });
 
     it('shows cron toggle link below children', () => {
@@ -191,7 +226,9 @@ describe('ScheduleInput', () => {
           <div>Child</div>
         </ScheduleInput>
       );
-      expect(screen.getByTestId('anchor-use-cron-schedule')).toBeInTheDocument();
+      expect(
+        screen.getByTestId('anchor-use-cron-schedule')
+      ).toBeInTheDocument();
     });
 
     it('does not show cron link when disabled with children', () => {
@@ -200,7 +237,9 @@ describe('ScheduleInput', () => {
           <div>Child</div>
         </ScheduleInput>
       );
-      expect(screen.queryByTestId('anchor-use-cron-schedule')).not.toBeInTheDocument();
+      expect(
+        screen.queryByTestId('anchor-use-cron-schedule')
+      ).not.toBeInTheDocument();
     });
   });
 
@@ -219,12 +258,16 @@ describe('ScheduleInput', () => {
 
     it('shows "Use interval schedule" link in cron mode', () => {
       render(<ScheduleInput {...defaultCronProps()} />);
-      expect(screen.getByTestId('anchor-use-interval-schedule')).toBeInTheDocument();
+      expect(
+        screen.getByTestId('anchor-use-interval-schedule')
+      ).toBeInTheDocument();
     });
 
     it('shows "Open Cron Builder" link', () => {
       render(<ScheduleInput {...defaultCronProps()} />);
-      expect(screen.getByTestId('anchor-open-cron-builder')).toBeInTheDocument();
+      expect(
+        screen.getByTestId('anchor-open-cron-builder')
+      ).toBeInTheDocument();
     });
 
     it('calls onScheduleTypeChange("interval") and onCronChange("") when switching to interval', () => {
@@ -251,13 +294,20 @@ describe('ScheduleInput', () => {
 
     it('does not show cron links when disabled', () => {
       render(<ScheduleInput {...defaultCronProps()} disabled />);
-      expect(screen.queryByTestId('anchor-use-interval-schedule')).not.toBeInTheDocument();
-      expect(screen.queryByTestId('anchor-open-cron-builder')).not.toBeInTheDocument();
+      expect(
+        screen.queryByTestId('anchor-use-interval-schedule')
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByTestId('anchor-open-cron-builder')
+      ).not.toBeInTheDocument();
     });
 
     it('renders custom switchToIntervalLabel', () => {
       render(
-        <ScheduleInput {...defaultCronProps()} switchToIntervalLabel="Use simple schedule" />
+        <ScheduleInput
+          {...defaultCronProps()}
+          switchToIntervalLabel="Use simple schedule"
+        />
       );
       expect(screen.getByText('Use simple schedule')).toBeInTheDocument();
     });
@@ -279,7 +329,9 @@ describe('ScheduleInput', () => {
       });
       render(<ScheduleInput {...defaultCronProps()} cronValue="bad cron" />);
       await waitFor(() => {
-        expect(screen.getByTestId('cron-error')).toHaveTextContent('Invalid cron expression');
+        expect(screen.getByTestId('cron-error')).toHaveTextContent(
+          'Invalid cron expression'
+        );
       });
     });
 
@@ -325,7 +377,9 @@ describe('ScheduleInput', () => {
     it('passes current cronValue to CronBuilder', () => {
       render(<ScheduleInput {...defaultCronProps()} cronValue="0 4 * * *" />);
       fireEvent.click(screen.getByTestId('anchor-open-cron-builder'));
-      expect(screen.getByTestId('cron-builder-value')).toHaveTextContent('0 4 * * *');
+      expect(screen.getByTestId('cron-builder-value')).toHaveTextContent(
+        '0 4 * * *'
+      );
     });
 
     it('closes CronBuilder when onClose is triggered', () => {

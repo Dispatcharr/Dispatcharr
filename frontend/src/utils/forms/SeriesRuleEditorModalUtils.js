@@ -25,7 +25,7 @@ export function formatRange(start, end) {
     const s = new Date(start);
     const e = new Date(end);
 
-    if(isNaN(s) || isNaN(e)) throw new Error('Invalid date');
+    if (isNaN(s) || isNaN(e)) throw new Error('Invalid date');
 
     const sameDay = s.toDateString() === e.toDateString();
     const dateStr = s.toLocaleDateString();

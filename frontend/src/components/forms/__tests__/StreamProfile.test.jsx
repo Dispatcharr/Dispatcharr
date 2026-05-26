@@ -25,7 +25,8 @@ vi.mock('../../../utils/forms/StreamProfileUtils.js', () => ({
   ],
   COMMAND_EXAMPLES: {
     ffmpeg: '-user_agent {userAgent} -i {streamUrl} -c copy -f mpegts pipe:1',
-    streamlink: '{streamUrl} --http-header User-Agent={userAgent} best --stdout',
+    streamlink:
+      '{streamUrl} --http-header User-Agent={userAgent} best --stdout',
   },
 }));
 
@@ -99,7 +100,9 @@ vi.mock('@mantine/core', () => ({
         data-testid="checkbox-is-active"
         type="checkbox"
         checked={checked ?? false}
-        onChange={(e) => onChange({ currentTarget: { checked: e.target.checked } })}
+        onChange={(e) =>
+          onChange({ currentTarget: { checked: e.target.checked } })
+        }
       />
     </div>
   ),
@@ -114,7 +117,17 @@ vi.mock('@mantine/core', () => ({
         {children}
       </div>
     ) : null,
-  Select: ({ label, value, onChange, data, placeholder, error, clearable, disabled, description }) => (
+  Select: ({
+    label,
+    value,
+    onChange,
+    data,
+    placeholder,
+    error,
+    clearable,
+    disabled,
+    description,
+  }) => (
     <div>
       <label>{label}</label>
       {description && <div>{description}</div>}
@@ -135,10 +148,24 @@ vi.mock('@mantine/core', () => ({
     </div>
   ),
   Stack: ({ children }) => <div>{children}</div>,
-  Textarea: ({ label, name, value, onChange, error, placeholder, description, disabled, ...rest }) => (
+  Textarea: ({
+    label,
+    name,
+    value,
+    onChange,
+    error,
+    placeholder,
+    description,
+    disabled,
+    ...rest
+  }) => (
     <div>
       <label htmlFor={name}>{label}</label>
-      {description && <div data-testid={`desc-${label?.replace(/\s+/g, '-').toLowerCase()}`}>{description}</div>}
+      {description && (
+        <div data-testid={`desc-${label?.replace(/\s+/g, '-').toLowerCase()}`}>
+          {description}
+        </div>
+      )}
       <textarea
         id={name}
         name={name}
@@ -196,7 +223,9 @@ const setupMocks = () => {
     sel({ userAgents: mockUserAgents })
   );
   vi.mocked(StreamProfileUtils.addStreamProfile).mockResolvedValue(undefined);
-  vi.mocked(StreamProfileUtils.updateStreamProfile).mockResolvedValue(undefined);
+  vi.mocked(StreamProfileUtils.updateStreamProfile).mockResolvedValue(
+    undefined
+  );
   vi.mocked(StreamProfileUtils.getResolver).mockReturnValue(undefined);
   vi.mocked(StreamProfileUtils.toCommandSelection).mockImplementation((cmd) => {
     const builtins = ['ffmpeg', 'streamlink', 'cvlc', 'yt-dlp'];
@@ -234,7 +263,9 @@ describe('StreamProfile', () => {
 
     it('renders "Stream Profile" as the modal title', () => {
       render(<StreamProfile {...defaultProps()} />);
-      expect(screen.getByTestId('modal-title')).toHaveTextContent('Stream Profile');
+      expect(screen.getByTestId('modal-title')).toHaveTextContent(
+        'Stream Profile'
+      );
     });
 
     it('calls onClose when modal close button is clicked', () => {
@@ -302,7 +333,9 @@ describe('StreamProfile', () => {
 
     it('pre-fills parameters from profile prop', () => {
       render(<StreamProfile {...defaultProps({ profile: makeProfile() })} />);
-      expect(screen.getByTestId('textarea-parameters')).toHaveValue('-i {streamUrl}');
+      expect(screen.getByTestId('textarea-parameters')).toHaveValue(
+        '-i {streamUrl}'
+      );
     });
 
     it('pre-selects command from profile prop', () => {
@@ -345,7 +378,9 @@ describe('StreamProfile', () => {
   describe('command selection', () => {
     it('does not show Custom Command input when a built-in is selected', () => {
       render(<StreamProfile {...defaultProps({ profile: makeProfile() })} />);
-      expect(screen.queryByTestId('input-custom-command')).not.toBeInTheDocument();
+      expect(
+        screen.queryByTestId('input-custom-command')
+      ).not.toBeInTheDocument();
     });
 
     it('shows Custom Command input when Custom… is selected', () => {
@@ -364,14 +399,20 @@ describe('StreamProfile', () => {
       fireEvent.change(screen.getByTestId('select-command'), {
         target: { value: 'ffmpeg' },
       });
-      expect(screen.queryByTestId('input-custom-command')).not.toBeInTheDocument();
+      expect(
+        screen.queryByTestId('input-custom-command')
+      ).not.toBeInTheDocument();
     });
 
     it('shows Custom Command input when profile has a custom command', () => {
-      vi.mocked(StreamProfileUtils.toCommandSelection).mockReturnValue('__custom__');
+      vi.mocked(StreamProfileUtils.toCommandSelection).mockReturnValue(
+        '__custom__'
+      );
       render(
         <StreamProfile
-          {...defaultProps({ profile: makeProfile({ command: '/usr/bin/mycmd' }) })}
+          {...defaultProps({
+            profile: makeProfile({ command: '/usr/bin/mycmd' }),
+          })}
         />
       );
       expect(screen.getByTestId('input-custom-command')).toBeInTheDocument();
@@ -604,4 +645,3 @@ describe('StreamProfile', () => {
     });
   });
 });
-

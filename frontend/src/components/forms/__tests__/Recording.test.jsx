@@ -55,11 +55,20 @@ vi.mock('@mantine/form', () => ({
     return {
       values,
       key: vi.fn((k) => k),
-      getInputProps: vi.fn((k) => ({ name: k, value: values[k] ?? '', onChange: vi.fn() })),
-      onSubmit: vi.fn((handler) => (e) => { e?.preventDefault?.(); return handler(values); }),
+      getInputProps: vi.fn((k) => ({
+        name: k,
+        value: values[k] ?? '',
+        onChange: vi.fn(),
+      })),
+      onSubmit: vi.fn((handler) => (e) => {
+        e?.preventDefault?.();
+        return handler(values);
+      }),
       reset: vi.fn(),
       setValues: vi.fn((newVals) => Object.assign(values, newVals)),
-      setFieldValue: vi.fn((k, v) => { values[k] = v; }),
+      setFieldValue: vi.fn((k, v) => {
+        values[k] = v;
+      }),
       validateField: vi.fn(),
     };
   }),
@@ -74,24 +83,37 @@ vi.mock('@mantine/core', () => ({
     </div>
   ),
   Button: ({ children, onClick, loading, type }) => (
-    <button type={type} onClick={onClick} data-loading={loading} disabled={loading}>
+    <button
+      type={type}
+      onClick={onClick}
+      data-loading={loading}
+      disabled={loading}
+    >
       {children}
     </button>
   ),
   Group: ({ children }) => <div>{children}</div>,
-  Loader: ({ size, color }) => <span data-testid="loader" data-size={size} data-color={color} />,
+  Loader: ({ size, color }) => (
+    <span data-testid="loader" data-size={size} data-color={color} />
+  ),
   Modal: ({ children, opened, onClose, title }) =>
     opened ? (
       <div data-testid="modal">
         <div data-testid="modal-title">{title}</div>
-        <button data-testid="modal-close" onClick={onClose}>×</button>
+        <button data-testid="modal-close" onClick={onClose}>
+          ×
+        </button>
         {children}
       </div>
     ) : null,
   MultiSelect: ({ label, placeholder, ...props }) => (
     <div>
       <label>{label}</label>
-      <input data-testid={`multiselect-${label}`} placeholder={placeholder} {...props} />
+      <input
+        data-testid={`multiselect-${label}`}
+        placeholder={placeholder}
+        {...props}
+      />
     </div>
   ),
   SegmentedControl: ({ value, onChange, data, disabled }) => (
@@ -115,7 +137,9 @@ vi.mock('@mantine/core', () => ({
       {rightSection}
       <select data-testid={`select-${label}`} disabled={disabled} {...props}>
         {(data ?? []).map((opt) => (
-          <option key={opt.value} value={opt.value}>{opt.label}</option>
+          <option key={opt.value} value={opt.value}>
+            {opt.label}
+          </option>
         ))}
       </select>
     </div>
@@ -124,7 +148,11 @@ vi.mock('@mantine/core', () => ({
   TextInput: ({ label, placeholder, ...props }) => (
     <div>
       <label>{label}</label>
-      <input data-testid={`textinput-${label}`} placeholder={placeholder} {...props} />
+      <input
+        data-testid={`textinput-${label}`}
+        placeholder={placeholder}
+        {...props}
+      />
     </div>
   ),
 }));
@@ -136,8 +164,10 @@ vi.mock('@mantine/dates', () => ({
       <label>{label}</label>
       <input
         data-testid={`datepicker-${label}`}
-        value={value ? value.toISOString?.() ?? value : ''}
-        onChange={(e) => onChange(e.target.value ? new Date(e.target.value) : null)}
+        value={value ? (value.toISOString?.() ?? value) : ''}
+        onChange={(e) =>
+          onChange(e.target.value ? new Date(e.target.value) : null)
+        }
       />
     </div>
   ),
@@ -175,7 +205,10 @@ const setupStoreMock = () => {
   const mockFetchRecurringRules = vi.fn().mockResolvedValue(undefined);
 
   vi.mocked(useChannelsStore).mockImplementation((sel) =>
-    sel({ fetchRecordings: mockFetchRecordings, fetchRecurringRules: mockFetchRecurringRules })
+    sel({
+      fetchRecordings: mockFetchRecordings,
+      fetchRecurringRules: mockFetchRecurringRules,
+    })
   );
 
   return { mockFetchRecordings, mockFetchRecurringRules };
@@ -223,7 +256,9 @@ describe('RecordingModal', () => {
     it('renders the scheduling conflicts alert', () => {
       render(<RecordingModal isOpen onClose={vi.fn()} />);
       expect(screen.getByTestId('alert')).toBeInTheDocument();
-      expect(screen.getByTestId('alert-title')).toHaveTextContent('Scheduling Conflicts');
+      expect(screen.getByTestId('alert-title')).toHaveTextContent(
+        'Scheduling Conflicts'
+      );
     });
   });
 
@@ -232,13 +267,19 @@ describe('RecordingModal', () => {
   describe('mode switching', () => {
     it('defaults to "single" mode', () => {
       render(<RecordingModal isOpen onClose={vi.fn()} />);
-      expect(screen.getByTestId('mode-single')).toHaveAttribute('data-active', 'true');
+      expect(screen.getByTestId('mode-single')).toHaveAttribute(
+        'data-active',
+        'true'
+      );
     });
 
     it('switches to recurring mode when Recurring button clicked', () => {
       render(<RecordingModal isOpen onClose={vi.fn()} />);
       fireEvent.click(screen.getByTestId('mode-recurring'));
-      expect(screen.getByTestId('mode-recurring')).toHaveAttribute('data-active', 'true');
+      expect(screen.getByTestId('mode-recurring')).toHaveAttribute(
+        'data-active',
+        'true'
+      );
     });
 
     it('shows DateTimePicker fields in single mode', () => {
@@ -256,7 +297,9 @@ describe('RecordingModal', () => {
     });
 
     it('disables mode toggle when editing an existing recording', () => {
-      render(<RecordingModal isOpen onClose={vi.fn()} recording={makeRecording()} />);
+      render(
+        <RecordingModal isOpen onClose={vi.fn()} recording={makeRecording()} />
+      );
       expect(screen.getByTestId('mode-single')).toBeDisabled();
       expect(screen.getByTestId('mode-recurring')).toBeDisabled();
     });
@@ -296,7 +339,9 @@ describe('RecordingModal', () => {
     });
 
     it('calls sortedChannelOptions with [] when getChannelsSummary rejects', async () => {
-      vi.mocked(RecordingUtils.getChannelsSummary).mockRejectedValue(new Error('fail'));
+      vi.mocked(RecordingUtils.getChannelsSummary).mockRejectedValue(
+        new Error('fail')
+      );
       render(<RecordingModal isOpen onClose={vi.fn()} />);
       await waitFor(() => {
         expect(RecordingUtils.sortedChannelOptions).toHaveBeenCalledWith(
@@ -336,7 +381,10 @@ describe('RecordingModal', () => {
       fireEvent.submit(screen.getByText('Schedule Recording').closest('form'));
       await waitFor(() => {
         expect(showNotification).toHaveBeenCalledWith(
-          expect.objectContaining({ title: 'Recording scheduled', color: 'green' })
+          expect.objectContaining({
+            title: 'Recording scheduled',
+            color: 'green',
+          })
         );
       });
     });
@@ -360,7 +408,9 @@ describe('RecordingModal', () => {
     });
 
     it('does not call showNotification when createRecording throws', async () => {
-      vi.mocked(RecordingUtils.createRecording).mockRejectedValue(new Error('fail'));
+      vi.mocked(RecordingUtils.createRecording).mockRejectedValue(
+        new Error('fail')
+      );
       render(<RecordingModal isOpen onClose={vi.fn()} />);
       fireEvent.submit(screen.getByText('Schedule Recording').closest('form'));
       await waitFor(() => {
@@ -402,7 +452,10 @@ describe('RecordingModal', () => {
       fireEvent.submit(screen.getByText('Schedule Recording').closest('form'));
       await waitFor(() => {
         expect(showNotification).toHaveBeenCalledWith(
-          expect.objectContaining({ title: 'Recording updated', color: 'green' })
+          expect.objectContaining({
+            title: 'Recording updated',
+            color: 'green',
+          })
         );
       });
     });
@@ -446,7 +499,10 @@ describe('RecordingModal', () => {
       fireEvent.submit(screen.getByText('Save Rule').closest('form'));
       await waitFor(() => {
         expect(showNotification).toHaveBeenCalledWith(
-          expect.objectContaining({ title: 'Recurring rule saved', color: 'green' })
+          expect.objectContaining({
+            title: 'Recurring rule saved',
+            color: 'green',
+          })
         );
       });
     });
@@ -462,7 +518,9 @@ describe('RecordingModal', () => {
     });
 
     it('does not show notification when createRecurringRule throws', async () => {
-      vi.mocked(RecordingUtils.createRecurringRule).mockRejectedValue(new Error('fail'));
+      vi.mocked(RecordingUtils.createRecurringRule).mockRejectedValue(
+        new Error('fail')
+      );
       render(<RecordingModal isOpen onClose={vi.fn()} />);
       fireEvent.click(screen.getByTestId('mode-recurring'));
       fireEvent.submit(screen.getByText('Save Rule').closest('form'));
@@ -478,19 +536,34 @@ describe('RecordingModal', () => {
     it('calls getSingleFormDefaults with recording and channel when opening with existing recording', () => {
       const recording = makeRecording();
       const channel = makeChannel();
-      render(<RecordingModal isOpen recording={recording} channel={channel} onClose={vi.fn()} />);
-      expect(RecordingUtils.getSingleFormDefaults).toHaveBeenCalledWith(recording, channel);
+      render(
+        <RecordingModal
+          isOpen
+          recording={recording}
+          channel={channel}
+          onClose={vi.fn()}
+        />
+      );
+      expect(RecordingUtils.getSingleFormDefaults).toHaveBeenCalledWith(
+        recording,
+        channel
+      );
     });
 
     it('calls getSingleFormDefaults with null when opening for new recording', () => {
       render(<RecordingModal isOpen onClose={vi.fn()} />);
-      expect(RecordingUtils.getSingleFormDefaults).toHaveBeenCalledWith(null, null);
+      expect(RecordingUtils.getSingleFormDefaults).toHaveBeenCalledWith(
+        null,
+        null
+      );
     });
 
     it('calls getRecurringFormDefaults with channel on open', () => {
       const channel = makeChannel();
       render(<RecordingModal isOpen channel={channel} onClose={vi.fn()} />);
-      expect(RecordingUtils.getRecurringFormDefaults).toHaveBeenCalledWith(channel);
+      expect(RecordingUtils.getRecurringFormDefaults).toHaveBeenCalledWith(
+        channel
+      );
     });
   });
 

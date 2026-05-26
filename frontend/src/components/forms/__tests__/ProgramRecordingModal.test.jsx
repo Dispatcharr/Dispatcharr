@@ -27,7 +27,9 @@ vi.mock('@mantine/core', async () => ({
     opened ? (
       <div data-testid="modal">
         <div data-testid="modal-title">{title}</div>
-        <button data-testid="modal-close" onClick={onClose}>×</button>
+        <button data-testid="modal-close" onClick={onClose}>
+          ×
+        </button>
         {children}
       </div>
     ) : null,
@@ -43,13 +45,18 @@ vi.mock('@mantine/core', async () => ({
     </button>
   ),
   Anchor: ({ children, onClick }) => (
-    <a data-testid="anchor" onClick={onClick}>{children}</a>
+    <a data-testid="anchor" onClick={onClick}>
+      {children}
+    </a>
   ),
 }));
 
 // ── Imports after mocks ────────────────────────────────────────────────────────
 import ProgramRecordingModal from '../ProgramRecordingModal.jsx';
-import { deleteRecordingById, deleteSeriesAndRule } from '../../../utils/cards/RecordingCardUtils.js';
+import {
+  deleteRecordingById,
+  deleteSeriesAndRule,
+} from '../../../utils/cards/RecordingCardUtils.js';
 import { deleteSeriesRuleByTvgId } from '../../../utils/guideUtils.js';
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
@@ -114,11 +121,7 @@ describe('ProgramRecordingModal', () => {
   describe('handleRemoveRecording', () => {
     it('calls deleteRecordingById with the recording id', async () => {
       const recording = makeRecording();
-      render(
-        <ProgramRecordingModal
-          {...defaultProps({ recording })}
-        />
-      );
+      render(<ProgramRecordingModal {...defaultProps({ recording })} />);
       fireEvent.click(screen.getByText('Remove this recording'));
       await waitFor(() => {
         expect(deleteRecordingById).toHaveBeenCalledWith('rec-1');
@@ -129,9 +132,7 @@ describe('ProgramRecordingModal', () => {
       const onClose = vi.fn();
       const recording = makeRecording();
       render(
-        <ProgramRecordingModal
-          {...defaultProps({ recording, onClose })}
-        />
+        <ProgramRecordingModal {...defaultProps({ recording, onClose })} />
       );
       fireEvent.click(screen.getByText('Remove this recording'));
       await waitFor(() => {
@@ -144,9 +145,7 @@ describe('ProgramRecordingModal', () => {
       const onClose = vi.fn();
       const recording = makeRecording();
       render(
-        <ProgramRecordingModal
-          {...defaultProps({ recording, onClose })}
-        />
+        <ProgramRecordingModal {...defaultProps({ recording, onClose })} />
       );
       fireEvent.click(screen.getByText('Remove this recording'));
       await waitFor(() => {
@@ -202,7 +201,10 @@ describe('ProgramRecordingModal', () => {
       );
       fireEvent.click(screen.getByText(/Remove series rule/i));
       await waitFor(() => {
-        expect(deleteSeriesRuleByTvgId).toHaveBeenCalledWith('tvg-3', 'Rule Show');
+        expect(deleteSeriesRuleByTvgId).toHaveBeenCalledWith(
+          'tvg-3',
+          'Rule Show'
+        );
       });
     });
 
@@ -210,7 +212,10 @@ describe('ProgramRecordingModal', () => {
       const onExistingRuleModeChange = vi.fn();
       render(
         <ProgramRecordingModal
-          {...defaultProps({ existingRuleMode: 'rule', onExistingRuleModeChange })}
+          {...defaultProps({
+            existingRuleMode: 'rule',
+            onExistingRuleModeChange,
+          })}
         />
       );
       fireEvent.click(screen.getByText(/Remove series rule/i));
@@ -245,14 +250,18 @@ describe('ProgramRecordingModal', () => {
 
     it('calls onRecordSeriesAll when "Record All" is clicked', () => {
       const onRecordSeriesAll = vi.fn();
-      render(<ProgramRecordingModal {...defaultProps({ onRecordSeriesAll })} />);
+      render(
+        <ProgramRecordingModal {...defaultProps({ onRecordSeriesAll })} />
+      );
       fireEvent.click(screen.getByText('Every episode'));
       expect(onRecordSeriesAll).toHaveBeenCalled();
     });
 
     it('calls onRecordSeriesNew when "Record New" is clicked', () => {
       const onRecordSeriesNew = vi.fn();
-      render(<ProgramRecordingModal {...defaultProps({ onRecordSeriesNew })} />);
+      render(
+        <ProgramRecordingModal {...defaultProps({ onRecordSeriesNew })} />
+      );
       fireEvent.click(screen.getByText('New episodes only'));
       expect(onRecordSeriesNew).toHaveBeenCalled();
     });
@@ -264,22 +273,32 @@ describe('ProgramRecordingModal', () => {
     it('opens SeriesRuleEditorModal when "Edit Rule" is clicked', () => {
       render(
         <ProgramRecordingModal
-          {...defaultProps({ existingRuleMode: 'rule', existingRule: { id: 1 } })}
+          {...defaultProps({
+            existingRuleMode: 'rule',
+            existingRule: { id: 1 },
+          })}
         />
       );
       fireEvent.click(screen.getByText(/Customize rule/i));
-      expect(screen.getByTestId('series-rule-editor-modal')).toBeInTheDocument();
+      expect(
+        screen.getByTestId('series-rule-editor-modal')
+      ).toBeInTheDocument();
     });
 
     it('closes SeriesRuleEditorModal when its onClose is called', () => {
       render(
         <ProgramRecordingModal
-          {...defaultProps({ existingRuleMode: 'rule', existingRule: { id: 1 } })}
+          {...defaultProps({
+            existingRuleMode: 'rule',
+            existingRule: { id: 1 },
+          })}
         />
       );
       fireEvent.click(screen.getByText(/Customize rule/i));
       fireEvent.click(screen.getByTestId('series-rule-editor-close'));
-      expect(screen.queryByTestId('series-rule-editor-modal')).not.toBeInTheDocument();
+      expect(
+        screen.queryByTestId('series-rule-editor-modal')
+      ).not.toBeInTheDocument();
     });
   });
 });

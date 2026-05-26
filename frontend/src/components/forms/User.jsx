@@ -23,7 +23,7 @@ import { Copy, Key, RotateCcwKey, X } from 'lucide-react';
 import { useForm } from '@mantine/form';
 import useChannelsStore from '../../store/channels';
 import useOutputProfilesStore from '../../store/outputProfiles';
-import { USER_LEVEL_LABELS, USER_LEVELS, } from '../../constants';
+import { USER_LEVEL_LABELS, USER_LEVELS } from '../../constants';
 import useAuthStore from '../../store/auth';
 import { copyToClipboard } from '../../utils';
 import {

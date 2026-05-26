@@ -13,7 +13,11 @@ vi.mock('@hookform/resolvers/yup', () => ({
 
 import API from '../../../api.js';
 import { yupResolver } from '@hookform/resolvers/yup';
-import { getResolver, updateUserAgent, addUserAgent } from '../UserAgentUtils.js';
+import {
+  getResolver,
+  updateUserAgent,
+  addUserAgent,
+} from '../UserAgentUtils.js';
 
 describe('UserAgentUtils', () => {
   // ─── getResolver ──────────────────────────────────────────────────────────────
@@ -32,7 +36,7 @@ describe('UserAgentUtils', () => {
     });
   });
 
-// ─── updateUserAgent ──────────────────────────────────────────────────────────
+  // ─── updateUserAgent ──────────────────────────────────────────────────────────
 
   describe('updateUserAgent', () => {
     beforeEach(() => {
@@ -63,7 +67,7 @@ describe('UserAgentUtils', () => {
     });
   });
 
-// ─── addUserAgent ─────────────────────────────────────────────────────────────
+  // ─── addUserAgent ─────────────────────────────────────────────────────────────
 
   describe('addUserAgent', () => {
     beforeEach(() => {

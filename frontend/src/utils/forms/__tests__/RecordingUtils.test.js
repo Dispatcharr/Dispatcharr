@@ -85,7 +85,7 @@ describe('RecordingUtils', () => {
     });
   });
 
-// ─── toIsoIfDate ──────────────────────────────────────────────────────────────
+  // ─── toIsoIfDate ──────────────────────────────────────────────────────────────
 
   describe('toIsoIfDate', () => {
     it('returns ISO string for a valid Date', () => {
@@ -107,7 +107,7 @@ describe('RecordingUtils', () => {
     });
   });
 
-// ─── toDateString ─────────────────────────────────────────────────────────────
+  // ─── toDateString ─────────────────────────────────────────────────────────────
 
   describe('toDateString', () => {
     it('formats a Date to YYYY-MM-DD', () => {
@@ -129,7 +129,7 @@ describe('RecordingUtils', () => {
     });
   });
 
-// ─── createRoundedDate ────────────────────────────────────────────────────────
+  // ─── createRoundedDate ────────────────────────────────────────────────────────
 
   describe('createRoundedDate', () => {
     it('returns a Date', () => {
@@ -141,7 +141,7 @@ describe('RecordingUtils', () => {
     });
   });
 
-// ─── timeChange ───────────────────────────────────────────────────────────────
+  // ─── timeChange ───────────────────────────────────────────────────────────────
 
   describe('timeChange', () => {
     it('calls setter with string directly', () => {
@@ -163,7 +163,7 @@ describe('RecordingUtils', () => {
     });
   });
 
-// ─── API wrappers ─────────────────────────────────────────────────────────────
+  // ─── API wrappers ─────────────────────────────────────────────────────────────
 
   describe('getChannelsSummary', () => {
     it('calls API.getChannelsSummary', () => {
@@ -197,13 +197,13 @@ describe('RecordingUtils', () => {
     });
   });
 
-// ─── sortedChannelOptions ─────────────────────────────────────────────────────
+  // ─── sortedChannelOptions ─────────────────────────────────────────────────────
 
   describe('sortedChannelOptions', () => {
     const channels = [
-      { id: 3, name: 'CNN',  channel_number: 20 },
-      { id: 1, name: 'ESPN', channel_number: 5  },
-      { id: 2, name: 'HBO',  channel_number: 10 },
+      { id: 3, name: 'CNN', channel_number: 20 },
+      { id: 1, name: 'ESPN', channel_number: 5 },
+      { id: 2, name: 'HBO', channel_number: 10 },
     ];
 
     it('sorts channels by channel_number ascending', () => {
@@ -213,7 +213,9 @@ describe('RecordingUtils', () => {
     });
 
     it('maps each channel to { value, label }', () => {
-      const result = sortedChannelOptions([{ id: 7, name: 'FOX', channel_number: 3 }]);
+      const result = sortedChannelOptions([
+        { id: 7, name: 'FOX', channel_number: 3 },
+      ]);
       expect(result[0]).toEqual({ value: '7', label: 'FOX' });
     });
 
@@ -269,22 +271,25 @@ describe('RecordingUtils', () => {
     });
   });
 
-// ─── numberedChannelLabel ─────────────────────────────────────────────────────
+  // ─── numberedChannelLabel ─────────────────────────────────────────────────────
 
   describe('numberedChannelLabel', () => {
     it('returns "number - name" when both are present', () => {
-      expect(numberedChannelLabel({ id: 1, name: 'HBO', channel_number: 501 }))
-        .toBe('501 - HBO');
+      expect(
+        numberedChannelLabel({ id: 1, name: 'HBO', channel_number: 501 })
+      ).toBe('501 - HBO');
     });
 
     it('returns name only when channel_number is falsy', () => {
-      expect(numberedChannelLabel({ id: 1, name: 'HBO', channel_number: null }))
-        .toBe('HBO');
+      expect(
+        numberedChannelLabel({ id: 1, name: 'HBO', channel_number: null })
+      ).toBe('HBO');
     });
 
     it('falls back to "Channel id" when name is missing and number present', () => {
-      expect(numberedChannelLabel({ id: 5, channel_number: 10 }))
-        .toBe('10 - Channel 5');
+      expect(numberedChannelLabel({ id: 5, channel_number: 10 })).toBe(
+        '10 - Channel 5'
+      );
     });
 
     it('falls back to "Channel id" when both name and number are missing', () => {
@@ -292,7 +297,7 @@ describe('RecordingUtils', () => {
     });
   });
 
-// ─── getSingleFormDefaults ────────────────────────────────────────────────────
+  // ─── getSingleFormDefaults ────────────────────────────────────────────────────
 
   describe('getSingleFormDefaults', () => {
     it('returns defaults with no arguments', () => {
@@ -320,7 +325,7 @@ describe('RecordingUtils', () => {
     });
   });
 
-// ─── getRecurringFormDefaults ─────────────────────────────────────────────────
+  // ─── getRecurringFormDefaults ─────────────────────────────────────────────────
 
   describe('getRecurringFormDefaults', () => {
     it('returns defaults with no arguments', () => {
@@ -341,7 +346,7 @@ describe('RecordingUtils', () => {
     });
   });
 
-// ─── buildSinglePayload ───────────────────────────────────────────────────────
+  // ─── buildSinglePayload ───────────────────────────────────────────────────────
 
   describe('buildSinglePayload', () => {
     it('builds payload from values', () => {
@@ -357,7 +362,7 @@ describe('RecordingUtils', () => {
     });
   });
 
-// ─── buildRecurringPayload ────────────────────────────────────────────────────
+  // ─── buildRecurringPayload ────────────────────────────────────────────────────
 
   describe('buildRecurringPayload', () => {
     it('builds payload from values', () => {
@@ -396,7 +401,7 @@ describe('RecordingUtils', () => {
     });
   });
 
-// ─── singleFormValidators ─────────────────────────────────────────────────────
+  // ─── singleFormValidators ─────────────────────────────────────────────────────
 
   describe('singleFormValidators', () => {
     describe('end_time', () => {
@@ -424,12 +429,14 @@ describe('RecordingUtils', () => {
       it('returns null when end is after start', () => {
         const start = new Date('2024-06-15T09:00:00Z');
         const end = new Date('2024-06-15T10:00:00Z');
-        expect(singleFormValidators.end_time(end, { start_time: start })).toBeNull();
+        expect(
+          singleFormValidators.end_time(end, { start_time: start })
+        ).toBeNull();
       });
     });
   });
 
-// ─── recurringFormValidators ──────────────────────────────────────────────────
+  // ─── recurringFormValidators ──────────────────────────────────────────────────
 
   describe('recurringFormValidators', () => {
     describe('days_of_week', () => {
@@ -458,9 +465,11 @@ describe('RecordingUtils', () => {
 
     describe('end_time', () => {
       it('returns error when value is falsy', () => {
-        expect(recurringFormValidators.end_time(null, { start_time: '2024-06-15T10:00:00' })).toBe(
-          'Select an end time'
-        );
+        expect(
+          recurringFormValidators.end_time(null, {
+            start_time: '2024-06-15T10:00:00',
+          })
+        ).toBe('Select an end time');
       });
 
       it('returns error when end equals start (diff === 0)', () => {
@@ -488,15 +497,17 @@ describe('RecordingUtils', () => {
       it('returns error when end_date is before start_date', () => {
         const start = new Date('2024-06-15');
         const end = new Date('2024-06-01');
-        expect(recurringFormValidators.end_date(end, { start_date: start })).toBe(
-          'End date cannot be before start date'
-        );
+        expect(
+          recurringFormValidators.end_date(end, { start_date: start })
+        ).toBe('End date cannot be before start date');
       });
 
       it('returns null when end_date is on or after start_date', () => {
         const start = new Date('2024-06-15');
         const end = new Date('2024-06-15');
-        expect(recurringFormValidators.end_date(end, { start_date: start })).toBeNull();
+        expect(
+          recurringFormValidators.end_date(end, { start_date: start })
+        ).toBeNull();
       });
     });
   });

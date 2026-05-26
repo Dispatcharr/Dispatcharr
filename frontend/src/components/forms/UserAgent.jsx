@@ -1,8 +1,12 @@
 // Modal.js
 import React, { useEffect, useMemo } from 'react';
 import { useForm } from 'react-hook-form';
-import { Button, Checkbox, Flex, Modal, Space, TextInput, } from '@mantine/core';
-import { addUserAgent, getResolver, updateUserAgent } from '../../utils/forms/UserAgentUtils.js';
+import { Button, Checkbox, Flex, Modal, Space, TextInput } from '@mantine/core';
+import {
+  addUserAgent,
+  getResolver,
+  updateUserAgent,
+} from '../../utils/forms/UserAgentUtils.js';
 
 const UserAgent = ({ userAgent = null, isOpen, onClose }) => {
   const defaultValues = useMemo(

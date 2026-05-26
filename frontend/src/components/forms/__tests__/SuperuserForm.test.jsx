@@ -191,7 +191,9 @@ describe('SuperuserForm', () => {
       fireEvent.change(screen.getByTestId('input-email'), {
         target: { name: 'email', value: 'admin@example.com' },
       });
-      expect(screen.getByTestId('input-email')).toHaveValue('admin@example.com');
+      expect(screen.getByTestId('input-email')).toHaveValue(
+        'admin@example.com'
+      );
     });
 
     it('initializes all fields as empty strings', () => {
@@ -329,4 +331,3 @@ describe('SuperuserForm', () => {
     });
   });
 });
-

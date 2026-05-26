@@ -59,12 +59,10 @@ vi.mock('@mantine/form', async () => {
             setValuesState((prev) => ({ ...prev, [k]: v }));
           }),
         })),
-        onSubmit: vi.fn(
-          (handler) => (e) => {
-            e?.preventDefault?.();
-            return handler(values);
-          }
-        ),
+        onSubmit: vi.fn((handler) => (e) => {
+          e?.preventDefault?.();
+          return handler(values);
+        }),
         reset: vi.fn(() => setValuesState({ ...initialValues })),
         setValues: vi.fn((newVals) =>
           setValuesState((prev) => ({ ...prev, ...newVals }))
@@ -84,7 +82,16 @@ vi.mock('@mantine/core', () => ({
       {children}
     </span>
   ),
-  Button: ({ children, onClick, loading, type, variant, color, size, disabled }) => (
+  Button: ({
+    children,
+    onClick,
+    loading,
+    type,
+    variant,
+    color,
+    size,
+    disabled,
+  }) => (
     <button
       type={type}
       onClick={onClick}
@@ -173,8 +180,10 @@ vi.mock('@mantine/dates', () => ({
       <label>{label}</label>
       <input
         data-testid={`datepicker-${label}`}
-        value={value ? value.toISOString?.() ?? String(value) : ''}
-        onChange={(e) => onChange(e.target.value ? new Date(e.target.value) : null)}
+        value={value ? (value.toISOString?.() ?? String(value)) : ''}
+        onChange={(e) =>
+          onChange(e.target.value ? new Date(e.target.value) : null)
+        }
       />
     </div>
   ),
@@ -286,7 +295,9 @@ const setupMocks = ({ rule = makeRule(), occurrences = [] } = {}) => {
     enabled: rule?.enabled ?? true,
   });
 
-  vi.mocked(RecordingUtils.getChannelsSummary).mockResolvedValue([makeChannel()]);
+  vi.mocked(RecordingUtils.getChannelsSummary).mockResolvedValue([
+    makeChannel(),
+  ]);
 
   vi.mocked(RecurringRuleModalUtils.getFormDefaults).mockReturnValue({
     channel_id: rule?.channel_id ?? '',
@@ -299,10 +310,18 @@ const setupMocks = ({ rule = makeRule(), occurrences = [] } = {}) => {
     enabled: rule?.enabled ?? true,
   });
 
-  vi.mocked(RecurringRuleModalUtils.getUpcomingOccurrences).mockReturnValue(occurrences);
-  vi.mocked(RecurringRuleModalUtils.updateRecurringRule).mockResolvedValue(undefined);
-  vi.mocked(RecurringRuleModalUtils.updateRecurringRuleEnabled).mockResolvedValue(undefined);
-  vi.mocked(RecurringRuleModalUtils.deleteRecurringRuleById).mockResolvedValue(undefined);
+  vi.mocked(RecurringRuleModalUtils.getUpcomingOccurrences).mockReturnValue(
+    occurrences
+  );
+  vi.mocked(RecurringRuleModalUtils.updateRecurringRule).mockResolvedValue(
+    undefined
+  );
+  vi.mocked(
+    RecurringRuleModalUtils.updateRecurringRuleEnabled
+  ).mockResolvedValue(undefined);
+  vi.mocked(RecurringRuleModalUtils.deleteRecurringRuleById).mockResolvedValue(
+    undefined
+  );
   vi.mocked(deleteRecordingById).mockResolvedValue(undefined);
 
   return { mockFetchRecurringRules };
@@ -339,13 +358,17 @@ describe('RecurringRuleModal', () => {
 
     it('uses rule name as modal title', () => {
       render(<RecurringRuleModal {...defaultProps()} />);
-      expect(screen.getByTestId('modal-title')).toHaveTextContent('Morning News');
+      expect(screen.getByTestId('modal-title')).toHaveTextContent(
+        'Morning News'
+      );
     });
 
     it('falls back to "Recurring Rule" when rule has no name', () => {
       setupMocks({ rule: makeRule({ name: '' }) });
       render(<RecurringRuleModal {...defaultProps()} />);
-      expect(screen.getByTestId('modal-title')).toHaveTextContent('Recurring Rule');
+      expect(screen.getByTestId('modal-title')).toHaveTextContent(
+        'Recurring Rule'
+      );
     });
 
     it('calls onClose when modal close button is clicked', () => {
@@ -366,16 +389,15 @@ describe('RecurringRuleModal', () => {
     it('renders fallback message when rule does not exist', () => {
       render(<RecurringRuleModal {...defaultProps()} />);
       expect(
-        screen.getByText('The recurring rule for this recording no longer exists.')
+        screen.getByText(
+          'The recurring rule for this recording no longer exists.'
+        )
       ).toBeInTheDocument();
     });
 
     it('shows Delete Recording button when sourceRecording is provided', () => {
       render(
-        <RecurringRuleModal
-          {...defaultProps()}
-          recording={makeRecording()}
-        />
+        <RecurringRuleModal {...defaultProps()} recording={makeRecording()} />
       );
       expect(screen.getByText('Delete Recording')).toBeInTheDocument();
     });
@@ -407,7 +429,10 @@ describe('RecurringRuleModal', () => {
       fireEvent.click(screen.getByText('Delete Recording'));
       await waitFor(() => {
         expect(showNotification).toHaveBeenCalledWith(
-          expect.objectContaining({ title: 'Recording deleted', color: 'green' })
+          expect.objectContaining({
+            title: 'Recording deleted',
+            color: 'green',
+          })
         );
       });
     });
@@ -571,10 +596,9 @@ describe('RecurringRuleModal', () => {
       render(<RecurringRuleModal {...defaultProps()} />);
       fireEvent.submit(screen.getByText('Save changes').closest('form'));
       await waitFor(() => {
-        expect(RecurringRuleModalUtils.updateRecurringRule).toHaveBeenCalledWith(
-          'rule-1',
-          expect.any(Object)
-        );
+        expect(
+          RecurringRuleModalUtils.updateRecurringRule
+        ).toHaveBeenCalledWith('rule-1', expect.any(Object));
       });
     });
 
@@ -623,12 +647,17 @@ describe('RecurringRuleModal', () => {
     it('Save changes button shows loading state while saving', async () => {
       let resolve;
       vi.mocked(RecurringRuleModalUtils.updateRecurringRule).mockReturnValue(
-        new Promise((r) => { resolve = r; })
+        new Promise((r) => {
+          resolve = r;
+        })
       );
       render(<RecurringRuleModal {...defaultProps()} />);
       fireEvent.submit(screen.getByText('Save changes').closest('form'));
       await waitFor(() => {
-        expect(screen.getByText('Save changes')).toHaveAttribute('data-loading', 'true');
+        expect(screen.getByText('Save changes')).toHaveAttribute(
+          'data-loading',
+          'true'
+        );
       });
       resolve();
     });
@@ -646,9 +675,9 @@ describe('RecurringRuleModal', () => {
       render(<RecurringRuleModal {...defaultProps()} />);
       fireEvent.click(screen.getByText('Delete rule'));
       await waitFor(() => {
-        expect(RecurringRuleModalUtils.deleteRecurringRuleById).toHaveBeenCalledWith(
-          'rule-1'
-        );
+        expect(
+          RecurringRuleModalUtils.deleteRecurringRuleById
+        ).toHaveBeenCalledWith('rule-1');
       });
     });
 
@@ -684,9 +713,9 @@ describe('RecurringRuleModal', () => {
     });
 
     it('does not show notification when deleteRecurringRuleById throws', async () => {
-      vi.mocked(RecurringRuleModalUtils.deleteRecurringRuleById).mockRejectedValue(
-        new Error('fail')
-      );
+      vi.mocked(
+        RecurringRuleModalUtils.deleteRecurringRuleById
+      ).mockRejectedValue(new Error('fail'));
       render(<RecurringRuleModal {...defaultProps()} />);
       fireEvent.click(screen.getByText('Delete rule'));
       await waitFor(() => {
@@ -805,7 +834,9 @@ describe('RecurringRuleModal', () => {
 
     it('calls getUpcomingOccurrences with recordings, userNow, ruleId, toUserTime', () => {
       render(<RecurringRuleModal {...defaultProps()} />);
-      expect(RecurringRuleModalUtils.getUpcomingOccurrences).toHaveBeenCalledWith(
+      expect(
+        RecurringRuleModalUtils.getUpcomingOccurrences
+      ).toHaveBeenCalledWith(
         expect.any(Array),
         expect.any(Function),
         'rule-1',
@@ -838,10 +869,7 @@ describe('RecurringRuleModal', () => {
       const occ = makeOccurrence();
       setupMocks({ occurrences: [occ] });
       render(
-        <RecurringRuleModal
-          {...defaultProps()}
-          onEditOccurrence={undefined}
-        />
+        <RecurringRuleModal {...defaultProps()} onEditOccurrence={undefined} />
       );
       expect(() => fireEvent.click(screen.getByText('Edit'))).not.toThrow();
     });
@@ -888,13 +916,18 @@ describe('RecurringRuleModal', () => {
     it('shows loading state on Cancel button while deleting occurrence', async () => {
       let resolve;
       vi.mocked(deleteRecordingById).mockReturnValue(
-        new Promise((r) => { resolve = r; })
+        new Promise((r) => {
+          resolve = r;
+        })
       );
       setupMocks({ occurrences: [makeOccurrence()] });
       render(<RecurringRuleModal {...defaultProps()} />);
       fireEvent.click(screen.getByText('Cancel'));
       await waitFor(() => {
-        expect(screen.getByText('Cancel')).toHaveAttribute('data-loading', 'true');
+        expect(screen.getByText('Cancel')).toHaveAttribute(
+          'data-loading',
+          'true'
+        );
       });
       resolve();
     });
@@ -934,4 +967,3 @@ describe('RecurringRuleModal', () => {
     });
   });
 });
-
