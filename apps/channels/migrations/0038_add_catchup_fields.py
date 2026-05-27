@@ -17,7 +17,10 @@ def backfill_stream_catchup(apps, schema_editor):
             UPDATE dispatcharr_channels_stream
             SET is_catchup = TRUE,
                 catchup_days = COALESCE(
-                    (custom_properties->>'tv_archive_duration')::int, 7
+                    CASE WHEN (custom_properties->>'tv_archive_duration') ~ '^\\d+$'
+                         THEN (custom_properties->>'tv_archive_duration')::int
+                         ELSE NULL
+                    END, 7
                 )
             WHERE custom_properties IS NOT NULL
               AND custom_properties != 'null'::jsonb

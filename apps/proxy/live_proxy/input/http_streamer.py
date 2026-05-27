@@ -202,8 +202,18 @@ class HTTPStreamReader:
             synced = not self._strip_ts_preamble
             sync_buf = bytearray() if not synced else None
 
+            # If the caller peeked at the response body (e.g. to validate TS
+            # sync before accepting the response), prepend those bytes so they
+            # aren't lost.  They've already been consumed from the raw socket.
+            peek_data = getattr(self.response, "_peek_data", None)
+
             chunk_count = 0
-            for chunk in self.response.iter_content(chunk_size=self.chunk_size):
+            chunks_iter = self.response.iter_content(chunk_size=self.chunk_size)
+            if peek_data:
+                import itertools
+                chunks_iter = itertools.chain([peek_data], chunks_iter)
+
+            for chunk in chunks_iter:
                 if not self.running:
                     break
                 if not chunk:

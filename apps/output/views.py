@@ -2,10 +2,7 @@ from django.http import HttpResponse, JsonResponse, Http404, HttpResponseForbidd
 import json
 from django.urls import reverse
 from apps.channels.models import Channel, ChannelProfile, ChannelGroup, Stream
-from apps.channels.utils import (
-    format_channel_number,
-    resolve_channel_by_provider_stream_id,
-)
+from apps.channels.utils import format_channel_number
 from django.db.models import Prefetch
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
@@ -2211,6 +2208,8 @@ def _convert_xmltv_to_local_timezone(response):
     """
     timeshift_settings = CoreSettings.get_timeshift_settings()
     tz_name = timeshift_settings.get('default_timezone', 'UTC')
+    if tz_name == 'UTC':
+        return response  # No rewrite needed — timestamps are already UTC
     try:
         local_tz = ZoneInfo(tz_name)
     except Exception:
@@ -2401,23 +2400,21 @@ def _xc_channel_entry(channel, channel_num_map, _get_default_group_id, _logo_url
 
     # Denormalized catch-up fields — populated at M3U/XC import time and
     # rolled up via ChannelStream signal.  Zero DB queries here.
+    # Always emit channel.id as stream_id — clients must only see
+    # Dispatcharr's internal IDs.  The provider's stream_id is a backend
+    # detail looked up internally by the timeshift endpoint.
     if channel.is_catchup:
         tv_archive = 1
         tv_archive_duration = channel.catchup_days
-        try:
-            stream_id_value = int(channel.catchup_provider_stream_id)
-        except (TypeError, ValueError):
-            stream_id_value = channel.id
     else:
         tv_archive = 0
         tv_archive_duration = 0
-        stream_id_value = channel.id
 
     return {
         "num": channel_num_int,
         "name": channel.effective_name,
         "stream_type": "live",
-        "stream_id": stream_id_value,
+        "stream_id": channel.id,
         "stream_icon": (
             f"{_logo_url_prefix}{effective_logo.id}{_logo_url_suffix}"
             if effective_logo else None
@@ -2463,20 +2460,12 @@ def xc_get_epg(request, user, short=False):
     if not channel_id:
         raise Http404()
 
-    # Try internal Channel.id first (most requests).  Fall back to provider
-    # stream_id lookup for catch-up channels whose xc_get_live_streams emits
-    # the provider's stream_id instead of the internal Channel.id.
-    resolved_channel_id = channel_id
+    # Clients always receive channel.id from get_live_streams, so this is
+    # a straightforward int lookup — no provider stream_id fallback needed.
     try:
-        candidate = int(channel_id)
-        if Channel.objects.filter(id=candidate).exists():
-            resolved_channel_id = candidate
-        else:
-            raise ValueError
+        resolved_channel_id = int(channel_id)
     except (TypeError, ValueError):
-        provider_channel, _ = resolve_channel_by_provider_stream_id(channel_id)
-        if provider_channel is not None:
-            resolved_channel_id = provider_channel.id
+        raise Http404()
 
     channel = None
     # Apply effective-value annotation + hidden-exclusion at every channel

@@ -6,6 +6,7 @@ from apps.timeshift.helpers import (
     build_timeshift_url_format_a,
     build_timeshift_url_format_b,
     format_timestamp_as_sql_datetime,
+    format_timestamp_as_underscore,
 )
 
 
@@ -17,18 +18,38 @@ class _FakeAccount:
 
 
 class TimestampFormatTests(TestCase):
-    """The SQL-datetime shape is needed for some XC server parsers. The
-    reshape function changes format only — no timezone conversion."""
+    """Timestamp reshape functions change format only — no timezone conversion."""
 
     def test_format_sql_reshapes_without_tz_conversion(self):
-        # Must reshape only — no timezone shift. The value stays as-is.
         self.assertEqual(
             format_timestamp_as_sql_datetime("2026-05-12:17-00"),
             "2026-05-12 17:00:00",
         )
 
+    def test_format_sql_accepts_underscore_input(self):
+        self.assertEqual(
+            format_timestamp_as_sql_datetime("2026-05-12_17-00"),
+            "2026-05-12 17:00:00",
+        )
+
     def test_format_sql_invalid_falls_back(self):
         self.assertEqual(format_timestamp_as_sql_datetime("garbage"), "garbage")
+
+    def test_format_underscore_from_colon_dash(self):
+        self.assertEqual(
+            format_timestamp_as_underscore("2026-05-21:12-55"),
+            "2026-05-21_12-55",
+        )
+
+    def test_format_underscore_idempotent(self):
+        # Underscore input → underscore output (no change)
+        self.assertEqual(
+            format_timestamp_as_underscore("2026-05-21_12-55"),
+            "2026-05-21_12-55",
+        )
+
+    def test_format_underscore_invalid_falls_back(self):
+        self.assertEqual(format_timestamp_as_underscore("garbage"), "garbage")
 
 
 class BuildTimeshiftUrlTests(TestCase):

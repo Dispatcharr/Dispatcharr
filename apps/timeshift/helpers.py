@@ -1,7 +1,7 @@
 """URL builders + timestamp conversion + archive-days probe for XC catch-up."""
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 
 from django.core.cache import cache
 
@@ -16,28 +16,24 @@ MAX_AUTO_PREV_DAYS = 30
 
 
 def compute_provider_archive_days_capped():
-    """Largest `tv_archive_duration` advertised by any XC stream (capped, cached).
+    """Largest `catchup_days` across all XC streams with catch-up (capped, cached).
 
+    Uses the denormalized ``Stream.catchup_days`` field instead of iterating
+    JSON blobs — one aggregate query, no Python loop.
     Returns 0 when no XC stream advertises catch-up.
     """
     def _scan():
         from apps.channels.models import Stream
+        from django.db.models import Max
 
-        max_days = 0
-        for props in (
-            Stream.objects.filter(m3u_account__account_type="XC")
-            .exclude(custom_properties__isnull=True)
-            .values_list("custom_properties", flat=True)
-        ):
-            try:
-                if not int((props or {}).get("tv_archive", 0) or 0):
-                    continue
-                value = int((props or {}).get("tv_archive_duration", 0) or 0)
-            except (TypeError, ValueError):
-                continue
-            if value > max_days:
-                max_days = value
-        return min(max_days, MAX_AUTO_PREV_DAYS)
+        result = (
+            Stream.objects.filter(
+                m3u_account__account_type="XC",
+                is_catchup=True,
+            )
+            .aggregate(max_days=Max("catchup_days"))
+        )
+        return min(result["max_days"] or 0, MAX_AUTO_PREV_DAYS)
 
     return cache.get_or_set(
         "timeshift:provider_archive_days_capped",
@@ -46,15 +42,36 @@ def compute_provider_archive_days_capped():
     )
 
 
+def _parse_timestamp(timestamp_str):
+    """Parse a timestamp string into a datetime, accepting colon-dash or underscore shapes.
+
+    Accepts: ``YYYY-MM-DD:HH-MM`` (iPlayTV/TiviMate native),
+             ``YYYY-MM-DD_HH-MM`` (XC underscore shape).
+    Returns None on failure.
+    """
+    for fmt in ("%Y-%m-%d:%H-%M", "%Y-%m-%d_%H-%M"):
+        try:
+            return datetime.strptime(timestamp_str, fmt)
+        except ValueError:
+            continue
+    return None
+
+
 def get_programme_duration(channel, timestamp_str):
     """Duration in minutes of the EPG programme starting at `timestamp_str`.
 
-    `timestamp_str` is `YYYY-MM-DD:HH-MM` in UTC (passed through from the
-    client URL unchanged — no timezone conversion). Falls back to a
-    120-minute default if EPG lookup fails.
+    `timestamp_str` is `YYYY-MM-DD:HH-MM` or `YYYY-MM-DD_HH-MM` in UTC
+    (passed through from the client URL unchanged — no timezone conversion).
+    Falls back to a 120-minute default if EPG lookup fails.
     """
     try:
-        dt = datetime.strptime(timestamp_str, "%Y-%m-%d:%H-%M")
+        dt = _parse_timestamp(timestamp_str)
+        if dt is None:
+            return DEFAULT_DURATION_MINUTES
+        # EPG start_time/end_time are timezone-aware (USE_TZ=True), so the
+        # parsed datetime must also be aware to avoid a TypeError in the ORM
+        # filter.  The timestamp is already in UTC (derived from the EPG epoch).
+        dt = dt.replace(tzinfo=timezone.utc)
         if not channel.epg_data:
             return DEFAULT_DURATION_MINUTES
 
@@ -95,9 +112,28 @@ def build_timeshift_url_format_b(m3u_account, stream_id, timestamp, duration_min
     )
 
 
-def format_timestamp_as_sql_datetime(timestamp):
-    """Reshape `YYYY-MM-DD:HH-MM` to `YYYY-MM-DD HH:MM:SS` without any
+def format_timestamp_as_underscore(timestamp):
+    """Reshape ``YYYY-MM-DD:HH-MM`` to ``YYYY-MM-DD_HH-MM`` without any
     timezone conversion.
+
+    Many XC servers use the underscore shape as their
+    canonical catch-up URL format, especially for recently-indexed archives
+    (< 5–6 hours old). The colon-dash and SQL shapes only resolve against the
+    legacy catch-up parser, which covers archives older than roughly half a day.
+
+    Do NOT add timezone conversion here — see ``format_timestamp_as_sql_datetime``
+    docstring for the full history.
+    """
+    dt = _parse_timestamp(timestamp)
+    if dt is None:
+        logger.error("Timeshift underscore reshape failed for %r: unrecognised format", timestamp)
+        return timestamp
+    return dt.strftime("%Y-%m-%d_%H-%M")
+
+
+def format_timestamp_as_sql_datetime(timestamp):
+    """Reshape ``YYYY-MM-DD:HH-MM`` (or underscore variant) to ``YYYY-MM-DD HH:MM:SS``
+    without any timezone conversion.
 
     Some XC servers refuse the dash-only shape for archives whose recording
     is still being finalised and only resolve the SQL-datetime shape. This
@@ -108,9 +144,8 @@ def format_timestamp_as_sql_datetime(timestamp):
     Do NOT add timezone conversion here — that was the root cause of the
     "wrong programme plays" bug (plugin v1.1.4 → v1.2.6 history).
     """
-    try:
-        dt = datetime.strptime(timestamp, "%Y-%m-%d:%H-%M")
-        return dt.strftime("%Y-%m-%d %H:%M:%S")
-    except Exception as e:
-        logger.error("Timeshift SQL timestamp reshape failed for %r: %s", timestamp, e)
+    dt = _parse_timestamp(timestamp)
+    if dt is None:
+        logger.error("Timeshift SQL timestamp reshape failed for %r: unrecognised format", timestamp)
         return timestamp
+    return dt.strftime("%Y-%m-%d %H:%M:%S")

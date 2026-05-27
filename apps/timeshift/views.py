@@ -3,13 +3,13 @@
 
 URL parameter quirk matching what iPlayTV / TiviMate emit:
     Position "stream_id"  -> EPG channel number, IGNORED here.
-    Position "duration"   -> actually the provider's stream_id.
+    Position "duration"   -> Dispatcharr's Channel.id (the XC API emits
+                              channel.id as stream_id to clients).
 """
 
 import hmac
+import itertools
 import logging
-import os
-import threading
 import time
 import uuid
 
@@ -23,6 +23,7 @@ from django.http import (
 )
 
 from apps.accounts.models import User
+from apps.channels.models import Channel
 from apps.channels.utils import (
     get_channel_catchup_info,
     resolve_channel_by_provider_stream_id,
@@ -31,7 +32,8 @@ from apps.proxy.live_proxy.config_helper import ConfigHelper
 from apps.proxy.live_proxy.constants import ChannelMetadataField, ChannelState
 from apps.proxy.live_proxy.redis_keys import RedisKeys
 from apps.proxy.live_proxy.utils import get_client_ip
-from apps.proxy.live_proxy.input.http_streamer import HTTPStreamReader
+from apps.proxy.live_proxy.input.http_streamer import find_ts_sync
+from apps.proxy.utils import check_user_stream_limits
 from core.models import CoreSettings
 from core.utils import RedisClient
 
@@ -39,6 +41,7 @@ from .helpers import (
     build_timeshift_url_format_a,
     build_timeshift_url_format_b,
     format_timestamp_as_sql_datetime,
+    format_timestamp_as_underscore,
     get_programme_duration,
 )
 
@@ -48,14 +51,21 @@ CLIENT_TTL_SECONDS = 60
 
 
 def timeshift_proxy(request, username, password, stream_id, timestamp, duration):  # noqa: ARG001 stream_id
-    # The "duration" URL slot is the provider's stream_id — see module docstring.
-    provider_stream_id = duration[:-3] if duration.endswith(".ts") else duration
+    # The "duration" URL slot carries the stream identifier sent by the XC
+    # API.  Since PR #1242 review 2, the API emits channel.id (Dispatcharr
+    # internal) — not the provider's stream_id.  Resolve by Channel.id first;
+    # fall back to provider stream_id for backward compatibility.
+    raw_id = duration[:-3] if duration.endswith(".ts") else duration
 
     user = _authenticate_user(username, password)
     if user is None:
         return HttpResponseForbidden("Invalid credentials")
 
-    channel, _ = resolve_channel_by_provider_stream_id(provider_stream_id)
+    channel = None
+    try:
+        channel = Channel.objects.get(id=int(raw_id))
+    except (Channel.DoesNotExist, ValueError, TypeError):
+        channel, _ = resolve_channel_by_provider_stream_id(raw_id)
     if channel is None:
         raise Http404("Channel not found")
 
@@ -83,25 +93,32 @@ def timeshift_proxy(request, username, password, stream_id, timestamp, duration)
     # 1-2 hours later than intended.
     # Learned from plugin history v1.1.4 → v1.2.6: 6 iterations of timezone
     # bugs all converged on "never convert the provider URL timestamp".
-    local_timestamp = timestamp
+    underscore_timestamp = format_timestamp_as_underscore(timestamp)
     sql_timestamp = format_timestamp_as_sql_datetime(timestamp)
-    duration_minutes = get_programme_duration(channel, local_timestamp)
+    duration_minutes = get_programme_duration(channel, timestamp)
     stream_id_value = (props or {}).get("stream_id")
     if stream_id_value is None:
         return HttpResponseBadRequest("Cannot build timeshift URL")
 
-    # Build a small set of upstream candidates. Different XC servers (or even
-    # different code paths inside the same server) accept different timestamp
-    # shapes and different URL layouts: the dash-only shape covers most
-    # finalised archives, the SQL-datetime shape unlocks a separate path that
-    # some servers use for archives still being indexed, and the path layout
-    # (Format B) is the only one some Stalker-style portals expose. We try
-    # them in order until one accepts the request — see `_stream_from_provider`
-    # for the iteration logic.
+    # Build a prioritised set of upstream candidates. Different XC servers (or
+    # even different code paths inside the same server) accept different
+    # timestamp shapes and URL layouts:
+    #
+    # • Underscore (YYYY-MM-DD_HH-MM): canonical format for many XC
+    #   providers. Works for ALL archives — recent and old. Tried first.
+    # • Colon-dash (YYYY-MM-DD:HH-MM): legacy shape used by older servers /
+    #   the lenient parser. Resolves only finalised archives (> ~5–6 h old).
+    # • SQL-datetime (YYYY-MM-DD HH:MM:SS): alternative modern shape accepted
+    #   by some servers' strict parser for recently-indexed archives.
+    # • Format B (path layout): the only shape some Stalker-style portals expose.
+    #
+    # We try them in order until one returns a 2xx — see `_stream_from_provider`.
     candidate_urls = [
-        build_timeshift_url_format_a(m3u_account, stream_id_value, local_timestamp, duration_minutes),
+        build_timeshift_url_format_a(m3u_account, stream_id_value, underscore_timestamp, duration_minutes),
+        build_timeshift_url_format_b(m3u_account, stream_id_value, underscore_timestamp, duration_minutes),
         build_timeshift_url_format_a(m3u_account, stream_id_value, sql_timestamp, duration_minutes),
-        build_timeshift_url_format_b(m3u_account, stream_id_value, local_timestamp, duration_minutes),
+        build_timeshift_url_format_a(m3u_account, stream_id_value, timestamp, duration_minutes),
+        build_timeshift_url_format_b(m3u_account, stream_id_value, timestamp, duration_minutes),
     ]
 
     try:
@@ -110,7 +127,7 @@ def timeshift_proxy(request, username, password, stream_id, timestamp, duration)
         user_agent = ""
 
     safe_ts = timestamp.replace(":", "-").replace("/", "-")
-    virtual_channel_id = f"timeshift_{channel.id}_{safe_ts}_{provider_stream_id}"
+    virtual_channel_id = f"timeshift_{channel.id}_{safe_ts}_{stream_id_value}"
     client_id = f"timeshift_{uuid.uuid4().hex[:16]}"
     client_ip = get_client_ip(request)
     range_header = request.META.get("HTTP_RANGE")
@@ -121,19 +138,26 @@ def timeshift_proxy(request, username, password, stream_id, timestamp, duration)
     default_profile = m3u_account.profiles.filter(is_default=True).first()
     m3u_profile_id = default_profile.id if default_profile is not None else None
 
-    # If the user is switching from live TV to timeshift on the same channel,
-    # the live stream still holds the provider connection (~1s teardown).
-    # Force-stop it synchronously before opening the timeshift upstream so
-    # the provider slot is free.  No-op if no live stream is active.
-    from apps.proxy.live_proxy.services.channel_service import ChannelService
-    ChannelService.stop_channel(str(channel.uuid))
+    # Free the provider slot before connecting upstream.
+    # 1. Enforce user stream limits — this terminates the oldest active stream
+    #    (live, timeshift, or VOD) via the Redis stop-key mechanism, same as
+    #    the live and VOD proxy entry points.
+    if not check_user_stream_limits(user, client_id, media_id=virtual_channel_id):
+        return HttpResponseForbidden("Stream limit exceeded")
+
+    # Note: no explicit ChannelService.stop_channel() here.  The
+    # check_user_stream_limits() call above already terminates the oldest
+    # active stream (live, timeshift, or VOD) via the Redis stop-key
+    # mechanism — same pattern as the live and VOD proxy entry points.
+    # Calling stop_channel() unconditionally would kill other users' live
+    # streams on the same channel.
 
     if debug:
         logger.info(
             "Timeshift request: channel=%s ts=%s provider_sid=%s vid=%s client=%s range=%s",
             channel.name,
-            local_timestamp,
-            provider_stream_id,
+            timestamp,
+            stream_id_value,
             virtual_channel_id,
             client_id,
             range_header or "(none)",
@@ -268,8 +292,8 @@ def _heartbeat_stats_client(redis_client, virtual_channel_id, client_id, bytes_d
             pipe.hincrby(metadata_key, ChannelMetadataField.TOTAL_BYTES, bytes_delta)
         pipe.expire(metadata_key, CLIENT_TTL_SECONDS)
         pipe.execute()
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("Timeshift stats heartbeat failed: %s", exc)
 
 
 def _unregister_stats_client(redis_client, virtual_channel_id, client_id):
@@ -293,7 +317,6 @@ def _unregister_stats_client(redis_client, virtual_channel_id, client_id):
 # ---------------------------------------------------------------------------
 
 
-
 def _open_upstream(url, user_agent, range_header):
     """Open the upstream HTTP request (status + headers known synchronously)."""
     headers = {}
@@ -309,30 +332,29 @@ def _open_upstream(url, user_agent, range_header):
     )
 
 
-_format_cache_lock = threading.Lock()
-_format_cache = {}
+_FORMAT_CACHE_KEY = "timeshift:format_idx:{}"
+_FORMAT_CACHE_TTL = 3600  # 1 hour
 
 
 def _get_cached_format_index(account_id):
     """Return the index of the URL shape that last worked for this account,
     or None if we haven't seen one succeed yet.
 
-    Caching the winning shape lets a fast-forward session — where the player
-    reissues GETs at one-second intervals as the user scrubs — skip the
-    cascade after the first successful candidate and go straight to the
-    working URL on every subsequent request.
+    Uses ``django.core.cache`` (Redis-backed) so every uWSGI worker shares
+    the same format discovery — the first worker that finds the winning URL
+    shape caches it for all others.
     """
     if account_id is None:
         return None
-    with _format_cache_lock:
-        return _format_cache.get(account_id)
+    from django.core.cache import cache
+    return cache.get(_FORMAT_CACHE_KEY.format(account_id))
 
 
 def _set_cached_format_index(account_id, index):
     if account_id is None:
         return
-    with _format_cache_lock:
-        _format_cache[account_id] = index
+    from django.core.cache import cache
+    cache.set(_FORMAT_CACHE_KEY.format(account_id), index, _FORMAT_CACHE_TTL)
 
 
 def _stream_from_provider(
@@ -370,10 +392,10 @@ def _stream_from_provider(
         ordered_urls = list(candidate_urls)
         original_indices = list(range(len(candidate_urls)))
 
-    # Try each candidate URL until one returns a streamable status. We keep
-    # going on 400/404 (the two refusal modes XC servers use when the URL
-    # shape doesn't match their parser); a 403, 5xx or connection error is
-    # decisive and short-circuits the loop.
+    # Try each candidate URL until one returns a streamable MPEG-TS response.
+    # Some XC servers return HTTP 200 with PHP error text instead of 404 when
+    # the timestamp format doesn't match their parser.  We peek at the first
+    # bytes to confirm TS sync before accepting the response.
     upstream = None
     last_status = None
     last_url = ordered_urls[0]
@@ -386,10 +408,39 @@ def _stream_from_provider(
             return HttpResponseBadRequest("Provider connection error")
         last_status = response.status_code
         last_url = url
+        if debug:
+            logger.info(
+                "Timeshift cascade[%d]: status=%d type=%s url=%s",
+                orig_idx, response.status_code,
+                response.headers.get("Content-Type", "?"),
+                _redact_url(url),
+            )
         if response.status_code in (200, 206):
-            upstream = response
-            winning_index = orig_idx
-            break
+            # Peek at the first bytes to confirm we're getting MPEG-TS, not
+            # a PHP error page disguised as 200.  Read up to 1 KB — enough
+            # to find a TS sync chain or detect HTML/PHP text.
+            peek = response.raw.read(1024)
+            sync_offset = find_ts_sync(peek) if peek else -1
+            if sync_offset >= 0:
+                # Valid TS — strip any pre-sync garbage (PHP warnings, BOM)
+                # and prepend the clean bytes into the iter_content chain.
+                response._peek_data = peek[sync_offset:]
+                upstream = response
+                winning_index = orig_idx
+                break
+            else:
+                # No TS sync found — likely a PHP error.  Log and try next.
+                snippet = peek[:200].decode("utf-8", errors="replace") if peek else "(empty)"
+                logger.warning(
+                    "Timeshift upstream returned 200 but no TS sync in first %d "
+                    "bytes (likely PHP error): %s — url=%s",
+                    len(peek) if peek else 0,
+                    snippet.replace("\n", " ")[:120],
+                    _redact_url(url),
+                )
+                response.close()
+                last_status = 404  # Treat as soft rejection for cascade
+                continue
         response.close()
         if response.status_code not in (400, 404):
             # Decisive failure (403, 5xx, …) — no point trying alternative URLs.
@@ -408,7 +459,7 @@ def _stream_from_provider(
             return HttpResponseNotFound("Catch-up not available yet")
         if last_status == 403:
             return HttpResponseForbidden("Provider denied access")
-        return HttpResponseBadRequest(f"Provider error: {last_status}")
+        return HttpResponseBadRequest("Provider error")
 
     content_type = upstream.headers.get("Content-Type", "video/mp2t")
     content_range = upstream.headers.get("Content-Range", "")
@@ -429,32 +480,37 @@ def _stream_from_provider(
         m3u_profile_id=m3u_profile_id,
     )
 
-    # Use HTTPStreamReader (same component as live TV) with a 1 MB pipe
-    # buffer and TS preamble stripping.  The producer thread reads from the
-    # provider and writes to the pipe; the WSGI greenlet reads from the
-    # pipe and yields to the client.
-    reader = HTTPStreamReader(
-        url=last_url,
-        chunk_size=chunk_size,
-        response=upstream,
-        strip_ts_preamble=True,
-    )
-    pipe_read_fd = reader.start()
-    pipe_reader = os.fdopen(pipe_read_fd, "rb", buffering=0)
+    # Stream directly via iter_content+yield (same pattern as VOD proxy).
+    # The peek already validated TS sync and stripped any preamble.
+    peek_data = getattr(upstream, "_peek_data", None)
+    chunks_iter = upstream.iter_content(chunk_size=chunk_size)
+    if peek_data:
+        chunks_iter = itertools.chain([peek_data], chunks_iter)
 
     def stream_generator():
         last_heartbeat = time.time()
         bytes_since_heartbeat = 0
         total_yielded = 0
+        chunk_count = 0
         loop_start = time.time()
+        # Same stop-key pattern as live (generator.py:395) and VOD
+        # (multi_worker_connection_manager.py:1095).
+        stop_key = RedisKeys.client_stop(virtual_channel_id, client_id)
         try:
-            while True:
-                data = pipe_reader.read(chunk_size)
+            for data in chunks_iter:
                 if not data:
-                    break
+                    continue
                 yield data
                 bytes_since_heartbeat += len(data)
                 total_yielded += len(data)
+                chunk_count += 1
+
+                # Check stop signal every 100 chunks (mirrors VOD pattern)
+                if chunk_count % 100 == 0:
+                    if redis_client and redis_client.exists(stop_key):
+                        logger.info("Timeshift client %s received stop signal", client_id)
+                        redis_client.delete(stop_key)
+                        break
 
                 now = time.time()
                 if now - last_heartbeat >= 5:
@@ -470,15 +526,19 @@ def _stream_from_provider(
             logger.exception("Timeshift stream loop error")
         finally:
             elapsed = time.time() - loop_start
+            if bytes_since_heartbeat > 0:
+                _heartbeat_stats_client(
+                    redis_client, virtual_channel_id, client_id,
+                    bytes_delta=bytes_since_heartbeat,
+                )
             if debug and total_yielded > 0:
                 mbps = (total_yielded * 8) / elapsed / 1_000_000 if elapsed > 0 else 0
                 logger.info(
                     "Timeshift disconnect: vid=%s client=%s yielded=%d bytes in %.1fs (%.2f Mbps avg)",
                     virtual_channel_id, client_id, total_yielded, elapsed, mbps,
                 )
-            reader.stop()
             try:
-                pipe_reader.close()
+                upstream.close()
             except Exception:
                 pass
             _unregister_stats_client(redis_client, virtual_channel_id, client_id)
@@ -494,8 +554,10 @@ def _stream_from_provider(
     # propagates back into the generator).
     response["X-Accel-Buffering"] = "no"
     # Forward Content-Range so iPlayTV / TiviMate seek cursor stays correct.
-    # Content-Length is intentionally NOT forwarded: chunked transfer is the
-    # safer interchange format for long-lived streaming.
+    # Content-Length is NOT forwarded: Django's StreamingHttpResponse uses
+    # chunked transfer encoding, which is incompatible with Content-Length.
+    # Sending both causes clients to wait for the full file instead of
+    # playing progressively.
     if content_range:
         response["Content-Range"] = content_range
     response["Accept-Ranges"] = "bytes"
@@ -503,10 +565,16 @@ def _stream_from_provider(
 
 
 def _redact_url(url):
-    """Strip credentials from a URL for safe logging."""
+    """Strip credentials from a URL for safe logging.
+
+    Handles both ``user:pass@host`` and XC path-based credentials
+    (``/username/password/...``) by truncating to ``scheme://host/...``.
+    Query-string parameters are always stripped.
+    """
     if not url or "://" not in url:
         return url
     scheme, rest = url.split("://", 1)
     if "@" in rest:
         rest = rest.split("@", 1)[1]
-    return f"{scheme}://{rest.split('?')[0]}/..."
+    host = rest.split("/", 1)[0]
+    return f"{scheme}://{host}/..."

@@ -601,24 +601,12 @@ def stream_xc(request, username, password, channel_id):
     if custom_properties["xc_password"] != password:
         return Response({"error": "Invalid credentials"}, status=401)
 
-    # Resolve the channel id.  Try the internal Channel.id first (most
-    # requests).  Fall back to provider stream_id lookup for catch-up
-    # channels whose xc_get_live_streams emits the provider's stream_id.
-    from apps.channels.utils import resolve_channel_by_provider_stream_id
-    resolved_internal_id = None
+    # Clients always receive channel.id from get_live_streams — straightforward
+    # int lookup, no provider stream_id fallback needed.
     try:
-        candidate = int(channel_id)
-        if Channel.objects.filter(id=candidate).exists():
-            resolved_internal_id = candidate
+        resolved_internal_id = int(channel_id)
     except (TypeError, ValueError):
-        pass
-
-    if resolved_internal_id is None:
-        provider_channel, _ = resolve_channel_by_provider_stream_id(str(channel_id))
-        if provider_channel is not None:
-            resolved_internal_id = provider_channel.id
-        else:
-            return JsonResponse({"error": "Not found"}, status=404)
+        return JsonResponse({"error": "Not found"}, status=404)
 
     if user.user_level < 10:
         user_profile_count = user.channel_profiles.count()

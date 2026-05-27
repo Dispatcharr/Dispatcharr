@@ -43,31 +43,30 @@ def resolve_channel_by_provider_stream_id(provider_stream_id):
 
 
 def get_channel_catchup_info(channel):
-    """Return catch-up info for a Channel, or None if no stream has tv_archive.
+    """Return catch-up info for a Channel, or None if catch-up is unavailable.
 
-    Walks `channel.streams` in `channelstream__order`, returns a dict for the
-    first archive-enabled stream: `{stream, props, provider_stream_id,
-    tv_archive_duration}`. `tv_archive` may be stored as 1, "1", True or
-    "True" depending on the M3U importer that wrote it.
+    Uses the denormalized ``channel.is_catchup`` and
+    ``channel.catchup_provider_stream_id`` fields for a zero-cost gate,
+    then fetches the first catch-up stream (for its ``m3u_account``) with a
+    targeted filter instead of iterating all streams.
     """
-    for stream in channel.streams.order_by("channelstream__order"):
-        props = stream.custom_properties or {}
-        if str(props.get("tv_archive")) not in ("1", "True"):
-            continue
-        provider_stream_id = props.get("stream_id")
-        if not provider_stream_id:
-            continue
-        try:
-            archive_days = int(props.get("tv_archive_duration", 7) or 7)
-        except (TypeError, ValueError):
-            archive_days = 7
-        return {
-            "stream": stream,
-            "props": props,
-            "provider_stream_id": str(provider_stream_id),
-            "tv_archive_duration": archive_days,
-        }
-    return None
+    if not getattr(channel, "is_catchup", False) or not channel.catchup_provider_stream_id:
+        return None
+
+    stream = (
+        channel.streams.filter(is_catchup=True)
+        .select_related("m3u_account")
+        .first()
+    )
+    if stream is None:
+        return None
+
+    return {
+        "stream": stream,
+        "props": stream.custom_properties or {},
+        "provider_stream_id": str(channel.catchup_provider_stream_id),
+        "tv_archive_duration": channel.catchup_days or 7,
+    }
 
 
 def increment_stream_count(account):
