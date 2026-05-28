@@ -2503,9 +2503,13 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
                     _escaped = seg.replace("'", "'\\''")
                     _cl.write(f"file '{_escaped}'\n")
 
+            # Common flags that tolerate corrupt frames in the input segments.
+            _corrupt_flags = ["-fflags", "+discardcorrupt", "-err_detect", "ignore_err"]
+
             concat_result = subprocess.run(
                 [
                     "ffmpeg", "-y",
+                    *_corrupt_flags,
                     "-f", "concat", "-safe", "0",
                     "-i", concat_list_path,
                     "-c", "copy",
@@ -2522,8 +2526,7 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
             # MP4-intermediate fallback: some MPEG-TS streams (parameter set
             # changes mid-stream, weird PMT updates, audio discontinuities)
             # fail to mux directly into Matroska but go through an MP4
-            # container cleanly, which can then be remuxed losslessly to
-            # MKV.  Try this before declaring the recording lost.
+            # container cleanly, which can then be remuxed losslessly to MKV.
             if not _ok:
                 logger.warning(
                     f"DVR recording {recording_id}: direct HLS\u2192MKV concat failed "
@@ -2546,6 +2549,7 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
                 _mp4_concat = subprocess.run(
                     [
                         "ffmpeg", "-y",
+                        *_corrupt_flags,
                         "-f", "concat", "-safe", "0",
                         "-i", concat_list_path,
                         "-c", "copy",
@@ -2587,6 +2591,43 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
                         f"failed (rc={_mp4_concat.returncode}). stderr: "
                         f"{(_mp4_concat.stderr or '')[:300]}"
                     )
+                    # Last-resort fallback: re-encode audio to flush corrupt AAC
+                    # frames that neither stream copy nor aac_adtstoasc can handle.
+                    if not _ok:
+                        logger.warning(
+                            f"DVR recording {recording_id}: attempting audio re-encode "
+                            f"fallback to recover from corrupt AAC frames"
+                        )
+                        _reencode_result = subprocess.run(
+                            [
+                                "ffmpeg", "-y",
+                                *_corrupt_flags,
+                                "-f", "concat", "-safe", "0",
+                                "-i", concat_list_path,
+                                "-c:v", "copy",
+                                "-c:a", "aac", "-b:a", "192k",
+                                "-map", "0:v:0", "-map", "0:a:0",
+                                final_path,
+                            ],
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                        )
+                        if (
+                            _reencode_result.returncode == 0
+                            and os.path.exists(final_path)
+                            and os.path.getsize(final_path) > 0
+                        ):
+                            _ok = True
+                            _fallback_used = True
+                            logger.info(
+                                f"DVR recording {recording_id}: audio re-encode "
+                                f"fallback succeeded"
+                            )
+                        else:
+                            logger.error(
+                                f"DVR recording {recording_id}: audio re-encode "
+                                f"fallback failed (rc={_reencode_result.returncode}). "
+                                f"stderr: {(_reencode_result.stderr or '')[:300]}"
+                            )
                 try:
                     if os.path.exists(_intermediate_mp4):
                         os.remove(_intermediate_mp4)
