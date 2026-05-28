@@ -19,7 +19,7 @@ def add_maxplayer_user_agents(apps, schema_editor):
             is_active=True,
         )
 
-    # Add MaxPlayer (libmpv) - used for actual video stream requests
+    # Add MaxPlayer (libmpv) - used for actual video stream requests on Windows/desktop
     if not UserAgent.objects.filter(name="MaxPlayer (libmpv)").exists():
         UserAgent.objects.create(
             name="MaxPlayer (libmpv)",
@@ -28,10 +28,30 @@ def add_maxplayer_user_agents(apps, schema_editor):
             is_active=True,
         )
 
+    # Add MaxPlayer (iOS) - used for actual video stream requests on iPhone/iPad
+    if not UserAgent.objects.filter(name="MaxPlayer (iOS)").exists():
+        UserAgent.objects.create(
+            name="MaxPlayer (iOS)",
+            user_agent="MaxPlayer",
+            description="MaxPlayer iOS stream UA for video playback",
+            is_active=True,
+        )
+
+    # Add MaxPlayer Mobile - iOS API/EPG/playlist requests
+    if not UserAgent.objects.filter(name="MaxPlayer Mobile").exists():
+        UserAgent.objects.create(
+            name="MaxPlayer Mobile",
+            user_agent="maxplayer_mobile/32 CFNetwork/3860.600.2 Darwin/25.5.0",
+            description="MaxPlayer iOS UA for API/EPG/playlist requests",
+            is_active=True,
+        )
+
 
 def reverse_add_maxplayer_user_agents(apps, schema_editor):
     UserAgent = apps.get_model("core", "UserAgent")
-    UserAgent.objects.filter(name__in=["MaxPlayer", "MaxPlayer (libmpv)"]).delete()
+    UserAgent.objects.filter(name__in=[
+        "MaxPlayer", "MaxPlayer (libmpv)", "MaxPlayer (iOS)", "MaxPlayer Mobile"
+    ]).delete()
 
 
 class Migration(migrations.Migration):

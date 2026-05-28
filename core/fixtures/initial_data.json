@@ -40,6 +40,26 @@
     }
   },
   {
+    "model": "core.useragent",
+    "pk": 5,
+    "fields": {
+      "name": "MaxPlayer (iOS)",
+      "user_agent": "MaxPlayer",
+      "description": "MaxPlayer iOS stream UA for video playback",
+      "is_active": true
+    }
+  },
+  {
+    "model": "core.useragent",
+    "pk": 6,
+    "fields": {
+      "name": "MaxPlayer Mobile",
+      "user_agent": "maxplayer_mobile/32 CFNetwork/3860.600.2 Darwin/25.5.0",
+      "description": "MaxPlayer iOS UA for API/EPG/playlist requests",
+      "is_active": true
+    }
+  },
+  {
     "model": "core.streamprofile",
     "pk": 1,
     "fields": {
