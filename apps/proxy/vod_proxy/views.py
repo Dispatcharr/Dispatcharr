@@ -307,6 +307,11 @@ def stream_vod(request, content_type, content_id, session_id=None, profile_id=No
     if not network_access_allowed(request, "STREAMS"):
         return JsonResponse({"error": "Forbidden"}, status=403)
 
+    # When called via X-API-Key (or JWT) without a user injected from Xtream URL routing,
+    # fall back to the DRF-authenticated user so system events carry the correct username.
+    if user is None and hasattr(request, "user") and request.user.is_authenticated:
+        user = request.user
+
     logger.info(f"[VOD-REQUEST] Starting VOD stream request: {content_type}/{content_id}, session: {session_id}, profile: {profile_id}")
     logger.info(f"[VOD-REQUEST] Full request path: {request.get_full_path()}")
     logger.info(f"[VOD-REQUEST] Request method: {request.method}")
