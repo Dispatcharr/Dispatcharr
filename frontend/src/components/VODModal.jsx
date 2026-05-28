@@ -324,6 +324,11 @@ const VODModal = ({ vod, opened, onClose }) => {
   const onChangeSelectedProvider = (value) => {
     const provider = providers.find((p) => p.id.toString() === value);
     setSelectedProvider(provider);
+    if (provider) {
+      fetchMovieDetailsFromProvider(vod.id, provider.id)
+        .then((details) => setDetailedVOD(details))
+        .catch(() => {});
+    }
   }
 
   if (!vod) return null;
