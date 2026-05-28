@@ -396,7 +396,17 @@ class CoreSettings(models.Model):
             "channel_shutdown_delay": 0,
             "channel_init_grace_period": 5,
             "new_client_behind_seconds": 5,
+            "null_ts_keepalive": True,
         })
+
+    @classmethod
+    def get_null_ts_keepalive(cls):
+        """Whether to send null TS packets while waiting for stream init.
+
+        Set to False when downstream clients (e.g. Emby) misinterpret the
+        null TS packet during codec probing and force an unwanted transcode.
+        """
+        return bool(cls.get_proxy_settings().get("null_ts_keepalive", True))
 
     # System Settings
     @classmethod

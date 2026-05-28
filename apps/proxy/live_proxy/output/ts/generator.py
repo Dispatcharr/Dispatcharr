@@ -169,12 +169,18 @@ class StreamGenerator:
                     yield create_ts_packet('error', "Error: Channel is stopping")
                     return False
 
-            # Send null packets to keep the connection alive during initialization.
+            # Send null TS packets to keep the connection alive during
+            # initialization. This can be disabled via the proxy setting
+            # null_ts_keepalive=False for clients (e.g. Emby) that
+            # misinterpret the null packet during codec probing and force
+            # an unwanted transcode.
             if time.time() - last_keepalive >= keepalive_interval:
-                logger.debug(f"[{self.client_id}] Sending keepalive during initialization")
-                keepalive_data = create_ts_packet('null')
-                yield keepalive_data
-                self.bytes_sent += len(keepalive_data)
+                from core.models import CoreSettings
+                if CoreSettings.get_null_ts_keepalive():
+                    logger.debug(f"[{self.client_id}] Sending keepalive during initialization")
+                    keepalive_data = create_ts_packet('null')
+                    yield keepalive_data
+                    self.bytes_sent += len(keepalive_data)
                 last_keepalive = time.time()
             else:
                 gevent.sleep(0.1)
