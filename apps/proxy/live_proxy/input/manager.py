@@ -131,11 +131,17 @@ class StreamManager:
         """Create and configure requests session with optimal settings"""
         session = requests.Session()
 
-        # Configure session headers
+        # Configure session headers to match a native IPTV player.
+        # Suppress Accept-Encoding and Connection so requests does not add
+        # them automatically — they reveal an HTTP library and video streams
+        # are never compressed.
         session.headers.update({
             'User-Agent': self.user_agent,
-            'Connection': 'keep-alive'
+            'Accept': '*/*',
+            'Accept-Language': 'en_US',
         })
+        session.headers.pop('Accept-Encoding', None)
+        session.headers.pop('Connection', None)
 
         # Set up connection pooling for better performance
         adapter = requests.adapters.HTTPAdapter(

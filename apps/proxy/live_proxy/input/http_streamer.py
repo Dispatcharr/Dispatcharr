@@ -48,8 +48,17 @@ class HTTPStreamReader:
     def _read_stream(self):
         """Thread worker that reads HTTP stream and writes to pipe"""
         try:
-            # Build headers
-            headers = {}
+            # Build headers that closely match what a real IPTV player sends.
+            # Explicitly clear Accept-Encoding and Connection so requests does
+            # not add them — video streams are never compressed and the extra
+            # headers can reveal the client is an HTTP library rather than a
+            # native player.
+            headers = {
+                'Accept': '*/*',
+                'Accept-Language': 'en_US',
+                'Accept-Encoding': None,   # suppress requests default
+                'Connection': None,        # suppress requests default
+            }
             if self.user_agent:
                 headers['User-Agent'] = self.user_agent
 
