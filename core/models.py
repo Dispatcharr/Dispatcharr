@@ -315,6 +315,7 @@ class CoreSettings(models.Model):
             "comskip_custom_path": "",
             "comskip_mode": "cut",
             "comskip_hw_accel": "none",
+            "comskip_threads": 1,
             "pre_offset_minutes": 0,
             "post_offset_minutes": 0,
             "series_rules": [],
@@ -353,6 +354,14 @@ class CoreSettings(models.Model):
     def get_dvr_comskip_hw_accel(cls):
         hw = cls.get_dvr_settings().get("comskip_hw_accel", "none")
         return hw if hw in ("none", "cuvid", "qsv") else "none"
+
+    @classmethod
+    def get_dvr_comskip_threads(cls):
+        val = cls.get_dvr_settings().get("comskip_threads", 1)
+        try:
+            return max(0, int(val))
+        except (TypeError, ValueError):
+            return 1
 
     @classmethod
     def get_dvr_comskip_custom_path(cls):

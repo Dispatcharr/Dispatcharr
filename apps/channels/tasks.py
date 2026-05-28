@@ -3176,9 +3176,17 @@ def comskip_process_recording(recording_id: int):
     try:
         comskip_mode = CoreSettings.get_dvr_comskip_mode()
         hw_accel = CoreSettings.get_dvr_comskip_hw_accel()
+        threads = CoreSettings.get_dvr_comskip_threads()
         cmd = [comskip_bin, "--output", os.path.dirname(file_path)]
         if hw_accel != "none":
             cmd.insert(1, f"--{hw_accel}")
+        # Pass --threads on the CLI so it takes effect before ffmpeg decoder
+        # initialisation. The INI-based thread_count=0 setting is applied too
+        # late and causes SIGABRT on multi-threaded builds inside Docker.
+        # Default is 1 (safe); set comskip_threads=0 in DVR settings to let
+        # comskip auto-detect (useful on bare-metal with many cores).
+        if threads != 0:
+            cmd.append(f"--threads={threads}")
         # Prefer user-specified INI, fall back to known defaults
         ini_candidates = []
         try:
