@@ -439,6 +439,28 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
             trailer = extract_string_from_array_or_string(trailer_raw) if trailer_raw else None
             logo_url = movie_data.get('stream_icon') or ''
 
+            # Extract optional metadata fields supplied by the XC provider in
+            # get_vod_streams. Stored in custom_properties so that the
+            # provider-info endpoint (and the XC vod_info passthrough) can
+            # return them without a separate per-movie API call.
+            director = extract_string_from_array_or_string(
+                movie_data.get('director') or ''
+            )
+            actors = extract_string_from_array_or_string(
+                movie_data.get('actors') or movie_data.get('cast') or ''
+            )
+            release_date = movie_data.get('release_date') or movie_data.get('releasedate') or ''
+
+            custom_props = {}
+            if trailer:
+                custom_props['trailer'] = trailer
+            if director:
+                custom_props['director'] = director
+            if actors:
+                custom_props['actors'] = actors
+            if release_date:
+                custom_props['release_date'] = release_date
+
             movie_props = {
                 'name': name,
                 'year': year,
@@ -448,7 +470,7 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
                 'rating': rating,
                 'genre': genre,
                 'duration_secs': duration_secs,
-                'custom_properties': {'trailer': trailer} if trailer else None,
+                'custom_properties': custom_props or None,
             }
 
             movie_keys[movie_key] = {
@@ -548,8 +570,14 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
 
             for field, value in movie_props.items():
                 if field == 'custom_properties':
-                    if value != movie.custom_properties:
-                        movie.custom_properties = value
+                    # Merge incoming props into the existing dict so that
+                    # detailed_info and other keys written by advanced refresh
+                    # are not lost when a basic sync runs afterwards.
+                    existing_cp = movie.custom_properties or {}
+                    incoming_cp = value or {}
+                    merged = {**existing_cp, **incoming_cp}
+                    if merged != existing_cp:
+                        movie.custom_properties = merged
                         updated = True
                 elif getattr(movie, field) != value:
                     setattr(movie, field, value)
