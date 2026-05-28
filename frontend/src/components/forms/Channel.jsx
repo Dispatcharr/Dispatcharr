@@ -52,6 +52,7 @@ import {
   getProviderHint,
   handleEpgUpdate,
   isFormFieldOverridden,
+  listOverriddenFields,
   matchChannelEpg,
   OVERRIDABLE_FIELDS,
   OVERRIDE_FIELD_LABELS,
@@ -381,11 +382,13 @@ const ChannelForm = ({ channel: channelProp = null, isOpen, onClose }) => {
   const watchedFormValues = watch();
   const overriddenFieldLabels = useMemo(() => {
     if (!channel) return [];
-    return OVERRIDABLE_FIELDS.filter((field) =>
-      isFormFieldOverridden(channel, field, watchedFormValues[field])
-    ).map((field) => OVERRIDE_FIELD_LABELS[field]);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [channel, JSON.stringify(watchedFormValues)]);
+    // Use the stored override record (channel.override) to decide whether the
+    // "Clear All Overrides" button should appear, not the form-vs-provider diff.
+    // isFormFieldOverridden returns false when the override value happens to
+    // equal the current provider value, hiding the button even though the
+    // override is still stored and will block future auto-sync updates.
+    return listOverriddenFields(channel);
+  }, [channel]);
   const hasAnyOverride = overriddenFieldLabels.length > 0;
 
   const onSubmit = async (values) => {
