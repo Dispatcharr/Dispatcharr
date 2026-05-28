@@ -1,0 +1,31 @@
+on:
+  issues:
+    types: [opened, reopened]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+
+      # Request a bot user token
+      - uses: actions/create-github-app-token@v1
+        id: app-token
+        with:
+          app-id: ${{ secrets.BOT_APP_ID }}
+          private-key: ${{ secrets.BOT_PRIVATE_KEY }}
+
+      # Do the actual check
+      - uses: Dispatcharr/repo-bot/actions/template-enforcer@v1
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          event-type: issue
+          required-type: "Bug, Feature"
+          enforcement: close-and-lock
+          bypass-for-members: true
+          close-comment: |
+            ## Issue not opened from a template
+
+
+            This issue was closed because it was not opened using one of the available issue templates.
+
+            Please [open a new issue]({new-issue-url}) and select the appropriate template. This helps us triage and address issues efficiently.
