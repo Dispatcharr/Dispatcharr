@@ -44,20 +44,37 @@ def is_compact_group(group_relation):
 def get_group_relation_for_channel(channel):
     """Resolve the ChannelGroupM3UAccount that owns this auto-created
     channel. Returns None for manual channels, or when the relation has
-    been deleted."""
-    if (
-        not channel.auto_created
-        or not channel.auto_created_by_id
-        or not channel.channel_group_id
-    ):
+    been deleted.
+
+    When a Channel Group Override is active, channel.channel_group_id
+    holds the *target* (override) group's id, not the source group's id
+    stored on the ChannelGroupM3UAccount.  In that case the direct lookup
+    fails, so we fall back to scanning relations for the same M3U account
+    and matching on the group_override custom-property.
+    """
+    if not channel.auto_created or not channel.auto_created_by_id:
         return None
-    try:
-        return ChannelGroupM3UAccount.objects.get(
-            m3u_account_id=channel.auto_created_by_id,
-            channel_group_id=channel.channel_group_id,
-        )
-    except ChannelGroupM3UAccount.DoesNotExist:
-        return None
+
+    if channel.channel_group_id:
+        # Fast path: no override active — source group == current group.
+        try:
+            return ChannelGroupM3UAccount.objects.get(
+                m3u_account_id=channel.auto_created_by_id,
+                channel_group_id=channel.channel_group_id,
+            )
+        except ChannelGroupM3UAccount.DoesNotExist:
+            pass
+
+        # Override path: channel.channel_group_id is the override target.
+        # Find the relation whose custom_properties["group_override"] matches.
+        for rel in ChannelGroupM3UAccount.objects.filter(
+            m3u_account_id=channel.auto_created_by_id
+        ):
+            cp = rel.custom_properties or {}
+            if str(cp.get("group_override", "")) == str(channel.channel_group_id):
+                return rel
+
+    return None
 
 
 def build_reserved_set(exclude_channel_ids=None, range_start=None, range_end=None):
@@ -130,9 +147,11 @@ def assign_compact_numbers_for_channels(channel_ids):
     if not channels:
         return {}
 
-    # Group channels by (account_id, group_id) so each unique pair's
-    # ChannelGroupM3UAccount is resolved with a single SELECT rather than
-    # one per channel.
+    # Group channels by (account_id, group_id). When a Channel Group
+    # Override is active, channel.channel_group_id is the *target* group
+    # rather than the source group stored on ChannelGroupM3UAccount, so the
+    # direct (account_id, channel_group_id) lookup below may miss it.
+    # We collect all account IDs and then match relations via get_group_relation_for_channel.
     by_pair = {}
     for ch in channels:
         if _channel_has_number_override(ch):
@@ -143,6 +162,7 @@ def assign_compact_numbers_for_channels(channel_ids):
         return {}
 
     pair_keys = list(by_pair.keys())
+    # Direct lookup for channels whose source group == channel_group_id
     relations_by_pair = {}
     relations_qs = ChannelGroupM3UAccount.objects.filter(
         m3u_account_id__in={k[0] for k in pair_keys},
@@ -150,6 +170,17 @@ def assign_compact_numbers_for_channels(channel_ids):
     )
     for rel in relations_qs:
         relations_by_pair[(rel.m3u_account_id, rel.channel_group_id)] = rel
+
+    # Override fallback: for (account_id, group_id) pairs not yet resolved,
+    # resolve per-channel via get_group_relation_for_channel (handles the case
+    # where channel_group_id is the override target, not the source group).
+    unresolved_pairs = {k for k in pair_keys if k not in relations_by_pair}
+    if unresolved_pairs:
+        for key in unresolved_pairs:
+            sample_channel = by_pair[key][0]
+            rel = get_group_relation_for_channel(sample_channel)
+            if rel is not None:
+                relations_by_pair[key] = rel
 
     by_relation = {}
     for key, group_channels in by_pair.items():
@@ -265,11 +296,20 @@ def _repack_inner(group_relation):
         else None
     )
 
+    # When a Channel Group Override is configured, channels are stored
+    # under the override target group's id rather than the source group's id.
+    # Include both the source group and the override target in the lookup so
+    # that repack sees all channels regardless of whether the override is set.
+    override_group_id = cp.get("group_override")
+    group_ids = {group_id}
+    if override_group_id:
+        group_ids.add(int(override_group_id))
+
     channels = list(
         Channel.objects.filter(
             auto_created=True,
             auto_created_by_id=account_id,
-            channel_group_id=group_id,
+            channel_group_id__in=group_ids,
         ).select_related("override")
     )
 
