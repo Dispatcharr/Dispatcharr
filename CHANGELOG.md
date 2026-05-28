@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Docker base image now uses a multi-stage build.** The builder stage installs compilers and dev headers (`gcc`, `g++`, `gfortran`, `build-essential`, `libopenblas-dev`, `libpcre3-dev`, `python3.13-dev`, `ninja-build`) to create the virtual environment and compile the legacy NumPy wheel (cpu-baseline=none for old hardware). The final runtime image starts from the same ffmpeg base, copies only the prebuilt venv and wheel from the builder, and installs only the runtime libraries needed at runtime - eliminating compiler binaries from production containers and reducing final image size. — Thanks [@kensac](https://github.com/kensac)
+- **`libpq-dev` removed from both build and runtime stages.** The project uses `psycopg2-binary`, which bundles its own statically linked copy of libpq inside the wheel. No system libpq headers or shared library are needed at build or runtime.
+
 ### Performance
 
 - **Reduced Redis round-trips on the Stats page channel status endpoint.** `get_basic_channel_info` was making up to 6 individual `HGET` calls per connected client plus a redundant `HGET` for `TOTAL_BYTES` (already present in the preceding `HGETALL` result). Client metadata is now fetched with a single `HMGET` per client, and `TOTAL_BYTES` is read from the already-fetched hash. Under load with many active streams this significantly reduces the time each uWSGI worker holds the GIL servicing the stats endpoint, reducing the chance of concurrent requests from other pages timing out with a 503. The same `HGET`-to-`HMGET` consolidation was applied to `stream_ts` and `get_user_active_connections`. The Stats page frontend was also fixed to fire the initial fetch only once on mount (previously two `useEffect` hooks both triggered an immediate fetch on load). — Thanks [@JCBird1012](https://github.com/JCBird1012)
