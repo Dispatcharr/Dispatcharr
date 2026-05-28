@@ -451,9 +451,11 @@ class Channel(models.Model):
     def effective_stream_profile_obj(self):
         return self._resolve_effective_fk("stream_profile")
 
-    # @TODO: honor stream's stream profile
     def get_stream_profile(self):
-        stream_profile = self.stream_profile
+        # Respect per-channel overrides: effective_stream_profile_obj uses
+        # _resolve_effective_fk which picks override.stream_profile when set,
+        # falling back to the channel's own stream_profile field.
+        stream_profile = self.effective_stream_profile_obj
         if not stream_profile:
             stream_profile = StreamProfile.objects.get(
                 id=CoreSettings.get_default_stream_profile_id()
