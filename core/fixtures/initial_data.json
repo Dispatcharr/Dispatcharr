@@ -20,6 +20,26 @@
     }
   },
   {
+    "model": "core.useragent",
+    "pk": 3,
+    "fields": {
+      "name": "MaxPlayer",
+      "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) MaxPlayer/1.2.47 Chrome/106.0.5249.199 Electron/21.4.4 Safari/537.36",
+      "description": "MaxPlayer desktop app (Electron/Chromium)",
+      "is_active": true
+    }
+  },
+  {
+    "model": "core.useragent",
+    "pk": 4,
+    "fields": {
+      "name": "MaxPlayer (libmpv)",
+      "user_agent": "MaxPlayer/1.2.47 (win32 - x64) (libmpv)",
+      "description": "MaxPlayer stream UA used by libmpv for video playback",
+      "is_active": true
+    }
+  },
+  {
     "model": "core.streamprofile",
     "pk": 1,
     "fields": {
