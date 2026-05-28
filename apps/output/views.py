@@ -3159,13 +3159,19 @@ def get_host_and_port(request):
         # Omit standard ports from URLs
         return host, None if port == standard_port else port
 
-    # 4. Check if we're behind a reverse proxy (X-Forwarded-Proto or X-Forwarded-For present)
-    # If so, assume standard port for the scheme (don't trust SERVER_PORT in this case)
-    if request.META.get("HTTP_X_FORWARDED_PROTO") or request.META.get("HTTP_X_FORWARDED_FOR"):
+    # 4. Check if we're behind a reverse proxy (X-Forwarded-Proto or X-Forwarded-For present).
+    # Still check SERVER_PORT: a non-standard port (e.g. 9191) must be preserved even behind
+    # a proxy so that generated M3U URLs remain reachable. Only skip SERVER_PORT when it
+    # matches the standard port for the scheme (80/443), which means the proxy handles TLS
+    # termination and the port can be safely omitted.
+    behind_proxy = request.META.get("HTTP_X_FORWARDED_PROTO") or request.META.get("HTTP_X_FORWARDED_FOR")
+    port = request.META.get("SERVER_PORT")
+    if behind_proxy:
+        if port and port != standard_port:
+            return host, port
         return host, None
 
     # 5. Try SERVER_PORT from META (only if NOT behind reverse proxy)
-    port = request.META.get("SERVER_PORT")
     if port:
         # Omit standard ports from URLs
         return host, None if port == standard_port else port
