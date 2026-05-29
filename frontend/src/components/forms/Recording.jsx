@@ -304,7 +304,7 @@ const RecordingModal = ({
   const handleRecurringSubmit = async (values) => {
     try {
       setSubmitting(true);
-      await API.createRecurringRule({
+      const result = await API.createRecurringRule({
         channel: values.channel_id,
         days_of_week: (values.days_of_week || []).map((d) => Number(d)),
         start_time: toTimeString(values.start_time),
@@ -315,12 +315,28 @@ const RecordingModal = ({
       });
 
       await Promise.all([fetchRecurringRules(), fetchRecordings()]);
-      notifications.show({
-        title: 'Recurring rule saved',
-        message: 'Future slots will be scheduled automatically',
-        color: 'green',
-        autoClose: 2500,
-      });
+
+      const count = result?.scheduled_count ?? null;
+      if (count === 0) {
+        notifications.show({
+          title: 'Recurring rule saved',
+          message:
+            'Rule created, but no upcoming slots were found in the next 14 days. ' +
+            'Check that your selected days and date range include future dates.',
+          color: 'yellow',
+          autoClose: 6000,
+        });
+      } else {
+        notifications.show({
+          title: 'Recurring rule saved',
+          message:
+            count != null
+              ? `${count} slot${count !== 1 ? 's' : ''} scheduled`
+              : 'Future slots will be scheduled automatically',
+          color: 'green',
+          autoClose: 2500,
+        });
+      }
       handleClose();
     } catch (error) {
       console.error('Failed to create recurring rule', error);

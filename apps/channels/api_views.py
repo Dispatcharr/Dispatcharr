@@ -3173,10 +3173,20 @@ class RecurringRecordingRuleViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         rule = serializer.save()
         try:
-            sync_recurring_rule_impl(rule.id, drop_existing=True)
+            rule._created_count = sync_recurring_rule_impl(rule.id, drop_existing=True)
         except Exception as err:
             logger.warning(f"Failed to initialize recurring rule {rule.id}: {err}")
+            rule._created_count = 0
         return rule
+
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        rule = self.perform_create(serializer)
+        headers = self.get_success_headers(serializer.data)
+        data = serializer.data
+        data['scheduled_count'] = getattr(rule, '_created_count', 0)
+        return Response(data, status=status.HTTP_201_CREATED, headers=headers)
 
     def perform_update(self, serializer):
         rule = serializer.save()
