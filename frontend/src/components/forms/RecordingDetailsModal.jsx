@@ -43,6 +43,90 @@ import {
 } from '../../utils/forms/RecordingDetailsModalUtils.js';
 import { showNotification } from '../../utils/notificationUtils.js';
 
+const EpisodeRow = ({
+  rec,
+  recording,
+  channel,
+  channelsById,
+  livePosterUrl,
+  toUserTime,
+  dateformat,
+  timeformat,
+  onOpenChild,
+}) => {
+  const cp = rec.custom_properties || {};
+  const pr = cp.program || {};
+  const start = toUserTime(rec.start_time);
+  const end = toUserTime(rec.end_time);
+  const season = cp.season ?? pr?.custom_properties?.season;
+  const episode = cp.episode ?? pr?.custom_properties?.episode;
+  const onscreen =
+    cp.onscreen_episode ?? pr?.custom_properties?.onscreen_episode;
+  const se = getSeasonLabel(season, episode, onscreen);
+  const posterLogoId = cp.poster_logo_id;
+  const purl = getPosterUrl(posterLogoId, cp, livePosterUrl);
+  const epChannel =
+    channelsById[rec.channel] ||
+    (rec.channel === recording?.channel ? channel : null);
+
+  const onRemove = async (e) => {
+    e?.stopPropagation?.();
+    try {
+      await deleteRecordingById(rec.id);
+    } catch (error) {
+      console.error('Failed to delete upcoming recording', error);
+    }
+  };
+
+  return (
+    <Card
+      withBorder
+      radius="md"
+      padding="sm"
+      style={{ backgroundColor: '#27272A', cursor: 'pointer' }}
+      onClick={() => onOpenChild(rec)}
+    >
+      <Flex gap="sm" align="center">
+        <Image
+          src={purl}
+          w={64}
+          h={64}
+          fit="contain"
+          radius="sm"
+          alt={pr.title}
+          fallbackSrc={getChannelLogoUrl(epChannel) || defaultLogo}
+        />
+        <Stack gap={4} flex={1}>
+          <Group justify="space-between">
+            <Text
+              fw={600}
+              size="sm"
+              lineClamp={1}
+              title={pr.sub_title || pr.title}
+            >
+              {pr.sub_title || pr.title}
+            </Text>
+            {se && (
+              <Badge color="gray" variant="light">
+                {se}
+              </Badge>
+            )}
+          </Group>
+          <Text size="xs">
+            {format(start, `${dateformat}, YYYY ${timeformat}`)} –{' '}
+            {format(end, timeformat)}
+          </Text>
+        </Stack>
+        <Group gap={6}>
+          <Button size="xs" color="red" variant="light" onClick={onRemove}>
+            Remove
+          </Button>
+        </Group>
+      </Flex>
+    </Card>
+  );
+};
+
 const RecordingDetailsModal = ({
   opened,
   onClose,
@@ -280,86 +364,6 @@ const RecordingDetailsModal = ({
 
   if (!recording) return null;
 
-  const EpisodeRow = ({ rec }) => {
-    const cp = rec.custom_properties || {};
-    const pr = cp.program || {};
-    const start = toUserTime(rec.start_time);
-    const end = toUserTime(rec.end_time);
-    const season = cp.season ?? pr?.custom_properties?.season;
-    const episode = cp.episode ?? pr?.custom_properties?.episode;
-    const onscreen =
-      cp.onscreen_episode ?? pr?.custom_properties?.onscreen_episode;
-    const se = getSeasonLabel(season, episode, onscreen);
-    const posterLogoId = cp.poster_logo_id;
-    const purl = getPosterUrl(posterLogoId, cp, livePosterUrl);
-    const epChannel =
-      channelsById[rec.channel] ||
-      (rec.channel === recording?.channel ? channel : null);
-
-    const onRemove = async (e) => {
-      e?.stopPropagation?.();
-      try {
-        await deleteRecordingById(rec.id);
-      } catch (error) {
-        console.error('Failed to delete upcoming recording', error);
-      }
-      // recording_cancelled WS event triggers the debounced fetchRecordings()
-    };
-
-    const handleOnMainCardClick = () => {
-      setChildRec(rec);
-      setChildOpen(true);
-    };
-
-    return (
-      <Card
-        withBorder
-        radius="md"
-        padding="sm"
-        style={{ backgroundColor: '#27272A', cursor: 'pointer' }}
-        onClick={handleOnMainCardClick}
-      >
-        <Flex gap="sm" align="center">
-          <Image
-            src={purl}
-            w={64}
-            h={64}
-            fit="contain"
-            radius="sm"
-            alt={pr.title || recordingName}
-            fallbackSrc={getChannelLogoUrl(epChannel) || defaultLogo}
-          />
-          <Stack gap={4} flex={1}>
-            <Group justify="space-between">
-              <Text
-                fw={600}
-                size="sm"
-                lineClamp={1}
-                title={pr.sub_title || pr.title}
-              >
-                {pr.sub_title || pr.title}
-              </Text>
-              {se && (
-                <Badge color="gray" variant="light">
-                  {se}
-                </Badge>
-              )}
-            </Group>
-            <Text size="xs">
-              {format(start, `${dateformat}, YYYY ${timeformat}`)} –{' '}
-              {format(end, timeformat)}
-            </Text>
-          </Stack>
-          <Group gap={6}>
-            <Button size="xs" color="red" variant="light" onClick={onRemove}>
-              Remove
-            </Button>
-          </Group>
-        </Flex>
-      </Card>
-    );
-  };
-
   const WatchLive = () => {
     return (
       <Button
@@ -416,7 +420,21 @@ const RecordingDetailsModal = ({
           </Text>
         )}
         {upcomingEpisodes.map((ep) => (
-          <EpisodeRow key={`ep-${ep.id}`} rec={ep} />
+          <EpisodeRow
+            key={`ep-${ep.id}`}
+            rec={ep}
+            recording={recording}
+            channel={channel}
+            channelsById={channelsById}
+            livePosterUrl={livePosterUrl}
+            toUserTime={toUserTime}
+            dateformat={dateformat}
+            timeformat={timeformat}
+            onOpenChild={(rec) => {
+              setChildRec(rec);
+              setChildOpen(true);
+            }}
+          />
         ))}
         {childOpen && childRec && (
           <RecordingDetailsModal
@@ -601,7 +619,7 @@ const RecordingDetailsModal = ({
         title: { color: 'white' },
       }}
     >
-      {isSeriesGroup ? <Series /> : <Movie />}
+      {isSeriesGroup ? Series() : Movie()}
     </Modal>
   );
 };
