@@ -1,24 +1,31 @@
-import API from "../../api.js";
-import useChannelsStore from "../../store/channels.jsx";
-import defaultLogo from "../../images/logo.png";
-import { formatSeasonEpisode } from "../guideUtils.js";
-import { buildLiveStreamUrl } from "../components/FloatingVideoUtils.js";
+import API from '../../api.js';
+import useChannelsStore from '../../store/channels.jsx';
+import defaultLogo from '../../images/logo.png';
+import { formatSeasonEpisode } from '../guideUtils.js';
+import { buildLiveStreamUrl } from '../components/FloatingVideoUtils.js';
 
 export const removeRecording = (id) => {
+  // Optimistically remove immediately from UI
   try {
     useChannelsStore.getState().removeRecording(id);
   } catch (error) {
-    console.error("Failed to optimistically remove recording", error);
+    console.error('Failed to optimistically remove recording', error);
   }
+  // Fire-and-forget server delete; websocket will keep others in sync
   API.deleteRecording(id).catch(() => {
+    // On failure, fallback to refetch to restore state
     try {
       useChannelsStore.getState().fetchRecordings();
     } catch (error) {
-      console.error("Failed to refresh recordings after delete", error);
+      console.error('Failed to refresh recordings after delete', error);
     }
   });
 };
 
+/**
+ * Resolve the channel logo cache URL from either a full channel object
+ * (has logo.cache_url) or a summary object (has logo_id integer).
+ */
 export const getChannelLogoUrl = (channel) => {
   if (!channel) return null;
   let url = channel.logo_id
@@ -26,8 +33,8 @@ export const getChannelLogoUrl = (channel) => {
     : channel.logo?.cache_url || null;
   if (
     url &&
-    url.startsWith("/") &&
-    typeof import.meta !== "undefined" &&
+    url.startsWith('/') &&
+    typeof import.meta !== 'undefined' &&
     import.meta.env &&
     import.meta.env.DEV
   ) {
@@ -42,10 +49,10 @@ export const getPosterUrl = (posterLogoId, customProperties, posterUrl) => {
     : customProperties?.poster_url || posterUrl || null;
   if (
     purl &&
-    typeof import.meta !== "undefined" &&
+    typeof import.meta !== 'undefined' &&
     import.meta.env &&
     import.meta.env.DEV &&
-    purl.startsWith("/")
+    purl.startsWith('/')
   ) {
     purl = `${window.location.protocol}//${window.location.hostname}:5656${purl}`;
   }
@@ -54,7 +61,7 @@ export const getPosterUrl = (posterLogoId, customProperties, posterUrl) => {
 
 export const getShowVideoUrl = (channel, env_mode) => {
   let url = `/proxy/ts/stream/${channel.uuid}`;
-  if (env_mode === "dev") {
+  if (env_mode === 'dev') {
     url = `${window.location.protocol}//${window.location.hostname}:5656${url}`;
   }
   return buildLiveStreamUrl(url);
@@ -80,23 +87,23 @@ export const deleteSeriesAndRule = async (seriesInfo) => {
   const { tvg_id, title } = seriesInfo;
   try {
     await API.bulkRemoveSeriesRecordings({
-      tvg_id: tvg_id || "",
+      tvg_id: tvg_id || '',
       title,
-      scope: "title",
+      scope: 'title',
     });
   } catch (error) {
-    console.error("Failed to remove series recordings", error);
+    console.error('Failed to remove series recordings', error);
   }
   try {
     await API.deleteSeriesRule(tvg_id, title);
   } catch (error) {
-    console.error("Failed to delete series rule", error);
+    console.error('Failed to delete series rule', error);
   }
 };
 
 export const getRecordingUrl = (customProps, env_mode) => {
   let fileUrl = customProps?.file_url || customProps?.output_file_url;
-  if (fileUrl && env_mode === "dev" && fileUrl.startsWith("/")) {
+  if (fileUrl && env_mode === 'dev' && fileUrl.startsWith('/')) {
     fileUrl = `${window.location.protocol}//${window.location.hostname}:5656${fileUrl}`;
   }
   return fileUrl;
