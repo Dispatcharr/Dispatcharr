@@ -111,7 +111,7 @@ XC_PROFILE_REFRESH_DELAY = float(os.environ.get('XC_PROFILE_REFRESH_DELAY', '2.5
 
 # Database optimization settings
 DATABASE_STATEMENT_TIMEOUT = 300  # Seconds before timing out long-running queries
-DATABASE_CONN_MAX_AGE = None  # Managed by django-db-geventpool; None = persistent pool connections
+DATABASE_CONN_MAX_AGE = 0  # geventpool intercepts close(); pool handles reuse
 
 # Disable atomic requests for performance-sensitive views
 ATOMIC_REQUESTS = False
@@ -221,7 +221,7 @@ if os.getenv("DB_ENGINE", None) == "sqlite":
 else:
     DATABASES = {
         "default": {
-            "ENGINE": "django_db_geventpool.backends.postgresql",
+            "ENGINE": "django_db_geventpool.backends.postgresql_psycopg3",
             "NAME": os.environ.get("POSTGRES_DB", "dispatcharr"),
             "USER": os.environ.get("POSTGRES_USER", "dispatch"),
             "PASSWORD": os.environ.get("POSTGRES_PASSWORD", "secret"),
@@ -229,8 +229,9 @@ else:
             "PORT": int(os.environ.get("POSTGRES_PORT", 5432)),
             "CONN_MAX_AGE": DATABASE_CONN_MAX_AGE,
             "OPTIONS": {
-                "MAX_CONNS": 20,   # Per-worker pool size; 4 workers × 20 = 80 total < pg max_connections=100
-                "REUSE_CONNS": 10, # Connections to keep warm between requests
+                "MAX_CONNS": 8,   # Per-worker pool size; 4 workers × 8 = 32 total < pg max_connections=100
+                "REUSE_CONNS": 3, # Connections to keep warm between requests
+                "pool": False,    # Disable Django's native psycopg3 pool; geventpool manages connections
             },
         }
     }
