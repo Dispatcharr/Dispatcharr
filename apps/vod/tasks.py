@@ -453,7 +453,7 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
 
             custom_props = {}
             if trailer:
-                custom_props['trailer'] = trailer
+                custom_props['youtube_trailer'] = trailer
             if director:
                 custom_props['director'] = director
             if actors:
@@ -573,9 +573,18 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
                     # Merge incoming props into the existing dict so that
                     # detailed_info and other keys written by advanced refresh
                     # are not lost when a basic sync runs afterwards.
+                    # For metadata fields (director/actors/release_date), only
+                    # write if the field is empty — advanced refresh may have
+                    # stored richer data that basic sync must not overwrite.
                     existing_cp = movie.custom_properties or {}
                     incoming_cp = value or {}
-                    merged = {**existing_cp, **incoming_cp}
+                    merged = dict(existing_cp)
+                    for k, v in incoming_cp.items():
+                        if k in ('director', 'actors', 'release_date'):
+                            if not existing_cp.get(k):
+                                merged[k] = v
+                        else:
+                            merged[k] = v
                     if merged != existing_cp:
                         movie.custom_properties = merged
                         updated = True
