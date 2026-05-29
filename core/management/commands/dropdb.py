@@ -1,6 +1,6 @@
 import sys
-import psycopg2
-from psycopg2 import sql
+import psycopg
+from psycopg import sql
 from django.core.management.base import BaseCommand
 from django.conf import settings
 from django.db import connection
@@ -38,8 +38,7 @@ class Command(BaseCommand):
         maintenance_db = 'postgres'
         try:
             self.stdout.write("Connecting to maintenance database...")
-            conn = psycopg2.connect(dbname=maintenance_db, user=user, password=password, host=host, port=port, **ssl_kwargs)
-            conn.autocommit = True
+            conn = psycopg.connect(dbname=maintenance_db, user=user, password=password, host=host, port=port, autocommit=True, **ssl_kwargs)
             cur = conn.cursor()
             self.stdout.write(f"Dropping database '{db_name}'...")
             cur.execute(sql.SQL("DROP DATABASE IF EXISTS {}").format(sql.Identifier(db_name)))
