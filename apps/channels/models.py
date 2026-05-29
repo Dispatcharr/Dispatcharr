@@ -712,6 +712,11 @@ class Channel(models.Model):
                         True,
                     )  # Return newly assigned stream and matched profile
                 else:
+                    from apps.m3u.connection_pool import (
+                        group_has_capacity_for_profile,
+                        profile_has_capacity_for_selection,
+                    )
+
                     # At capacity: try to preempt a lower-impact channel on this profile
                     victim_channel_id = self._pick_channel_to_preempt(
                         profile_id=profile.id,
@@ -723,12 +728,21 @@ class Channel(models.Model):
                         logger.info(f"Preempting channel {victim_channel_id} for new stream on profile {profile.id}")
                         # return self.id, profile.id, victim_channel_id
 
-                    # This profile is at max connections
                     has_streams_but_maxed_out = True
-                    logger.debug(
-                        f"Profile {profile.id} at max connections: "
-                        f"{current_count}/{profile.max_streams}"
-                    )
+                    if not profile_has_capacity_for_selection(profile, redis_client):
+                        logger.info(
+                            f"Profile {profile.id} at max connections: "
+                            f"{current_count}/{profile.max_streams}, trying next profile"
+                        )
+                    elif not group_has_capacity_for_profile(profile, redis_client):
+                        logger.info(
+                            f"Profile {profile.id} login or server group pool full, trying next profile"
+                        )
+                    else:
+                        logger.debug(
+                            f"Profile {profile.id} reservation failed: "
+                            f"{current_count}/{profile.max_streams}"
+                        )
 
         # No available streams - determine specific reason
         if has_streams_but_maxed_out:
@@ -873,25 +887,9 @@ class Channel(models.Model):
         if current_profile_id == new_profile_id:
             return True
 
-        from apps.m3u.models import M3UAccountProfile
-        from apps.m3u.connection_pool import (
-            get_enforced_server_group_for_profile,
-            profile_connections_key,
-        )
+        from apps.m3u.connection_pool import profile_connections_key
 
-        new_profile = M3UAccountProfile.objects.get(id=new_profile_id)
-        if get_enforced_server_group_for_profile(new_profile):
-            # Shared group pool: one active stream uses one group slot regardless
-            # of which profile supplies the URL.
-            redis_client.set(f"stream_profile:{stream_id}", new_profile_id)
-            logger.info(
-                f"Updated stream {stream_id} profile from {current_profile_id} to "
-                f"{new_profile_id} (shared group pool unchanged)"
-            )
-            return True
-
-        # Use pipeline for atomic profile switch to prevent counter drift
-        # if an exception occurs between DECR and INCR
+        # Profile counters always move on switch; group totals stay unchanged (one stream).
         old_profile_connections_key = profile_connections_key(current_profile_id)
         new_profile_connections_key = profile_connections_key(new_profile_id)
         old_count = int(redis_client.get(old_profile_connections_key) or 0)

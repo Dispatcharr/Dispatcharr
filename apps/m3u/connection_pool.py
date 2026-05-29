@@ -3,8 +3,9 @@ Shared connection pool enforcement for M3U accounts in the same ServerGroup.
 
 Profile selection rotates across M3UAccountProfile rows using each profile's own
 Redis counter (the pre-pool behavior). When an account belongs to a ServerGroup
-with max_streams > 0, the group counter is scoped by provider login fingerprint
-so profiles that rewrite to different IPTV credentials keep independent limits.
+with max_streams > 0, a credential-scoped counter is checked on reserve/release
+so accounts sharing the same provider login share one limit without blocking
+unrelated logins on the same group.
 """
 
 from __future__ import annotations
@@ -29,10 +30,12 @@ def profile_connections_key(profile_id: int) -> str:
     return PROFILE_CONNECTIONS_KEY.format(profile_id=profile_id)
 
 
-def server_group_connections_key(group_id: int, fingerprint: Optional[str] = None) -> str:
-    """Redis key for a manual ServerGroup slot, scoped by provider login."""
-    fp = (fingerprint or "unknown")[:16]
-    return SERVER_GROUP_CONNECTIONS_KEY.format(group_id=group_id, fingerprint=fp)
+def server_group_connections_key(group_id: int, fingerprint: str) -> str:
+    """Redis key for per-credential usage within a ServerGroup."""
+    return SERVER_GROUP_CONNECTIONS_KEY.format(
+        group_id=group_id,
+        fingerprint=fingerprint[:16],
+    )
 
 
 def compute_credential_fingerprint(username: str, password: str) -> Optional[str]:
@@ -124,22 +127,30 @@ def get_enforced_server_group_for_profile(profile):
     return None
 
 
-def _group_counter_key(profile, group) -> str:
-    return server_group_connections_key(
-        group.id,
-        get_profile_credential_fingerprint(profile),
-    )
+def _credential_counter_key(profile, group) -> Optional[str]:
+    fingerprint = get_profile_credential_fingerprint(profile)
+    if not fingerprint:
+        return None
+    return server_group_connections_key(group.id, fingerprint)
 
 
 def get_profile_connection_count(profile, redis_client) -> int:
     return int(redis_client.get(profile_connections_key(profile.id)) or 0)
 
 
-def get_group_connection_count(profile, redis_client) -> int:
+def get_credential_connection_count(profile, redis_client) -> int:
     group = get_enforced_server_group_for_profile(profile)
     if not group:
         return 0
-    return int(redis_client.get(_group_counter_key(profile, group)) or 0)
+    cred_key = _credential_counter_key(profile, group)
+    if not cred_key:
+        return 0
+    return int(redis_client.get(cred_key) or 0)
+
+
+def get_group_connection_count(profile, redis_client) -> int:
+    """Backwards-compatible alias for credential-scoped group usage."""
+    return get_credential_connection_count(profile, redis_client)
 
 
 def profile_has_capacity_for_selection(profile, redis_client) -> bool:
@@ -151,35 +162,22 @@ def profile_has_capacity_for_selection(profile, redis_client) -> bool:
 
 def group_has_capacity_for_profile(profile, redis_client) -> bool:
     group = get_enforced_server_group_for_profile(profile)
-    if not group:
+    if not group or profile.max_streams == 0:
         return True
-    return get_group_connection_count(profile, redis_client) < group.max_streams
+    cred_key = _credential_counter_key(profile, group)
+    if not cred_key:
+        return True
+    return get_credential_connection_count(profile, redis_client) < profile.max_streams
 
 
 def pool_has_capacity_for_profile(profile, redis_client) -> bool:
-    """Non-mutating check before reserve: profile slot and group slot if applicable."""
+    """Non-mutating check before reserve: profile slot and credential slot if applicable."""
     return profile_has_capacity_for_selection(profile, redis_client) and group_has_capacity_for_profile(
         profile, redis_client
     )
 
 
-def _reserve_server_group_slot_for_profile(profile, redis_client) -> bool:
-    group = get_enforced_server_group_for_profile(profile)
-    if not group:
-        return True
-    key = _group_counter_key(profile, group)
-    group_count = redis_client.incr(key)
-    if group_count <= group.max_streams:
-        return True
-    redis_client.decr(key)
-    return False
-
-
-def _release_server_group_slot_for_profile(profile, redis_client) -> None:
-    group = get_enforced_server_group_for_profile(profile)
-    if not group:
-        return
-    key = _group_counter_key(profile, group)
+def _safe_decr(redis_client, key: str) -> None:
     current = int(redis_client.get(key) or 0)
     if current <= 0:
         return
@@ -188,9 +186,35 @@ def _release_server_group_slot_for_profile(profile, redis_client) -> None:
         redis_client.set(key, 0)
 
 
+def _reserve_server_group_slot_for_profile(profile, redis_client) -> bool:
+    group = get_enforced_server_group_for_profile(profile)
+    if not group or profile.max_streams == 0:
+        return True
+
+    cred_key = _credential_counter_key(profile, group)
+    if not cred_key:
+        return True
+
+    cred_count = redis_client.incr(cred_key)
+    if cred_count <= profile.max_streams:
+        return True
+
+    redis_client.decr(cred_key)
+    return False
+
+
+def _release_server_group_slot_for_profile(profile, redis_client) -> None:
+    group = get_enforced_server_group_for_profile(profile)
+    if not group or profile.max_streams == 0:
+        return
+    cred_key = _credential_counter_key(profile, group)
+    if cred_key:
+        _safe_decr(redis_client, cred_key)
+
+
 def reserve_profile_slot(profile, redis_client) -> Tuple[bool, int]:
     """
-    Atomically reserve profile + optional group slots (INCR-first).
+    Atomically reserve profile + optional credential slots (INCR-first).
 
     Returns (reserved, profile_count_after_attempt).
     """
@@ -212,7 +236,7 @@ def reserve_profile_slot(profile, redis_client) -> Tuple[bool, int]:
 
 
 def release_profile_slot(profile_id: int, redis_client) -> None:
-    """Release profile and shared group slots after a stream ends."""
+    """Release profile and shared credential slots after a stream end."""
     from apps.m3u.models import M3UAccountProfile
 
     try:
