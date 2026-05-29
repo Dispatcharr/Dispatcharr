@@ -583,9 +583,25 @@ describe('RecurringRuleModal', () => {
     });
 
     it('calls form.setValues with getFormDefaults result', () => {
-      const formMock = vi.mocked(useForm).mock.results[0]?.value;
+      const expectedDefaults = {
+        channel_id: 'ch-1',
+        rule_name: 'Morning News',
+        days_of_week: ['mon', 'tue'],
+        start_date: new Date('2024-01-01'),
+        end_date: null,
+        start_time: '08:00',
+        end_time: '09:00',
+        enabled: true,
+      };
+      vi.mocked(RecurringRuleModalUtils.getFormDefaults).mockReturnValue(
+        expectedDefaults
+      );
+
       render(<RecurringRuleModal {...defaultProps()} />);
-      expect(formMock?.setValues ?? vi.fn()).toBeDefined();
+
+      // form instance is created during render — read after
+      const formMock = vi.mocked(useForm).mock.results[0].value;
+      expect(formMock.setValues).toHaveBeenCalledWith(expectedDefaults);
     });
   });
 
