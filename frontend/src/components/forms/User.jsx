@@ -137,7 +137,7 @@ const User = ({ user = null, isOpen, onClose }) => {
       const newKey = resp && (resp.key || resp.raw_key);
       if (newKey) {
         setGeneratedKey(newKey);
-        console.log(setUserAPIKey(newKey));
+        setUserAPIKey(newKey);
       }
     } catch {
       // API shows notifications

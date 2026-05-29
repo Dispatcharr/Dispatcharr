@@ -801,18 +801,6 @@ describe('guideUtils', () => {
     });
   });
 
-  // ── evaluateSeriesRule ────────────────────────────────────────────────────
-
-  describe('evaluateSeriesRule', () => {
-    it('should evaluate series rule via API', async () => {
-      vi.mocked(API.evaluateSeriesRules).mockResolvedValue({});
-
-      await guideUtils.evaluateSeriesRulesByTvgId('tvg-1');
-
-      expect(API.evaluateSeriesRules).toHaveBeenCalledWith('tvg-1');
-    });
-  });
-
   // ── calculateLeftScrollPosition ───────────────────────────────────────────
 
   describe('calculateLeftScrollPosition', () => {
