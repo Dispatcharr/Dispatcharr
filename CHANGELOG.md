@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Configurable per-page count and sticky pagination footer in Plugin Browse.** The pagination controls now live in a fixed footer bar at the bottom of the page. A page-size selector (9 / 18 / 27 / 36) sits alongside the pagination widget and an item range readout (`X to Y of Z`). The selected page size is persisted in `localStorage` so it survives page navigations. — Thanks [@sethwv](https://github.com/sethwv)
+
+### Changed
+
+- **Docker base image now uses a multi-stage build.** The builder stage installs compilers and dev headers (`gcc`, `g++`, `gfortran`, `build-essential`, `libopenblas-dev`, `libpcre3-dev`, `python3.13-dev`, `ninja-build`) to create the virtual environment and compile the legacy NumPy wheel (cpu-baseline=none for old hardware). The final runtime image starts from the same ffmpeg base, copies only the prebuilt venv and wheel from the builder, and installs only the runtime libraries needed at runtime - eliminating compiler binaries from production containers and reducing final image size. — Thanks [@kensac](https://github.com/kensac)
+- **`libpq-dev` removed from both build and runtime stages.** The project uses `psycopg2-binary`, which bundles its own statically linked copy of libpq inside the wheel. No system libpq headers or shared library are needed at build or runtime.
+
+### Performance
+
+- **Reduced Redis round-trips on the Stats page channel status endpoint.** `get_basic_channel_info` was making up to 6 individual `HGET` calls per connected client plus a redundant `HGET` for `TOTAL_BYTES` (already present in the preceding `HGETALL` result). Client metadata is now fetched with a single `HMGET` per client, and `TOTAL_BYTES` is read from the already-fetched hash. Under load with many active streams this significantly reduces the time each uWSGI worker holds the GIL servicing the stats endpoint, reducing the chance of concurrent requests from other pages timing out with a 503. The same `HGET`-to-`HMGET` consolidation was applied to `stream_ts` and `get_user_active_connections`. The Stats page frontend was also fixed to fire the initial fetch only once on mount (previously two `useEffect` hooks both triggered an immediate fetch on load). — Thanks [@JCBird1012](https://github.com/JCBird1012)
+
+### Fixed
+
+- **Plugins with available updates were not sorting to the top of the Plugin Browse list.** The sort weight function previously treated `update_available` plugins the same as any other installed plugin, leaving them buried. They now receive the highest sort priority (below the search/filter results header) so users can spot pending updates immediately. — Thanks [@sethwv](https://github.com/sethwv)
+- **Disabled state on the size-labeled install button rendered with a warm tint instead of appearing clearly disabled.** The CSS filter was `brightness(0.65) saturate(0.7)`, which left a faint color cast. It is now `grayscale(1) brightness(0.55)`, matching the standard disabled appearance. — Thanks [@sethwv](https://github.com/sethwv)
+- **Restoring a backup from an older version left the database with missing schema.** The restore task ran `pg_restore` which replaced the entire database (including the `django_migrations` table) but did not run migrations afterward. If the backup predated a schema migration, the restored database was missing tables and columns added by those migrations, causing 500 errors on every API call. `migrate --noinput` now runs automatically after every restore. The success notification also now recommends a restart to clear stale service state.
+
 ## [0.25.1] - 2026-05-23
 
 ### Fixed

@@ -8,6 +8,7 @@ import {
   Group,
   Loader,
   Modal,
+  NativeSelect,
   NumberInput,
   Pagination,
   Select,
@@ -68,6 +69,7 @@ export default function PluginBrowsePage() {
   const saveIntervalTimer = useRef(null);
 
   const recentlyInstalledSlugs = useRef(new Set());
+  const recentlyUpdatedSlugs = useRef(new Set());
   const recentlyUninstalledSlugs = useRef(new Set());
 
   const [searchQuery, setSearchQuery] = useState('');
@@ -75,7 +77,14 @@ export default function PluginBrowsePage() {
   const [filterRepo, setFilterRepo] = useState('all');
   const [filterStatus, setFilterStatus] = useState('all');
   const [page, setPage] = useState(1);
-  const perPage = 9;
+  const [perPage, setPerPage] = useState(() => {
+    const stored = localStorage.getItem('pluginBrowsePerPage');
+    return stored && !isNaN(Number(stored)) ? Number(stored) : 9;
+  });
+  const handlePerPageChange = (value) => {
+    setPerPage(Number(value));
+    localStorage.setItem('pluginBrowsePerPage', value);
+  };
 
   const hasFetched = useRef(false);
 
@@ -294,6 +303,8 @@ export default function PluginBrowsePage() {
       // Pre-sort weights: deprecated → installed → incompatible sink to bottom (in that order)
       // Recently installed plugins are exempt so they don't jump away after install
       const weight = (p) => {
+        if (p.install_status === 'update_available') return -1;
+        if (recentlyUpdatedSlugs.current.has(p.slug)) return -1;
         if (recentlyInstalledSlugs.current.has(p.slug)) return 0;
         if (recentlyUninstalledSlugs.current.has(p.slug)) return 2;
         const meetsMin =
@@ -335,10 +346,10 @@ export default function PluginBrowsePage() {
     appVersion,
   ]);
 
-  // Reset to page 1 when filters/search change
+  // Reset to page 1 when filters/search/page-size change
   React.useEffect(() => {
     setPage(1);
-  }, [searchQuery, filterRepo, filterStatus, sortBy]);
+  }, [searchQuery, filterRepo, filterStatus, sortBy, perPage]);
 
   const totalPages = Math.ceil(filteredPlugins.length / perPage);
   const paginatedPlugins = filteredPlugins.slice(
@@ -347,7 +358,15 @@ export default function PluginBrowsePage() {
   );
 
   return (
-    <AppShellMain p={16}>
+    <AppShellMain
+      style={{
+        padding: 0,
+        display: 'flex',
+        flexDirection: 'column',
+        minHeight: '100%',
+      }}
+    >
+      <Box p={16} pb={60} style={{ flex: 1 }}>
       <Group justify="space-between" mb="md">
         <Group gap="xs" align="center">
           <Text fw={700} size="lg">
@@ -467,38 +486,69 @@ export default function PluginBrowsePage() {
       )}
 
       {!loading && filteredPlugins.length > 0 && (
-        <>
-          <SimpleGrid cols={{ base: 1, md: 2, xl: 3 }} spacing="md">
-            {paginatedPlugins.map((p) => (
-              <AvailablePluginCard
-                key={`${p.repo_id}-${p.slug}`}
-                plugin={p}
-                appVersion={appVersion}
-                multiRepo={repos.length > 1}
-                onBeforeInstall={(slug) => {
-                  if (slug) recentlyInstalledSlugs.current.add(slug);
-                }}
-                onInstalled={(slug) => {
-                  if (slug) recentlyInstalledSlugs.current.add(slug);
-                  fetchAvailablePlugins();
-                }}
-                onUninstalled={(slug) => {
-                  if (slug) recentlyUninstalledSlugs.current.add(slug);
-                }}
-              />
-            ))}
-          </SimpleGrid>
-          {totalPages > 1 && (
-            <Group justify="center" mt="lg">
-              <Pagination
-                value={page}
-                onChange={setPage}
-                total={totalPages}
-                size="sm"
-              />
-            </Group>
-          )}
-        </>
+        <SimpleGrid cols={{ base: 1, md: 2, xl: 3 }} spacing="md">
+          {paginatedPlugins.map((p) => (
+            <AvailablePluginCard
+              key={`${p.repo_id}-${p.slug}`}
+              plugin={p}
+              appVersion={appVersion}
+              multiRepo={repos.length > 1}
+              onBeforeInstall={(slug) => {
+                if (slug) {
+                  if (p.install_status === 'update_available') {
+                    recentlyUpdatedSlugs.current.add(slug);
+                  } else {
+                    recentlyInstalledSlugs.current.add(slug);
+                  }
+                }
+              }}
+              onInstalled={(slug) => {
+                if (slug) recentlyInstalledSlugs.current.add(slug);
+                fetchAvailablePlugins();
+              }}
+              onUninstalled={(slug) => {
+                if (slug) recentlyUninstalledSlugs.current.add(slug);
+              }}
+            />
+          ))}
+        </SimpleGrid>
+      )}
+
+      </Box>
+
+      {!loading && filteredPlugins.length > 0 && (
+        <Box
+          style={{
+            position: 'fixed',
+            bottom: 0,
+            left: 'var(--app-shell-navbar-offset, 0rem)',
+            right: 0,
+            zIndex: 100,
+            background: '#1A1A1E',
+            borderTop: '1px solid #2A2A2E',
+          }}
+        >
+          <Group gap={5} justify="center" style={{ padding: 8 }}>
+            <Text size="xs">Page Size</Text>
+            <NativeSelect
+              size="xxs"
+              value={String(perPage)}
+              data={['9', '18', '27', '36']}
+              onChange={(e) => handlePerPageChange(e.target.value)}
+              styles={{ input: { textAlignLast: 'center' } }}
+            />
+            <Pagination
+              total={totalPages}
+              value={page}
+              onChange={setPage}
+              size="xs"
+              withEdges
+            />
+            <Text size="xs">
+              {`${(page - 1) * perPage + 1} to ${Math.min(page * perPage, filteredPlugins.length)} of ${filteredPlugins.length}`}
+            </Text>
+          </Group>
+        </Box>
       )}
 
       {/* Manage Repos Modal */}
