@@ -1,4 +1,4 @@
-import React, { useRef, useState, useMemo } from 'react';
+import React, { useState, useMemo } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { copyToClipboard } from '../utils';
 import {
@@ -18,7 +18,6 @@ import {
   Box,
   Text,
   UnstyledButton,
-  TextInput,
   ActionIcon,
   AppShellNavbar,
   ScrollArea,
@@ -161,10 +160,9 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
   const getNavOrder = useAuthStore((s) => s.getNavOrder);
   const getHiddenNav = useAuthStore((s) => s.getHiddenNav);
 
-  const publicIPRef = useRef(null);
-
   const [userFormOpen, setUserFormOpen] = useState(false);
   const [aboutOpen, setAboutOpen] = useState(false);
+  const [ipRevealed, setIpRevealed] = useState(false);
 
   const closeUserForm = () => setUserFormOpen(false);
 
@@ -289,35 +287,62 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
         }}
       >
         {isAuthenticated && (
-          <Stack gap="sm">
-            {!collapsed && (
-              <TextInput
-                label="Public IP"
-                ref={publicIPRef}
-                value={environment.public_ip}
-                readOnly={true}
-                leftSection={
-                  environment.country_code && (
-                    <img
-                      src={`https://flagcdn.com/16x12/${environment.country_code.toLowerCase()}.png`}
-                      alt={environment.country_name || environment.country_code}
-                      title={
-                        environment.country_name || environment.country_code
-                      }
-                    />
-                  )
-                }
-                rightSection={
-                  <ActionIcon
-                    variant="transparent"
-                    color="gray.9"
-                    onClick={copyPublicIP}
+          <Stack gap="sm" style={{ width: '100%' }}>
+            {!collapsed &&
+              environment.ip_lookup_enabled !== false &&
+              environment.public_ip &&
+              !environment.public_ip.startsWith('Error') && (
+                <Box
+                  onMouseEnter={() => setIpRevealed(true)}
+                  onMouseLeave={() => setIpRevealed(false)}
+                >
+                  <Text size="sm" fw={500} mb={4}>Public IP</Text>
+                  <Box
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      border: '1px solid var(--mantine-color-default-border)',
+                      borderRadius: 'var(--mantine-radius-sm)',
+                      backgroundColor: 'var(--mantine-color-dark-6)',
+                      height: '36px',
+                      paddingLeft: '10px',
+                      gap: '8px',
+                      cursor: 'default',
+                    }}
                   >
-                    <Copy />
-                  </ActionIcon>
-                }
-              />
-            )}
+                    {environment.country_code && (
+                      <img
+                        src={`https://flagcdn.com/16x12/${environment.country_code.toLowerCase()}.png`}
+                        alt={environment.country_name || environment.country_code}
+                        title={environment.country_name || environment.country_code}
+                        style={{ flexShrink: 0 }}
+                      />
+                    )}
+                    <Box style={{ flex: 1, overflow: 'hidden', userSelect: ipRevealed ? 'text' : 'none' }}>
+                      <span
+                        style={{
+                          display: 'block',
+                          whiteSpace: 'nowrap',
+                          fontSize: 'var(--mantine-font-size-sm)',
+                          color: 'var(--mantine-color-text)',
+                          filter: ipRevealed ? 'none' : 'blur(5px)',
+                          transition: 'filter 0.15s',
+                        }}
+                      >
+                        {environment.public_ip}
+                      </span>
+                    </Box>
+                    <ActionIcon
+                      variant="transparent"
+                      color="gray.9"
+                      onClick={copyPublicIP}
+                      style={{ flexShrink: 0 }}
+                    >
+                      <Copy />
+                    </ActionIcon>
+                  </Box>
+                </Box>
+              )}
 
             {!collapsed && authUser && (
               <Group

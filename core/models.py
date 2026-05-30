@@ -407,6 +407,7 @@ class CoreSettings(models.Model):
             "max_system_events": 100,
             "preferred_region": None,
             "auto_import_mapped_files": True,
+            "enable_ip_lookup": True,
         })
 
     @classmethod

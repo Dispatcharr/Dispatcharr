@@ -96,14 +96,6 @@ vi.mock('@mantine/core', async () => {
         </Component>
       );
     },
-    TextInput: ({ value, onChange, leftSection, rightSection, label }) => (
-      <div>
-        {label && <label>{label}</label>}
-        {leftSection}
-        <input value={value} onChange={onChange} />
-        {rightSection}
-      </div>
-    ),
     ActionIcon: ({ children, onClick, ...props }) => (
       <button onClick={onClick} {...props}>
         {children}
@@ -290,7 +282,7 @@ describe('Sidebar', () => {
     it('should render public IP with country flag', () => {
       renderSidebar();
 
-      const ipInput = screen.getByDisplayValue('192.168.1.1');
+      const ipInput = screen.getByText('192.168.1.1');
       expect(ipInput).toBeInTheDocument();
 
       const flag = screen.getByAltText('United States');
@@ -492,7 +484,7 @@ describe('Sidebar', () => {
       });
 
       renderSidebar();
-      expect(screen.getByDisplayValue('192.168.1.1')).toBeInTheDocument();
+      expect(screen.getByText('192.168.1.1')).toBeInTheDocument();
       expect(
         screen.queryByRole('img', { name: /flag/i })
       ).not.toBeInTheDocument();
