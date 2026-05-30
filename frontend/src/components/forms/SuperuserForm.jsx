@@ -16,13 +16,21 @@ import useAuthStore from '../../store/auth';
 import useSettingsStore from '../../store/settings';
 import logo from '../../assets/logo.png';
 
+const createSuperUser = (formData) => {
+  return API.createSuperUser({
+    username: formData.username,
+    password: formData.password,
+    email: formData.email,
+  });
+};
+
 function SuperuserForm() {
   const [formData, setFormData] = useState({
     username: '',
     password: '',
     email: '',
   });
-  const [error, setError] = useState('');
+  const [_error, setError] = useState('');
   const setSuperuserExists = useAuthStore((s) => s.setSuperuserExists);
   const fetchVersion = useSettingsStore((s) => s.fetchVersion);
   const storedVersion = useSettingsStore((s) => s.version);
@@ -43,11 +51,7 @@ function SuperuserForm() {
     e.preventDefault();
     try {
       console.log(formData);
-      const response = await API.createSuperUser({
-        username: formData.username,
-        password: formData.password,
-        email: formData.email,
-      });
+      const response = await createSuperUser(formData);
       if (response.superuser_exists) {
         setSuperuserExists(true);
       }

@@ -153,7 +153,7 @@ class EpgIgnoreListsTest(TestCase):
 
 
 class DropDBCommandTlsTest(TestCase):
-    """Verify dropdb management command passes TLS parameters to psycopg2."""
+    """Verify dropdb management command passes TLS parameters to psycopg."""
     databases = []
 
     _DB_WITH_TLS = {
@@ -184,7 +184,7 @@ class DropDBCommandTlsTest(TestCase):
         }
     }
 
-    @patch('core.management.commands.dropdb.psycopg2.connect')
+    @patch('core.management.commands.dropdb.psycopg.connect')
     @patch('core.management.commands.dropdb.connection')
     @patch('builtins.input', return_value='yes')
     def test_dropdb_passes_ssl_kwargs_when_tls_enabled(self, _inp, _conn, mock_connect):
@@ -199,13 +199,14 @@ class DropDBCommandTlsTest(TestCase):
         mock_connect.assert_called_once_with(
             dbname='postgres', user='testuser', password='testpass',
             host='localhost', port=5432,
+            autocommit=True,
             sslmode='verify-full',
             sslrootcert='/certs/ca.crt',
             sslcert='/certs/client.crt',
             sslkey='/certs/client.key',
         )
 
-    @patch('core.management.commands.dropdb.psycopg2.connect')
+    @patch('core.management.commands.dropdb.psycopg.connect')
     @patch('core.management.commands.dropdb.connection')
     @patch('builtins.input', return_value='yes')
     def test_dropdb_no_ssl_kwargs_when_tls_disabled(self, _inp, _conn, mock_connect):
@@ -220,4 +221,5 @@ class DropDBCommandTlsTest(TestCase):
         mock_connect.assert_called_once_with(
             dbname='postgres', user='testuser', password='testpass',
             host='localhost', port=5432,
+            autocommit=True,
         )

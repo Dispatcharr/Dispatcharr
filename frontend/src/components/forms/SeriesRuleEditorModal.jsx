@@ -1,64 +1,37 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  Alert,
+  Badge,
+  Button,
+  Divider,
+  Group,
   Modal,
+  ScrollAreaAutosize,
+  SegmentedControl,
+  Select,
   Stack,
   Text,
-  TextInput,
   Textarea,
-  SegmentedControl,
-  Group,
-  Button,
-  Select,
-  Badge,
-  Divider,
-  ScrollArea,
-  Alert,
+  TextInput,
 } from '@mantine/core';
-import API from '../../api.js';
 import useChannelsStore from '../../store/channels.jsx';
 import useEPGsStore from '../../store/epgs.jsx';
 import { useDebounce } from '../../utils.js';
 import { showNotification } from '../../utils/notificationUtils.js';
-
-const TITLE_MODES = [
-  { label: 'Exact', value: 'exact' },
-  { label: 'Contains', value: 'contains' },
-  { label: 'Whole word', value: 'search' },
-  { label: 'Regex', value: 'regex' },
-];
-
-const DESCRIPTION_MODES = [
-  { label: 'Contains', value: 'contains' },
-  { label: 'Whole word', value: 'search' },
-  { label: 'Regex', value: 'regex' },
-];
-
-const EPISODE_MODES = [
-  { label: 'All episodes', value: 'all' },
-  { label: 'New only', value: 'new' },
-];
-
-function formatRange(start, end) {
-  try {
-    const s = new Date(start);
-    const e = new Date(end);
-    const sameDay = s.toDateString() === e.toDateString();
-    const dateStr = s.toLocaleDateString();
-    const startStr = s.toLocaleTimeString([], {
-      hour: '2-digit',
-      minute: '2-digit',
-    });
-    const endStr = e.toLocaleTimeString([], {
-      hour: '2-digit',
-      minute: '2-digit',
-    });
-    return sameDay
-      ? `${dateStr} ${startStr} - ${endStr}`
-      : `${dateStr} ${startStr} -> ${e.toLocaleString()}`;
-  } catch {
-    return `${start} - ${end}`;
-  }
-}
+import { getChannelsSummary } from '../../utils/forms/RecordingUtils.js';
+import {
+  createSeriesRule,
+  evaluateSeriesRulesByTvgId,
+} from '../../utils/guideUtils.js';
+import {
+  DESCRIPTION_MODES,
+  EPISODE_MODES,
+  formatRange,
+  getChannelOptions,
+  getTvgOptions,
+  previewSeriesRule,
+  TITLE_MODES,
+} from '../../utils/forms/SeriesRuleEditorModalUtils.js';
 
 export default function SeriesRuleEditorModal({
   opened,
@@ -106,7 +79,7 @@ export default function SeriesRuleEditorModal({
   useEffect(() => {
     if (!opened) return;
     let cancelled = false;
-    API.getChannelsSummary()
+    getChannelsSummary()
       .then((chans) => {
         if (!cancelled) setAllChannels(Array.isArray(chans) ? chans : []);
       })
@@ -152,7 +125,7 @@ export default function SeriesRuleEditorModal({
 
     setPreviewLoading(true);
     setPreviewError(null);
-    API.previewSeriesRule(debouncedPreviewKey, { signal: controller.signal })
+    previewSeriesRule(debouncedPreviewKey, controller)
       .then((resp) => {
         if (controller.signal.aborted) return;
         setPreview(resp || { matches: [], total: 0 });
@@ -173,44 +146,11 @@ export default function SeriesRuleEditorModal({
   // EPG channel options for the tvg_id selector. Deduplicate by tvg_id value
   // since the same channel can appear across multiple EPG sources.
   const tvgOptions = useMemo(() => {
-    const seen = new Set();
-    const options = [];
-    for (const t of tvgs || []) {
-      if (!t.tvg_id || seen.has(t.tvg_id)) continue;
-      seen.add(t.tvg_id);
-      options.push({
-        value: t.tvg_id,
-        label: t.name ? `${t.name} (${t.tvg_id})` : t.tvg_id,
-      });
-    }
-    return options.sort((a, b) => a.label.localeCompare(b.label));
+    return getTvgOptions(tvgs);
   }, [tvgs]);
 
-  // Channel select options: prefer channels matching the selected tvg_id.
   const channelOptions = useMemo(() => {
-    const sorted = [...allChannels].sort((a, b) => {
-      const aNum = Number(a.channel_number) || 0;
-      const bNum = Number(b.channel_number) || 0;
-      if (aNum !== bNum) return aNum - bNum;
-      return (a.name || '').localeCompare(b.name || '');
-    });
-    const matching = [];
-    const others = [];
-    for (const c of sorted) {
-      const item = {
-        value: String(c.id),
-        label: c.channel_number
-          ? `${c.channel_number} - ${c.name || `Channel ${c.id}`}`
-          : c.name || `Channel ${c.id}`,
-      };
-      const cTvg = c.epg_data_id ? tvgsById?.[c.epg_data_id]?.tvg_id : null;
-      if (tvgId && cTvg && String(cTvg) === String(tvgId)) {
-        matching.push(item);
-      } else {
-        others.push(item);
-      }
-    }
-    return [...matching, ...others];
+    return getChannelOptions(allChannels, tvgsById, tvgId);
   }, [allChannels, tvgsById, tvgId]);
 
   const canSave = !!(payload.title || payload.description);
@@ -218,10 +158,10 @@ export default function SeriesRuleEditorModal({
   const handleSave = async () => {
     setSaving(true);
     try {
-      await API.createSeriesRule(payload);
+      await createSeriesRule(payload);
       // Trigger evaluation so matching upcoming programs get scheduled.
       try {
-        await API.evaluateSeriesRules(payload.tvg_id);
+        await evaluateSeriesRulesByTvgId(payload.tvg_id);
         await useChannelsStore.getState().fetchRecordings();
       } catch (e) {
         console.warn('Failed to evaluate after save', e);
@@ -229,6 +169,8 @@ export default function SeriesRuleEditorModal({
       showNotification({ title: 'Series rule saved' });
       if (onSaved) await onSaved();
       onClose();
+    } catch (e) {
+      console.error('Failed to save series rule', e);
     } finally {
       setSaving(false);
     }
@@ -370,7 +312,7 @@ export default function SeriesRuleEditorModal({
           </Alert>
         )}
 
-        <ScrollArea.Autosize mah={240}>
+        <ScrollAreaAutosize mah={240}>
           <Stack gap={4}>
             {(preview.matches || []).map((p) => (
               <Group key={p.id} gap="xs" wrap="nowrap" align="flex-start">
@@ -407,7 +349,7 @@ export default function SeriesRuleEditorModal({
                 </Text>
               )}
           </Stack>
-        </ScrollArea.Autosize>
+        </ScrollAreaAutosize>
 
         <Group justify="flex-end" gap="xs">
           <Button variant="subtle" onClick={onClose}>

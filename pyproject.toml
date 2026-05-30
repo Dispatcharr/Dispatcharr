@@ -7,7 +7,7 @@ requires-python = ">=3.13"
 dynamic = ["version"]
 dependencies = [
     "Django==6.0.5",
-    "psycopg2-binary==2.9.12",
+    "psycopg[binary]",
     "celery[redis]==5.6.3",
     "djangorestframework==3.17.1",
     "requests==2.33.1",
@@ -18,7 +18,7 @@ dependencies = [
     "python-vlc",
     "yt-dlp",
     "gevent==26.4.0",
-    "psycogreen",
+    "django-db-geventpool",
     "daphne",
     "uwsgi",
     "django-cors-headers",
