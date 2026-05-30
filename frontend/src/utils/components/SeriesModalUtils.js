@@ -140,7 +140,8 @@ export const getEpisodeStreamUrl = (episode, selectedProvider, env_mode) => {
   }
   const token = useAuthStore.getState().accessToken;
   if (token) params.set('token', token);
-  if (params.toString()) streamUrl += `?${params.toString()}`;
+  if (params.toString())
+    streamUrl += `?${params.toString().replace(/\+/g, '%20')}`;
 
   if (env_mode === 'dev') {
     streamUrl = `${window.location.protocol}//${window.location.hostname}:5656${streamUrl}`;
