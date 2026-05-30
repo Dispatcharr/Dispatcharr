@@ -23,7 +23,7 @@ import {
   formatStreamLabel,
   getYouTubeEmbedUrl,
   imdbUrl,
-  tmdbUrl
+  tmdbUrl,
 } from '../utils/components/SeriesModalUtils.js';
 import { YouTubeTrailerModal } from './modals/YouTubeTrailerModal.jsx';
 import {
@@ -38,7 +38,7 @@ const Movie = ({
   hasMultipleProviders,
   selectedProvider,
   detailedVOD,
-  vod
+  vod,
 }) => {
   const showVideo = useVideoStore((s) => s.showVideo);
   const env_mode = useSettingsStore((s) => s.environment.env_mode);
@@ -71,28 +71,19 @@ const Movie = ({
       <Title order={3}>{displayVOD.name}</Title>
 
       {/* Original name if different */}
-      {displayVOD.o_name &&
-        displayVOD.o_name !== displayVOD.name && (
-          <Text size="sm" c="dimmed" fs="italic">
-            Original: {displayVOD.o_name}
-          </Text>
-        )}
+      {displayVOD.o_name && displayVOD.o_name !== displayVOD.name && (
+        <Text size="sm" c="dimmed" fs="italic">
+          Original: {displayVOD.o_name}
+        </Text>
+      )}
 
       <Group spacing="md">
-        {displayVOD.year && (
-          <Badge color="blue">{displayVOD.year}</Badge>
-        )}
+        {displayVOD.year && <Badge color="blue">{displayVOD.year}</Badge>}
         {displayVOD.duration_secs && (
-          <Badge color="gray">
-            {formatDuration(displayVOD.duration_secs)}
-          </Badge>
+          <Badge color="gray">{formatDuration(displayVOD.duration_secs)}</Badge>
         )}
-        {displayVOD.rating && (
-          <Badge color="yellow">{displayVOD.rating}</Badge>
-        )}
-        {displayVOD.age && (
-          <Badge color="orange">{displayVOD.age}</Badge>
-        )}
+        {displayVOD.rating && <Badge color="yellow">{displayVOD.rating}</Badge>}
+        {displayVOD.age && <Badge color="orange">{displayVOD.age}</Badge>}
         <Badge color="green">Movie</Badge>
         {/* imdb_id and tmdb_id badges */}
         {displayVOD.imdb_id && (
@@ -203,12 +194,15 @@ const Movie = ({
 
 const MovieTechnicalDetails = ({ selectedProvider, displayVOD }) => {
   const techDetails = getTechnicalDetails(selectedProvider, displayVOD);
-  const hasDetails = techDetails.bitrate || techDetails.video || techDetails.audio;
+  const hasDetails =
+    techDetails.bitrate || techDetails.video || techDetails.audio;
 
   if (!hasDetails) return null;
 
-  const hasVideo = techDetails.video && Object.keys(techDetails.video).length > 0;
-  const hasAudio = techDetails.audio && Object.keys(techDetails.audio).length > 0;
+  const hasVideo =
+    techDetails.video && Object.keys(techDetails.video).length > 0;
+  const hasAudio =
+    techDetails.audio && Object.keys(techDetails.audio).length > 0;
 
   return (
     <Stack spacing={4} mt="xs">
@@ -217,7 +211,9 @@ const MovieTechnicalDetails = ({ selectedProvider, displayVOD }) => {
         {selectedProvider && (
           <Text size="xs" c="dimmed" weight="normal" span ml={8}>
             (from {selectedProvider.m3u_account.name}
-            {selectedProvider.stream_id && ` - Stream ${selectedProvider.stream_id}`})
+            {selectedProvider.stream_id &&
+              ` - Stream ${selectedProvider.stream_id}`}
+            )
           </Text>
         )}
       </Text>
@@ -315,11 +311,9 @@ const VODModal = ({ vod, opened, onClose }) => {
   }, [opened]);
 
   const onClickYouTubeTrailer = () => {
-    setTrailerUrl(
-      getYouTubeEmbedUrl(displayVOD.youtube_trailer)
-    );
+    setTrailerUrl(getYouTubeEmbedUrl(displayVOD.youtube_trailer));
     setTrailerModalOpened(true);
-  }
+  };
 
   const onChangeSelectedProvider = (value) => {
     const provider = providers.find((p) => p.id.toString() === value);
@@ -331,7 +325,7 @@ const VODModal = ({ vod, opened, onClose }) => {
         .catch(() => {})
         .finally(() => setLoadingDetails(false));
     }
-  }
+  };
 
   if (!vod) return null;
 
