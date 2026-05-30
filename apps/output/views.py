@@ -23,7 +23,7 @@ import os
 from apps.m3u.utils import calculate_tuner_count
 from apps.proxy.utils import get_user_active_connections
 import regex
-from core.utils import log_system_event
+from core.utils import log_system_event, build_absolute_uri_with_port
 import hashlib
 
 logger = logging.getLogger(__name__)
