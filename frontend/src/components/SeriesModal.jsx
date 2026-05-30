@@ -470,6 +470,13 @@ const SeriesModal = ({ series, opened, onClose }) => {
   const onChangeSelectedProvider = (value) => {
     const provider = providers.find((p) => p.id.toString() === value);
     setSelectedProvider(provider);
+    if (provider) {
+      setLoadingDetails(true);
+      fetchSeriesInfo(series.id, provider.id)
+        .then((details) => setDetailedSeries(details))
+        .catch(() => {})
+        .finally(() => setLoadingDetails(false));
+    }
   };
 
   if (!series) return null;
