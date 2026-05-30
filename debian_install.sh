@@ -414,6 +414,7 @@ server {
     listen ${NGINX_HTTP_PORT};
     location / {
         include proxy_params;
+        proxy_set_header X-Forwarded-Port \$server_port;
         proxy_pass http://unix:${GUNICORN_SOCKET};
     }
     location /static/ {
