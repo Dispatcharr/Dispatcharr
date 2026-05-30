@@ -2655,47 +2655,70 @@ def xc_get_series_categories(user):
 def xc_get_series(request, user, category_id=None):
     """Get series list for XtreamCodes API"""
     from apps.vod.models import M3USeriesRelation
+    from django.db import connection
 
-    series_list = []
-
-    # All authenticated users get access to series from all active M3U accounts
-    filters = {"m3u_account__is_active": True}
-
+    rel_filters = {"m3u_account__is_active": True}
     if category_id:
-        filters["category_id"] = category_id
+        rel_filters["category_id"] = category_id
 
-    # Get series relations instead of series directly
-    series_relations = M3USeriesRelation.objects.filter(**filters).select_related(
-        'series', 'series__logo', 'category', 'm3u_account'
+    base_qs = (
+        M3USeriesRelation.objects
+        .filter(**rel_filters)
+        .select_related('series', 'series__logo', 'category')
     )
 
-    for relation in series_relations:
+    if connection.vendor == 'postgresql':
+        relations = list(
+            base_qs.order_by('series_id', '-m3u_account__priority', 'id')
+            .distinct('series_id')
+        )
+    else:
+        seen: dict = {}
+        for rel in base_qs.order_by('-m3u_account__priority', 'id'):
+            if rel.series_id not in seen:
+                seen[rel.series_id] = rel
+        relations = list(seen.values())
+
+    _base_url = build_absolute_uri_with_port(request, "")
+    _sample_logo_path = reverse("api:vod:vodlogo-cache", args=[0])
+    _logo_prefix_raw, _, _logo_suffix_raw = _sample_logo_path.partition("/0/")
+    _logo_url_prefix = _base_url + _logo_prefix_raw + "/"
+    _logo_url_suffix = "/" + _logo_suffix_raw
+
+    relations.sort(key=lambda r: (r.series.name or "").lower())
+
+    series_list = []
+    append = series_list.append
+    for num, relation in enumerate(relations, 1):
         series = relation.series
-        series_list.append({
-            "num": relation.id,  # Use relation ID
+        custom_props = series.custom_properties or {}
+        category = relation.category
+        rating = series.rating
+        logo = series.logo
+        year_str = str(series.year) if series.year else ""
+        release_date = custom_props.get('release_date', year_str)
+
+        append({
+            "num": num,
             "name": series.name,
-            "series_id": relation.id,  # Use relation ID
+            "series_id": relation.id,
             "cover": (
-                None if not series.logo
-                else build_absolute_uri_with_port(
-                    request,
-                    reverse("api:vod:vodlogo-cache", args=[series.logo.id])
-                )
+                f"{_logo_url_prefix}{logo.id}{_logo_url_suffix}" if logo else None
             ),
             "plot": series.description or "",
-            "cast": series.custom_properties.get('cast', '') if series.custom_properties else "",
-            "director": series.custom_properties.get('director', '') if series.custom_properties else "",
+            "cast": custom_props.get('cast', ''),
+            "director": custom_props.get('director', ''),
             "genre": series.genre or "",
-            "release_date": series.custom_properties.get('release_date', str(series.year) if series.year else "") if series.custom_properties else (str(series.year) if series.year else ""),
-            "releaseDate": series.custom_properties.get('release_date', str(series.year) if series.year else "") if series.custom_properties else (str(series.year) if series.year else ""),
+            "release_date": release_date,
+            "releaseDate": release_date,
             "last_modified": str(int(relation.updated_at.timestamp())),
-            "rating": str(series.rating or "0"),
-            "rating_5based": str(round(float(series.rating or 0) / 2, 2)) if series.rating else "0",
-            "backdrop_path": series.custom_properties.get('backdrop_path', []) if series.custom_properties else [],
-            "youtube_trailer": series.custom_properties.get('youtube_trailer', '') if series.custom_properties else "",
-            "episode_run_time": series.custom_properties.get('episode_run_time', '') if series.custom_properties else "",
-            "category_id": str(relation.category.id) if relation.category else "0",
-            "category_ids": [int(relation.category.id)] if relation.category else [],
+            "rating": str(rating or "0"),
+            "rating_5based": str(round(float(rating or 0) / 2, 2)) if rating else "0",
+            "backdrop_path": custom_props.get('backdrop_path', []),
+            "youtube_trailer": custom_props.get('youtube_trailer', ''),
+            "episode_run_time": custom_props.get('episode_run_time', ''),
+            "category_id": str(category.id) if category else "0",
+            "category_ids": [category.id] if category else [],
             "tmdb_id": series.tmdb_id or "",
             "imdb_id": series.imdb_id or "",
         })
