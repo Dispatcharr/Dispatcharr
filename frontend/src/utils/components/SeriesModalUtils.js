@@ -1,3 +1,5 @@
+import useAuthStore from '../../store/auth';
+
 export const imdbUrl = (imdb_id) =>
   imdb_id ? `https://www.imdb.com/title/${imdb_id}` : '';
 
@@ -27,7 +29,9 @@ const extractQuality = (relation) => {
 
   // 2. Secondary: Custom properties detailed_info
   if (relation.custom_properties?.detailed_info) {
-    const fromDetailedInfo = getQualityFromDetailedInfo(relation.custom_properties.detailed_info);
+    const fromDetailedInfo = getQualityFromDetailedInfo(
+      relation.custom_properties.detailed_info
+    );
     if (fromDetailedInfo) return fromDetailedInfo;
   }
 
@@ -55,7 +59,10 @@ const getQualityFromBackend = (qualityInfo) => {
 const getQualityFromDetailedInfo = (detailedInfo) => {
   // Check video dimensions first
   if (detailedInfo.video?.width && detailedInfo.video?.height) {
-    return getQualityInfoFromDimensions(detailedInfo.video.width, detailedInfo.video.height);
+    return getQualityInfoFromDimensions(
+      detailedInfo.video.width,
+      detailedInfo.video.height
+    );
   }
 
   // Check name field
@@ -91,7 +98,7 @@ const getQualityInfoFromDimensions = (width, height) => {
   } else {
     return ` - ${width}x${height}`;
   }
-}
+};
 
 export const sortEpisodesList = (episodesList) => {
   return episodesList.sort((a, b) => {
@@ -123,15 +130,17 @@ export const sortBySeasonNumber = (episodesBySeason) => {
 export const getEpisodeStreamUrl = (episode, selectedProvider, env_mode) => {
   let streamUrl = `/proxy/vod/episode/${episode.uuid}`;
 
-  // Add selected provider as query parameter if available
+  const params = new URLSearchParams();
   if (selectedProvider) {
-    // Use stream_id for most specific selection, fallback to account_id
     if (selectedProvider.stream_id) {
-      streamUrl += `?stream_id=${encodeURIComponent(selectedProvider.stream_id)}`;
+      params.set('stream_id', selectedProvider.stream_id);
     } else {
-      streamUrl += `?m3u_account_id=${selectedProvider.m3u_account.id}`;
+      params.set('m3u_account_id', selectedProvider.m3u_account.id);
     }
   }
+  const token = useAuthStore.getState().accessToken;
+  if (token) params.set('token', token);
+  if (params.toString()) streamUrl += `?${params.toString()}`;
 
   if (env_mode === 'dev') {
     streamUrl = `${window.location.protocol}//${window.location.hostname}:5656${streamUrl}`;

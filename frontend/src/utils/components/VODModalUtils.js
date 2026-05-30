@@ -1,3 +1,5 @@
+import useAuthStore from '../../store/auth';
+
 const hasValidTechnicalDetails = (obj) => {
   return obj?.bitrate || obj?.video || obj?.audio;
 };
@@ -60,15 +62,17 @@ export const getTechnicalDetails = (selectedProvider, defaultVOD) => {
 export const getMovieStreamUrl = (vod, selectedProvider, env_mode) => {
   let streamUrl = `/proxy/vod/movie/${vod.uuid}`;
 
-  // Add selected provider as query parameter if available
+  const params = new URLSearchParams();
   if (selectedProvider) {
-    // Use stream_id for most specific selection, fallback to account_id
     if (selectedProvider.stream_id) {
-      streamUrl += `?stream_id=${encodeURIComponent(selectedProvider.stream_id)}`;
+      params.set('stream_id', selectedProvider.stream_id);
     } else {
-      streamUrl += `?m3u_account_id=${selectedProvider.m3u_account.id}`;
+      params.set('m3u_account_id', selectedProvider.m3u_account.id);
     }
   }
+  const token = useAuthStore.getState().accessToken;
+  if (token) params.set('token', token);
+  if (params.toString()) streamUrl += `?${params.toString()}`;
 
   if (env_mode === 'dev') {
     streamUrl = `${window.location.protocol}//${window.location.hostname}:5656${streamUrl}`;

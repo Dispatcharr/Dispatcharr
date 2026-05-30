@@ -7,6 +7,7 @@ import time
 import random
 import logging
 import requests
+from urllib.parse import urlencode
 from django.http import  JsonResponse, Http404, HttpResponse
 from django.shortcuts import get_object_or_404
 from django.views.decorators.csrf import csrf_exempt
@@ -14,10 +15,12 @@ from apps.vod.models import Movie, Series, Episode
 from apps.m3u.models import  M3UAccountProfile
 from apps.proxy.vod_proxy.multi_worker_connection_manager import MultiWorkerVODConnectionManager, infer_content_type_from_url, get_vod_client_stop_key
 from .utils import get_client_info
-from rest_framework.decorators import api_view, permission_classes
+from rest_framework.decorators import api_view, authentication_classes, permission_classes
 from rest_framework.permissions import AllowAny
 from apps.accounts.models import User
 from apps.accounts.permissions import IsAdmin
+from rest_framework_simplejwt.authentication import JWTAuthentication
+from apps.accounts.authentication import ApiKeyAuthentication, QueryParamJWTAuthentication
 from apps.proxy.utils import check_user_stream_limits
 from dispatcharr.utils import network_access_allowed
 
@@ -293,6 +296,7 @@ def _transform_url(original_url, m3u_profile):
         return original_url
 
 @api_view(["GET"])
+@authentication_classes([JWTAuthentication, ApiKeyAuthentication, QueryParamJWTAuthentication])
 @permission_classes([AllowAny])
 def stream_vod(request, content_type, content_id, session_id=None, profile_id=None, user=None):
     """
@@ -306,7 +310,8 @@ def stream_vod(request, content_type, content_id, session_id=None, profile_id=No
     """
     if not network_access_allowed(request, "STREAMS"):
         return JsonResponse({"error": "Forbidden"}, status=403)
-
+    if user is None and hasattr(request, "user") and request.user.is_authenticated:
+        user = request.user
     logger.info(f"[VOD-REQUEST] Starting VOD stream request: {content_type}/{content_id}, session: {session_id}, profile: {profile_id}")
     logger.info(f"[VOD-REQUEST] Full request path: {request.get_full_path()}")
     logger.info(f"[VOD-REQUEST] Request method: {request.method}")
@@ -384,38 +389,55 @@ def stream_vod(request, content_type, content_id, session_id=None, profile_id=No
             new_session_id = f"vod_{int(time.time() * 1000)}_{random.randint(1000, 9999)}"
             logger.info(f"[VOD-SESSION] Creating new session: {new_session_id}")
 
-            # Preserve any query parameters (except session_id)
+            # Preserve any query parameters (except session_id and token)
             query_params = dict(request.GET)
-            query_params.pop('session_id', None)  # Remove if present
+            query_params.pop('session_id', None)
+            query_params.pop('token', None)  # Token not needed after session is established
 
-            if user:
-                redirect_url = f"{request.path}?session_id={new_session_id}"
-                if query_params:
-                    query_string = urlencode(query_params, doseq=True)
-                    redirect_url = f"{redirect_url}&{query_string}"
+            # Always put session_id in the URL path - URL patterns only route it from there
+            path_parts = request.path.rstrip('/').split('/')
+            if profile_id:
+                new_path = f"{'/'.join(path_parts)}/{new_session_id}/{profile_id}/"
             else:
-                # Build redirect URL with session ID in path, preserve query parameters
-                path_parts = request.path.rstrip('/').split('/')
+                new_path = f"{'/'.join(path_parts)}/{new_session_id}"
 
-                # Construct new path: /vod/movie/UUID/SESSION_ID or /vod/movie/UUID/SESSION_ID/PROFILE_ID/
-                if profile_id:
-                    new_path = f"{'/'.join(path_parts)}/{new_session_id}/{profile_id}/"
-                else:
-                    new_path = f"{'/'.join(path_parts)}/{new_session_id}"
-
-                if query_params:
-                    from urllib.parse import urlencode
-                    query_string = urlencode(query_params, doseq=True)
-                    redirect_url = f"{new_path}?{query_string}"
-                else:
-                    redirect_url = new_path
+            if query_params:
+                query_string = urlencode(query_params, doseq=True)
+                redirect_url = f"{new_path}?{query_string}"
+            else:
+                redirect_url = new_path
 
             logger.info(f"[VOD-SESSION] Redirecting to path-based URL: {redirect_url}")
+
+            # Persist the authenticated user to Redis so the streaming request
+            # (which arrives without the token after the redirect) can resolve it.
+            if user:
+                try:
+                    from core.utils import RedisClient
+                    _r = RedisClient.get_client()
+                    if _r:
+                        _r.set(f"vod_session_user:{new_session_id}", user.id, ex=300)
+                except Exception:
+                    pass
 
             return HttpResponse(
                 status=301,
                 headers={'Location': redirect_url}
             )
+
+        # Resolve user from Redis session mapping when the streaming request
+        # arrives without auth credentials (token was stripped from redirect URL).
+        # Only needed on the first streaming request - skip if connection already exists.
+        if user is None:
+            try:
+                from core.utils import RedisClient
+                _r = RedisClient.get_client()
+                if _r and not _r.exists(f"vod_persistent_connection:{session_id}"):
+                    stored_uid = _r.get(f"vod_session_user:{session_id}")
+                    if stored_uid:
+                        user = User.objects.filter(id=int(stored_uid)).first()
+            except Exception:
+                pass
 
         if user:
             if not check_user_stream_limits(user, session_id, media_id=content_id):
@@ -506,6 +528,7 @@ def stream_vod(request, content_type, content_id, session_id=None, profile_id=No
         return HttpResponse(f"Streaming error: {str(e)}", status=500)
 
 @api_view(["HEAD"])
+@authentication_classes([JWTAuthentication, ApiKeyAuthentication, QueryParamJWTAuthentication])
 @permission_classes([AllowAny])
 def head_vod(request, content_type, content_id, session_id=None, profile_id=None):
     """

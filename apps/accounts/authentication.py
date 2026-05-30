@@ -1,5 +1,7 @@
 from rest_framework import authentication
 from rest_framework import exceptions
+from rest_framework_simplejwt.authentication import JWTAuthentication
+from rest_framework_simplejwt.exceptions import InvalidToken, TokenError
 from django.conf import settings
 from drf_spectacular.extensions import OpenApiAuthenticationExtension
 from .models import User
@@ -84,3 +86,18 @@ class ApiKeyAuthentication(authentication.BaseAuthentication):
 
     def authenticate_header(self, request):
         return self.keyword
+
+
+class QueryParamJWTAuthentication(JWTAuthentication):
+    """Reads a JWT from the `token` query parameter. Used for media endpoints
+    where the browser cannot set Authorization headers (e.g. <video src>)."""
+
+    def authenticate(self, request):
+        raw_token = request.GET.get('token')
+        if not raw_token:
+            return None
+        try:
+            validated_token = self.get_validated_token(raw_token)
+            return self.get_user(validated_token), validated_token
+        except (InvalidToken, TokenError):
+            return None
