@@ -2549,65 +2549,79 @@ def xc_get_vod_categories(user):
 
 def xc_get_vod_streams(request, user, category_id=None):
     """Get VOD streams (movies) for XtreamCodes API"""
-    from apps.vod.models import Movie, M3UMovieRelation
-    from django.db.models import Prefetch
+    from apps.vod.models import M3UMovieRelation
+    from django.db import connection
+
+    rel_filters = {"m3u_account__is_active": True}
+    if category_id:
+        rel_filters["category_id"] = category_id
+
+    base_qs = (
+        M3UMovieRelation.objects
+        .filter(**rel_filters)
+        .select_related('movie', 'movie__logo', 'category')
+    )
+
+    if connection.vendor == 'postgresql':
+        # DISTINCT ON returns one row per movie (highest-priority active relation)
+        # in a single query. ORDER BY must lead with the DISTINCT field.
+        relations = list(
+            base_qs.order_by('movie_id', '-m3u_account__priority', 'id')
+            .distinct('movie_id')
+        )
+    else:
+        # SQLite fallback: fetch all matching relations, deduplicate in Python.
+        seen: dict = {}
+        for rel in base_qs.order_by('-m3u_account__priority', 'id'):
+            if rel.movie_id not in seen:
+                seen[rel.movie_id] = rel
+        relations = list(seen.values())
+
+    # Precompute logo URL prefix/suffix once (mirrors _xc_live_streams_setup)
+    # so each row only needs a string concat instead of reverse() + URI build.
+    _base_url = build_absolute_uri_with_port(request, "")
+    _sample_logo_path = reverse("api:vod:vodlogo-cache", args=[0])
+    _logo_prefix_raw, _, _logo_suffix_raw = _sample_logo_path.partition("/0/")
+    _logo_url_prefix = _base_url + _logo_prefix_raw + "/"
+    _logo_url_suffix = "/" + _logo_suffix_raw
+
+    # Sort by name (DISTINCT ON forces ORDER BY movie_id; SQLite path is unsorted).
+    relations.sort(key=lambda r: (r.movie.name or "").lower())
 
     streams = []
+    append = streams.append
+    for num, relation in enumerate(relations, 1):
+        movie = relation.movie
+        custom_props = movie.custom_properties or {}
+        category = relation.category
+        category_id_str = str(category.id) if category else "0"
+        category_id_list = [category.id] if category else []
+        rating = movie.rating
+        logo = movie.logo
 
-    # All authenticated users get access to VOD from all active M3U accounts
-    filters = {"m3u_relations__m3u_account__is_active": True}
-
-    if category_id:
-        filters["m3u_relations__category_id"] = category_id
-
-    # Optimize with prefetch_related to eliminate N+1 queries
-    # This loads all relations in a single query instead of one per movie
-    movies = Movie.objects.filter(**filters).select_related('logo').prefetch_related(
-        Prefetch(
-            'm3u_relations',
-            queryset=M3UMovieRelation.objects.filter(
-                m3u_account__is_active=True
-            ).select_related('m3u_account', 'category').order_by('-m3u_account__priority', 'id'),
-            to_attr='active_relations'
-        )
-    ).distinct()
-
-    for movie in movies:
-        # Get the first (highest priority) relation from prefetched data
-        # This avoids the N+1 query problem entirely
-        if hasattr(movie, 'active_relations') and movie.active_relations:
-            relation = movie.active_relations[0]
-        else:
-            # Fallback - should rarely be needed with proper prefetching
-            continue
-
-        streams.append({
-            "num": movie.id,
+        append({
+            "num": num,
             "name": movie.name,
             "stream_type": "movie",
             "stream_id": movie.id,
             "stream_icon": (
-                None if not movie.logo
-                else build_absolute_uri_with_port(
-                    request,
-                    reverse("api:vod:vodlogo-cache", args=[movie.logo.id])
-                )
+                f"{_logo_url_prefix}{logo.id}{_logo_url_suffix}" if logo else None
             ),
-            "rating": movie.rating or "0",
-            "rating_5based": round(float(movie.rating or 0) / 2, 2) if movie.rating else 0,
+            "rating": rating or "0",
+            "rating_5based": round(float(rating or 0) / 2, 2) if rating else 0,
             "added": str(int(movie.created_at.timestamp())),
             "is_adult": 0,
             "tmdb_id": movie.tmdb_id or "",
             "imdb_id": movie.imdb_id or "",
-            "trailer": (movie.custom_properties or {}).get('youtube_trailer') or "",
+            "trailer": custom_props.get('youtube_trailer') or "",
             "plot": movie.description or "",
             "genre": movie.genre or "",
             "year": movie.year or "",
-            "director": (movie.custom_properties or {}).get('director', ''),
-            "cast": (movie.custom_properties or {}).get('actors', ''),
-            "release_date": (movie.custom_properties or {}).get('release_date', ''),
-            "category_id": str(relation.category.id) if relation.category else "0",
-            "category_ids": [int(relation.category.id)] if relation.category else [],
+            "director": custom_props.get('director', ''),
+            "cast": custom_props.get('actors', ''),
+            "release_date": custom_props.get('release_date', ''),
+            "category_id": category_id_str,
+            "category_ids": category_id_list,
             "container_extension": relation.container_extension or "mp4",
             "custom_sid": None,
             "direct_source": "",
