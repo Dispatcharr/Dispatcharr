@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **Configurable per-page count and sticky pagination footer in Plugin Browse.** The pagination controls now live in a fixed footer bar at the bottom of the page. A page-size selector (9 / 18 / 27 / 36) sits alongside the pagination widget and an item range readout (`X to Y of Z`). The selected page size is persisted in `localStorage` so it survives page navigations. — Thanks [@sethwv](https://github.com/sethwv)
+- **VOD basic sync now stores additional metadata from the provider's stream list.** When a provider includes `director`, `cast`, `release_date`, or `trailer`/`youtube_trailer` in its `get_vod_streams` response, Dispatcharr now captures and stores those fields in `custom_properties` during the initial sync pass. Previously, this data was discarded and only populated if an advanced per-movie refresh was triggered. - Thanks [@nemesbak](https://github.com/nemesbak)
 
 ### Changed
 
@@ -31,6 +32,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Plugins with available updates were not sorting to the top of the Plugin Browse list.** The sort weight function previously treated `update_available` plugins the same as any other installed plugin, leaving them buried. They now receive the highest sort priority (below the search/filter results header) so users can spot pending updates immediately. — Thanks [@sethwv](https://github.com/sethwv)
 - **Disabled state on the size-labeled install button rendered with a warm tint instead of appearing clearly disabled.** The CSS filter was `brightness(0.65) saturate(0.7)`, which left a faint color cast. It is now `grayscale(1) brightness(0.55)`, matching the standard disabled appearance. — Thanks [@sethwv](https://github.com/sethwv)
 - **Restoring a backup from an older version left the database with missing schema.** The restore task ran `pg_restore` which replaced the entire database (including the `django_migrations` table) but did not run migrations afterward. If the backup predated a schema migration, the restored database was missing tables and columns added by those migrations, causing 500 errors on every API call. `migrate --noinput` now runs automatically after every restore. The success notification also now recommends a restart to clear stale service state.
+- **Cast and actors lists were silently truncated to the first name.** When a provider returns `cast` or `actors` as a JSON array, the helper used during both movie and series basic sync and movie advanced refresh only extracted the first element. All names in the array are now joined into a comma-separated string. Providers that return cast as a plain string are unaffected.
 
 ## [0.25.1] - 2026-05-23
 
