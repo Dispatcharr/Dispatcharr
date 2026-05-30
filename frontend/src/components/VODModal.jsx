@@ -325,9 +325,11 @@ const VODModal = ({ vod, opened, onClose }) => {
     const provider = providers.find((p) => p.id.toString() === value);
     setSelectedProvider(provider);
     if (provider) {
+      setLoadingDetails(true);
       fetchMovieDetailsFromProvider(vod.id, provider.id)
         .then((details) => setDetailedVOD(details))
-        .catch(() => {});
+        .catch(() => {})
+        .finally(() => setLoadingDetails(false));
     }
   }
 
