@@ -1632,11 +1632,11 @@ export default class API {
     }
   }
 
-  static async refreshEPG(id) {
+  static async refreshEPG(id, force = false) {
     try {
       const response = await request(`${host}/api/epg/import/`, {
         method: 'POST',
-        body: { id },
+        body: { id, force },
       });
 
       return response;
@@ -3820,7 +3820,9 @@ export default class API {
 
   static async getSDLineups(sourceId) {
     try {
-      const response = await request(`${host}/api/epg/sources/${sourceId}/sd-lineups/`);
+      const response = await request(
+        `${host}/api/epg/sources/${sourceId}/sd-lineups/`
+      );
       return response;
     } catch (e) {
       errorNotification('Failed to retrieve Schedules Direct lineups', e);
@@ -3829,10 +3831,13 @@ export default class API {
 
   static async addSDLineup(sourceId, lineup) {
     try {
-      const response = await request(`${host}/api/epg/sources/${sourceId}/sd-lineups/`, {
-        method: 'POST',
-        body: { lineup },
-      });
+      const response = await request(
+        `${host}/api/epg/sources/${sourceId}/sd-lineups/`,
+        {
+          method: 'POST',
+          body: { lineup },
+        }
+      );
       return response;
     } catch (e) {
       errorNotification(`Failed to add lineup ${lineup}`, e);
@@ -3841,10 +3846,13 @@ export default class API {
 
   static async deleteSDLineup(sourceId, lineup) {
     try {
-      const response = await request(`${host}/api/epg/sources/${sourceId}/sd-lineups/`, {
-        method: 'DELETE',
-        body: { lineup },
-      });
+      const response = await request(
+        `${host}/api/epg/sources/${sourceId}/sd-lineups/`,
+        {
+          method: 'DELETE',
+          body: { lineup },
+        }
+      );
       return response;
     } catch (e) {
       errorNotification(`Failed to remove lineup ${lineup}`, e);
@@ -3853,10 +3861,13 @@ export default class API {
 
   static async searchSDLineups(sourceId, country, postalcode) {
     try {
-      const response = await request(`${host}/api/epg/sources/${sourceId}/sd-lineups/search/`, {
-        method: 'POST',
-        body: { country, postalcode },
-      });
+      const response = await request(
+        `${host}/api/epg/sources/${sourceId}/sd-lineups/search/`,
+        {
+          method: 'POST',
+          body: { country, postalcode },
+        }
+      );
       return response;
     } catch (e) {
       errorNotification('Failed to search Schedules Direct lineups', e);

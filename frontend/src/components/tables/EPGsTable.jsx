@@ -99,7 +99,6 @@ const RowActions = ({ tableSize, row, editEPG, deleteEPG, refreshEPG }) => {
   );
 };
 
-
 const EPGStatusCell = ({ epg }) => {
   // Direct Zustand subscription scoped to this source only.
   // This component re-renders whenever its source's progress changes,
@@ -138,9 +137,15 @@ const EPGStatusCell = ({ epg }) => {
     let additionalInfo = '';
     if (progress.message) {
       additionalInfo = progress.message;
-    } else if (progress.processed !== undefined && progress.channels !== undefined) {
+    } else if (
+      progress.processed !== undefined &&
+      progress.channels !== undefined
+    ) {
       additionalInfo = `${progress.processed.toLocaleString()} programs for ${progress.channels} channels`;
-    } else if (progress.processed !== undefined && progress.total !== undefined) {
+    } else if (
+      progress.processed !== undefined &&
+      progress.total !== undefined
+    ) {
       additionalInfo = `${progress.processed.toLocaleString()} / ${progress.total.toLocaleString()}`;
     }
 
@@ -186,7 +191,8 @@ const EPGStatusCell = ({ epg }) => {
 
   // Show success message
   if (epg.status === 'success') {
-    const successMessage = epg.last_message || 'EPG data refreshed successfully';
+    const successMessage =
+      epg.last_message || 'EPG data refreshed successfully';
     return (
       <Tooltip label={successMessage} multiline width={300}>
         <Text
@@ -205,12 +211,7 @@ const EPGStatusCell = ({ epg }) => {
   if (epg.status === 'idle' && epg.last_message) {
     return (
       <Tooltip label={epg.last_message} multiline width={300}>
-        <Text
-          c="dimmed"
-          size="xs"
-          lineClamp={2}
-          style={{ lineHeight: 1.3 }}
-        >
+        <Text c="dimmed" size="xs" lineClamp={2} style={{ lineHeight: 1.3 }}>
           {epg.last_message}
         </Text>
       </Tooltip>
@@ -230,6 +231,8 @@ const EPGsTable = () => {
   const [epgToDelete, setEpgToDelete] = useState(null);
   const [data, setData] = useState([]);
   const [deleting, setDeleting] = useState(false);
+  const [confirmSDRefreshOpen, setConfirmSDRefreshOpen] = useState(false);
+  const [sdRefreshTarget, setSDRefreshTarget] = useState(null);
 
   const epgs = useEPGsStore((s) => s.epgs);
 
@@ -274,9 +277,9 @@ const EPGsTable = () => {
         size: 130,
         cell: ({ cell }) => {
           const typeMap = {
-            'xmltv': 'XMLTV',
-            'schedules_direct': 'Schedules Direct',
-            'dummy': 'Custom Dummy',
+            xmltv: 'XMLTV',
+            schedules_direct: 'Schedules Direct',
+            dummy: 'Custom Dummy',
           };
           return typeMap[cell.getValue()] || cell.getValue();
         },
@@ -439,11 +442,25 @@ const EPGsTable = () => {
     }
   };
 
-  const refreshEPG = async (id) => {
-    await API.refreshEPG(id);
+  const refreshEPG = async (id, force = false) => {
+    await API.refreshEPG(id, force);
     notifications.show({
       title: 'EPG refresh initiated',
     });
+  };
+
+  const handleRefreshEPG = (id) => {
+    const epgObj = epgs[id];
+    if (
+      epgObj?.source_type === 'schedules_direct' &&
+      epgObj?.updated_at &&
+      Date.now() - new Date(epgObj.updated_at).getTime() < 2 * 60 * 60 * 1000
+    ) {
+      setSDRefreshTarget(id);
+      setConfirmSDRefreshOpen(true);
+      return;
+    }
+    refreshEPG(id);
   };
 
   const closeEPGForm = () => {
@@ -478,7 +495,7 @@ const EPGsTable = () => {
             row={row}
             editEPG={editEPG}
             deleteEPG={deleteEPG}
-            refreshEPG={refreshEPG}
+            refreshEPG={handleRefreshEPG}
           />
         );
     }
@@ -684,6 +701,28 @@ const EPGsTable = () => {
         epg={epg}
         isOpen={dummyEpgModalOpen}
         onClose={closeDummyEPGForm}
+      />
+
+      <ConfirmationDialog
+        opened={confirmSDRefreshOpen}
+        onClose={() => setConfirmSDRefreshOpen(false)}
+        onConfirm={() => {
+          setConfirmSDRefreshOpen(false);
+          refreshEPG(sdRefreshTarget, true);
+        }}
+        title="Refresh Schedules Direct Early?"
+        message={
+          <div>
+            <p>This source was refreshed less than 2 hours ago.</p>
+            <p>
+              Schedules Direct rate-limits requests per account. Refreshing too
+              frequently may cause your account to be temporarily blocked.
+            </p>
+            <p>Are you sure you want to force a refresh now?</p>
+          </div>
+        }
+        confirmLabel="Refresh Anyway"
+        cancelLabel="Cancel"
       />
 
       <ConfirmationDialog

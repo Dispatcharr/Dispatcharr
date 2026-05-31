@@ -307,7 +307,7 @@ def refresh_all_epg_data():
 
 
 @shared_task(time_limit=14400)
-def refresh_epg_data(source_id):
+def refresh_epg_data(source_id, force=False):
     if not acquire_task_lock('refresh_epg_data', source_id):
         logger.debug(f"EPG refresh for {source_id} already running")
         return
@@ -378,7 +378,7 @@ def refresh_epg_data(source_id):
             parse_programs_for_source(source)
 
         elif source.source_type == 'schedules_direct':
-            fetch_schedules_direct(source)
+            fetch_schedules_direct(source, force=force)
 
         source.save(update_fields=['updated_at'])
         # After successful EPG refresh, evaluate DVR series rules to schedule new episodes
@@ -1973,7 +1973,7 @@ def fetch_schedules_direct_stations(self, source_id):
     fetch_schedules_direct(source, stations_only=True)
 
 
-def fetch_schedules_direct(source, stations_only=False):
+def fetch_schedules_direct(source, stations_only=False, force=False):
     """
     Fetch EPG data from the Schedules Direct JSON API and persist it to the
     EPGData / ProgramData models.
@@ -2032,7 +2032,7 @@ def fetch_schedules_direct(source, stations_only=False):
     # updated_at, which would otherwise incorrectly trigger this guard). Always
     # allow the first full refresh through so guide data is immediately available.
     # -------------------------------------------------------------------------
-    if not stations_only and source.updated_at:
+    if not stations_only and not force and source.updated_at:
         from apps.epg.models import SDScheduleMD5 as _SDScheduleMD5
         has_prior_full_refresh = _SDScheduleMD5.objects.filter(epg_source=source).exists()
         if has_prior_full_refresh:
@@ -2053,6 +2053,8 @@ def fetch_schedules_direct(source, stations_only=False):
                 return
         else:
             logger.info(f"SD source {source.id}: No prior full refresh detected — skipping 2-hour guard for first full fetch.")
+    elif force and not stations_only:
+        logger.info(f"SD source {source.id}: Force flag set — bypassing 2-hour refresh guard.")
 
     # -------------------------------------------------------------------------
     # Build SD-specific headers

@@ -999,6 +999,7 @@ class EPGImportAPIView(APIView):
     def post(self, request, format=None):
         logger.info("EPGImportAPIView: Received request to import EPG data.")
         epg_id = request.data.get("id", None)
+        force = bool(request.data.get("force", False))
 
         # Check if this is a dummy EPG source
         try:
@@ -1013,7 +1014,7 @@ class EPGImportAPIView(APIView):
         except EPGSource.DoesNotExist:
             pass  # Let the task handle the missing source
 
-        refresh_epg_data.delay(epg_id)  # Trigger Celery task
+        refresh_epg_data.delay(epg_id, force=force)  # Trigger Celery task
         logger.info("EPGImportAPIView: Task dispatched to refresh EPG data.")
         return Response(
             {"success": True, "message": "EPG data refresh initiated."},
