@@ -26,6 +26,9 @@ const SystemSettingsForm = React.memo(({ active }) => {
   const settings = useSettingsStore((s) => s.settings);
   const isModular =
     useSettingsStore((s) => s.environment.env_mode) === 'modular';
+  const ipLookupEnvDisabled = useSettingsStore(
+    (s) => s.environment.ip_lookup_env_disabled
+  );
 
   const [saved, setSaved] = useState(false);
 
@@ -108,6 +111,23 @@ const SystemSettingsForm = React.memo(({ active }) => {
           id="auto_import_mapped_files"
         />
       </Group>
+      {!ipLookupEnvDisabled && (
+        <Group justify="space-between" pt={5}>
+          <div>
+            <Text size="sm" fw={500}>
+              Enable IP Lookup
+            </Text>
+            <Text size="xs" c="dimmed">
+              Fetch and display the instance's public IP and country flag in the
+              sidebar.
+            </Text>
+          </div>
+          <Switch
+            {...form.getInputProps('enable_ip_lookup', { type: 'checkbox' })}
+            id="enable_ip_lookup"
+          />
+        </Group>
+      )}
       {isModular && (
         <>
           <Divider my="md" label="Connection Security" labelPosition="left" />

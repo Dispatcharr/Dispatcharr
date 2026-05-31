@@ -1,6 +1,5 @@
 # core/api_views.py
 
-import json
 import ipaddress
 import logging
 from django.conf import settings as django_settings
@@ -8,11 +7,9 @@ from django.db import models
 from rest_framework import viewsets, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from django.shortcuts import get_object_or_404
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.decorators import api_view, permission_classes, action
-from drf_spectacular.utils import extend_schema, OpenApiParameter
-from drf_spectacular.types import OpenApiTypes
+from drf_spectacular.utils import extend_schema
 from .models import (
     UserAgent,
     StreamProfile,
@@ -32,8 +29,10 @@ from .serializers import (
 )
 
 import socket
+import threading
 import requests
 import os
+from django.core.cache import cache
 from core.tasks import rehash_streams
 from apps.accounts.permissions import (
     Authenticated,
@@ -287,6 +286,73 @@ class ProxySettingsViewSet(viewsets.ViewSet):
 
 
 
+_IP_CACHE_KEY = "dispatcharr:ip_lookup_result"
+_IP_CACHE_TTL = 3600  # 1 hour
+_IP_LOCK_KEY = "dispatcharr:ip_lookup_lock"
+
+
+def _perform_ip_lookup():
+    """Run IP and geolocation lookups in a background thread and cache the result."""
+    public_ip = None
+    local_ip = None
+    country_code = None
+    country_name = None
+    city = None
+
+    try:
+        r = requests.get("https://api64.ipify.org?format=json", timeout=5)
+        r.raise_for_status()
+        public_ip = r.json().get("ip")
+    except requests.RequestException:
+        pass
+
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            s.connect(("203.0.113.1", 80))
+            local_ip = s.getsockname()[0]
+        finally:
+            s.close()
+    except Exception:
+        pass
+
+    try:
+        ipaddress.ip_address(public_ip)
+    except (ValueError, TypeError):
+        public_ip = None
+
+    if public_ip:
+        try:
+            r = requests.get(f"https://ipapi.co/{public_ip}/json/", timeout=5)
+            if r.status_code == requests.codes.ok:
+                geo = r.json()
+                country_code = geo.get("country_code")
+                country_name = geo.get("country_name")
+                city = geo.get("city")
+            else:
+                r = requests.get("http://ip-api.com/json/", timeout=5)
+                if r.status_code == requests.codes.ok:
+                    geo = r.json()
+                    country_code = geo.get("countryCode")
+                    country_name = geo.get("country")
+                    city = geo.get("city")
+        except Exception as e:
+            logger.error(f"Error during geo lookup: {e}")
+
+    result = {
+        "public_ip": public_ip,
+        "local_ip": local_ip,
+        "country_code": country_code,
+        "country_name": country_name,
+        "city": city,
+    }
+    cache.set(_IP_CACHE_KEY, result, _IP_CACHE_TTL)
+    cache.delete(_IP_LOCK_KEY)
+
+    from core.utils import send_websocket_update
+    send_websocket_update("updates", "update", {"type": "ip_lookup_complete", **result})
+
+
 @extend_schema(
     description="Endpoint for environment details",
 )
@@ -297,55 +363,27 @@ def environment(request):
     local_ip = None
     country_code = None
     country_name = None
+    city = None
+    ip_lookup_pending = False
 
-    # 1) Get the public IP from ipify.org API
-    try:
-        r = requests.get("https://api64.ipify.org?format=json", timeout=5)
-        r.raise_for_status()
-        public_ip = r.json().get("ip")
-    except requests.RequestException as e:
-        public_ip = f"Error: {e}"
+    ip_lookup_env_disabled = not getattr(django_settings, "ENABLE_IP_LOOKUP", True)
+    ip_lookup_db_enabled = CoreSettings.get_system_settings().get("enable_ip_lookup", True)
+    ip_lookup_enabled = not ip_lookup_env_disabled and ip_lookup_db_enabled
 
-    # 2) Get the local IP by connecting to a public DNS server
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        # connect to a "public" address so the OS can determine our local interface
-        s.connect(("8.8.8.8", 80))
-        local_ip = s.getsockname()[0]
-        s.close()
-    except Exception as e:
-        local_ip = f"Error: {e}"
+    if ip_lookup_enabled:
+        cached = cache.get(_IP_CACHE_KEY)
+        if cached is not None:
+            public_ip = cached.get("public_ip")
+            local_ip = cached.get("local_ip")
+            country_code = cached.get("country_code")
+            country_name = cached.get("country_name")
+            city = cached.get("city")
+        else:
+            if cache.add(_IP_LOCK_KEY, True, 30):
+                threading.Thread(target=_perform_ip_lookup, daemon=True).start()
+            ip_lookup_pending = True
 
-    # 3) Get geolocation data from ipapi.co or ip-api.com
-    if public_ip and "Error" not in public_ip:
-        try:
-            # Attempt to get geo information from ipapi.co first
-            r = requests.get(f"https://ipapi.co/{public_ip}/json/", timeout=5)
-
-            if r.status_code == requests.codes.ok:
-                geo = r.json()
-                country_code = geo.get("country_code")  # e.g. "US"
-                country_name = geo.get("country_name")  # e.g. "United States"
-
-            else:
-                # If ipapi.co fails, fallback to ip-api.com
-                # only supports http requests for free tier
-                r = requests.get("http://ip-api.com/json/", timeout=5)
-
-                if r.status_code == requests.codes.ok:
-                    geo = r.json()
-                    country_code = geo.get("countryCode")  # e.g. "US"
-                    country_name = geo.get("country")  # e.g. "United States"
-
-                else:
-                    raise Exception("Geo lookup failed with both services")
-
-        except Exception as e:
-            logger.error(f"Error during geo lookup: {e}")
-            country_code = None
-            country_name = None
-
-    # 4) Get environment mode and TLS status from settings
+    # Get environment mode and TLS status from settings
     postgres_ssl = getattr(django_settings, "POSTGRES_SSL", False)
 
     return Response(
@@ -355,6 +393,10 @@ def environment(request):
             "local_ip": local_ip,
             "country_code": country_code,
             "country_name": country_name,
+            "city": city,
+            "ip_lookup_enabled": ip_lookup_enabled,
+            "ip_lookup_env_disabled": ip_lookup_env_disabled,
+            "ip_lookup_pending": ip_lookup_pending,
             "env_mode": os.getenv("DISPATCHARR_ENV", "aio"),
             "redis_tls": {
                 "enabled": getattr(django_settings, "REDIS_SSL", False),
