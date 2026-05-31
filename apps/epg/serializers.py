@@ -68,6 +68,8 @@ class EPGSourceSerializer(serializers.ModelSerializer):
                 cron_expr = f'{ct.minute} {ct.hour} {ct.day_of_month} {ct.month_of_year} {ct.day_of_week}'
         instance._cron_expression = cron_expr
         for attr, value in validated_data.items():
+            if attr == 'password' and not value:
+                continue
             setattr(instance, attr, value)
         instance.save()
         return instance
