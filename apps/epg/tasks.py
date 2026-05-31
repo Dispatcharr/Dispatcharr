@@ -2226,9 +2226,11 @@ def fetch_schedules_direct(source, stations_only=False):
                 if not sid:
                     continue
                 logo_url = None
-                logos = station.get('stationLogos') or station.get('logo') or []
+                logos = station.get('stationLogo') or station.get('logo') or []
                 if isinstance(logos, list) and logos:
-                    logo_url = logos[0].get('URL') or logos[0].get('url')
+                    # Prefer 'dark' variant (best on dark backgrounds); fall back to first available
+                    preferred = next((l for l in logos if l.get('category') == 'dark'), logos[0])
+                    logo_url = preferred.get('URL') or preferred.get('url')
                 elif isinstance(logos, dict):
                     logo_url = logos.get('URL') or logos.get('url')
                 station_map[sid] = {
@@ -2673,6 +2675,8 @@ def fetch_schedules_direct(source, stations_only=False):
                     custom_props['season'] = int(season)
                 if episode:
                     custom_props['episode'] = int(episode)
+                if season and episode:
+                    custom_props['onscreen_episode'] = f"S{int(season)} E{int(episode)}"
 
             content_rating = meta.get('contentRating', [])
             if content_rating:
@@ -2706,11 +2710,13 @@ def fetch_schedules_direct(source, stations_only=False):
             if credits:
                 custom_props['credits'] = credits
 
-            if airing.get('isLive'):
+            if airing.get('liveTapeDelay') == 'Live':
                 custom_props['live'] = True
-            if airing.get('isNew'):
+            if airing.get('new'):
                 custom_props['new'] = True
-            if airing.get('isPremiere'):
+            else:
+                custom_props['previously_shown'] = True
+            if airing.get('premiere'):
                 custom_props['premiere'] = True
 
             year = meta.get('movie', {}).get('year') or meta.get('originalAirDate', '')[:4]
