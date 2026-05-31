@@ -777,7 +777,10 @@ class CurrentProgramsAPIView(APIView):
             # Limit to 50 IDs per request
             epg_data_ids = epg_data_ids[:50]
 
-            epg_data_entries = EPGData.objects.select_related('epg_source').filter(id__in=epg_data_ids)
+            # Defer the multi-MB programme_index the JOIN would pull once per row. The lookup reads it via a targeted refresh_from_db
+            epg_data_entries = EPGData.objects.select_related('epg_source').defer(
+                'epg_source__programme_index'
+            ).filter(id__in=epg_data_ids)
 
             # Batch-fetch current programs for all requested EPG entries in one query
             db_programs = ProgramData.objects.filter(

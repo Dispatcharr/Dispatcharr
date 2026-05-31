@@ -6,7 +6,11 @@ from django.test import TestCase
 from django.utils import timezone
 
 from apps.epg.models import EPGSource, EPGData
-from apps.epg.tasks import find_current_program_for_tvg_id, build_programme_index
+from apps.epg.tasks import (
+    find_current_program_for_tvg_id,
+    build_programme_index,
+    build_programme_index_task,
+)
 
 FIXTURE_DIR = os.path.join(os.path.dirname(__file__), "fixtures")
 FIXTURE_XML = os.path.join(FIXTURE_DIR, "test_epg.xml")
@@ -161,6 +165,43 @@ class FindCurrentProgramTests(TestCase):
         finally:
             os.unlink(tmp_path)
 
+    def test_channel_id_entities_and_whitespace_match_tvg_id(self):
+        # programme@channel carries an XML entity and surrounding whitespace;
+        # EPGData.tvg_id holds the lxml-decoded, stripped form. The index key
+        # and lookup must canonicalize to the same value.
+        xml = (
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            "<tv>\n"
+            '  <channel id="A&amp;E.us"/>\n'
+            '  <programme start="20000101000000 +0000" '
+            'stop="20991231235959 +0000" channel=" A&amp;E.us ">\n'
+            "    <title>A and E Now</title>\n"
+            "  </programme>\n"
+            "</tv>\n"
+        )
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".xml", delete=False
+        ) as f:
+            f.write(xml)
+            tmp_path = f.name
+
+        try:
+            src = EPGSource.objects.create(
+                name="Entities", source_type="xmltv", file_path=tmp_path
+            )
+            build_programme_index(src.id)
+            src.refresh_from_db()
+            self.assertIn("A&E.us", src.programme_index["channels"])
+
+            epg = EPGData.objects.create(
+                tvg_id="A&E.us", name="A&E", epg_source=src
+            )
+            result = find_current_program_for_tvg_id(epg)
+            self.assertIsNotNone(result)
+            self.assertEqual(result["title"], "A and E Now")
+        finally:
+            os.unlink(tmp_path)
+
     @patch("apps.epg.tasks.build_programme_index_task")
     def test_no_index_dispatches_build_and_returns_timeout(self, mock_build_task):
         # Source with no index and file on disk
@@ -176,44 +217,10 @@ class FindCurrentProgramTests(TestCase):
             epg_source=src,
         )
 
-        mock_redis = MagicMock()
-        mock_redis.set.return_value = True
-        with patch(
-            "core.utils.RedisClient.get_client",
-            return_value=mock_redis,
-        ):
-            result = find_current_program_for_tvg_id(epg)
+        result = find_current_program_for_tvg_id(epg)
 
         self.assertEqual(result, "timeout")
         mock_build_task.delay.assert_called_once_with(src.id)
-        mock_redis.set.assert_called_once()
-        lock_key = mock_redis.set.call_args.args[0]
-        self.assertEqual(lock_key, f"building_programme_index_{src.id}")
-
-    @patch("apps.epg.tasks.build_programme_index_task")
-    def test_no_index_skips_dispatch_when_lock_held(self, mock_build_task):
-        src = EPGSource.objects.create(
-            name="Lock Held",
-            source_type="xmltv",
-            file_path=FIXTURE_XML,
-            programme_index=None,
-        )
-        epg = EPGData.objects.create(
-            tvg_id="channel.current",
-            name="Current",
-            epg_source=src,
-        )
-
-        mock_redis = MagicMock()
-        mock_redis.set.return_value = False  # someone else already building
-        with patch(
-            "core.utils.RedisClient.get_client",
-            return_value=mock_redis,
-        ):
-            result = find_current_program_for_tvg_id(epg)
-
-        self.assertEqual(result, "timeout")
-        mock_build_task.delay.assert_not_called()
 
 
 class BuildProgrammeIndexTests(TestCase):
@@ -239,6 +246,40 @@ class BuildProgrammeIndexTests(TestCase):
     def test_nonexistent_source_does_not_raise(self):
         # Should log error but not raise
         build_programme_index(99999)
+
+    @patch("apps.epg.tasks.build_programme_index")
+    def test_task_builds_and_releases_lock_when_free(self, mock_build):
+        mock_redis = MagicMock()
+        mock_redis.set.return_value = True  # lock acquired
+        with patch("core.utils.RedisClient.get_client", return_value=mock_redis):
+            build_programme_index_task(42)
+
+        mock_build.assert_called_once_with(42)
+        mock_redis.set.assert_called_once()
+        self.assertEqual(
+            mock_redis.set.call_args.args[0], "building_programme_index_42"
+        )
+        mock_redis.delete.assert_called_once_with("building_programme_index_42")
+
+    @patch("apps.epg.tasks.build_programme_index")
+    def test_task_skips_when_lock_held(self, mock_build):
+        mock_redis = MagicMock()
+        mock_redis.set.return_value = False  # another build in flight
+        with patch("core.utils.RedisClient.get_client", return_value=mock_redis):
+            build_programme_index_task(42)
+
+        mock_build.assert_not_called()
+        mock_redis.delete.assert_not_called()
+
+    @patch("apps.epg.tasks.build_programme_index", side_effect=RuntimeError("boom"))
+    def test_task_releases_lock_on_failure(self, mock_build):
+        mock_redis = MagicMock()
+        mock_redis.set.return_value = True
+        with patch("core.utils.RedisClient.get_client", return_value=mock_redis):
+            with self.assertRaises(RuntimeError):
+                build_programme_index_task(42)
+
+        mock_redis.delete.assert_called_once_with("building_programme_index_42")
 
     def test_per_channel_interleaved_marking(self):
         xml = (

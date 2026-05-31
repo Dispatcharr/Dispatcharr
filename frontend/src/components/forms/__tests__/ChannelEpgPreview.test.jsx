@@ -145,9 +145,10 @@ describe('Channel EPG preview hook', () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(0);
     });
-    for (const delay of [3000, 4500, 6750, 10125, 15000]) {
+    // Backoff ramps to a 15s cap; advance past the 180s deadline that bounds the loop.
+    for (let elapsed = 0; elapsed <= 190000; elapsed += 15100) {
       await act(async () => {
-        await vi.advanceTimersByTimeAsync(delay + 100);
+        await vi.advanceTimersByTimeAsync(15100);
       });
     }
 

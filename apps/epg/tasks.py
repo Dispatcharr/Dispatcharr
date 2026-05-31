@@ -318,8 +318,8 @@ def refresh_epg_data(source_id):
                 gc.collect()
                 return
 
-            # Build byte-offset index for preview lookups (runs before full program parse)
-            build_programme_index(source.id)
+            # Build byte-offset index for preview lookups in the background so refresh isn't blocked by it
+            build_programme_index_task.delay(source.id)
 
             parse_programs_for_source(source)
 
@@ -2368,6 +2368,14 @@ _MAX_START_TAG = 4096  # generous upper bound for a start tag with namespaces/ex
 _OFFSET_CAP = 10  # max block-starts recorded per channel; exceeding this flags the channel as interleaved
 
 
+def _decode_channel_id(raw):
+    """Match how EPGData.tvg_id is stored: resolve XML entities and strip, so byte-level index keys equal the lxml-parsed channel ids."""
+    s = raw.decode('utf-8', errors='replace')
+    if '&' in s:
+        s = html.unescape(s)
+    return s.strip()
+
+
 def _find_programme_tag(buf, start):
     """
     Find the next <programme element in *buf* starting from *start*.
@@ -2465,9 +2473,7 @@ def build_programme_index(source_id):
                     buf, idx, tag_end + 1 if tag_end != -1 else idx + _MAX_START_TAG
                 )
                 if m:
-                    channel_id = (m.group(1) or m.group(2)).decode(
-                        'utf-8', errors='replace'
-                    )
+                    channel_id = _decode_channel_id(m.group(1) or m.group(2))
                     if channel_id not in index:
                         index[channel_id] = [abs_pos]
                     elif channel_id != prev_channel:
@@ -2510,8 +2516,17 @@ def build_programme_index(source_id):
 
 @shared_task
 def build_programme_index_task(source_id):
-    """Celery wrapper so build_programme_index can be dispatched async."""
-    build_programme_index(source_id)
+    """Celery wrapper. Locks so refresh and preview don't both build the same source. Releases on finish rather than waiting out the TTL."""
+    from core.utils import RedisClient
+
+    redis_client = RedisClient.get_client()
+    lock_key = f'building_programme_index_{source_id}'
+    if not redis_client.set(lock_key, '1', nx=True, ex=300):
+        return
+    try:
+        build_programme_index(source_id)
+    finally:
+        redis_client.delete(lock_key)
 
 
 def find_current_program_for_tvg_id(epg_or_id):
@@ -2522,8 +2537,6 @@ def find_current_program_for_tvg_id(epg_or_id):
 
     Returns dict, None, or "timeout".
     """
-    from core.utils import RedisClient
-
     if isinstance(epg_or_id, EPGData):
         epg = epg_or_id
     else:
@@ -2575,10 +2588,7 @@ def find_current_program_for_tvg_id(epg_or_id):
 
     # No index yet: dispatch a background build and let the frontend retry.
     # A sync scan can block a worker for ~10s on SMB-hosted EPGs.
-    redis_client = RedisClient.get_client()
-    lock_key = f'building_programme_index_{source.id}'
-    if redis_client.set(lock_key, '1', nx=True, ex=300):
-        build_programme_index_task.delay(source.id)
+    build_programme_index_task.delay(source.id)
     return 'timeout'
 
 
@@ -2625,7 +2635,7 @@ def _read_programs_at_offsets(file_path, tvg_id, offsets, now):
                         )
                         continue
 
-                    ch = (m.group(1) or m.group(2)).decode('utf-8', errors='replace')
+                    ch = _decode_channel_id(m.group(1) or m.group(2))
                     if ch != tvg_id:
                         done = True  # different channel, end of block
                         break
@@ -2718,7 +2728,7 @@ def _scan_from_offset_for_tvg_id(file_path, tvg_id, start_offset, now, timeout_s
                     )
                     continue
 
-                ch = (m.group(1) or m.group(2)).decode('utf-8', errors='replace')
+                ch = _decode_channel_id(m.group(1) or m.group(2))
                 if ch != tvg_id:
                     search_from = (
                         tag_end + 1 if tag_end != -1 else tag_start + _PROGRAMME_TAG_LEN

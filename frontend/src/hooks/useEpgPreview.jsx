@@ -19,7 +19,7 @@ export const useEpgPreview = (epgDataId) => {
     setHasFetchedProgram(false);
 
     const fetchWithRetry = async () => {
-      const maxRetries = 5;
+      const maxRetries = 20;
       const deadlineMs = 3 * 60 * 1000;
       const startTime = Date.now();
       let delay = 3000;
