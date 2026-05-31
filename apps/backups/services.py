@@ -23,8 +23,7 @@ def get_backup_dir() -> Path:
 
 
 def _is_postgresql() -> bool:
-    """Check if we're using PostgreSQL."""
-    return settings.DATABASES["default"]["ENGINE"] == "django.db.backends.postgresql"
+    return "postgresql" in settings.DATABASES["default"]["ENGINE"]
 
 
 def _get_pg_env() -> dict:
