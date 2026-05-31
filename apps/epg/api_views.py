@@ -22,6 +22,7 @@ from .tasks import refresh_epg_data
 from .query_utils import parse_text_query
 from apps.accounts.permissions import (
     Authenticated,
+    IsAdmin,
     IsStandardUser,
     permission_classes_by_action,
     permission_classes_by_method,
@@ -47,6 +48,10 @@ class EPGSourceViewSet(viewsets.ModelViewSet):
         try:
             return [perm() for perm in permission_classes_by_action[self.action]]
         except KeyError:
+            if self.action in ('sd_lineups', 'sd_lineups_search'):
+                if self.request.method == 'GET':
+                    return [IsStandardUser()]
+                return [IsAdmin()]
             return [Authenticated()]
 
     def get_queryset(self):
