@@ -202,6 +202,39 @@ class FindCurrentProgramTests(TestCase):
         finally:
             os.unlink(tmp_path)
 
+    def test_offset_lookup_resolves_named_html_entities_in_programme_text(self):
+        xml = (
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            "<tv>\n"
+            '  <channel id="entity.channel"/>\n'
+            '  <programme start="20000101000000 +0000" '
+            'stop="20991231235959 +0000" channel="entity.channel">\n'
+            "    <title>Caf&eacute; Live</title>\n"
+            "  </programme>\n"
+            "</tv>\n"
+        )
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".xml", delete=False
+        ) as f:
+            f.write(xml)
+            tmp_path = f.name
+
+        try:
+            src = EPGSource.objects.create(
+                name="Named Entities", source_type="xmltv", file_path=tmp_path
+            )
+            build_programme_index(src.id)
+
+            epg = EPGData.objects.create(
+                tvg_id="entity.channel", name="Entity Channel", epg_source=src
+            )
+            result = find_current_program_for_tvg_id(epg)
+
+            self.assertIsNotNone(result)
+            self.assertEqual(result["title"], "Caf\u00e9 Live")
+        finally:
+            os.unlink(tmp_path)
+
     @patch("apps.epg.tasks.build_programme_index_task")
     def test_no_index_dispatches_build_and_returns_timeout(self, mock_build_task):
         # Source with no index and file on disk
@@ -242,6 +275,36 @@ class BuildProgrammeIndexTests(TestCase):
         self.assertNotIn("channel.empty", channels)
         # Small fixture has no interleaved channels
         self.assertEqual(index["interleaved_channels"], [])
+
+    def test_builds_index_when_channel_attribute_has_valid_xml_spacing(self):
+        xml = (
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            "<tv>\n"
+            '  <channel id="spaced.channel"/>\n'
+            '  <programme start="20000101000000 +0000" '
+            'stop="20991231235959 +0000" channel = "spaced.channel">\n'
+            "    <title>Spaced Attribute Current</title>\n"
+            "  </programme>\n"
+            "</tv>\n"
+        )
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".xml", delete=False
+        ) as f:
+            f.write(xml)
+            tmp_path = f.name
+
+        try:
+            src = EPGSource.objects.create(
+                name="Spaced Attribute", source_type="xmltv", file_path=tmp_path
+            )
+            build_programme_index(src.id)
+            src.refresh_from_db()
+
+            self.assertIn(
+                "spaced.channel", src.programme_index["channels"]
+            )
+        finally:
+            os.unlink(tmp_path)
 
     def test_nonexistent_source_does_not_raise(self):
         # Should log error but not raise

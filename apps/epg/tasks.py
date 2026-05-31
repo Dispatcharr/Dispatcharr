@@ -52,6 +52,12 @@ def _build_html_entity_doctype() -> bytes:
 _HTML_ENTITY_DOCTYPE = _build_html_entity_doctype()
 
 
+def _parse_programme_element(element_bytes):
+    """Parse a single <programme> element, prepending the HTML-entity DOCTYPE so references like &eacute; in the text resolve instead of failing."""
+    parser = etree.XMLParser(resolve_entities=True, load_dtd=True, no_network=True)
+    return etree.fromstring(_HTML_ENTITY_DOCTYPE + element_bytes, parser)
+
+
 class _PrependStream:
     """Wraps an open binary file and prepends a bytes prefix to its content.
 
@@ -2360,7 +2366,7 @@ def _resolve_source_file(epg_source):
     return file_path
 
 
-_CHANNEL_ATTR_RE = re.compile(rb"""channel=(?:"([^"]+)"|'([^']+)')""")
+_CHANNEL_ATTR_RE = re.compile(rb"""channel\s*=\s*(?:"([^"]+)"|'([^']+)')""")
 _PROGRAMME_TAG = b'<programme'
 _PROGRAMME_TAG_LEN = len(_PROGRAMME_TAG)
 _TAG_FOLLOW = b' \t\n\r>/'
@@ -2654,7 +2660,7 @@ def _read_programs_at_offsets(file_path, tvg_id, offsets, now):
                     search_from = close_end
 
                     try:
-                        prog = etree.fromstring(element_bytes)
+                        prog = _parse_programme_element(element_bytes)
                     except etree.XMLSyntaxError:
                         continue
 
@@ -2747,7 +2753,7 @@ def _scan_from_offset_for_tvg_id(file_path, tvg_id, start_offset, now, timeout_s
                 search_from = close_end
 
                 try:
-                    prog = etree.fromstring(element_bytes)
+                    prog = _parse_programme_element(element_bytes)
                 except etree.XMLSyntaxError:
                     continue
 

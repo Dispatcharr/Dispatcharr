@@ -399,7 +399,6 @@ def _rebuild_programme_indices():
     """Queue index builds for active EPG sources that are missing their DB index."""
     try:
         from apps.epg.tasks import build_programme_index_task
-        redis_client = RedisClient.get_client()
 
         sources = EPGSource.objects.filter(
             is_active=True,
@@ -408,10 +407,9 @@ def _rebuild_programme_indices():
 
         count = 0
         for source in sources:
-            lock_key = f"building_programme_index_{source.id}"
-            if redis_client.set(lock_key, "1", nx=True, ex=300):
-                build_programme_index_task.delay(source.id)
-                count += 1
+            # The task acquires its own build lock; taking it here would make the task no-op.
+            build_programme_index_task.delay(source.id)
+            count += 1
 
         if count:
             logger.info(f"Queued programme index rebuild for {count} EPG source(s)")
