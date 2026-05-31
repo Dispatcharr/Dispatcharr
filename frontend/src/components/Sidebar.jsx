@@ -314,7 +314,7 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
                       <img
                         src={`https://flagcdn.com/16x12/${environment.country_code.toLowerCase()}.png`}
                         alt={environment.country_name || environment.country_code}
-                        title={environment.country_name || environment.country_code}
+                        title={[environment.country_name || environment.country_code, environment.city].filter(Boolean).join(', ')}
                         style={{ flexShrink: 0 }}
                       />
                     )}

@@ -300,6 +300,7 @@ def _perform_ip_lookup():
     local_ip = None
     country_code = None
     country_name = None
+    city = None
 
     try:
         r = requests.get("https://api64.ipify.org?format=json", timeout=5)
@@ -323,12 +324,14 @@ def _perform_ip_lookup():
                 geo = r.json()
                 country_code = geo.get("country_code")
                 country_name = geo.get("country_name")
+                city = geo.get("city")
             else:
                 r = requests.get("http://ip-api.com/json/", timeout=5)
                 if r.status_code == requests.codes.ok:
                     geo = r.json()
                     country_code = geo.get("countryCode")
                     country_name = geo.get("country")
+                    city = geo.get("city")
         except Exception as e:
             logger.error(f"Error during geo lookup: {e}")
 
@@ -337,6 +340,7 @@ def _perform_ip_lookup():
         "local_ip": local_ip,
         "country_code": country_code,
         "country_name": country_name,
+        "city": city,
     }, _IP_CACHE_TTL)
     cache.delete(_IP_LOCK_KEY)
 
@@ -351,6 +355,7 @@ def environment(request):
     local_ip = None
     country_code = None
     country_name = None
+    city = None
     ip_lookup_pending = False
 
     ip_lookup_env_disabled = not getattr(django_settings, "ENABLE_IP_LOOKUP", True)
@@ -364,6 +369,7 @@ def environment(request):
             local_ip = cached.get("local_ip")
             country_code = cached.get("country_code")
             country_name = cached.get("country_name")
+            city = cached.get("city")
         else:
             # cache.add() is atomic — only one worker starts the background thread
             if cache.add(_IP_LOCK_KEY, True, 30):
@@ -380,6 +386,7 @@ def environment(request):
             "local_ip": local_ip,
             "country_code": country_code,
             "country_name": country_name,
+            "city": city,
             "ip_lookup_enabled": ip_lookup_enabled,
             "ip_lookup_env_disabled": ip_lookup_env_disabled,
             "ip_lookup_pending": ip_lookup_pending,
