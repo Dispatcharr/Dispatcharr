@@ -394,18 +394,28 @@ def stream_vod(request, content_type, content_id, session_id=None, profile_id=No
             query_params.pop('session_id', None)
             query_params.pop('token', None)  # Token not needed after session is established
 
-            # Always put session_id in the URL path - URL patterns only route it from there
-            path_parts = request.path.rstrip('/').split('/')
-            if profile_id:
-                new_path = f"{'/'.join(path_parts)}/{new_session_id}/{profile_id}/"
-            else:
-                new_path = f"{'/'.join(path_parts)}/{new_session_id}"
+            # The VOD proxy URL patterns accept session_id in the path, so we redirect
+            # to a path-based URL. XC endpoints (/movie/<user>/<pass>/<id>.<ext>) have
+            # a fixed shape and instead read session_id from a query parameter.
+            is_vod_proxy_path = request.path.startswith('/proxy/vod/')
 
-            if query_params:
-                query_string = urlencode(query_params, doseq=True)
-                redirect_url = f"{new_path}?{query_string}"
+            if is_vod_proxy_path:
+                path_parts = request.path.rstrip('/').split('/')
+                if profile_id:
+                    new_path = f"{'/'.join(path_parts)}/{new_session_id}/{profile_id}/"
+                else:
+                    new_path = f"{'/'.join(path_parts)}/{new_session_id}"
+
+                if query_params:
+                    query_string = urlencode(query_params, doseq=True)
+                    redirect_url = f"{new_path}?{query_string}"
+                else:
+                    redirect_url = new_path
             else:
-                redirect_url = new_path
+                # XC path: keep the original path, put session_id in the query string
+                query_params['session_id'] = new_session_id
+                query_string = urlencode(query_params, doseq=True)
+                redirect_url = f"{request.path}?{query_string}"
 
             logger.info(f"[VOD-SESSION] Redirecting to path-based URL: {redirect_url}")
 
