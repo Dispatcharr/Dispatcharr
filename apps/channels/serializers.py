@@ -19,10 +19,9 @@ from apps.epg.serializers import EPGDataSerializer
 from core.models import StreamProfile
 from apps.epg.models import EPGData
 from django.db import connection, transaction
-from django.urls import reverse
 from rest_framework import serializers
 from django.utils import timezone
-from core.utils import validate_flexible_url
+from core.utils import validate_flexible_url, build_absolute_uri_with_port
 
 
 class LogoSerializer(serializers.ModelSerializer):
@@ -57,13 +56,12 @@ class LogoSerializer(serializers.ModelSerializer):
         return instance
 
     def get_cache_url(self, obj):
-        # return f"/api/channels/logos/{obj.id}/cache/"
         request = self.context.get("request")
-        if request:
-            return request.build_absolute_uri(
-                reverse("api:channels:logo-cache", args=[obj.id])
-            )
-        return reverse("api:channels:logo-cache", args=[obj.id])
+        if not request:
+            return f"/api/channels/logos/{obj.id}/cache/"
+        if not hasattr(self, "_cache_url_prefix"):
+            self._cache_url_prefix = build_absolute_uri_with_port(request, "")
+        return f"{self._cache_url_prefix}/api/channels/logos/{obj.id}/cache/"
 
     def get_channel_count(self, obj):
         """Get the number of channels using this logo"""
