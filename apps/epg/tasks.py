@@ -2759,7 +2759,7 @@ def fetch_schedules_direct(source, stations_only=False):
                     md5=md5,
                 )
                 for pid, md5 in schedule_program_md5s.items()
-                if pid in programs_to_fetch  # Only cache what we actually downloaded
+                if pid in program_metadata  # Only cache programs that were actually downloaded
             ]
             if md5_records:
                 SDProgramMD5.objects.bulk_create(
