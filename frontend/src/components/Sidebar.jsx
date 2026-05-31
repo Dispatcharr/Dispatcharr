@@ -318,18 +318,36 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
                         style={{ flexShrink: 0 }}
                       />
                     )}
-                    <Box style={{ flex: 1, overflow: 'hidden', userSelect: ipRevealed ? 'text' : 'none' }}>
+                    <Box style={{ flex: 1, overflow: 'hidden' }}>
                       <span
                         style={{
                           display: 'block',
                           whiteSpace: 'nowrap',
                           fontSize: 'var(--mantine-font-size-sm)',
                           color: 'var(--mantine-color-text)',
-                          filter: ipRevealed ? 'none' : 'blur(5px)',
-                          transition: 'filter 0.15s',
                         }}
                       >
-                        {environment.public_ip}
+                        {(() => {
+                          const ip = environment.public_ip;
+                          const isIPv6 = ip.includes(':');
+                          const sep = isIPv6 ? ':' : '.';
+                          const parts = ip.split(sep);
+                          const splitAt = isIPv6 ? 4 : 2;
+                          const visible = parts.slice(0, splitAt).join(sep) + sep;
+                          const hidden = parts.slice(splitAt).join(sep);
+                          return (
+                            <>
+                              {visible}
+                              <span style={{
+                                filter: ipRevealed ? 'none' : 'blur(5px)',
+                                transition: 'filter 0.15s',
+                                userSelect: ipRevealed ? 'text' : 'none',
+                              }}>
+                                {hidden}
+                              </span>
+                            </>
+                          );
+                        })()}
                       </span>
                     </Box>
                     <ActionIcon
