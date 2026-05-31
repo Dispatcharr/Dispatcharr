@@ -70,14 +70,14 @@ class EPGSourceSerializerSDTests(TestCase):
         self.assertIn('username', data)
         self.assertEqual(data['username'], 'sduser')
 
-    def test_password_in_serializer_fields(self):
+    def test_password_not_in_serializer_output(self):
         source = EPGSource.objects.create(
             name='SD API Key Test',
             source_type='schedules_direct',
             password='secret',
         )
         data = EPGSourceSerializer(source).data
-        self.assertIn('password', data)
+        self.assertNotIn('password', data)
 
 
 # ---------------------------------------------------------------------------
