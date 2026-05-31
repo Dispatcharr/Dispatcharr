@@ -44,6 +44,7 @@ const useSettingsStore = create((set, get) => ({
           public_ip: '',
           country_code: '',
           country_name: '',
+          city: '',
           env_mode: 'aio',
           ip_lookup_enabled: true,
           ip_lookup_env_disabled: false,
@@ -60,18 +61,6 @@ const useSettingsStore = create((set, get) => ({
       }
 
       set(newState);
-
-      // If the IP lookup was still running when we fetched, retry once it should be done
-      if (env?.ip_lookup_pending) {
-        setTimeout(async () => {
-          try {
-            const freshEnv = await api.getEnvironmentSettings();
-            if (freshEnv && !freshEnv.ip_lookup_pending) {
-              set({ environment: freshEnv });
-            }
-          } catch {}
-        }, 7000);
-      }
     } catch (error) {
       set({ error: 'Failed to load settings.', isLoading: false });
     }
@@ -96,6 +85,15 @@ const useSettingsStore = create((set, get) => ({
       return get().version;
     }
   },
+
+  setEnvironmentFields: (fields) =>
+    set((state) => ({
+      environment: {
+        ...state.environment,
+        ...fields,
+        ip_lookup_pending: false,
+      },
+    })),
 
   updateSetting: (setting) =>
     set((state) => ({

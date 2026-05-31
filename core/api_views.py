@@ -1,6 +1,5 @@
 # core/api_views.py
 
-import json
 import ipaddress
 import logging
 from django.conf import settings as django_settings
@@ -8,11 +7,9 @@ from django.db import models
 from rest_framework import viewsets, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from django.shortcuts import get_object_or_404
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.decorators import api_view, permission_classes, action
-from drf_spectacular.utils import extend_schema, OpenApiParameter
-from drf_spectacular.types import OpenApiTypes
+from drf_spectacular.utils import extend_schema
 from .models import (
     UserAgent,
     StreamProfile,
@@ -311,11 +308,18 @@ def _perform_ip_lookup():
 
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("8.8.8.8", 80))
-        local_ip = s.getsockname()[0]
-        s.close()
+        try:
+            s.connect(("203.0.113.1", 80))
+            local_ip = s.getsockname()[0]
+        finally:
+            s.close()
     except Exception:
         pass
+
+    try:
+        ipaddress.ip_address(public_ip)
+    except (ValueError, TypeError):
+        public_ip = None
 
     if public_ip:
         try:
@@ -335,14 +339,18 @@ def _perform_ip_lookup():
         except Exception as e:
             logger.error(f"Error during geo lookup: {e}")
 
-    cache.set(_IP_CACHE_KEY, {
+    result = {
         "public_ip": public_ip,
         "local_ip": local_ip,
         "country_code": country_code,
         "country_name": country_name,
         "city": city,
-    }, _IP_CACHE_TTL)
+    }
+    cache.set(_IP_CACHE_KEY, result, _IP_CACHE_TTL)
     cache.delete(_IP_LOCK_KEY)
+
+    from core.utils import send_websocket_update
+    send_websocket_update("updates", "update", {"type": "ip_lookup_complete", **result})
 
 
 @extend_schema(
@@ -371,7 +379,6 @@ def environment(request):
             country_name = cached.get("country_name")
             city = cached.get("city")
         else:
-            # cache.add() is atomic — only one worker starts the background thread
             if cache.add(_IP_LOCK_KEY, True, 30):
                 threading.Thread(target=_perform_ip_lookup, daemon=True).start()
             ip_lookup_pending = True

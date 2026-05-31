@@ -21,6 +21,7 @@ import {
   ActionIcon,
   AppShellNavbar,
   ScrollArea,
+  Skeleton,
   Tooltip,
 } from '@mantine/core';
 import logo from '../images/logo.png';
@@ -290,13 +291,27 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
           <Stack gap="sm" style={{ width: '100%' }}>
             {!collapsed &&
               environment.ip_lookup_enabled !== false &&
+              environment.ip_lookup_pending && (
+                <Box>
+                  <Text size="sm" fw={500} mb={4}>
+                    Public IP
+                  </Text>
+                  <Skeleton height={36} radius="sm" />
+                </Box>
+              )}
+
+            {!collapsed &&
+              environment.ip_lookup_enabled !== false &&
+              !environment.ip_lookup_pending &&
               environment.public_ip &&
               !environment.public_ip.startsWith('Error') && (
                 <Box
-                  onMouseEnter={() => setIpRevealed(true)}
-                  onMouseLeave={() => setIpRevealed(false)}
+                  onClick={() => setIpRevealed((v) => !v)}
+                  style={{ cursor: 'pointer' }}
                 >
-                  <Text size="sm" fw={500} mb={4}>Public IP</Text>
+                  <Text size="sm" fw={500} mb={4}>
+                    Public IP
+                  </Text>
                   <Box
                     style={{
                       display: 'flex',
@@ -307,14 +322,20 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
                       height: '36px',
                       paddingLeft: '10px',
                       gap: '8px',
-                      cursor: 'default',
                     }}
                   >
                     {environment.country_code && (
                       <img
                         src={`https://flagcdn.com/16x12/${environment.country_code.toLowerCase()}.png`}
-                        alt={environment.country_name || environment.country_code}
-                        title={[environment.country_name || environment.country_code, environment.city].filter(Boolean).join(', ')}
+                        alt={
+                          environment.country_name || environment.country_code
+                        }
+                        title={[
+                          environment.country_name || environment.country_code,
+                          environment.city,
+                        ]
+                          .filter(Boolean)
+                          .join(', ')}
                         style={{ flexShrink: 0 }}
                       />
                     )}
@@ -333,16 +354,19 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
                           const sep = isIPv6 ? ':' : '.';
                           const parts = ip.split(sep);
                           const splitAt = isIPv6 ? 4 : 2;
-                          const visible = parts.slice(0, splitAt).join(sep) + sep;
+                          const visible =
+                            parts.slice(0, splitAt).join(sep) + sep;
                           const hidden = parts.slice(splitAt).join(sep);
                           return (
                             <>
                               {visible}
-                              <span style={{
-                                filter: ipRevealed ? 'none' : 'blur(5px)',
-                                transition: 'filter 0.15s',
-                                userSelect: ipRevealed ? 'text' : 'none',
-                              }}>
+                              <span
+                                style={{
+                                  filter: ipRevealed ? 'none' : 'blur(5px)',
+                                  transition: 'filter 0.15s',
+                                  userSelect: ipRevealed ? 'text' : 'none',
+                                }}
+                              >
                                 {hidden}
                               </span>
                             </>
@@ -353,7 +377,10 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
                     <ActionIcon
                       variant="transparent"
                       color="gray.9"
-                      onClick={copyPublicIP}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        copyPublicIP();
+                      }}
                       style={{ flexShrink: 0 }}
                     >
                       <Copy />
@@ -379,7 +406,7 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
               </Group>
             )}
             {collapsed && (
-              <Group gap="xs">
+              <Group justify="center" style={{ width: '100%' }}>
                 <Avatar src="" radius="xl" />
               </Group>
             )}
