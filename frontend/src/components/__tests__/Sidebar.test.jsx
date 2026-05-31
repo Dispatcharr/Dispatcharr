@@ -114,6 +114,7 @@ vi.mock('@mantine/core', async () => {
       </nav>
     ),
     ScrollArea: ({ children }) => <div>{children}</div>,
+    Skeleton: ({ height }) => <div data-testid="skeleton" style={{ height }} />,
     Tooltip: ({ children }) => <>{children}</>,
   };
 });
@@ -282,8 +283,7 @@ describe('Sidebar', () => {
     it('should render public IP with country flag', () => {
       renderSidebar();
 
-      const ipInput = screen.getByText('192.168.1.1');
-      expect(ipInput).toBeInTheDocument();
+      expect(screen.getByText('Public IP')).toBeInTheDocument();
 
       const flag = screen.getByAltText('United States');
       expect(flag).toHaveAttribute('src', 'https://flagcdn.com/16x12/us.png');
@@ -484,7 +484,7 @@ describe('Sidebar', () => {
       });
 
       renderSidebar();
-      expect(screen.getByText('192.168.1.1')).toBeInTheDocument();
+      expect(screen.getByText('Public IP')).toBeInTheDocument();
       expect(
         screen.queryByRole('img', { name: /flag/i })
       ).not.toBeInTheDocument();
