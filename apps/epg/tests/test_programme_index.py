@@ -1,4 +1,5 @@
 import os
+import gzip
 import tempfile
 from unittest.mock import patch, MagicMock
 
@@ -235,6 +236,282 @@ class FindCurrentProgramTests(TestCase):
         finally:
             os.unlink(tmp_path)
 
+    def test_epgshare_fr_style_programme_with_channel_first_and_apostrophe_entities(self):
+        # Based on epgshare01 FR feeds: channel is the first programme attr,
+        # ids/text include non-ASCII plus XML entities, and sub-title is common.
+        tvg_id = "France.3.-.C\u00f4te.d'Azur.fr"
+        xml = (
+            '<?xml version="1.0" encoding="UTF-8" ?>\n'
+            '<tv generator-info-name="none" generator-info-url="none">\n'
+            '  <channel id="France.3.-.C\u00f4te.d&apos;Azur.fr">\n'
+            '    <display-name lang="fr">France 3 - C\u00f4te d&apos;Azur</display-name>\n'
+            "  </channel>\n"
+            '  <programme channel="France.3.-.C\u00f4te.d&apos;Azur.fr" '
+            'start="20000101000000 +0000" stop="20991231235959 +0000">\n'
+            "    <title lang=\"fr\">La p&apos;tite librairie</title>\n"
+            "    <sub-title lang=\"fr\">Le Lys de Brooklyn, de Betty Smith</sub-title>\n"
+            "  </programme>\n"
+            "</tv>\n"
+        )
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".xml", encoding="utf-8", delete=False
+        ) as f:
+            f.write(xml)
+            tmp_path = f.name
+
+        try:
+            src = EPGSource.objects.create(
+                name="EPGShare FR", source_type="xmltv", file_path=tmp_path
+            )
+            build_programme_index(src.id)
+            src.refresh_from_db()
+            self.assertIn(tvg_id, src.programme_index["channels"])
+
+            epg = EPGData.objects.create(
+                tvg_id=tvg_id, name="France 3 Cote d'Azur", epg_source=src
+            )
+            result = find_current_program_for_tvg_id(epg)
+
+            self.assertIsNotNone(result)
+            self.assertEqual(result["title"], "La p'tite librairie")
+            self.assertEqual(
+                result["sub_title"], "Le Lys de Brooklyn, de Betty Smith"
+            )
+        finally:
+            os.unlink(tmp_path)
+
+    def test_epgshare_fr_style_description_decodes_predefined_entities(self):
+        xml = (
+            '<?xml version="1.0" encoding="UTF-8" ?>\n'
+            "<tv>\n"
+            '  <channel id="Chasse.et.P\u00eache.fr"/>\n'
+            '  <programme channel="Chasse.et.P\u00eache.fr" '
+            'start="20000101000000 +0000" stop="20991231235959 +0000">\n'
+            "    <title lang=\"fr\">Chasse &amp; p\u00eache, le mag</title>\n"
+            "    <desc lang=\"fr\">Au sommaire : &quot;La r\u00e9gion&quot; &lt;HD&gt; &amp; bonus.</desc>\n"
+            "  </programme>\n"
+            "</tv>\n"
+        )
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".xml", encoding="utf-8", delete=False
+        ) as f:
+            f.write(xml)
+            tmp_path = f.name
+
+        try:
+            src = EPGSource.objects.create(
+                name="EPGShare FR Entities", source_type="xmltv", file_path=tmp_path
+            )
+            build_programme_index(src.id)
+
+            epg = EPGData.objects.create(
+                tvg_id="Chasse.et.P\u00eache.fr",
+                name="Chasse et Peche",
+                epg_source=src,
+            )
+            result = find_current_program_for_tvg_id(epg)
+
+            self.assertIsNotNone(result)
+            self.assertEqual(result["title"], "Chasse & p\u00eache, le mag")
+            self.assertEqual(
+                result["description"],
+                'Au sommaire : "La r\u00e9gion" <HD> & bonus.',
+            )
+        finally:
+            os.unlink(tmp_path)
+
+    def test_epgshare_all_sources_style_start_stop_before_channel(self):
+        # The all-sources EPG contains both programme attr orders:
+        # channel/start/stop and start/stop/channel.
+        tvg_id = "Atfal.&.Mawaheb.ae"
+        xml = (
+            '<?xml version="1.0" encoding="UTF-8" ?>\n'
+            "<tv>\n"
+            '  <channel id="Atfal.&amp;.Mawaheb.ae"/>\n'
+            '  <programme start="20000101000000 +0000" '
+            'stop="20991231235959 +0000" channel="Atfal.&amp;.Mawaheb.ae">\n'
+            "    <title lang=\"en\">Kids &amp; Talent</title>\n"
+            "  </programme>\n"
+            "</tv>\n"
+        )
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".xml", encoding="utf-8", delete=False
+        ) as f:
+            f.write(xml)
+            tmp_path = f.name
+
+        try:
+            src = EPGSource.objects.create(
+                name="EPGShare All Sources", source_type="xmltv", file_path=tmp_path
+            )
+            build_programme_index(src.id)
+            src.refresh_from_db()
+            self.assertIn(tvg_id, src.programme_index["channels"])
+
+            epg = EPGData.objects.create(
+                tvg_id=tvg_id, name="Atfal and Mawaheb", epg_source=src
+            )
+            result = find_current_program_for_tvg_id(epg)
+
+            self.assertIsNotNone(result)
+            self.assertEqual(result["title"], "Kids & Talent")
+        finally:
+            os.unlink(tmp_path)
+
+    def test_jesmann_fullguide_style_numeric_channel_id(self):
+        # FullGuide.xml.gz uses numeric channel ids and consistently orders
+        # programme attrs as start/stop/channel.
+        xml = (
+            '<?xml version="1.0" encoding="UTF-8" ?>\n'
+            "<tv>\n"
+            '  <channel id="123958">\n'
+            "    <display-name>Sample Numeric Channel</display-name>\n"
+            "  </channel>\n"
+            '  <programme start="20000101000000 +0000" '
+            'stop="20991231235959 +0000" channel="123958">\n'
+            "    <title>Breaking Basics</title>\n"
+            "    <desc>Tobi visits the &quot;Flying Steps&quot; in Berlin.</desc>\n"
+            "  </programme>\n"
+            "</tv>\n"
+        )
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".xml", encoding="utf-8", delete=False
+        ) as f:
+            f.write(xml)
+            tmp_path = f.name
+
+        try:
+            src = EPGSource.objects.create(
+                name="Jesmann FullGuide", source_type="xmltv", file_path=tmp_path
+            )
+            build_programme_index(src.id)
+            src.refresh_from_db()
+            self.assertIn("123958", src.programme_index["channels"])
+
+            epg = EPGData.objects.create(
+                tvg_id="123958", name="Numeric Channel", epg_source=src
+            )
+            result = find_current_program_for_tvg_id(epg)
+
+            self.assertIsNotNone(result)
+            self.assertEqual(result["title"], "Breaking Basics")
+            self.assertEqual(
+                result["description"],
+                'Tobi visits the "Flying Steps" in Berlin.',
+            )
+        finally:
+            os.unlink(tmp_path)
+
+    def test_offset_lookup_accepts_single_quoted_channel_attribute(self):
+        xml = (
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            "<tv>\n"
+            "  <channel id='single.quote.channel'/>\n"
+            "  <programme start='20000101000000 +0000' "
+            "stop='20991231235959 +0000' channel='single.quote.channel'>\n"
+            "    <title>Single Quote Current</title>\n"
+            "  </programme>\n"
+            "</tv>\n"
+        )
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".xml", encoding="utf-8", delete=False
+        ) as f:
+            f.write(xml)
+            tmp_path = f.name
+
+        try:
+            src = EPGSource.objects.create(
+                name="Single Quotes", source_type="xmltv", file_path=tmp_path
+            )
+            build_programme_index(src.id)
+            src.refresh_from_db()
+            self.assertIn("single.quote.channel", src.programme_index["channels"])
+
+            epg = EPGData.objects.create(
+                tvg_id="single.quote.channel",
+                name="Single Quote Channel",
+                epg_source=src,
+            )
+            result = find_current_program_for_tvg_id(epg)
+
+            self.assertIsNotNone(result)
+            self.assertEqual(result["title"], "Single Quote Current")
+        finally:
+            os.unlink(tmp_path)
+
+    def test_offset_lookup_resolves_html_named_entity_not_predefined_by_xml(self):
+        xml = (
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            "<tv>\n"
+            '  <channel id="html.entity.channel"/>\n'
+            '  <programme start="20000101000000 +0000" '
+            'stop="20991231235959 +0000" channel="html.entity.channel">\n'
+            "    <title>Caf&eacute;&nbsp;Society</title>\n"
+            "  </programme>\n"
+            "</tv>\n"
+        )
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".xml", encoding="utf-8", delete=False
+        ) as f:
+            f.write(xml)
+            tmp_path = f.name
+
+        try:
+            src = EPGSource.objects.create(
+                name="HTML Entities", source_type="xmltv", file_path=tmp_path
+            )
+            build_programme_index(src.id)
+
+            epg = EPGData.objects.create(
+                tvg_id="html.entity.channel",
+                name="HTML Entity Channel",
+                epg_source=src,
+            )
+            result = find_current_program_for_tvg_id(epg)
+
+            self.assertIsNotNone(result)
+            self.assertEqual(result["title"], "Caf\u00e9\u00a0Society")
+        finally:
+            os.unlink(tmp_path)
+
+    def test_offset_lookup_handles_programme_element_larger_than_read_chunk(self):
+        long_desc = "x" * (2 * 1024 * 1024 + 1024)
+        xml = (
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            "<tv>\n"
+            '  <channel id="large.programme.channel"/>\n'
+            '  <programme start="20000101000000 +0000" '
+            'stop="20991231235959 +0000" channel="large.programme.channel">\n'
+            "    <title>Large Programme Current</title>\n"
+            f"    <desc>{long_desc}</desc>\n"
+            "  </programme>\n"
+            "</tv>\n"
+        )
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".xml", encoding="utf-8", delete=False
+        ) as f:
+            f.write(xml)
+            tmp_path = f.name
+
+        try:
+            src = EPGSource.objects.create(
+                name="Large Programme", source_type="xmltv", file_path=tmp_path
+            )
+            build_programme_index(src.id)
+
+            epg = EPGData.objects.create(
+                tvg_id="large.programme.channel",
+                name="Large Programme Channel",
+                epg_source=src,
+            )
+            result = find_current_program_for_tvg_id(epg)
+
+            self.assertIsNotNone(result)
+            self.assertEqual(result["title"], "Large Programme Current")
+            self.assertEqual(len(result["description"]), len(long_desc))
+        finally:
+            os.unlink(tmp_path)
+
     @patch("apps.epg.tasks.build_programme_index_task")
     def test_no_index_dispatches_build_and_returns_timeout(self, mock_build_task):
         # Source with no index and file on disk
@@ -303,6 +580,82 @@ class BuildProgrammeIndexTests(TestCase):
             self.assertIn(
                 "spaced.channel", src.programme_index["channels"]
             )
+        finally:
+            os.unlink(tmp_path)
+
+    def test_builds_index_from_extracted_file_path_for_gz_source(self):
+        xml = (
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            "<tv>\n"
+            '  <channel id="gz.channel"/>\n'
+            '  <programme channel="gz.channel" '
+            'start="20000101000000 +0000" stop="20991231235959 +0000">\n'
+            "    <title>GZ Current</title>\n"
+            "  </programme>\n"
+            "</tv>\n"
+        )
+        gz_path = None
+        xml_path = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="wb", suffix=".xml.gz", delete=False
+            ) as gz_file:
+                gz_path = gz_file.name
+                with gzip.GzipFile(fileobj=gz_file, mode="wb") as compressed:
+                    compressed.write(b"not the file the index should scan")
+
+            with tempfile.NamedTemporaryFile(
+                mode="w", suffix=".xml", encoding="utf-8", delete=False
+            ) as xml_file:
+                xml_file.write(xml)
+                xml_path = xml_file.name
+
+            src = EPGSource.objects.create(
+                name="Extracted GZ",
+                source_type="xmltv",
+                file_path=gz_path,
+                extracted_file_path=xml_path,
+            )
+            build_programme_index(src.id)
+            src.refresh_from_db()
+
+            self.assertIn("gz.channel", src.programme_index["channels"])
+        finally:
+            if gz_path:
+                os.unlink(gz_path)
+            if xml_path:
+                os.unlink(xml_path)
+
+    def test_builds_index_ignores_elements_whose_name_only_starts_with_programme(self):
+        xml = (
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            "<tv>\n"
+            '  <channel id="real.channel"/>\n'
+            '  <programme-extra channel="not.a.programme" '
+            'start="20000101000000 +0000" stop="20991231235959 +0000">\n'
+            "    <title>Not a Programme</title>\n"
+            "  </programme-extra>\n"
+            '  <programme channel="real.channel" '
+            'start="20000101000000 +0000" stop="20991231235959 +0000">\n'
+            "    <title>Real Programme</title>\n"
+            "  </programme>\n"
+            "</tv>\n"
+        )
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".xml", encoding="utf-8", delete=False
+        ) as f:
+            f.write(xml)
+            tmp_path = f.name
+
+        try:
+            src = EPGSource.objects.create(
+                name="Programme Prefix", source_type="xmltv", file_path=tmp_path
+            )
+            build_programme_index(src.id)
+            src.refresh_from_db()
+
+            self.assertIn("real.channel", src.programme_index["channels"])
+            self.assertNotIn("not.a.programme", src.programme_index["channels"])
         finally:
             os.unlink(tmp_path)
 
