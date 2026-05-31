@@ -144,6 +144,7 @@ class ProgramData(models.Model):
     sub_title = models.TextField(blank=True, null=True)
     description = models.TextField(blank=True, null=True)
     tvg_id = models.CharField(max_length=255, null=True, blank=True)
+    program_id = models.CharField(max_length=64, null=True, blank=True, help_text='Schedules Direct programID (e.g. EP123456789). Null for XMLTV sources.')
     custom_properties = models.JSONField(default=dict, blank=True, null=True)
 
     def __str__(self):

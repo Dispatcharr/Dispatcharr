@@ -17,6 +17,7 @@ import zipfile
 from celery import shared_task
 from django.conf import settings
 from django.db import connection, transaction
+from django.db.models import Q
 from django.utils import timezone
 from apps.channels.models import Channel
 from core.models import UserAgent, CoreSettings
@@ -102,7 +103,7 @@ def _open_xmltv_file(file_path: str):
     Prepends a <!DOCTYPE tv [...]> block that declares all 252 HTML 4 named
     entities so lxml/libxml2 resolves references like &eacute; correctly
     instead of silently dropping them in recovery mode.  This involves zero
-    disk I/O — the DOCTYPE is streamed in-memory before the file content.
+    disk I/O (the DOCTYPE is streamed in-memory before the file content).
 
     If the file already contains a <!DOCTYPE> declaration the file is returned
     unchanged; a second DOCTYPE would be invalid XML.
@@ -126,7 +127,7 @@ def _open_xmltv_file(file_path: str):
             f.seek(decl_end + 2)
             return _PrependStream(xml_decl + b'\n' + _HTML_ENTITY_DOCTYPE, f)
 
-    # No XML declaration — insert DOCTYPE at the very start of the file.
+    # No XML declaration found; insert DOCTYPE at the very start of the file.
     f.seek(0)
     return _PrependStream(_HTML_ENTITY_DOCTYPE, f)
 
@@ -1317,14 +1318,14 @@ def parse_channels_only(source):
 
 @shared_task(time_limit=3600, soft_time_limit=3500)
 def parse_programs_for_tvg_id(epg_id):
-    # Skip XMLTV file parsing for Schedules Direct sources — program data is
+    # Skip XMLTV file parsing for Schedules Direct sources. Program data is
     # fetched and persisted directly by fetch_schedules_direct().
     try:
         from apps.epg.models import EPGData
         epg_obj = EPGData.objects.select_related('epg_source').filter(id=epg_id).first()
         if epg_obj and epg_obj.epg_source and epg_obj.epg_source.source_type == 'schedules_direct':
             logger.info(f"Skipping XMLTV parse for SD EPGData id={epg_id} (source: {epg_obj.epg_source.name})")
-            return "Skipped — Schedules Direct source"
+            return "Skipped (Schedules Direct source)"
     except Exception as e:
         logger.warning(f"Could not check EPG source type for id={epg_id}: {e}")
 
@@ -1979,7 +1980,7 @@ def fetch_schedules_direct(source, stations_only=False, force=False):
     EPGData / ProgramData models.
 
     Authentication flow (as required by the SD API specification):
-      1. POST credentials to the token endpoint — password must be SHA1-hashed
+      1. POST credentials to the token endpoint (password must be SHA1-hashed
          as required by the Schedules Direct API specification.
       2. Use the returned token for all subsequent requests via the 'token' header.
       3. Tokens are valid for 24 hours; SD returns the current valid token if one
@@ -1989,7 +1990,7 @@ def fetch_schedules_direct(source, stations_only=False, force=False):
       1. Fetch subscribed lineups for the account.
       2. Fetch station metadata for each lineup.
       3. Persist station metadata to EPGData.
-      4. If stations_only=True, stop here — used on initial source creation so
+      4. If stations_only=True, stop here. Used on initial source creation so
          the user can run Auto-match EPG before the full program fetch.
       5. Fetch schedule grids in 14-day date-batched requests per station.
       6. Fetch program metadata in batched requests (up to 5000 programIDs per request).
@@ -2041,7 +2042,7 @@ def fetch_schedules_direct(source, stations_only=False, force=False):
             if elapsed < min_interval_seconds:
                 remaining_minutes = int((min_interval_seconds - elapsed) / 60)
                 msg = (
-                    f"Schedules Direct refresh skipped — minimum 2-hour interval not reached. "
+                    f"Schedules Direct refresh skipped. Minimum 2-hour interval not reached. "
                     f"Last refreshed {int(elapsed / 60)} minutes ago. "
                     f"Please wait {remaining_minutes} more minute(s)."
                 )
@@ -2052,9 +2053,9 @@ def fetch_schedules_direct(source, stations_only=False, force=False):
                 _sd_send_ws_sync(source.id, "refresh", 100, status="idle", message=msg)
                 return
         else:
-            logger.info(f"SD source {source.id}: No prior full refresh detected — skipping 2-hour guard for first full fetch.")
+            logger.info(f"SD source {source.id}: No prior full refresh detected, skipping 2-hour guard for first full fetch.")
     elif force and not stations_only:
-        logger.info(f"SD source {source.id}: Force flag set — bypassing 2-hour refresh guard.")
+        logger.info(f"SD source {source.id}: Force flag set, bypassing 2-hour refresh guard.")
 
     # -------------------------------------------------------------------------
     # Build SD-specific headers
@@ -2074,7 +2075,7 @@ def fetch_schedules_direct(source, stations_only=False, force=False):
         return h
 
     # -------------------------------------------------------------------------
-    # Step 1 — Authenticate and obtain session token
+    # Step 1: Authenticate and obtain session token
     # The SD API requires the password to be SHA1-hashed before transmission.
     # This is a requirement of the Schedules Direct API specification, not an
     # architectural choice.
@@ -2102,7 +2103,7 @@ def fetch_schedules_direct(source, stations_only=False, force=False):
             elif auth_code == 4004:
                 msg = "Schedules Direct: account locked due to too many failed login attempts. Try again in 15 minutes."
             elif auth_code == 4009:
-                msg = "Schedules Direct: too many login attempts in 24 hours. Token is valid for 24 hours — check for misconfiguration."
+                msg = "Schedules Direct: too many login attempts in 24 hours. Token is valid for 24 hours. Check for misconfiguration."
             elif auth_code == 4001:
                 msg = "Schedules Direct: account has expired. Please renew your subscription at schedulesdirect.org."
             elif auth_code == 4008:
@@ -2138,7 +2139,7 @@ def fetch_schedules_direct(source, stations_only=False, force=False):
         return
 
     # -------------------------------------------------------------------------
-    # Step 2 — Check account status (respect OFFLINE system status)
+    # Step 2: Check account status (respect OFFLINE system status)
     # -------------------------------------------------------------------------
     try:
         status_response = requests.get(
@@ -2165,7 +2166,7 @@ def fetch_schedules_direct(source, stations_only=False, force=False):
         logger.warning(f"Could not fetch SD system status, proceeding anyway: {e}")
 
     # -------------------------------------------------------------------------
-    # Step 3 — Fetch subscribed lineups and build station map
+    # Step 3: Fetch subscribed lineups and build station map
     # -------------------------------------------------------------------------
     _sd_send_ws_sync(source.id, "parsing_programs", 10, message="Fetching subscribed lineups...")
     try:
@@ -2175,7 +2176,7 @@ def fetch_schedules_direct(source, stations_only=False, force=False):
             timeout=30,
         )
         # SD returns 400 with code 4102 when no lineups are configured.
-        # This is a valid account state — the user needs to add lineups via
+        # This is a valid account state. The user needs to add lineups via
         # the Manage Lineups UI. Treat as idle rather than error.
         if lineups_response.status_code == 400:
             sd_data = lineups_response.json()
@@ -2256,7 +2257,7 @@ def fetch_schedules_direct(source, stations_only=False, force=False):
     logger.info(f"Built station map with {len(station_map)} stations.")
 
     # -------------------------------------------------------------------------
-    # Step 4 — Persist station metadata to EPGData
+    # Step 4: Persist station metadata to EPGData
     # -------------------------------------------------------------------------
     source.status = EPGSource.STATUS_PARSING
     source.last_message = f"Syncing {len(station_map)} stations..."
@@ -2313,7 +2314,7 @@ def fetch_schedules_direct(source, stations_only=False, force=False):
         for epg in EPGData.objects.filter(epg_source=source, tvg_id__in=list(station_map.keys()))
     }
 
-    # Station sync complete — send progress continuing into programs phase
+    # Station sync complete. Send progress update before continuing into programs phase.
     # We deliberately do NOT send parsing_channels at 100 with status=success here
     # because that would cause the frontend to mark the source as complete and
     # stop rendering progress updates for the subsequent program fetch phases.
@@ -2321,7 +2322,7 @@ def fetch_schedules_direct(source, stations_only=False, force=False):
                     message=f"Stations synced ({len(station_map)} stations). Preparing schedule fetch...")
 
     # -------------------------------------------------------------------------
-    # Stations-only mode — used on initial source creation.
+    # Stations-only mode. Used on initial source creation.
     # Stop here so the user can run Auto-match EPG before the full program fetch.
     # -------------------------------------------------------------------------
     if stations_only:
@@ -2340,10 +2341,10 @@ def fetch_schedules_direct(source, stations_only=False, force=False):
         return
 
     # -------------------------------------------------------------------------
-    # Step 5 — MD5-delta schedule fetch
+    # Step 5: MD5-delta schedule fetch
     # First fetch MD5 hashes for all stations/dates. Compare against our
     # locally cached hashes to determine which schedules have changed.
-    # Only download schedules that have actually changed — this minimises
+    # Only download schedules that have actually changed; this minimises
     # API calls against SD's rate-limited endpoints.
     # -------------------------------------------------------------------------
     from apps.epg.models import SDScheduleMD5
@@ -2353,6 +2354,12 @@ def fetch_schedules_direct(source, stations_only=False, force=False):
     station_ids = list(station_map.keys())
     today = date.today()
     date_list = [(today + timedelta(days=i)).strftime('%Y-%m-%d') for i in range(SD_DAYS_TO_FETCH)]
+
+    # Prune SDScheduleMD5 records whose dates have rolled off the fetch window.
+    # These accumulate one row per station per day and are never useful once past.
+    pruned_sched_md5_count = SDScheduleMD5.objects.filter(epg_source=source, date__lt=today).delete()[0]
+    if pruned_sched_md5_count:
+        logger.info(f"Pruned {pruned_sched_md5_count} expired SDScheduleMD5 records (before {today}).")
 
     # Fetch MD5 hashes for all stations in batches of 5000
     STATION_BATCH_SIZE = 5000
@@ -2407,7 +2414,7 @@ def fetch_schedules_direct(source, stations_only=False, force=False):
     program_ids_needed = set()
 
     if not changed_by_station:
-        logger.info("No schedule changes detected — skipping schedule and program downloads.")
+        logger.info("No schedule changes detected, skipping schedule and program downloads.")
         _sd_send_ws_sync(source.id, "parsing_programs", 100, status="success",
                         message="No schedule changes detected since last refresh. Guide data is up to date.")
         source.status = EPGSource.STATUS_SUCCESS
@@ -2519,7 +2526,7 @@ def fetch_schedules_direct(source, stations_only=False, force=False):
         return
 
     # -------------------------------------------------------------------------
-    # Step 6 — MD5-delta program metadata fetch
+    # Step 6: MD5-delta program metadata fetch
     # The schedule response includes an MD5 hash per program airing.
     # Compare against our cached program MD5s to only download programs
     # whose metadata has changed since our last fetch.
@@ -2599,7 +2606,7 @@ def fetch_schedules_direct(source, stations_only=False, force=False):
     gc.collect()
 
     # -------------------------------------------------------------------------
-    # Step 7 — Build ProgramData records and persist atomically
+    # Step 7: Build ProgramData records and persist atomically
     # -------------------------------------------------------------------------
     logger.info("Building program records...")
     _sd_send_ws_sync(source.id, "parsing_programs", 80)
@@ -2733,6 +2740,7 @@ def fetch_schedules_direct(source, stations_only=False, force=False):
                 sub_title=episode_title or None,
                 description=desc or None,
                 tvg_id=sid,
+                program_id=pid,
                 custom_properties=custom_props or None,
             ))
             total_programs += 1
@@ -2742,14 +2750,37 @@ def fetch_schedules_direct(source, stations_only=False, force=False):
 
     _sd_send_ws_sync(source.id, "parsing_programs", 88)
 
-    # Atomic delete + bulk insert — same pattern as parse_programs_for_source
+    # Build a map of epg_db_id -> list of (day_start_utc, day_end_utc) for each changed date.
+    # Only programs that fall within changed station/date pairs will be deleted and replaced;
+    # programs for unchanged stations or unchanged dates are left intact.
+    import datetime as dt_module
+    epg_changed_date_ranges = {}
+    for sid, changed_date_strs in changed_by_station.items():
+        epg_db_id = epg_id_map.get(sid)
+        if not epg_db_id or epg_db_id not in mapped_epg_ids:
+            continue
+        ranges = []
+        for ds in changed_date_strs:
+            d = dt_module.date.fromisoformat(ds)
+            day_start = datetime(d.year, d.month, d.day, tzinfo=dt_timezone.utc)
+            ranges.append((day_start, day_start + timedelta(days=1)))
+        if ranges:
+            epg_changed_date_ranges[epg_db_id] = ranges
+
+    # Atomic delete (surgical) + bulk insert
     BATCH_SIZE = 1000
     try:
         with transaction.atomic():
             with connection.cursor() as cursor:
                 cursor.execute("SET LOCAL statement_timeout = '10min'")
-            deleted_count = ProgramData.objects.filter(epg_id__in=mapped_epg_ids).delete()[0]
-            logger.debug(f"Deleted {deleted_count} existing SD programs.")
+            total_deleted = 0
+            for epg_db_id, day_ranges in epg_changed_date_ranges.items():
+                q = Q()
+                for day_start, day_end in day_ranges:
+                    q |= Q(start_time__gte=day_start, start_time__lt=day_end)
+                cnt = ProgramData.objects.filter(epg_id=epg_db_id).filter(q).delete()[0]
+                total_deleted += cnt
+            logger.debug(f"Deleted {total_deleted} changed SD programs across {len(epg_changed_date_ranges)} stations.")
             for i in range(0, len(all_programs_to_create), BATCH_SIZE):
                 ProgramData.objects.bulk_create(all_programs_to_create[i:i + BATCH_SIZE])
                 progress = 88 + int(((i + BATCH_SIZE) / max(len(all_programs_to_create), 1)) * 10)
@@ -2789,6 +2820,30 @@ def fetch_schedules_direct(source, stations_only=False, force=False):
     finally:
         all_programs_to_create = None
         gc.collect()
+
+    # Prune ProgramData whose end_time has passed. With surgical per-date deletes,
+    # programs from dates that have rolled off the window are never explicitly removed.
+    today_utc = datetime(today.year, today.month, today.day, tzinfo=dt_timezone.utc)
+    try:
+        expired_count = ProgramData.objects.filter(epg_id__in=mapped_epg_ids, end_time__lt=today_utc).delete()[0]
+        if expired_count:
+            logger.info(f"Pruned {expired_count} expired SD ProgramData records (end_time before {today}).")
+    except Exception as prune_err:
+        logger.warning(f"Failed to prune expired SD ProgramData: {prune_err}")
+
+    # Prune SDProgramMD5 rows no longer referenced by any live ProgramData for this source.
+    try:
+        live_program_ids = set(
+            ProgramData.objects.filter(epg_id__in=mapped_epg_ids, program_id__isnull=False)
+            .values_list('program_id', flat=True)
+        )
+        pruned_prog_md5_count = SDProgramMD5.objects.filter(epg_source=source).exclude(
+            program_id__in=live_program_ids
+        ).delete()[0]
+        if pruned_prog_md5_count:
+            logger.info(f"Pruned {pruned_prog_md5_count} stale SDProgramMD5 records no longer referenced by live ProgramData.")
+    except Exception as prune_err:
+        logger.warning(f"Failed to prune stale SDProgramMD5 records: {prune_err}")
 
     # -------------------------------------------------------------------------
     # Done
