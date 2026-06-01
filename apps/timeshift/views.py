@@ -14,6 +14,7 @@ import time
 import uuid
 
 import requests
+from django.core.cache import cache
 from django.http import (
     Http404,
     HttpResponseBadRequest,
@@ -24,10 +25,7 @@ from django.http import (
 
 from apps.accounts.models import User
 from apps.channels.models import Channel
-from apps.channels.utils import (
-    get_channel_catchup_info,
-    resolve_channel_by_provider_stream_id,
-)
+from apps.channels.utils import get_channel_catchup_info
 from apps.proxy.live_proxy.config_helper import ConfigHelper
 from apps.proxy.live_proxy.constants import ChannelMetadataField, ChannelState
 from apps.proxy.live_proxy.redis_keys import RedisKeys
@@ -51,23 +49,19 @@ CLIENT_TTL_SECONDS = 60
 
 
 def timeshift_proxy(request, username, password, stream_id, timestamp, duration):  # noqa: ARG001 stream_id
-    # The "duration" URL slot carries the stream identifier sent by the XC
-    # API.  Since PR #1242 review 2, the API emits channel.id (Dispatcharr
-    # internal) — not the provider's stream_id.  Resolve by Channel.id first;
-    # fall back to provider stream_id for backward compatibility.
+    # The "duration" URL slot carries Dispatcharr's internal Channel.id — the
+    # XC API emits channel.id as the stream_id to clients, never the provider's
+    # stream_id.  Resolve by Channel.id; 404 if it doesn't exist.
     raw_id = duration[:-3] if duration.endswith(".ts") else duration
 
     user = _authenticate_user(username, password)
     if user is None:
         return HttpResponseForbidden("Invalid credentials")
 
-    channel = None
     try:
         channel = Channel.objects.get(id=int(raw_id))
     except (Channel.DoesNotExist, ValueError, TypeError):
-        channel, _ = resolve_channel_by_provider_stream_id(raw_id)
-    if channel is None:
-        raise Http404("Channel not found")
+        raise Http404("Channel not found") from None
 
     if not _user_can_access_channel(user, channel):
         return HttpResponseForbidden("Access denied")
@@ -346,14 +340,12 @@ def _get_cached_format_index(account_id):
     """
     if account_id is None:
         return None
-    from django.core.cache import cache
     return cache.get(_FORMAT_CACHE_KEY.format(account_id))
 
 
 def _set_cached_format_index(account_id, index):
     if account_id is None:
         return
-    from django.core.cache import cache
     cache.set(_FORMAT_CACHE_KEY.format(account_id), index, _FORMAT_CACHE_TTL)
 
 

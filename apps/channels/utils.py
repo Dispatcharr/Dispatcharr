@@ -17,31 +17,6 @@ def format_channel_number(value, empty=""):
     return value
 
 
-def resolve_channel_by_provider_stream_id(provider_stream_id):
-    """Find a Channel + Stream by the XC provider's stream_id.
-
-    XC clients address channels via the provider's `stream_id` (stored in
-    `Stream.custom_properties["stream_id"]`), not Dispatcharr's internal
-    `Channel.id`. Returns `(Channel, Stream)` on hit, `(None, None)` on miss.
-    """
-    from apps.channels.models import Stream
-
-    stream = (
-        Stream.objects.filter(
-            custom_properties__stream_id=str(provider_stream_id),
-            m3u_account__account_type="XC",
-        )
-        .select_related("m3u_account")
-        .first()
-    )
-    if stream is None:
-        return None, None
-    channel = stream.channels.first()
-    if channel is None:
-        return None, None
-    return channel, stream
-
-
 def get_channel_catchup_info(channel):
     """Return catch-up info for a Channel, or None if catch-up is unavailable.
 
