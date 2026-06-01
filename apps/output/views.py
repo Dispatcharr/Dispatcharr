@@ -126,7 +126,7 @@ def generate_m3u(request, profile_name=None, user=None):
     # Check if this is a POST request with data (which we don't want to allow)
     if request.method == "POST" and request.body:
         if request.body.decode() != '{}':
-            return HttpResponseForbidden("POST requests with body are not allowed, body is: {}".format(request.body.decode()))
+            return HttpResponseForbidden("POST requests with body are not allowed.")
 
     if user is not None:
         if user.user_level < 10:

@@ -87,7 +87,11 @@ describe('useSettingsStore', () => {
       public_ip: '',
       country_code: '',
       country_name: '',
+      city: '',
       env_mode: 'aio',
+      ip_lookup_enabled: true,
+      ip_lookup_env_disabled: false,
+      ip_lookup_pending: false,
     });
   });
 

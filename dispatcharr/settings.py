@@ -59,6 +59,8 @@ if REDIS_SSL:
 else:
     print("Redis TLS: disabled")
 
+ENABLE_IP_LOOKUP = os.environ.get("DISPATCHARR_ENABLE_IP_LOOKUP", "true").lower() == "true"
+
 # Set DEBUG to True for development, False for production
 if os.environ.get("DISPATCHARR_DEBUG", "False").lower() == "true":
     DEBUG = True
