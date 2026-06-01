@@ -1,50 +1,25 @@
 // StreamProfile form
 import React, { useEffect, useMemo, useState } from 'react';
 import { useForm } from 'react-hook-form';
-import { yupResolver } from '@hookform/resolvers/yup';
-import * as Yup from 'yup';
-import API from '../../api';
 import useUserAgentsStore from '../../store/userAgents';
 import {
-  Modal,
-  TextInput,
-  Textarea,
-  Select,
   Button,
-  Flex,
-  Stack,
   Checkbox,
+  Flex,
+  Modal,
+  Select,
+  Stack,
+  Textarea,
+  TextInput,
 } from '@mantine/core';
-
-// Built-in commands supported by Dispatcharr out of the box.
-const BUILT_IN_COMMANDS = [
-  { value: 'ffmpeg', label: 'FFmpeg' },
-  { value: 'streamlink', label: 'Streamlink' },
-  { value: 'cvlc', label: 'VLC' },
-  { value: 'yt-dlp', label: 'yt-dlp' },
-  { value: '__custom__', label: 'Custom…' },
-];
-
-// Default parameter examples for each built-in command.
-const COMMAND_EXAMPLES = {
-  ffmpeg: '-user_agent {userAgent} -i {streamUrl} -c copy -f mpegts pipe:1',
-  streamlink: '{streamUrl} --http-header User-Agent={userAgent} best --stdout',
-  cvlc: '-vv -I dummy --no-video-title-show --http-user-agent {userAgent} {streamUrl} --sout #standard{access=file,mux=ts,dst=-}',
-  'yt-dlp': '--hls-use-mpegts -f best -o - {streamUrl}',
-};
-
-// Returns '__custom__' when the command isn't one of the built-ins,
-// otherwise returns the command value itself.
-const toCommandSelection = (command) =>
-  BUILT_IN_COMMANDS.find((o) => o.value === command && o.value !== '__custom__')
-    ? command
-    : '__custom__';
-
-const schema = Yup.object({
-  name: Yup.string().required('Name is required'),
-  command: Yup.string().required('Command is required'),
-  parameters: Yup.string(),
-});
+import {
+  addStreamProfile,
+  BUILT_IN_COMMANDS,
+  COMMAND_EXAMPLES,
+  getResolver,
+  toCommandSelection,
+  updateStreamProfile,
+} from '../../utils/forms/StreamProfileUtils.js';
 
 const StreamProfile = ({ profile = null, isOpen, onClose }) => {
   const userAgents = useUserAgentsStore((state) => state.userAgents);
@@ -73,7 +48,7 @@ const StreamProfile = ({ profile = null, isOpen, onClose }) => {
     watch,
   } = useForm({
     defaultValues,
-    resolver: yupResolver(schema),
+    resolver: getResolver(),
   });
 
   // Sync form + dropdown selection whenever the target profile or modal state changes
@@ -84,9 +59,9 @@ const StreamProfile = ({ profile = null, isOpen, onClose }) => {
 
   const onSubmit = async (values) => {
     if (profile?.id) {
-      await API.updateStreamProfile({ id: profile.id, ...values });
+      await updateStreamProfile(profile.id, values);
     } else {
-      await API.addStreamProfile(values);
+      await addStreamProfile(values);
     }
 
     reset();
@@ -101,6 +76,17 @@ const StreamProfile = ({ profile = null, isOpen, onClose }) => {
   const isCustom = commandSelection === '__custom__';
   const userAgentValue = watch('user_agent');
   const isActiveValue = watch('is_active');
+
+  const handleOnChangeCommand = (val) => {
+    setCommandSelection(val);
+    // For built-in selections, write the real command value immediately
+    if (val !== '__custom__') {
+      setValue('command', val, { shouldValidate: true });
+    } else {
+      // Clear so the user enters their own value
+      setValue('command', '', { shouldValidate: false });
+    }
+  };
 
   return (
     <Modal opened={isOpen} onClose={onClose} title="Stream Profile">
@@ -127,16 +113,7 @@ const StreamProfile = ({ profile = null, isOpen, onClose }) => {
             data={BUILT_IN_COMMANDS}
             disabled={isLocked}
             value={commandSelection}
-            onChange={(val) => {
-              setCommandSelection(val);
-              // For built-in selections, write the real command value immediately
-              if (val !== '__custom__') {
-                setValue('command', val, { shouldValidate: true });
-              } else {
-                // Clear so the user enters their own value
-                setValue('command', '', { shouldValidate: false });
-              }
-            }}
+            onChange={handleOnChangeCommand}
             error={isCustom ? undefined : errors.command?.message}
           />
 

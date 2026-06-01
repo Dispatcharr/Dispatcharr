@@ -68,6 +68,7 @@ export const saveChangedSettings = async (settings, changedSettings) => {
     'max_system_events',
     'preferred_region',
     'auto_import_mapped_files',
+    'enable_ip_lookup',
   ];
   const timeshiftFields = [
     'timeshift_default_timezone',
@@ -142,6 +143,7 @@ export const saveChangedSettings = async (settings, changedSettings) => {
       'schedule_enabled',
       'auto_import_mapped_files',
       'timeshift_debug_logging',
+      'enable_ip_lookup',
     ];
     if (booleanFields.includes(formKey) && value != null) {
       value = typeof value === 'boolean' ? value : Boolean(value);
@@ -379,6 +381,10 @@ export const parseSettings = (settings) => {
     parsed.auto_import_mapped_files =
       typeof systemSettings.auto_import_mapped_files === 'boolean'
         ? systemSettings.auto_import_mapped_files
+        : true;
+    parsed.enable_ip_lookup =
+      typeof systemSettings.enable_ip_lookup === 'boolean'
+        ? systemSettings.enable_ip_lookup
         : true;
   }
 

@@ -64,11 +64,9 @@ configure_variables() {
   POSTGRES_PASSWORD="secret"
   NGINX_HTTP_PORT="9191"
   WEBSOCKET_PORT="8001"
-  GUNICORN_RUNTIME_DIR="dispatcharr"
-  GUNICORN_SOCKET="/run/${GUNICORN_RUNTIME_DIR}/dispatcharr.sock"
-  PYTHON_BIN=$(command -v python3)
+  UWSGI_RUNTIME_DIR="dispatcharr"
+  UWSGI_SOCKET="/run/${UWSGI_RUNTIME_DIR}/dispatcharr.sock"
   SYSTEMD_DIR="/etc/systemd/system"
-  NGINX_SITE="/etc/nginx/sites-available/dispatcharr"
 }
 
 ##############################################################################
@@ -79,8 +77,8 @@ install_packages() {
   echo ">>> Installing system packages..."
   apt-get update
   declare -a packages=(
-    git curl wget build-essential gcc libpq-dev
-    python3-dev python3-venv python3-pip nginx redis-server
+    git curl wget build-essential gcc libpq-dev libpcre3-dev
+    nginx redis-server
     postgresql postgresql-contrib ffmpeg procps streamlink
     sudo
   )
@@ -113,6 +111,11 @@ create_dispatcharr_user() {
 ##############################################################################
 
 setup_postgresql() {
+  echo ">>> Waiting for PostgreSQL to accept connections..."
+  until pg_isready -h /var/run/postgresql >/dev/null 2>&1; do
+    sleep 1
+  done
+
   echo ">>> Checking PostgreSQL database and user..."
 
   db_exists=$(sudo -u postgres psql -tAc "SELECT 1 FROM pg_database WHERE datname='$POSTGRES_DB'")
@@ -143,7 +146,7 @@ setup_postgresql() {
 
 clone_dispatcharr_repo() {
   echo ">>> Installing or updating Dispatcharr in ${APP_DIR} ..."
-  
+
   if [ ! -d "$APP_DIR" ]; then
     mkdir -p "$APP_DIR"
     chown "$DISPATCH_USER:$DISPATCH_GROUP" "$APP_DIR"
@@ -171,14 +174,8 @@ EOSU
 # 6) Setup Python Environment
 ##############################################################################
 
-install_uv() {
-  echo ">>> Installing UV package manager..."
-  curl -LsSf https://astral.sh/uv/install.sh | sh
-  export PATH="$HOME/.local/bin:$PATH"
-}
-
 setup_python_env() {
-  echo ">>> Setting up Python virtual environment with UV..."
+  echo ">>> Setting up Python virtual environment with UV (Python 3.13)..."
 
   su - "$DISPATCH_USER" <<EOSU
   set -euo pipefail
@@ -188,13 +185,12 @@ setup_python_env() {
   command -v uv >/dev/null 2>&1 || curl -LsSf https://astral.sh/uv/install.sh | sh
 
   rm -rf env
-  $PYTHON_BIN -m venv env
-  env/bin/python -m ensurepip --upgrade
+  # uv creates the venv with a managed Python 3.13 (auto-downloads if missing),
+  # avoiding system Python version mismatches on Debian 12 / Ubuntu 24.04.
+  uv venv --python 3.13 env
 
   export UV_PROJECT_ENVIRONMENT="$APP_DIR/env"
   uv sync --no-dev
-
-  env/bin/python -m pip install -q gunicorn
 EOSU
 
   ln -sf /usr/bin/ffmpeg "$APP_DIR/env/bin/ffmpeg"
@@ -291,17 +287,40 @@ EOSU
 configure_services() {
   echo ">>> Creating systemd service files..."
 
-  # Gunicorn
+  # uWSGI config
+  cat <<EOF >${APP_DIR}/uwsgi-debian.ini
+[uwsgi]
+chdir = ${APP_DIR}
+module = dispatcharr.wsgi:application
+virtualenv = ${APP_DIR}/env
+master = true
+workers = 4
+socket = ${UWSGI_SOCKET}
+chmod-socket = 666
+vacuum = true
+die-on-term = true
+gevent = 100
+gevent-early-monkey-patch = true
+import = dispatcharr.gevent_patch
+lazy-apps = true
+buffer-size = 65536
+socket-timeout = 600
+thunder-lock = true
+EOF
+
+  chown ${DISPATCH_USER}:${DISPATCH_GROUP} ${APP_DIR}/uwsgi-debian.ini
+
+  # uWSGI
   cat <<EOF >${SYSTEMD_DIR}/dispatcharr.service
 [Unit]
-Description=Gunicorn for Dispatcharr
+Description=uWSGI for Dispatcharr
 After=network.target postgresql.service redis-server.service
 
 [Service]
 User=${DISPATCH_USER}
 Group=${DISPATCH_GROUP}
 WorkingDirectory=${APP_DIR}
-RuntimeDirectory=${GUNICORN_RUNTIME_DIR}
+RuntimeDirectory=${UWSGI_RUNTIME_DIR}
 RuntimeDirectoryMode=0775
 EnvironmentFile=/opt/dispatcharr/.env
 Environment="PATH=${APP_DIR}/env/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin"
@@ -310,12 +329,7 @@ Environment="POSTGRES_USER=${POSTGRES_USER}"
 Environment="POSTGRES_PASSWORD=${POSTGRES_PASSWORD}"
 Environment="POSTGRES_HOST=localhost"
 ExecStartPre=/usr/bin/bash -c 'until pg_isready -h localhost -U ${POSTGRES_USER}; do sleep 1; done'
-ExecStart=${APP_DIR}/env/bin/gunicorn \\
-    --workers=4 \\
-    --worker-class=gevent \\
-    --timeout=300 \\
-    --bind unix:${GUNICORN_SOCKET} \\
-    dispatcharr.wsgi:application
+ExecStart=${APP_DIR}/env/bin/uwsgi --ini ${APP_DIR}/uwsgi-debian.ini
 Restart=always
 KillMode=mixed
 SyslogIdentifier=dispatcharr
@@ -412,9 +426,14 @@ EOF
   cat <<EOF >/etc/nginx/sites-available/dispatcharr.conf
 server {
     listen ${NGINX_HTTP_PORT};
+    client_max_body_size 0;
+
     location / {
-        include proxy_params;
-        proxy_pass http://unix:${GUNICORN_SOCKET};
+        include uwsgi_params;
+        uwsgi_param HTTP_X_REAL_IP \$remote_addr;
+        uwsgi_read_timeout 600;
+        uwsgi_send_timeout 600;
+        uwsgi_pass unix:${UWSGI_SOCKET};
     }
     location /static/ {
         alias ${APP_DIR}/static/;
@@ -465,7 +484,7 @@ show_summary() {
 =================================================
 Dispatcharr installation (or update) complete!
 Nginx is listening on port ${NGINX_HTTP_PORT}.
-Gunicorn socket: ${GUNICORN_SOCKET}.
+uWSGI socket: ${UWSGI_SOCKET}.
 WebSockets on port ${WEBSOCKET_PORT} (path /ws/).
 
 You can check logs via:

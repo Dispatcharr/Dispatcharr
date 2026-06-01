@@ -485,7 +485,7 @@ class Channel(models.Model):
 
     # @TODO: honor stream's stream profile
     def get_stream_profile(self):
-        stream_profile = self.stream_profile
+        stream_profile = self.effective_stream_profile_obj
         if not stream_profile:
             stream_profile = StreamProfile.objects.get(
                 id=CoreSettings.get_default_stream_profile_id()

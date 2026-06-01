@@ -3526,10 +3526,11 @@ export default class API {
     }
   }
 
-  static async getMovieProviderInfo(movieId) {
+  static async getMovieProviderInfo(movieId, relationId = null) {
     try {
+      const params = relationId ? `?relation_id=${relationId}` : '';
       const response = await request(
-        `${host}/api/vod/movies/${movieId}/provider-info/`
+        `${host}/api/vod/movies/${movieId}/provider-info/${params}`
       );
       return response;
     } catch (e) {
@@ -3568,11 +3569,12 @@ export default class API {
     }
   }
 
-  static async getSeriesInfo(seriesId) {
+  static async getSeriesInfo(seriesId, relationId = null) {
     try {
-      // Call the provider-info endpoint that includes episodes
+      const params = new URLSearchParams({ include_episodes: 'true' });
+      if (relationId) params.set('relation_id', relationId);
       const response = await request(
-        `${host}/api/vod/series/${seriesId}/provider-info/?include_episodes=true`
+        `${host}/api/vod/series/${seriesId}/provider-info/?${params}`
       );
       return response;
     } catch (e) {

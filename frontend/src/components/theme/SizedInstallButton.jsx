@@ -71,7 +71,7 @@ const SizedInstallButton = ({
                 : 'var(--mantine-primary-color-filled-hover)'
               : colorVar,
           filter: isDisabled
-            ? 'brightness(0.65) saturate(0.7)'
+            ? 'grayscale(1) brightness(0.55)'
             : hovered
               ? 'brightness(0.86)'
               : 'brightness(0.82)',

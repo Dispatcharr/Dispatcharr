@@ -38,8 +38,8 @@ import {
   Popover,
   ActionIcon,
   Group,
-  Divider,
-  SimpleGrid,
+  PopoverTarget,
+  PopoverDropdown,
 } from '@mantine/core';
 import { Info } from 'lucide-react';
 import { validateCronExpression } from '../../utils/cronUtils';
@@ -118,12 +118,12 @@ export default function ScheduleInput({
               <Group gap="xs">
                 Cron Expression
                 <Popover width={320} position="top" withArrow shadow="md">
-                  <Popover.Target>
+                  <PopoverTarget>
                     <ActionIcon variant="subtle" size="xs" color="gray">
                       <Info size={14} />
                     </ActionIcon>
-                  </Popover.Target>
-                  <Popover.Dropdown p="sm">
+                  </PopoverTarget>
+                  <PopoverDropdown p="sm">
                     <Text size="xs" fw={600} mb="xs" c="dimmed">
                       COMMON EXAMPLES
                     </Text>
@@ -169,7 +169,7 @@ export default function ScheduleInput({
                         <Code size="xs">30 14 1 * *</Code>
                       </Group>
                     </Stack>
-                  </Popover.Dropdown>
+                  </PopoverDropdown>
                 </Popover>
               </Group>
             }

@@ -4,6 +4,7 @@ import duration from 'dayjs/plugin/duration';
 import relativeTime from 'dayjs/plugin/relativeTime';
 import utc from 'dayjs/plugin/utc';
 import timezone from 'dayjs/plugin/timezone';
+import customParseFormat from 'dayjs/plugin/customParseFormat';
 import useSettingsStore from '../store/settings';
 import useLocalStorage from '../hooks/useLocalStorage';
 
@@ -11,12 +12,21 @@ dayjs.extend(duration);
 dayjs.extend(relativeTime);
 dayjs.extend(utc);
 dayjs.extend(timezone);
+dayjs.extend(customParseFormat);
 
 export const convertToMs = (dateTime) => dayjs(dateTime).valueOf();
 
 export const convertToSec = (dateTime) => dayjs(dateTime).unix();
 
-export const initializeTime = (dateTime) => dayjs(dateTime);
+export const initializeTime = (dateTime, format = null, locale = null, strict = false) => {
+  if (format && locale) {
+    return dayjs(dateTime, format, locale, strict);
+  } else if (format) {
+    return dayjs(dateTime, format, strict);
+  } else {
+    return dayjs(dateTime);
+  }
+}
 
 export const startOfDay = (dateTime) => dayjs(dateTime).startOf('day');
 
@@ -42,6 +52,10 @@ export const getNow = () => dayjs();
 
 export const toFriendlyDuration = (dateTime, unit) =>
   dayjs.duration(dateTime, unit).humanize();
+
+export const isValid = (dateTime) => dayjs(dateTime).isValid();
+
+export const toDate = (dateTime) => dayjs(dateTime).toDate();
 
 export const formatExactDuration = (seconds) => {
   if (seconds < 60) return `${seconds.toFixed(1)} seconds`;
@@ -76,6 +90,8 @@ export const setMinute = (dateTime, value) => dayjs(dateTime).minute(value);
 
 export const setSecond = (dateTime, value) => dayjs(dateTime).second(value);
 
+export const setMillisecond = (dateTime, value) => dayjs(dateTime).millisecond(value);
+
 export const getMonth = (dateTime) => dayjs(dateTime).month();
 
 export const getYear = (dateTime) => dayjs(dateTime).year();
@@ -87,6 +103,8 @@ export const getHour = (dateTime) => dayjs(dateTime).hour();
 export const getMinute = (dateTime) => dayjs(dateTime).minute();
 
 export const getSecond = (dateTime) => dayjs(dateTime).second();
+
+export const getMillisecond = (dateTime) => dayjs(dateTime).millisecond();
 
 export const getNowMs = () => Date.now();
 

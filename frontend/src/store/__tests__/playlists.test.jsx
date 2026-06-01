@@ -194,15 +194,25 @@ describe('usePlaylistsStore', () => {
     });
   });
 
-  it('should remove playlists', () => {
+  it('should remove playlists and their profiles', () => {
     const { result } = renderHook(() => usePlaylistsStore());
 
     act(() => {
-      result.current.playlists = [
-        { id: 'playlist1', name: 'Playlist 1' },
-        { id: 'playlist2', name: 'Playlist 2' },
-        { id: 'playlist3', name: 'Playlist 3' },
-      ];
+      result.current.addPlaylist({
+        id: 'playlist1',
+        name: 'Playlist 1',
+        profiles: ['profile1'],
+      });
+      result.current.addPlaylist({
+        id: 'playlist2',
+        name: 'Playlist 2',
+        profiles: ['profile2'],
+      });
+      result.current.addPlaylist({
+        id: 'playlist3',
+        name: 'Playlist 3',
+        profiles: ['profile3'],
+      });
     });
 
     act(() => {
@@ -210,8 +220,11 @@ describe('usePlaylistsStore', () => {
     });
 
     expect(result.current.playlists).toEqual([
-      { id: 'playlist2', name: 'Playlist 2' },
+      { id: 'playlist2', name: 'Playlist 2', profiles: ['profile2'] },
     ]);
+    expect(result.current.profiles).toEqual({ playlist2: ['profile2'] });
+    expect(result.current.profiles.playlist1).toBeUndefined();
+    expect(result.current.profiles.playlist3).toBeUndefined();
   });
 
   it('should set refresh progress with two parameters', () => {
