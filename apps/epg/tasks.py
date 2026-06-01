@@ -2446,7 +2446,7 @@ def build_programme_index(source_id):
         )
         return
 
-    logger.info(
+    logger.debug(
         f'[build_programme_index] Building byte-offset index for source {source_id} from {file_path}'
     )
     start = time.monotonic()
