@@ -1529,6 +1529,24 @@ export default class API {
     }
   }
 
+  static async getCurrentProgramForEpg(epgId) {
+    const response = await request(
+      `${host}/api/epg/current-programs/`,
+      {
+        method: 'POST',
+        body: { epg_data_ids: [epgId] },
+      }
+    );
+
+    if (response && response.length > 0) {
+      if (response[0].parsing) {
+        return { parsing: true };
+      }
+      return response[0];
+    }
+    return null;
+  }
+
   // Notice there's a duplicated "refreshPlaylist" method above;
   // you might want to rename or remove one if it's not needed.
 
