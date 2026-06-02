@@ -1817,6 +1817,48 @@ def _classify_sync_failure(exc):
     return "OTHER"
 
 
+def rollup_channel_catchup_fields(account_id):
+    """Roll up denormalized catch-up fields from streams to channels.
+
+    Updates ``is_catchup``, ``catchup_days``, and
+    ``catchup_provider_stream_id`` on every Channel that has at least one
+    Stream belonging to *account_id* (auto-created or manually assigned).
+    """
+    from django.db import connection
+
+    with connection.cursor() as cur:
+        cur.execute("""
+            WITH agg AS (
+                SELECT
+                    cs.channel_id,
+                    bool_or(s.is_catchup)  AS any_catchup,
+                    MAX(s.catchup_days)    AS max_days,
+                    (
+                        array_agg(
+                            s.custom_properties->>'stream_id'
+                            ORDER BY cs."order"
+                        ) FILTER (WHERE s.is_catchup = TRUE)
+                    )[1]                   AS first_sid
+                FROM dispatcharr_channels_channelstream cs
+                JOIN dispatcharr_channels_stream s ON s.id = cs.stream_id
+                WHERE cs.channel_id IN (
+                    SELECT DISTINCT cs2.channel_id
+                    FROM dispatcharr_channels_channelstream cs2
+                    JOIN dispatcharr_channels_stream s2 ON s2.id = cs2.stream_id
+                    WHERE s2.m3u_account_id = %s
+                )
+                GROUP BY cs.channel_id
+            )
+            UPDATE dispatcharr_channels_channel c
+            SET
+                is_catchup                 = COALESCE(agg.any_catchup, FALSE),
+                catchup_days               = COALESCE(agg.max_days, 0),
+                catchup_provider_stream_id = COALESCE(agg.first_sid, '')
+            FROM agg
+            WHERE c.id = agg.channel_id
+        """, [account_id])
+
+
 @shared_task
 def sync_auto_channels(account_id, scan_start_time=None):
     """
@@ -2573,33 +2615,6 @@ def sync_auto_channels(account_id, scan_start_time=None):
                     ],
                     batch_size=500,
                 )
-
-                # Roll up denormalized catch-up fields from streams to
-                # channels.  bulk_create bypasses Django signals, so this
-                # explicit SQL is the only path that fires during import.
-                from django.db import connection as _conn
-                with _conn.cursor() as _cur:
-                    _cur.execute("""
-                        UPDATE dispatcharr_channels_channel c SET
-                            is_catchup = EXISTS (
-                                SELECT 1 FROM dispatcharr_channels_channelstream cs
-                                JOIN dispatcharr_channels_stream s ON s.id = cs.stream_id
-                                WHERE cs.channel_id = c.id AND s.is_catchup = TRUE
-                            ),
-                            catchup_days = COALESCE((
-                                SELECT MAX(s.catchup_days)
-                                FROM dispatcharr_channels_channelstream cs
-                                JOIN dispatcharr_channels_stream s ON s.id = cs.stream_id
-                                WHERE cs.channel_id = c.id AND s.is_catchup = TRUE
-                            ), 0),
-                            catchup_provider_stream_id = COALESCE((
-                                SELECT s.custom_properties->>'stream_id'
-                                FROM dispatcharr_channels_channelstream cs
-                                JOIN dispatcharr_channels_stream s ON s.id = cs.stream_id
-                                WHERE cs.channel_id = c.id AND s.is_catchup = TRUE
-                                ORDER BY cs."order" LIMIT 1
-                            ), '')
-                    """)
 
                 if profiles_to_assign:
                     ChannelProfileMembership.objects.bulk_create(
@@ -3576,6 +3591,17 @@ def _refresh_single_m3u_account_impl(account_id):
             logger.error(
                 f"Error running auto channel sync for account {account_id}: {str(e)}"
             )
+
+        # Roll up catch-up fields from streams to channels.  Runs after
+        # sync_auto_channels so new and existing channels both reflect the
+        # current tv_archive flags from the just-completed stream refresh.
+        # Covers manual channels too, so it lives here rather than inside
+        # sync_auto_channels which only manages auto-created channels.
+        try:
+            rollup_channel_catchup_fields(account_id)
+            logger.debug(f"Catch-up field rollup complete for account {account_id}")
+        except Exception as e:
+            logger.error(f"Error rolling up catch-up fields for account {account_id}: {str(e)}")
 
         # Calculate elapsed time
         elapsed_time = time.time() - start_time
