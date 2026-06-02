@@ -14,6 +14,7 @@ import {
   buildOverridePayload,
   listOverriddenFields,
   clearChannelOverrides,
+  isFormFieldOverridden,
 } from '../ChannelUtils.js';
 
 // ── API mock ───────────────────────────────────────────────────────────────────
@@ -718,6 +719,47 @@ describe('ChannelUtils', () => {
       expect(labels).toContain('Name');
       expect(labels).toContain('Channel Number');
       expect(labels).not.toContain('Logo');
+    });
+  });
+
+  // ── isFormFieldOverridden ────────────────────────────────────────────────────
+
+  describe('isFormFieldOverridden', () => {
+    it('returns false for manual channels', () => {
+      const ch = makeChannel({ auto_created: false });
+      expect(isFormFieldOverridden(ch, 'name', 'Anything')).toBe(false);
+    });
+
+    it('returns true when the form value differs from the provider value', () => {
+      const ch = makeChannel({ auto_created: true, name: 'Provider Name' });
+      expect(isFormFieldOverridden(ch, 'name', 'Custom Name')).toBe(true);
+    });
+
+    it('returns false when no override exists and form matches provider', () => {
+      const ch = makeChannel({ auto_created: true, name: 'Provider Name' });
+      expect(isFormFieldOverridden(ch, 'name', 'Provider Name')).toBe(false);
+    });
+
+    // A persisted override whose value coincides with the provider value
+    // must still count as overridden, so the reset affordance stays
+    // available to clear it. Value-only detection wrongly returned false
+    // here (pencil showed, reset button vanished).
+    it('returns true when a persisted override exists even if its value equals the provider value', () => {
+      const ch = makeChannel({
+        auto_created: true,
+        channel_group_id: 5,
+        override: { channel_group_id: 5 },
+      });
+      expect(isFormFieldOverridden(ch, 'channel_group_id', '5')).toBe(true);
+    });
+
+    it('returns false when the override field is explicitly null (cleared)', () => {
+      const ch = makeChannel({
+        auto_created: true,
+        channel_group_id: 5,
+        override: { channel_group_id: null },
+      });
+      expect(isFormFieldOverridden(ch, 'channel_group_id', '5')).toBe(false);
     });
   });
 
