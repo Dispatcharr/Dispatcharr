@@ -2049,3 +2049,149 @@ class Migration0037DemoteOrphansTests(TestCase):
             "auto_created=True or deleted",
         )
         self.assertIsNone(ch.auto_created_by)
+
+
+class CompactNumberingWithGroupOverrideTests(TestCase):
+    """
+    Compact numbering must keep working when a Channel Group Override is
+    configured on the source ChannelGroupM3UAccount. With an override,
+    sync stores auto-created channels under the OVERRIDE TARGET group's id
+    rather than the source group's id recorded on the relation. The
+    compact paths resolve the relation from the channel's group id, so
+    without the override-aware fallback they all miss and slot accounting
+    silently breaks (hidden channels keep their numbers, unhides get none,
+    repack sees zero channels).
+
+    Fix location: apps/channels/compact_numbering.py
+    (get_group_relation_for_channel fallback, _repack_inner group_ids,
+    assign_compact_numbers_for_channels bulk fallback).
+    """
+
+    def _override_setup(self, start=100, end=110):
+        account = _make_account()
+        source_group = _make_group(name="SourcePPV")
+        target_group = _make_group(name="TargetAll")
+        rel = _attach_group_to_account(
+            account,
+            source_group,
+            custom_properties={
+                "compact_numbering": True,
+                "group_override": target_group.id,
+            },
+        )
+        rel.auto_sync_channel_start = start
+        rel.auto_sync_channel_end = end
+        rel.save()
+        return account, source_group, target_group, rel
+
+    def _auto_channel(self, account, group, number=None, hidden=False, name="PPV"):
+        return Channel.objects.create(
+            name=name,
+            channel_number=number,
+            channel_group=group,
+            auto_created=True,
+            auto_created_by=account,
+            hidden_from_output=hidden,
+        )
+
+    def test_hide_releases_slot_under_group_override(self):
+        # Fail signature: channel_number stays populated after hide =
+        # release_compact_number_on_hide bailed because
+        # get_group_relation_for_channel returned None for the override
+        # target group.
+        account, source, target, rel = self._override_setup()
+        ch = self._auto_channel(account, target, number=100)
+
+        ch.hidden_from_output = True
+        ch.save()
+        ch.refresh_from_db()
+
+        self.assertIsNone(
+            ch.channel_number,
+            "Hiding an auto channel under a Channel Group Override must "
+            "release its compact slot (channel_number=None)",
+        )
+
+    def test_unhide_assigns_slot_under_group_override(self):
+        # Fail signature: channel_number stays None after unhide =
+        # assign_compact_number_on_unhide bailed on the override target.
+        account, source, target, rel = self._override_setup()
+        ch = self._auto_channel(account, target, number=None, hidden=True)
+
+        ch.hidden_from_output = False
+        ch.save()
+        ch.refresh_from_db()
+
+        self.assertEqual(
+            ch.channel_number,
+            100,
+            "Unhiding an auto channel under a Channel Group Override must "
+            "assign a number from the compact range",
+        )
+
+    def test_repack_sees_channels_under_override_target(self):
+        # Fail signature: assigned=0 = _repack_inner filtered on the source
+        # group id and found none of the channels stored under the target.
+        from apps.channels.compact_numbering import repack_group
+
+        account, source, target, rel = self._override_setup()
+        channels = [
+            self._auto_channel(account, target, number=900 + i, name=f"C{i}")
+            for i in range(3)
+        ]
+
+        result = repack_group(rel)
+
+        self.assertEqual(result["assigned"], 3)
+        self.assertEqual(result["failed"], 0)
+        nums = sorted(
+            Channel.objects.filter(
+                id__in=[c.id for c in channels]
+            ).values_list("channel_number", flat=True)
+        )
+        self.assertEqual(nums, [100, 101, 102])
+
+    def test_no_override_fast_path_still_resolves(self):
+        # Regression guard: the common no-override case must still resolve
+        # the relation via the direct lookup (channel.channel_group_id ==
+        # source group id), unaffected by the override fallback.
+        from apps.channels.compact_numbering import (
+            get_group_relation_for_channel,
+        )
+
+        account = _make_account()
+        group = _make_group(name="PlainSports")
+        rel = _attach_group_to_account(
+            account, group, custom_properties={"compact_numbering": True}
+        )
+        ch = self._auto_channel(account, group, number=100)
+
+        resolved = get_group_relation_for_channel(ch)
+        self.assertIsNotNone(resolved)
+        self.assertEqual(resolved.id, rel.id)
+
+    def test_repack_under_override_query_count_does_not_scale(self):
+        # Perf guard: the override-aware repack widens the channel lookup's
+        # IN clause; it must not add a query per channel. Query count must
+        # be identical for N and 3*N channels.
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+        from apps.channels.compact_numbering import repack_group
+
+        account, source, target, rel = self._override_setup(start=100, end=300)
+
+        def measure(n):
+            Channel.objects.filter(auto_created_by=account).delete()
+            for i in range(n):
+                self._auto_channel(account, target, number=900 + i, name=f"C{i}")
+            with CaptureQueriesContext(connection) as ctx:
+                repack_group(rel)
+            return len(ctx.captured_queries)
+
+        small = measure(5)
+        large = measure(15)
+        self.assertEqual(
+            small,
+            large,
+            f"repack query count scaled with channel count: {small} -> {large}",
+        )
