@@ -24,6 +24,7 @@ def get_channel_catchup_info(channel):
 
     stream = (
         channel.streams.filter(is_catchup=True)
+        .order_by("channelstream__order")
         .select_related("m3u_account")
         .first()
     )
