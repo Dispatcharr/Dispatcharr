@@ -1820,9 +1820,19 @@ def _classify_sync_failure(exc):
 def rollup_channel_catchup_fields(account_id):
     """Roll up denormalized catch-up fields from streams to channels.
 
-    Updates ``is_catchup``, ``catchup_days``, and
-    ``catchup_provider_stream_id`` on every Channel that has at least one
-    Stream belonging to *account_id* (auto-created or manually assigned).
+    Updates ``is_catchup`` and ``catchup_days`` on every Channel that has
+    at least one Stream belonging to *account_id* (auto-created or manually
+    assigned).
+
+    Called from the account-refresh pipeline after streams have been
+    written so that both new and existing channels reflect the current
+    ``tv_archive`` flags.  Intentionally separate from
+    ``sync_auto_channels`` because it applies to manual channels too and
+    has no dependency on auto-channel logic.
+
+    Uses a single-pass CTE (``bool_or`` + ``MAX``) instead of correlated
+    subqueries so the work stays O(channelstream rows for this account)
+    rather than O(channels * subqueries).
     """
     from django.db import connection
 
@@ -1832,13 +1842,7 @@ def rollup_channel_catchup_fields(account_id):
                 SELECT
                     cs.channel_id,
                     bool_or(s.is_catchup)  AS any_catchup,
-                    MAX(s.catchup_days)    AS max_days,
-                    (
-                        array_agg(
-                            s.custom_properties->>'stream_id'
-                            ORDER BY cs."order"
-                        ) FILTER (WHERE s.is_catchup = TRUE)
-                    )[1]                   AS first_sid
+                    MAX(s.catchup_days)    AS max_days
                 FROM dispatcharr_channels_channelstream cs
                 JOIN dispatcharr_channels_stream s ON s.id = cs.stream_id
                 WHERE cs.channel_id IN (
@@ -1851,9 +1855,8 @@ def rollup_channel_catchup_fields(account_id):
             )
             UPDATE dispatcharr_channels_channel c
             SET
-                is_catchup                 = COALESCE(agg.any_catchup, FALSE),
-                catchup_days               = COALESCE(agg.max_days, 0),
-                catchup_provider_stream_id = COALESCE(agg.first_sid, '')
+                is_catchup   = COALESCE(agg.any_catchup, FALSE),
+                catchup_days = COALESCE(agg.max_days, 0)
             FROM agg
             WHERE c.id = agg.channel_id
         """, [account_id])

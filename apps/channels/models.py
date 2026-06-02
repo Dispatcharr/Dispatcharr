@@ -399,12 +399,6 @@ class Channel(models.Model):
         default=0,
         help_text="Max catch-up archive days across all streams on this channel",
     )
-    catchup_provider_stream_id = models.CharField(
-        max_length=64,
-        blank=True,
-        default="",
-        help_text="Provider stream_id of the highest-priority catch-up stream (for timeshift URL construction)",
-    )
 
     # Hidden channels are excluded from HDHR, M3U, EPG, and XC output queries.
     # Auto-sync still recognizes them so they are not recreated when their

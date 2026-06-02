@@ -385,7 +385,4 @@ def update_channel_catchup_fields(sender, instance, **kwargs):
     Channel.objects.filter(pk=channel.pk).update(
         is_catchup=best is not None,
         catchup_days=best.catchup_days if best else 0,
-        catchup_provider_stream_id=(
-            (best.custom_properties or {}).get("stream_id", "") if best else ""
-        ),
     )

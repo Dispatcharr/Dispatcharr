@@ -18,14 +18,8 @@ def format_channel_number(value, empty=""):
 
 
 def get_channel_catchup_info(channel):
-    """Return catch-up info for a Channel, or None if catch-up is unavailable.
-
-    Uses the denormalized ``channel.is_catchup`` and
-    ``channel.catchup_provider_stream_id`` fields for a zero-cost gate,
-    then fetches the first catch-up stream (for its ``m3u_account``) with a
-    targeted filter instead of iterating all streams.
-    """
-    if not getattr(channel, "is_catchup", False) or not channel.catchup_provider_stream_id:
+    """Return catch-up info for a Channel, or None if catch-up is unavailable."""
+    if not getattr(channel, "is_catchup", False):
         return None
 
     stream = (
@@ -39,7 +33,6 @@ def get_channel_catchup_info(channel):
     return {
         "stream": stream,
         "props": stream.custom_properties or {},
-        "provider_stream_id": str(channel.catchup_provider_stream_id),
         "tv_archive_duration": channel.catchup_days or 7,
     }
 

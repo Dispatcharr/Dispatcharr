@@ -47,14 +47,7 @@ def backfill_channel_catchup(apps, schema_editor):
                     SELECT MAX(s.catchup_days) FROM dispatcharr_channels_channelstream cs
                     JOIN dispatcharr_channels_stream s ON s.id = cs.stream_id
                     WHERE cs.channel_id = c.id AND s.is_catchup = TRUE
-                ), 0),
-                catchup_provider_stream_id = COALESCE((
-                    SELECT s.custom_properties->>'stream_id'
-                    FROM dispatcharr_channels_channelstream cs
-                    JOIN dispatcharr_channels_stream s ON s.id = cs.stream_id
-                    WHERE cs.channel_id = c.id AND s.is_catchup = TRUE
-                    ORDER BY cs."order" LIMIT 1
-                ), '')
+                ), 0)
         """)
 
 
@@ -99,16 +92,6 @@ class Migration(migrations.Migration):
             field=models.PositiveIntegerField(
                 default=0,
                 help_text="Max catch-up archive days across all streams on this channel",
-            ),
-        ),
-        migrations.AddField(
-            model_name="channel",
-            name="catchup_provider_stream_id",
-            field=models.CharField(
-                max_length=64,
-                blank=True,
-                default="",
-                help_text="Provider stream_id of the highest-priority catch-up stream",
             ),
         ),
         # Backfill existing data
