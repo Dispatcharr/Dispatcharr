@@ -11,7 +11,7 @@ from urllib.parse import urlencode
 from django.http import  JsonResponse, Http404, HttpResponse
 from django.shortcuts import get_object_or_404
 from django.views.decorators.csrf import csrf_exempt
-from apps.vod.models import Movie, Series, Episode
+from apps.vod.models import Movie, Series, Episode, M3UMovieRelation, M3UEpisodeRelation
 from apps.m3u.models import  M3UAccountProfile
 from apps.proxy.vod_proxy.multi_worker_connection_manager import MultiWorkerVODConnectionManager, infer_content_type_from_url, get_vod_client_stop_key
 from .utils import get_client_info
@@ -39,7 +39,49 @@ def _get_content_and_relation(content_type, content_id, preferred_m3u_account_id
             logger.info(f"[CONTENT-LOOKUP] Preferred stream ID: {preferred_stream_id}")
 
         if content_type == 'movie':
-            content_obj = get_object_or_404(Movie, uuid=content_id)
+            content_obj = Movie.objects.filter(uuid=content_id).first()
+            if content_obj is None and preferred_stream_id:
+                # UUIDs are regenerated when process_movie_batch
+                # (apps/vod/tasks.py) creates duplicate vod_movie records
+                # during refresh — see #961 / #973. stream_id is stable
+                # (unique per (m3u_account, stream_id)) so it's a safe
+                # fallback for previously-cached external player URLs.
+                # Strictest-match first: prefer the requested account, then
+                # any active account by priority (matches the existing
+                # relation-selection ordering below).
+                rel = None
+                if preferred_m3u_account_id:
+                    rel = (
+                        M3UMovieRelation.objects
+                        .filter(stream_id=preferred_stream_id,
+                                m3u_account_id=preferred_m3u_account_id,
+                                m3u_account__is_active=True)
+                        .select_related('movie', 'm3u_account')
+                        .first()
+                    )
+                if rel is None:
+                    rel = (
+                        M3UMovieRelation.objects
+                        .filter(stream_id=preferred_stream_id,
+                                m3u_account__is_active=True)
+                        .select_related('movie', 'm3u_account')
+                        .order_by('-m3u_account__priority', 'id')
+                        .first()
+                    )
+                if rel is not None:
+                    content_obj = rel.movie
+                    logger.warning(
+                        f"[STREAMID-FALLBACK] Movie UUID {content_id} not "
+                        f"found; resolved via stream_id "
+                        f"{preferred_stream_id} -> movie uuid "
+                        f"{content_obj.uuid} (provider: "
+                        f"{rel.m3u_account.name})"
+                    )
+            if content_obj is None:
+                raise Http404(
+                    f"Movie not found by uuid {content_id} "
+                    f"or stream_id {preferred_stream_id}"
+                )
             logger.info(f"[CONTENT-FOUND] Movie: {content_obj.name} (ID: {content_obj.id})")
 
             # Filter by preferred stream ID first (most specific)
@@ -70,7 +112,44 @@ def _get_content_and_relation(content_type, content_id, preferred_m3u_account_id
             return content_obj, relation
 
         elif content_type == 'episode':
-            content_obj = get_object_or_404(Episode, uuid=content_id)
+            content_obj = Episode.objects.filter(uuid=content_id).first()
+            if content_obj is None and preferred_stream_id:
+                # Same rationale as the movie branch above — episode UUIDs
+                # are regenerated when process_series_batch creates
+                # duplicate vod_episode records during refresh.
+                rel = None
+                if preferred_m3u_account_id:
+                    rel = (
+                        M3UEpisodeRelation.objects
+                        .filter(stream_id=preferred_stream_id,
+                                m3u_account_id=preferred_m3u_account_id,
+                                m3u_account__is_active=True)
+                        .select_related('episode', 'm3u_account')
+                        .first()
+                    )
+                if rel is None:
+                    rel = (
+                        M3UEpisodeRelation.objects
+                        .filter(stream_id=preferred_stream_id,
+                                m3u_account__is_active=True)
+                        .select_related('episode', 'm3u_account')
+                        .order_by('-m3u_account__priority', 'id')
+                        .first()
+                    )
+                if rel is not None:
+                    content_obj = rel.episode
+                    logger.warning(
+                        f"[STREAMID-FALLBACK] Episode UUID {content_id} not "
+                        f"found; resolved via stream_id "
+                        f"{preferred_stream_id} -> episode uuid "
+                        f"{content_obj.uuid} (provider: "
+                        f"{rel.m3u_account.name})"
+                    )
+            if content_obj is None:
+                raise Http404(
+                    f"Episode not found by uuid {content_id} "
+                    f"or stream_id {preferred_stream_id}"
+                )
             logger.info(f"[CONTENT-FOUND] Episode: {content_obj.name} (ID: {content_obj.id}, Series: {content_obj.series.name})")
 
             # Filter by preferred stream ID first (most specific)
