@@ -69,19 +69,78 @@ configure_variables() {
   SYSTEMD_DIR="/etc/systemd/system"
 }
 
+# Helper: pick the first candidate package that exists in apt repos
+pick_candidate() {
+  local cand info candidate
+  for cand in "$@"; do
+    info=$(apt-cache policy "$cand" 2>/dev/null || true)
+    candidate=$(printf '%s' "$info" | awk '/Candidate:/ {print $2; exit}')
+    if [ -n "$candidate" ] && [ "$candidate" != "(none)" ]; then
+      printf '%s' "$cand"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Resolve a list of package candidate entries into installable package names.
+# Each entry may contain alternatives separated by '|', e.g. 'libpcre3-dev|libpcre2-dev'
+resolve_packages() {
+  local entry
+  local alts
+  local alt
+  local resolved=()
+  for entry in "$@"; do
+    IFS='|' read -r -a alts <<<"$entry"
+    alt=$(pick_candidate "${alts[@]}" 2>/dev/null || true)
+    if [ -n "$alt" ]; then
+      resolved+=("$alt")
+    else
+      echo "[WARN] No available candidate for package group: $entry" >&2
+    fi
+  done
+  printf '%s\n' "${resolved[@]}"
+}
+
 ##############################################################################
 # 2) Install System Packages
 ##############################################################################
 
 install_packages() {
   echo ">>> Installing system packages..."
+  # Refresh package lists before probing availability
   apt-get update
-  declare -a packages=(
-    git curl wget build-essential gcc libpq-dev libpcre3-dev
-    nginx redis-server
-    postgresql postgresql-contrib ffmpeg procps streamlink
-    sudo
+
+  # Candidate package groups (use '|' to separate alternatives)
+  package_candidates=(
+    'git'
+    'curl'
+    'wget'
+    'build-essential'
+    'gcc'
+    'libpq-dev'
+    'libpcre3-dev|libpcre2-dev|pcre3-dev'
+    'python3-dev|python3.13-dev'
+    'libssl-dev'
+    'pkg-config'
+    'nginx'
+    'redis-server'
+    'postgresql'
+    'postgresql-contrib'
+    'ffmpeg'
+    'procps'
+    'streamlink'
+    'sudo'
   )
+
+  # Resolve candidates to actual installable package names
+  mapfile -t packages < <(resolve_packages "${package_candidates[@]}")
+
+  if [ "${#packages[@]}" -eq 0 ]; then
+    echo "[ERROR] No installable packages found. Aborting." >&2
+    exit 1
+  fi
+
   apt-get install -y --no-install-recommends "${packages[@]}"
 
   if ! command -v node >/dev/null 2>&1; then

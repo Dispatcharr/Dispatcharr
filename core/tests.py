@@ -2,7 +2,56 @@ from unittest.mock import patch, MagicMock
 
 from django.test import TestCase
 
+from apps.epg.models import EPGSource
 from core.models import CoreSettings, DVR_SETTINGS_KEY, EPG_SETTINGS_KEY
+
+
+class ProgrammeIndexRebuildTests(TestCase):
+    def test_startup_rebuild_does_not_lock_out_queued_build_task(self):
+        EPGSource.objects.update(
+            programme_index={"channels": {}, "interleaved_channels": []}
+        )
+        source = EPGSource.objects.create(
+            name="Missing Index",
+            source_type="xmltv",
+            is_active=True,
+            programme_index=None,
+        )
+
+        class FakeRedis:
+            def __init__(self):
+                self.keys = set()
+
+            def set(self, key, value, nx=False, ex=None):
+                if nx and key in self.keys:
+                    return False
+                self.keys.add(key)
+                return True
+
+            def delete(self, key):
+                self.keys.discard(key)
+
+        fake_redis = FakeRedis()
+
+        from apps.epg.tasks import build_programme_index_task
+        from core.tasks import _rebuild_programme_indices
+
+        def run_task_immediately(source_id):
+            build_programme_index_task(source_id)
+
+        with patch(
+            "core.tasks.RedisClient.get_client", return_value=fake_redis
+        ), patch(
+            "core.utils.RedisClient.get_client", return_value=fake_redis
+        ), patch(
+            "apps.epg.tasks.build_programme_index"
+        ) as mock_build, patch(
+            "apps.epg.tasks.build_programme_index_task.delay",
+            side_effect=run_task_immediately,
+        ):
+            _rebuild_programme_indices()
+
+        mock_build.assert_called_once_with(source.id)
 
 
 class GetDvrSeriesRulesTest(TestCase):
