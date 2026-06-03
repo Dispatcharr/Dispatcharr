@@ -485,13 +485,21 @@ const ChannelForm = ({ channel: channelProp = null, isOpen, onClose }) => {
     return <></>;
   }
 
+  // Case- and accent-insensitive.
+  const foldText = (text) =>
+    text
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '');
+
+  // Every term must match, against name and id combined.
+  const tvgFilterTerms = foldText(tvgFilter).split(/\s+/).filter(Boolean);
   const filteredTvgs = tvgs
     .filter((tvg) => tvg.epg_source == selectedEPG)
-    .filter(
-      (tvg) =>
-        tvg.name.toLowerCase().includes(tvgFilter.toLowerCase()) ||
-        tvg.tvg_id.toLowerCase().includes(tvgFilter.toLowerCase())
-    );
+    .filter((tvg) => {
+      const haystack = foldText(`${tvg.name} ${tvg.tvg_id}`);
+      return tvgFilterTerms.every((term) => haystack.includes(term));
+    });
 
   const filteredLogos = logoOptions.filter((logo) =>
     logo.name.toLowerCase().includes(logoFilter.toLowerCase())
@@ -1072,6 +1080,7 @@ const ChannelForm = ({ channel: channelProp = null, isOpen, onClose }) => {
                     {/* Filter Input */}
                     <TextInput
                       label="Filter"
+                      name="tvg-filter"
                       value={tvgFilter}
                       onChange={(event) =>
                         setTvgFilter(event.currentTarget.value)
