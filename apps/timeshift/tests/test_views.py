@@ -98,11 +98,30 @@ class StreamFromProviderStatusMappingTests(TestCase):
         self.assertEqual(mocked_open.call_count, 1)
 
     @patch.object(views, "_open_upstream")
-    def test_upstream_500_short_circuits_loop(self, mocked_open):
+    def test_upstream_500_continues_to_next_candidate(self, mocked_open):
+        # A 5xx is format-specific on many XC servers (PHP fatal with
+        # display_errors off turns an "Undefined array key" warning into a
+        # hard 500), so the cascade must keep trying — the next timestamp
+        # shape often succeeds.  Regression: providers that 500 on the first
+        # shape used to fail outright because the loop short-circuited.
+        mocked_open.side_effect = [
+            _fake_upstream(500),
+            _fake_upstream(200, body=_make_ts_payload()),
+        ]
+        with patch.object(views, "RedisClient"), \
+             patch.object(views, "_register_stats_client"), \
+             patch.object(views, "_unregister_stats_client"):
+            response = views._stream_from_provider(**self.kwargs)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(mocked_open.call_count, 2)
+
+    @patch.object(views, "_open_upstream")
+    def test_all_candidates_500_returns_error(self, mocked_open):
+        # Every shape 500s → all candidates attempted, then a clean error.
         mocked_open.return_value = _fake_upstream(500)
         response = views._stream_from_provider(**self.kwargs)
         self.assertEqual(response.status_code, 400)
-        self.assertEqual(mocked_open.call_count, 1)
+        self.assertEqual(mocked_open.call_count, 3)
 
     @patch.object(views, "_open_upstream")
     def test_first_candidate_succeeds(self, mocked_open):

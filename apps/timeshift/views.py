@@ -434,8 +434,16 @@ def _stream_from_provider(
                 last_status = 404  # Treat as soft rejection for cascade
                 continue
         response.close()
-        if response.status_code not in (400, 404):
-            # Decisive failure (403, 5xx, …) — no point trying alternative URLs.
+        # Decisive statuses where trying other URL shapes can't help and may
+        # escalate an IP ban: auth failures (401/403), IP-level block (406), and
+        # any redirect (3xx) — for XC providers a 302 is the first sign of a ban.
+        # A 5xx is different: it is usually format-specific — some XC servers run
+        # PHP with display_errors off, so the "Undefined array key" warning that
+        # another server emits as 200+text becomes a hard 500. The very next
+        # candidate timestamp shape often succeeds, so keep trying instead of
+        # giving up (this is why catch-up appeared broken on providers that 500).
+        code = response.status_code
+        if code in (401, 403, 406) or 300 <= code < 400:
             break
 
     if winning_index is not None:
