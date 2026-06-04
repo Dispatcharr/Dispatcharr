@@ -7,7 +7,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('epg', '0022_alter_epgdata_name'),
+        ('epg', '0023_epgsource_programme_index'),
     ]
 
     operations = [
