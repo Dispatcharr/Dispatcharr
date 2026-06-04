@@ -1,0 +1,43 @@
+services:
+  dispatcharr:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    container_name: dispatcharr_dev
+    restart: unless-stopped
+    ports:
+      - 9191:9191
+      - 8001:8001
+    volumes:
+      - dispatcharr_data:/data
+    environment:
+      - POSTGRES_HOST=db
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=dispatcharr
+      - POSTGRES_USER=dispatch
+      - POSTGRES_PASSWORD=secret
+      - DJANGO_SECRET_KEY=dev-secret-key-not-for-production
+      - DISPATCHARR_LOG_LEVEL=info
+    depends_on:
+      db:
+        condition: service_healthy
+
+  db:
+    image: postgres:17
+    container_name: dispatcharr_dev_db
+    restart: unless-stopped
+    environment:
+      - POSTGRES_DB=dispatcharr
+      - POSTGRES_USER=dispatch
+      - POSTGRES_PASSWORD=secret
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dispatch -d dispatcharr"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  dispatcharr_data:
+  postgres_data:

@@ -1,1640 +1,256 @@
-# apps/m3u/tasks.py
+# apps/epg/tasks.py
+
 import logging
-import re
-import regex
-import requests
+import gzip
+import html.entities
 import os
-import gc
-import gzip, zipfile
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from celery.app.control import Inspect
-from celery.result import AsyncResult
-from celery import shared_task, current_app, group
+import uuid
+import requests
+import time  # Add import for tracking download progress
+from datetime import datetime, timedelta, timezone as dt_timezone
+import gc  # Add garbage collection module
+import json
+from lxml import etree  # Using lxml exclusively
+import psutil  # Add import for memory tracking
+import zipfile
+
+from celery import shared_task
 from django.conf import settings
-from django.core.cache import cache
-from django.db import models, transaction
-from .models import M3UAccount
-from apps.channels.models import Stream, ChannelGroup, ChannelGroupM3UAccount
+from django.db import connection, transaction
+from django.db.models import Q
+from django.utils import timezone
+from apps.channels.models import Channel
+from core.models import UserAgent, CoreSettings
+
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
-from django.utils import timezone
-import time
-import json
-from core.utils import (
-    RedisClient,
-    acquire_task_lock,
-    release_task_lock,
-    TaskLockRenewer,
-    natural_sort_key,
-    log_system_event,
-)
-from core.models import CoreSettings, UserAgent
-from asgiref.sync import async_to_sync
-from core.xtream_codes import Client as XCClient
-from core.utils import send_websocket_update
-from .utils import normalize_stream_url
+
+from .models import EPGSource, EPGData, ProgramData, SDScheduleMD5, SDProgramMD5
+from core.utils import acquire_task_lock, release_task_lock, TaskLockRenewer, send_websocket_update, cleanup_memory, log_system_event
 
 logger = logging.getLogger(__name__)
 
-BATCH_SIZE = 1500  # Optimized batch size for threading
-m3u_dir = os.path.join(settings.MEDIA_ROOT, "cached_m3u")
+SD_BASE_URL = 'https://json.schedulesdirect.org/20141201'
+SD_DAYS_TO_FETCH = 20
+SD_PROGRAM_BATCH_SIZE = 5000
 
-_EXTINF_ATTR_RE = re.compile(r'([^\s=]+)\s*=\s*(["\'])(.*?)\2')
-
-
-def fetch_m3u_lines(account, use_cache=False):
-    os.makedirs(m3u_dir, exist_ok=True)
-    file_path = os.path.join(m3u_dir, f"{account.id}.m3u")
-
-    """Fetch M3U file lines efficiently."""
-    if account.server_url:
-        if not use_cache or not os.path.exists(file_path):
-            try:
-                # Try to get account-specific user agent first
-                user_agent_obj = account.get_user_agent()
-                user_agent = (
-                    user_agent_obj.user_agent
-                    if user_agent_obj
-                    else "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-                )
-
-                logger.debug(
-                    f"Using user agent: {user_agent} for M3U account: {account.name}"
-                )
-                headers = {"User-Agent": user_agent}
-                logger.info(f"Fetching from URL {account.server_url}")
-
-                # Set account status to FETCHING before starting download
-                account.status = M3UAccount.Status.FETCHING
-                account.last_message = "Starting download..."
-                account.save(update_fields=["status", "last_message"])
-
-                response = requests.get(
-                    account.server_url, headers=headers, stream=True,
-                    timeout=(30, 60),  # 30s connect, 60s read between chunks
-                )
-
-                # Log the actual response details for debugging
-                logger.debug(f"HTTP Response: {response.status_code} from {account.server_url}")
-                logger.debug(f"Content-Type: {response.headers.get('content-type', 'Not specified')}")
-                logger.debug(f"Content-Length: {response.headers.get('content-length', 'Not specified')}")
-                logger.debug(f"Response headers: {dict(response.headers)}")
-
-                # Check if we've been redirected to a different URL
-                if hasattr(response, 'url') and response.url != account.server_url:
-                    logger.warning(f"Request was redirected from {account.server_url} to {response.url}")
-
-                # Check for ANY non-success status code FIRST (before raise_for_status)
-                if response.status_code < 200 or response.status_code >= 300:
-                    # For error responses, read the content immediately (not streaming)
-                    try:
-                        response_content = response.text[:1000]  # Capture up to 1000 characters
-                        logger.error(f"Error response content: {response_content!r}")
-                    except Exception as e:
-                        logger.error(f"Could not read error response content: {e}")
-                        response_content = "Could not read error response content"
-
-                    # Provide specific messages for known non-standard codes
-                    if response.status_code == 884:
-                        error_msg = f"Server returned HTTP 884 (authentication/authorization failure) from URL: {account.server_url}. Server message: {response_content}"
-                    elif response.status_code >= 800:
-                        error_msg = f"Server returned non-standard HTTP status {response.status_code} from URL: {account.server_url}. Server message: {response_content}"
-                    elif response.status_code == 404:
-                        error_msg = f"M3U file not found (404) at URL: {account.server_url}. Server message: {response_content}"
-                    elif response.status_code == 403:
-                        error_msg = f"Access forbidden (403) to M3U file at URL: {account.server_url}. Server message: {response_content}"
-                    elif response.status_code == 401:
-                        error_msg = f"Authentication required (401) for M3U file at URL: {account.server_url}. Server message: {response_content}"
-                    elif response.status_code == 500:
-                        error_msg = f"Server error (500) while fetching M3U file from URL: {account.server_url}. Server message: {response_content}"
-                    else:
-                        error_msg = f"HTTP error ({response.status_code}) while fetching M3U file from URL: {account.server_url}. Server message: {response_content}"
-
-                    logger.error(error_msg)
-                    account.status = M3UAccount.Status.ERROR
-                    account.last_message = error_msg
-                    account.save(update_fields=["status", "last_message"])
-                    send_m3u_update(
-                        account.id,
-                        "downloading",
-                        100,
-                        status="error",
-                        error=error_msg,
-                    )
-                    return [], False
-
-                # Only call raise_for_status if we have a success code (this should not raise now)
-                response.raise_for_status()
-
-                total_size = int(response.headers.get("Content-Length", 0))
-                downloaded = 0
-                start_time = time.time()
-                last_update_time = start_time
-                progress = 0
-                has_content = False
-
-                # Stream directly to a temp file to avoid holding the entire
-                # M3U in memory (large files can be 100MB+, which would use
-                # ~3x that in RAM in certain approaches).
-                temp_path = file_path + ".tmp"
-                try:
-                    send_m3u_update(account.id, "downloading", 0)
-                    with open(temp_path, "wb") as tmp_file:
-                        for chunk in response.iter_content(chunk_size=8192):
-                            if chunk:
-                                tmp_file.write(chunk)
-                                has_content = True
-
-                                downloaded += len(chunk)
-                                elapsed_time = time.time() - start_time
-
-                                # Calculate download speed in KB/s
-                                speed = downloaded / elapsed_time / 1024  # in KB/s
-
-                                # Calculate progress percentage
-                                if total_size and total_size > 0:
-                                    progress = (downloaded / total_size) * 100
-
-                                # Time remaining (in seconds)
-                                time_remaining = (
-                                    (total_size - downloaded) / (speed * 1024)
-                                    if speed > 0
-                                    else 0
-                                )
-
-                                current_time = time.time()
-                                if current_time - last_update_time >= 0.5:
-                                    last_update_time = current_time
-                                    if progress > 0:
-                                        # Update the account's last_message with detailed progress info
-                                        progress_msg = f"Downloading: {progress:.1f}% - {speed:.1f} KB/s - {time_remaining:.1f}s remaining"
-                                        account.last_message = progress_msg
-                                        account.save(update_fields=["last_message"])
-
-                                        send_m3u_update(
-                                            account.id,
-                                            "downloading",
-                                            progress,
-                                            speed=speed,
-                                            elapsed_time=elapsed_time,
-                                            time_remaining=time_remaining,
-                                            message=progress_msg,
-                                        )
-
-                    # Check if we actually received any content
-                    logger.info(f"Download completed. Has content: {has_content}, Content length: {downloaded} bytes")
-                    if not has_content or downloaded == 0:
-                        error_msg = f"Server responded successfully (HTTP {response.status_code}) but provided empty M3U file from URL: {account.server_url}"
-                        logger.error(error_msg)
-                        account.status = M3UAccount.Status.ERROR
-                        account.last_message = error_msg
-                        account.save(update_fields=["status", "last_message"])
-                        send_m3u_update(
-                            account.id,
-                            "downloading",
-                            100,
-                            status="error",
-                            error=error_msg,
-                        )
-                        return [], False
-
-                    # Validate the file by reading only the first portion from
-                    # disk — no need to load the entire file into memory just
-                    # to check the header.
-                    VALIDATION_READ_SIZE = 32768  # 32KB covers headers comfortably
-                    try:
-                        with open(temp_path, "rb") as vf:
-                            head_bytes = vf.read(VALIDATION_READ_SIZE)
-                        head_str = head_bytes.decode('utf-8', errors='ignore')
-                        head_lines = head_str.strip().split('\n')
-
-                        # Count total lines efficiently without loading full file
-                        with open(temp_path, "rb") as vf:
-                            total_lines = sum(1 for _ in vf)
-
-                        # Log first few lines for debugging (be careful not to log too much)
-                        preview_lines = head_lines[:5]
-                        logger.info(f"Content preview (first 5 lines): {preview_lines}")
-                        logger.info(f"Total lines in content: {total_lines}")
-
-                        # Check if it's a valid M3U file (should start with #EXTM3U or contain M3U-like content)
-                        is_valid_m3u = False
-
-                        # First, check if this looks like an error response disguised as 200 OK
-                        head_lower = head_str.lower()
-                        if any(error_indicator in head_lower for error_indicator in [
-                            '<html', '<!doctype html', 'error', 'not found', '404', '403', '500',
-                            'access denied', 'unauthorized', 'forbidden', 'invalid', 'expired'
-                        ]):
-                            logger.warning(f"Content appears to be an error response disguised as HTTP 200: {head_str[:200]!r}")
-                            # Continue with M3U validation, but this gives us a clue
-
-                        if head_lines and head_lines[0].strip().upper().startswith('#EXTM3U'):
-                            is_valid_m3u = True
-                            logger.info("Content validated as M3U: starts with #EXTM3U")
-                        elif any(line.strip().startswith('#EXTINF:') for line in head_lines):
-                            is_valid_m3u = True
-                            logger.info("Content validated as M3U: contains #EXTINF entries")
-                        elif any(line.strip().startswith('http') for line in head_lines):
-                            # Has HTTP URLs, might be a simple M3U without headers
-                            is_valid_m3u = True
-                            logger.info("Content validated as M3U: contains HTTP URLs")
-                        elif any(line.strip().startswith(('rtsp', 'rtp', 'udp')) for line in head_lines):
-                            # Has RTSP/RTP/UDP URLs, might be a simple M3U without headers
-                            is_valid_m3u = True
-                            logger.info("Content validated as M3U: contains RTSP/RTP/UDP URLs")
-
-                        if not is_valid_m3u:
-                            # Log what we actually received for debugging
-                            logger.error(f"Invalid M3U content received. First 200 characters: {head_str[:200]!r}")
-
-                            # Try to provide more specific error messages based on content
-                            if '<html' in head_lower or '<!doctype html' in head_lower:
-                                error_msg = f"Server returned HTML page instead of M3U file from URL: {account.server_url}. This usually indicates an error or authentication issue."
-                            elif 'error' in head_lower or 'not found' in head_lower:
-                                error_msg = f"Server returned an error message instead of M3U file from URL: {account.server_url}. Content: {head_str[:100]}"
-                            elif len(head_str.strip()) == 0:
-                                error_msg = f"Server returned completely empty response from URL: {account.server_url}"
-                            else:
-                                error_msg = f"Server provided invalid M3U content from URL: {account.server_url}. Content does not appear to be a valid M3U file."
-                            logger.error(error_msg)
-                            account.status = M3UAccount.Status.ERROR
-                            account.last_message = error_msg
-                            account.save(update_fields=["status", "last_message"])
-                            send_m3u_update(
-                                account.id,
-                                "downloading",
-                                100,
-                                status="error",
-                                error=error_msg,
-                            )
-                            return [], False
-
-                    except UnicodeDecodeError:
-                        with open(temp_path, "rb") as vf:
-                            first_bytes = vf.read(200)
-                        logger.error(f"Non-text content received. First 200 bytes: {first_bytes!r}")
-                        error_msg = f"Server provided non-text content from URL: {account.server_url}. Unable to process as M3U file."
-                        logger.error(error_msg)
-                        account.status = M3UAccount.Status.ERROR
-                        account.last_message = error_msg
-                        account.save(update_fields=["status", "last_message"])
-                        send_m3u_update(
-                            account.id,
-                            "downloading",
-                            100,
-                            status="error",
-                            error=error_msg,
-                        )
-                        return [], False
-
-                    # Validation passed — promote temp file to final path
-                    os.replace(temp_path, file_path)
-
-                    # Final update with 100% progress
-                    dl_size = downloaded / 1024 / 1024
-                    final_msg = f"Download complete. Size: {dl_size:.2f} MB, Time: {time.time() - start_time:.1f}s"
-                    account.last_message = final_msg
-                    account.save(update_fields=["last_message"])
-                    send_m3u_update(account.id, "downloading", 100, message=final_msg)
-
-                finally:
-                    # Clean up temp file on any failure path
-                    if os.path.exists(temp_path):
-                        try:
-                            os.remove(temp_path)
-                        except OSError:
-                            pass
-            except requests.exceptions.HTTPError as e:
-                # Handle HTTP errors specifically with more context
-                status_code = e.response.status_code if e.response else "unknown"
-
-                # Try to capture the error response content
-                response_content = ""
-                if e.response:
-                    try:
-                        response_content = e.response.text[:500]  # Limit to first 500 characters
-                        logger.error(f"HTTP error response content: {response_content!r}")
-                    except Exception as content_error:
-                        logger.error(f"Could not read HTTP error response content: {content_error}")
-                        response_content = "Could not read error response content"
-
-                if status_code == 404:
-                    error_msg = f"M3U file not found (404) at URL: {account.server_url}. Server message: {response_content}"
-                elif status_code == 403:
-                    error_msg = f"Access forbidden (403) to M3U file at URL: {account.server_url}. Server message: {response_content}"
-                elif status_code == 401:
-                    error_msg = f"Authentication required (401) for M3U file at URL: {account.server_url}. Server message: {response_content}"
-                elif status_code == 500:
-                    error_msg = f"Server error (500) while fetching M3U file from URL: {account.server_url}. Server message: {response_content}"
-                else:
-                    error_msg = f"HTTP error ({status_code}) while fetching M3U file from URL: {account.server_url}. Server message: {response_content}"
-
-                logger.error(error_msg)
-                account.status = M3UAccount.Status.ERROR
-                account.last_message = error_msg
-                account.save(update_fields=["status", "last_message"])
-                send_m3u_update(
-                    account.id,
-                    "downloading",
-                    100,
-                    status="error",
-                    error=error_msg,
-                )
-                return [], False
-            except requests.exceptions.RequestException as e:
-                # Handle other request errors (connection, timeout, etc.)
-                if "timeout" in str(e).lower():
-                    error_msg = f"Timeout while fetching M3U file from URL: {account.server_url}"
-                elif "connection" in str(e).lower():
-                    error_msg = f"Connection error while fetching M3U file from URL: {account.server_url}"
-                else:
-                    error_msg = f"Network error while fetching M3U file from URL: {account.server_url} - {str(e)}"
-
-                logger.error(error_msg)
-                account.status = M3UAccount.Status.ERROR
-                account.last_message = error_msg
-                account.save(update_fields=["status", "last_message"])
-                send_m3u_update(
-                    account.id,
-                    "downloading",
-                    100,
-                    status="error",
-                    error=error_msg,
-                )
-                return [], False
-            except Exception as e:
-                # Handle any other unexpected errors
-                error_msg = f"Unexpected error while fetching M3U file from URL: {account.server_url} - {str(e)}"
-                logger.error(error_msg)
-                account.status = M3UAccount.Status.ERROR
-                account.last_message = error_msg
-                account.save(update_fields=["status", "last_message"])
-                send_m3u_update(
-                    account.id,
-                    "downloading",
-                    100,
-                    status="error",
-                    error=error_msg,
-                )
-                return [], False
-
-        # Check if the file exists and is not empty (fallback check - should not happen with new validation)
-        if not os.path.exists(file_path) or os.path.getsize(file_path) == 0:
-            error_msg = f"M3U file is unexpectedly missing or empty after validation: {file_path}"
-            logger.error(error_msg)
-            account.status = M3UAccount.Status.ERROR
-            account.last_message = error_msg
-            account.save(update_fields=["status", "last_message"])
-            send_m3u_update(
-                account.id, "downloading", 100, status="error", error=error_msg
-            )
-            return [], False  # Return empty list and False for success
-
-        try:
-            with open(file_path, "r", encoding="utf-8") as f:
-                return f.readlines(), True
-        except Exception as e:
-            error_msg = f"Error reading M3U file: {str(e)}"
-            logger.error(error_msg)
-            account.status = M3UAccount.Status.ERROR
-            account.last_message = error_msg
-            account.save(update_fields=["status", "last_message"])
-            send_m3u_update(
-                account.id, "downloading", 100, status="error", error=error_msg
-            )
-            return [], False
-
-    elif account.file_path:
-        try:
-            if account.file_path.endswith(".gz"):
-                with gzip.open(account.file_path, "rt", encoding="utf-8") as f:
-                    return f.readlines(), True
-
-            elif account.file_path.endswith(".zip"):
-                with zipfile.ZipFile(account.file_path, "r") as zip_file:
-                    for name in zip_file.namelist():
-                        if name.endswith(".m3u"):
-                            with zip_file.open(name) as f:
-                                return [
-                                    line.decode("utf-8") for line in f.readlines()
-                                ], True
-
-                    error_msg = (
-                        f"No .m3u file found in ZIP archive: {account.file_path}"
-                    )
-                    logger.warning(error_msg)
-                    account.status = M3UAccount.Status.ERROR
-                    account.last_message = error_msg
-                    account.save(update_fields=["status", "last_message"])
-                    send_m3u_update(
-                        account.id, "downloading", 100, status="error", error=error_msg
-                    )
-                    return [], False
-
-            else:
-                with open(account.file_path, "r", encoding="utf-8") as f:
-                    return f.readlines(), True
-
-        except (IOError, OSError, zipfile.BadZipFile, gzip.BadGzipFile) as e:
-            error_msg = f"Error opening file {account.file_path}: {e}"
-            logger.error(error_msg)
-            account.status = M3UAccount.Status.ERROR
-            account.last_message = error_msg
-            account.save(update_fields=["status", "last_message"])
-            send_m3u_update(
-                account.id, "downloading", 100, status="error", error=error_msg
-            )
-            return [], False
-
-    # Neither server_url nor uploaded_file is available
-    error_msg = "No M3U source available (missing URL and file)"
-    logger.error(error_msg)
-    account.status = M3UAccount.Status.ERROR
-    account.last_message = error_msg
-    account.save(update_fields=["status", "last_message"])
-    send_m3u_update(account.id, "downloading", 100, status="error", error=error_msg)
-    return [], False
+# DOCTYPE internal subset for XMLTV files.  Declares all 252 HTML 4 named
+# entities so lxml/libxml2 can resolve references like &eacute; correctly
+# instead of silently dropping them in recovery mode.
+# The 5 XML-predefined entities (amp, lt, gt, quot, apos) are always
+# recognised by the XML spec and must not be redeclared.
+_XML_ENTITIES = frozenset({'amp', 'lt', 'gt', 'quot', 'apos'})
 
 
-def get_case_insensitive_attr(attributes, key, default=""):
-    """Get attribute value using case-insensitive key lookup."""
-    for attr_key, attr_value in attributes.items():
-        if attr_key.lower() == key.lower():
-            return attr_value
-    return default
+def _build_html_entity_doctype() -> bytes:
+    """Build a DOCTYPE internal subset declaring all HTML 4 named entities."""
+    lines = [b'<!DOCTYPE tv [\n']
+    for name, codepoint in sorted(html.entities.name2codepoint.items()):
+        if name not in _XML_ENTITIES:
+            # Numeric character references are always valid XML regardless of codepoint.
+            lines.append(f'<!ENTITY {name} "&#x{codepoint:X};">\n'.encode('ascii'))
+    lines.append(b']>\n')
+    return b''.join(lines)
 
 
-def parse_is_adult(value):
-    try:
-        return int(value) == 1
-    except (TypeError, ValueError):
-        return False
+_HTML_ENTITY_DOCTYPE = _build_html_entity_doctype()
 
 
-def parse_extinf_line(line: str) -> dict:
+class _PrependStream:
+    """Wraps an open binary file and prepends a bytes prefix to its content.
+
+    Used by _open_xmltv_file to inject a DOCTYPE entity block before the
+    file content reaches lxml's iterparse, with zero disk I/O.
     """
-    Parse an EXTINF line from an M3U file.
-    This function removes the "#EXTINF:" prefix, then extracts all key="value" attributes,
-    and treats everything after the last attribute as the display name.
 
-    Returns a dictionary with:
-      - 'attributes': a dict of attribute key/value pairs (e.g. tvg-id, tvg-logo, group-title)
-      - 'display_name': the text after the attributes (the fallback display name)
-      - 'name': the value from tvg-name (if present) or the display name otherwise.
+    __slots__ = ('_prefix', '_prefix_pos', '_file')
+
+    def __init__(self, prefix: bytes, file_obj):
+        self._prefix = prefix
+        self._prefix_pos = 0
+        self._file = file_obj
+
+    def read(self, size=-1):
+        prefix_len = len(self._prefix)
+        if self._prefix_pos >= prefix_len:
+            return self._file.read(size)
+        remaining = prefix_len - self._prefix_pos
+        if size < 0:
+            chunk = self._prefix[self._prefix_pos:] + self._file.read()
+            self._prefix_pos = prefix_len
+            return chunk
+        if size <= remaining:
+            chunk = self._prefix[self._prefix_pos:self._prefix_pos + size]
+            self._prefix_pos += size
+            return chunk
+        chunk = self._prefix[self._prefix_pos:]
+        self._prefix_pos = prefix_len
+        return chunk + self._file.read(size - remaining)
+
+    def close(self):
+        self._file.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        self.close()
+
+
+def _open_xmltv_file(file_path: str):
+    """Open an XMLTV file for lxml iterparse, injecting an HTML entity DOCTYPE.
+
+    Prepends a <!DOCTYPE tv [...]> block that declares all 252 HTML 4 named
+    entities so lxml/libxml2 resolves references like &eacute; correctly
+    instead of silently dropping them in recovery mode.  This involves zero
+    disk I/O (the DOCTYPE is streamed in-memory before the file content).
+
+    If the file already contains a <!DOCTYPE> declaration the file is returned
+    unchanged; a second DOCTYPE would be invalid XML.
+
+    The caller is responsible for closing the returned object.
     """
-    if not line.startswith("#EXTINF:"):
+    f = open(file_path, 'rb')
+    start = f.read(512)
+
+    # Do not inject if the file already declares a DOCTYPE.
+    if b'<!DOCTYPE' in start or b'<!doctype' in start.lower():
+        f.seek(0)
+        return f
+
+    # Insert the DOCTYPE after the XML declaration if one is present.
+    xml_pos = start.find(b'<?xml')
+    if xml_pos >= 0:
+        decl_end = start.find(b'?>', xml_pos)
+        if decl_end >= 0:
+            xml_decl = start[:decl_end + 2]
+            f.seek(decl_end + 2)
+            return _PrependStream(xml_decl + b'\n' + _HTML_ENTITY_DOCTYPE, f)
+
+    # No XML declaration found; insert DOCTYPE at the very start of the file.
+    f.seek(0)
+    return _PrependStream(_HTML_ENTITY_DOCTYPE, f)
+
+
+def validate_icon_url_fast(icon_url, max_length=None):
+    """
+    Fast validation for icon URLs during parsing.
+    Returns None if URL is too long, original URL otherwise.
+    If max_length is None, gets it dynamically from the EPGData model field.
+    """
+    if max_length is None:
+        # Get max_length dynamically from the model field
+        max_length = EPGData._meta.get_field('icon_url').max_length
+
+    if icon_url and len(icon_url) > max_length:
+        logger.warning(f"Icon URL too long ({len(icon_url)} > {max_length}), skipping: {icon_url[:100]}...")
         return None
-    content = line[len("#EXTINF:") :].strip()
-
-    # Single pass: extract all attributes AND track the last attribute position.
-    # Keys are normalised to lowercase so downstream code can use plain dict.get()
-    attrs = {}
-    last_attr_end = 0
-
-    for match in _EXTINF_ATTR_RE.finditer(content):
-        attrs[match.group(1).lower()] = match.group(3)
-        last_attr_end = match.end()
-
-    # Everything after the last attribute (skipping leading comma and whitespace) is the display name
-    if last_attr_end > 0:
-        remaining = content[last_attr_end:].strip()
-        # Remove leading comma if present
-        if remaining.startswith(','):
-            remaining = remaining[1:].strip()
-        display_name = remaining
-    else:
-        # No attributes found, try the old comma-split method as fallback
-        parts = content.split(',', 1)
-        if len(parts) == 2:
-            display_name = parts[1].strip()
-        else:
-            display_name = content.strip()
-
-    # Per the base #EXTINF spec, the comma text is the canonical human-readable title.
-    # Fall back to tvc-guide-title, then tvg-name (which some providers use as an EPG key,
-    # not a display label), and finally the raw content if everything else is empty.
-    name = display_name or attrs.get("tvc-guide-title") or attrs.get("tvg-name") or content.strip()
-    return {"attributes": attrs, "display_name": display_name, "name": name}
+    return icon_url
 
 
-def iter_m3u_entries(lines):
-    """
-    Generator that yields fully-assembled M3U stream entries from raw lines.
-
-    Each yielded dict is guaranteed to contain a ``url`` key in addition to the
-    fields produced by :func:`parse_extinf_line` (``attributes``, ``display_name``,
-    ``name``).  Recognised extended-tag lines that appear *between* an ``#EXTINF``
-    and its URL are accumulated into the pending entry so they are available for
-    downstream processing:
-
-    - ``#EXTGRP`` — sets ``attributes["group-title"]`` when no ``group-title``
-      attribute was present on the ``#EXTINF`` line (explicit attribute wins).
-    - ``#EXTVLCOPT`` — stored as a list under the ``vlc_opts`` key.
-
-    Unknown directives (``#KODIPROP``, etc.) and blank lines are
-    silently skipped while keeping the pending entry intact.  A second ``#EXTINF``
-    before a URL discards the first entry with a warning.  A trailing ``#EXTINF``
-    at end-of-file with no URL is also discarded.
-
-    Adding support for a new directive requires only a new ``elif`` branch here;
-    no other code needs to change.
-    """
-    pending = None
-    pending_line_num = None
-    for line_num, raw_line in enumerate(lines, 1):
-        line = raw_line.strip()
-        if not line:
-            continue
-
-        if line.startswith("#EXTINF"):
-            if pending is not None:
-                logger.warning(
-                    f"Line {pending_line_num}: #EXTINF had no URL (next #EXTINF at line {line_num}); "
-                    f"discarding entry: {list(pending['attributes'].items())[:3]}"
-                )
-            parsed = parse_extinf_line(line)
-            if parsed is None:
-                logger.warning(f"Line {line_num}: Failed to parse #EXTINF: {line[:200]}")
-            pending = parsed  # None if malformed; URL branch guards on `pending is not None`
-            pending_line_num = line_num
-
-        elif line.startswith("#EXTGRP:"):
-            # Only apply when group-title is absent — explicit attribute wins.
-            if pending is not None and "group-title" not in pending["attributes"]:
-                pending["attributes"]["group-title"] = line[len("#EXTGRP:"):].strip()
-            # else: #EXTGRP outside an entry, or group-title already set — silently skip
-
-        elif line.startswith("#EXTVLCOPT:"):
-            if pending is not None:
-                pending.setdefault("vlc_opts", []).append(line[len("#EXTVLCOPT:"):])
-            # else: #EXTVLCOPT outside an entry — silently skip
-
-        elif pending is not None and line.startswith(("http", "rtsp", "rtp", "udp")):
-            pending["url"] = normalize_stream_url(line) if line.startswith("udp") else line
-            yield pending
-            pending = None
-            pending_line_num = None
-
-        # else: unknown directive or bare content — skip, keeping pending intact
-
-    if pending is not None:
-        logger.warning(
-            f"Line {pending_line_num}: #EXTINF at end of file had no URL; "
-            f"discarding entry: {list(pending['attributes'].items())[:3]}"
-        )
+MAX_EXTRACT_CHUNK_SIZE = 65536 # 64kb (base2)
 
 
-@shared_task
-def refresh_m3u_accounts():
-    """Queue background parse for all active M3UAccounts."""
-    active_accounts = M3UAccount.objects.filter(is_active=True)
-    count = 0
-    for account in active_accounts:
-        refresh_single_m3u_account.delay(account.id)
-        count += 1
-
-    msg = f"Queued M3U refresh for {count} active account(s)."
-    logger.info(msg)
-    return msg
-
-
-def check_field_lengths(streams_to_create):
-    for stream in streams_to_create:
-        for field, value in stream.__dict__.items():
-            if isinstance(value, str) and len(value) > 255:
-                print(f"{field} --- {value}")
-
-        print("")
-        print("")
-
-
-@shared_task
-def process_groups(account, groups, scan_start_time=None):
-    """Process groups and update their relationships with the M3U account.
-
-    Args:
-        account: M3UAccount instance
-        groups: Dict of group names to custom properties
-        scan_start_time: Timestamp when the scan started (for consistent last_seen marking)
-    """
-    # Use scan_start_time if provided, otherwise current time
-    # This ensures consistency with stream processing and cleanup logic
-    if scan_start_time is None:
-        scan_start_time = timezone.now()
-
-    existing_groups = {
-        group.name: group
-        for group in ChannelGroup.objects.filter(name__in=groups.keys())
-    }
-    logger.info(f"Currently {len(existing_groups)} existing groups")
-
-    # Check if we should auto-enable new groups based on account settings
-    account_custom_props = account.custom_properties or {}
-    auto_enable_new_groups_live = account_custom_props.get("auto_enable_new_groups_live", True)
-
-    # Separate existing groups from groups that need to be created
-    existing_group_objs = []
-    groups_to_create = []
-
-    for group_name, custom_props in groups.items():
-        if group_name in existing_groups:
-            existing_group_objs.append(existing_groups[group_name])
-        else:
-            groups_to_create.append(ChannelGroup(name=group_name))
-
-    # Create new groups and fetch them back with IDs
-    newly_created_group_objs = []
-    if groups_to_create:
-        logger.info(f"Creating {len(groups_to_create)} new groups for account {account.id}")
-        newly_created_group_objs = list(ChannelGroup.bulk_create_and_fetch(groups_to_create))
-        logger.debug(f"Successfully created {len(newly_created_group_objs)} new groups")
-
-    # Combine all groups
-    all_group_objs = existing_group_objs + newly_created_group_objs
-
-    # Get existing relationships for this account
-    existing_relationships = {
-        rel.channel_group.name: rel
-        for rel in ChannelGroupM3UAccount.objects.filter(
-            m3u_account=account,
-            channel_group__name__in=groups.keys()
-        ).select_related('channel_group')
+def send_epg_update(source_id, action, progress, **kwargs):
+    """Send WebSocket update about EPG download/parsing progress"""
+    # Start with the base data dictionary
+    data = {
+        "progress": progress,
+        "type": "epg_refresh",
+        "source": source_id,
+        "action": action,
     }
 
-    relations_to_create = []
-    relations_to_update = []
+    # Add the additional key-value pairs from kwargs
+    data.update(kwargs)
 
-    for group in all_group_objs:
-        custom_props = groups.get(group.name, {})
+    # Use the standardized update function with garbage collection for program parsing
+    # This is a high-frequency operation that needs more aggressive memory management
+    collect_garbage = action == "parsing_programs" and progress % 10 == 0
+    send_websocket_update('updates', 'update', data, collect_garbage=collect_garbage)
 
-        if group.name in existing_relationships:
-            # Update existing relationship if xc_id has changed (preserve other custom properties)
-            existing_rel = existing_relationships[group.name]
+    # Explicitly clear references
+    data = None
 
-            # Get existing custom properties (now JSONB, no need to parse)
-            existing_custom_props = existing_rel.custom_properties or {}
-
-            # Get the new xc_id from groups data
-            new_xc_id = custom_props.get("xc_id")
-            existing_xc_id = existing_custom_props.get("xc_id")
-
-            # Only update if xc_id has changed
-            if new_xc_id != existing_xc_id:
-                # Merge new xc_id with existing custom properties to preserve user settings
-                updated_custom_props = existing_custom_props.copy()
-                if new_xc_id is not None:
-                    updated_custom_props["xc_id"] = new_xc_id
-                elif "xc_id" in updated_custom_props:
-                    # Remove xc_id if it's no longer provided (e.g., converting from XC to standard)
-                    del updated_custom_props["xc_id"]
-
-                existing_rel.custom_properties = updated_custom_props
-                existing_rel.last_seen = scan_start_time
-                existing_rel.is_stale = False
-                relations_to_update.append(existing_rel)
-                logger.debug(f"Updated xc_id for group '{group.name}' from '{existing_xc_id}' to '{new_xc_id}' - account {account.id}")
-            else:
-                # Update last_seen even if xc_id hasn't changed
-                existing_rel.last_seen = scan_start_time
-                existing_rel.is_stale = False
-                relations_to_update.append(existing_rel)
-                logger.debug(f"xc_id unchanged for group '{group.name}' - account {account.id}")
-        else:
-            # Create new relationship - this group is new to this M3U account
-            # Use the auto_enable setting to determine if it should start enabled
-            if not auto_enable_new_groups_live:
-                logger.info(f"Group '{group.name}' is new to account {account.id} - creating relationship but DISABLED (auto_enable_new_groups_live=False)")
-
-            relations_to_create.append(
-                ChannelGroupM3UAccount(
-                    channel_group=group,
-                    m3u_account=account,
-                    custom_properties=custom_props,
-                    enabled=auto_enable_new_groups_live,
-                    last_seen=scan_start_time,
-                    is_stale=False,
-                )
-            )
-
-    # Bulk create new relationships
-    if relations_to_create:
-        ChannelGroupM3UAccount.objects.bulk_create(relations_to_create, ignore_conflicts=True)
-        logger.debug(f"Created {len(relations_to_create)} new group relationships for account {account.id}")
-
-    # Bulk update existing relationships
-    if relations_to_update:
-        ChannelGroupM3UAccount.objects.bulk_update(relations_to_update, ['custom_properties', 'last_seen', 'is_stale'])
-        logger.info(f"Updated {len(relations_to_update)} existing group relationships for account {account.id}")
+    # For high-frequency parsing, occasionally force additional garbage collection
+    # to prevent memory buildup
+    if action == "parsing_programs" and progress % 50 == 0:
+        gc.collect()
 
 
-def cleanup_stale_group_relationships(account, scan_start_time):
+def _sd_send_ws_sync(source_id, action, progress, **kwargs):
     """
-    Remove group relationships that haven't been seen since the stale retention period.
-    This follows the same logic as stream cleanup for consistency.
+    Sends a WebSocket progress update synchronously via Redis, bypassing gevent.spawn.
+
+    In Celery prefork workers that inherit gevent monkey-patching from uWSGI,
+    gevent.spawn schedules coroutines that never execute because there is no
+    running gevent hub in the worker process. This function writes directly to
+    Redis using the channels_redis 4.x wire format, guaranteeing delivery
+    regardless of the execution context.
     """
-    # Calculate cutoff date for stale group relationships
-    stale_cutoff = scan_start_time - timezone.timedelta(days=account.stale_stream_days)
-    logger.info(
-        f"Removing group relationships not seen since {stale_cutoff} for M3U account {account.id}"
-    )
-
-    # Find stale relationships
-    stale_relationships = ChannelGroupM3UAccount.objects.filter(
-        m3u_account=account,
-        last_seen__lt=stale_cutoff
-    ).select_related('channel_group')
-
-    relations_to_delete = list(stale_relationships)
-    deleted_count = len(relations_to_delete)
-
-    if deleted_count > 0:
-        logger.info(
-            f"Found {deleted_count} stale group relationships for account {account.id}: "
-            f"{[rel.channel_group.name for rel in relations_to_delete]}"
-        )
-
-        # Delete the stale relationships
-        stale_relationships.delete()
-
-        # Check if any of the deleted relationships left groups with no remaining associations
-        orphaned_group_ids = []
-        for rel in relations_to_delete:
-            group = rel.channel_group
-
-            # Check if this group has any remaining M3U account relationships
-            remaining_m3u_relationships = ChannelGroupM3UAccount.objects.filter(
-                channel_group=group
-            ).exists()
-
-            # Check if this group has any direct channels (not through M3U accounts)
-            has_direct_channels = group.related_channels().exists()
-
-            # If no relationships and no direct channels, it's safe to delete
-            if not remaining_m3u_relationships and not has_direct_channels:
-                orphaned_group_ids.append(group.id)
-                logger.debug(f"Group '{group.name}' has no remaining associations and will be deleted")
-
-        # Delete truly orphaned groups
-        if orphaned_group_ids:
-            deleted_groups = list(ChannelGroup.objects.filter(id__in=orphaned_group_ids).values_list('name', flat=True))
-            ChannelGroup.objects.filter(id__in=orphaned_group_ids).delete()
-            logger.info(f"Deleted {len(orphaned_group_ids)} orphaned groups that had no remaining associations: {deleted_groups}")
-    else:
-        logger.debug(f"No stale group relationships found for account {account.id}")
-
-    return deleted_count
-
-
-def collect_xc_streams(account_id, enabled_groups):
-    """Collect all XC streams in a single API call and filter by enabled groups."""
-    account = M3UAccount.objects.get(id=account_id)
-    all_streams = []
-
-    # Create a mapping from category_id to group info for filtering
-    enabled_category_ids = {}
-    for group_name, props in enabled_groups.items():
-        if "xc_id" in props:
-            enabled_category_ids[str(props["xc_id"])] = {
-                "name": group_name,
-                "props": props
-            }
-
     try:
-        with XCClient(
-            account.server_url,
-            account.username,
-            account.password,
-            account.get_user_agent(),
-        ) as xc_client:
+        import msgpack
+        import redis as redis_lib
+        from django.conf import settings
 
-            # Fetch ALL live streams in a single API call (much more efficient)
-            logger.info("Fetching ALL live streams from XC provider...")
-            all_xc_streams = xc_client.get_all_live_streams()  # Get all streams without category filter
+        data = {"progress": progress, "type": "epg_refresh", "source": source_id, "action": action}
+        data.update(kwargs)
+        message = {"type": "update", "data": data}
 
-            if not all_xc_streams:
-                logger.warning("No live streams returned from XC provider")
-                return []
+        redis_url = getattr(settings, "CELERY_BROKER_URL", "redis://localhost:6379/0")
+        r = redis_lib.from_url(redis_url, decode_responses=False)
 
-            logger.info(f"Retrieved {len(all_xc_streams)} total live streams from provider")
+        prefix = "asgi"
+        group_name = "updates"
+        group_key = f"{prefix}:group:{group_name}"
+        group_expiry = 86400
+        channel_expiry = 60
+        rand_len = 12
+        now = time.time()
 
-            # Filter streams based on enabled categories
-            filtered_count = 0
-            for stream in all_xc_streams:
-                # Fall back to a generated name if the provider returns null/empty
-                stream_name = stream.get("name") or f"{account.name} - {stream.get('stream_id', 'Unknown')}"
-                if not stream.get("name"):
-                    logger.warning(
-                        f"XC stream has null/empty name; using generated name '{stream_name}' "
-                        f"(stream_id={stream.get('stream_id', 'unknown')})"
-                    )
+        r.zremrangebyscore(group_key, 0, now - group_expiry)
+        raw = r.zrange(group_key, 0, -1)
+        if not raw:
+            return
 
-                # Get the category_id for this stream
-                category_id = str(stream.get("category_id", ""))
+        channels = [m.decode("utf-8") if isinstance(m, bytes) else m for m in raw]
+        nonlocal_map = {}
+        for ch in channels:
+            pos = ch.find("!")
+            nl = ch[:pos + 1] if pos >= 0 else ch
+            nonlocal_map.setdefault(nl, []).append(ch)
 
-                # Only include streams from enabled categories
-                if category_id in enabled_category_ids:
-                    group_info = enabled_category_ids[category_id]
-
-                    # Convert XC stream to our standard format with all properties preserved
-                    stream_data = {
-                        "name": stream_name,
-                        "url": xc_client.get_stream_url(stream["stream_id"]),
-                        "attributes": {
-                            "tvg-id": stream.get("epg_channel_id", ""),
-                            "tvg-logo": stream.get("stream_icon", ""),
-                            "group-title": group_info["name"],
-                            # Preserve all XC stream properties as custom attributes
-                            "stream_id": str(stream.get("stream_id", "")),
-                            "num": stream.get("num"),
-                            "category_id": category_id,
-                            "stream_type": stream.get("stream_type", ""),
-                            "added": stream.get("added", ""),
-                            "is_adult": str(stream.get("is_adult", "0")),
-                            "custom_sid": stream.get("custom_sid", ""),
-                            # Include any other properties that might be present
-                            **{k: str(v) for k, v in stream.items() if k not in [
-                                "name", "stream_id", "epg_channel_id", "stream_icon",
-                                "category_id", "stream_type", "added", "is_adult", "custom_sid", "num"
-                            ] and v is not None}
-                        }
-                    }
-                    all_streams.append(stream_data)
-                    filtered_count += 1
-
+        pipe = r.pipeline(transaction=False)
+        for nl, chs in nonlocal_map.items():
+            channel_key = prefix + nl
+            msg = dict(message)
+            msg["__asgi_channel__"] = chs
+            serialized = os.urandom(rand_len) + msgpack.packb(msg)
+            pipe.zadd(channel_key, {serialized: now})
+            pipe.expire(channel_key, channel_expiry)
+        pipe.execute()
+        r.close()
     except Exception as e:
-        logger.error(f"Failed to fetch XC streams: {str(e)}")
-        return []
+        logger.warning(f"SD WebSocket sync send failed: {e}")
+        # Fall back to standard path
+        send_epg_update(source_id, action, progress, **kwargs)
 
-    logger.info(f"Filtered {filtered_count} streams from {len(enabled_category_ids)} enabled categories")
-    return all_streams
 
-def process_xc_category_direct(account_id, batch, groups, hash_keys):
-    from django.db import connections
-
-    # Ensure clean database connections for threading
-    connections.close_all()
-
-    account = M3UAccount.objects.get(id=account_id)
-
-    streams_to_create = []
-    streams_to_update = []
-    stream_hashes = {}
-
-    try:
-        with XCClient(
-            account.server_url,
-            account.username,
-            account.password,
-            account.get_user_agent(),
-        ) as xc_client:
-            # Log the batch details to help with debugging
-            logger.debug(f"Processing XC batch: {batch}")
-
-            for group_name, props in batch.items():
-                # Check if we have a valid xc_id for this group
-                if "xc_id" not in props:
-                    logger.error(
-                        f"Missing xc_id for group {group_name} in batch {batch}"
-                    )
-                    continue
-
-                # Get actual group ID from the mapping
-                group_id = groups.get(group_name)
-                if not group_id:
-                    logger.error(f"Group {group_name} not found in enabled groups")
-                    continue
-
-                try:
-                    logger.debug(
-                        f"Fetching streams for XC category: {group_name} (ID: {props['xc_id']})"
-                    )
-                    streams = xc_client.get_live_category_streams(props["xc_id"])
-
-                    if not streams:
-                        logger.warning(
-                            f"No streams found for XC category {group_name} (ID: {props['xc_id']})"
-                        )
-                        continue
-
-                    logger.debug(
-                        f"Found {len(streams)} streams for category {group_name}"
-                    )
-
-                    for stream in streams:
-                        name = stream.get("name") or f"{account.name} - {stream.get('stream_id', 'Unknown')}"
-                        if not stream.get("name"):
-                            logger.warning(
-                                f"XC stream has null/empty name in category {group_name}; "
-                                f"using generated name '{name}' (stream_id={stream.get('stream_id', 'unknown')})"
-                            )
-                        raw_stream_id = stream.get("stream_id", "")
-                        provider_stream_id = None
-                        if raw_stream_id:
-                            try:
-                                provider_stream_id = int(raw_stream_id)
-                            except (ValueError, TypeError):
-                                pass
-                        url = xc_client.get_stream_url(stream["stream_id"])
-                        tvg_id = stream.get("epg_channel_id", "")
-                        tvg_logo = stream.get("stream_icon", "")
-                        group_title = group_name
-                        stream_chno = stream.get("num")
-                        # Convert stream_chno to float if valid, otherwise None
-                        if stream_chno is not None:
-                            try:
-                                stream_chno = float(stream_chno)
-                            except (ValueError, TypeError):
-                                stream_chno = None
-
-                        stream_hash = Stream.generate_hash_key(
-                            name, url, tvg_id, hash_keys, m3u_id=account_id, group=group_title,
-                            account_type='XC', stream_id=provider_stream_id
-                        )
-                        stream_props = {
-                            "name": name,
-                            "url": url,
-                            "logo_url": tvg_logo,
-                            "tvg_id": tvg_id,
-                            "m3u_account": account,
-                            "channel_group_id": int(group_id),
-                            "stream_hash": stream_hash,
-                            "custom_properties": stream,
-                            "is_adult": parse_is_adult(stream.get("is_adult", 0)),
-                            "is_stale": False,
-                            "stream_id": provider_stream_id,
-                            "stream_chno": stream_chno,
-                        }
-
-                        if stream_hash not in stream_hashes:
-                            stream_hashes[stream_hash] = stream_props
-                except Exception as e:
-                    logger.error(
-                        f"Error processing XC category {group_name} (ID: {props['xc_id']}): {str(e)}"
-                    )
-                    continue
-
-        # Process all found streams
-        existing_streams = {
-            s.stream_hash: s
-            for s in Stream.objects.filter(stream_hash__in=stream_hashes.keys()).select_related('m3u_account').only(
-                'id', 'stream_hash', 'name', 'url', 'logo_url', 'tvg_id', 'custom_properties', 'last_seen', 'updated_at', 'm3u_account', 'stream_id', 'stream_chno'
-            )
-        }
-
-        for stream_hash, stream_props in stream_hashes.items():
-            if stream_hash in existing_streams:
-                obj = existing_streams[stream_hash]
-                # Optimized field comparison for XC streams
-                changed = (
-                    obj.name != stream_props["name"] or
-                    obj.url != stream_props["url"] or
-                    obj.logo_url != stream_props["logo_url"] or
-                    obj.tvg_id != stream_props["tvg_id"] or
-                    obj.custom_properties != stream_props["custom_properties"] or
-                    obj.is_adult != stream_props["is_adult"] or
-                    obj.stream_id != stream_props["stream_id"] or
-                    obj.stream_chno != stream_props["stream_chno"]
-                )
-
-                if changed:
-                    for key, value in stream_props.items():
-                        setattr(obj, key, value)
-                    obj.last_seen = timezone.now()
-                    obj.updated_at = timezone.now()  # Update timestamp only for changed streams
-                    obj.is_stale = False
-                    streams_to_update.append(obj)
-                else:
-                    # Always update last_seen, even if nothing else changed
-                    obj.last_seen = timezone.now()
-                    obj.is_stale = False
-                    # Don't update updated_at for unchanged streams
-                    streams_to_update.append(obj)
-
-                # Remove from existing_streams since we've processed it
-                del existing_streams[stream_hash]
-            else:
-                stream_props["last_seen"] = timezone.now()
-                stream_props["updated_at"] = (
-                    timezone.now()
-                )  # Set initial updated_at for new streams
-                stream_props["is_stale"] = False
-                streams_to_create.append(Stream(**stream_props))
-
-        try:
-            with transaction.atomic():
-                if streams_to_create:
-                    Stream.objects.bulk_create(streams_to_create, ignore_conflicts=True)
-
-                if streams_to_update:
-                    # Simplified bulk update for better performance
-                    Stream.objects.bulk_update(
-                        streams_to_update,
-                        ['name', 'url', 'logo_url', 'tvg_id', 'custom_properties', 'is_adult', 'last_seen', 'updated_at', 'is_stale', 'stream_id', 'stream_chno'],
-                        batch_size=150  # Smaller batch size for XC processing
-                    )
-
-                # Update last_seen for any remaining existing streams that weren't processed
-                if len(existing_streams.keys()) > 0:
-                    Stream.objects.bulk_update(existing_streams.values(), ["last_seen"])
-        except Exception as e:
-            logger.error(f"Bulk operation failed for XC streams: {str(e)}")
-
-        retval = f"Batch processed: {len(streams_to_create)} created, {len(streams_to_update)} updated."
-
-    except Exception as e:
-        logger.error(f"XC category processing error: {str(e)}")
-        retval = f"Error processing XC batch: {str(e)}"
-    finally:
-        # Clean up database connections for threading
-        connections.close_all()
-
-    # Aggressive garbage collection
-    del streams_to_create, streams_to_update, stream_hashes, existing_streams
-    gc.collect()
-
-    return retval
-
-
-def process_m3u_batch_direct(account_id, batch, groups, hash_keys):
-    """Processes a batch of M3U streams using bulk operations with thread-safe DB connections."""
-    from django.db import connections
-
-    # Ensure clean database connections for threading
-    connections.close_all()
-
-    account = M3UAccount.objects.get(id=account_id)
-
-    compiled_filters = [
-        (
-            re.compile(
-                f.regex_pattern,
-                (
-                    re.IGNORECASE
-                    if (f.custom_properties or {}).get(
-                        "case_sensitive", True
-                    )
-                    == False
-                    else 0
-                ),
-            ),
-            f,
-        )
-        for f in account.filters.order_by("order")
-    ]
-
-    streams_to_create = []
-    streams_to_update = []
-    stream_hashes = {}
-
-    name_max_length = Stream._meta.get_field('name').max_length
-
-    logger.debug(f"Processing batch of {len(batch)} for M3U account {account_id}")
-    if compiled_filters:
-        logger.debug(f"Using compiled filters: {[f[1].regex_pattern for f in compiled_filters]}")
-    for stream_info in batch:
-        try:
-            name, url = stream_info["name"], stream_info["url"]
-
-            # Validate URL length - maximum of 4096 characters
-            if url and len(url) > 4096:
-                logger.warning(f"Skipping stream '{name}': URL too long ({len(url)} characters, max 4096)")
-                continue
-
-            # Truncate name if it exceeds the model field limit
-            if name and len(name) > name_max_length:
-                logger.warning(f"Stream name too long ({len(name)} > {name_max_length}), truncating: {name[:80]}...")
-                name = name[:name_max_length]
-
-            tvg_id, tvg_logo = get_case_insensitive_attr(
-                stream_info["attributes"], "tvg-id", ""
-            ), get_case_insensitive_attr(stream_info["attributes"], "tvg-logo", "")
-            group_title = get_case_insensitive_attr(
-                stream_info["attributes"], "group-title", "Default Group"
-            )
-            logger.debug(f"Processing stream: {name} - {url} in group {group_title}")
-            include = True
-            for pattern, filter in compiled_filters:
-                logger.trace(f"Checking filter pattern {pattern}")
-                target = name
-                if filter.filter_type == "url":
-                    target = url
-                elif filter.filter_type == "group":
-                    target = group_title
-
-                if pattern.search(target or ""):
-                    logger.debug(
-                        f"Stream {name} - {url} matches filter pattern {filter.regex_pattern}"
-                    )
-                    include = not filter.exclude
-                    break
-
-            if not include:
-                logger.debug(f"Stream excluded by filter, skipping.")
-                continue
-
-            # Filter out disabled groups for this account
-            if group_title not in groups:
-                logger.debug(
-                    f"Skipping stream in disabled or excluded group: {group_title}"
-                )
-                continue
-
-            # Determine provider-specific fields first
-            provider_stream_id = None
-            channel_num = None
-            account_type_for_hash = None
-
-            if account.account_type == M3UAccount.Types.XC:
-                account_type_for_hash = 'XC'
-                raw_stream_id = stream_info["attributes"].get("stream_id", "")
-                if raw_stream_id:
-                    try:
-                        provider_stream_id = int(raw_stream_id)
-                    except (ValueError, TypeError):
-                        pass
-                raw_num = stream_info["attributes"].get("num")
-                if raw_num is not None:
-                    try:
-                        channel_num = float(raw_num)
-                    except (ValueError, TypeError):
-                        pass
-            else:
-                # For standard M3U accounts, check for tvg-chno or channel-number
-                tvg_chno = get_case_insensitive_attr(stream_info["attributes"], "tvg-chno", None)
-                if tvg_chno is None:
-                    tvg_chno = get_case_insensitive_attr(stream_info["attributes"], "channel-number", None)
-                if tvg_chno is not None:
-                    try:
-                        channel_num = float(tvg_chno)
-                    except (ValueError, TypeError):
-                        pass
-
-            # Generate hash once with all parameters
-            stream_hash = Stream.generate_hash_key(
-                name, url, tvg_id, hash_keys, m3u_id=account_id, group=group_title,
-                account_type=account_type_for_hash, stream_id=provider_stream_id
-            )
-
-            stream_props = {
-                "name": name,
-                "url": url,
-                "logo_url": tvg_logo,
-                "tvg_id": tvg_id,
-                "m3u_account": account,
-                "channel_group_id": int(groups.get(group_title)),
-                "stream_hash": stream_hash,
-                "custom_properties": {**stream_info["attributes"], "vlc_opts": stream_info["vlc_opts"]} if "vlc_opts" in stream_info else stream_info["attributes"],
-                "is_adult": parse_is_adult(stream_info["attributes"].get("is_adult", 0)),
-                "is_stale": False,
-                "stream_id": provider_stream_id,
-                "stream_chno": channel_num,
-            }
-
-            if stream_hash not in stream_hashes:
-                stream_hashes[stream_hash] = stream_props
-        except Exception as e:
-            logger.error(f"Failed to process stream {name}: {e}")
-            logger.error(json.dumps(stream_info))
-
-    existing_streams = {
-        s.stream_hash: s
-        for s in Stream.objects.filter(stream_hash__in=stream_hashes.keys()).select_related('m3u_account').only(
-            'id', 'stream_hash', 'name', 'url', 'logo_url', 'tvg_id', 'custom_properties', 'last_seen', 'updated_at', 'm3u_account', 'stream_id', 'stream_chno'
-        )
-    }
-
-    for stream_hash, stream_props in stream_hashes.items():
-        if stream_hash in existing_streams:
-            obj = existing_streams[stream_hash]
-            # Optimized field comparison
-            changed = (
-                obj.name != stream_props["name"] or
-                obj.url != stream_props["url"] or
-                obj.logo_url != stream_props["logo_url"] or
-                obj.tvg_id != stream_props["tvg_id"] or
-                obj.custom_properties != stream_props["custom_properties"] or
-                obj.is_adult != stream_props["is_adult"] or
-                obj.stream_id != stream_props["stream_id"] or
-                obj.stream_chno != stream_props["stream_chno"]
-            )
-
-            # Always update last_seen
-            obj.last_seen = timezone.now()
-
-            if changed:
-                # Only update fields that changed and set updated_at
-                obj.name = stream_props["name"]
-                obj.url = stream_props["url"]
-                obj.logo_url = stream_props["logo_url"]
-                obj.tvg_id = stream_props["tvg_id"]
-                obj.custom_properties = stream_props["custom_properties"]
-                obj.is_adult = stream_props["is_adult"]
-                obj.stream_id = stream_props["stream_id"]
-                obj.stream_chno = stream_props["stream_chno"]
-                obj.updated_at = timezone.now()
-
-            # Always mark as not stale since we saw it in this refresh
-            obj.is_stale = False
-
-            streams_to_update.append(obj)
-        else:
-            # New stream
-            stream_props["last_seen"] = timezone.now()
-            stream_props["updated_at"] = timezone.now()
-            stream_props["is_stale"] = False
-            streams_to_create.append(Stream(**stream_props))
-
-    try:
-        with transaction.atomic():
-            if streams_to_create:
-                Stream.objects.bulk_create(streams_to_create, ignore_conflicts=True)
-
-            if streams_to_update:
-                # Update all streams in a single bulk operation
-                Stream.objects.bulk_update(
-                    streams_to_update,
-                    ['name', 'url', 'logo_url', 'tvg_id', 'custom_properties', 'is_adult', 'last_seen', 'updated_at', 'is_stale', 'stream_id', 'stream_chno'],
-                    batch_size=200
-                )
-    except Exception as e:
-        logger.error(f"Bulk operation failed: {str(e)}")
-
-    retval = f"M3U account: {account_id}, Batch processed: {len(streams_to_create)} created, {len(streams_to_update)} updated."
-
-    # Clean up database connections for threading
-    connections.close_all()
-
-    # Free batch data structures (reference-counted deallocation)
-    del streams_to_create, streams_to_update, stream_hashes, existing_streams
-
-    return retval
-
-
-def cleanup_streams(account_id, scan_start_time=timezone.now):
-    account = M3UAccount.objects.get(id=account_id, is_active=True)
-    existing_groups = ChannelGroup.objects.filter(
-        m3u_accounts__m3u_account=account,
-        m3u_accounts__enabled=True,
-    ).values_list("id", flat=True)
-    logger.info(
-        f"Found {len(existing_groups)} active groups for M3U account {account_id}"
-    )
-
-    # Calculate cutoff date for stale streams
-    stale_cutoff = scan_start_time - timezone.timedelta(days=account.stale_stream_days)
-    logger.info(
-        f"Removing streams not seen since {stale_cutoff} for M3U account {account_id}"
-    )
-
-    # Delete streams that are not in active groups
-    streams_to_delete = Stream.objects.filter(m3u_account=account).exclude(
-        channel_group__in=existing_groups
-    )
-
-    # Also delete streams that haven't been seen for longer than stale_stream_days
-    stale_streams = Stream.objects.filter(
-        m3u_account=account, last_seen__lt=stale_cutoff
-    )
-
-    deleted_count = streams_to_delete.count()
-    stale_count = stale_streams.count()
-
-    streams_to_delete.delete()
-    stale_streams.delete()
-
-    total_deleted = deleted_count + stale_count
-    logger.info(
-        f"Cleanup for M3U account {account_id} complete: {deleted_count} streams removed due to group filter, {stale_count} removed as stale"
-    )
-
-    # Return the total count of deleted streams
-    return total_deleted
-
-
-@shared_task
-def refresh_m3u_groups(account_id, use_cache=False, full_refresh=False, scan_start_time=None):
-    """Refresh M3U groups for an account.
-
-    Args:
-        account_id: ID of the M3U account
-        use_cache: Whether to use cached M3U file
-        full_refresh: Whether this is part of a full refresh
-        scan_start_time: Timestamp when the scan started (for consistent last_seen marking)
+def delete_epg_refresh_task_by_id(epg_id):
     """
-    if not acquire_task_lock("refresh_m3u_account_groups", account_id):
-        return f"Task already running for account_id={account_id}.", None
-
-    lock_renewer = TaskLockRenewer("refresh_m3u_account_groups", account_id)
-    lock_renewer.start()
-
-    try:
-        account = M3UAccount.objects.get(id=account_id, is_active=True)
-    except M3UAccount.DoesNotExist:
-        lock_renewer.stop()
-        release_task_lock("refresh_m3u_account_groups", account_id)
-        return f"M3UAccount with ID={account_id} not found or inactive.", None
-
-    extinf_data = []
-    groups = {"Default Group": {}}
-
-    if account.account_type == M3UAccount.Types.XC:
-        # Log detailed information about the account
-        logger.info(
-            f"Processing XC account {account_id} with URL: {account.server_url}"
-        )
-        logger.debug(
-            f"Username: {account.username}, Has password: {'Yes' if account.password else 'No'}"
-        )
-
-        # Validate required fields
-        if not account.server_url:
-            error_msg = "Missing server URL for Xtream Codes account"
-            logger.error(error_msg)
-            account.status = M3UAccount.Status.ERROR
-            account.last_message = error_msg
-            account.save(update_fields=["status", "last_message"])
-            send_m3u_update(
-                account_id, "processing_groups", 100, status="error", error=error_msg
-            )
-            lock_renewer.stop()
-            release_task_lock("refresh_m3u_account_groups", account_id)
-            return error_msg, None
-
-        if not account.username or not account.password:
-            error_msg = "Missing username or password for Xtream Codes account"
-            logger.error(error_msg)
-            account.status = M3UAccount.Status.ERROR
-            account.last_message = error_msg
-            account.save(update_fields=["status", "last_message"])
-            send_m3u_update(
-                account_id, "processing_groups", 100, status="error", error=error_msg
-            )
-            lock_renewer.stop()
-            release_task_lock("refresh_m3u_account_groups", account_id)
-            return error_msg, None
-
-        try:
-            # Ensure server URL is properly formatted
-            server_url = account.server_url.rstrip("/")
-            if not (
-                server_url.startswith("http://") or server_url.startswith("https://")
-            ):
-                server_url = f"http://{server_url}"
-
-            # User agent handling - completely rewritten
-            try:
-                # Debug the user agent issue
-                logger.debug(f"Getting user agent for account {account.id}")
-
-                # Use a hardcoded user agent string to avoid any issues with object structure
-                user_agent_string = (
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-                )
-
-                try:
-                    # Try to get the user agent directly from the database
-                    if account.user_agent_id:
-                        ua_obj = UserAgent.objects.get(id=account.user_agent_id)
-                        if (
-                            ua_obj
-                            and hasattr(ua_obj, "user_agent")
-                            and ua_obj.user_agent
-                        ):
-                            user_agent_string = ua_obj.user_agent
-                            logger.debug(
-                                f"Using user agent from account: {user_agent_string}"
-                            )
-                    else:
-                        # Get default user agent from CoreSettings
-                        default_ua_id = CoreSettings.get_default_user_agent_id()
-                        logger.debug(
-                            f"Default user agent ID from settings: {default_ua_id}"
-                        )
-                        if default_ua_id:
-                            ua_obj = UserAgent.objects.get(id=default_ua_id)
-                            if (
-                                ua_obj
-                                and hasattr(ua_obj, "user_agent")
-                                and ua_obj.user_agent
-                            ):
-                                user_agent_string = ua_obj.user_agent
-                                logger.debug(
-                                    f"Using default user agent: {user_agent_string}"
-                                )
-                except Exception as e:
-                    logger.warning(
-                        f"Error getting user agent, using fallback: {str(e)}"
-                    )
-
-                logger.debug(f"Final user agent string: {user_agent_string}")
-            except Exception as e:
-                user_agent_string = (
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-                )
-                logger.warning(
-                    f"Exception in user agent handling, using fallback: {str(e)}"
-                )
-
-            logger.info(
-                f"Creating XCClient with URL: {account.server_url}, Username: {account.username}, User-Agent: {user_agent_string}"
-            )
-
-            # Create XCClient with explicit error handling
-            try:
-                with XCClient(
-                    account.server_url, account.username, account.password, user_agent_string
-                ) as xc_client:
-                    logger.info(f"XCClient instance created successfully")
-
-                    # Queue async profile refresh task to run in background
-                    # This prevents any delay in the main refresh process
-                    try:
-                        logger.info(f"Queueing background profile refresh for account {account.name}")
-                        refresh_account_profiles.delay(account.id)
-                    except Exception as e:
-                        logger.warning(f"Failed to queue profile refresh task: {str(e)}")
-                        # Don't fail the main refresh if profile refresh can't be queued
-
-                    # Get categories with detailed error handling
-                    try:
-                        logger.info(f"Getting live categories from XC server")
-                        xc_categories = xc_client.get_live_categories()
-                        logger.info(
-                            f"Found {len(xc_categories)} categories: {xc_categories}"
-                        )
-
-                        # Validate response
-                        if not isinstance(xc_categories, list):
-                            error_msg = (
-                                f"Unexpected response from XC server: {xc_categories}"
-                            )
-                            logger.error(error_msg)
-                            account.status = M3UAccount.Status.ERROR
-                            account.last_message = error_msg
-                            account.save(update_fields=["status", "last_message"])
-                            send_m3u_update(
-                                account_id,
-                                "processing_groups",
-                                100,
-                                status="error",
-                                error=error_msg,
-                            )
-                            lock_renewer.stop()
-                            release_task_lock("refresh_m3u_account_groups", account_id)
-                            return error_msg, None
-
-                        if len(xc_categories) == 0:
-                            logger.warning("No categories found in XC server response")
-
-                        for category in xc_categories:
-                            cat_name = category.get("category_name", "Unknown Category")
-                            cat_id = category.get("category_id", "0")
-                            logger.info(f"Adding category: {cat_name} (ID: {cat_id})")
-                            groups[cat_name] = {
-                                "xc_id": cat_id,
-                            }
-                    except Exception as e:
-                        # Determine if this is an authentication error or category retrieval error
-                        error_str = str(e).lower()
-                        # Check for authentication-related keywords or HTTP status codes commonly used for auth failures
-                        is_auth_error = any(keyword in error_str for keyword in [
-                            'auth', 'credential', 'login', 'unauthorized', 'forbidden',
-                            '401', '403', '512', '513'  # HTTP status codes: 401 Unauthorized, 403 Forbidden, 512-513 (non-standard auth failure)
-                        ])
-
-                        if is_auth_error:
-                            error_msg = f"Failed to authenticate with XC server: {str(e)}"
-                        else:
-                            error_msg = f"Failed to get categories from XC server: {str(e)}"
-
-                        logger.error(error_msg)
-                        account.status = M3UAccount.Status.ERROR
-                        account.last_message = error_msg
-                        account.save(update_fields=["status", "last_message"])
-                        send_m3u_update(
-                            account_id,
-                            "processing_groups",
-                            100,
-                            status="error",
-                            error=error_msg,
-                        )
-                        lock_renewer.stop()
-                        release_task_lock("refresh_m3u_account_groups", account_id)
-                        return error_msg, None
-
-            except Exception as e:
-                error_msg = f"Failed to create XC Client: {str(e)}"
-                logger.error(error_msg)
-                account.status = M3UAccount.Status.ERROR
-                account.last_message = error_msg
-                account.save(update_fields=["status", "last_message"])
-                send_m3u_update(
-                    account_id,
-                    "processing_groups",
-                    100,
-                    status="error",
-                    error=error_msg,
-                )
-                lock_renewer.stop()
-                release_task_lock("refresh_m3u_account_groups", account_id)
-                return error_msg, None
-        except Exception as e:
-            error_msg = f"Unexpected error occurred in XC Client: {str(e)}"
-            logger.error(error_msg)
-            account.status = M3UAccount.Status.ERROR
-            account.last_message = error_msg
-            account.save(update_fields=["status", "last_message"])
-            send_m3u_update(
-                account_id, "processing_groups", 100, status="error", error=error_msg
-            )
-            lock_renewer.stop()
-            release_task_lock("refresh_m3u_account_groups", account_id)
-            return error_msg, None
-    else:
-        lines, success = fetch_m3u_lines(account, use_cache)
-        if not success:
-            # If fetch failed, don't continue processing
-            lock_renewer.stop()
-            release_task_lock("refresh_m3u_account_groups", account_id)
-            return f"Failed to fetch M3U data for account_id={account_id}.", None
-
-        # Log basic file structure for debugging
-        logger.debug(f"Processing {len(lines)} lines from M3U file")
-
-        valid_stream_count = 0
-
-        for entry in iter_m3u_entries(lines):
-            valid_stream_count += 1
-            group_title_attr = get_case_insensitive_attr(entry["attributes"], "group-title", "")
-            if group_title_attr and group_title_attr not in groups:
-                logger.debug(f"Found new group for M3U account {account_id}: '{group_title_attr}'")
-                groups[group_title_attr] = {}
-            extinf_data.append(entry)
-
-            if valid_stream_count % 1000 == 0:
-                logger.debug(f"Processed {valid_stream_count} valid streams so far for M3U account: {account_id}")
-
-        logger.info(f"M3U parsing complete - Valid streams: {valid_stream_count}")
-
-        # Log group statistics
-        logger.info(
-            f"Found {len(groups)} groups in M3U file: {', '.join(list(groups.keys())[:20])}"
-            + ("..." if len(groups) > 20 else "")
-        )
-
-        # Cache processed data
-        cache_path = os.path.join(m3u_dir, f"{account_id}.json")
-        with open(cache_path, "w", encoding="utf-8") as f:
-            json.dump(
-                {
-                    "extinf_data": extinf_data,
-                    "groups": groups,
-                },
-                f,
-            )
-            logger.debug(f"Cached parsed M3U data to {cache_path}")
-
-    send_m3u_update(account_id, "processing_groups", 0)
-
-    process_groups(account, groups, scan_start_time)
-
-    lock_renewer.stop()
-    release_task_lock("refresh_m3u_account_groups", account_id)
-
-    if not full_refresh:
-        # Use update() instead of save() to avoid triggering signals
-        M3UAccount.objects.filter(id=account_id).update(
-            status=M3UAccount.Status.PENDING_SETUP,
-            last_message="M3U groups loaded. Please select groups or refresh M3U to complete setup.",
-        )
-        send_m3u_update(
-            account_id,
-            "processing_groups",
-            100,
-            status="pending_setup",
-            message="M3U groups loaded. Please select groups or refresh M3U to complete setup.",
-        )
-
-    return extinf_data, groups
-
-
-def delete_m3u_refresh_task_by_id(account_id):
-    """
-    Delete the periodic task associated with an M3U account ID.
+    Delete the periodic task associated with an EPG source ID.
     Can be called directly or from the post_delete signal.
     Returns True if a task was found and deleted, False otherwise.
     """
     try:
         task = None
-        task_name = f"m3u_account-refresh-{account_id}"
+        task_name = f"epg_source-refresh-{epg_id}"
 
         # Look for task by name
         try:
             from django_celery_beat.models import PeriodicTask, IntervalSchedule
-
             task = PeriodicTask.objects.get(name=task_name)
-            logger.debug(f"Found task by name: {task.id} for M3UAccount {account_id}")
+            logger.info(f"Found task by name: {task.id} for EPGSource {epg_id}")
         except PeriodicTask.DoesNotExist:
             logger.warning(f"No PeriodicTask found with name {task_name}")
             return False
@@ -1643,2171 +259,3336 @@ def delete_m3u_refresh_task_by_id(account_id):
         if task:
             # Store interval info before deleting the task
             interval_id = None
-            if hasattr(task, "interval") and task.interval:
+            if hasattr(task, 'interval') and task.interval:
                 interval_id = task.interval.id
 
                 # Count how many TOTAL tasks use this interval (including this one)
-                tasks_with_same_interval = PeriodicTask.objects.filter(
-                    interval_id=interval_id
-                ).count()
-                logger.debug(
-                    f"Interval {interval_id} is used by {tasks_with_same_interval} tasks total"
-                )
+                tasks_with_same_interval = PeriodicTask.objects.filter(interval_id=interval_id).count()
+                logger.info(f"Interval {interval_id} is used by {tasks_with_same_interval} tasks total")
 
             # Delete the task first
             task_id = task.id
             task.delete()
-            logger.debug(f"Successfully deleted periodic task {task_id}")
+            logger.info(f"Successfully deleted periodic task {task_id}")
 
             # Now check if we should delete the interval
             # We only delete if it was the ONLY task using this interval
             if interval_id and tasks_with_same_interval == 1:
                 try:
                     interval = IntervalSchedule.objects.get(id=interval_id)
-                    logger.debug(
-                        f"Deleting interval schedule {interval_id} (not shared with other tasks)"
-                    )
+                    logger.info(f"Deleting interval schedule {interval_id} (not shared with other tasks)")
                     interval.delete()
-                    logger.debug(f"Successfully deleted interval {interval_id}")
+                    logger.info(f"Successfully deleted interval {interval_id}")
                 except IntervalSchedule.DoesNotExist:
                     logger.warning(f"Interval {interval_id} no longer exists")
             elif interval_id:
-                logger.debug(
-                    f"Not deleting interval {interval_id} as it's shared with {tasks_with_same_interval-1} other tasks"
-                )
+                logger.info(f"Not deleting interval {interval_id} as it's shared with {tasks_with_same_interval-1} other tasks")
 
             return True
         return False
     except Exception as e:
-        logger.error(
-            f"Error deleting periodic task for M3UAccount {account_id}: {str(e)}",
-            exc_info=True,
-        )
+        logger.error(f"Error deleting periodic task for EPGSource {epg_id}: {str(e)}", exc_info=True)
         return False
 
 
-def _next_available_number(used_numbers, start, end=None):
-    """
-    Return the smallest integer >= start that is not present in `used_numbers`.
-
-    When `end` is provided (inclusive upper bound for range-constrained groups),
-    returns None if the search exceeds that bound instead of running
-    indefinitely. The search is O(cluster size) per call against the set;
-    maintaining the cursor monotonically across calls keeps the
-    "next_available" numbering mode from becoming O(N^2) on large groups.
-    """
-    n = start
-    while n in used_numbers:
-        n += 1
-        if end is not None and n > end:
-            return None
-    if end is not None and n > end:
-        return None
-    return n
-
-
-def _pick_target_number(
-    mode,
-    stream,
-    used_numbers,
-    fixed_cursor,
-    fallback_start,
-    end_number=None,
-    range_start=None,
-):
-    """
-    Return the channel number a given stream should claim under the group's
-    numbering mode, or None if the configured range is exhausted.
-
-    Shared by the existing-channel renumber pass and the new-channel create
-    pass so both honor identical mode semantics: provider-supplied number
-    when available and free, otherwise fall back; or always next-available;
-    or fixed-cursor sequential.
-
-    `range_start`, when provided, is the inclusive lower bound for the
-    group's configured numbering range. Provider-supplied numbers below
-    this bound fall back to the next-available picker so freshly-created
-    channels never land outside the configured range.
-    """
-    if mode == "provider":
-        chno = stream.stream_chno
-        if (
-            chno is not None
-            and chno not in used_numbers
-            and (range_start is None or chno >= range_start)
-            and (end_number is None or chno <= end_number)
-        ):
-            return chno
-        # No usable provider number: walk from fallback_start, bumped up
-        # to range_start when set so the fallback never lands below the
-        # configured range.
-        effective_start = (
-            max(fallback_start, range_start)
-            if range_start is not None
-            else fallback_start
-        )
-        return _next_available_number(used_numbers, effective_start, end=end_number)
-    if mode == "next_available":
-        return _next_available_number(used_numbers, 1, end=end_number)
-    return _next_available_number(used_numbers, fixed_cursor, end=end_number)
-
-
-def _custom_properties_as_dict(value):
-    """
-    Normalize a JSONField-backed custom_properties value into a dict.
-
-    Historical data has rows where the field holds a JSON-encoded string
-    instead of a dict. Django's JSONField serializes whatever it gets, so
-    `.get()` on one of those rows raises AttributeError and aborts the
-    entire sync. Treat string values as JSON to parse, and fall back to an
-    empty dict for anything that isn't a dict after parsing.
-    """
-    import json
-
-    if isinstance(value, dict):
-        return value
-    if isinstance(value, str):
-        try:
-            parsed = json.loads(value)
-        except (ValueError, TypeError):
-            logger.warning(
-                "custom_properties stored as non-JSON string; ignoring: %r",
-                value[:100],
-            )
-            return {}
-        return parsed if isinstance(parsed, dict) else {}
-    return {}
-
-
-def _classify_sync_failure(exc):
-    """
-    Map an exception raised during per-stream sync to a coarse typed
-    reason used by the completion notification's grouped failure list.
-    Keeps the bucket count small so the modal stays readable; the
-    underlying exception text is preserved verbatim in ``error``.
-    """
-    from django.db import IntegrityError
-
-    if isinstance(exc, IntegrityError):
-        return "INTEGRITY_ERROR"
-    return "OTHER"
-
-
 @shared_task
-def sync_auto_channels(account_id, scan_start_time=None):
-    """
-    Automatically create/update/delete channels to match streams in groups with auto_channel_sync enabled.
-    Preserves existing channel UUIDs to maintain M3U link integrity.
-    Called after M3U refresh completes successfully.
-    """
-    from apps.channels.models import (
-        Channel,
-        ChannelGroup,
-        ChannelGroupM3UAccount,
-        Stream,
-        ChannelStream,
-    )
-    from apps.epg.models import EPGData
-    from django.utils import timezone
-
-    try:
-        account = M3UAccount.objects.get(id=account_id)
-        logger.info(f"Starting auto channel sync for M3U account {account.name}")
-
-        # Always use scan_start_time as the cutoff for last_seen
-        if scan_start_time is not None:
-            if isinstance(scan_start_time, str):
-                scan_start_time = timezone.datetime.fromisoformat(scan_start_time)
-        else:
-            scan_start_time = timezone.now()
-
-        # Get groups with auto sync enabled for this account
-        auto_sync_groups = ChannelGroupM3UAccount.objects.filter(
-            m3u_account=account, enabled=True, auto_channel_sync=True
-        ).select_related("channel_group")
-
-        channels_created = 0
-        channels_updated = 0
-        channels_deleted = 0
-        channels_failed = 0
-        # Per-failure context for the completion notification. Each entry
-        # carries a typed ``reason`` so the modal can group counts by
-        # cause; the cap keeps the WebSocket payload bounded but is sized
-        # generously to cover realistic multi-provider failure sets.
-        # Full per-stream detail still goes to ``logger.warning`` for
-        # power-user diagnostics regardless of the cap.
-        failed_stream_details = []
-        FAILURE_LOG_LIMIT = 1000
-
-        # Group range reservations (start+end) are advisory and NOT seeded
-        # here: two groups with overlapping ranges must cooperate, so only
-        # actually-occupied numbers constrain assignment.
-        # Hidden auto-created channels stay in the seed because the renumber
-        # loop iterates current provider streams (which excludes hidden
-        # ones); excluding them here would let sync reclaim their numbers.
-        used_numbers = set(
-            Channel.objects.exclude(
-                auto_created=True,
-                auto_created_by=account,
-                hidden_from_output=False,
-            ).values_list("channel_number", flat=True)
-        )
-        # Override pins are global reservations: effective_channel_number
-        # uses the override, so the picker must treat those numbers as
-        # taken or sync can produce duplicate effective channel numbers.
-        from apps.channels.models import ChannelOverride
-
-        used_numbers.update(
-            ChannelOverride.objects.filter(
-                channel_number__isnull=False
-            ).values_list("channel_number", flat=True)
-        )
-        used_numbers.discard(None)
-
-        for group_relation in auto_sync_groups:
-            channel_group = group_relation.channel_group
-            start_number = group_relation.auto_sync_channel_start or 1.0
-            # Optional upper bound; _next_available_number returns None when
-            # exhausted, which the per-stream loop converts to a failure.
-            end_number = group_relation.auto_sync_channel_end
-
-            # Get force_dummy_epg, group_override, and regex patterns from group custom_properties
-            group_custom_props = {}
-            force_dummy_epg = False  # Backward compatibility: legacy option to disable EPG
-            override_group_id = None
-            name_regex_pattern = None
-            name_replace_pattern = None
-            name_match_regex = None
-            name_match_exclude_regex = None
-            channel_profile_ids = None
-            channel_sort_order = None
-            channel_sort_reverse = False
-            stream_profile_id = None
-            custom_logo_id = None
-            custom_epg_id = None  # New option: select specific EPG source (takes priority over force_dummy_epg)
-            channel_numbering_mode = "fixed"  # Default mode
-            channel_numbering_fallback = 1  # Default fallback for provider mode
-            group_custom_props = _custom_properties_as_dict(
-                group_relation.custom_properties
-            )
-            if group_custom_props:
-                force_dummy_epg = group_custom_props.get("force_dummy_epg", False)
-                override_group_id = group_custom_props.get("group_override")
-                name_regex_pattern = group_custom_props.get("name_regex_pattern")
-                name_replace_pattern = group_custom_props.get(
-                    "name_replace_pattern"
-                )
-                name_match_regex = group_custom_props.get("name_match_regex")
-                name_match_exclude_regex = group_custom_props.get(
-                    "name_match_exclude_regex"
-                )
-                channel_profile_ids = group_custom_props.get("channel_profile_ids")
-                custom_epg_id = group_custom_props.get("custom_epg_id")
-                channel_sort_order = group_custom_props.get("channel_sort_order")
-                channel_sort_reverse = group_custom_props.get(
-                    "channel_sort_reverse", False
-                )
-                stream_profile_id = group_custom_props.get("stream_profile_id")
-                custom_logo_id = group_custom_props.get("custom_logo_id")
-                channel_numbering_mode = group_custom_props.get("channel_numbering_mode", "fixed")
-                channel_numbering_fallback = group_custom_props.get("channel_numbering_fallback", 1)
-
-            # Determine which group to use for created channels
-            target_group = channel_group
-            if override_group_id:
-                try:
-                    target_group = ChannelGroup.objects.get(id=override_group_id)
-                    logger.info(
-                        f"Using override group '{target_group.name}' instead of '{channel_group.name}' for auto-created channels"
-                    )
-                except ChannelGroup.DoesNotExist:
-                    logger.warning(
-                        f"Override group with ID {override_group_id} not found, using original group '{channel_group.name}'"
-                    )
-
-            logger.info(
-                f"Processing auto sync for group: {channel_group.name} (mode: {channel_numbering_mode}, start: {start_number})"
-            )
-
-            # Get all current streams in this group for this M3U account, filter out stale streams
-            current_streams = Stream.objects.filter(
-                m3u_account=account,
-                channel_group=channel_group,
-                last_seen__gte=scan_start_time,
-            )
-
-            # Filter streams in Python using the same `regex` module as the
-            # preview API. This ensures auto-sync accepts the same patterns
-            # the user tested in the frontend (e.g. `(?)` as a no-op inline
-            # modifier), and avoids passing potentially incompatible syntax
-            # to PostgreSQL's regex engine.
-            streams_is_list = False
-            if name_match_regex:
-                try:
-                    match_re = regex.compile(name_match_regex, regex.IGNORECASE)
-                    current_streams = [s for s in current_streams if match_re.search(s.name)]
-                    streams_is_list = True
-                except regex.error as e:
-                    logger.warning(
-                        f"Invalid name_match_regex '{name_match_regex}' for group '{channel_group.name}': {e}. Skipping name filter."
-                    )
-
-            # Exclude regex runs after the include filter so the two
-            # compose: include narrows, exclude removes from what's left.
-            if name_match_exclude_regex:
-                try:
-                    exclude_re = regex.compile(name_match_exclude_regex, regex.IGNORECASE)
-                    current_streams = [s for s in current_streams if not exclude_re.search(s.name)]
-                    streams_is_list = True
-                except regex.error as e:
-                    logger.warning(
-                        f"Invalid name_match_exclude_regex '{name_match_exclude_regex}' for group '{channel_group.name}': {e}. Skipping exclude filter."
-                    )
-
-            # --- APPLY CHANNEL SORT ORDER ---
-            if channel_sort_order and channel_sort_order != "":
-                if channel_sort_order == "name":
-                    if not streams_is_list:
-                        current_streams = list(current_streams)
-                        streams_is_list = True
-                    current_streams.sort(
-                        key=lambda stream: natural_sort_key(stream.name),
-                        reverse=channel_sort_reverse,
-                    )
-                elif channel_sort_order == "tvg_id":
-                    if streams_is_list:
-                        current_streams.sort(
-                            key=lambda s: (s.tvg_id or ""),
-                            reverse=channel_sort_reverse,
-                        )
-                    else:
-                        order_prefix = "-" if channel_sort_reverse else ""
-                        current_streams = current_streams.order_by(f"{order_prefix}tvg_id")
-                elif channel_sort_order == "updated_at":
-                    if streams_is_list:
-                        current_streams.sort(
-                            key=lambda s: (s.updated_at or ""),
-                            reverse=channel_sort_reverse,
-                        )
-                    else:
-                        order_prefix = "-" if channel_sort_reverse else ""
-                        current_streams = current_streams.order_by(
-                            f"{order_prefix}updated_at"
-                        )
-                else:
-                    logger.warning(
-                        f"Unknown channel_sort_order '{channel_sort_order}' for group '{channel_group.name}'. Using provider order."
-                    )
-                    if streams_is_list:
-                        current_streams.sort(
-                            key=lambda s: s.id,
-                            reverse=channel_sort_reverse,
-                        )
-                    else:
-                        order_prefix = "-" if channel_sort_reverse else ""
-                        current_streams = current_streams.order_by(f"{order_prefix}id")
-            else:
-                # Provider order (default) - can still be reversed
-                if streams_is_list:
-                    current_streams.sort(
-                        key=lambda s: s.id,
-                        reverse=channel_sort_reverse,
-                    )
-                else:
-                    order_prefix = "-" if channel_sort_reverse else ""
-                    current_streams = current_streams.order_by(f"{order_prefix}id")
-
-            # Scoped to this group so the loop below runs in O(group size).
-            # Multi-stream channels are deduped by channel_id so every
-            # stream_id maps to the same in-memory Channel instance and
-            # post-loop bulk_update writes the merged state.
-            existing_channel_map = {}
-            existing_channels_by_id = {}
-            existing_channel_streams = (
-                ChannelStream.objects.filter(
-                    channel__auto_created=True,
-                    channel__auto_created_by=account,
-                    stream__m3u_account=account,
-                    stream__channel_group=channel_group,
-                )
-                .select_related("channel")
-            )
-            for cs in existing_channel_streams:
-                if cs.stream_id and cs.channel_id:
-                    canonical = existing_channels_by_id.setdefault(
-                        cs.channel_id, cs.channel
-                    )
-                    existing_channel_map[cs.stream_id] = canonical
-
-            # Track which streams we've processed
-            processed_stream_ids = set()
-
-            # Check if we have streams - handle both QuerySet and list cases
-            has_streams = (
-                len(current_streams) > 0
-                if streams_is_list
-                else current_streams.exists()
-            )
-
-            # Bulk pre-fetch collapses N+1 Logo/EPGData lookups into a
-            # pair of in_bulk() calls.
-            from apps.channels.models import Logo
-            from apps.epg.models import EPGSource
-
-            # Resolve the group's custom EPG source once.
-            custom_epg_source = None
-            custom_dummy_epg_data = None
-            if custom_epg_id:
-                try:
-                    custom_epg_source = EPGSource.objects.get(id=custom_epg_id)
-                    if custom_epg_source.source_type == "dummy":
-                        custom_dummy_epg_data = (
-                            EPGData.objects.filter(
-                                epg_source=custom_epg_source
-                            ).first()
-                        )
-                        if not custom_dummy_epg_data:
-                            logger.warning(
-                                f"No EPGData found for dummy EPG source "
-                                f"{custom_epg_source.name} (ID: {custom_epg_id})"
-                            )
-                except EPGSource.DoesNotExist:
-                    logger.warning(
-                        f"Custom EPG source with ID {custom_epg_id} not found "
-                        f"for group '{channel_group.name}', falling back to "
-                        f"auto-match"
-                    )
-
-            # Resolve the group's custom logo once.
-            custom_logo = None
-            if custom_logo_id:
-                try:
-                    custom_logo = Logo.objects.get(id=custom_logo_id)
-                except Logo.DoesNotExist:
-                    logger.warning(
-                        f"Custom logo with ID {custom_logo_id} not found for "
-                        f"group '{channel_group.name}', falling back to stream "
-                        f"logos"
-                    )
-
-            logo_cache_by_url = {}
-            epg_cache_by_tvg_id = {}
-            if has_streams:
-                # Collect unique URLs / tvg_ids in one DB call each.
-                stream_iter = (
-                    current_streams
-                    if streams_is_list
-                    else list(current_streams.values("logo_url", "tvg_id"))
-                )
-                unique_logo_urls = {
-                    s.get("logo_url") if isinstance(s, dict) else getattr(s, "logo_url", None)
-                    for s in stream_iter
-                }
-                unique_logo_urls.discard(None)
-                unique_logo_urls.discard("")
-                if unique_logo_urls:
-                    logo_cache_by_url = {
-                        lg.url: lg
-                        for lg in Logo.objects.filter(url__in=unique_logo_urls)
-                    }
-
-                unique_tvg_ids = {
-                    s.get("tvg_id") if isinstance(s, dict) else getattr(s, "tvg_id", None)
-                    for s in stream_iter
-                }
-                unique_tvg_ids.discard(None)
-                unique_tvg_ids.discard("")
-                # Skip the EPG cache when force_dummy_epg with no
-                # custom source override; the resolver always returns None.
-                want_epg_cache = unique_tvg_ids and (
-                    not force_dummy_epg or custom_epg_id
-                )
-                if want_epg_cache:
-                    # Scope to the group's pinned source so foreign-source
-                    # tvg_id matches do not leak in.
-                    epg_q = EPGData.objects.filter(tvg_id__in=unique_tvg_ids)
-                    if (
-                        custom_epg_source is not None
-                        and custom_epg_source.source_type != "dummy"
-                    ):
-                        epg_q = epg_q.filter(epg_source=custom_epg_source)
-                    epg_cache_by_tvg_id = {d.tvg_id: d for d in epg_q}
-
-            def _resolve_logo_for_stream(stream):
-                """Return a Logo for stream.logo_url, creating it once if needed."""
-                url = getattr(stream, "logo_url", None)
-                if not url:
-                    return None
-                cached = logo_cache_by_url.get(url)
-                if cached is not None:
-                    return cached
-                created, _ = Logo.objects.get_or_create(
-                    url=url,
-                    defaults={"name": stream.name or stream.tvg_id or "Unknown"},
-                )
-                logo_cache_by_url[url] = created
-                return created
-
-            def _resolve_epg_for_stream(stream):
-                """Return the EPGData row that should be assigned to this
-                stream's channel. Encodes all four group-level EPG modes:
-
-                  1. custom dummy source:           single shared EPGData
-                  2. custom non-dummy source:       cache lookup, scoped to
-                                                    that source
-                  3. force_dummy_epg with no custom: None (clear EPG)
-                  4. default auto-match:            cache lookup, any source
-
-                The cache (epg_cache_by_tvg_id) is built once above with the
-                correct scope so the per-stream lookup is a dict access.
-                """
-                if custom_epg_source is not None:
-                    if custom_epg_source.source_type == "dummy":
-                        return custom_dummy_epg_data
-                    tvg_id = getattr(stream, "tvg_id", None)
-                    if not tvg_id:
-                        return None
-                    return epg_cache_by_tvg_id.get(tvg_id)
-                if force_dummy_epg:
-                    return None
-                tvg_id = getattr(stream, "tvg_id", None)
-                if not tvg_id:
-                    return None
-                return epg_cache_by_tvg_id.get(tvg_id)
-
-            if not has_streams:
-                logger.debug(f"No streams found in group {channel_group.name}")
-                # No streams left in the group: drop the visible auto
-                # channels. Hidden channels are preserved so the hide
-                # flag survives temporary provider drops (event/PPV).
-                channels_to_delete = [
-                    ch
-                    for ch in existing_channel_map.values()
-                    if not ch.hidden_from_output
-                ]
-                if channels_to_delete:
-                    deleted_count = len(channels_to_delete)
-                    Channel.objects.filter(
-                        id__in=[ch.id for ch in channels_to_delete]
-                    ).delete()
-                    channels_deleted += deleted_count
-                    logger.debug(
-                        f"Deleted {deleted_count} auto channels (no streams remaining)"
-                    )
-                continue
-
-            # Prepare profiles to assign to new channels
-            from apps.channels.models import ChannelProfile, ChannelProfileMembership
-
-            if (
-                channel_profile_ids
-                and isinstance(channel_profile_ids, list)
-                and len(channel_profile_ids) > 0
-            ):
-                # Convert all to int (in case they're strings)
-                try:
-                    profile_ids = [int(pid) for pid in channel_profile_ids]
-                except Exception:
-                    profile_ids = []
-                profiles_to_assign = list(
-                    ChannelProfile.objects.filter(id__in=profile_ids)
-                )
-            else:
-                profiles_to_assign = list(ChannelProfile.objects.all())
-
-            # Get stream profile to assign if specified
-            from core.models import StreamProfile
-            stream_profile_to_assign = None
-            if stream_profile_id:
-                try:
-                    stream_profile_to_assign = StreamProfile.objects.get(id=int(stream_profile_id))
-                    logger.info(
-                        f"Will assign stream profile '{stream_profile_to_assign.name}' to auto-synced streams in group '{channel_group.name}'"
-                    )
-                except (StreamProfile.DoesNotExist, ValueError, TypeError):
-                    logger.warning(
-                        f"Stream profile with ID {stream_profile_id} not found for group '{channel_group.name}', streams will use default profile"
-                    )
-                    stream_profile_to_assign = None
-
-            current_channel_number = start_number
-
-            # Renumber existing channels to match sort order. Compact
-            # mode skips this; the end-of-iteration pack is the source
-            # of truth and would overwrite the renumber.
-            compact_mode = bool(group_custom_props.get("compact_numbering"))
-            channels_to_renumber = []
-            temp_channel_number = start_number
-
-            for stream in current_streams if not compact_mode else []:
-                if stream.id in existing_channel_map:
-                    channel = existing_channel_map[stream.id]
-
-                    target_number = _pick_target_number(
-                        channel_numbering_mode,
-                        stream,
-                        used_numbers,
-                        temp_channel_number,
-                        channel_numbering_fallback,
-                        end_number=end_number,
-                        range_start=start_number,
-                    )
-
-                    # Range exhausted: leave the channel at its existing
-                    # number. The renumber pass is sort-optimization only;
-                    # no failure record needed.
-                    if target_number is None:
-                        # Preserve the channel's current number in used_numbers
-                        if channel.channel_number is not None:
-                            used_numbers.add(channel.channel_number)
-                        continue
-
-                    # Add this number to used_numbers so we don't reuse it in this batch
-                    used_numbers.add(target_number)
-
-                    if channel.channel_number != target_number:
-                        channel.channel_number = target_number
-                        channels_to_renumber.append(channel)
-                        logger.debug(
-                            f"Will renumber channel '{channel.name}' to {target_number}"
-                        )
-
-                    # Only increment temp_channel_number in fixed mode
-                    if channel_numbering_mode == "fixed":
-                        temp_channel_number += 1.0
-                        if temp_channel_number % 1 != 0:  # Has decimal
-                            temp_channel_number = int(temp_channel_number) + 1.0
-
-            # Bulk update channel numbers if any need renumbering
-            if channels_to_renumber:
-                Channel.objects.bulk_update(
-                    channels_to_renumber, ["channel_number"], batch_size=500
-                )
-                logger.info(
-                    f"Renumbered {len(channels_to_renumber)} channels to maintain sort order"
-                )
-
-            # When the group's configured range is narrower than its existing
-            # channels span, any non-hidden auto-created channel whose number
-            # falls outside [start, end] gets deleted. The new-channel
-            # creation loop below picks up the freed stream and re-creates
-            # the channel at a slot inside the new range, so the net user
-            # outcome is a renumber, not a failure. Counted in
-            # channels_deleted; the replacement counts in channels_created.
-            # Hidden channels are preserved. Runs BEFORE new-channel creation
-            # so slots freed by the deletions are available to incoming
-            # streams.
-            if end_number is not None:
-                overflow_delete_ids = []
-                for stream_id, ch in list(existing_channel_map.items()):
-                    if ch.hidden_from_output:
-                        continue
-                    num = ch.channel_number
-                    if num is None:
-                        continue
-                    if num < start_number or num > end_number:
-                        overflow_delete_ids.append(ch.id)
-                        existing_channel_map.pop(stream_id, None)
-                        used_numbers.discard(num)
-                if overflow_delete_ids:
-                    deleted = Channel.objects.filter(
-                        id__in=overflow_delete_ids
-                    ).delete()
-                    removed_count = (
-                        deleted[1].get("dispatcharr_channels.Channel", 0)
-                        if isinstance(deleted, tuple) and len(deleted) > 1
-                        else len(overflow_delete_ids)
-                    )
-                    channels_deleted += removed_count
-                    logger.info(
-                        f"Deleted {removed_count} channels outside the "
-                        f"range {int(start_number)}-{int(end_number)} for "
-                        f"group '{channel_group.name}'"
-                    )
-
-            # Reset channel number counter for processing new channels
-            current_channel_number = start_number
-
-            # Per-channel changes are buffered and bulk_update'd once after the
-            # loop. update_fields is set explicitly so post_save signals only
-            # fire for receivers whose tracked field actually changed.
-            existing_dirty_channels = []
-            existing_dirty_ids = set()
-            existing_dirty_field_set = set()
-            # Subset of channels whose epg_data actually changed in this
-            # pass. Used by the dispatcher below to fire the EPG parse
-            # task only for those, not for every channel in
-            # existing_dirty_channels.
-            epg_dirty_channel_ids = set()
-
-            # New channels are buffered and bulk_create'd after the loop.
-            # bulk_create skips post_save, so the EPG parse task is dispatched
-            # once per unique epg_data_id below rather than per channel.
-            # Pairs are (Channel(), Stream) so the post-loop step can attach
-            # ChannelStream rows using the IDs Postgres returns.
-            new_channels_pending = []
-
-            for stream in current_streams:
-                processed_stream_ids.add(stream.id)
-                try:
-                    # Parse custom properties for additional info
-                    stream_custom_props = stream.custom_properties or {}
-                    tvc_guide_stationid = stream_custom_props.get("tvc-guide-stationid")
-
-                    # --- REGEX FIND/REPLACE LOGIC ---
-                    original_name = stream.name
-                    new_name = original_name
-                    if name_regex_pattern is not None:
-                        # If replace is None, treat as empty string (remove match)
-                        replace = (
-                            name_replace_pattern
-                            if name_replace_pattern is not None
-                            else ""
-                        )
-                        try:
-                            # Convert $1, $2, etc. to \1, \2, etc. for consistency with M3U profiles
-                            safe_replace_pattern = re.sub(r'\$(\d+)', r'\\\1', replace)
-                            new_name = re.sub(
-                                name_regex_pattern, safe_replace_pattern, original_name
-                            )
-                        except re.error as e:
-                            logger.warning(
-                                f"Regex error for group '{channel_group.name}': {e}. Using original name."
-                            )
-                            new_name = original_name
-
-                    # Check if we already have a channel for this stream
-                    existing_channel = existing_channel_map.get(stream.id)
-
-                    if existing_channel:
-                        # Track only the fields that actually changed, so the
-                        # eventual UPDATE writes one column per change instead
-                        # of every column on every channel. The dirty list is
-                        # accumulated and bulk_update'd after the loop -
-                        # which avoids issuing an UPDATE per channel and
-                        # avoids firing the EPG post_save signal on saves
-                        # that didn't touch epg_data.
-                        dirty_fields = []
-
-                        if existing_channel.name != new_name:
-                            existing_channel.name = new_name
-                            dirty_fields.append("name")
-
-                        if existing_channel.tvg_id != stream.tvg_id:
-                            existing_channel.tvg_id = stream.tvg_id
-                            dirty_fields.append("tvg_id")
-
-                        if existing_channel.tvc_guide_stationid != tvc_guide_stationid:
-                            existing_channel.tvc_guide_stationid = tvc_guide_stationid
-                            dirty_fields.append("tvc_guide_stationid")
-
-                        # The group override may direct sync to a different
-                        # ChannelGroup than the one currently on the row.
-                        if existing_channel.channel_group_id != target_group.id:
-                            existing_channel.channel_group = target_group
-                            dirty_fields.append("channel_group")
-
-                        # Logo: custom group setting wins; otherwise stream logo
-                        current_logo = (
-                            custom_logo
-                            if custom_logo_id and custom_logo is not None
-                            else _resolve_logo_for_stream(stream)
-                        )
-                        current_logo_id = current_logo.id if current_logo else None
-                        if existing_channel.logo_id != current_logo_id:
-                            existing_channel.logo = current_logo
-                            dirty_fields.append("logo")
-
-                        # EPG: handled centrally by _resolve_epg_for_stream
-                        current_epg_data = _resolve_epg_for_stream(stream)
-                        current_epg_id = (
-                            current_epg_data.id if current_epg_data else None
-                        )
-                        if existing_channel.epg_data_id != current_epg_id:
-                            existing_channel.epg_data = current_epg_data
-                            dirty_fields.append("epg_data")
-                            if current_epg_id is not None:
-                                epg_dirty_channel_ids.add(existing_channel.id)
-
-                        # Stream profile: only set if group has one configured
-                        if (
-                            stream_profile_to_assign is not None
-                            and existing_channel.stream_profile_id
-                            != stream_profile_to_assign.id
-                        ):
-                            existing_channel.stream_profile = stream_profile_to_assign
-                            dirty_fields.append("stream_profile")
-
-                        if dirty_fields:
-                            # Multi-stream channels appear once per stream;
-                            # dedupe by id so bulk_update does not double-fire
-                            # and channels_updated does not double-count.
-                            if existing_channel.id not in existing_dirty_ids:
-                                existing_dirty_channels.append(existing_channel)
-                                existing_dirty_ids.add(existing_channel.id)
-                                channels_updated += 1
-                            existing_dirty_field_set.update(dirty_fields)
-
-                    else:
-                        # Range exhaustion is surfaced to the user via the
-                        # completion notification, not swallowed.
-                        target_number = _pick_target_number(
-                            channel_numbering_mode,
-                            stream,
-                            used_numbers,
-                            current_channel_number,
-                            channel_numbering_fallback,
-                            end_number=end_number,
-                            range_start=start_number,
-                        )
-
-                        if target_number is None:
-                            channels_failed += 1
-                            if len(failed_stream_details) < FAILURE_LOG_LIMIT:
-                                failed_stream_details.append({
-                                    "stream_name": stream.name,
-                                    "stream_id": stream.id,
-                                    "group": channel_group.name,
-                                    "reason": "RANGE_EXHAUSTED",
-                                    "error": (
-                                        f"Channel number range "
-                                        f"{int(start_number)}-{int(end_number)} is full"
-                                    ),
-                                })
-                            processed_stream_ids.add(stream.id)
-                            continue
-
-                        # Add this number to used_numbers
-                        used_numbers.add(target_number)
-
-                        # Resolve every FK BEFORE the create call so the
-                        # initial INSERT carries the complete row.
-                        new_logo = (
-                            custom_logo
-                            if custom_logo_id and custom_logo is not None
-                            else _resolve_logo_for_stream(stream)
-                        )
-                        new_epg_data = _resolve_epg_for_stream(stream)
-
-                        new_channels_pending.append(
-                            (
-                                Channel(
-                                    channel_number=target_number,
-                                    name=new_name,
-                                    tvg_id=stream.tvg_id,
-                                    tvc_guide_stationid=tvc_guide_stationid,
-                                    channel_group=target_group,
-                                    user_level=0,
-                                    auto_created=True,
-                                    auto_created_by=account,
-                                    logo=new_logo,
-                                    epg_data=new_epg_data,
-                                    stream_profile=stream_profile_to_assign,
-                                ),
-                                stream,
-                            )
-                        )
-
-                    # Increment channel number for next iteration (only in fixed mode)
-                    if channel_numbering_mode == "fixed":
-                        current_channel_number += 1.0
-                        if current_channel_number % 1 != 0:  # Has decimal
-                            current_channel_number = int(current_channel_number) + 1.0
-
-                except Exception as e:
-                    logger.error(
-                        f"Error processing auto channel for stream {stream.name}: {str(e)}"
-                    )
-                    channels_failed += 1
-                    if len(failed_stream_details) < FAILURE_LOG_LIMIT:
-                        failed_stream_details.append({
-                            "stream_name": stream.name,
-                            "stream_id": stream.id,
-                            "group": channel_group.name,
-                            "reason": _classify_sync_failure(e),
-                            "error": str(e),
-                        })
-                    continue
-
-            # Bulk-create channels, then dependent rows using the IDs
-            # Postgres returns. bulk_create skips post_save, so the EPG
-            # parse task is dispatched explicitly per-epg_data_id below
-            # to avoid flooding Celery at scale.
-            if new_channels_pending:
-                channel_objs = [pair[0] for pair in new_channels_pending]
-                streams_for_new = [pair[1] for pair in new_channels_pending]
-                Channel.objects.bulk_create(channel_objs, batch_size=500)
-
-                ChannelStream.objects.bulk_create(
-                    [
-                        ChannelStream(
-                            channel_id=channel_objs[i].id,
-                            stream_id=streams_for_new[i].id,
-                            order=0,
-                        )
-                        for i in range(len(channel_objs))
-                    ],
-                    batch_size=500,
-                )
-
-                if profiles_to_assign:
-                    ChannelProfileMembership.objects.bulk_create(
-                        [
-                            ChannelProfileMembership(
-                                channel_id=ch.id,
-                                channel_profile_id=profile.id,
-                                enabled=True,
-                            )
-                            for ch in channel_objs
-                            for profile in profiles_to_assign
-                        ],
-                        ignore_conflicts=True,
-                        batch_size=500,
-                    )
-
-                channels_created += len(channel_objs)
-
-                # One EPG parse task per unique EPGData replaces the
-                # per-channel post_save dispatch bypassed by bulk_create.
-                from apps.epg.tasks import parse_programs_for_tvg_id
-
-                unique_epg_ids = {
-                    ch.epg_data_id for ch in channel_objs if ch.epg_data_id
-                }
-                for epg_id in unique_epg_ids:
-                    parse_programs_for_tvg_id.delay(epg_id)
-
-                logger.debug(
-                    f"Bulk created {len(channel_objs)} channels in group "
-                    f"'{channel_group.name}'; dispatched "
-                    f"{len(unique_epg_ids)} unique EPG parse task(s)"
-                )
-
-            # bulk_update writes only the columns named in `fields` and
-            # bypasses post_save, so the EPG refresh signal cannot fire here.
-            # Dispatch one parse task per unique EPGData id when epg_data was
-            # in the dirty set, mirroring the new-channel path above.
-            if existing_dirty_channels:
-                Channel.objects.bulk_update(
-                    existing_dirty_channels,
-                    fields=list(existing_dirty_field_set),
-                    batch_size=500,
-                )
-                if epg_dirty_channel_ids:
-                    from apps.epg.tasks import parse_programs_for_tvg_id
-
-                    # Dispatch only for channels whose epg_data_id changed.
-                    # Other dirty channels would queue redundant parses.
-                    unique_epg_ids = {
-                        ch.epg_data_id
-                        for ch in existing_dirty_channels
-                        if ch.id in epg_dirty_channel_ids and ch.epg_data_id
-                    }
-                    for epg_id in unique_epg_ids:
-                        parse_programs_for_tvg_id.delay(epg_id)
-                logger.debug(
-                    f"Bulk updated {len(existing_dirty_channels)} existing "
-                    f"channels (fields: {sorted(existing_dirty_field_set)})"
-                )
-
-            # Reconcile ChannelProfileMembership in two writes: one
-            # bulk_update for enable-flips, one bulk_create for missing
-            # rows. Avoids a per-channel save loop.
-            existing_channel_ids = [
-                c.id for c in existing_channel_map.values()
-            ]
-            target_profile_ids = {p.id for p in profiles_to_assign}
-            if existing_channel_ids:
-                membership_rows = list(
-                    ChannelProfileMembership.objects.filter(
-                        channel_id__in=existing_channel_ids
-                    ).only("id", "channel_id", "channel_profile_id", "enabled")
-                )
-                memberships_by_channel = {}
-                for m in membership_rows:
-                    memberships_by_channel.setdefault(m.channel_id, []).append(m)
-
-                rows_to_flip = []
-                rows_to_create = []
-                for ch_id in existing_channel_ids:
-                    rows = memberships_by_channel.get(ch_id, [])
-                    have_for_target = set()
-                    for m in rows:
-                        if m.channel_profile_id in target_profile_ids:
-                            have_for_target.add(m.channel_profile_id)
-                            if not m.enabled:
-                                m.enabled = True
-                                rows_to_flip.append(m)
-                        else:
-                            if m.enabled:
-                                m.enabled = False
-                                rows_to_flip.append(m)
-                    missing = target_profile_ids - have_for_target
-                    for pid in missing:
-                        rows_to_create.append(
-                            ChannelProfileMembership(
-                                channel_id=ch_id,
-                                channel_profile_id=pid,
-                                enabled=True,
-                            )
-                        )
-
-                if rows_to_flip:
-                    ChannelProfileMembership.objects.bulk_update(
-                        rows_to_flip, ["enabled"], batch_size=500
-                    )
-                if rows_to_create:
-                    ChannelProfileMembership.objects.bulk_create(
-                        rows_to_create, ignore_conflicts=True, batch_size=500
-                    )
-                if rows_to_flip or rows_to_create:
-                    logger.debug(
-                        f"Reconciled memberships for "
-                        f"{len(existing_channel_ids)} channels "
-                        f"({len(rows_to_flip)} flipped, "
-                        f"{len(rows_to_create)} created)"
-                    )
-
-            # Delete channels whose streams have all disappeared.
-            # Hidden channels are preserved so event/PPV holds across
-            # provider drops.
-            channel_streams_in_group = {}
-            for stream_id, channel in existing_channel_map.items():
-                channel_streams_in_group.setdefault(channel.id, []).append(
-                    (stream_id, channel)
-                )
-            channels_to_delete = []
-            for ch_id, pairs in channel_streams_in_group.items():
-                channel = pairs[0][1]
-                if channel.hidden_from_output:
-                    continue
-                stream_ids = {sid for sid, _ in pairs}
-                if not (stream_ids & processed_stream_ids):
-                    channels_to_delete.append(channel)
-
-            if channels_to_delete:
-                deleted_count = len(channels_to_delete)
-                Channel.objects.filter(
-                    id__in=[ch.id for ch in channels_to_delete]
-                ).delete()
-                channels_deleted += deleted_count
-                logger.debug(
-                    f"Deleted {deleted_count} auto channels for removed streams"
-                )
-
-            # Compact-mode pack: hidden channels release their number and
-            # visible channels pack contiguously into [start, end]. Runs
-            # after create/update/delete so the channel set is stable.
-            if compact_mode:
-                from apps.channels.compact_numbering import repack_group
-
-                pack_result = repack_group(group_relation)
-                if pack_result["failed"]:
-                    channels_failed += pack_result["failed"]
-                    if (
-                        len(failed_stream_details) < FAILURE_LOG_LIMIT
-                    ):
-                        failed_stream_details.append(
-                            {
-                                "stream_name": None,
-                                "stream_id": None,
-                                "group": channel_group.name,
-                                "reason": "RANGE_EXHAUSTED",
-                                "error": (
-                                    f"Compact pack: {pack_result['failed']} "
-                                    f"visible channel(s) could not fit in range "
-                                    f"{int(start_number)}"
-                                    + (
-                                        f"-{int(end_number)}"
-                                        if end_number
-                                        else "+"
-                                    )
-                                ),
-                            }
-                        )
-                logger.debug(
-                    f"Compact pack for group '{channel_group.name}': "
-                    f"{pack_result['assigned']} assigned, "
-                    f"{pack_result['released']} released, "
-                    f"{pack_result['failed']} failed"
-                )
-
-        # Cleanup mode read from account.custom_properties.orphan_channel_cleanup:
-        # "always" (default; key absent) removes every orphan auto channel;
-        # "preserve_customized" keeps those with a ChannelOverride row;
-        # "never" disables cleanup. Hidden channels are preserved across all
-        # modes so event/PPV channels that come and go are not silently lost.
-        cleanup_mode = (account.custom_properties or {}).get(
-            "orphan_channel_cleanup", "always"
-        )
-        if cleanup_mode != "never":
-            orphaned_channels = Channel.objects.filter(
-                auto_created=True,
-                auto_created_by=account,
-                hidden_from_output=False,
-            ).exclude(
-                id__in=ChannelStream.objects.filter(
-                    stream__m3u_account=account,
-                    stream__isnull=False,
-                ).values_list("channel_id", flat=True)
-            )
-            if cleanup_mode == "preserve_customized":
-                orphaned_channels = orphaned_channels.filter(override__isnull=True)
-
-            _, per_model = orphaned_channels.delete()
-            deleted_channels = per_model.get("dispatcharr_channels.Channel", 0)
-            if deleted_channels:
-                channels_deleted += deleted_channels
-                logger.info(
-                    f"Deleted {deleted_channels} orphaned auto channels with no valid streams (mode={cleanup_mode})"
-                )
-
-        logger.info(
-            f"Auto channel sync complete for account {account.name}: "
-            f"{channels_created} created, {channels_updated} updated, "
-            f"{channels_deleted} deleted, {channels_failed} failed"
-        )
-        return {
-            "status": "ok",
-            "channels_created": channels_created,
-            "channels_updated": channels_updated,
-            "channels_deleted": channels_deleted,
-            "channels_failed": channels_failed,
-            "failed_stream_details": failed_stream_details,
-        }
-
-    except Exception as e:
-        logger.error(f"Error in auto channel sync for account {account_id}: {str(e)}")
-        return {
-            "status": "error",
-            "error": str(e),
-            "channels_created": 0,
-            "channels_updated": 0,
-            "channels_deleted": 0,
-            "channels_failed": 0,
-            "failed_stream_details": [],
-        }
-
-
-def get_transformed_credentials(account, profile=None):
-    """
-    Get transformed credentials for XtreamCodes API calls.
-
-    Args:
-        account: M3UAccount instance
-        profile: M3UAccountProfile instance (optional, if not provided will use primary profile)
-
-    Returns:
-        tuple: (transformed_url, transformed_username, transformed_password)
-    """
-    import re
-    import urllib.parse
-
-    # If no profile is provided, find the primary active profile
-    if profile is None:
-        try:
-            from apps.m3u.models import M3UAccountProfile
-            profile = M3UAccountProfile.objects.filter(
-                m3u_account=account,
-                is_active=True
-            ).first()
-            if profile:
-                logger.debug(f"Using primary profile '{profile.name}' for URL transformation")
-            else:
-                logger.debug(f"No active profiles found for account {account.name}, using base credentials")
-        except Exception as e:
-            logger.warning(f"Could not get primary profile for account {account.name}: {e}")
-            profile = None
-
-    base_url = account.server_url
-    base_username = account.username
-    base_password = account.password    # Build a complete URL with credentials (similar to how IPTV URLs are structured)
-    # Format: http://server.com:port/live/username/password/1234.ts
-    if base_url and base_username and base_password:
-        # Remove trailing slash from server URL if present
-        clean_server_url = base_url.rstrip('/')
-
-        # Build the complete URL with embedded credentials
-        complete_url = f"{clean_server_url}/live/{base_username}/{base_password}/1234.ts"
-        logger.debug(f"Built complete URL: {complete_url}")
-
-        # Apply profile-specific transformations if profile is provided
-        if profile and profile.search_pattern and profile.replace_pattern:
-            try:
-                # Handle backreferences: convert JS-style $<name> -> \g<name>, $1 -> \1
-                # regex module accepts JS-style (?<name>...) named groups natively
-                safe_replace_pattern = regex.sub(r'\$<([^>]+)>', r'\\g<\1>', profile.replace_pattern)
-                safe_replace_pattern = regex.sub(r'\$(\d+)', r'\\\1', safe_replace_pattern)
-
-                # Apply transformation to the complete URL
-                transformed_complete_url = regex.sub(profile.search_pattern, safe_replace_pattern, complete_url)
-                logger.info(f"Transformed complete URL: {complete_url} -> {transformed_complete_url}")
-
-                # Extract components from the transformed URL
-                # Pattern: http://server.com:port/live/username/password/1234.ts
-                parsed_url = urllib.parse.urlparse(transformed_complete_url)
-                path_parts = [part for part in parsed_url.path.split('/') if part]
-
-                if len(path_parts) >= 4 and path_parts[-1] == '1234.ts':
-                    # Extract username and password from the known structure:
-                    # .../{live}/{username}/{password}/1234.ts
-                    # Using negative indices so sub-paths in the server URL don't shift extraction
-                    transformed_username = path_parts[-3]
-                    transformed_password = path_parts[-2]
-
-                    # Rebuild server URL: preserve any sub-path that precedes
-                    # /live/username/password/1234.ts (path_parts[:-4]).
-                    base_path_parts = path_parts[:-4]
-                    base_path = ('/' + '/'.join(base_path_parts)) if base_path_parts else ''
-                    transformed_url = f"{parsed_url.scheme}://{parsed_url.netloc}{base_path}"
-
-                    logger.debug(f"Extracted transformed credentials:")
-                    logger.debug(f"  Server URL: {transformed_url}")
-                    logger.debug(f"  Username: {transformed_username}")
-                    logger.debug(f"  Password: {transformed_password}")
-
-                    return transformed_url, transformed_username, transformed_password
-                else:
-                    logger.warning(f"Could not extract credentials from transformed URL: {transformed_complete_url}")
-                    return base_url, base_username, base_password
-
-            except Exception as e:
-                logger.error(f"Error transforming URL for profile {profile.name if profile else 'unknown'}: {e}")
-                return base_url, base_username, base_password
-        else:
-            # No profile or no transformation patterns
-            return base_url, base_username, base_password
-    else:
-        logger.warning(f"Missing credentials for account {account.name}")
-        return base_url, base_username, base_password
-
-
-@shared_task
-def refresh_account_profiles(account_id):
-    """Refresh account information for all active profiles of an XC account.
-
-    This task runs asynchronously in the background after account refresh completes.
-    It includes rate limiting delays between profile authentications to prevent provider bans.
-    """
-    from django.conf import settings
-    import time
-
-    try:
-        account = M3UAccount.objects.get(id=account_id, is_active=True)
-
-        if account.account_type != M3UAccount.Types.XC:
-            logger.debug(f"Account {account_id} is not XC type, skipping profile refresh")
-            return f"Account {account_id} is not an XtreamCodes account"
-
-        from apps.m3u.models import M3UAccountProfile
-
-        profiles = M3UAccountProfile.objects.filter(
-            m3u_account=account,
-            is_active=True
-        )
-
-        if not profiles.exists():
-            logger.info(f"No active profiles found for account {account.name}")
-            return f"No active profiles for account {account_id}"
-
-        # Get user agent for this account
-        try:
-            user_agent_string = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-            if account.user_agent_id:
-                from core.models import UserAgent
-                ua_obj = UserAgent.objects.get(id=account.user_agent_id)
-                if ua_obj and hasattr(ua_obj, "user_agent") and ua_obj.user_agent:
-                    user_agent_string = ua_obj.user_agent
-        except Exception as e:
-            logger.warning(f"Error getting user agent, using fallback: {str(e)}")
-        logger.debug(f"Using user agent for profile refresh: {user_agent_string}")
-        # Get rate limiting delay from settings
-        profile_delay = getattr(settings, 'XC_PROFILE_REFRESH_DELAY', 2.5)
-
-        profiles_updated = 0
-        profiles_failed = 0
-
-        logger.info(f"Starting background refresh for {profiles.count()} profiles of account {account.name}")
-
-        for idx, profile in enumerate(profiles):
-            try:
-                # Add delay between profiles to prevent rate limiting (except for first profile)
-                if idx > 0:
-                    logger.info(f"Waiting {profile_delay}s before refreshing next profile to avoid rate limiting")
-                    time.sleep(profile_delay)
-
-                # Get transformed credentials for this specific profile
-                profile_url, profile_username, profile_password = get_transformed_credentials(account, profile)
-
-                # Create a separate XC client for this profile's credentials
-                with XCClient(
-                    profile_url,
-                    profile_username,
-                    profile_password,
-                    user_agent_string
-                ) as profile_client:
-                    # Authenticate with this profile's credentials
-                    if profile_client.authenticate():
-                        # Get account information specific to this profile's credentials
-                        profile_account_info = profile_client.get_account_info()
-
-                        # Merge with existing custom_properties if they exist
-                        existing_props = profile.custom_properties or {}
-                        existing_props.update(profile_account_info)
-                        profile.custom_properties = existing_props
-                        profile.save(update_fields=['custom_properties', 'exp_date'])
-
-                        profiles_updated += 1
-                        logger.info(f"Updated account information for profile '{profile.name}' ({profiles_updated}/{profiles.count()})")
-                    else:
-                        profiles_failed += 1
-                        logger.warning(f"Failed to authenticate profile '{profile.name}' with transformed credentials")
-
-            except Exception as profile_error:
-                profiles_failed += 1
-                logger.error(f"Failed to update account information for profile '{profile.name}': {str(profile_error)}")
-                # Continue with other profiles even if one fails
-
-        result_msg = f"Profile refresh complete for account {account.name}: {profiles_updated} updated, {profiles_failed} failed"
-        logger.info(result_msg)
-        return result_msg
-
-    except M3UAccount.DoesNotExist:
-        error_msg = f"Account {account_id} not found"
-        logger.error(error_msg)
-        return error_msg
-    except Exception as e:
-        error_msg = f"Error refreshing profiles for account {account_id}: {str(e)}"
-        logger.error(error_msg)
-        return error_msg
-
-
-@shared_task
-def refresh_account_info(profile_id):
-    """Refresh only the account information for a specific M3U profile."""
-    if not acquire_task_lock("refresh_account_info", profile_id):
-        return f"Account info refresh task already running for profile_id={profile_id}."
-
-    try:
-        from apps.m3u.models import M3UAccountProfile
-        import re
-
-        profile = M3UAccountProfile.objects.get(id=profile_id)
-        account = profile.m3u_account
-
-        if account.account_type != M3UAccount.Types.XC:
-            release_task_lock("refresh_account_info", profile_id)
-            return f"Profile {profile_id} belongs to account {account.id} which is not an XtreamCodes account."
-
-        # Get transformed credentials using the helper function
-        transformed_url, transformed_username, transformed_password = get_transformed_credentials(account, profile)
-
-        # Initialize XtreamCodes client with extracted/transformed credentials
-        client = XCClient(
-            transformed_url,
-            transformed_username,
-            transformed_password,
-            account.get_user_agent(),
-        )        # Authenticate and get account info
-        auth_result = client.authenticate()
-        if not auth_result:
-            error_msg = f"Authentication failed for profile {profile.name} ({profile_id})"
-            logger.error(error_msg)
-
-            # Send error notification to frontend via websocket
-            send_websocket_update(
-                "updates",
-                "update",
-                {
-                    "type": "account_info_refresh_error",
-                    "profile_id": profile_id,
-                    "profile_name": profile.name,
-                    "error": "Authentication failed with the provided credentials",
-                    "message": f"Failed to authenticate profile '{profile.name}'. Please check the credentials."
-                }
-            )
-
-            release_task_lock("refresh_account_info", profile_id)
-            return error_msg
-
-        # Get account information
-        account_info = client.get_account_info()
-
-        # Update only this specific profile with the new account info
-        if not profile.custom_properties:
-            profile.custom_properties = {}
-        profile.custom_properties.update(account_info)
-        profile.save()
-
-        # Send success notification to frontend via websocket
-        send_websocket_update(
-            "updates",
-            "update",
-            {
-                "type": "account_info_refresh_success",
-                "profile_id": profile_id,
-                "profile_name": profile.name,
-                "message": f"Account information successfully refreshed for profile '{profile.name}'"
-            }
-        )
-
-        release_task_lock("refresh_account_info", profile_id)
-        return f"Account info refresh completed for profile {profile_id} ({profile.name})."
-
-    except M3UAccountProfile.DoesNotExist:
-        error_msg = f"Profile {profile_id} not found"
-        logger.error(error_msg)
-
-        send_websocket_update(
-            "updates",
-            "update",
-            {
-                "type": "account_refresh_error",
-                "profile_id": profile_id,
-                "error": "Profile not found",
-                "message": f"Profile {profile_id} not found"
-            }
-        )
-
-        release_task_lock("refresh_account_info", profile_id)
-        return error_msg
-    except Exception as e:
-        error_msg = f"Error refreshing account info for profile {profile_id}: {str(e)}"
-        logger.error(error_msg)
-
-        send_websocket_update(
-            "updates",
-            "update",
-            {
-                "type": "account_refresh_error",
-                "profile_id": profile_id,
-                "error": str(e),
-                "message": f"Failed to refresh account info: {str(e)}"
-            }
-        )
-
-        release_task_lock("refresh_account_info", profile_id)
-        return error_msg
-@shared_task(time_limit=3600, soft_time_limit=3500)
-def refresh_single_m3u_account(account_id):
-    """Splits M3U processing into chunks and dispatches them as parallel tasks."""
-    if not acquire_task_lock("refresh_single_m3u_account", account_id):
-        return f"Task already running for account_id={account_id}."
-
-    # Keep the lock alive while this long-running task is working.
-    # Without renewal, the 300s lock TTL can expire during large
-    # downloads/parses, allowing duplicate tasks to start.
-    lock_renewer = TaskLockRenewer("refresh_single_m3u_account", account_id)
+def refresh_all_epg_data():
+    logger.info("Starting refresh_epg_data task.")
+    # Exclude dummy EPG sources from refresh - they don't need refreshing
+    active_sources = EPGSource.objects.filter(is_active=True).exclude(source_type='dummy')
+    logger.debug(f"Found {active_sources.count()} active EPGSource(s) (excluding dummy EPGs).")
+
+    for source in active_sources:
+        refresh_epg_data(source.id)
+        # Force garbage collection between sources
+        gc.collect()
+
+    logger.info("Finished refresh_epg_data task.")
+    return "EPG data refreshed."
+
+
+@shared_task(time_limit=14400)
+def refresh_epg_data(source_id, force=False):
+    if not acquire_task_lock('refresh_epg_data', source_id):
+        logger.debug(f"EPG refresh for {source_id} already running")
+        return
+
+    lock_renewer = TaskLockRenewer('refresh_epg_data', source_id)
     lock_renewer.start()
 
+    source = None
     try:
-        return _refresh_single_m3u_account_impl(account_id)
-    finally:
-        # Guaranteed cleanup on all exit paths (success, exception, early return)
-        lock_renewer.stop()
-        release_task_lock("refresh_single_m3u_account", account_id)
+        # Try to get the EPG source
+        try:
+            source = EPGSource.objects.get(id=source_id)
+        except EPGSource.DoesNotExist:
+            # The EPG source doesn't exist, so delete the periodic task if it exists
+            logger.warning(f"EPG source with ID {source_id} not found, but task was triggered. Cleaning up orphaned task.")
 
+            # Call the shared function to delete the task
+            if delete_epg_refresh_task_by_id(source_id):
+                logger.info(f"Successfully cleaned up orphaned task for EPG source {source_id}")
+            else:
+                logger.info(f"No orphaned task found for EPG source {source_id}")
 
-def _refresh_single_m3u_account_impl(account_id):
-    """Implementation of M3U account refresh with guaranteed memory cleanup."""
-    # Record start time
-    refresh_start_timestamp = timezone.now()  # For the cleanup function
-    start_time = time.time()  # For tracking elapsed time as float
-    streams_created = 0
-    streams_updated = 0
-    streams_deleted = 0
+            # Release the lock and exit
+            lock_renewer.stop()
+            release_task_lock('refresh_epg_data', source_id)
+            # Force garbage collection before exit
+            gc.collect()
+            return f"EPG source {source_id} does not exist, task cleaned up"
 
-    try:
-        account = M3UAccount.objects.get(id=account_id, is_active=True)
-        if not account.is_active:
-            logger.debug(f"Account {account_id} is not active, skipping.")
+        # The source exists but is not active, just skip processing
+        if not source.is_active:
+            logger.info(f"EPG source {source_id} is not active. Skipping.")
+            lock_renewer.stop()
+            release_task_lock('refresh_epg_data', source_id)
+            # Force garbage collection before exit
+            gc.collect()
             return
 
-        # Set status to fetching
-        account.status = M3UAccount.Status.FETCHING
-        account.save(update_fields=['status'])
+        # Skip refresh for dummy EPG sources - they don't need refreshing
+        if source.source_type == 'dummy':
+            logger.info(f"Skipping refresh for dummy EPG source {source.name} (ID: {source_id})")
+            lock_renewer.stop()
+            release_task_lock('refresh_epg_data', source_id)
+            gc.collect()
+            return
 
-        filters = list(account.filters.all())
+        # Continue with the normal processing...
+        logger.info(f"Processing EPGSource: {source.name} (type: {source.source_type})")
+        if source.source_type == 'xmltv':
+            fetch_success = fetch_xmltv(source)
+            if not fetch_success:
+                logger.error(f"Failed to fetch XMLTV for source {source.name}")
+                lock_renewer.stop()
+                release_task_lock('refresh_epg_data', source_id)
+                # Force garbage collection before exit
+                gc.collect()
+                return
 
-        # Check if VOD is enabled for this account
-        vod_enabled = False
-        if account.custom_properties:
-            custom_props = account.custom_properties or {}
-            vod_enabled = custom_props.get('enable_vod', False)
+            parse_channels_success = parse_channels_only(source)
+            if not parse_channels_success:
+                logger.error(f"Failed to parse channels for source {source.name}")
+                lock_renewer.stop()
+                release_task_lock('refresh_epg_data', source_id)
+                # Force garbage collection before exit
+                gc.collect()
+                return
 
-    except M3UAccount.DoesNotExist:
-        # The M3U account doesn't exist, so delete the periodic task if it exists
-        logger.warning(
-            f"M3U account with ID {account_id} not found, but task was triggered. Cleaning up orphaned task."
-        )
+            parse_programs_for_source(source)
 
-        # Call the helper function to delete the task
-        if delete_m3u_refresh_task_by_id(account_id):
-            logger.info(
-                f"Successfully cleaned up orphaned task for M3U account {account_id}"
-            )
-        else:
-            logger.debug(f"No orphaned task found for M3U account {account_id}")
+        elif source.source_type == 'schedules_direct':
+            fetch_schedules_direct(source, force=force)
 
-        return f"M3UAccount with ID={account_id} not found or inactive, task cleaned up"
-
-    # Fetch M3U lines and handle potential issues
-    extinf_data = []
-    groups = None
-
-    cache_path = os.path.join(m3u_dir, f"{account_id}.json")
-    if os.path.exists(cache_path):
+        source.save(update_fields=['updated_at'])
+        # After successful EPG refresh, evaluate DVR series rules to schedule new episodes
         try:
-            with open(cache_path, "r") as file:
-                data = json.load(file)
-
-            extinf_data = data["extinf_data"]
-            groups = data["groups"]
-            del data  # Free top-level dict; extinf_data/groups retain their references
-        except json.JSONDecodeError as e:
-            # Handle corrupted JSON file
-            logger.error(
-                f"Error parsing cached M3U data for account {account_id}: {str(e)}"
-            )
-
-            # Backup the corrupted file for potential analysis
-            backup_path = f"{cache_path}.corrupted"
-            try:
-                os.rename(cache_path, backup_path)
-                logger.info(f"Renamed corrupted cache file to {backup_path}")
-            except OSError as rename_err:
-                logger.warning(
-                    f"Failed to rename corrupted cache file: {str(rename_err)}"
-                )
-
-            # Reset the data to empty structures
-            extinf_data = []
-            groups = None
-        except Exception as e:
-            logger.error(f"Unexpected error reading cached M3U data: {str(e)}")
-            extinf_data = []
-            groups = None
-
-    if not extinf_data:
+            from apps.channels.tasks import evaluate_series_rules
+            evaluate_series_rules.delay()
+        except Exception:
+            pass
+    except Exception as e:
+        logger.error(f"Error in refresh_epg_data for source {source_id}: {e}", exc_info=True)
         try:
-            logger.info(f"Calling refresh_m3u_groups for account {account_id}")
-            result = refresh_m3u_groups(account_id, full_refresh=True, scan_start_time=refresh_start_timestamp)
-            logger.trace(f"refresh_m3u_groups result: {result}")
+            if source:
+                source.status = 'error'
+                source.last_message = f"Error refreshing EPG data: {str(e)}"
+                source.save(update_fields=['status', 'last_message'])
+                send_epg_update(source_id, "refresh", 100, status="error", error=str(e))
+        except Exception as inner_e:
+            logger.error(f"Error updating source status: {inner_e}")
+    finally:
+        # Clear references to ensure proper garbage collection
+        source = None
+        # Force garbage collection before releasing the lock
+        gc.collect()
+        lock_renewer.stop()
+        release_task_lock('refresh_epg_data', source_id)
 
-            # Check for completely empty result or missing groups
-            if not result or result[1] is None:
-                logger.error(
-                    f"Failed to refresh M3U groups for account {account_id}: {result}"
-                )
-                return "Failed to update m3u account - download failed or other error"
 
-            extinf_data, groups = result
+def fetch_xmltv(source):
+    # Handle cases with local file but no URL
+    if not source.url and source.file_path and os.path.exists(source.file_path):
+        logger.info(f"Using existing local file for EPG source: {source.name} at {source.file_path}")
 
-            # XC accounts can have empty extinf_data but valid groups
+        # Check if the existing file is compressed and we need to extract it
+        if source.file_path.endswith(('.gz', '.zip')) and not source.file_path.endswith('.xml'):
             try:
-                account = M3UAccount.objects.get(id=account_id)
-                is_xc_account = account.account_type == M3UAccount.Types.XC
-            except M3UAccount.DoesNotExist:
-                is_xc_account = False
+                # Define the path for the extracted file in the cache directory
+                cache_dir = os.path.join(settings.MEDIA_ROOT, "cached_epg")
+                os.makedirs(cache_dir, exist_ok=True)
+                xml_path = os.path.join(cache_dir, f"{source.id}.xml")
 
-            # For XC accounts, empty extinf_data is normal at this stage
-            if not extinf_data and not is_xc_account:
-                logger.error(f"No streams found for non-XC account {account_id}")
-                account.status = M3UAccount.Status.ERROR
-                account.last_message = "No streams found in M3U source"
-                account.save(update_fields=["status", "last_message"])
-                send_m3u_update(
-                    account_id, "parsing", 100, status="error", error="No streams found"
+                # Extract to the cache location keeping the original
+                extracted_path = extract_compressed_file(source.file_path, xml_path, delete_original=False)
+
+                if extracted_path:
+                    logger.info(f"Extracted mapped compressed file to: {extracted_path}")
+                    # Update to use extracted_file_path instead of changing file_path
+                    source.extracted_file_path = extracted_path
+                    source.save(update_fields=['extracted_file_path'])
+                else:
+                    logger.error(f"Failed to extract mapped compressed file. Using original file: {source.file_path}")
+            except Exception as e:
+                logger.error(f"Failed to extract existing compressed file: {e}")
+                # Continue with the original file if extraction fails
+
+        # Set the status to success in the database
+        source.status = 'success'
+        source.save(update_fields=['status'])
+
+        # Send a download complete notification
+        send_epg_update(source.id, "downloading", 100, status="success")
+
+        # Return True to indicate successful fetch, processing will continue with parse_channels_only
+        return True
+
+    # Handle cases where no URL is provided and no valid file path exists
+    if not source.url:
+        # Update source status for missing URL
+        source.status = 'error'
+        source.last_message = "No URL provided and no valid local file exists"
+        source.save(update_fields=['status', 'last_message'])
+        send_epg_update(source.id, "downloading", 100, status="error", error="No URL provided and no valid local file exists")
+        return False
+
+    logger.info(f"Fetching XMLTV data from source: {source.name}")
+    try:
+        # Get default user agent from settings
+        stream_settings = CoreSettings.get_stream_settings()
+        user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:138.0) Gecko/20100101 Firefox/138.0"  # Fallback default
+        default_user_agent_id = stream_settings.get('default_user_agent')
+        if default_user_agent_id:
+            try:
+                user_agent_obj = UserAgent.objects.filter(id=int(default_user_agent_id)).first()
+                if user_agent_obj and user_agent_obj.user_agent:
+                    user_agent = user_agent_obj.user_agent
+                    logger.debug(f"Using default user agent: {user_agent}")
+            except (ValueError, Exception) as e:
+                logger.warning(f"Error retrieving default user agent, using fallback: {e}")
+
+        headers = {
+            'User-Agent': user_agent
+        }
+
+        # Update status to fetching before starting download
+        source.status = 'fetching'
+        source.save(update_fields=['status'])
+
+        # Send initial download notification
+        send_epg_update(source.id, "downloading", 0)
+
+        # Use streaming response to track download progress
+        with requests.get(source.url, headers=headers, stream=True, timeout=60) as response:
+            # Handle 404 specifically
+            if response.status_code == 404:
+                logger.error(f"EPG URL not found (404): {source.url}")
+                # Update status to error in the database
+                source.status = 'error'
+                source.last_message = f"EPG source '{source.name}' returned 404 error - will retry on next scheduled run"
+                source.save(update_fields=['status', 'last_message'])
+
+                # Notify users through the WebSocket about the EPG fetch failure
+                channel_layer = get_channel_layer()
+                async_to_sync(channel_layer.group_send)(
+                    'updates',
+                    {
+                        'type': 'update',
+                        'data': {
+                            "success": False,
+                            "type": "epg_fetch_error",
+                            "source_id": source.id,
+                            "source_name": source.name,
+                            "error_code": 404,
+                            "message": f"EPG source '{source.name}' returned 404 error - will retry on next scheduled run"
+                        }
+                    }
                 )
-        except Exception as e:
-            logger.error(f"Exception in refresh_m3u_groups: {str(e)}", exc_info=True)
-            account.status = M3UAccount.Status.ERROR
-            account.last_message = f"Error refreshing M3U groups: {str(e)}"
-            account.save(update_fields=["status", "last_message"])
-            send_m3u_update(
-                account_id,
-                "parsing",
-                100,
-                status="error",
-                error=f"Error refreshing M3U groups: {str(e)}",
-            )
-            return "Failed to update m3u account"
+                # Ensure we update the download progress to 100 with error status
+                send_epg_update(source.id, "downloading", 100, status="error", error="URL not found (404)")
+                return False
 
-    # Only proceed with parsing if we actually have data and no errors were encountered
-    # Get account type to handle XC accounts differently
-    try:
-        is_xc_account = account.account_type == M3UAccount.Types.XC
-    except Exception:
-        is_xc_account = False
+            # For all other error status codes
+            if response.status_code >= 400:
+                error_message = f"HTTP error {response.status_code}"
+                user_message = f"EPG source '{source.name}' encountered HTTP error {response.status_code}"
 
-    # Modified validation logic for different account types
-    if (not groups) or (not is_xc_account and not extinf_data):
-        logger.error(f"No data to process for account {account_id}")
-        account.status = M3UAccount.Status.ERROR
-        account.last_message = "No data available for processing"
-        account.save(update_fields=["status", "last_message"])
-        send_m3u_update(
-            account_id,
-            "parsing",
-            100,
-            status="error",
-            error="No data available for processing",
-        )
-        return "Failed to update m3u account, no data available"
+                # Update status to error in the database
+                source.status = 'error'
+                source.last_message = user_message
+                source.save(update_fields=['status', 'last_message'])
 
-    hash_keys = CoreSettings.get_m3u_hash_key().split(",")
+                # Notify users through the WebSocket
+                channel_layer = get_channel_layer()
+                async_to_sync(channel_layer.group_send)(
+                    'updates',
+                    {
+                        'type': 'update',
+                        'data': {
+                            "success": False,
+                            "type": "epg_fetch_error",
+                            "source_id": source.id,
+                            "source_name": source.name,
+                            "error_code": response.status_code,
+                            "message": user_message
+                        }
+                    }
+                )
+                # Update download progress
+                send_epg_update(source.id, "downloading", 100, status="error", error=user_message)
+                return False
 
-    existing_groups = {
-        group.name: group.id
-        for group in ChannelGroup.objects.filter(
-            m3u_accounts__m3u_account=account,  # Filter by the M3UAccount
-            m3u_accounts__enabled=True,  # Filter by the enabled flag in the join table
-        )
-    }
+            response.raise_for_status()
+            logger.debug("XMLTV data fetched successfully.")
 
-    try:
-        # Set status to parsing
-        account.status = M3UAccount.Status.PARSING
-        account.save(update_fields=["status"])
+            # Define base paths for consistent file naming
+            cache_dir = os.path.join(settings.MEDIA_ROOT, "cached_epg")
+            os.makedirs(cache_dir, exist_ok=True)
 
-        # Commit any pending transactions before threading
-        from django.db import transaction
-        transaction.commit()
+            # Create temporary download file with .tmp extension
+            temp_download_path = os.path.join(cache_dir, f"{source.id}.tmp")
 
-        # Initialize stream counters
-        streams_created = 0
-        streams_updated = 0
+            # Check if we have content length for progress tracking
+            total_size = int(response.headers.get('content-length', 0))
+            downloaded = 0
+            start_time = time.time()
+            last_update_time = start_time
+            update_interval = 0.5  # Only update every 0.5 seconds
 
-        if account.account_type == M3UAccount.Types.STADNARD:
-            logger.debug(
-                f"Processing Standard account ({account_id}) with groups: {existing_groups}"
-            )
-            # Break into batches and process with threading - use global batch size
-            batches = [
-                extinf_data[i : i + BATCH_SIZE]
-                for i in range(0, len(extinf_data), BATCH_SIZE)
-            ]
+            # Download to temporary file
+            with open(temp_download_path, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=16384):
+                    f.write(chunk)
 
-            logger.info(f"Processing {len(extinf_data)} streams in {len(batches)} thread batches")
+                    downloaded += len(chunk)
+                    elapsed_time = time.time() - start_time
 
-            # Use 2 threads for optimal database connection handling
-            max_workers = min(2, len(batches))
-            logger.debug(f"Using {max_workers} threads for processing")
+                    # Calculate download speed in KB/s
+                    speed = downloaded / elapsed_time / 1024 if elapsed_time > 0 else 0
 
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                # Submit batch processing tasks using direct functions (now thread-safe)
-                future_to_batch = {
-                    executor.submit(process_m3u_batch_direct, account_id, batch, existing_groups, hash_keys): i
-                    for i, batch in enumerate(batches)
-                }
+                    # Calculate progress percentage
+                    if total_size and total_size > 0:
+                        progress = min(100, int((downloaded / total_size) * 100))
+                    else:
+                        # If no content length header, estimate progress
+                        progress = min(95, int((downloaded / (10 * 1024 * 1024)) * 100))  # Assume 10MB if unknown
 
-                completed_batches = 0
-                total_batches = len(batches)
+                    # Time remaining (in seconds)
+                    time_remaining = (total_size - downloaded) / (speed * 1024) if speed > 0 and total_size > 0 else 0
 
-                # Process completed batches as they finish
-                for future in as_completed(future_to_batch):
-                    batch_idx = future_to_batch[future]
-                    try:
-                        result = future.result()
-                        completed_batches += 1
-
-                        # Extract stream counts from result
-                        if isinstance(result, str):
-                            try:
-                                created_match = re.search(r"(\d+) created", result)
-                                updated_match = re.search(r"(\d+) updated", result)
-                                if created_match and updated_match:
-                                    created_count = int(created_match.group(1))
-                                    updated_count = int(updated_match.group(1))
-                                    streams_created += created_count
-                                    streams_updated += updated_count
-                            except (AttributeError, ValueError):
-                                pass
-
-                        # Send progress update
-                        progress = int((completed_batches / total_batches) * 100)
-                        current_elapsed = time.time() - start_time
-
-                        if progress > 0:
-                            estimated_total = (current_elapsed / progress) * 100
-                            time_remaining = max(0, estimated_total - current_elapsed)
-                        else:
-                            time_remaining = 0
-
-                        send_m3u_update(
-                            account_id,
-                            "parsing",
+                    # Only send updates at specified intervals to avoid flooding
+                    current_time = time.time()
+                    if current_time - last_update_time >= update_interval and progress > 0:
+                        last_update_time = current_time
+                        send_epg_update(
+                            source.id,
+                            "downloading",
                             progress,
-                            elapsed_time=current_elapsed,
-                            time_remaining=time_remaining,
-                            streams_processed=streams_created + streams_updated,
+                            speed=round(speed, 2),
+                            elapsed_time=round(elapsed_time, 1),
+                            time_remaining=round(time_remaining, 1),
+                            downloaded=f"{downloaded / (1024 * 1024):.2f} MB"
                         )
 
-                        logger.debug(f"Thread batch {completed_batches}/{total_batches} completed")
+                    # Explicitly delete the chunk to free memory immediately
+                    del chunk
 
-                    except Exception as e:
-                        logger.error(f"Error in thread batch {batch_idx}: {str(e)}")
-                        completed_batches += 1  # Still count it to avoid hanging
+            # Send completion notification
+            send_epg_update(source.id, "downloading", 100)
 
-            logger.info(f"Thread-based processing completed for account {account_id}")
-        else:
-            # For XC accounts, get the groups with their custom properties containing xc_id
-            logger.debug(f"Processing XC account with groups: {existing_groups}")
+            # Determine the appropriate file extension based on content detection
+            with open(temp_download_path, 'rb') as f:
+                content_sample = f.read(1024)  # Just need the first 1KB to detect format
 
-            # Get the ChannelGroupM3UAccount entries with their custom_properties
-            channel_group_relationships = ChannelGroupM3UAccount.objects.filter(
-                m3u_account=account, enabled=True
-            ).select_related("channel_group")
-
-            filtered_groups = {}
-            for rel in channel_group_relationships:
-                group_name = rel.channel_group.name
-                group_id = rel.channel_group.id
-
-                # Load the custom properties with the xc_id
-                custom_props = rel.custom_properties or {}
-                if "xc_id" in custom_props:
-                    filtered_groups[group_name] = {
-                        "xc_id": custom_props["xc_id"],
-                        "channel_group_id": group_id,
-                    }
-                    logger.debug(
-                        f"Added group {group_name} with xc_id {custom_props['xc_id']}"
-                    )
-                else:
-                    logger.warning(
-                        f"No xc_id found in custom properties for group {group_name}"
-                    )
-
-            logger.info(
-                f"Filtered {len(filtered_groups)} groups for processing: {filtered_groups}"
+            # Use our helper function to detect the format
+            format_type, is_compressed, file_extension = detect_file_format(
+                file_path=source.url,  # Original URL as a hint
+                content=content_sample  # Actual file content for detection
             )
 
-            # Collect all XC streams in a single API call and filter by enabled categories
-            logger.info("Fetching all XC streams from provider and filtering by enabled categories...")
-            all_xc_streams = collect_xc_streams(account_id, filtered_groups)
+            logger.debug(f"File format detection results: type={format_type}, compressed={is_compressed}, extension={file_extension}")
 
-            if not all_xc_streams:
-                logger.warning("No streams collected from XC groups")
+            # Ensure consistent final paths
+            compressed_path = os.path.join(cache_dir, f"{source.id}{file_extension}" if is_compressed else f"{source.id}.compressed")
+            xml_path = os.path.join(cache_dir, f"{source.id}.xml")
+
+            # Clean up old files before saving new ones
+            if os.path.exists(compressed_path):
+                try:
+                    os.remove(compressed_path)
+                    logger.debug(f"Removed old compressed file: {compressed_path}")
+                except OSError as e:
+                    logger.warning(f"Failed to remove old compressed file: {e}")
+
+            if os.path.exists(xml_path):
+                try:
+                    os.remove(xml_path)
+                    logger.debug(f"Removed old XML file: {xml_path}")
+                except OSError as e:
+                    logger.warning(f"Failed to remove old XML file: {e}")
+
+            # Rename the temp file to appropriate final path
+            if is_compressed:
+                try:
+                    os.rename(temp_download_path, compressed_path)
+                    logger.debug(f"Renamed temp file to compressed file: {compressed_path}")
+                    current_file_path = compressed_path
+                except OSError as e:
+                    logger.error(f"Failed to rename temp file to compressed file: {e}")
+                    current_file_path = temp_download_path  # Fall back to using temp file
             else:
-                # Now batch by stream count (like standard M3U processing)
-                batches = [
-                    all_xc_streams[i : i + BATCH_SIZE]
-                    for i in range(0, len(all_xc_streams), BATCH_SIZE)
-                ]
+                try:
+                    os.rename(temp_download_path, xml_path)
+                    logger.debug(f"Renamed temp file to XML file: {xml_path}")
+                    current_file_path = xml_path
+                except OSError as e:
+                    logger.error(f"Failed to rename temp file to XML file: {e}")
+                    current_file_path = temp_download_path  # Fall back to using temp file
 
-                logger.info(f"Processing {len(all_xc_streams)} XC streams in {len(batches)} batches")
+            # Now extract the file if it's compressed
+            if is_compressed:
+                try:
+                    logger.info(f"Extracting compressed file {current_file_path}")
+                    send_epg_update(source.id, "extracting", 0, message="Extracting downloaded file")
 
-                # Free the original list; batches hold independent sliced copies
-                del all_xc_streams
+                    # Always extract to the standard XML path - set delete_original to True to clean up
+                    extracted = extract_compressed_file(current_file_path, xml_path, delete_original=True)
 
-                # Use threading for XC stream processing - now with consistent batch sizes
-                max_workers = min(4, len(batches))
-                logger.debug(f"Using {max_workers} threads for XC stream processing")
+                    if extracted:
+                        logger.info(f"Successfully extracted to {xml_path}, compressed file deleted")
+                        send_epg_update(source.id, "extracting", 100, message=f"File extracted successfully, temporary file removed")
+                        # Update to store only the extracted file path since the compressed file is now gone
+                        source.file_path = xml_path
+                        source.extracted_file_path = None
+                    else:
+                        logger.error("Extraction failed, using compressed file")
+                        send_epg_update(source.id, "extracting", 100, status="error", message="Extraction failed, using compressed file")
+                        # Use the compressed file
+                        source.file_path = current_file_path
+                        source.extracted_file_path = None
+                except Exception as e:
+                    logger.error(f"Error extracting file: {str(e)}", exc_info=True)
+                    send_epg_update(source.id, "extracting", 100, status="error", message=f"Error during extraction: {str(e)}")
+                    # Use the compressed file if extraction fails
+                    source.file_path = current_file_path
+                    source.extracted_file_path = None
+            else:
+                # It's already an XML file
+                source.file_path = current_file_path
+                source.extracted_file_path = None
 
-                with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                    # Submit stream batch processing tasks (reuse standard M3U processing)
-                    future_to_batch = {
-                        executor.submit(process_m3u_batch_direct, account_id, batch, existing_groups, hash_keys): i
-                        for i, batch in enumerate(batches)
-                    }
+            # Update the source's file paths
+            source.save(update_fields=['file_path', 'status', 'extracted_file_path'])
 
-                    completed_batches = 0
-                    total_batches = len(batches)
+            # Update status to parsing
+            source.status = 'parsing'
+            source.save(update_fields=['status'])
 
-                    # Process completed batches as they finish
-                    for future in as_completed(future_to_batch):
-                        batch_idx = future_to_batch[future]
-                        try:
-                            result = future.result()
-                            completed_batches += 1
+            logger.info(f"Cached EPG file saved to {source.file_path}")
 
-                            # Extract stream counts from result
-                            if isinstance(result, str):
-                                try:
-                                    created_match = re.search(r"(\d+) created", result)
-                                    updated_match = re.search(r"(\d+) updated", result)
-                                    if created_match and updated_match:
-                                        created_count = int(created_match.group(1))
-                                        updated_count = int(updated_match.group(1))
-                                        streams_created += created_count
-                                        streams_updated += updated_count
-                                except (AttributeError, ValueError):
-                                    pass
+            return True
 
-                            # Send progress update
-                            progress = int((completed_batches / total_batches) * 100)
-                            current_elapsed = time.time() - start_time
+    except requests.exceptions.HTTPError as e:
+        logger.error(f"HTTP Error fetching XMLTV from {source.name}: {e}", exc_info=True)
 
-                            if progress > 0:
-                                estimated_total = (current_elapsed / progress) * 100
-                                time_remaining = max(0, estimated_total - current_elapsed)
-                            else:
-                                time_remaining = 0
+        # Get error details
+        status_code = e.response.status_code if hasattr(e, 'response') and e.response else 'unknown'
+        error_message = str(e)
 
-                            send_m3u_update(
-                                account_id,
-                                "parsing",
-                                progress,
-                                elapsed_time=current_elapsed,
-                                time_remaining=time_remaining,
-                                streams_processed=streams_created + streams_updated,
-                            )
+        # Create a user-friendly message
+        user_message = f"EPG source '{source.name}' encountered HTTP error {status_code}"
 
-                            logger.debug(f"XC thread batch {completed_batches}/{total_batches} completed")
+        # Add specific handling for common HTTP errors
+        if status_code == 404:
+            user_message = f"EPG source '{source.name}' URL not found (404) - will retry on next scheduled run"
+        elif status_code == 401 or status_code == 403:
+            user_message = f"EPG source '{source.name}' access denied (HTTP {status_code}) - check credentials"
+        elif status_code == 429:
+            user_message = f"EPG source '{source.name}' rate limited (429) - try again later"
+        elif status_code >= 500:
+            user_message = f"EPG source '{source.name}' server error (HTTP {status_code}) - will retry later"
 
-                        except Exception as e:
-                            logger.error(f"Error in XC thread batch {batch_idx}: {str(e)}")
-                            completed_batches += 1  # Still count it to avoid hanging
+        # Update source status to error with the error message
+        source.status = 'error'
+        source.last_message = user_message
+        source.save(update_fields=['status', 'last_message'])
 
-                logger.info(f"XC thread-based processing completed for account {account_id}")
-
-        # Ensure all database transactions are committed before cleanup
-        logger.info(
-            f"All thread processing completed, ensuring DB transactions are committed before cleanup"
-        )
-        # Force a simple DB query to ensure connection sync
-        Stream.objects.filter(
-            id=-1
-        ).exists()  # This will never find anything but ensures DB sync
-
-        # Mark streams that weren't seen in this refresh as stale (pending deletion)
-        stale_stream_count = Stream.objects.filter(
-            m3u_account=account,
-            last_seen__lt=refresh_start_timestamp
-        ).update(is_stale=True)
-        logger.info(f"Marked {stale_stream_count} streams as stale for account {account_id}")
-
-        # Mark group relationships that weren't seen in this refresh as stale (pending deletion)
-        stale_group_count = ChannelGroupM3UAccount.objects.filter(
-            m3u_account=account,
-            last_seen__lt=refresh_start_timestamp
-        ).update(is_stale=True)
-        logger.info(f"Marked {stale_group_count} group relationships as stale for account {account_id}")
-
-        # Now run cleanup
-        streams_deleted = cleanup_streams(account_id, refresh_start_timestamp)
-
-        # Cleanup stale group relationships (follows same retention policy as streams)
-        cleanup_stale_group_relationships(account, refresh_start_timestamp)
-
-        # Run auto channel sync after successful refresh
-        auto_sync_message = ""
-        auto_sync_result = {}
-        try:
-            auto_sync_result = sync_auto_channels(
-                account_id, scan_start_time=str(refresh_start_timestamp)
-            ) or {}
-            logger.info(
-                f"Auto channel sync result for account {account_id}: {auto_sync_result}"
-            )
-            if auto_sync_result.get("status") == "ok":
-                created = auto_sync_result.get("channels_created", 0)
-                updated = auto_sync_result.get("channels_updated", 0)
-                deleted = auto_sync_result.get("channels_deleted", 0)
-                failed = auto_sync_result.get("channels_failed", 0)
-                if created or updated or deleted or failed:
-                    parts = []
-                    if created:
-                        parts.append(f"{created} channel(s) created")
-                    if updated:
-                        parts.append(f"{updated} updated")
-                    if deleted:
-                        parts.append(f"{deleted} deleted")
-                    if failed:
-                        parts.append(f"{failed} failed")
-                    auto_sync_message = f" Auto-sync: {', '.join(parts)}."
-            elif auto_sync_result.get("status") == "error":
-                auto_sync_message = (
-                    f" Auto-sync error: {auto_sync_result.get('error', 'unknown')}."
-                )
-        except Exception as e:
-            logger.error(
-                f"Error running auto channel sync for account {account_id}: {str(e)}"
-            )
-
-        # Calculate elapsed time
-        elapsed_time = time.time() - start_time
-
-        # Calculate total streams processed
-        streams_processed = streams_created + streams_updated
-
-        # Set status to success and update timestamp BEFORE sending the final update
-        account.status = M3UAccount.Status.SUCCESS
-        account.last_message = (
-            f"Processing completed in {elapsed_time:.1f} seconds. "
-            f"Streams: {streams_created} created, {streams_updated} updated, {streams_deleted} removed. "
-            f"Total processed: {streams_processed}.{auto_sync_message}"
-        )
-        account.updated_at = timezone.now()
-        account.save(update_fields=["status", "last_message", "updated_at"])
-
-        # Log system event for M3U refresh
-        log_system_event(
-            event_type='m3u_refresh',
-            account_name=account.name,
-            elapsed_time=round(elapsed_time, 2),
-            streams_created=streams_created,
-            streams_updated=streams_updated,
-            streams_deleted=streams_deleted,
-            total_processed=streams_processed,
+        # Notify users through the WebSocket about the EPG fetch failure
+        channel_layer = get_channel_layer()
+        async_to_sync(channel_layer.group_send)(
+            'updates',
+            {
+                'type': 'update',
+                'data': {
+                    "success": False,
+                    "type": "epg_fetch_error",
+                    "source_id": source.id,
+                    "source_name": source.name,
+                    "error_code": status_code,
+                    "message": user_message,
+                    "details": error_message
+                }
+            }
         )
 
-        # Send final update with complete metrics and explicitly include success status
-        send_m3u_update(
-            account_id,
-            "parsing",
-            100,
-            status="success",  # Explicitly set status to success
-            elapsed_time=elapsed_time,
-            time_remaining=0,
-            streams_processed=streams_processed,
-            streams_created=streams_created,
-            streams_updated=streams_updated,
-            streams_deleted=streams_deleted,
-            # Structured auto-sync counts so the frontend can render a
-            # warning card when anything failed, without parsing the
-            # free-text last_message.
-            channels_created=auto_sync_result.get("channels_created", 0),
-            channels_updated=auto_sync_result.get("channels_updated", 0),
-            channels_deleted=auto_sync_result.get("channels_deleted", 0),
-            channels_failed=auto_sync_result.get("channels_failed", 0),
-            failed_stream_details=auto_sync_result.get("failed_stream_details", []),
-            message=account.last_message,
-        )
+        # Ensure we update the download progress to 100 with error status
+        send_epg_update(source.id, "downloading", 100, status="error", error=user_message)
+        return False
+    except requests.exceptions.ConnectionError as e:
+        # Handle connection errors separately
+        error_message = str(e)
+        user_message = f"Connection error: Unable to connect to EPG source '{source.name}'"
+        logger.error(f"Connection error fetching XMLTV from {source.name}: {e}", exc_info=True)
 
-        # Trigger VOD refresh if enabled and account is XtreamCodes type
-        if vod_enabled and account.account_type == M3UAccount.Types.XC:
-            logger.info(f"VOD is enabled for account {account_id}, triggering VOD refresh")
+        # Update source status
+        source.status = 'error'
+        source.last_message = user_message
+        source.save(update_fields=['status', 'last_message'])
+
+        # Send notifications
+        channel_layer = get_channel_layer()
+        async_to_sync(channel_layer.group_send)(
+            'updates',
+            {
+                'type': 'update',
+                'data': {
+                    "success": False,
+                    "type": "epg_fetch_error",
+                    "source_id": source.id,
+                    "source_name": source.name,
+                    "error_code": "connection_error",
+                    "message": user_message
+                }
+            }
+        )
+        send_epg_update(source.id, "downloading", 100, status="error", error=user_message)
+        return False
+    except requests.exceptions.Timeout as e:
+        # Handle timeout errors specifically
+        error_message = str(e)
+        user_message = f"Timeout error: EPG source '{source.name}' took too long to respond"
+        logger.error(f"Timeout error fetching XMLTV from {source.name}: {e}", exc_info=True)
+
+        # Update source status
+        source.status = 'error'
+        source.last_message = user_message
+        source.save(update_fields=['status', 'last_message'])
+
+        # Send notifications
+        send_epg_update(source.id, "downloading", 100, status="error", error=user_message)
+        return False
+    except Exception as e:
+        error_message = str(e)
+        logger.error(f"Error fetching XMLTV from {source.name}: {e}", exc_info=True)
+
+        # Update source status for general exceptions too
+        source.status = 'error'
+        source.last_message = f"Error: {error_message}"
+        source.save(update_fields=['status', 'last_message'])
+
+        # Ensure we update the download progress to 100 with error status
+        send_epg_update(source.id, "downloading", 100, status="error", error=f"Error: {error_message}")
+        return False
+
+
+def extract_compressed_file(file_path, output_path=None, delete_original=False):
+    """
+    Extracts a compressed file (.gz or .zip) to an XML file.
+
+    Args:
+        file_path: Path to the compressed file
+        output_path: Specific path where the file should be extracted (optional)
+        delete_original: Whether to delete the original compressed file after successful extraction
+
+    Returns:
+        Path to the extracted XML file, or None if extraction failed
+    """
+    try:
+        if output_path is None:
+            base_path = os.path.splitext(file_path)[0]
+            extracted_path = f"{base_path}.xml"
+        else:
+            extracted_path = output_path
+
+        # Make sure the output path doesn't already exist
+        if os.path.exists(extracted_path):
             try:
-                from apps.vod.tasks import refresh_vod_content
-                refresh_vod_content.delay(account_id)
-                logger.info(f"VOD refresh task queued for account {account_id}")
+                os.remove(extracted_path)
+                logger.info(f"Removed existing extracted file: {extracted_path}")
             except Exception as e:
-                logger.error(f"Failed to queue VOD refresh for account {account_id}: {str(e)}")
+                logger.warning(f"Failed to remove existing extracted file: {e}")
+                # If we can't delete the existing file and no specific output was requested,
+                # create a unique filename instead
+                if output_path is None:
+                    base_path = os.path.splitext(file_path)[0]
+                    extracted_path = f"{base_path}_{uuid.uuid4().hex[:8]}.xml"
+
+        # Use our detection helper to determine the file format instead of relying on extension
+        with open(file_path, 'rb') as f:
+            content_sample = f.read(4096)  # Read a larger sample to ensure accurate detection
+
+        format_type, is_compressed, _ = detect_file_format(file_path=file_path, content=content_sample)
+
+        if format_type == 'gzip':
+            logger.debug(f"Extracting gzip file: {file_path}")
+            try:
+                # First check if the content is XML by reading a sample
+                with gzip.open(file_path, 'rb') as gz_file:
+                    content_sample = gz_file.read(4096)  # Read first 4KB for detection
+                    detected_format, _, _ = detect_file_format(content=content_sample)
+
+                    if detected_format != 'xml':
+                        logger.warning(f"GZIP file does not appear to contain XML content: {file_path} (detected as: {detected_format})")
+                        # Continue anyway since GZIP only contains one file
+
+                    # Reset file pointer and extract the content
+                    gz_file.seek(0)
+                    with open(extracted_path, 'wb') as out_file:
+                        while True:
+                            chunk = gz_file.read(MAX_EXTRACT_CHUNK_SIZE)
+                            if not chunk or len(chunk) == 0:
+                                break
+                            out_file.write(chunk)
+            except Exception as e:
+                logger.error(f"Error extracting GZIP file: {e}", exc_info=True)
+                return None
+
+            logger.info(f"Successfully extracted gzip file to: {extracted_path}")
+
+            # Delete original compressed file if requested
+            if delete_original:
+                try:
+                    os.remove(file_path)
+                    logger.info(f"Deleted original compressed file: {file_path}")
+                except Exception as e:
+                    logger.warning(f"Failed to delete original compressed file {file_path}: {e}")
+
+            return extracted_path
+
+        elif format_type == 'zip':
+            logger.debug(f"Extracting zip file: {file_path}")
+            with zipfile.ZipFile(file_path, 'r') as zip_file:
+                # Find the first XML file in the ZIP archive
+                xml_files = [f for f in zip_file.namelist() if f.lower().endswith('.xml')]
+
+                if not xml_files:
+                    logger.info("No files with .xml extension found in ZIP archive, checking content of all files")
+                    # Check content of each file to see if any are XML without proper extension
+                    for filename in zip_file.namelist():
+                        if not filename.endswith('/'):  # Skip directories
+                            try:
+                                # Read a sample of the file content
+                                content_sample = zip_file.read(filename, 4096)  # Read up to 4KB for detection
+                                format_type, _, _ = detect_file_format(content=content_sample)
+                                if format_type == 'xml':
+                                    logger.info(f"Found XML content in file without .xml extension: {filename}")
+                                    xml_files = [filename]
+                                    break
+                            except Exception as e:
+                                logger.warning(f"Error reading file {filename} from ZIP: {e}")
+
+                if not xml_files:
+                    logger.error("No XML file found in ZIP archive")
+                    return None
+
+                # Extract the first XML file
+                with open(extracted_path, 'wb') as out_file:
+                    with zip_file.open(xml_files[0], "r") as xml_file:
+                        while True:
+                            chunk = xml_file.read(MAX_EXTRACT_CHUNK_SIZE)
+                            if not chunk or len(chunk) == 0:
+                                break
+                            out_file.write(chunk)
+
+            logger.info(f"Successfully extracted zip file to: {extracted_path}")
+
+            # Delete original compressed file if requested
+            if delete_original:
+                try:
+                    os.remove(file_path)
+                    logger.info(f"Deleted original compressed file: {file_path}")
+                except Exception as e:
+                    logger.warning(f"Failed to delete original compressed file {file_path}: {e}")
+
+            return extracted_path
+
+        else:
+            logger.error(f"Unsupported or unrecognized compressed file format: {file_path} (detected as: {format_type})")
+            return None
 
     except Exception as e:
-        logger.error(f"Error processing M3U for account {account_id}: {str(e)}")
-        try:
-            account.status = M3UAccount.Status.ERROR
-            account.last_message = f"Error processing M3U: {str(e)}"
-            account.save(update_fields=["status", "last_message"])
-        except Exception:
-            logger.debug(f"Failed to update account {account_id} status during error handling")
-        raise  # Re-raise the exception for Celery to handle
-    finally:
-        # Free large data structures regardless of success or failure
-        if 'existing_groups' in locals():
-            del existing_groups
-        if 'extinf_data' in locals():
-            del extinf_data
-        if 'groups' in locals():
-            del groups
-        if 'batches' in locals():
-            del batches
-        if 'all_xc_streams' in locals():
-            del all_xc_streams
-        if 'data' in locals():
-            del data
-        if 'filtered_groups' in locals():
-            del filtered_groups
-        if 'channel_group_relationships' in locals():
-            del channel_group_relationships
+        logger.error(f"Error extracting {file_path}: {str(e)}", exc_info=True)
+        return None
 
-        # Remove cache file after processing (success or failure)
-        cache_path = os.path.join(m3u_dir, f"{account_id}.json")
+
+def parse_channels_only(source):
+    # Use extracted file if available, otherwise use the original file path
+    file_path = source.extracted_file_path if source.extracted_file_path else source.file_path
+    if not file_path:
+        file_path = source.get_cache_file()
+
+    # Send initial parsing notification
+    send_epg_update(source.id, "parsing_channels", 0)
+
+    process = None
+    should_log_memory = False
+
+    try:
+        # Check if the file exists
+        if not os.path.exists(file_path):
+            logger.error(f"EPG file does not exist at path: {file_path}")
+
+            # Update the source's file_path to the default cache location
+            new_path = source.get_cache_file()
+            logger.info(f"Updating file_path from '{file_path}' to '{new_path}'")
+            source.file_path = new_path
+            source.save(update_fields=['file_path'])
+
+            # If the source has a URL, fetch the data before continuing
+            if source.url:
+                logger.info(f"Fetching new EPG data from URL: {source.url}")
+                fetch_success = fetch_xmltv(source)  # Store the result
+
+                # Only proceed if fetch was successful AND file exists
+                if not fetch_success:
+                    logger.error(f"Failed to fetch EPG data from URL: {source.url}")
+                    # Update status to error
+                    source.status = 'error'
+                    source.last_message = f"Failed to fetch EPG data from URL"
+                    source.save(update_fields=['status', 'last_message'])
+                    # Send error notification
+                    send_epg_update(source.id, "parsing_channels", 100, status="error", error="Failed to fetch EPG data")
+                    return False
+
+                # Verify the file was downloaded successfully
+                if not os.path.exists(source.file_path):
+                    logger.error(f"Failed to fetch EPG data, file still missing at: {source.file_path}")
+                    # Update status to error
+                    source.status = 'error'
+                    source.last_message = f"Failed to fetch EPG data, file missing after download"
+                    source.save(update_fields=['status', 'last_message'])
+                    send_epg_update(source.id, "parsing_channels", 100, status="error", error="File not found after download")
+                    return False
+
+                # Update file_path with the new location
+                file_path = source.file_path
+            else:
+                logger.error(f"No URL provided for EPG source {source.name}, cannot fetch new data")
+                # Update status to error
+                source.status = 'error'
+                source.last_message = f"No URL provided, cannot fetch EPG data"
+                source.save(update_fields=['updated_at'])
+
+        # Initialize process variable for memory tracking only in debug mode
         try:
-            os.remove(cache_path)
-        except OSError:
+            process = None
+            # Get current log level as a number
+            current_log_level = logger.getEffectiveLevel()
+
+            # Only track memory usage when log level is DEBUG (10) or more verbose
+            # This is more future-proof than string comparisons
+            should_log_memory = current_log_level <= logging.DEBUG or settings.DEBUG
+
+            if should_log_memory:
+                process = psutil.Process()
+                initial_memory = process.memory_info().rss / 1024 / 1024
+                logger.debug(f"[parse_channels_only] Initial memory usage: {initial_memory:.2f} MB")
+        except (ImportError, NameError):
+            process = None
+            should_log_memory = False
+            logger.warning("psutil not available for memory tracking")
+
+        # Replace full dictionary load with more efficient lookup set
+        existing_tvg_ids = set()
+        existing_epgs = {}
+        scanned_tvg_ids = set()  # Track tvg_ids seen in the current scan for stale cleanup
+        last_id = 0
+        chunk_size = 5000
+
+        while True:
+            tvg_id_chunk = set(EPGData.objects.filter(
+                epg_source=source,
+                id__gt=last_id
+            ).order_by('id').values_list('tvg_id', flat=True)[:chunk_size])
+
+            if not tvg_id_chunk:
+                break
+
+            existing_tvg_ids.update(tvg_id_chunk)
+            last_id = EPGData.objects.filter(tvg_id__in=tvg_id_chunk).order_by('-id')[0].id
+        # Update progress to show file read starting
+        send_epg_update(source.id, "parsing_channels", 10)
+
+        # Stream parsing instead of loading entire file at once
+        # This can be simplified since we now always have XML files
+        epgs_to_create = []
+        epgs_to_update = []
+        total_channels = 0
+        processed_channels = 0
+        batch_size = 500  # Process in batches to limit memory usage
+        progress = 0  # Initialize progress variable here
+        icon_url_max_length = EPGData._meta.get_field('icon_url').max_length  # Get max length for icon_url field
+        name_max_length = EPGData._meta.get_field('name').max_length  # Get max length for name field
+
+        # Track memory at key points
+        if process:
+            logger.debug(f"[parse_channels_only] Memory before opening file: {process.memory_info().rss / 1024 / 1024:.2f} MB")
+
+        try:
+            # Attempt to count existing channels in the database
+            try:
+                total_channels = EPGData.objects.filter(epg_source=source).count()
+                logger.info(f"Found {total_channels} existing channels for this source")
+            except Exception as e:
+                logger.error(f"Error counting channels: {e}")
+                total_channels = 500  # Default estimate
+            if process:
+                logger.debug(f"[parse_channels_only] Memory after closing initial file: {process.memory_info().rss / 1024 / 1024:.2f} MB")
+
+            # Update progress after counting
+            send_epg_update(source.id, "parsing_channels", 25, total_channels=total_channels)
+
+            # Open the file - no need to check file type since it's always XML now
+            logger.debug(f"Opening file for channel parsing: {file_path}")
+            source_file = _open_xmltv_file(file_path)
+
+            if process:
+                logger.debug(f"[parse_channels_only] Memory after opening file: {process.memory_info().rss / 1024 / 1024:.2f} MB")
+
+            # Change iterparse to look for both channel and programme elements
+            logger.debug(f"Creating iterparse context for channels and programmes")
+            channel_parser = etree.iterparse(source_file, events=('end',), tag=('channel', 'programme'), remove_blank_text=True, recover=True)
+            if process:
+                logger.debug(f"[parse_channels_only] Memory after creating iterparse: {process.memory_info().rss / 1024 / 1024:.2f} MB")
+
+            channel_count = 0
+            total_elements_processed = 0  # Track total elements processed, not just channels
+            for _, elem in channel_parser:
+                total_elements_processed += 1
+                # Only process channel elements
+                if elem.tag == 'channel':
+                    channel_count += 1
+                    tvg_id = elem.get('id', '').strip()
+                    if tvg_id:
+                        scanned_tvg_ids.add(tvg_id)
+                        display_name = None
+                        icon_url = None
+                        for child in elem:
+                            if display_name is None and child.tag == 'display-name' and child.text:
+                                display_name = child.text.strip()
+                            elif child.tag == 'icon':
+                                raw_icon_url = child.get('src', '').strip()
+                                icon_url = validate_icon_url_fast(raw_icon_url, icon_url_max_length)
+                            if display_name and icon_url:
+                                break  # No need to continue if we have both
+
+                        if not display_name:
+                            display_name = tvg_id
+
+                        if display_name and len(display_name) > name_max_length:
+                            logger.warning(f"EPG display name too long ({len(display_name)} > {name_max_length}), truncating: {display_name[:80]}...")
+                            display_name = display_name[:name_max_length]
+
+                        # Use lazy loading approach to reduce memory usage
+                        if tvg_id in existing_tvg_ids:
+                            # Only fetch the object if we need to update it and it hasn't been loaded yet
+                            if tvg_id not in existing_epgs:
+                                try:
+                                    # This loads the full EPG object from the database and caches it
+                                    existing_epgs[tvg_id] = EPGData.objects.get(tvg_id=tvg_id, epg_source=source)
+                                except EPGData.DoesNotExist:
+                                    # Handle race condition where record was deleted
+                                    existing_tvg_ids.remove(tvg_id)
+                                    epgs_to_create.append(EPGData(
+                                        tvg_id=tvg_id,
+                                        name=display_name,
+                                        icon_url=icon_url,
+                                        epg_source=source,
+                                    ))
+                                    logger.debug(f"[parse_channels_only] Added new channel to epgs_to_create 1: {tvg_id} - {display_name}")
+                                    processed_channels += 1
+                                    continue
+
+                            # We use the cached object to check if the name or icon_url has changed
+                            epg_obj = existing_epgs[tvg_id]
+                            needs_update = False
+                            if epg_obj.name != display_name:
+                                epg_obj.name = display_name
+                                needs_update = True
+                            if epg_obj.icon_url != icon_url:
+                                epg_obj.icon_url = icon_url
+                                needs_update = True
+
+                            if needs_update:
+                                epgs_to_update.append(epg_obj)
+                                logger.debug(f"[parse_channels_only] Added channel to update to epgs_to_update: {tvg_id} - {display_name}")
+                            else:
+                                # No changes needed, just clear the element
+                                logger.debug(f"[parse_channels_only] No changes needed for channel {tvg_id} - {display_name}")
+                        else:
+                            # This is a new channel that doesn't exist in our database
+                            epgs_to_create.append(EPGData(
+                                tvg_id=tvg_id,
+                                name=display_name,
+                                icon_url=icon_url,
+                                epg_source=source,
+                            ))
+                            logger.debug(f"[parse_channels_only] Added new channel to epgs_to_create 2: {tvg_id} - {display_name}")
+
+                    processed_channels += 1
+
+                    # Batch processing
+                    if len(epgs_to_create) >= batch_size:
+                        logger.info(f"[parse_channels_only] Bulk creating {len(epgs_to_create)} EPG entries")
+                        EPGData.objects.bulk_create(epgs_to_create, ignore_conflicts=True)
+                        if process:
+                            logger.info(f"[parse_channels_only] Memory after bulk_create: {process.memory_info().rss / 1024 / 1024:.2f} MB")
+                        del epgs_to_create  # Explicit deletion
+                        epgs_to_create = []
+                        cleanup_memory(log_usage=should_log_memory, force_collection=True)
+                        if process:
+                            logger.info(f"[parse_channels_only] Memory after gc.collect(): {process.memory_info().rss / 1024 / 1024:.2f} MB")
+
+                    if len(epgs_to_update) >= batch_size:
+                        logger.info(f"[parse_channels_only] Bulk updating {len(epgs_to_update)} EPG entries")
+                        if process:
+                            logger.info(f"[parse_channels_only] Memory before bulk_update: {process.memory_info().rss / 1024 / 1024:.2f} MB")
+                        EPGData.objects.bulk_update(epgs_to_update, ["name", "icon_url"])
+                        if process:
+                            logger.info(f"[parse_channels_only] Memory after bulk_update: {process.memory_info().rss / 1024 / 1024:.2f} MB")
+                        epgs_to_update = []
+                        # Force garbage collection
+                        cleanup_memory(log_usage=should_log_memory, force_collection=True)
+
+                    # Periodically clear the existing_epgs cache to prevent memory buildup
+                    if processed_channels % 1000 == 0:
+                        logger.info(f"[parse_channels_only] Clearing existing_epgs cache at {processed_channels} channels")
+                        existing_epgs.clear()
+                        cleanup_memory(log_usage=should_log_memory, force_collection=True)
+                        if process:
+                            logger.info(f"[parse_channels_only] Memory after clearing cache: {process.memory_info().rss / 1024 / 1024:.2f} MB")
+
+                    # Send progress updates
+                    if processed_channels % 100 == 0 or processed_channels == total_channels:
+                        progress = 25 + int((processed_channels / total_channels) * 65) if total_channels > 0 else 90
+                        send_epg_update(
+                            source.id,
+                            "parsing_channels",
+                            progress,
+                            processed=processed_channels,
+                            total=total_channels
+                        )
+                    if processed_channels > total_channels:
+                        logger.debug(f"[parse_channels_only] Processed channel {tvg_id} - processed {processed_channels - total_channels} additional channels")
+                    else:
+                        logger.debug(f"[parse_channels_only] Processed channel {tvg_id} - processed {processed_channels}/{total_channels}")
+                    if process:
+                        logger.debug(f"[parse_channels_only] Memory before elem cleanup: {process.memory_info().rss / 1024 / 1024:.2f} MB")
+                    # Clear memory
+                    try:
+                        # First clear the element's content
+                        clear_element(elem)
+
+                    except Exception as e:
+                        # Just log the error and continue - don't let cleanup errors stop processing
+                        logger.debug(f"[parse_channels_only] Non-critical error during XML element cleanup: {e}")
+                    if process:
+                        logger.debug(f"[parse_channels_only] Memory after elem cleanup: {process.memory_info().rss / 1024 / 1024:.2f} MB")
+
+                    logger.debug(f"[parse_channels_only] Total elements processed: {total_elements_processed}")
+
+                else:
+                    logger.trace(f"[parse_channels_only] Skipping non-channel element: {elem.get('channel', 'unknown')} - {elem.get('start', 'unknown')} {elem.tag}")
+                    clear_element(elem)
+                    continue
+
+        except (etree.XMLSyntaxError, Exception) as xml_error:
+            logger.error(f"[parse_channels_only] XML parsing failed: {xml_error}")
+            # Update status to error
+            source.status = 'error'
+            source.last_message = f"Error parsing XML file: {str(xml_error)}"
+            source.save(update_fields=['status', 'last_message'])
+            send_epg_update(source.id, "parsing_channels", 100, status="error", error=str(xml_error))
+            return False
+        if process:
+            logger.info(f"[parse_channels_only] Processed {processed_channels} channels current memory: {process.memory_info().rss / 1024 / 1024:.2f} MB")
+        else:
+            logger.info(f"[parse_channels_only] Processed {processed_channels} channels")
+        # Process any remaining items
+        if epgs_to_create:
+            EPGData.objects.bulk_create(epgs_to_create, ignore_conflicts=True)
+            logger.debug(f"[parse_channels_only] Created final batch of {len(epgs_to_create)} EPG entries")
+
+        if epgs_to_update:
+            EPGData.objects.bulk_update(epgs_to_update, ["name", "icon_url"])
+            logger.debug(f"[parse_channels_only] Updated final batch of {len(epgs_to_update)} EPG entries")
+
+        # Clean up stale EPGData: entries that existed before the scan but weren't seen, and aren't mapped to any channel.
+        # Use existing_tvg_ids - scanned_tvg_ids to avoid a full-table scan with a large EXCLUDE list.
+        potentially_stale = existing_tvg_ids - scanned_tvg_ids
+        if potentially_stale:
+            stale_qs = EPGData.objects.filter(epg_source=source, tvg_id__in=potentially_stale, channels__isnull=True)
+            deleted_count, _ = stale_qs.delete()
+            if deleted_count:
+                logger.info(f"[parse_channels_only] Cleaned up {deleted_count} stale EPG entries not in current scan and unmapped to any channel")
+
+        if process:
+            logger.debug(f"[parse_channels_only] Memory after final batch creation: {process.memory_info().rss / 1024 / 1024:.2f} MB")
+
+        # Update source status with channel count
+        source.status = 'success'
+        source.last_message = f"Successfully parsed {processed_channels} channels"
+        source.save(update_fields=['status', 'last_message'])
+
+        # Send completion notification
+        send_epg_update(
+            source.id,
+            "parsing_channels",
+            100,
+            status="success",
+            channels_count=processed_channels
+        )
+
+        send_websocket_update('updates', 'update', {"success": True, "type": "epg_channels"})
+
+        logger.info(f"Finished parsing channel info. Found {processed_channels} channels.")
+
+        return True
+
+    except FileNotFoundError:
+        logger.error(f"EPG file not found at: {file_path}")
+        # Update status to error
+        source.status = 'error'
+        source.last_message = f"EPG file not found: {file_path}"
+        source.save(update_fields=['status', 'last_message'])
+        send_epg_update(source.id, "parsing_channels", 100, status="error", error="File not found")
+        return False
+    except Exception as e:
+        logger.error(f"Error reading EPG file {file_path}: {e}", exc_info=True)
+        # Update status to error
+        source.status = 'error'
+        source.last_message = f"Error parsing EPG file: {str(e)}"
+        source.save(update_fields=['status', 'last_message'])
+        send_epg_update(source.id, "parsing_channels", 100, status="error", error=str(e))
+        return False
+    finally:
+        # Cleanup memory and close file
+        if process:
+            logger.debug(f"[parse_channels_only] Memory before cleanup: {process.memory_info().rss / 1024 / 1024:.2f} MB")
+        try:
+            # Output any errors in the channel_parser error log
+            if 'channel_parser' in locals() and hasattr(channel_parser, 'error_log') and len(channel_parser.error_log) > 0:
+                logger.debug(f"XML parser errors found ({len(channel_parser.error_log)} total):")
+                for i, error in enumerate(channel_parser.error_log):
+                    logger.debug(f"  Error {i+1}: {error}")
+            if 'channel_parser' in locals():
+                del channel_parser
+            if 'elem' in locals():
+                del elem
+            if 'parent' in locals():
+                del parent
+
+            if 'source_file' in locals():
+                source_file.close()
+                del source_file
+            # Clear remaining large data structures
+            existing_epgs.clear()
+            epgs_to_create.clear()
+            epgs_to_update.clear()
+            existing_epgs = None
+            epgs_to_create = None
+            epgs_to_update = None
+            if 'scanned_tvg_ids' in locals() and scanned_tvg_ids is not None:
+                scanned_tvg_ids.clear()
+                scanned_tvg_ids = None
+            cleanup_memory(log_usage=should_log_memory, force_collection=True)
+        except Exception as e:
+            logger.warning(f"Cleanup error: {e}")
+
+        try:
+            if process:
+                final_memory = process.memory_info().rss / 1024 / 1024
+                logger.debug(f"[parse_channels_only] Final memory usage: {final_memory:.2f} MB")
+                process = None
+        except:
             pass
 
-    return f"Dispatched jobs complete."
 
 
-def send_m3u_update(account_id, action, progress, **kwargs):
-    # Start with the base data dictionary
-    data = {
-        "progress": progress,
-        "type": "m3u_refresh",
-        "account": account_id,
-        "action": action,
+@shared_task(time_limit=3600, soft_time_limit=3500)
+def parse_programs_for_tvg_id(epg_id):
+    # Skip XMLTV file parsing for Schedules Direct sources. Program data is
+    # fetched and persisted directly by fetch_schedules_direct().
+    try:
+        from apps.epg.models import EPGData
+        epg_obj = EPGData.objects.select_related('epg_source').filter(id=epg_id).first()
+        if epg_obj and epg_obj.epg_source and epg_obj.epg_source.source_type == 'schedules_direct':
+            logger.info(f"Skipping XMLTV parse for SD EPGData id={epg_id} (source: {epg_obj.epg_source.name})")
+            return "Skipped (Schedules Direct source)"
+    except Exception as e:
+        logger.warning(f"Could not check EPG source type for id={epg_id}: {e}")
+
+    if not acquire_task_lock('parse_epg_programs', epg_id):
+        logger.info(f"Program parse for {epg_id} already in progress, skipping duplicate task")
+        return "Task already running"
+
+    lock_renewer = TaskLockRenewer('parse_epg_programs', epg_id)
+    lock_renewer.start()
+
+    source_file = None
+    program_parser = None
+    programs_to_create = []
+    programs_processed = 0
+    try:
+        # Add memory tracking only in trace mode or higher
+        try:
+            process = None
+            # Get current log level as a number
+            current_log_level = logger.getEffectiveLevel()
+
+            # Only track memory usage when log level is TRACE or more verbose or if running in DEBUG mode
+            should_log_memory = current_log_level <= 5 or settings.DEBUG
+
+            if should_log_memory:
+                process = psutil.Process()
+                initial_memory = process.memory_info().rss / 1024 / 1024
+                logger.info(f"[parse_programs_for_tvg_id] Initial memory usage: {initial_memory:.2f} MB")
+                mem_before = initial_memory
+        except ImportError:
+            process = None
+            should_log_memory = False
+
+        epg = EPGData.objects.get(id=epg_id)
+        epg_source = epg.epg_source
+
+        # Skip program parsing for dummy EPG sources - they don't have program data files
+        if epg_source.source_type == 'dummy':
+            logger.info(f"Skipping program parsing for dummy EPG source {epg_source.name} (ID: {epg_id})")
+            lock_renewer.stop()
+            release_task_lock('parse_epg_programs', epg_id)
+            return
+
+        if not Channel.objects.filter(epg_data=epg).exists():
+            logger.info(f"No channels matched to EPG {epg.tvg_id}")
+            lock_renewer.stop()
+            release_task_lock('parse_epg_programs', epg_id)
+            return
+
+        logger.info(f"Refreshing program data for tvg_id: {epg.tvg_id}")
+
+        # Optimize deletion with a single delete query instead of chunking
+        # This is faster for most database engines
+        ProgramData.objects.filter(epg=epg).delete()
+
+        file_path = epg_source.extracted_file_path if epg_source.extracted_file_path else epg_source.file_path
+        if not file_path:
+            file_path = epg_source.get_cache_file()
+
+        # Check if the file exists
+        if not os.path.exists(file_path):
+            logger.error(f"EPG file not found at: {file_path}")
+
+            if epg_source.url:
+                # Update the file path in the database
+                new_path = epg_source.get_cache_file()
+                logger.info(f"Updating file_path from '{file_path}' to '{new_path}'")
+                epg_source.file_path = new_path
+                epg_source.save(update_fields=['file_path'])
+                logger.info(f"Fetching new EPG data from URL: {epg_source.url}")
+            else:
+                logger.info(f"EPG source does not have a URL, using existing file path: {file_path} to rebuild cache")
+
+            # Fetch new data before continuing
+            if epg_source:
+
+                # Properly check the return value from fetch_xmltv
+                fetch_success = fetch_xmltv(epg_source)
+
+                # If fetch was not successful or the file still doesn't exist, abort
+                if not fetch_success:
+                    logger.error(f"Failed to fetch EPG data, cannot parse programs for tvg_id: {epg.tvg_id}")
+                    # Update status to error if not already set
+                    epg_source.status = 'error'
+                    epg_source.last_message = f"Failed to download EPG data, cannot parse programs"
+                    epg_source.save(update_fields=['status', 'last_message'])
+                    send_epg_update(epg_source.id, "parsing_programs", 100, status="error", error="Failed to download EPG file")
+                    lock_renewer.stop()
+                    release_task_lock('parse_epg_programs', epg_id)
+                    return
+
+                # Also check if the file exists after download
+                if not os.path.exists(epg_source.file_path):
+                    logger.error(f"Failed to fetch EPG data, file still missing at: {epg_source.file_path}")
+                    epg_source.status = 'error'
+                    epg_source.last_message = f"Failed to download EPG data, file missing after download"
+                    epg_source.save(update_fields=['status', 'last_message'])
+                    send_epg_update(epg_source.id, "parsing_programs", 100, status="error", error="File not found after download")
+                    lock_renewer.stop()
+                    release_task_lock('parse_epg_programs', epg_id)
+                    return
+
+                # Update file_path with the new location
+                if epg_source.extracted_file_path:
+                    file_path = epg_source.extracted_file_path
+                else:
+                    file_path = epg_source.file_path
+            else:
+                logger.error(f"No URL provided for EPG source {epg_source.name}, cannot fetch new data")
+                # Update status to error
+                epg_source.status = 'error'
+                epg_source.last_message = f"No URL provided, cannot fetch EPG data"
+                epg_source.save(update_fields=['status', 'last_message'])
+                send_epg_update(epg_source.id, "parsing_programs", 100, status="error", error="No URL provided")
+                lock_renewer.stop()
+                release_task_lock('parse_epg_programs', epg_id)
+                return
+
+        # Use streaming parsing to reduce memory usage
+        # No need to check file type anymore since it's always XML
+        logger.debug(f"Parsing programs for tvg_id={epg.tvg_id} from {file_path}")
+
+        # Memory usage tracking
+        if process:
+            try:
+                mem_before = process.memory_info().rss / 1024 / 1024
+                logger.debug(f"[parse_programs_for_tvg_id] Memory before parsing {epg.tvg_id} -  {mem_before:.2f} MB")
+            except Exception as e:
+                logger.warning(f"Error tracking memory: {e}")
+                mem_before = 0
+
+        programs_to_create = []
+        batch_size = 1000  # Process in batches to limit memory usage
+
+        try:
+            # Open the file directly - no need to check compression
+            logger.debug(f"Opening file for parsing: {file_path}")
+            source_file = _open_xmltv_file(file_path)
+
+            # Stream parse the file using lxml's iterparse
+            program_parser = etree.iterparse(source_file, events=('end',), tag='programme',  remove_blank_text=True, recover=True)
+
+            for _, elem in program_parser:
+                if elem.get('channel') == epg.tvg_id:
+                    try:
+                        start_time = parse_xmltv_time(elem.get('start'))
+                        end_time = parse_xmltv_time(elem.get('stop'))
+                        title = None
+                        desc = None
+                        sub_title = None
+
+                        # Efficiently process child elements
+                        for child in elem:
+                            if child.tag == 'title':
+                                title = child.text or 'No Title'
+                            elif child.tag == 'desc':
+                                desc = child.text or ''
+                            elif child.tag == 'sub-title':
+                                sub_title = child.text or ''
+
+                        if not title:
+                            title = 'No Title'
+
+                        # Extract custom properties
+                        custom_props = extract_custom_properties(elem)
+                        custom_properties_json = None
+
+                        if custom_props:
+                            logger.trace(f"Number of custom properties: {len(custom_props)}")
+                            custom_properties_json = custom_props
+
+                        # Fallback: extract S/E from description when episode-num
+                        # elements didn't provide them
+                        if desc:
+                            has_season = (custom_properties_json or {}).get('season') is not None
+                            has_episode = (custom_properties_json or {}).get('episode') is not None
+                            if not has_season or not has_episode:
+                                d_season, d_episode, cleaned_desc = extract_season_episode_from_description(desc)
+                                if d_season is not None and d_episode is not None:
+                                    if custom_properties_json is None:
+                                        custom_properties_json = {}
+                                    if not has_season:
+                                        custom_properties_json['season'] = d_season
+                                    if not has_episode:
+                                        custom_properties_json['episode'] = d_episode
+                                    custom_properties_json['season_episode_source'] = 'description'
+                                    desc = cleaned_desc
+
+                        programs_to_create.append(ProgramData(
+                            epg=epg,
+                            start_time=start_time,
+                            end_time=end_time,
+                            title=title[:255],
+                            description=desc,
+                            sub_title=sub_title,
+                            tvg_id=epg.tvg_id,
+                            custom_properties=custom_properties_json
+                        ))
+                        programs_processed += 1
+                        # Clear the element to free memory
+                        clear_element(elem)
+                        # Batch processing
+                        if len(programs_to_create) >= batch_size:
+                            ProgramData.objects.bulk_create(programs_to_create)
+                            logger.debug(f"Saved batch of {len(programs_to_create)} programs for {epg.tvg_id}")
+                            programs_to_create = []
+                            # Only call gc.collect() every few batches
+                            if programs_processed % (batch_size * 5) == 0:
+                                gc.collect()
+
+                    except Exception as e:
+                        logger.error(f"Error processing program for {epg.tvg_id}: {e}", exc_info=True)
+                else:
+                    # Immediately clean up non-matching elements to reduce memory pressure
+                    if elem is not None:
+                        clear_element(elem)
+                    continue
+
+            # Make sure to close the file and release parser resources
+            if source_file:
+                source_file.close()
+                source_file = None
+
+            if program_parser:
+                program_parser = None
+
+            gc.collect()
+
+        except zipfile.BadZipFile as zip_error:
+            logger.error(f"Bad ZIP file: {zip_error}")
+            raise
+        except etree.XMLSyntaxError as xml_error:
+            logger.error(f"XML syntax error parsing program data: {xml_error}")
+            raise
+        except Exception as e:
+            logger.error(f"Error parsing XML for programs: {e}", exc_info=True)
+            raise
+        finally:
+            # Ensure file is closed even if an exception occurs
+            if source_file:
+                source_file.close()
+                source_file = None
+             # Memory tracking after processing
+            if process:
+                try:
+                    mem_after = process.memory_info().rss / 1024 / 1024
+                    logger.info(f"[parse_programs_for_tvg_id] Memory after parsing 1 {epg.tvg_id} - {programs_processed} programs: {mem_after:.2f} MB (change: {mem_after-mem_before:.2f} MB)")
+                except Exception as e:
+                    logger.warning(f"Error tracking memory: {e}")
+
+        # Process any remaining items
+        if programs_to_create:
+            ProgramData.objects.bulk_create(programs_to_create)
+            logger.debug(f"Saved final batch of {len(programs_to_create)} programs for {epg.tvg_id}")
+            programs_to_create = None
+            custom_props = None
+            custom_properties_json = None
+
+
+        logger.info(f"Completed program parsing for tvg_id={epg.tvg_id}.")
+    finally:
+        # Reset internal caches and pools that lxml might be keeping
+        try:
+            etree.clear_error_log()
+        except:
+            pass
+        # Explicit cleanup of all potentially large objects
+        if source_file:
+            try:
+                source_file.close()
+            except:
+                pass
+        source_file = None
+        program_parser = None
+        programs_to_create = None
+
+        epg_source = None
+        # Add comprehensive cleanup before releasing lock
+        cleanup_memory(log_usage=should_log_memory, force_collection=True)
+        # Memory tracking after processing
+        if process:
+            try:
+                mem_after = process.memory_info().rss / 1024 / 1024
+                logger.info(f"[parse_programs_for_tvg_id] Final memory usage {epg.tvg_id} - {programs_processed} programs: {mem_after:.2f} MB (change: {mem_after-mem_before:.2f} MB)")
+            except Exception as e:
+                logger.warning(f"Error tracking memory: {e}")
+            process = None
+        epg = None
+        programs_processed = None
+        lock_renewer.stop()
+        release_task_lock('parse_epg_programs', epg_id)
+
+
+
+def parse_programs_for_source(epg_source, tvg_id=None):
+    """
+    Parse programs for all MAPPED channels from an EPG source in a single pass.
+
+    This is an optimized version that:
+    1. Only processes EPG entries that are actually mapped to channels
+    2. Parses the XML file ONCE instead of once per channel
+    3. Skips programmes for unmapped channels entirely during parsing
+
+    This dramatically improves performance when an EPG source has many channels
+    but only a fraction are mapped.
+    """
+    # Send initial programs parsing notification
+    send_epg_update(epg_source.id, "parsing_programs", 0)
+    should_log_memory = False
+    process = None
+    initial_memory = 0
+    source_file = None
+
+    # Add memory tracking only in trace mode or higher
+    try:
+        # Get current log level as a number
+        current_log_level = logger.getEffectiveLevel()
+
+        # Only track memory usage when log level is TRACE or more verbose
+        should_log_memory = current_log_level <= 5 or settings.DEBUG  # Assuming TRACE is level 5 or lower
+
+        if should_log_memory:
+            process = psutil.Process()
+            initial_memory = process.memory_info().rss / 1024 / 1024
+            logger.info(f"[parse_programs_for_source] Initial memory usage: {initial_memory:.2f} MB")
+    except ImportError:
+        logger.warning("psutil not available for memory tracking")
+        process = None
+        should_log_memory = False
+
+    try:
+        # Only get EPG entries that are actually mapped to channels
+        mapped_epg_ids = set(
+            Channel.objects.filter(
+                epg_data__epg_source=epg_source,
+                epg_data__isnull=False
+            ).values_list('epg_data_id', flat=True)
+        )
+
+        if not mapped_epg_ids:
+            total_epg_count = EPGData.objects.filter(epg_source=epg_source).count()
+            logger.info(f"No channels mapped to any EPG entries from source: {epg_source.name} "
+                       f"(source has {total_epg_count} EPG entries, 0 mapped)")
+            # Update status - this is not an error, just no mapped entries
+            epg_source.status = 'success'
+            epg_source.last_message = f"No channels mapped to this EPG source ({total_epg_count} entries available)"
+            epg_source.save(update_fields=['status', 'last_message'])
+            send_epg_update(epg_source.id, "parsing_programs", 100, status="success")
+            return True
+
+        # Get the mapped EPG entries with their tvg_ids
+        mapped_epgs = EPGData.objects.filter(id__in=mapped_epg_ids).values('id', 'tvg_id')
+        tvg_id_to_epg_id = {epg['tvg_id']: epg['id'] for epg in mapped_epgs if epg['tvg_id']}
+        mapped_tvg_ids = set(tvg_id_to_epg_id.keys())
+
+        total_epg_count = EPGData.objects.filter(epg_source=epg_source).count()
+        mapped_count = len(mapped_tvg_ids)
+
+        logger.info(f"Parsing programs for {mapped_count} MAPPED channels from source: {epg_source.name} "
+                   f"(skipping {total_epg_count - mapped_count} unmapped EPG entries)")
+
+        # Get the file path
+        file_path = epg_source.extracted_file_path if epg_source.extracted_file_path else epg_source.file_path
+        if not file_path:
+            file_path = epg_source.get_cache_file()
+
+        # Check if the file exists
+        if not os.path.exists(file_path):
+            logger.error(f"EPG file not found at: {file_path}")
+
+            if epg_source.url:
+                # Update the file path in the database
+                new_path = epg_source.get_cache_file()
+                logger.info(f"Updating file_path from '{file_path}' to '{new_path}'")
+                epg_source.file_path = new_path
+                epg_source.save(update_fields=['file_path'])
+                logger.info(f"Fetching new EPG data from URL: {epg_source.url}")
+
+                # Fetch new data before continuing
+                fetch_success = fetch_xmltv(epg_source)
+
+                if not fetch_success:
+                    logger.error(f"Failed to fetch EPG data for source: {epg_source.name}")
+                    epg_source.status = 'error'
+                    epg_source.last_message = f"Failed to download EPG data"
+                    epg_source.save(update_fields=['status', 'last_message'])
+                    send_epg_update(epg_source.id, "parsing_programs", 100, status="error", error="Failed to download EPG file")
+                    return False
+
+                # Update file_path with the new location
+                file_path = epg_source.extracted_file_path if epg_source.extracted_file_path else epg_source.file_path
+            else:
+                logger.error(f"No URL provided for EPG source {epg_source.name}, cannot fetch new data")
+                epg_source.status = 'error'
+                epg_source.last_message = f"No URL provided, cannot fetch EPG data"
+                epg_source.save(update_fields=['status', 'last_message'])
+                send_epg_update(epg_source.id, "parsing_programs", 100, status="error", error="No URL provided")
+                return False
+
+        # SINGLE PASS PARSING: Parse the XML file once and collect all programs in memory
+        # We parse FIRST, then do an atomic delete+insert to avoid race conditions
+        # where clients might see empty/partial EPG data during the transition
+        all_programs_to_create = []
+        programs_by_channel = {tvg_id: 0 for tvg_id in mapped_tvg_ids}  # Track count per channel
+        total_programs = 0
+        skipped_programs = 0
+        last_progress_update = 0
+
+        try:
+            logger.debug(f"Opening file for single-pass parsing: {file_path}")
+            source_file = _open_xmltv_file(file_path)
+
+            # Stream parse the file using lxml's iterparse
+            program_parser = etree.iterparse(source_file, events=('end',), tag='programme', remove_blank_text=True, recover=True)
+
+            for _, elem in program_parser:
+                channel_id = elem.get('channel')
+
+                # Skip programmes for unmapped channels immediately
+                if channel_id not in mapped_tvg_ids:
+                    skipped_programs += 1
+                    # Clear element to free memory
+                    clear_element(elem)
+                    continue
+
+                # This programme is for a mapped channel - process it
+                try:
+                    start_time = parse_xmltv_time(elem.get('start'))
+                    end_time = parse_xmltv_time(elem.get('stop'))
+                    title = None
+                    desc = None
+                    sub_title = None
+
+                    # Efficiently process child elements
+                    for child in elem:
+                        if child.tag == 'title':
+                            title = child.text or 'No Title'
+                        elif child.tag == 'desc':
+                            desc = child.text or ''
+                        elif child.tag == 'sub-title':
+                            sub_title = child.text or ''
+
+                    if not title:
+                        title = 'No Title'
+
+                    # Extract custom properties
+                    custom_props = extract_custom_properties(elem)
+                    custom_properties_json = custom_props if custom_props else None
+
+                    # Fallback: extract S/E from description when episode-num
+                    # elements didn't provide them
+                    if desc:
+                        has_season = (custom_properties_json or {}).get('season') is not None
+                        has_episode = (custom_properties_json or {}).get('episode') is not None
+                        if not has_season or not has_episode:
+                            d_season, d_episode, cleaned_desc = extract_season_episode_from_description(desc)
+                            if d_season is not None and d_episode is not None:
+                                if custom_properties_json is None:
+                                    custom_properties_json = {}
+                                if not has_season:
+                                    custom_properties_json['season'] = d_season
+                                if not has_episode:
+                                    custom_properties_json['episode'] = d_episode
+                                custom_properties_json['season_episode_source'] = 'description'
+                                desc = cleaned_desc
+
+                    epg_id = tvg_id_to_epg_id[channel_id]
+                    all_programs_to_create.append(ProgramData(
+                        epg_id=epg_id,
+                        start_time=start_time,
+                        end_time=end_time,
+                        title=title[:255],
+                        description=desc,
+                        sub_title=sub_title,
+                        tvg_id=channel_id,
+                        custom_properties=custom_properties_json
+                    ))
+                    total_programs += 1
+                    programs_by_channel[channel_id] += 1
+
+                    # Clear the element to free memory
+                    clear_element(elem)
+
+                    # Send progress update (estimate based on programs processed)
+                    if total_programs - last_progress_update >= 5000:
+                        last_progress_update = total_programs
+                        # Cap at 70% during parsing phase (save 30% for DB operations)
+                        progress = min(70, 10 + int((total_programs / max(total_programs + 10000, 1)) * 60))
+                        send_epg_update(epg_source.id, "parsing_programs", progress,
+                                      processed=total_programs, channels=mapped_count)
+
+                    # Periodic garbage collection during parsing
+                    if total_programs % 5000 == 0:
+                        gc.collect()
+
+                except Exception as e:
+                    logger.error(f"Error processing program for {channel_id}: {e}", exc_info=True)
+                    clear_element(elem)
+                    continue
+
+        except etree.XMLSyntaxError as xml_error:
+            logger.error(f"XML syntax error parsing program data: {xml_error}")
+            epg_source.status = EPGSource.STATUS_ERROR
+            epg_source.last_message = f"XML parsing error: {str(xml_error)}"
+            epg_source.save(update_fields=['status', 'last_message'])
+            send_epg_update(epg_source.id, "parsing_programs", 100, status="error", message=str(xml_error))
+            return False
+        except Exception as e:
+            logger.error(f"Error parsing XML for programs: {e}", exc_info=True)
+            raise
+        finally:
+            if source_file:
+                source_file.close()
+                source_file = None
+
+        # Now perform atomic delete + bulk insert
+        # This ensures clients never see empty/partial EPG data
+        logger.info(f"Parsed {total_programs} programs, performing atomic database update...")
+        send_epg_update(epg_source.id, "parsing_programs", 75, message="Updating database...")
+
+        batch_size = 1000
+        try:
+            with transaction.atomic():
+                # Kill any individual statement that hangs longer than 10 minutes.
+                # SET LOCAL automatically resets when this transaction ends (commit or rollback).
+                with connection.cursor() as cursor:
+                    cursor.execute("SET LOCAL statement_timeout = '10min'")
+                # Delete existing programs for mapped EPGs
+                deleted_count = ProgramData.objects.filter(epg_id__in=mapped_epg_ids).delete()[0]
+                logger.debug(f"Deleted {deleted_count} existing programs")
+
+                # Clean up orphaned programs for unmapped EPG entries
+                unmapped_epg_ids = list(EPGData.objects.filter(
+                    epg_source=epg_source
+                ).exclude(id__in=mapped_epg_ids).values_list('id', flat=True))
+
+                if unmapped_epg_ids:
+                    orphaned_count = ProgramData.objects.filter(epg_id__in=unmapped_epg_ids).delete()[0]
+                    if orphaned_count > 0:
+                        logger.info(f"Cleaned up {orphaned_count} orphaned programs for {len(unmapped_epg_ids)} unmapped EPG entries")
+
+                # Bulk insert all new programs in batches within the same transaction
+                for i in range(0, len(all_programs_to_create), batch_size):
+                    batch = all_programs_to_create[i:i + batch_size]
+                    ProgramData.objects.bulk_create(batch)
+
+                    # Update progress during insertion
+                    progress = 75 + int((i / len(all_programs_to_create)) * 20) if all_programs_to_create else 95
+                    if i % (batch_size * 5) == 0:
+                        send_epg_update(epg_source.id, "parsing_programs", min(95, progress),
+                                      message=f"Inserting programs... {i}/{len(all_programs_to_create)}")
+
+            logger.info(f"Atomic update complete: deleted {deleted_count}, inserted {total_programs} programs")
+
+        except Exception as db_error:
+            logger.error(f"Database error during atomic update: {db_error}", exc_info=True)
+            epg_source.status = EPGSource.STATUS_ERROR
+            epg_source.last_message = f"Database error: {str(db_error)}"
+            epg_source.save(update_fields=['status', 'last_message'])
+            send_epg_update(epg_source.id, "parsing_programs", 100, status="error", message=str(db_error))
+            return False
+        finally:
+            # Clear the large list to free memory
+            all_programs_to_create = None
+            gc.collect()
+
+        # Count channels that actually got programs
+        channels_with_programs = sum(1 for count in programs_by_channel.values() if count > 0)
+
+        # Success message
+        epg_source.status = EPGSource.STATUS_SUCCESS
+        epg_source.last_message = (
+            f"Parsed {total_programs:,} programs for {channels_with_programs} channels "
+            f"(skipped {skipped_programs:,} programs for {total_epg_count - mapped_count} unmapped channels)"
+        )
+        epg_source.updated_at = timezone.now()
+        epg_source.save(update_fields=['status', 'last_message', 'updated_at'])
+
+        # Log system event for EPG refresh
+        log_system_event(
+            event_type='epg_refresh',
+            source_name=epg_source.name,
+            programs=total_programs,
+            channels=channels_with_programs,
+            skipped_programs=skipped_programs,
+            unmapped_channels=total_epg_count - mapped_count,
+        )
+
+        # Send completion notification with status
+        send_epg_update(epg_source.id, "parsing_programs", 100,
+                      status="success",
+                      message=epg_source.last_message,
+                      updated_at=epg_source.updated_at.isoformat())
+
+        logger.info(f"Completed parsing programs for source: {epg_source.name} - "
+               f"{total_programs:,} programs for {channels_with_programs} channels, "
+               f"skipped {skipped_programs:,} programs for unmapped channels")
+        return True
+
+    except Exception as e:
+        logger.error(f"Error in parse_programs_for_source: {e}", exc_info=True)
+        # Update status to error
+        epg_source.status = EPGSource.STATUS_ERROR
+        epg_source.last_message = f"Error parsing programs: {str(e)}"
+        epg_source.save(update_fields=['status', 'last_message'])
+        send_epg_update(epg_source.id, "parsing_programs", 100,
+                      status="error",
+                      message=epg_source.last_message)
+        return False
+    finally:
+        # Final memory cleanup and tracking
+        if source_file:
+            try:
+                source_file.close()
+            except:
+                pass
+            source_file = None
+
+        # Explicitly release any remaining large data structures
+        programs_to_create = None
+        programs_by_channel = None
+        mapped_epg_ids = None
+        mapped_tvg_ids = None
+        tvg_id_to_epg_id = None
+        gc.collect()
+
+        # Add comprehensive memory cleanup at the end
+        cleanup_memory(log_usage=should_log_memory, force_collection=True)
+        if process:
+            final_memory = process.memory_info().rss / 1024 / 1024
+            logger.info(f"[parse_programs_for_source] Final memory usage: {final_memory:.2f} MB difference: {final_memory - initial_memory:.2f} MB")
+            # Explicitly clear the process object to prevent potential memory leaks
+            process = None
+@shared_task(bind=True)
+def fetch_schedules_direct_stations(self, source_id):
+    """
+    Lightweight Celery task that runs a stations-only Schedules Direct fetch.
+    Called on initial source creation so EPGData entries exist for auto-matching
+    before the user commits to a full schedule/program fetch.
+    """
+    try:
+        source = EPGSource.objects.get(id=source_id)
+    except EPGSource.DoesNotExist:
+        logger.error(f"EPGSource {source_id} not found for SD stations fetch")
+        return
+    fetch_schedules_direct(source, stations_only=True)
+
+
+def fetch_schedules_direct(source, stations_only=False, force=False):
+    """
+    Fetch EPG data from the Schedules Direct JSON API and persist it to the
+    EPGData / ProgramData models.
+
+    Authentication flow (as required by the SD API specification):
+      1. POST credentials to the token endpoint (password must be SHA1-hashed
+         as required by the Schedules Direct API specification.
+      2. Use the returned token for all subsequent requests via the 'token' header.
+      3. Tokens are valid for 24 hours; SD returns the current valid token if one
+         already exists for the account.
+
+    Data flow:
+      1. Fetch subscribed lineups for the account.
+      2. Fetch station metadata for each lineup.
+      3. Persist station metadata to EPGData.
+      4. If stations_only=True, stop here. Used on initial source creation so
+         the user can run Auto-match EPG before the full program fetch.
+      5. Fetch schedule grids in 14-day date-batched requests per station.
+      6. Fetch program metadata in batched requests (up to 5000 programIDs per request).
+      7. Persist channels to EPGData and programs to ProgramData.
+
+    Args:
+        source: EPGSource instance
+        stations_only: If True, only fetch and persist station metadata (no schedules/programs).
+                      Used on initial source creation to populate EPGData for auto-matching
+                      before channels are assigned.
+    """
+    import hashlib
+    from datetime import date
+
+
+    logger.info(f"Fetching Schedules Direct data for source: {source.name}")
+
+    # -------------------------------------------------------------------------
+    # Validate credentials
+    # -------------------------------------------------------------------------
+    username = (source.username or '').strip()
+    password = (source.password or '').strip()
+
+    if not username or not password:
+        msg = "Schedules Direct source requires both a username and password."
+        logger.error(msg)
+        source.status = EPGSource.STATUS_ERROR
+        source.last_message = msg
+        source.save(update_fields=['status', 'last_message'])
+        _sd_send_ws_sync(source.id, "refresh", 100, status="error", error=msg)
+        return
+
+    # -------------------------------------------------------------------------
+    # Enforce 2-hour minimum interval between full fetches (not stations-only).
+    # Schedules Direct enforces rate limits of ~200 requests per 2-hour window.
+    # This prevents automated abuse regardless of how the refresh was triggered.
+    #
+    # Exception: if no SDScheduleMD5 records exist yet, this is the first full
+    # refresh after initial source creation (stations-only runs first and updates
+    # updated_at, which would otherwise incorrectly trigger this guard). Always
+    # allow the first full refresh through so guide data is immediately available.
+    # -------------------------------------------------------------------------
+    if not stations_only and not force and source.updated_at:
+        from apps.epg.models import SDScheduleMD5 as _SDScheduleMD5
+        has_prior_full_refresh = _SDScheduleMD5.objects.filter(epg_source=source).exists()
+        if has_prior_full_refresh:
+            elapsed = (timezone.now() - source.updated_at).total_seconds()
+            min_interval_seconds = 2 * 3600  # 2 hours
+            if elapsed < min_interval_seconds:
+                remaining_minutes = int((min_interval_seconds - elapsed) / 60)
+                msg = (
+                    f"Schedules Direct refresh skipped. Minimum 2-hour interval not reached. "
+                    f"Last refreshed {int(elapsed / 60)} minutes ago. "
+                    f"Please wait {remaining_minutes} more minute(s)."
+                )
+                logger.warning(f"SD source {source.id}: {msg}")
+                source.status = EPGSource.STATUS_IDLE
+                source.last_message = msg
+                source.save(update_fields=['status', 'last_message'])
+                _sd_send_ws_sync(source.id, "refresh", 100, status="idle", message=msg)
+                return
+        else:
+            logger.info(f"SD source {source.id}: No prior full refresh detected, skipping 2-hour guard for first full fetch.")
+    elif force and not stations_only:
+        logger.info(f"SD source {source.id}: Force flag set, bypassing 2-hour refresh guard.")
+
+    # -------------------------------------------------------------------------
+    # Build SD-specific headers
+    # SD API spec requires the User-Agent to identify the application and version.
+    # SergeantPanda confirmed Dispatcharr should identify itself properly.
+    # -------------------------------------------------------------------------
+    from version import __version__ as dispatcharr_version
+    sd_user_agent = f"Dispatcharr/{dispatcharr_version}"
+
+    def _sd_headers(token=None):
+        h = {
+            'Content-Type': 'application/json',
+            'User-Agent': sd_user_agent,
+        }
+        if token:
+            h['token'] = token
+        return h
+
+    # -------------------------------------------------------------------------
+    # Step 1: Authenticate and obtain session token
+    # The SD API requires the password to be SHA1-hashed before transmission.
+    # This is a requirement of the Schedules Direct API specification, not an
+    # architectural choice.
+    # -------------------------------------------------------------------------
+    source.status = EPGSource.STATUS_FETCHING
+    source.last_message = "Authenticating with Schedules Direct..."
+    source.save(update_fields=['status', 'last_message'])
+    _sd_send_ws_sync(source.id, "parsing_programs", 2, message="Authenticating with Schedules Direct...")
+
+    try:
+        sha1_password = hashlib.sha1(password.encode('utf-8')).hexdigest()
+        token_response = requests.post(
+            f"{SD_BASE_URL}/token",
+            json={'username': username, 'password': sha1_password},
+            headers=_sd_headers(),
+            timeout=30,
+        )
+        token_response.raise_for_status()
+        token_data = token_response.json()
+
+        auth_code = token_data.get('code', 0)
+        if auth_code != 0:
+            if auth_code == 4007:
+                msg = "Schedules Direct: this application is not authorized. Please contact the Dispatcharr maintainers."
+            elif auth_code == 4004:
+                msg = "Schedules Direct: account locked due to too many failed login attempts. Try again in 15 minutes."
+            elif auth_code == 4009:
+                msg = "Schedules Direct: too many login attempts in 24 hours. Token is valid for 24 hours. Check for misconfiguration."
+            elif auth_code == 4001:
+                msg = "Schedules Direct: account has expired. Please renew your subscription at schedulesdirect.org."
+            elif auth_code == 4008:
+                msg = "Schedules Direct: account is inactive. Please log in to schedulesdirect.org to reactivate."
+            else:
+                msg = f"Schedules Direct authentication failed (code {auth_code}): {token_data.get('message', 'Unknown error')}"
+            logger.error(msg)
+            source.status = EPGSource.STATUS_ERROR
+            source.last_message = msg
+            source.save(update_fields=['status', 'last_message'])
+            _sd_send_ws_sync(source.id, "refresh", 100, status="error", error=msg)
+            return
+
+        token = token_data.get('token')
+        if not token:
+            msg = "Schedules Direct returned no token."
+            logger.error(msg)
+            source.status = EPGSource.STATUS_ERROR
+            source.last_message = msg
+            source.save(update_fields=['status', 'last_message'])
+            _sd_send_ws_sync(source.id, "refresh", 100, status="error", error=msg)
+            return
+
+        logger.info("Schedules Direct authentication successful.")
+
+    except requests.exceptions.RequestException as e:
+        msg = f"Network error authenticating with Schedules Direct: {e}"
+        logger.error(msg, exc_info=True)
+        source.status = EPGSource.STATUS_ERROR
+        source.last_message = msg
+        source.save(update_fields=['status', 'last_message'])
+        _sd_send_ws_sync(source.id, "refresh", 100, status="error", error=msg)
+        return
+
+    # -------------------------------------------------------------------------
+    # Step 2: Check account status (respect OFFLINE system status)
+    # -------------------------------------------------------------------------
+    try:
+        status_response = requests.get(
+            f"{SD_BASE_URL}/status",
+            headers=_sd_headers(token),
+            timeout=30,
+        )
+        status_response.raise_for_status()
+        status_data = status_response.json()
+        system_status = status_data.get('systemStatus', [{}])[0].get('status', 'Online')
+        if system_status == 'Offline':
+            # Per SD API spec: if system is offline, disconnect and do not
+            # retry for 1 hour. We set idle status rather than error since
+            # this is a temporary SD-side condition.
+            msg = "Schedules Direct system is currently offline. Per SD guidelines, retrying in 1 hour."
+            logger.warning(msg)
+            source.status = EPGSource.STATUS_IDLE
+            source.last_message = msg
+            source.save(update_fields=['status', 'last_message'])
+            _sd_send_ws_sync(source.id, "refresh", 100, status="idle", message=msg)
+            return
+        logger.debug(f"Schedules Direct system status: {system_status}")
+    except requests.exceptions.RequestException as e:
+        logger.warning(f"Could not fetch SD system status, proceeding anyway: {e}")
+
+    # -------------------------------------------------------------------------
+    # Step 3: Fetch subscribed lineups and build station map
+    # -------------------------------------------------------------------------
+    _sd_send_ws_sync(source.id, "parsing_programs", 10, message="Fetching subscribed lineups...")
+    try:
+        lineups_response = requests.get(
+            f"{SD_BASE_URL}/lineups",
+            headers=_sd_headers(token),
+            timeout=30,
+        )
+        # SD returns 400 with code 4102 when no lineups are configured.
+        # This is a valid account state. The user needs to add lineups via
+        # the Manage Lineups UI. Treat as idle rather than error.
+        if lineups_response.status_code == 400:
+            sd_data = lineups_response.json()
+            if sd_data.get('code') == 4102:
+                msg = "No lineups configured. Use the Manage Lineups option in the EPG source settings to add a lineup."
+                logger.warning(f"SD source {source.id}: no lineups configured on account (4102).")
+                source.status = EPGSource.STATUS_IDLE
+                source.last_message = msg
+                source.save(update_fields=['status', 'last_message'])
+                _sd_send_ws_sync(source.id, "refresh", 100, status="idle", message=msg)
+                return
+        lineups_response.raise_for_status()
+        lineups_data = lineups_response.json()
+        lineups = [l for l in lineups_data.get('lineups', []) if not l.get('isDeleted', False)]
+        if not lineups:
+            msg = "No lineups configured. Use the Manage Lineups option in the EPG source settings to add a lineup."
+            logger.warning(f"SD source {source.id}: no active lineups found.")
+            source.status = EPGSource.STATUS_IDLE
+            source.last_message = msg
+            source.save(update_fields=['status', 'last_message'])
+            _sd_send_ws_sync(source.id, "refresh", 100, status="idle", message=msg)
+            return
+        logger.info(f"Found {len(lineups)} lineup(s) in SD account.")
+
+        # Extract country from lineup IDs (format: "USA-NJ29486-X", "GBR-...", etc.)
+        sd_lineup_country = None
+        for l in lineups:
+            lid = l.get('lineupID') or l.get('lineup') or ''
+            if '-' in lid:
+                sd_lineup_country = lid.split('-')[0]
+                break
+        logger.debug(f"SD lineup country: {sd_lineup_country}")
+    except requests.exceptions.RequestException as e:
+        msg = f"Failed to fetch Schedules Direct lineups: {e}"
+        logger.error(msg, exc_info=True)
+        source.status = EPGSource.STATUS_ERROR
+        source.last_message = msg
+        source.save(update_fields=['status', 'last_message'])
+        _sd_send_ws_sync(source.id, "refresh", 100, status="error", error=msg)
+        return
+
+    # Build station metadata map: stationID -> {name, callsign, logo_url}
+    station_map = {}
+    _sd_send_ws_sync(source.id, "parsing_programs", 18, message=f"Fetching station metadata for {len(lineups)} lineup(s)...")
+    for lineup in lineups:
+        lineup_id = lineup.get('lineupID') or lineup.get('lineup')
+        if not lineup_id:
+            continue
+        try:
+            detail_response = requests.get(
+                f"{SD_BASE_URL}/lineups/{lineup_id}",
+                headers=_sd_headers(token),
+                timeout=30,
+            )
+            detail_response.raise_for_status()
+            detail_data = detail_response.json()
+            for station in detail_data.get('stations', []):
+                sid = station.get('stationID')
+                if not sid:
+                    continue
+                logo_url = None
+                logos = station.get('stationLogo') or station.get('logo') or []
+                if isinstance(logos, list) and logos:
+                    # Read preferred logo style from source settings; default to 'dark'
+                    logo_style = (source.custom_properties or {}).get('logo_style', 'dark')
+                    preferred = next((l for l in logos if l.get('category') == logo_style), logos[0])
+                    logo_url = preferred.get('URL') or preferred.get('url')
+                elif isinstance(logos, dict):
+                    logo_url = logos.get('URL') or logos.get('url')
+                station_map[sid] = {
+                    'name': station.get('name', sid),
+                    'callsign': station.get('callsign', ''),
+                    'logo_url': logo_url,
+                }
+            logger.debug(f"Fetched {len(detail_data.get('stations', []))} stations from lineup {lineup_id}")
+        except requests.exceptions.RequestException as e:
+            logger.warning(f"Failed to fetch lineup details for {lineup_id}: {e}")
+
+    if not station_map:
+        msg = "No stations found across all Schedules Direct lineups."
+        logger.warning(msg)
+        source.status = EPGSource.STATUS_ERROR
+        source.last_message = msg
+        source.save(update_fields=['status', 'last_message'])
+        _sd_send_ws_sync(source.id, "refresh", 100, status="error", error=msg)
+        return
+
+    logger.info(f"Built station map with {len(station_map)} stations.")
+
+    # -------------------------------------------------------------------------
+    # Step 4: Persist station metadata to EPGData
+    # -------------------------------------------------------------------------
+    source.status = EPGSource.STATUS_PARSING
+    source.last_message = f"Syncing {len(station_map)} stations..."
+    source.save(update_fields=['status', 'last_message'])
+    _sd_send_ws_sync(source.id, "parsing_programs", 28, message=f"Syncing {len(station_map)} stations to database...")
+
+    existing_epg_map = {
+        epg.tvg_id: epg
+        for epg in EPGData.objects.filter(epg_source=source)
     }
 
-    # Only fetch the account when we actually need to fill in missing fields.
-    # Many callers in tight loops already pass status/message; skip the DB hit then.
-    if "status" not in kwargs or "message" not in kwargs:
-        try:
-            account = M3UAccount.objects.only("status", "last_message").get(id=account_id)
-            if "status" not in kwargs:
-                data["status"] = account.status
-            if "message" not in kwargs and account.last_message:
-                data["message"] = account.last_message
-        except Exception:
-            pass
+    epgs_to_create = []
+    epgs_to_update = []
+    icon_max_length = EPGData._meta.get_field('icon_url').max_length
+    name_max_length = EPGData._meta.get_field('name').max_length
 
-    # Add the additional key-value pairs from kwargs
-    data.update(kwargs)
-    send_websocket_update("updates", "update", data, collect_garbage=False)
+    for sid, info in station_map.items():
+        display_name = (info['name'] or sid)[:name_max_length]
+        logo = info['logo_url']
+        if logo and len(logo) > icon_max_length:
+            logo = None
 
-    # Explicitly clear data reference to help garbage collection
-    data = None
-
-
-def evaluate_profile_expiration_notification(profile):
-    """
-    Evaluate a single M3UAccountProfile's expiration date and create, update,
-    or delete the corresponding SystemNotification accordingly.
-
-    Returns the notification key that should remain active (warning or expired),
-    or None if the profile is not expiring soon and any stale notifications were removed.
-    This return value is used by the bulk task to track active keys for stale cleanup.
-    """
-    from core.models import SystemNotification
-    from core.utils import send_websocket_notification, send_notification_dismissed
-
-    exp = profile.exp_date
-    if not exp:
-        return None
-
-    now = timezone.now()
-    warning_threshold = now + timezone.timedelta(days=7)
-    warning_key = f"xc-exp-warning-{profile.id}"
-    expired_key = f"xc-exp-expired-{profile.id}"
-
-    if exp <= now:
-        # Already expired — delete warning, create/update expired notification
-        deleted_warning = list(
-            SystemNotification.objects.filter(notification_key=warning_key)
-            .values_list("notification_key", flat=True)
-        )
-        SystemNotification.objects.filter(notification_key=warning_key).delete()
-        for key in deleted_warning:
-            send_notification_dismissed(key)
-
-        notification, created = SystemNotification.objects.update_or_create(
-            notification_key=expired_key,
-            defaults={
-                "notification_type": SystemNotification.NotificationType.WARNING,
-                "priority": SystemNotification.Priority.HIGH,
-                "title": f"Account Expired: {profile.name}",
-                "message": (
-                    f'Profile "{profile.name}" on M3U account '
-                    f'"{profile.m3u_account.name}" has expired '
-                    f"(expired {exp.strftime('%Y-%m-%d %H:%M UTC')})."
-                ),
-                "action_data": {
-                    "profile_id": profile.id,
-                    "account_id": profile.m3u_account.id,
-                    "account_name": profile.m3u_account.name,
-                    "profile_name": profile.name,
-                    "exp_date": exp.isoformat(),
-                },
-                "is_active": True,
-                "admin_only": True,
-            },
-        )
-        send_websocket_notification(notification)
-        return expired_key
-
-    elif exp <= warning_threshold:
-        # Expiring within 7 days — delete expired notification, create/update warning
-        deleted_expired = list(
-            SystemNotification.objects.filter(notification_key=expired_key)
-            .values_list("notification_key", flat=True)
-        )
-        SystemNotification.objects.filter(notification_key=expired_key).delete()
-        for key in deleted_expired:
-            send_notification_dismissed(key)
-
-        days_left = (exp - now).days
-        if days_left == 0:
-            expires_in_str = "today"
-        elif days_left == 1:
-            expires_in_str = "in 1 day"
+        if sid in existing_epg_map:
+            epg_obj = existing_epg_map[sid]
+            needs_update = False
+            if epg_obj.name != display_name:
+                epg_obj.name = display_name
+                needs_update = True
+            if epg_obj.icon_url != logo:
+                epg_obj.icon_url = logo
+                needs_update = True
+            if needs_update:
+                epgs_to_update.append(epg_obj)
         else:
-            expires_in_str = f"in {days_left} days"
+            epgs_to_create.append(EPGData(
+                tvg_id=sid,
+                name=display_name,
+                icon_url=logo,
+                epg_source=source,
+            ))
 
-        notification, created = SystemNotification.objects.update_or_create(
-            notification_key=warning_key,
-            defaults={
-                "notification_type": SystemNotification.NotificationType.WARNING,
-                "priority": SystemNotification.Priority.NORMAL,
-                "title": f"Account Expiring: {profile.name}",
-                "message": (
-                    f'Profile "{profile.name}" on M3U account '
-                    f'"{profile.m3u_account.name}" expires {expires_in_str} '
-                    f"(expires {exp.strftime('%Y-%m-%d %H:%M UTC')})."
-                ),
-                "action_data": {
-                    "profile_id": profile.id,
-                    "account_id": profile.m3u_account.id,
-                    "account_name": profile.m3u_account.name,
-                    "profile_name": profile.name,
-                    "exp_date": exp.isoformat(),
-                },
-                "is_active": True,
-                "admin_only": True,
-            },
+    if epgs_to_create:
+        EPGData.objects.bulk_create(epgs_to_create, ignore_conflicts=True)
+        logger.info(f"Created {len(epgs_to_create)} new EPGData entries.")
+    if epgs_to_update:
+        EPGData.objects.bulk_update(epgs_to_update, ['name', 'icon_url'])
+        logger.info(f"Updated {len(epgs_to_update)} existing EPGData entries.")
+
+    gc.collect()
+
+    # Rebuild map with fresh DB ids for all stations
+    epg_id_map = {
+        epg.tvg_id: epg.id
+        for epg in EPGData.objects.filter(epg_source=source, tvg_id__in=list(station_map.keys()))
+    }
+
+    # Station sync complete. Send progress update before continuing into programs phase.
+    # We deliberately do NOT send parsing_channels at 100 with status=success here
+    # because that would cause the frontend to mark the source as complete and
+    # stop rendering progress updates for the subsequent program fetch phases.
+    _sd_send_ws_sync(source.id, "parsing_programs", 30,
+                    message=f"Stations synced ({len(station_map)} stations). Preparing schedule fetch...")
+
+    # -------------------------------------------------------------------------
+    # Stations-only mode. Used on initial source creation.
+    # Stop here so the user can run Auto-match EPG before the full program fetch.
+    # -------------------------------------------------------------------------
+    if stations_only:
+        success_msg = (
+            f"{len(station_map)} stations loaded from Schedules Direct. "
+            f"Run Auto-match EPG to map your channels, then use the Refresh "
+            f"button to populate guide data."
         )
-        send_websocket_notification(notification)
-        return warning_key
+        source.status = EPGSource.STATUS_SUCCESS
+        source.last_message = success_msg
+        source.updated_at = timezone.now()
+        source.save(update_fields=['status', 'last_message', 'updated_at'])
+        _sd_send_ws_sync(source.id, "parsing_channels", 100, status="success",
+                        message=success_msg, channels_count=len(station_map))
+        logger.info(f"Stations-only fetch complete for source: {source.name} ({len(station_map)} stations)")
+        return
 
-    else:
-        # Not expiring soon — delete any stale notifications
-        deleted_keys = list(
-            SystemNotification.objects.filter(
-                notification_key__in=[warning_key, expired_key]
-            ).values_list("notification_key", flat=True)
-        )
-        SystemNotification.objects.filter(
-            notification_key__in=[warning_key, expired_key]
-        ).delete()
-        for key in deleted_keys:
-            send_notification_dismissed(key)
-        return None
+    # -------------------------------------------------------------------------
+    # Step 5: MD5-delta schedule fetch
+    # First fetch MD5 hashes for all stations/dates. Compare against our
+    # locally cached hashes to determine which schedules have changed.
+    # Only download schedules that have actually changed; this minimises
+    # API calls against SD's rate-limited endpoints.
+    # -------------------------------------------------------------------------
+    from apps.epg.models import SDScheduleMD5
+    from django.utils.dateparse import parse_datetime
 
+    _sd_send_ws_sync(source.id, "parsing_programs", 33, message=f"Checking schedule MD5s for {len(station_map)} stations over {SD_DAYS_TO_FETCH} days...")
+    station_ids = list(station_map.keys())
+    today = date.today()
+    date_list = [(today + timedelta(days=i)).strftime('%Y-%m-%d') for i in range(SD_DAYS_TO_FETCH)]
 
-@shared_task
-def check_account_expirations():
-    """
-    Daily task: check all account profiles for upcoming expirations.
-    Creates/updates SystemNotifications for profiles expiring within 7 days.
-    Uses separate notification keys for warning vs expired so users can
-    dismiss the 7-day warning and still receive the expired notification.
-    """
-    from apps.m3u.models import M3UAccountProfile
-    from core.models import SystemNotification
-    from core.utils import send_notification_dismissed
+    # Prune SDScheduleMD5 records whose dates have rolled off the fetch window.
+    # These accumulate one row per station per day and are never useful once past.
+    pruned_sched_md5_count = SDScheduleMD5.objects.filter(epg_source=source, date__lt=today).delete()[0]
+    if pruned_sched_md5_count:
+        logger.info(f"Pruned {pruned_sched_md5_count} expired SDScheduleMD5 records (before {today}).")
 
-    # Find all active profiles with an exp_date that is set
-    expiring_profiles = (
-        M3UAccountProfile.objects.filter(
-            m3u_account__is_active=True,
-            is_active=True,
-            exp_date__isnull=False,
-        )
-        .select_related("m3u_account")
-    )
+    # Fetch MD5 hashes for all stations in batches of 5000
+    STATION_BATCH_SIZE = 5000
+    server_md5s = {}  # (station_id, date) -> {md5, last_modified}
 
-    active_notification_keys = set()
+    logger.info(f"Fetching schedule MD5s for {len(station_ids)} stations over {SD_DAYS_TO_FETCH} days.")
 
-    for profile in expiring_profiles:
-        active_key = evaluate_profile_expiration_notification(profile)
-        if active_key:
-            active_notification_keys.add(active_key)
+    station_batches = [station_ids[i:i + STATION_BATCH_SIZE] for i in range(0, len(station_ids), STATION_BATCH_SIZE)]
+    for batch in station_batches:
+        try:
+            md5_response = requests.post(
+                f"{SD_BASE_URL}/schedules/md5",
+                json=[{'stationID': sid, 'date': date_list} for sid in batch],
+                headers=_sd_headers(token),
+                timeout=120,
+            )
+            md5_response.raise_for_status()
+            md5_data = md5_response.json()
+            for sid, dates in md5_data.items():
+                for date_str, info in dates.items():
+                    if info.get('code', 0) == 0:
+                        server_md5s[(sid, date_str)] = {
+                            'md5': info.get('md5', ''),
+                            'last_modified': info.get('lastModified', ''),
+                        }
+        except requests.exceptions.RequestException as e:
+            logger.warning(f"Failed to fetch schedule MD5s: {e}")
 
-    # Delete stale notifications for profiles whose expiration was extended
-    stale = SystemNotification.objects.filter(
-        is_active=True,
-    ).filter(
-        models.Q(notification_key__startswith="xc-exp-warning-") |
-        models.Q(notification_key__startswith="xc-exp-expired-")
-    ).exclude(notification_key__in=active_notification_keys)
-    stale_keys = list(stale.values_list("notification_key", flat=True))
-    stale.delete()
-    for key in stale_keys:
-        send_notification_dismissed(key)
+    # Load our cached MD5s from DB
+    cached_md5s = {
+        (r.station_id, r.date.strftime('%Y-%m-%d')): r.md5
+        for r in SDScheduleMD5.objects.filter(epg_source=source, station_id__in=station_ids)
+    }
+
+    # Determine which station/date combinations need downloading
+    changed_by_station = {}  # station_id -> [date_str, ...]
+    for (sid, date_str), server_info in server_md5s.items():
+        if date_str not in date_list:
+            continue
+        cached = cached_md5s.get((sid, date_str))
+        if cached != server_info['md5']:
+            changed_by_station.setdefault(sid, []).append(date_str)
+
+    total_changed = sum(len(v) for v in changed_by_station.values())
+    total_possible = len(station_ids) * len(date_list)
+    logger.info(f"Schedule MD5 check: {len(server_md5s)} hashes checked, {total_changed} station/date combinations changed (of {total_possible} possible).")
+    _sd_send_ws_sync(source.id, "parsing_programs", 38,
+                    message=f"MD5 check complete: {len(changed_by_station)} stations have schedule updates.")
+
+    # schedules_by_station: stationID -> list of {programID, airDateTime, duration, ...}
+    schedules_by_station = {sid: [] for sid in station_ids}
+    program_ids_needed = set()
+
+    if not changed_by_station:
+        logger.info("No schedule changes detected, skipping schedule and program downloads.")
+        _sd_send_ws_sync(source.id, "parsing_programs", 100, status="success",
+                        message="No schedule changes detected since last refresh. Guide data is up to date.")
+        source.status = EPGSource.STATUS_SUCCESS
+        source.last_message = "No schedule changes detected. Guide data is up to date."
+        source.updated_at = timezone.now()
+        source.save(update_fields=['status', 'last_message', 'updated_at'])
+        return
+
+    # Download only changed schedules, batched by 7-day windows per station
+    SCHEDULE_BATCH_DAYS = 7
+    changed_station_ids = list(changed_by_station.keys())
+    date_batches = [date_list[i:i + SCHEDULE_BATCH_DAYS] for i in range(0, len(date_list), SCHEDULE_BATCH_DAYS)]
+    new_md5_records = []
+    updated_md5_records = []
+    existing_md5_map = {
+        (r.station_id, r.date.strftime('%Y-%m-%d')): r
+        for r in SDScheduleMD5.objects.filter(epg_source=source, station_id__in=changed_station_ids)
+    }
+
+    for batch_idx, date_batch in enumerate(date_batches):
+        # Notify frontend at the start of each batch so progress updates immediately
+        pre_progress = 38 + int((batch_idx / len(date_batches)) * 22)
+        logger.info(f"Fetching schedule batch {batch_idx + 1} of {len(date_batches)}...")
+        _sd_send_ws_sync(source.id, "parsing_programs", min(59, pre_progress),
+                        message=f"Fetching schedules: batch {batch_idx + 1} of {len(date_batches)}...")
+        # Yield to gevent hub so the WebSocket update is delivered before the blocking request
+        try:
+            import gevent; gevent.sleep(0)
+        except ImportError:
+            pass
+        # Only include stations that have changes in this date batch
+        request_body = [
+            {'stationID': sid, 'date': [d for d in date_batch if d in changed_by_station.get(sid, [])]}
+            for sid in changed_station_ids
+            if any(d in changed_by_station.get(sid, []) for d in date_batch)
+        ]
+        if not request_body:
+            continue
+        try:
+            sched_response = requests.post(
+                f"{SD_BASE_URL}/schedules",
+                json=request_body,
+                headers=_sd_headers(token),
+                timeout=120,
+            )
+            sched_response.raise_for_status()
+            sched_data = sched_response.json()
+
+            for station_sched in sched_data:
+                sid = station_sched.get('stationID')
+                if not sid:
+                    continue
+                programs = station_sched.get('programs', [])
+                schedules_by_station.setdefault(sid, []).extend(programs)
+                for prog in programs:
+                    pid = prog.get('programID')
+                    if pid:
+                        program_ids_needed.add(pid)
+
+                # Update MD5 cache for this station/date
+                meta = station_sched.get('metadata', {})
+                start_date = meta.get('startDate')
+                md5_val = meta.get('md5', '')
+                last_mod_str = meta.get('modified', '')
+                if start_date and md5_val:
+                    key = (sid, start_date)
+                    last_mod = parse_datetime(last_mod_str) if last_mod_str else timezone.now()
+                    if key in existing_md5_map:
+                        rec = existing_md5_map[key]
+                        rec.md5 = md5_val
+                        rec.last_modified = last_mod
+                        updated_md5_records.append(rec)
+                    else:
+                        import datetime as dt_module
+                        try:
+                            date_obj = dt_module.date.fromisoformat(start_date)
+                            new_md5_records.append(SDScheduleMD5(
+                                epg_source=source,
+                                station_id=sid,
+                                date=date_obj,
+                                md5=md5_val,
+                                last_modified=last_mod,
+                            ))
+                        except ValueError:
+                            pass
+
+            progress = 38 + int(((batch_idx + 1) / len(date_batches)) * 22)
+            _sd_send_ws_sync(source.id, "parsing_programs", min(60, progress),
+                            message=f"Fetching changed schedules: batch {batch_idx + 1}/{len(date_batches)} ({len(program_ids_needed):,} programs found)")
+
+        except requests.exceptions.RequestException as e:
+            logger.warning(f"Failed to fetch schedule batch {batch_idx + 1}: {e}")
+
+    # Persist updated MD5 cache
+    if new_md5_records:
+        SDScheduleMD5.objects.bulk_create(new_md5_records, ignore_conflicts=True)
+        logger.info(f"Cached {len(new_md5_records)} new schedule MD5s.")
+    if updated_md5_records:
+        SDScheduleMD5.objects.bulk_update(updated_md5_records, ['md5', 'last_modified'])
+        logger.info(f"Updated {len(updated_md5_records)} existing schedule MD5s.")
+
+    if not program_ids_needed:
+        msg = "No schedule data returned from Schedules Direct."
+        logger.warning(msg)
+        source.status = EPGSource.STATUS_ERROR
+        source.last_message = msg
+        source.save(update_fields=['status', 'last_message'])
+        _sd_send_ws_sync(source.id, "parsing_programs", 100, status="error", error=msg)
+        return
+
+    # -------------------------------------------------------------------------
+    # Step 6: MD5-delta program metadata fetch
+    # The schedule response includes an MD5 hash per program airing.
+    # Compare against our cached program MD5s to only download programs
+    # whose metadata has changed since our last fetch.
+    # -------------------------------------------------------------------------
+
+    # Build map of programID -> md5 from schedule data
+    schedule_program_md5s = {}  # programID -> md5 from schedule
+    for sid, airings in schedules_by_station.items():
+        for airing in airings:
+            pid = airing.get('programID')
+            md5 = airing.get('md5')
+            if pid and md5:
+                schedule_program_md5s[pid] = md5
+
+    # Load cached program MD5s from SDProgramMD5 table, keyed by programID
+    cached_prog_md5s = {
+        r.program_id: r.md5
+        for r in SDProgramMD5.objects.filter(
+            epg_source=source,
+            program_id__in=program_ids_needed,
+        ).only('program_id', 'md5')
+    }
+
+    # Only fetch programs where MD5 differs from our cached value
+    programs_to_fetch = {
+        pid for pid in program_ids_needed
+        if schedule_program_md5s.get(pid) != cached_prog_md5s.get(pid)
+    }
 
     logger.info(
-        f"Account expiration check complete: {len(active_notification_keys)} active notifications"
+        f"Program MD5 delta: {len(program_ids_needed)} programs in schedules, "
+        f"{len(programs_to_fetch)} need downloading ({len(program_ids_needed) - len(programs_to_fetch)} unchanged).")
+
+    program_metadata = {}
+    program_id_list = list(programs_to_fetch)
+    total_batches = max(1, (len(program_id_list) + SD_PROGRAM_BATCH_SIZE - 1) // SD_PROGRAM_BATCH_SIZE)
+
+    if program_id_list:
+        logger.info(f"Fetching metadata for {len(program_id_list)} programs in {total_batches} batch(es).")
+        for batch_idx in range(total_batches):
+            # Notify frontend at the start of each batch so progress updates immediately
+            pre_progress = 60 + int((batch_idx / total_batches) * 20)
+            logger.info(f"Fetching program metadata batch {batch_idx + 1} of {total_batches} ({batch_idx * SD_PROGRAM_BATCH_SIZE:,} of {len(program_id_list):,} programs)...")
+            _sd_send_ws_sync(source.id, "parsing_programs", min(79, pre_progress),
+                            message=f"Fetching program data: batch {batch_idx + 1} of {total_batches} ({batch_idx * SD_PROGRAM_BATCH_SIZE:,} of {len(program_id_list):,} programs)")
+            # Yield to gevent hub so the WebSocket update is delivered before the blocking request
+            try:
+                import gevent; gevent.sleep(0)
+            except ImportError:
+                pass
+            batch = program_id_list[batch_idx * SD_PROGRAM_BATCH_SIZE:(batch_idx + 1) * SD_PROGRAM_BATCH_SIZE]
+            try:
+                prog_response = requests.post(
+                    f"{SD_BASE_URL}/programs",
+                    json=batch,
+                    headers=_sd_headers(token),
+                    timeout=120,
+                )
+                prog_response.raise_for_status()
+                prog_data = prog_response.json()
+                for prog in prog_data:
+                    pid = prog.get('programID')
+                    if pid:
+                        program_metadata[pid] = prog
+
+                progress = 60 + int(((batch_idx + 1) / total_batches) * 20)
+                _sd_send_ws_sync(source.id, "parsing_programs", min(80, progress),
+                                message=f"Fetching program details: batch {batch_idx + 1}/{total_batches} ({len(program_metadata):,} programs loaded)")
+                logger.debug(f"Fetched program metadata batch {batch_idx + 1}/{total_batches}")
+
+            except requests.exceptions.RequestException as e:
+                logger.warning(f"Failed to fetch program metadata batch {batch_idx + 1}: {e}")
+    else:
+        logger.info("All program metadata unchanged - skipping program download.")
+        _sd_send_ws_sync(source.id, "parsing_programs", 80, message="Program metadata unchanged - using cached data.")
+
+    gc.collect()
+
+    # -------------------------------------------------------------------------
+    # Step 7: Build ProgramData records and persist atomically
+    # -------------------------------------------------------------------------
+    logger.info("Building program records...")
+    _sd_send_ws_sync(source.id, "parsing_programs", 80)
+
+    # Only process stations that are mapped to channels to match the existing
+    # XMLTV flow (parse_programs_for_source only processes mapped channels).
+    from apps.channels.models import Channel as ChannelModel
+    mapped_epg_ids = set(
+        ChannelModel.objects.filter(
+            epg_data__epg_source=source,
+            epg_data__isnull=False,
+        ).values_list('epg_data_id', flat=True)
     )
+    mapped_tvg_ids = set(
+        EPGData.objects.filter(
+            id__in=mapped_epg_ids,
+            epg_source=source,
+        ).values_list('tvg_id', flat=True)
+    )
+
+    # Cache existing program data for unchanged programs BEFORE surgical delete.
+    # When a station/date schedule MD5 changes, ALL airings are re-fetched, but only
+    # programs with changed program MD5s get metadata re-downloaded. The surgical delete
+    # wipes ALL ProgramData for changed dates, so unchanged programs lose their titles.
+    # This cache preserves their data for rebuilding.
+    unchanged_pids = set()
+    for sid, airings in schedules_by_station.items():
+        if sid not in mapped_tvg_ids:
+            continue
+        for airing in airings:
+            pid = airing.get('programID')
+            if pid and pid not in program_metadata:
+                unchanged_pids.add(pid)
+
+    existing_program_cache = {}
+    if unchanged_pids:
+        for pd in ProgramData.objects.filter(
+            epg__epg_source=source,
+            program_id__in=unchanged_pids,
+        ).only('program_id', 'title', 'description', 'sub_title', 'custom_properties'):
+            if pd.program_id not in existing_program_cache:
+                existing_program_cache[pd.program_id] = {
+                    'title': pd.title,
+                    'description': pd.description,
+                    'sub_title': pd.sub_title,
+                    'custom_properties': pd.custom_properties,
+                }
+        logger.info(f"Cached {len(existing_program_cache)} existing program records for unchanged programs.")
+
+    all_programs_to_create = []
+    total_programs = 0
+    skipped_unmapped = 0
+
+    for sid, airings in schedules_by_station.items():
+        if sid not in mapped_tvg_ids:
+            skipped_unmapped += len(airings)
+            continue
+
+        epg_db_id = epg_id_map.get(sid)
+        if not epg_db_id:
+            continue
+
+        for airing in airings:
+            pid = airing.get('programID')
+            air_time = airing.get('airDateTime')
+            duration_secs = airing.get('duration', 0)
+
+            if not pid or not air_time or not duration_secs:
+                continue
+
+            try:
+                start_dt = parse_schedules_direct_time(air_time)
+                end_dt = start_dt + timedelta(seconds=int(duration_secs))
+            except Exception as e:
+                logger.debug(f"Could not parse air time '{air_time}': {e}")
+                continue
+
+            meta = program_metadata.get(pid, {})
+            cached_prog = existing_program_cache.get(pid) if not meta else None
+
+            if cached_prog:
+                # Unchanged program — reuse cached data from before surgical delete
+                title = cached_prog['title'] or 'No Title'
+                desc = cached_prog['description'] or ''
+                episode_title = cached_prog['sub_title'] or ''
+                custom_props = cached_prog['custom_properties'] or {}
+            else:
+                titles = meta.get('titles', [{}])
+                title = titles[0].get('title120', '') if titles else ''
+                if not title:
+                    title = meta.get('episodeTitle150', '') or 'No Title'
+            title = title[:255]
+
+            if not cached_prog:
+                descriptions = meta.get('descriptions', {})
+                desc = ''
+                for key in ('description1000', 'description255', 'description100'):
+                    candidates = descriptions.get(key, [])
+                    if candidates:
+                        desc = candidates[0].get('description', '')
+                        if desc:
+                            break
+
+                episode_title = meta.get('episodeTitle150', '')
+
+                # Build custom_properties following the same pattern as the XMLTV parser
+                custom_props = {}
+
+                # Season/Episode — search all metadata entries, not just [0]
+                metadata_block = meta.get('metadata', [])
+                gracenote_meta = {}
+                for md_entry in metadata_block:
+                    if 'Gracenote' in md_entry:
+                        gracenote_meta = md_entry['Gracenote']
+                        break
+                if not gracenote_meta:
+                    # Fall back to TVmaze if Gracenote is absent
+                    for md_entry in metadata_block:
+                        if 'TVmaze' in md_entry:
+                            gracenote_meta = md_entry['TVmaze']
+                            break
+                season = gracenote_meta.get('season')
+                episode = gracenote_meta.get('episode')
+                if season:
+                    custom_props['season'] = int(season)
+                if episode:
+                    custom_props['episode'] = int(episode)
+                if season and episode:
+                    custom_props['onscreen_episode'] = f"S{int(season)} E{int(episode)}"
+
+                # Content rating — store full array, pick display rating by lineup country
+                content_rating = meta.get('contentRating', [])
+                if content_rating:
+                    custom_props['content_ratings'] = content_rating
+                    selected = None
+                    if sd_lineup_country:
+                        for cr in content_rating:
+                            if cr.get('country', '') == sd_lineup_country:
+                                selected = cr
+                                break
+                    if not selected:
+                        # Fall back to USA, then first available
+                        for cr in content_rating:
+                            if cr.get('country', '') == 'USA':
+                                selected = cr
+                                break
+                    if not selected:
+                        selected = content_rating[0]
+                    custom_props['rating'] = selected.get('code', '')
+                    custom_props['rating_system'] = selected.get('body', '')
+
+                # Content advisory — content warnings
+                content_advisory = meta.get('contentAdvisory', [])
+                if content_advisory:
+                    custom_props['content_advisory'] = content_advisory
+
+                # Categories — combine entityType, showType, and genres
+                categories = []
+                entity_type = meta.get('entityType', '')
+                show_type = meta.get('showType', '')
+                if entity_type:
+                    categories.append(entity_type)
+                if show_type and show_type != entity_type:
+                    categories.append(show_type)
+                genres = meta.get('genres', [])
+                categories.extend(genres)
+                if categories:
+                    custom_props['categories'] = categories
+
+                # Cast — top-billed only, store characterName, drop role noise
+                cast = meta.get('cast', [])
+                crew = meta.get('crew', [])
+                credits = {}
+                if cast:
+                    # Sort by billingOrder and cap at top-billed actors
+                    sorted_cast = sorted(
+                        [p for p in cast if p.get('name')],
+                        key=lambda p: int(p.get('billingOrder', '999'))
+                    )
+                    # Separate main cast from guest stars
+                    main_cast = [p for p in sorted_cast if p.get('role', '').lower() != 'guest star']
+                    # Store top-billed main cast (matching XMLTV parity)
+                    credits['actor'] = [
+                        {
+                            'name': p.get('name', ''),
+                            **(({'character': p['characterName']} ) if p.get('characterName') else {}),
+                        }
+                        for p in (main_cast[:6] if main_cast else sorted_cast[:6])
+                    ]
+                if crew:
+                    for member in crew:
+                        role = member.get('role', '').lower()
+                        name = member.get('name', '')
+                        if not name:
+                            continue
+                        if 'director' in role:
+                            credits.setdefault('director', []).append(name)
+                        elif 'writer' in role or 'screenwriter' in role:
+                            credits.setdefault('writer', []).append(name)
+                        elif 'producer' in role:
+                            credits.setdefault('producer', []).append(name)
+                if credits:
+                    custom_props['credits'] = credits
+
+                # Airing flags
+                if airing.get('liveTapeDelay') == 'Live':
+                    custom_props['live'] = True
+                if airing.get('new'):
+                    custom_props['new'] = True
+                else:
+                    custom_props['previously_shown'] = True
+                if airing.get('premiere'):
+                    custom_props['premiere'] = True
+
+                # Original air date — full date, not just year
+                original_air_date = meta.get('originalAirDate', '')
+                movie_year = meta.get('movie', {}).get('year', '')
+                if original_air_date:
+                    custom_props['date'] = original_air_date
+                elif movie_year:
+                    custom_props['date'] = str(movie_year)
+
+                # Country of production
+                country = meta.get('country', [])
+                if country:
+                    custom_props['country'] = country[0] if len(country) == 1 else ', '.join(country)
+
+                # Runtime — program duration without commercials (seconds → store for display)
+                runtime_secs = meta.get('duration') or meta.get('movie', {}).get('duration')
+                if runtime_secs:
+                    runtime_mins = int(runtime_secs) // 60
+                    custom_props['length'] = {'value': str(runtime_mins), 'units': 'minutes'}
+
+                # Movie quality ratings → star_ratings (matches XMLTV key)
+                movie_data = meta.get('movie', {})
+                quality_ratings = movie_data.get('qualityRating', [])
+                if quality_ratings:
+                    star_ratings = []
+                    for qr in quality_ratings:
+                        rating_str = qr.get('rating', '')
+                        max_rating = qr.get('maxRating', '')
+                        if rating_str and max_rating:
+                            star_ratings.append({
+                                'value': f"{rating_str}/{max_rating}",
+                                'system': qr.get('ratingsBody', ''),
+                            })
+                    if star_ratings:
+                        custom_props['star_ratings'] = star_ratings
+
+                # Sports event details
+                event_details = meta.get('eventDetails', {})
+                if event_details:
+                    custom_props['event_details'] = event_details
+
+            all_programs_to_create.append(ProgramData(
+                epg_id=epg_db_id,
+                start_time=start_dt,
+                end_time=end_dt,
+                title=title,
+                sub_title=episode_title or None,
+                description=desc or None,
+                tvg_id=sid,
+                program_id=pid,
+                custom_properties=custom_props or None,
+            ))
+            total_programs += 1
+
+    logger.info(f"Built {total_programs} program records "
+                f"({skipped_unmapped} skipped for unmapped stations).")
+
+    _sd_send_ws_sync(source.id, "parsing_programs", 88)
+
+    # Build a map of epg_db_id -> list of (day_start_utc, day_end_utc) for each changed date.
+    # Only programs that fall within changed station/date pairs will be deleted and replaced;
+    # programs for unchanged stations or unchanged dates are left intact.
+    import datetime as dt_module
+    epg_changed_date_ranges = {}
+    for sid, changed_date_strs in changed_by_station.items():
+        epg_db_id = epg_id_map.get(sid)
+        if not epg_db_id or epg_db_id not in mapped_epg_ids:
+            continue
+        ranges = []
+        for ds in changed_date_strs:
+            d = dt_module.date.fromisoformat(ds)
+            day_start = datetime(d.year, d.month, d.day, tzinfo=dt_timezone.utc)
+            ranges.append((day_start, day_start + timedelta(days=1)))
+        if ranges:
+            epg_changed_date_ranges[epg_db_id] = ranges
+
+    # Atomic delete (surgical) + bulk insert
+    BATCH_SIZE = 1000
+    try:
+        with transaction.atomic():
+            with connection.cursor() as cursor:
+                cursor.execute("SET LOCAL statement_timeout = '10min'")
+            total_deleted = 0
+            for epg_db_id, day_ranges in epg_changed_date_ranges.items():
+                q = Q()
+                for day_start, day_end in day_ranges:
+                    q |= Q(start_time__gte=day_start, start_time__lt=day_end)
+                cnt = ProgramData.objects.filter(epg_id=epg_db_id).filter(q).delete()[0]
+                total_deleted += cnt
+            logger.debug(f"Deleted {total_deleted} changed SD programs across {len(epg_changed_date_ranges)} stations.")
+            for i in range(0, len(all_programs_to_create), BATCH_SIZE):
+                ProgramData.objects.bulk_create(all_programs_to_create[i:i + BATCH_SIZE])
+                progress = 88 + int(((i + BATCH_SIZE) / max(len(all_programs_to_create), 1)) * 10)
+                _sd_send_ws_sync(source.id, "parsing_programs", min(98, progress))
+
+        logger.info(f"Committed {total_programs} Schedules Direct programs to database.")
+
+        # Upsert SDProgramMD5 records for programs we just downloaded
+        # This updates the cache so future fetches can skip unchanged programs
+        if schedule_program_md5s:
+            md5_records = [
+                SDProgramMD5(
+                    epg_source=source,
+                    program_id=pid,
+                    md5=md5,
+                )
+                for pid, md5 in schedule_program_md5s.items()
+                if pid in program_metadata  # Only cache programs that were actually downloaded
+            ]
+            if md5_records:
+                SDProgramMD5.objects.bulk_create(
+                    md5_records,
+                    update_conflicts=True,
+                    unique_fields=['epg_source', 'program_id'],
+                    update_fields=['md5'],
+                )
+                logger.info(f"Cached {len(md5_records)} program MD5s for future delta detection.")
+
+    except Exception as db_error:
+        msg = f"Database error persisting Schedules Direct programs: {db_error}"
+        logger.error(msg, exc_info=True)
+        source.status = EPGSource.STATUS_ERROR
+        source.last_message = msg
+        source.save(update_fields=['status', 'last_message'])
+        _sd_send_ws_sync(source.id, "parsing_programs", 100, status="error", error=msg)
+        return
+    finally:
+        all_programs_to_create = None
+        gc.collect()
+
+    # -------------------------------------------------------------------------
+    # Step 8: Fetch program artwork (posters) if enabled
+    # -------------------------------------------------------------------------
+    fetch_posters = (source.custom_properties or {}).get('fetch_posters', False)
+    if fetch_posters and program_metadata:
+        logger.info("Poster fetch enabled — retrieving program artwork from Schedules Direct.")
+        _sd_send_ws_sync(source.id, "parsing_programs", 98,
+                        message="Fetching program artwork...")
+
+        try:
+            # Build a set of unique artwork lookup IDs.
+            # For episodes (EP...), use the series root (SH...0000) so we get
+            # series-level artwork — one poster per series instead of per-episode.
+            artwork_lookup_ids = set()
+            pid_to_artwork_key = {}  # maps original programID -> the key we looked up
+
+            for pid in program_metadata:
+                if pid.startswith('EP'):
+                    sh_root = 'SH' + pid[2:10] + '0000'
+                    artwork_lookup_ids.add(sh_root)
+                    pid_to_artwork_key[pid] = sh_root
+                else:
+                    artwork_lookup_ids.add(pid)
+                    pid_to_artwork_key[pid] = pid
+
+            artwork_map = {}  # artwork_key -> poster_url
+            artwork_list = list(artwork_lookup_ids)
+            SD_ARTWORK_BATCH_SIZE = 500
+
+            total_art_batches = max(1, (len(artwork_list) + SD_ARTWORK_BATCH_SIZE - 1) // SD_ARTWORK_BATCH_SIZE)
+            logger.info(f"Fetching artwork index for {len(artwork_list)} unique program/series IDs "
+                        f"in {total_art_batches} batch(es).")
+
+            for batch_idx in range(total_art_batches):
+                batch = artwork_list[batch_idx * SD_ARTWORK_BATCH_SIZE:(batch_idx + 1) * SD_ARTWORK_BATCH_SIZE]
+                try:
+                    art_response = requests.post(
+                        f"{SD_BASE_URL}/metadata/programs/",
+                        json=batch,
+                        headers=_sd_headers(token),
+                        timeout=120,
+                    )
+                    art_response.raise_for_status()
+                    art_data = art_response.json()
+
+                    for entry in art_data:
+                        if not isinstance(entry, dict):
+                            continue
+                        entry_pid = entry.get('programID')
+                        images = entry.get('data') or []
+                        if not entry_pid or not images:
+                            continue
+
+                        # Filter to only dict entries — SD sometimes returns bare strings
+                        images = [img for img in images if isinstance(img, dict)]
+                        if not images:
+                            continue
+
+                        # Pick the best poster image:
+                        # Prefer portrait orientation (2x3, 3x4) in larger sizes
+                        # SD categories include: Iconic, Banner-L1, Banner-L2, Logo
+                        # SD uses width/height instead of a "size" field
+                        poster_url = None
+
+                        # First pass: portrait images (2x3 or 3x4) at decent size, prefer Iconic
+                        for min_width in [240, 135, 120]:
+                            for pref_cat in ['Banner-L1', 'Iconic']:
+                                match = next((img for img in images
+                                             if img.get('aspect') in ('2x3', '3x4')
+                                             and img.get('category') == pref_cat
+                                             and (img.get('width', 0) or 0) >= min_width), None)
+                                if match:
+                                    poster_url = match.get('uri')
+                                    break
+                            if poster_url:
+                                break
+
+                        # Fallback: any portrait image at any size
+                        if not poster_url:
+                            portrait = next((img for img in images
+                                            if img.get('aspect') in ('2x3', '3x4')), None)
+                            if portrait:
+                                poster_url = portrait.get('uri')
+
+                        if poster_url:
+                            # Complete the URL if it's relative
+                            if not poster_url.startswith('http'):
+                                poster_url = f"{SD_BASE_URL}/image/{poster_url}"
+                            artwork_map[entry_pid] = poster_url
+
+                    logger.info(f"Artwork batch {batch_idx + 1}/{total_art_batches}: "
+                                f"{len(artwork_map)} posters found so far.")
+
+                except requests.exceptions.RequestException as e:
+                    logger.warning(f"Failed to fetch artwork batch {batch_idx + 1}: {e}")
+
+            # Bulk-update ProgramData records with poster URLs
+            if artwork_map:
+                programs_to_update = []
+                for prog in ProgramData.objects.filter(
+                    epg_id__in=mapped_epg_ids,
+                    program_id__isnull=False,
+                ).only('id', 'program_id', 'custom_properties'):
+                    art_key = pid_to_artwork_key.get(prog.program_id)
+                    poster = artwork_map.get(art_key) if art_key else None
+                    if poster:
+                        cp = prog.custom_properties or {}
+                        cp['poster_url'] = poster
+                        prog.custom_properties = cp
+                        programs_to_update.append(prog)
+
+                if programs_to_update:
+                    ProgramData.objects.bulk_update(
+                        programs_to_update, ['custom_properties'], batch_size=1000
+                    )
+                    logger.info(f"Updated {len(programs_to_update)} programs with poster artwork.")
+                else:
+                    logger.info("No poster artwork matched committed programs.")
+            else:
+                logger.info("No poster artwork found from Schedules Direct.")
+
+        except Exception as art_error:
+            logger.warning(f"Poster artwork fetch failed (non-fatal): {art_error}", exc_info=True)
+
+    elif fetch_posters:
+        logger.info("Poster fetch enabled but no new program metadata downloaded — skipping artwork.")
+
+    # -------------------------------------------------------------------------
+    # Step 9: Apply SD station logos to matched channels if enabled
+    # -------------------------------------------------------------------------
+    use_sd_logos = (source.custom_properties or {}).get('use_sd_logos', False)
+    if use_sd_logos:
+        try:
+            from apps.channels.models import Channel as ChannelModel, Logo
+
+            channels_to_update = []
+            logos_created = 0
+
+            for channel in ChannelModel.objects.filter(
+                epg_data__epg_source=source,
+                epg_data__isnull=False,
+            ).select_related('epg_data', 'logo'):
+                icon_url = (channel.epg_data.icon_url or '').strip()
+                if not icon_url:
+                    continue
+
+                # Skip if channel already has this logo URL
+                if channel.logo and channel.logo.url == icon_url:
+                    continue
+
+                # Find or create a Logo object for this URL
+                try:
+                    logo = Logo.objects.get(url=icon_url)
+                except Logo.DoesNotExist:
+                    logo_name = channel.epg_data.name or f"SD Logo {channel.epg_data.tvg_id}"
+                    logo = Logo.objects.create(name=logo_name, url=icon_url)
+                    logos_created += 1
+
+                channel.logo = logo
+                channels_to_update.append(channel)
+
+            if channels_to_update:
+                ChannelModel.objects.bulk_update(channels_to_update, ['logo'], batch_size=100)
+                logger.info(f"Applied SD logos to {len(channels_to_update)} channels "
+                            f"({logos_created} new logos created).")
+            else:
+                logger.info("All matched channels already have current SD logos.")
+
+        except Exception as logo_error:
+            logger.warning(f"SD logo application failed (non-fatal): {logo_error}", exc_info=True)
+
+    # Prune ProgramData whose end_time has passed. With surgical per-date deletes,
+    # programs from dates that have rolled off the window are never explicitly removed.
+    today_utc = datetime(today.year, today.month, today.day, tzinfo=dt_timezone.utc)
+    try:
+        expired_count = ProgramData.objects.filter(epg_id__in=mapped_epg_ids, end_time__lt=today_utc).delete()[0]
+        if expired_count:
+            logger.info(f"Pruned {expired_count} expired SD ProgramData records (end_time before {today}).")
+    except Exception as prune_err:
+        logger.warning(f"Failed to prune expired SD ProgramData: {prune_err}")
+
+    # Prune SDProgramMD5 rows no longer referenced by any live ProgramData for this source.
+    try:
+        live_program_ids = set(
+            ProgramData.objects.filter(epg_id__in=mapped_epg_ids, program_id__isnull=False)
+            .values_list('program_id', flat=True)
+        )
+        pruned_prog_md5_count = SDProgramMD5.objects.filter(epg_source=source).exclude(
+            program_id__in=live_program_ids
+        ).delete()[0]
+        if pruned_prog_md5_count:
+            logger.info(f"Pruned {pruned_prog_md5_count} stale SDProgramMD5 records no longer referenced by live ProgramData.")
+    except Exception as prune_err:
+        logger.warning(f"Failed to prune stale SDProgramMD5 records: {prune_err}")
+
+    # -------------------------------------------------------------------------
+    # Prune stale poster cache files (>30 days old or orphaned)
+    # -------------------------------------------------------------------------
+    try:
+        cache_dir = '/data/cache/posters'
+        if os.path.exists(cache_dir):
+            import time as time_module
+            # Collect all poster hashes currently referenced by ProgramData
+            active_hashes = set()
+            for url in ProgramData.objects.filter(
+                epg__epg_source=source,
+                custom_properties__has_key='poster_url',
+            ).values_list('custom_properties__poster_url', flat=True):
+                if url:
+                    active_hashes.add(url.rsplit('/', 1)[-1])
+
+            pruned_posters = 0
+            for fname in os.listdir(cache_dir):
+                fpath = os.path.join(cache_dir, fname)
+                if not os.path.isfile(fpath):
+                    continue
+                file_age = time_module.time() - os.path.getmtime(fpath)
+                # Remove if older than 30 days OR not referenced by any current program
+                if file_age > 30 * 24 * 3600 or fname not in active_hashes:
+                    os.remove(fpath)
+                    pruned_posters += 1
+            if pruned_posters:
+                logger.info(f"Pruned {pruned_posters} stale poster cache files.")
+    except Exception as poster_prune_err:
+        logger.warning(f"Failed to prune poster cache: {poster_prune_err}")
+
+    # -------------------------------------------------------------------------
+    # Done
+    # -------------------------------------------------------------------------
+    success_msg = (
+        f"Successfully fetched {total_programs:,} programs for "
+        f"{len(mapped_tvg_ids)} mapped stations from Schedules Direct "
+        f"({skipped_unmapped:,} programs skipped for unmapped stations)."
+    )
+    source.status = EPGSource.STATUS_SUCCESS
+    source.last_message = success_msg
+    source.updated_at = timezone.now()
+    source.save(update_fields=['status', 'last_message', 'updated_at'])
+    _sd_send_ws_sync(source.id, "parsing_programs", 100, status="success", message=success_msg)
+    log_system_event(
+        event_type='epg_refresh',
+        source_name=source.name,
+        programs=total_programs,
+        channels=len(mapped_tvg_ids),
+        skipped_programs=skipped_unmapped,
+    )
+    logger.info(f"Schedules Direct fetch complete for source: {source.name}")
+
+
+# -------------------------------
+# Helper parse functions
+# -------------------------------
+def parse_xmltv_time(time_str):
+    try:
+        # Basic format validation
+        if len(time_str) < 14:
+            logger.warning(f"XMLTV timestamp too short: '{time_str}', using as-is")
+            dt_obj = datetime.strptime(time_str, '%Y%m%d%H%M%S')
+            return timezone.make_aware(dt_obj, timezone=dt_timezone.utc)
+
+        # Parse base datetime
+        dt_obj = datetime.strptime(time_str[:14], '%Y%m%d%H%M%S')
+
+        # Handle timezone if present
+        if len(time_str) >= 20:  # Has timezone info
+            tz_sign = time_str[15]
+            tz_hours = int(time_str[16:18])
+            tz_minutes = int(time_str[18:20])
+
+            # Create a timezone object
+            if tz_sign == '+':
+                tz_offset = dt_timezone(timedelta(hours=tz_hours, minutes=tz_minutes))
+            elif tz_sign == '-':
+                tz_offset = dt_timezone(timedelta(hours=-tz_hours, minutes=-tz_minutes))
+            else:
+                tz_offset = dt_timezone.utc
+
+            # Make datetime aware with correct timezone
+            aware_dt = datetime.replace(dt_obj, tzinfo=tz_offset)
+            # Convert to UTC
+            aware_dt = aware_dt.astimezone(dt_timezone.utc)
+
+            logger.trace(f"Parsed XMLTV time '{time_str}' to {aware_dt}")
+            return aware_dt
+        else:
+            # No timezone info, assume UTC
+            aware_dt = timezone.make_aware(dt_obj, timezone=dt_timezone.utc)
+            logger.trace(f"Parsed XMLTV time without timezone '{time_str}' as UTC: {aware_dt}")
+            return aware_dt
+
+    except Exception as e:
+        logger.error(f"Error parsing XMLTV time '{time_str}': {e}", exc_info=True)
+        raise
+
+
+def parse_schedules_direct_time(time_str):
+    try:
+        dt_obj = datetime.strptime(time_str, '%Y-%m-%dT%H:%M:%SZ')
+        aware_dt = timezone.make_aware(dt_obj, timezone=dt_timezone.utc)
+        logger.debug(f"Parsed Schedules Direct time '{time_str}' to {aware_dt}")
+        return aware_dt
+    except Exception as e:
+        logger.error(f"Error parsing Schedules Direct time '{time_str}': {e}", exc_info=True)
+        raise
+
+
+# Re-export from utils to preserve backward compatibility for any callers
+from apps.epg.utils import extract_season_episode_from_description, _ONSCREEN_RE  # noqa: F401
+
+
+# Helper function to extract custom properties - moved to a separate function to clean up the code
+def extract_custom_properties(prog):
+    # Create a new dictionary for each call
+    custom_props = {}
+
+    # Extract categories with a single comprehension to reduce intermediate objects
+    categories = [cat.text.strip() for cat in prog.findall('category') if cat.text and cat.text.strip()]
+    if categories:
+        custom_props['categories'] = categories
+
+    # Extract keywords (new)
+    keywords = [kw.text.strip() for kw in prog.findall('keyword') if kw.text and kw.text.strip()]
+    if keywords:
+        custom_props['keywords'] = keywords
+
+    # Extract episode numbers
+    for ep_num in prog.findall('episode-num'):
+        system = ep_num.get('system', '')
+        if system == 'xmltv_ns' and ep_num.text:
+            # Parse XMLTV episode-num format (season.episode.part)
+            parts = ep_num.text.split('.')
+            if len(parts) >= 2:
+                if parts[0].strip() != '':
+                    try:
+                        season = int(parts[0]) + 1  # XMLTV format is zero-based
+                        custom_props['season'] = season
+                    except ValueError:
+                        pass
+                if parts[1].strip() != '':
+                    try:
+                        episode = int(parts[1]) + 1  # XMLTV format is zero-based
+                        custom_props['episode'] = episode
+                    except ValueError:
+                        pass
+        elif system == 'onscreen' and ep_num.text:
+            onscreen_text = ep_num.text.strip()
+            custom_props['onscreen_episode'] = onscreen_text
+            # Extract season/episode from onscreen format if not already set by xmltv_ns
+            if 'season' not in custom_props or 'episode' not in custom_props:
+                match = _ONSCREEN_RE.search(onscreen_text)
+                if match:
+                    if 'season' not in custom_props:
+                        custom_props['season'] = int(match.group(1))
+                    if 'episode' not in custom_props:
+                        custom_props['episode'] = int(match.group(2))
+        elif system == 'dd_progid' and ep_num.text:
+            # Store the dd_progid format
+            custom_props['dd_progid'] = ep_num.text.strip()
+        # Add support for other systems like thetvdb.com, themoviedb.org, imdb.com
+        elif system in ['thetvdb.com', 'themoviedb.org', 'imdb.com'] and ep_num.text:
+            custom_props[f'{system}_id'] = ep_num.text.strip()
+
+    # Extract ratings more efficiently
+    rating_elem = prog.find('rating')
+    if rating_elem is not None:
+        value_elem = rating_elem.find('value')
+        if value_elem is not None and value_elem.text:
+            custom_props['rating'] = value_elem.text.strip()
+            if rating_elem.get('system'):
+                custom_props['rating_system'] = rating_elem.get('system')
+
+    # Extract star ratings (new)
+    star_ratings = []
+    for star_rating in prog.findall('star-rating'):
+        value_elem = star_rating.find('value')
+        if value_elem is not None and value_elem.text:
+            rating_data = {'value': value_elem.text.strip()}
+            if star_rating.get('system'):
+                rating_data['system'] = star_rating.get('system')
+            star_ratings.append(rating_data)
+    if star_ratings:
+        custom_props['star_ratings'] = star_ratings
+
+    # Extract credits more efficiently
+    credits_elem = prog.find('credits')
+    if credits_elem is not None:
+        credits = {}
+        for credit_type in ['director', 'actor', 'writer', 'adapter', 'producer', 'composer', 'editor', 'presenter', 'commentator', 'guest']:
+            if credit_type == 'actor':
+                # Handle actors with roles and guest status
+                actors = []
+                for actor_elem in credits_elem.findall('actor'):
+                    if actor_elem.text and actor_elem.text.strip():
+                        actor_data = {'name': actor_elem.text.strip()}
+                        if actor_elem.get('role'):
+                            actor_data['role'] = actor_elem.get('role')
+                        if actor_elem.get('guest') == 'yes':
+                            actor_data['guest'] = True
+                        actors.append(actor_data)
+                if actors:
+                    credits['actor'] = actors
+            else:
+                names = [e.text.strip() for e in credits_elem.findall(credit_type) if e.text and e.text.strip()]
+                if names:
+                    credits[credit_type] = names
+        if credits:
+            custom_props['credits'] = credits
+
+    # Extract other common program metadata
+    date_elem = prog.find('date')
+    if date_elem is not None and date_elem.text:
+        custom_props['date'] = date_elem.text.strip()
+
+    country_elem = prog.find('country')
+    if country_elem is not None and country_elem.text:
+        custom_props['country'] = country_elem.text.strip()
+
+    # Extract language information (new)
+    language_elem = prog.find('language')
+    if language_elem is not None and language_elem.text:
+        custom_props['language'] = language_elem.text.strip()
+
+    orig_language_elem = prog.find('orig-language')
+    if orig_language_elem is not None and orig_language_elem.text:
+        custom_props['original_language'] = orig_language_elem.text.strip()
+
+    # Extract length (new)
+    length_elem = prog.find('length')
+    if length_elem is not None and length_elem.text:
+        try:
+            length_value = int(length_elem.text.strip())
+            length_units = length_elem.get('units', 'minutes')
+            custom_props['length'] = {'value': length_value, 'units': length_units}
+        except ValueError:
+            pass
+
+    # Extract video information (new)
+    video_elem = prog.find('video')
+    if video_elem is not None:
+        video_info = {}
+        for video_attr in ['present', 'colour', 'aspect', 'quality']:
+            attr_elem = video_elem.find(video_attr)
+            if attr_elem is not None and attr_elem.text:
+                video_info[video_attr] = attr_elem.text.strip()
+        if video_info:
+            custom_props['video'] = video_info
+
+    # Extract audio information (new)
+    audio_elem = prog.find('audio')
+    if audio_elem is not None:
+        audio_info = {}
+        for audio_attr in ['present', 'stereo']:
+            attr_elem = audio_elem.find(audio_attr)
+            if attr_elem is not None and attr_elem.text:
+                audio_info[audio_attr] = attr_elem.text.strip()
+        if audio_info:
+            custom_props['audio'] = audio_info
+
+    # Extract subtitles information (new)
+    subtitles = []
+    for subtitle_elem in prog.findall('subtitles'):
+        subtitle_data = {}
+        if subtitle_elem.get('type'):
+            subtitle_data['type'] = subtitle_elem.get('type')
+        lang_elem = subtitle_elem.find('language')
+        if lang_elem is not None and lang_elem.text:
+            subtitle_data['language'] = lang_elem.text.strip()
+        if subtitle_data:
+            subtitles.append(subtitle_data)
+
+    if subtitles:
+        custom_props['subtitles'] = subtitles
+
+    # Extract reviews (new)
+    reviews = []
+    for review_elem in prog.findall('review'):
+        if review_elem.text and review_elem.text.strip():
+            review_data = {'content': review_elem.text.strip()}
+            if review_elem.get('type'):
+                review_data['type'] = review_elem.get('type')
+            if review_elem.get('source'):
+                review_data['source'] = review_elem.get('source')
+            if review_elem.get('reviewer'):
+                review_data['reviewer'] = review_elem.get('reviewer')
+            reviews.append(review_data)
+    if reviews:
+        custom_props['reviews'] = reviews
+
+    # Extract images (new)
+    images = []
+    for image_elem in prog.findall('image'):
+        if image_elem.text and image_elem.text.strip():
+            image_data = {'url': image_elem.text.strip()}
+            for attr in ['type', 'size', 'orient', 'system']:
+                if image_elem.get(attr):
+                    image_data[attr] = image_elem.get(attr)
+            images.append(image_data)
+    if images:
+        custom_props['images'] = images
+
+    icon_elem = prog.find('icon')
+    if icon_elem is not None and icon_elem.get('src'):
+        custom_props['icon'] = icon_elem.get('src')
+
+    # Simpler approach for boolean flags - expanded list
+    for kw in ['previously-shown', 'premiere', 'new', 'live', 'last-chance']:
+        if prog.find(kw) is not None:
+            custom_props[kw.replace('-', '_')] = True
+
+    # Extract premiere and last-chance text content if available
+    premiere_elem = prog.find('premiere')
+    if premiere_elem is not None:
+        custom_props['premiere'] = True
+        if premiere_elem.text and premiere_elem.text.strip():
+            custom_props['premiere_text'] = premiere_elem.text.strip()
+
+    last_chance_elem = prog.find('last-chance')
+    if last_chance_elem is not None:
+        custom_props['last_chance'] = True
+        if last_chance_elem.text and last_chance_elem.text.strip():
+            custom_props['last_chance_text'] = last_chance_elem.text.strip()
+
+    # Extract previously-shown details
+    prev_shown_elem = prog.find('previously-shown')
+    if prev_shown_elem is not None:
+        custom_props['previously_shown'] = True
+        prev_shown_data = {}
+        if prev_shown_elem.get('start'):
+            prev_shown_data['start'] = prev_shown_elem.get('start')
+        if prev_shown_elem.get('channel'):
+            prev_shown_data['channel'] = prev_shown_elem.get('channel')
+        if prev_shown_data:
+            custom_props['previously_shown_details'] = prev_shown_data
+
+    return custom_props
+
+
+def clear_element(elem):
+    """Clear an XML element and its parent to free memory."""
+    try:
+        elem.clear()
+        parent = elem.getparent()
+        if parent is not None:
+            while elem.getprevious() is not None:
+                del parent[0]
+            parent.remove(elem)
+    except Exception as e:
+        logger.warning(f"Error clearing XML element: {e}", exc_info=True)
+
+
+def detect_file_format(file_path=None, content=None):
+    """
+    Detect file format by examining content or file path.
+
+    Args:
+        file_path: Path to file (optional)
+        content: Raw file content bytes (optional)
+
+    Returns:
+        tuple: (format_type, is_compressed, file_extension)
+        format_type: 'gzip', 'zip', 'xml', or 'unknown'
+        is_compressed: Boolean indicating if the file is compressed
+        file_extension: Appropriate file extension including dot (.gz, .zip, .xml)
+    """
+    # Default return values
+    format_type = 'unknown'
+    is_compressed = False
+    file_extension = '.tmp'
+
+    # First priority: check content magic numbers as they're most reliable
+    if content:
+        # We only need the first few bytes for magic number detection
+        header = content[:20] if len(content) >= 20 else content
+
+        # Check for gzip magic number (1f 8b)
+        if len(header) >= 2 and header[:2] == b'\x1f\x8b':
+            return 'gzip', True, '.gz'
+
+        # Check for zip magic number (PK..)
+        if len(header) >= 2 and header[:2] == b'PK':
+            return 'zip', True, '.zip'
+
+        # Check for XML - either standard XML header or XMLTV-specific tag
+        if len(header) >= 5 and (b'<?xml' in header or b'<tv>' in header):
+            return 'xml', False, '.xml'
+
+    # Second priority: check file extension - focus on the final extension for compression
+    if file_path:
+        logger.debug(f"Detecting file format for: {file_path}")
+
+        # Handle compound extensions like .xml.gz - prioritize compression extensions
+        lower_path = file_path.lower()
+
+        # Check for compression extensions explicitly
+        if lower_path.endswith('.gz') or lower_path.endswith('.gzip'):
+            return 'gzip', True, '.gz'
+        elif lower_path.endswith('.zip'):
+            return 'zip', True, '.zip'
+        elif lower_path.endswith('.xml'):
+            return 'xml', False, '.xml'
+
+        # Fallback to mimetypes only if direct extension check doesn't work
+        import mimetypes
+        mime_type, _ = mimetypes.guess_type(file_path)
+        logger.debug(f"Guessed MIME type: {mime_type}")
+        if mime_type:
+            if mime_type == 'application/gzip' or mime_type == 'application/x-gzip':
+                return 'gzip', True, '.gz'
+            elif mime_type == 'application/zip':
+                return 'zip', True, '.zip'
+            elif mime_type == 'application/xml' or mime_type == 'text/xml':
+                return 'xml', False, '.xml'
+
+    # If we reach here, we couldn't reliably determine the format
+    return format_type, is_compressed, file_extension
+
+
+def generate_dummy_epg(source):
+    """
+    DEPRECATED: This function is no longer used.
+
+    Dummy EPG programs are now generated on-demand when they are requested
+    (during XMLTV export or EPG grid display), rather than being pre-generated
+    and stored in the database.
+
+    See: apps/output/views.py - generate_custom_dummy_programs()
+
+    This function remains for backward compatibility but should not be called.
+    """
+    logger.warning(f"generate_dummy_epg() called for {source.name} but this function is deprecated. "
+                   f"Dummy EPG programs are now generated on-demand.")
+    return True
