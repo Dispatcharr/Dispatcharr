@@ -365,7 +365,7 @@ const M3U = ({
                 id="server_group"
                 name="server_group"
                 label="Server Group"
-                description="Share a connection limit across multiple accounts (e.g. XC + M3U on the same subscription)"
+                description="Share login limits across accounts in a server group. Set max streams on each profile (unlimited profiles skip group enforcement)."
                 {...form.getInputProps('server_group')}
                 key={form.key('server_group')}
                 data={[{ value: '0', label: '(None)' }].concat(

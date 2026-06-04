@@ -70,7 +70,7 @@ const ServerGroupForm = ({ serverGroup = null, isOpen, onClose }) => {
 
         <NumberInput
           label="Max Streams"
-          description="Shared connection limit for all accounts in this group (0 = unlimited)"
+          description="Set above 0 to enable shared login pooling. Per-login limits use each account profile's max streams. Unlimited profiles (0) skip cross-account enforcement."
           min={0}
           value={maxStreams}
           onChange={(value) => setValue('max_streams', value ?? 0)}

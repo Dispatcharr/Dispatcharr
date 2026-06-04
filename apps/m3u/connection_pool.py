@@ -5,7 +5,8 @@ Profile selection rotates across M3UAccountProfile rows using each profile's own
 Redis counter (the pre-pool behavior). When an account belongs to a ServerGroup
 with max_streams > 0, a credential-scoped counter is checked on reserve/release
 so accounts sharing the same provider login share one limit without blocking
-unrelated logins on the same group.
+unrelated logins on the same group. Account profiles with max_streams=0 skip
+credential enforcement for that profile.
 """
 
 from __future__ import annotations
@@ -13,11 +14,14 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
-from typing import Optional, Tuple
+from typing import Literal, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
+ReserveFailureReason = Literal["profile_full", "credential_full"]
+
 PROFILE_CONNECTIONS_KEY = "profile_connections:{profile_id}"
+PROFILE_CREDENTIAL_RELEASE_KEY = "profile_credential_release:{profile_id}"
 SERVER_GROUP_CONNECTIONS_KEY = "server_group_connections:{group_id}:{fingerprint}"
 
 _XC_URL_CREDENTIALS_RE = re.compile(
@@ -28,6 +32,11 @@ _XC_URL_CREDENTIALS_RE = re.compile(
 
 def profile_connections_key(profile_id: int) -> str:
     return PROFILE_CONNECTIONS_KEY.format(profile_id=profile_id)
+
+
+def profile_credential_release_key(profile_id: int) -> str:
+    """Redis key storing the credential counter to release when the profile row is gone."""
+    return PROFILE_CREDENTIAL_RELEASE_KEY.format(profile_id=profile_id)
 
 
 def server_group_connections_key(group_id: int, fingerprint: str) -> str:
@@ -161,6 +170,8 @@ def profile_has_capacity_for_selection(profile, redis_client) -> bool:
 
 
 def group_has_capacity_for_profile(profile, redis_client) -> bool:
+    # Profiles with max_streams=0 skip credential enforcement entirely. An unlimited
+    # profile in a pooled group can still stream while other accounts share the login.
     group = get_enforced_server_group_for_profile(profile)
     if not group or profile.max_streams == 0:
         return True
@@ -186,21 +197,43 @@ def _safe_decr(redis_client, key: str) -> None:
         redis_client.set(key, 0)
 
 
-def _reserve_server_group_slot_for_profile(profile, redis_client) -> bool:
+def _remember_credential_release_key(
+    profile_id: int, cred_key: str, redis_client
+) -> None:
+    redis_client.set(profile_credential_release_key(profile_id), cred_key)
+
+
+def _release_credential_slot_by_profile_id(profile_id: int, redis_client) -> bool:
+    """Release a reserved credential counter using the key stored at reserve time."""
+    release_key = profile_credential_release_key(profile_id)
+    cred_key = redis_client.get(release_key)
+    if not cred_key:
+        return False
+
+    if isinstance(cred_key, bytes):
+        cred_key = cred_key.decode()
+    _safe_decr(redis_client, cred_key)
+    redis_client.delete(release_key)
+    return True
+
+
+def _reserve_server_group_slot_for_profile(
+    profile, redis_client
+) -> Tuple[bool, Optional[str]]:
     group = get_enforced_server_group_for_profile(profile)
     if not group or profile.max_streams == 0:
-        return True
+        return True, None
 
     cred_key = _credential_counter_key(profile, group)
     if not cred_key:
-        return True
+        return True, None
 
     cred_count = redis_client.incr(cred_key)
     if cred_count <= profile.max_streams:
-        return True
+        return True, cred_key
 
     redis_client.decr(cred_key)
-    return False
+    return False, None
 
 
 def _release_server_group_slot_for_profile(profile, redis_client) -> None:
@@ -212,11 +245,14 @@ def _release_server_group_slot_for_profile(profile, redis_client) -> None:
         _safe_decr(redis_client, cred_key)
 
 
-def reserve_profile_slot(profile, redis_client) -> Tuple[bool, int]:
+def reserve_profile_slot(
+    profile, redis_client
+) -> Tuple[bool, int, Optional[ReserveFailureReason]]:
     """
     Atomically reserve profile + optional credential slots (INCR-first).
 
-    Returns (reserved, profile_count_after_attempt).
+    Returns (reserved, profile_count_after_attempt, failure_reason).
+    failure_reason is set when reserved is False.
     """
     profile_key = profile_connections_key(profile.id)
     profile_count = 0
@@ -225,19 +261,33 @@ def reserve_profile_slot(profile, redis_client) -> Tuple[bool, int]:
         profile_count = redis_client.incr(profile_key)
         if profile_count > profile.max_streams:
             redis_client.decr(profile_key)
-            return False, profile_count - 1
+            return False, profile_count - 1, "profile_full"
 
-    if not _reserve_server_group_slot_for_profile(profile, redis_client):
+    cred_reserved, cred_key = _reserve_server_group_slot_for_profile(
+        profile, redis_client
+    )
+    if not cred_reserved:
         if profile.max_streams > 0:
             redis_client.decr(profile_key)
-        return False, profile_count - 1 if profile.max_streams > 0 else 0
+        return (
+            False,
+            profile_count - 1 if profile.max_streams > 0 else 0,
+            "credential_full",
+        )
 
-    return True, profile_count
+    if cred_key:
+        _remember_credential_release_key(profile.id, cred_key, redis_client)
+
+    return True, profile_count, None
 
 
 def release_profile_slot(profile_id: int, redis_client) -> None:
     """Release profile and shared credential slots after a stream end."""
     from apps.m3u.models import M3UAccountProfile
+
+    released_via_stored_key = _release_credential_slot_by_profile_id(
+        profile_id, redis_client
+    )
 
     try:
         profile = M3UAccountProfile.objects.get(id=profile_id)
@@ -250,5 +300,5 @@ def release_profile_slot(profile_id: int, redis_client) -> None:
         if current > 0:
             redis_client.decr(profile_key)
 
-    if profile:
+    if profile and not released_via_stored_key:
         _release_server_group_slot_for_profile(profile, redis_client)

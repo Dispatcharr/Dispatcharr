@@ -745,7 +745,9 @@ class MultiWorkerVODConnectionManager:
         from apps.m3u.connection_pool import reserve_profile_slot
 
         try:
-            reserved, new_count = reserve_profile_slot(m3u_profile, self.redis_client)
+            reserved, new_count, _failure_reason = reserve_profile_slot(
+                m3u_profile, self.redis_client
+            )
             if reserved:
                 logger.info(
                     f"[PROFILE-RESERVE] Profile {m3u_profile.id} slot reserved: "

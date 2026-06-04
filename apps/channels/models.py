@@ -234,7 +234,9 @@ class Stream(models.Model):
                 continue
 
             # Atomic slot reservation via shared connection pool helper
-            reserved, _count = reserve_profile_slot(profile, redis_client)
+            reserved, _count, _failure_reason = reserve_profile_slot(
+                profile, redis_client
+            )
 
             if reserved:
                 redis_client.set(f"channel_stream:{self.id}", self.id)
@@ -694,7 +696,9 @@ class Channel(models.Model):
                 has_active_profiles = True
 
                 # Atomically check and reserve a slot (INCR-first pattern)
-                reserved, current_count = reserve_profile_slot(profile, redis_client)
+                reserved, current_count, failure_reason = reserve_profile_slot(
+                    profile, redis_client
+                )
 
                 if reserved:
                     # Slot reserved — assign stream to this channel
@@ -712,11 +716,6 @@ class Channel(models.Model):
                         True,
                     )  # Return newly assigned stream and matched profile
                 else:
-                    from apps.m3u.connection_pool import (
-                        group_has_capacity_for_profile,
-                        profile_has_capacity_for_selection,
-                    )
-
                     # At capacity: try to preempt a lower-impact channel on this profile
                     victim_channel_id = self._pick_channel_to_preempt(
                         profile_id=profile.id,
@@ -729,14 +728,14 @@ class Channel(models.Model):
                         # return self.id, profile.id, victim_channel_id
 
                     has_streams_but_maxed_out = True
-                    if not profile_has_capacity_for_selection(profile, redis_client):
+                    if failure_reason == "profile_full":
                         logger.info(
                             f"Profile {profile.id} at max connections: "
                             f"{current_count}/{profile.max_streams}, trying next profile"
                         )
-                    elif not group_has_capacity_for_profile(profile, redis_client):
+                    elif failure_reason == "credential_full":
                         logger.info(
-                            f"Profile {profile.id} login or server group pool full, trying next profile"
+                            f"Profile {profile.id} shared login pool full, trying next profile"
                         )
                     else:
                         logger.debug(

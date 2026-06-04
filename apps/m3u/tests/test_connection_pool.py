@@ -14,6 +14,7 @@ from apps.m3u.connection_pool import (
     pool_has_capacity_for_profile,
     profile_has_capacity_for_selection,
     profile_connections_key,
+    profile_credential_release_key,
     release_profile_slot,
     reserve_profile_slot,
     server_group_connections_key,
@@ -31,10 +32,15 @@ class FakeRedis:
         val = self._data.get(key)
         if val is None:
             return None
+        if isinstance(val, str):
+            return val.encode()
         return str(val).encode()
 
     def set(self, key, value, ex=None):
-        self._data[key] = int(value)
+        try:
+            self._data[key] = int(value)
+        except (ValueError, TypeError):
+            self._data[key] = value
 
     def incr(self, key):
         self._data[key] = self._data.get(key, 0) + 1
@@ -43,6 +49,9 @@ class FakeRedis:
     def decr(self, key):
         self._data[key] = self._data.get(key, 0) - 1
         return self._data[key]
+
+    def delete(self, key):
+        self._data.pop(key, None)
 
     def pipeline(self):
         return FakeRedisPipeline(self)
@@ -125,10 +134,10 @@ class ManualServerGroupTests(TestCase):
         profile2.save()
 
         redis = FakeRedis()
-        reserved1, _ = reserve_profile_slot(profile1, redis)
+        reserved1, _, _ = reserve_profile_slot(profile1, redis)
         self.assertTrue(reserved1)
 
-        reserved2, _ = reserve_profile_slot(profile2, redis)
+        reserved2, _, _ = reserve_profile_slot(profile2, redis)
         self.assertFalse(reserved2)
         self.assertFalse(group_has_capacity_for_profile(profile2, redis))
 
@@ -153,7 +162,7 @@ class ManualServerGroupTests(TestCase):
         )
 
         redis = FakeRedis()
-        reserved, _ = reserve_profile_slot(default, redis)
+        reserved, _, _ = reserve_profile_slot(default, redis)
         self.assertTrue(reserved)
         self.assertFalse(profile_has_capacity_for_selection(default, redis))
         self.assertTrue(profile_has_capacity_for_selection(alt, redis))
@@ -182,7 +191,7 @@ class PoolEnforcementTests(TestCase):
         self.profile.save()
 
     def test_reserve_and_release_both_counters(self):
-        reserved, count = reserve_profile_slot(self.profile, self.redis)
+        reserved, count, _ = reserve_profile_slot(self.profile, self.redis)
         self.assertTrue(reserved)
         self.assertEqual(count, 1)
 
@@ -286,13 +295,37 @@ class PoolEnforcementTests(TestCase):
         fp = get_profile_credential_fingerprint(self.profile)
         cred_key = server_group_connections_key(self.group.id, fp)
 
-        self.assertTrue(reserve_profile_slot(self.profile, self.redis)[0])
+        reserved, _, failure_reason = reserve_profile_slot(
+            self.profile, self.redis
+        )
+        self.assertTrue(reserved)
+        self.assertIsNone(failure_reason)
         self.profile.delete()
 
         release_profile_slot(profile_id, self.redis)
 
         self.assertEqual(self.redis._data[profile_connections_key(profile_id)], 0)
-        self.assertEqual(self.redis._data[cred_key], 1)
+        self.assertEqual(self.redis._data[cred_key], 0)
+        self.assertNotIn(profile_credential_release_key(profile_id), self.redis._data)
+
+    def test_reserve_returns_failure_reason_without_extra_checks(self):
+        account2 = M3UAccount.objects.create(
+            name="Reason Account",
+            account_type="XC",
+            username="user",
+            password="pass",
+            server_url="http://xc.example.com",
+            server_group=self.group,
+            max_streams=5,
+        )
+        profile2 = M3UAccountProfile.objects.get(m3u_account=account2, is_default=True)
+        profile2.max_streams = 1
+        profile2.save()
+
+        self.assertTrue(reserve_profile_slot(self.profile, self.redis)[0])
+        reserved, _count, reason = reserve_profile_slot(profile2, self.redis)
+        self.assertFalse(reserved)
+        self.assertEqual(reason, "credential_full")
 
 
 class UpdateStreamProfileTests(TestCase):

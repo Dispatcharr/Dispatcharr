@@ -201,7 +201,11 @@ class ServerGroup(models.Model):
     )
     max_streams = models.PositiveIntegerField(
         default=0,
-        help_text="Maximum number of concurrent streams shared across all accounts in this group (0 for unlimited)",
+        help_text=(
+            "Set above 0 to enable shared credential pooling for accounts in this group. "
+            "Per-login limits come from each account profile's max_streams. "
+            "Profiles with max_streams=0 (unlimited) skip cross-account credential enforcement."
+        ),
     )
 
     def __str__(self):
