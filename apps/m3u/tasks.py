@@ -2955,7 +2955,7 @@ def refresh_account_profiles(account_id):
                         existing_props = profile.custom_properties or {}
                         existing_props.update(profile_account_info)
                         profile.custom_properties = existing_props
-                        profile.save(update_fields=['custom_properties'])
+                        profile.save(update_fields=['custom_properties', 'exp_date'])
 
                         profiles_updated += 1
                         logger.info(f"Updated account information for profile '{profile.name}' ({profiles_updated}/{profiles.count()})")

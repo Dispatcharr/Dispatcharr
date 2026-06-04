@@ -1440,23 +1440,20 @@ class StreamManager:
             except Exception as e:
                 logger.debug(f"Error stopping HTTP reader for channel {self.channel_id}: {e}")
 
-        # Otherwise handle socket and transcode resources
-        if self.socket:
-            try:
-                self.socket.close()
-            except Exception as e:
-                logger.debug(f"Error closing socket for channel {self.channel_id}: {e}")
-                pass
-
-        # Enhanced transcode process cleanup with immediate termination
-        if self.transcode_process:
+        # Kill proc before closing self.socket. Closing relay_read while the stream
+        # OS thread is blocked in select() on it does not reliably wake that select()
+        # on Linux. Killing ffmpeg closes its relay_write, sending EOF to the stream
+        # thread naturally. We close self.socket afterward as cleanup only.
+        proc = self.transcode_process
+        self.transcode_process = None  # claim early so concurrent greenlets skip this block
+        if proc:
             try:
                 logger.debug(f"Killing transcode process for channel {self.channel_id}")
-                self.transcode_process.kill()
+                proc.kill()
 
                 # Give it a very short time to die
                 try:
-                    self.transcode_process.wait(timeout=0.5)
+                    proc.wait(timeout=0.5)
                 except subprocess.TimeoutExpired:
                     logger.error(f"Failed to kill transcode process even with force for channel {self.channel_id}")
             except Exception as e:
@@ -1464,18 +1461,26 @@ class StreamManager:
 
                 # Final attempt: try to kill directly
                 try:
-                    self.transcode_process.kill()
+                    proc.kill()
                 except Exception as e:
                     logger.error(f"Final kill attempt failed for channel {self.channel_id}: {e}")
 
+        # Close relay socket after proc death; stream thread has already unblocked via EOF.
+        if self.socket:
+            try:
+                self.socket.close()
+            except Exception as e:
+                logger.debug(f"Error closing socket for channel {self.channel_id}: {e}")
+
+        if proc:
             # Explicitly close all subprocess pipes to prevent file descriptor leaks
             try:
-                if self.transcode_process.stdin:
-                    self.transcode_process.stdin.close()
-                if self.transcode_process.stdout:
-                    self.transcode_process.stdout.close()
-                if self.transcode_process.stderr:
-                    self.transcode_process.stderr.close()
+                if proc.stdin:
+                    proc.stdin.close()
+                if proc.stdout:
+                    proc.stdout.close()
+                if proc.stderr:
+                    proc.stderr.close()
                 logger.debug(f"Closed all subprocess pipes for channel {self.channel_id}")
             except Exception as e:
                 logger.debug(f"Error closing subprocess pipes for channel {self.channel_id}: {e}")
@@ -1492,8 +1497,7 @@ class StreamManager:
                 finally:
                     self.stderr_reader_thread = None
 
-            self.transcode_process = None
-            self.transcode_process_active = False  # Reset the flag
+            self.transcode_process_active = False
 
             # Clear transcode active key in Redis if available
             if hasattr(self.buffer, 'redis_client') and self.buffer.redis_client:
@@ -1558,6 +1562,10 @@ class StreamManager:
                     try:
                         chunk = _os.read(fd, Config.CHUNK_SIZE)
                     except OSError as e:
+                        import errno as _errno
+                        if e.errno == _errno.EAGAIN and (self.stop_requested or not self.running):
+                            self.connected = False
+                            return False
                         logger.warning(f"Read error for channel {self.channel_id}: {e}")
                         self.connected = False
                         return False

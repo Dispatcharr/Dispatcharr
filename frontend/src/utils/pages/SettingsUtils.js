@@ -48,6 +48,8 @@ export const saveChangedSettings = async (settings, changedSettings) => {
     'movie_fallback_template',
     'comskip_enabled',
     'comskip_custom_path',
+    'comskip_mode',
+    'comskip_hw_accel',
     'pre_offset_minutes',
     'post_offset_minutes',
     'series_rules',
@@ -65,6 +67,7 @@ export const saveChangedSettings = async (settings, changedSettings) => {
     'max_system_events',
     'preferred_region',
     'auto_import_mapped_files',
+    'enable_ip_lookup',
   ];
 
   for (const formKey in changedSettings) {
@@ -131,6 +134,7 @@ export const saveChangedSettings = async (settings, changedSettings) => {
       'comskip_enabled',
       'schedule_enabled',
       'auto_import_mapped_files',
+      'enable_ip_lookup',
     ];
     if (booleanFields.includes(formKey) && value != null) {
       value = typeof value === 'boolean' ? value : Boolean(value);
@@ -306,6 +310,8 @@ export const parseSettings = (settings) => {
         ? dvrSettings.comskip_enabled
         : Boolean(dvrSettings.comskip_enabled);
     parsed.comskip_custom_path = dvrSettings.comskip_custom_path;
+    parsed.comskip_mode = dvrSettings.comskip_mode || 'cut';
+    parsed.comskip_hw_accel = dvrSettings.comskip_hw_accel || 'none';
     parsed.pre_offset_minutes =
       typeof dvrSettings.pre_offset_minutes === 'number'
         ? dvrSettings.pre_offset_minutes
@@ -353,6 +359,10 @@ export const parseSettings = (settings) => {
     parsed.auto_import_mapped_files =
       typeof systemSettings.auto_import_mapped_files === 'boolean'
         ? systemSettings.auto_import_mapped_files
+        : true;
+    parsed.enable_ip_lookup =
+      typeof systemSettings.enable_ip_lookup === 'boolean'
+        ? systemSettings.enable_ip_lookup
         : true;
   }
 

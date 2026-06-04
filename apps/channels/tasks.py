@@ -1361,11 +1361,8 @@ def _evaluate_series_rules_locked(tvg_id, result):
 
     # Notify frontend to refresh
     try:
-        channel_layer = get_channel_layer()
-        async_to_sync(channel_layer.group_send)(
-            'updates',
-            {'type': 'update', 'data': {"success": True, "type": "recordings_refreshed", "scheduled": result["scheduled"]}},
-        )
+        from core.utils import send_websocket_update
+        send_websocket_update('updates', 'update', {"success": True, "type": "recordings_refreshed", "scheduled": result["scheduled"]})
     except Exception:
         pass
 
@@ -1440,11 +1437,8 @@ def reschedule_upcoming_recordings_for_offset_change_impl():
 
     # Notify frontend to refresh
     try:
-        channel_layer = get_channel_layer()
-        async_to_sync(channel_layer.group_send)(
-            'updates',
-            {'type': 'update', 'data': {"success": True, "type": "recordings_refreshed", "rescheduled": changed}},
-        )
+        from core.utils import send_websocket_update
+        send_websocket_update('updates', 'update', {"success": True, "type": "recordings_refreshed", "rescheduled": changed})
     except Exception:
         pass
 
@@ -3180,7 +3174,11 @@ def comskip_process_recording(recording_id: int):
     _ws('started', {"title": (cp.get('program') or {}).get('title') or os.path.basename(file_path)})
 
     try:
+        comskip_mode = CoreSettings.get_dvr_comskip_mode()
+        hw_accel = CoreSettings.get_dvr_comskip_hw_accel()
         cmd = [comskip_bin, "--output", os.path.dirname(file_path)]
+        if hw_accel != "none":
+            cmd.insert(1, f"--{hw_accel}")
         # Prefer user-specified INI, fall back to known defaults
         ini_candidates = []
         try:
@@ -3300,6 +3298,19 @@ def comskip_process_recording(recording_id: int):
         _ws('skipped', {"reason": "no_commercials", "commercials": 0})
         return "no_commercials"
 
+    if comskip_mode == "mark":
+        cp["comskip"] = {
+            "status": "completed",
+            "mode": "mark",
+            "edl": os.path.basename(edl_path),
+            "commercials": len(commercials),
+        }
+        if selected_ini:
+            cp["comskip"]["ini_path"] = selected_ini
+        _persist_custom_properties()
+        _ws('completed', {"commercials": len(commercials), "mode": "mark"})
+        return "ok"
+
     workdir = os.path.dirname(file_path)
     parts = []
     try:
@@ -3340,6 +3351,10 @@ def comskip_process_recording(recording_id: int):
         for pth in parts:
             try: os.remove(pth)
             except Exception: pass
+        try:
+            os.remove(edl_path)
+        except Exception:
+            pass
 
         cp["comskip"] = {
             "status": "completed",

@@ -752,6 +752,76 @@ def send_websocket_notification(notification):
         logger.error(f"Failed to send WebSocket notification: {e}")
 
 
+def get_host_and_port(request):
+    """
+    Returns (host, port) for building absolute URIs.
+    - Prefers X-Forwarded-Host/X-Forwarded-Port (nginx).
+    - Falls back to Host header.
+    - Returns None for port if using standard ports (80/443) to omit from URLs.
+    - In dev, uses 5656 as a guess if port cannot be determined.
+    """
+    scheme = request.META.get("HTTP_X_FORWARDED_PROTO", request.scheme)
+    standard_port = "443" if scheme == "https" else "80"
+
+    # 1. Try X-Forwarded-Host (may include port) - set by our nginx
+    xfh = request.META.get("HTTP_X_FORWARDED_HOST")
+    if xfh:
+        if ":" in xfh:
+            host, port = xfh.split(":", 1)
+            if port == standard_port:
+                return host, None
+            return host, port
+        else:
+            host = xfh
+
+        port = request.META.get("HTTP_X_FORWARDED_PORT")
+        if port:
+            return host, None if port == standard_port else port
+        if request.META.get("HTTP_X_FORWARDED_PROTO"):
+            return host, None
+
+    # 2. Try Host header
+    raw_host = request.get_host()
+    if ":" in raw_host:
+        host, port = raw_host.split(":", 1)
+        return host, None if port == standard_port else port
+    else:
+        host = raw_host
+
+    # 3. Check for X-Forwarded-Port (when Host header has no port but we're behind a reverse proxy)
+    port = request.META.get("HTTP_X_FORWARDED_PORT")
+    if port:
+        return host, None if port == standard_port else port
+
+    # 4. Behind a reverse proxy with no port info - assume standard port
+    if request.META.get("HTTP_X_FORWARDED_PROTO") or request.META.get("HTTP_X_FORWARDED_FOR"):
+        return host, None
+
+    # 5. Try SERVER_PORT from META (only if NOT behind reverse proxy)
+    port = request.META.get("SERVER_PORT")
+    if port:
+        return host, None if port == standard_port else port
+
+    # 6. Dev fallback
+    if os.environ.get("DISPATCHARR_ENV") == "dev" or host in ("localhost", "127.0.0.1"):
+        return host, "5656"
+
+    # 7. Final fallback: assume standard port for scheme
+    return host, None
+
+
+def build_absolute_uri_with_port(request, path):
+    """
+    Build an absolute URI with optional port.
+    Port is omitted from URL if None (standard port for scheme).
+    """
+    host, port = get_host_and_port(request)
+    scheme = request.META.get("HTTP_X_FORWARDED_PROTO", request.scheme)
+    if port:
+        return f"{scheme}://{host}:{port}{path}"
+    return f"{scheme}://{host}{path}"
+
+
 def send_notification_dismissed(notification_key):
     """
     Notify all connected clients that a notification was dismissed.

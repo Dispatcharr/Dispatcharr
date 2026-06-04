@@ -1,11 +1,13 @@
 import useChannelsStore from '../../store/channels.jsx';
-import API from '../../api';
 import {
+  format,
+  isAfter,
+  isBefore,
   useDateTimeFormat,
   useTimeHelpers,
 } from '../../utils/dateTimeUtils.js';
-import React from 'react';
-import { Pencil, RefreshCcw, Check, X } from 'lucide-react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { Check, Pencil, RefreshCcw, X } from 'lucide-react';
 import {
   ActionIcon,
   Badge,
@@ -21,7 +23,6 @@ import {
   TextInput,
 } from '@mantine/core';
 import useVideoStore from '../../store/useVideoStore.jsx';
-import { notifications } from '@mantine/notifications';
 import defaultLogo from '../../images/logo.png';
 import {
   deleteRecordingById,
@@ -33,10 +34,98 @@ import {
   runComSkip,
 } from '../../utils/cards/RecordingCardUtils.js';
 import {
+  getChannel,
   getRating,
   getStatRows,
   getUpcomingEpisodes,
+  refreshArtwork,
+  updateRecordingMetadata,
 } from '../../utils/forms/RecordingDetailsModalUtils.js';
+import { showNotification } from '../../utils/notificationUtils.js';
+
+const EpisodeRow = ({
+  rec,
+  recording,
+  channel,
+  channelsById,
+  livePosterUrl,
+  toUserTime,
+  dateformat,
+  timeformat,
+  onOpenChild,
+}) => {
+  const cp = rec.custom_properties || {};
+  const pr = cp.program || {};
+  const start = toUserTime(rec.start_time);
+  const end = toUserTime(rec.end_time);
+  const season = cp.season ?? pr?.custom_properties?.season;
+  const episode = cp.episode ?? pr?.custom_properties?.episode;
+  const onscreen =
+    cp.onscreen_episode ?? pr?.custom_properties?.onscreen_episode;
+  const se = getSeasonLabel(season, episode, onscreen);
+  const posterLogoId = cp.poster_logo_id;
+  const purl = getPosterUrl(posterLogoId, cp, livePosterUrl);
+  const epChannel =
+    channelsById[rec.channel] ||
+    (rec.channel === recording?.channel ? channel : null);
+
+  const onRemove = async (e) => {
+    e?.stopPropagation?.();
+    try {
+      await deleteRecordingById(rec.id);
+    } catch (error) {
+      console.error('Failed to delete upcoming recording', error);
+    }
+  };
+
+  return (
+    <Card
+      withBorder
+      radius="md"
+      padding="sm"
+      style={{ backgroundColor: '#27272A', cursor: 'pointer' }}
+      onClick={() => onOpenChild(rec)}
+    >
+      <Flex gap="sm" align="center">
+        <Image
+          src={purl}
+          w={64}
+          h={64}
+          fit="contain"
+          radius="sm"
+          alt={pr.title}
+          fallbackSrc={getChannelLogoUrl(epChannel) || defaultLogo}
+        />
+        <Stack gap={4} flex={1}>
+          <Group justify="space-between">
+            <Text
+              fw={600}
+              size="sm"
+              lineClamp={1}
+              title={pr.sub_title || pr.title}
+            >
+              {pr.sub_title || pr.title}
+            </Text>
+            {se && (
+              <Badge color="gray" variant="light">
+                {se}
+              </Badge>
+            )}
+          </Group>
+          <Text size="xs">
+            {format(start, `${dateformat}, YYYY ${timeformat}`)} –{' '}
+            {format(end, timeformat)}
+          </Text>
+        </Stack>
+        <Group gap={6}>
+          <Button size="xs" color="red" variant="light" onClick={onRemove}>
+            Remove
+          </Button>
+        </Group>
+      </Flex>
+    </Card>
+  );
+};
 
 const RecordingDetailsModal = ({
   opened,
@@ -51,21 +140,21 @@ const RecordingDetailsModal = ({
 }) => {
   const allRecordings = useChannelsStore((s) => s.recordings);
   // Local channel cache to avoid the global channels map
-  const [channelsById, setChannelsById] = React.useState({});
+  const [channelsById, setChannelsById] = useState({});
   const { toUserTime, userNow } = useTimeHelpers();
-  const [childOpen, setChildOpen] = React.useState(false);
-  const [childRec, setChildRec] = React.useState(null);
+  const [childOpen, setChildOpen] = useState(false);
+  const [childRec, setChildRec] = useState(null);
   const { timeFormat: timeformat, dateFormat: dateformat } =
     useDateTimeFormat();
 
-  const [editing, setEditing] = React.useState(false);
+  const [editing, setEditing] = useState(false);
 
   // Prefer the store version of the recording for live updates
   // (e.g., after artwork refresh or metadata edit via WebSocket).
   // Preserve _group_count from the categorized prop — the store version
   // doesn't carry this client-side field, so without merging it back
   // isSeriesGroup would always be false and the episode list hidden.
-  const safeRecording = React.useMemo(() => {
+  const safeRecording = useMemo(() => {
     if (recording?.id && Array.isArray(allRecordings)) {
       const found = allRecordings.find((r) => r.id === recording.id);
       if (found) {
@@ -81,7 +170,7 @@ const RecordingDetailsModal = ({
   const program = customProps.program || {};
 
   // Derive poster URL from live store data instead of the stale prop snapshot.
-  const livePosterUrl = React.useMemo(
+  const livePosterUrl = useMemo(
     () =>
       getPosterUrl(
         customProps.poster_logo_id,
@@ -93,17 +182,17 @@ const RecordingDetailsModal = ({
 
   // Optimistic overrides — show saved values immediately without waiting
   // for the WebSocket round-trip to refresh the store.
-  const [savedTitle, setSavedTitle] = React.useState(null);
-  const [savedDescription, setSavedDescription] = React.useState(null);
+  const [savedTitle, setSavedTitle] = useState(null);
+  const [savedDescription, setSavedDescription] = useState(null);
   const recordingName = savedTitle ?? (program.title || 'Custom Recording');
   const description =
     savedDescription ?? (program.description || customProps.description || '');
 
-  const [editTitle, setEditTitle] = React.useState('');
-  const [editDescription, setEditDescription] = React.useState('');
+  const [editTitle, setEditTitle] = useState('');
+  const [editDescription, setEditDescription] = useState('');
 
   // Reset optimistic state when the recording changes
-  React.useEffect(() => {
+  useEffect(() => {
     setSavedTitle(null);
     setSavedDescription(null);
     setEditing(false);
@@ -129,7 +218,7 @@ const RecordingDetailsModal = ({
   const isSeriesGroup = Boolean(
     safeRecording._group_count && safeRecording._group_count > 1
   );
-  const upcomingEpisodes = React.useMemo(() => {
+  const upcomingEpisodes = useMemo(() => {
     return getUpcomingEpisodes(
       isSeriesGroup,
       allRecordings,
@@ -147,7 +236,7 @@ const RecordingDetailsModal = ({
   ]);
 
   // Ensure channel is available for a given id
-  const loadChannel = React.useCallback(
+  const loadChannel = useCallback(
     async (id) => {
       if (!id) {
         return null;
@@ -159,7 +248,7 @@ const RecordingDetailsModal = ({
       }
 
       try {
-        const ch = await API.getChannel(id);
+        const ch = await getChannel(id);
         if (ch && ch.id === id) {
           setChannelsById((prev) => ({ ...prev, [id]: ch }));
           return ch;
@@ -177,7 +266,7 @@ const RecordingDetailsModal = ({
   );
 
   // When opening a child episode, fetch that episode's channel
-  React.useEffect(() => {
+  useEffect(() => {
     if (!childOpen || !childRec) return;
     loadChannel(childRec.channel);
   }, [childOpen, childRec, loadChannel]);
@@ -188,7 +277,7 @@ const RecordingDetailsModal = ({
     const s = toUserTime(rec.start_time);
     const e = toUserTime(rec.end_time);
 
-    if (now.isAfter(s) && now.isBefore(e)) {
+    if (isAfter(now, s) && isBefore(now, e)) {
       const ch =
         channelsById[rec.channel] ||
         (rec.channel === recording?.channel ? channel : null);
@@ -228,14 +317,11 @@ const RecordingDetailsModal = ({
 
   const saveMetadata = async () => {
     try {
-      await API.updateRecordingMetadata(recording.id, {
-        title: editTitle || 'Custom Recording',
-        description: editDescription,
-      });
+      await updateRecordingMetadata(recording, editTitle, editDescription);
       setSavedTitle(editTitle || 'Custom Recording');
       setSavedDescription(editDescription);
       setEditing(false);
-      notifications.show({
+      showNotification({
         title: 'Saved',
         message: 'Recording metadata updated',
         color: 'green',
@@ -249,8 +335,8 @@ const RecordingDetailsModal = ({
   const handleRefreshArtwork = async (e) => {
     e.stopPropagation?.();
     try {
-      await API.refreshArtwork(recording.id);
-      notifications.show({
+      await refreshArtwork(recording.id);
+      showNotification({
         title: 'Refreshing artwork',
         message: 'Poster resolution started',
         color: 'blue.5',
@@ -265,7 +351,7 @@ const RecordingDetailsModal = ({
     e.stopPropagation?.();
     try {
       await runComSkip(recording);
-      notifications.show({
+      showNotification({
         title: 'Removing commercials',
         message: 'Queued comskip for this recording',
         color: 'blue.5',
@@ -277,86 +363,6 @@ const RecordingDetailsModal = ({
   };
 
   if (!recording) return null;
-
-  const EpisodeRow = ({ rec }) => {
-    const cp = rec.custom_properties || {};
-    const pr = cp.program || {};
-    const start = toUserTime(rec.start_time);
-    const end = toUserTime(rec.end_time);
-    const season = cp.season ?? pr?.custom_properties?.season;
-    const episode = cp.episode ?? pr?.custom_properties?.episode;
-    const onscreen =
-      cp.onscreen_episode ?? pr?.custom_properties?.onscreen_episode;
-    const se = getSeasonLabel(season, episode, onscreen);
-    const posterLogoId = cp.poster_logo_id;
-    const purl = getPosterUrl(posterLogoId, cp, livePosterUrl);
-    const epChannel =
-      channelsById[rec.channel] ||
-      (rec.channel === recording?.channel ? channel : null);
-
-    const onRemove = async (e) => {
-      e?.stopPropagation?.();
-      try {
-        await deleteRecordingById(rec.id);
-      } catch (error) {
-        console.error('Failed to delete upcoming recording', error);
-      }
-      // recording_cancelled WS event triggers the debounced fetchRecordings()
-    };
-
-    const handleOnMainCardClick = () => {
-      setChildRec(rec);
-      setChildOpen(true);
-    };
-
-    return (
-      <Card
-        withBorder
-        radius="md"
-        padding="sm"
-        style={{ backgroundColor: '#27272A', cursor: 'pointer' }}
-        onClick={handleOnMainCardClick}
-      >
-        <Flex gap="sm" align="center">
-          <Image
-            src={purl}
-            w={64}
-            h={64}
-            fit="contain"
-            radius="sm"
-            alt={pr.title || recordingName}
-            fallbackSrc={getChannelLogoUrl(epChannel) || defaultLogo}
-          />
-          <Stack gap={4} flex={1}>
-            <Group justify="space-between">
-              <Text
-                fw={600}
-                size="sm"
-                lineClamp={1}
-                title={pr.sub_title || pr.title}
-              >
-                {pr.sub_title || pr.title}
-              </Text>
-              {se && (
-                <Badge color="gray" variant="light">
-                  {se}
-                </Badge>
-              )}
-            </Group>
-            <Text size="xs">
-              {start.format(`${dateformat}, YYYY ${timeformat}`)} –{' '}
-              {end.format(timeformat)}
-            </Text>
-          </Stack>
-          <Group gap={6}>
-            <Button size="xs" color="red" variant="light" onClick={onRemove}>
-              Remove
-            </Button>
-          </Group>
-        </Flex>
-      </Card>
-    );
-  };
 
   const WatchLive = () => {
     return (
@@ -414,7 +420,21 @@ const RecordingDetailsModal = ({
           </Text>
         )}
         {upcomingEpisodes.map((ep) => (
-          <EpisodeRow key={`ep-${ep.id}`} rec={ep} />
+          <EpisodeRow
+            key={`ep-${ep.id}`}
+            rec={ep}
+            recording={recording}
+            channel={channel}
+            channelsById={channelsById}
+            livePosterUrl={livePosterUrl}
+            toUserTime={toUserTime}
+            dateformat={dateformat}
+            timeformat={timeformat}
+            onOpenChild={(rec) => {
+              setChildRec(rec);
+              setChildOpen(true);
+            }}
+          />
         ))}
         {childOpen && childRec && (
           <RecordingDetailsModal
@@ -468,7 +488,7 @@ const RecordingDetailsModal = ({
             <Group gap={8}>
               {onWatchLive && <WatchLive />}
               {onWatchRecording && <WatchRecording />}
-              {onEdit && start.isAfter(userNow()) && <Edit />}
+              {onEdit && isAfter(start, userNow()) && <Edit />}
               {(customProps.status === 'completed' ||
                 customProps.status === 'stopped' ||
                 customProps.status === 'interrupted') &&
@@ -486,8 +506,8 @@ const RecordingDetailsModal = ({
             </Group>
           </Group>
           <Text size="sm">
-            {start.format(`${dateformat}, YYYY ${timeformat}`)} –{' '}
-            {end.format(timeformat)}
+            {format(start, `${dateformat}, YYYY ${timeformat}`)} –{' '}
+            {format(end, timeformat)}
           </Text>
           {rating && (
             <Group gap={8}>

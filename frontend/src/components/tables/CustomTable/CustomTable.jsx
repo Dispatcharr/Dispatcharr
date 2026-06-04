@@ -76,6 +76,7 @@ const CustomTable = ({ table }) => {
         tableCellProps={table.tableCellProps}
         enableDragDrop={table.enableDragDrop}
         selectedTableIdsSet={table.selectedTableIdsSet}
+        handleRowClickRef={table.handleRowClickRef}
       />
     </Box>
   );

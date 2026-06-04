@@ -313,6 +313,8 @@ class CoreSettings(models.Model):
             "movie_fallback_template": "Movies/{start}.mkv",
             "comskip_enabled": False,
             "comskip_custom_path": "",
+            "comskip_mode": "cut",
+            "comskip_hw_accel": "none",
             "pre_offset_minutes": 0,
             "post_offset_minutes": 0,
             "series_rules": [],
@@ -341,6 +343,16 @@ class CoreSettings(models.Model):
     @classmethod
     def get_dvr_comskip_enabled(cls):
         return bool(cls.get_dvr_settings().get("comskip_enabled", False))
+
+    @classmethod
+    def get_dvr_comskip_mode(cls):
+        mode = cls.get_dvr_settings().get("comskip_mode", "cut")
+        return mode if mode in ("cut", "mark") else "cut"
+
+    @classmethod
+    def get_dvr_comskip_hw_accel(cls):
+        hw = cls.get_dvr_settings().get("comskip_hw_accel", "none")
+        return hw if hw in ("none", "cuvid", "qsv") else "none"
 
     @classmethod
     def get_dvr_comskip_custom_path(cls):
@@ -395,6 +407,7 @@ class CoreSettings(models.Model):
             "max_system_events": 100,
             "preferred_region": None,
             "auto_import_mapped_files": True,
+            "enable_ip_lookup": True,
         })
 
     @classmethod

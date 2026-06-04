@@ -22,6 +22,10 @@ vi.mock('../NotificationCenter', () => ({
   ),
 }));
 
+vi.mock('../AboutModal', () => ({
+  default: () => null,
+}));
+
 // Mock lucide-react icons
 vi.mock('lucide-react', () => ({
   ListOrdered: ({ onClick }) => (
@@ -59,6 +63,7 @@ vi.mock('lucide-react', () => ({
   Heart: () => <div data-testid="heart-icon" />,
   Package: () => <div data-testid="package-icon" />,
   Download: () => <div data-testid="download-icon" />,
+  HelpCircle: () => <div data-testid="help-circle-icon" />,
 }));
 
 // Mock UserForm component
@@ -91,14 +96,6 @@ vi.mock('@mantine/core', async () => {
         </Component>
       );
     },
-    TextInput: ({ value, onChange, leftSection, rightSection, label }) => (
-      <div>
-        {label && <label>{label}</label>}
-        {leftSection}
-        <input value={value} onChange={onChange} />
-        {rightSection}
-      </div>
-    ),
     ActionIcon: ({ children, onClick, ...props }) => (
       <button onClick={onClick} {...props}>
         {children}
@@ -117,6 +114,7 @@ vi.mock('@mantine/core', async () => {
       </nav>
     ),
     ScrollArea: ({ children }) => <div>{children}</div>,
+    Skeleton: ({ height }) => <div data-testid="skeleton" style={{ height }} />,
     Tooltip: ({ children }) => <>{children}</>,
   };
 });
@@ -285,8 +283,7 @@ describe('Sidebar', () => {
     it('should render public IP with country flag', () => {
       renderSidebar();
 
-      const ipInput = screen.getByDisplayValue('192.168.1.1');
-      expect(ipInput).toBeInTheDocument();
+      expect(screen.getByText('Public IP')).toBeInTheDocument();
 
       const flag = screen.getByAltText('United States');
       expect(flag).toHaveAttribute('src', 'https://flagcdn.com/16x12/us.png');
@@ -487,7 +484,7 @@ describe('Sidebar', () => {
       });
 
       renderSidebar();
-      expect(screen.getByDisplayValue('192.168.1.1')).toBeInTheDocument();
+      expect(screen.getByText('Public IP')).toBeInTheDocument();
       expect(
         screen.queryByRole('img', { name: /flag/i })
       ).not.toBeInTheDocument();

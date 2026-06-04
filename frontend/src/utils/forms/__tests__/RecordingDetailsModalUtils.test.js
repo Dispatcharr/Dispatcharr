@@ -1,8 +1,21 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import * as RecordingDetailsModalUtils from '../RecordingDetailsModalUtils';
 import dayjs from 'dayjs';
+import API from '../../../api.js';
+
+vi.mock('../../../api.js', () => ({
+  default: {
+    getChannel: vi.fn(),
+    updateRecordingMetadata: vi.fn(),
+    refreshArtwork: vi.fn(),
+  },
+}));
 
 describe('RecordingDetailsModalUtils', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
   describe('getStatRows', () => {
     it('should return all stats when all values are present', () => {
       const stats = {
@@ -622,6 +635,110 @@ describe('RecordingDetailsModalUtils', () => {
       );
 
       expect(result).toEqual([]);
+    });
+  });
+
+  describe('getChannel', () => {
+    it('should call API.getChannel with the given id', async () => {
+      const mockChannel = { id: 42, name: 'Channel 1' };
+      API.getChannel.mockResolvedValue(mockChannel);
+
+      const result = await RecordingDetailsModalUtils.getChannel(42);
+
+      expect(API.getChannel).toHaveBeenCalledWith(42);
+      expect(result).toEqual(mockChannel);
+    });
+
+    it('should propagate API errors', async () => {
+      API.getChannel.mockRejectedValue(new Error('Not found'));
+
+      await expect(RecordingDetailsModalUtils.getChannel(99)).rejects.toThrow(
+        'Not found'
+      );
+    });
+  });
+
+  describe('updateRecordingMetadata', () => {
+    it('should call API with title and description', async () => {
+      const mockResponse = { id: 1, title: 'Updated Title' };
+      API.updateRecordingMetadata.mockResolvedValue(mockResponse);
+
+      const recording = { id: 1 };
+      const result = await RecordingDetailsModalUtils.updateRecordingMetadata(
+        recording,
+        'Updated Title',
+        'Updated description'
+      );
+
+      expect(API.updateRecordingMetadata).toHaveBeenCalledWith(1, {
+        title: 'Updated Title',
+        description: 'Updated description',
+      });
+      expect(result).toEqual(mockResponse);
+    });
+
+    it('should default title to "Custom Recording" when editTitle is empty', async () => {
+      API.updateRecordingMetadata.mockResolvedValue({});
+
+      const recording = { id: 5 };
+      await RecordingDetailsModalUtils.updateRecordingMetadata(
+        recording,
+        '',
+        'Some description'
+      );
+
+      expect(API.updateRecordingMetadata).toHaveBeenCalledWith(5, {
+        title: 'Custom Recording',
+        description: 'Some description',
+      });
+    });
+
+    it('should default title to "Custom Recording" when editTitle is null', async () => {
+      API.updateRecordingMetadata.mockResolvedValue({});
+
+      const recording = { id: 5 };
+      await RecordingDetailsModalUtils.updateRecordingMetadata(
+        recording,
+        null,
+        'desc'
+      );
+
+      expect(API.updateRecordingMetadata).toHaveBeenCalledWith(5, {
+        title: 'Custom Recording',
+        description: 'desc',
+      });
+    });
+
+    it('should propagate API errors', async () => {
+      API.updateRecordingMetadata.mockRejectedValue(new Error('Server error'));
+
+      await expect(
+        RecordingDetailsModalUtils.updateRecordingMetadata(
+          { id: 1 },
+          'Title',
+          'Desc'
+        )
+      ).rejects.toThrow('Server error');
+    });
+  });
+
+  describe('refreshArtwork', () => {
+    it('should call API.refreshArtwork with the given id', async () => {
+      const mockResponse = { success: true };
+      API.refreshArtwork.mockResolvedValue(mockResponse);
+
+      const result = await RecordingDetailsModalUtils.refreshArtwork(7);
+
+      expect(API.refreshArtwork).toHaveBeenCalledWith(7);
+      expect(result).toEqual(mockResponse);
+    });
+
+    it('should propagate API errors', async () => {
+      API.refreshArtwork.mockRejectedValue(new Error('Artwork fetch failed'));
+
+      await expect(
+        RecordingDetailsModalUtils.refreshArtwork(7)
+      ).rejects.toThrow('Artwork fetch failed');
     });
   });
 });

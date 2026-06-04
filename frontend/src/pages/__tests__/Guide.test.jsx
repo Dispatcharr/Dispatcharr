@@ -9,20 +9,36 @@ import useEPGsStore from '../../store/epgs';
 import useSettingsStore from '../../store/settings';
 import useVideoStore from '../../store/useVideoStore';
 import useLocalStorage from '../../hooks/useLocalStorage';
-import { showNotification } from '../../utils/notificationUtils.js';
 import * as guideUtils from '../../utils/guideUtils';
 import * as recordingCardUtils from '../../utils/cards/RecordingCardUtils.js';
 import * as dateTimeUtils from '../../utils/dateTimeUtils.js';
 import userEvent from '@testing-library/user-event';
 
 // Mock dependencies
-vi.mock('../../store/channels');
-vi.mock('../../store/logos');
-vi.mock('../../store/epgs');
-vi.mock('../../store/settings');
-vi.mock('../../store/useVideoStore');
-vi.mock('../../hooks/useLocalStorage');
-vi.mock('../../api');
+vi.mock('../../store/channels', () => ({
+  default: vi.fn(),
+}));
+vi.mock('../../store/logos', () => ({
+  default: vi.fn(),
+}));
+vi.mock('../../store/epgs', () => ({
+  default: vi.fn(),
+}));
+vi.mock('../../store/settings', () => ({
+  default: vi.fn(),
+}));
+vi.mock('../../store/useVideoStore', () => ({
+  default: vi.fn(),
+}));
+vi.mock('../../hooks/useLocalStorage', () => ({
+  default: vi.fn(),
+}));
+vi.mock('../../api', () => ({
+  default: {
+    getAllChannelIds: vi.fn(),
+    getChannelsSummary: vi.fn(),
+  },
+}));
 
 vi.mock('@mantine/hooks', () => ({
   useElementSize: () => ({
@@ -235,7 +251,7 @@ vi.mock('../../components/forms/SeriesRecordingModal', () => ({
 }));
 vi.mock('../../components/ProgramDetailModal', () => ({
   __esModule: true,
-  default: ({ program, channel, opened, onClose, onRecord }) =>
+  default: ({ program, opened, onClose, onRecord }) =>
     opened ? (
       <div data-testid="program-detail-modal">
         <div>{program?.title}</div>
@@ -252,11 +268,11 @@ vi.mock('../../utils/guideUtils', async () => {
     fetchPrograms: vi.fn(),
     createRecording: vi.fn(),
     createSeriesRule: vi.fn(),
-    evaluateSeriesRule: vi.fn(),
     fetchRules: vi.fn(),
     filterGuideChannels: vi.fn(),
     getGroupOptions: vi.fn(),
     getProfileOptions: vi.fn(),
+    sortChannels: vi.fn((ch) => ch),
   };
 });
 vi.mock('../../utils/cards/RecordingCardUtils.js', async () => {
@@ -403,7 +419,6 @@ describe('Guide', () => {
     );
     guideUtils.createRecording.mockResolvedValue(undefined);
     guideUtils.createSeriesRule.mockResolvedValue(undefined);
-    guideUtils.evaluateSeriesRule.mockResolvedValue(undefined);
     guideUtils.getGroupOptions.mockReturnValue([
       { value: 'all', label: 'All Groups' },
       { value: 'group-1', label: 'News' },
@@ -666,8 +681,7 @@ describe('Guide', () => {
 
       await waitFor(() => {
         expect(guideUtils.createRecording).toHaveBeenCalledWith(
-          expect.objectContaining({ id: 'channel-1' }),
-          expect.objectContaining({ id: 'prog-1' })
+          expect.objectContaining({ channel: 'channel-1' }),
         );
       });
     });

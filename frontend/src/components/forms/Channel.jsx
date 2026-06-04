@@ -3,10 +3,12 @@ import { useForm } from 'react-hook-form';
 import { yupResolver } from '@hookform/resolvers/yup';
 import * as Yup from 'yup';
 import useChannelsStore from '../../store/channels';
+import API from '../../api';
 import useStreamProfilesStore from '../../store/streamProfiles';
 import ChannelGroupForm from './ChannelGroup';
 import logo from '../../images/logo.png';
 import { useChannelLogoSelection } from '../../hooks/useSmartLogos';
+import { useEpgPreview } from '../../hooks/useEpgPreview';
 import useLogosStore from '../../store/logos';
 import LazyLogo from '../LazyLogo';
 import LogoForm from './Logo';
@@ -34,6 +36,7 @@ import {
   useMantineTheme,
 } from '@mantine/core';
 import { ListOrdered, SquarePlus, Undo2, X, Zap } from 'lucide-react';
+import ProgramPreview from '../ProgramPreview';
 import useEPGsStore from '../../store/epgs';
 import { FixedSizeList as List } from 'react-window';
 import { USER_LEVEL_LABELS, USER_LEVELS } from '../../constants';
@@ -455,6 +458,10 @@ const ChannelForm = ({ channel: channelProp = null, isOpen, onClose }) => {
     }
   }, [defaultValues, channel, reset, epgs, tvgsById]);
 
+  const epgDataId = watch('epg_data_id');
+  const { currentProgram, isLoadingProgram, hasFetchedProgram } =
+    useEpgPreview(epgDataId);
+
   // Memoize logo options to prevent infinite re-renders during background loading
   const logoOptions = useMemo(() => {
     const options = [{ id: '0', name: 'Default' }].concat(
@@ -521,7 +528,8 @@ const ChannelForm = ({ channel: channelProp = null, isOpen, onClose }) => {
             </Text>
           )}
           <Group justify="space-between" align="top">
-            <Stack gap="5" style={{ flex: 1 }}>
+            {/* Col 1: Identity - Channel Name, Number, Group, Logo */}
+            <Stack gap="5" style={{ flex: 1, minWidth: 0 }}>
               <TextInput
                 id="name"
                 name="name"
@@ -559,6 +567,33 @@ const ChannelForm = ({ channel: channelProp = null, isOpen, onClose }) => {
                 error={errors.name?.message}
                 size="xs"
                 style={{ flex: 1 }}
+              />
+
+              <NumberInput
+                id="channel_number"
+                name="channel_number"
+                label="Channel # (blank to auto-assign)"
+                description={
+                  <ProviderHintRow
+                    channel={channel}
+                    field="channel_number"
+                    formValue={watch('channel_number')}
+                    hintText={getProviderHint(channel, 'channel_number')}
+                    onReset={() =>
+                      setValue(
+                        'channel_number',
+                        getProviderFormValue(channel, 'channel_number'),
+                        { shouldDirty: true }
+                      )
+                    }
+                  />
+                }
+                value={watch('channel_number')}
+                onChange={(value) => setValue('channel_number', value)}
+                error={errors.channel_number?.message}
+                size="xs"
+                step={0.1}
+                precision={1}
               />
 
               <Flex gap="sm">
@@ -674,64 +709,6 @@ const ChannelForm = ({ channel: channelProp = null, isOpen, onClose }) => {
                 </Flex>
               </Flex>
 
-              <Select
-                id="stream_profile_id"
-                label="Stream Profile"
-                name="stream_profile_id"
-                description={
-                  <ProviderHintRow
-                    channel={channel}
-                    field="stream_profile_id"
-                    formValue={watch('stream_profile_id')}
-                    hintText={getFkProviderHint(
-                      channel,
-                      'stream_profile_id',
-                      streamProfiles.reduce((acc, p) => {
-                        acc[p.id] = p;
-                        return acc;
-                      }, {})
-                    )}
-                    onReset={() =>
-                      setValue(
-                        'stream_profile_id',
-                        getProviderFormValue(channel, 'stream_profile_id')
-                      )
-                    }
-                  />
-                }
-                value={watch('stream_profile_id')}
-                onChange={(value) => {
-                  setValue('stream_profile_id', value);
-                }}
-                error={errors.stream_profile_id?.message}
-                data={[{ value: '0', label: '(use default)' }].concat(
-                  streamProfiles.map((option) => ({
-                    value: `${option.id}`,
-                    label: option.name,
-                  }))
-                )}
-                size="xs"
-              />
-
-              <Select
-                label="User Level Access"
-                data={Object.entries(USER_LEVELS).map(([, value]) => {
-                  return {
-                    label: USER_LEVEL_LABELS[value],
-                    value: `${value}`,
-                  };
-                })}
-                value={watch('user_level')}
-                onChange={(value) => {
-                  setValue('user_level', value);
-                }}
-                error={errors.user_level?.message}
-              />
-            </Stack>
-
-            <Divider size="sm" orientation="vertical" />
-
-            <Stack justify="flex-start" style={{ flex: 1 }}>
               <Group justify="space-between">
                 <Popover
                   opened={logoPopoverOpened}
@@ -908,85 +885,16 @@ const ChannelForm = ({ channel: channelProp = null, isOpen, onClose }) => {
               >
                 Upload or Create Logo
               </Button>
-              <Tooltip label="Mark as mature/adult content (18+)" withArrow>
-                <Box>
-                  <Switch
-                    label="Mature Content"
-                    checked={watch('is_adult')}
-                    onChange={(event) =>
-                      setValue('is_adult', event.currentTarget.checked)
-                    }
-                    size="md"
-                  />
-                </Box>
-              </Tooltip>
-              <Tooltip
-                label="Hides this channel from HDHR, M3U, EPG, and XC client output and preserves it from auto-cleanup. To hide channels per-user, use channel profiles instead."
-                withArrow
-                multiline
-                w={320}
-              >
-                <Box>
-                  <Switch
-                    label="Hidden"
-                    checked={watch('hidden_from_output')}
-                    onChange={(event) =>
-                      setValue(
-                        'hidden_from_output',
-                        event.currentTarget.checked
-                      )
-                    }
-                    size="md"
-                  />
-                </Box>
-              </Tooltip>
-              {channel?.auto_created && hasAnyOverride && (
-                <Tooltip
-                  label={`Currently overriding: ${overriddenFieldLabels.join(', ')}. Clear all overrides to follow the provider values again on the next refresh.`}
-                  withArrow
-                >
-                  <Button
-                    variant="light"
-                    color="orange"
-                    size="xs"
-                    onClick={clearOverrides}
-                  >
-                    Clear All Overrides ({overriddenFieldLabels.length})
-                  </Button>
-                </Tooltip>
-              )}
             </Stack>
 
             <Divider size="sm" orientation="vertical" />
 
-            <Stack gap="5" style={{ flex: 1 }} justify="flex-start">
-              <NumberInput
-                id="channel_number"
-                name="channel_number"
-                label="Channel # (blank to auto-assign)"
-                description={
-                  <ProviderHintRow
-                    channel={channel}
-                    field="channel_number"
-                    formValue={watch('channel_number')}
-                    hintText={getProviderHint(channel, 'channel_number')}
-                    onReset={() =>
-                      setValue(
-                        'channel_number',
-                        getProviderFormValue(channel, 'channel_number'),
-                        { shouldDirty: true }
-                      )
-                    }
-                  />
-                }
-                value={watch('channel_number')}
-                onChange={(value) => setValue('channel_number', value)}
-                error={errors.channel_number?.message}
-                size="xs"
-                step={0.1} // Add step prop to allow decimal inputs
-                precision={1} // Specify decimal precision
-              />
-
+            {/* Col 2: Guide Data - TVG-ID, Gracenote StationId, EPG, Program Preview */}
+            <Stack
+              gap="5"
+              style={{ flex: 1, minWidth: 0 }}
+              justify="flex-start"
+            >
               <TextInput
                 id="tvg_id"
                 name="tvg_id"
@@ -1218,6 +1126,124 @@ const ChannelForm = ({ channel: channelProp = null, isOpen, onClose }) => {
                   </ScrollArea>
                 </PopoverDropdown>
               </Popover>
+
+              {(isLoadingProgram || hasFetchedProgram || currentProgram) && (
+                <Box mt="xs" p="xs">
+                  <ProgramPreview
+                    program={currentProgram}
+                    loading={isLoadingProgram}
+                    fetched={hasFetchedProgram}
+                    label="Current Program:"
+                  />
+                </Box>
+              )}
+            </Stack>
+
+            <Divider size="sm" orientation="vertical" />
+
+            {/* Col 3: Behavior/Access - Stream Profile, User Level, Mature Content, Hidden */}
+            <Stack justify="flex-start" style={{ flex: 1, minWidth: 0 }}>
+              <Select
+                id="stream_profile_id"
+                label="Stream Profile"
+                name="stream_profile_id"
+                description={
+                  <ProviderHintRow
+                    channel={channel}
+                    field="stream_profile_id"
+                    formValue={watch('stream_profile_id')}
+                    hintText={getFkProviderHint(
+                      channel,
+                      'stream_profile_id',
+                      streamProfiles.reduce((acc, p) => {
+                        acc[p.id] = p;
+                        return acc;
+                      }, {})
+                    )}
+                    onReset={() =>
+                      setValue(
+                        'stream_profile_id',
+                        getProviderFormValue(channel, 'stream_profile_id')
+                      )
+                    }
+                  />
+                }
+                value={watch('stream_profile_id')}
+                onChange={(value) => {
+                  setValue('stream_profile_id', value);
+                }}
+                error={errors.stream_profile_id?.message}
+                data={[{ value: '0', label: '(use default)' }].concat(
+                  streamProfiles.map((option) => ({
+                    value: `${option.id}`,
+                    label: option.name,
+                  }))
+                )}
+                size="xs"
+              />
+
+              <Select
+                label="User Level Access"
+                data={Object.entries(USER_LEVELS).map(([, value]) => {
+                  return {
+                    label: USER_LEVEL_LABELS[value],
+                    value: `${value}`,
+                  };
+                })}
+                value={watch('user_level')}
+                onChange={(value) => {
+                  setValue('user_level', value);
+                }}
+                error={errors.user_level?.message}
+              />
+
+              <Tooltip label="Mark as mature/adult content (18+)" withArrow>
+                <Box>
+                  <Switch
+                    label="Mature Content"
+                    checked={watch('is_adult')}
+                    onChange={(event) =>
+                      setValue('is_adult', event.currentTarget.checked)
+                    }
+                    size="md"
+                  />
+                </Box>
+              </Tooltip>
+              <Tooltip
+                label="Hides this channel from HDHR, M3U, EPG, and XC client output and preserves it from auto-cleanup. To hide channels per-user, use channel profiles instead."
+                withArrow
+                multiline
+                w={320}
+              >
+                <Box>
+                  <Switch
+                    label="Hidden"
+                    checked={watch('hidden_from_output')}
+                    onChange={(event) =>
+                      setValue(
+                        'hidden_from_output',
+                        event.currentTarget.checked
+                      )
+                    }
+                    size="md"
+                  />
+                </Box>
+              </Tooltip>
+              {channel?.auto_created && hasAnyOverride && (
+                <Tooltip
+                  label={`Currently overriding: ${overriddenFieldLabels.join(', ')}. Clear all overrides to follow the provider values again on the next refresh.`}
+                  withArrow
+                >
+                  <Button
+                    variant="light"
+                    color="orange"
+                    size="xs"
+                    onClick={clearOverrides}
+                  >
+                    Clear All Overrides ({overriddenFieldLabels.length})
+                  </Button>
+                </Tooltip>
+              )}
             </Stack>
           </Group>
 

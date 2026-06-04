@@ -79,6 +79,22 @@ vi.mock('@mantine/core', () => ({
       onChange={onChange}
     />
   ),
+  Select: ({ label, id, name, data, ...rest }) => (
+    <select
+      data-testid={id}
+      id={id}
+      name={name}
+      aria-label={label}
+      value={rest.value ?? ''}
+      onChange={(e) => rest.onChange?.(e.target.value)}
+    >
+      {(data || []).map((opt) => (
+        <option key={opt.value} value={opt.value}>
+          {opt.label}
+        </option>
+      ))}
+    </select>
+  ),
   Text: ({ children }) => <span>{children}</span>,
   TextInput: ({ label, id, name, placeholder, ...rest }) => (
     <input
@@ -115,6 +131,8 @@ import {
 const mockFormValues = {
   comskip_enabled: false,
   comskip_custom_path: '',
+  comskip_mode: 'cut',
+  comskip_hw_accel: 'none',
   pre_offset_minutes: 0,
   post_offset_minutes: 0,
   tv_template: '',
@@ -196,6 +214,20 @@ describe('DvrSettingsForm', () => {
       render(<DvrSettingsForm active={true} />);
       await waitFor(() => {
         expect(screen.getByTestId('comskip_custom_path')).toBeInTheDocument();
+      });
+    });
+
+    it('renders the comskip_mode select', async () => {
+      render(<DvrSettingsForm active={true} />);
+      await waitFor(() => {
+        expect(screen.getByTestId('comskip_mode')).toBeInTheDocument();
+      });
+    });
+
+    it('renders the comskip_hw_accel select', async () => {
+      render(<DvrSettingsForm active={true} />);
+      await waitFor(() => {
+        expect(screen.getByTestId('comskip_hw_accel')).toBeInTheDocument();
       });
     });
 

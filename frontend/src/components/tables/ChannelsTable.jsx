@@ -291,7 +291,6 @@ const ChannelsTable = ({ onReady }) => {
   const setSelectedChannelIds = useChannelsTableStore(
     (s) => s.setSelectedChannelIds
   );
-  const selectedChannelIds = useChannelsTableStore((s) => s.selectedChannelIds);
   const setExpandedChannelId = useChannelsTableStore(
     (s) => s.setExpandedChannelId
   );
@@ -613,7 +612,7 @@ const ChannelsTable = ({ onReady }) => {
 
     table.setSelectedTableIds([]);
 
-    if (selectedChannelIds.length > 0) {
+    if (table.selectedTableIds.length > 0) {
       // Use bulk delete for multiple selections
       setIsBulkDelete(true);
       setChannelToDelete(null);
@@ -1726,7 +1725,7 @@ const ChannelsTable = ({ onReady }) => {
         />
 
         <ChannelBatchForm
-          channelIds={selectedChannelIds}
+          channelIds={table.selectedTableIds}
           isOpen={channelBatchModalOpen}
           onClose={closeChannelBatchForm}
         />
