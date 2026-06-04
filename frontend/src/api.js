@@ -3879,6 +3879,25 @@ export default class API {
     }
   }
 
+  static async updateSDSettings(sourceId, settings) {
+    try {
+      // Read current custom_properties from the store to merge, not replace
+      const epgs = useEPGsStore.getState().epgs;
+      const source = epgs[sourceId];
+      const cp = { ...(source?.custom_properties || {}), ...settings };
+
+      const response = await request(`${host}/api/epg/sources/${sourceId}/`, {
+        method: 'PATCH',
+        body: { custom_properties: cp },
+      });
+
+      useEPGsStore.getState().updateEPG(response);
+      return response;
+    } catch (e) {
+      errorNotification('Failed to update Schedules Direct settings', e);
+    }
+  }
+
   static async searchSDLineups(sourceId, country, postalcode) {
     try {
       const response = await request(

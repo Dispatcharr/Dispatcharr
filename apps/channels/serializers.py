@@ -19,9 +19,10 @@ from apps.epg.serializers import EPGDataSerializer
 from core.models import StreamProfile
 from apps.epg.models import EPGData
 from django.db import connection, transaction
+from django.urls import reverse
 from rest_framework import serializers
 from django.utils import timezone
-from core.utils import validate_flexible_url, build_absolute_uri_with_port
+from core.utils import validate_flexible_url
 
 
 class LogoSerializer(serializers.ModelSerializer):
@@ -56,12 +57,18 @@ class LogoSerializer(serializers.ModelSerializer):
         return instance
 
     def get_cache_url(self, obj):
+        # Cache-busting: append a short hash of the logo's source URL so the browser
+        # fetches fresh when the logo changes (e.g., M3U logo replaced by SD logo).
+        # The backend ignores the 'v' parameter — it's purely for browser cache invalidation.
+        # See SD integration PR notes for context on why this was added.
+        import hashlib
+        url_hash = hashlib.md5((obj.url or '').encode()).hexdigest()[:8]
+        base_path = reverse("api:channels:logo-cache", args=[obj.id])
+        cache_url = f"{base_path}?v={url_hash}"
         request = self.context.get("request")
-        if not request:
-            return f"/api/channels/logos/{obj.id}/cache/"
-        if not hasattr(self, "_cache_url_prefix"):
-            self._cache_url_prefix = build_absolute_uri_with_port(request, "")
-        return f"{self._cache_url_prefix}/api/channels/logos/{obj.id}/cache/"
+        if request:
+            return request.build_absolute_uri(cache_url)
+        return cache_url
 
     def get_channel_count(self, obj):
         """Get the number of channels using this logo"""

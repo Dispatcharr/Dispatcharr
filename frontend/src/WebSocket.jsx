@@ -381,6 +381,11 @@ export const WebsocketProvider = ({ children }) => {
               ) {
                 API.batchSetEPG(parsedEvent.data.associations);
               }
+
+              // Refresh EPG store first, then requery channels so the table
+              // cross-references updated epg_data_id assignments immediately
+              fetchEPGData();
+              API.requeryChannels();
               break;
 
             case 'epg_matching_progress': {
@@ -962,12 +967,6 @@ export const WebsocketProvider = ({ children }) => {
             case 'notifications_cleared': {
               // Handle bulk notification clearing (e.g., when version is updated)
               API.getNotifications();
-              break;
-            }
-
-            case 'ip_lookup_complete': {
-              const { type: _t, ...ipData } = parsedEvent.data;
-              useSettingsStore.getState().setEnvironmentFields(ipData);
               break;
             }
 

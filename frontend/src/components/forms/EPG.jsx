@@ -18,6 +18,8 @@ import {
   Badge,
   ScrollArea,
   Table,
+  Switch,
+  UnstyledButton,
 } from '@mantine/core';
 import { TriangleAlert, Trash2, Plus, Search } from 'lucide-react';
 import { isNotEmpty, useForm } from '@mantine/form';
@@ -45,6 +47,138 @@ const SD_COUNTRIES_FALLBACK = [
   { value: 'NZL', label: 'New Zealand' },
 ];
 
+// ESPN HD logo previews — packaged as static URLs so no API call is needed.
+// These are publicly accessible S3 URLs that don't require authentication.
+const SD_LOGO_PREVIEW_BASE = 'https://schedulesdirect-api20141201-logos.s3.dualstack.us-east-1.amazonaws.com/stationLogos/s32645';
+const SD_LOGO_STYLES = [
+  { value: 'dark', label: 'Dark', url: `${SD_LOGO_PREVIEW_BASE}_dark_360w_270h.png` },
+  { value: 'white', label: 'White', url: `${SD_LOGO_PREVIEW_BASE}_white_360w_270h.png` },
+  { value: 'gray', label: 'Gray', url: `${SD_LOGO_PREVIEW_BASE}_gray_360w_270h.png` },
+  { value: 'light', label: 'Light', url: `${SD_LOGO_PREVIEW_BASE}_light_360w_270h.png` },
+];
+
+// ─── SD Settings: Logo toggle + style selector + Poster toggle ──────────────
+const SDSettings = ({ sourceId, customProperties }) => {
+  const cp = customProperties || {};
+  const [useSDLogos, setUseSDLogos] = useState(cp.use_sd_logos || false);
+  const [logoStyle, setLogoStyle] = useState(cp.logo_style || 'dark');
+  const [fetchPosters, setFetchPosters] = useState(cp.fetch_posters || false);
+  const [saving, setSaving] = useState(false);
+
+  // Sync from parent when customProperties changes
+  useEffect(() => {
+    const newCp = customProperties || {};
+    setUseSDLogos(newCp.use_sd_logos || false);
+    setLogoStyle(newCp.logo_style || 'dark');
+    setFetchPosters(newCp.fetch_posters || false);
+
+    // Persist the default logo_style if not already set
+    if (sourceId && !newCp.logo_style) {
+      API.updateSDSettings(sourceId, { logo_style: 'dark' });
+    }
+  }, [customProperties, sourceId]);
+
+  const saveSetting = async (key, value) => {
+    setSaving(true);
+    try {
+      await API.updateSDSettings(sourceId, { [key]: value });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleLogoToggle = (checked) => {
+    setUseSDLogos(checked);
+    saveSetting('use_sd_logos', checked);
+  };
+
+  const handleLogoChange = (style) => {
+    if (!useSDLogos) return;
+    setLogoStyle(style);
+    saveSetting('logo_style', style);
+  };
+
+  const handlePosterToggle = (checked) => {
+    setFetchPosters(checked);
+    saveSetting('fetch_posters', checked);
+  };
+
+  const logosDisabled = !useSDLogos;
+
+  return (
+    <Box>
+      <Switch
+        label="Use SD Station Logos"
+        description="Apply Schedules Direct station logos to matched channels during refresh."
+        checked={useSDLogos}
+        onChange={(e) => handleLogoToggle(e.currentTarget.checked)}
+        disabled={saving}
+        size="sm"
+        mb="sm"
+      />
+
+      <Text size="sm" fw={500} mb="xs" c={logosDisabled ? 'dimmed' : undefined}>
+        Station Logo Style
+      </Text>
+      <Text size="xs" c="dimmed" mb="xs">
+        Choose which logo variant to use for SD stations.
+      </Text>
+      <Group gap={6} mb="md">
+        {SD_LOGO_STYLES.map((style) => (
+          <UnstyledButton
+            key={style.value}
+            onClick={() => handleLogoChange(style.value)}
+            style={{
+              border: !logosDisabled && logoStyle === style.value
+                ? '2px solid var(--mantine-color-blue-5)'
+                : '2px solid var(--mantine-color-default-border)',
+              borderRadius: 'var(--mantine-radius-sm)',
+              padding: 3,
+              opacity: logosDisabled ? 0.3 : (saving ? 0.6 : 1),
+              cursor: logosDisabled ? 'not-allowed' : (saving ? 'wait' : 'pointer'),
+              flex: 1,
+              textAlign: 'center',
+              pointerEvents: logosDisabled ? 'none' : 'auto',
+            }}
+          >
+            <img
+              src={style.url}
+              alt={style.label}
+              style={{
+                width: '100%',
+                height: 50,
+                objectFit: 'contain',
+                display: 'block',
+                backgroundColor: style.value === 'white' || style.value === 'light'
+                  ? '#333'
+                  : 'transparent',
+                borderRadius: 2,
+                filter: logosDisabled ? 'grayscale(100%)' : 'none',
+              }}
+            />
+            <Text size="xs" ta="center" mt={2} fw={!logosDisabled && logoStyle === style.value ? 600 : 400}
+                  c={logosDisabled ? 'dimmed' : undefined}>
+              {style.label}
+            </Text>
+          </UnstyledButton>
+        ))}
+      </Group>
+
+      <Divider my="sm" />
+
+      <Switch
+        label="Fetch Program Posters"
+        description="WARNING: USES ADDITIONAL API REQUESTS. Poster images are fetched on-demand and cached locally for 30 days. Initial viewing of new programs will consume API requests against your Schedules Direct rate limit."
+        checked={fetchPosters}
+        onChange={(e) => handlePosterToggle(e.currentTarget.checked)}
+        disabled={saving}
+        size="sm"
+      />
+    </Box>
+  );
+};
+
+// ─── SD Lineup Manager ─────────────────────────────────────────────────────
 const SDLineupManager = ({ sourceId }) => {
   const [countries, setCountries] = useState(SD_COUNTRIES_FALLBACK);
   const [activeLineups, setActiveLineups] = useState([]);
@@ -175,7 +309,7 @@ const SDLineupManager = ({ sourceId }) => {
   const atMax = activeLineups.length >= maxLineups;
 
   return (
-    <Box mt="md">
+    <Box>
       <Divider my="sm" />
       <Group justify="space-between" mb="xs">
         <Text size="sm" fw={500}>
@@ -335,10 +469,12 @@ const SDLineupManager = ({ sourceId }) => {
   );
 };
 
+// ─── Main EPG Form ──────────────────────────────────────────────────────────
 const EPG = ({ epg = null, isOpen, onClose }) => {
   const [sourceType, setSourceType] = useState('xmltv');
   const [scheduleType, setScheduleType] = useState('interval');
   const [savedEpgId, setSavedEpgId] = useState(null);
+  const [sdCustomProps, setSdCustomProps] = useState(null);
 
   const form = useForm({
     mode: 'uncontrolled',
@@ -372,22 +508,18 @@ const EPG = ({ epg = null, isOpen, onClose }) => {
       values.cron_expression = '';
     }
 
-    if (epg?.id) {
-      if (!epg || typeof epg !== 'object' || !epg.id) {
-        showNotification({
-          title: 'Error',
-          message: 'Invalid EPG data. Please close and reopen this form.',
-          color: 'red',
-        });
-        return;
-      }
+    const existingId = epg?.id || savedEpgId;
 
-      await updateEPG(values, epg);
+    if (existingId) {
+      const epgObj = epg || { id: existingId };
+      await updateEPG(values, epgObj);
       onClose();
     } else {
       const result = await addEPG(values);
       if (result?.id) {
         setSavedEpgId(result.id);
+        // Load custom_properties for the new source
+        setSdCustomProps(result.custom_properties || {});
       } else {
         form.reset();
         onClose();
@@ -411,6 +543,7 @@ const EPG = ({ epg = null, isOpen, onClose }) => {
       form.setValues(values);
       setSourceType(epg.source_type);
       setSavedEpgId(epg.id);
+      setSdCustomProps(epg.custom_properties || {});
       setScheduleType(
         epg.cron_expression && epg.cron_expression.trim() !== ''
           ? 'cron'
@@ -421,6 +554,7 @@ const EPG = ({ epg = null, isOpen, onClose }) => {
       setSourceType('xmltv');
       setScheduleType('interval');
       setSavedEpgId(null);
+      setSdCustomProps(null);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [epg]);
@@ -433,6 +567,9 @@ const EPG = ({ epg = null, isOpen, onClose }) => {
   const handleClose = () => {
     form.reset();
     setSavedEpgId(null);
+    setSdCustomProps(null);
+    setSourceType('xmltv');
+    setScheduleType('interval');
     onClose();
   };
 
@@ -441,14 +578,15 @@ const EPG = ({ epg = null, isOpen, onClose }) => {
   }
 
   const isSD = sourceType === 'schedules_direct';
+  const hasSDPanel = isSD && savedEpgId;
 
   return (
     <>
-      <Modal opened={isOpen} onClose={handleClose} title="EPG Source" size={700}>
+      <Modal opened={isOpen} onClose={handleClose} title="EPG Source" size={hasSDPanel ? 1100 : 700}>
         <form onSubmit={form.onSubmit(onSubmit)}>
-          <Group justify="space-between" align="top">
+          <Group justify="space-between" align="top" wrap="nowrap">
             {/* Left Column */}
-            <Stack gap="md" style={{ flex: 1 }}>
+            <Stack gap="md" style={{ flex: 1, minWidth: 0 }}>
               <TextInput
                 id="name"
                 name="name"
@@ -541,8 +679,8 @@ const EPG = ({ epg = null, isOpen, onClose }) => {
 
             <Divider size="sm" orientation="vertical" />
 
-            {/* Right Column */}
-            <Stack gap="md" style={{ flex: 1 }}>
+            {/* Middle Column */}
+            <Stack gap="md" style={{ flex: 1, minWidth: 0 }}>
               {!isSD && (
                 <TextInput
                   id="url"
@@ -610,12 +748,23 @@ const EPG = ({ epg = null, isOpen, onClose }) => {
                 </Box>
               </Box>
             </Stack>
-          </Group>
 
-          {/* Lineup Manager — only shown for saved SD sources */}
-          {isSD && savedEpgId && (
-            <SDLineupManager sourceId={savedEpgId} />
-          )}
+            {/* Right Column — SD settings + Lineup Manager */}
+            {hasSDPanel && (
+              <>
+                <Divider size="sm" orientation="vertical" />
+                <Stack gap="md" style={{ flex: 1.2, minWidth: 0 }}>
+                  <ScrollArea h={550} offsetScrollbars>
+                    <SDSettings
+                      sourceId={savedEpgId}
+                      customProperties={sdCustomProps}
+                    />
+                    <SDLineupManager sourceId={savedEpgId} />
+                  </ScrollArea>
+                </Stack>
+              </>
+            )}
+          </Group>
 
           {/* Full Width Section */}
           <Box mt="md">
@@ -623,7 +772,7 @@ const EPG = ({ epg = null, isOpen, onClose }) => {
 
             {isSD && !savedEpgId && (
               <Text size="xs" c="dimmed" mb="sm">
-                Save this source first to manage Schedules Direct lineups.
+                Save this source first to manage Schedules Direct settings and lineups.
               </Text>
             )}
 
@@ -632,7 +781,7 @@ const EPG = ({ epg = null, isOpen, onClose }) => {
                 Cancel
               </Button>
               <Button type="submit" variant="filled" disabled={form.submitting}>
-                {epg?.id ? 'Update' : 'Create'} EPG Source
+                {(epg?.id || savedEpgId) ? 'Update' : 'Create'} EPG Source
               </Button>
             </Group>
           </Box>
