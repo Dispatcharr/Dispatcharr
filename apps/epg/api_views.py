@@ -1,6 +1,11 @@
-import logging, os, re
+import hashlib
+import logging
+import os
+import re
+import time
 from rest_framework import viewsets, status, serializers
 from rest_framework.pagination import PageNumberPagination
+from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework.decorators import action
@@ -461,6 +466,10 @@ class ProgramViewSet(viewsets.ModelViewSet):
     queryset = ProgramData.objects.select_related("epg").all()
     serializer_class = ProgramDataSerializer
 
+    # Per-source in-memory caches (token and error state)
+    _sd_poster_token_cache: dict = {}
+    _sd_poster_error_cache: dict = {}
+
     def get_permissions(self):
         try:
             return [perm() for perm in permission_classes_by_action[self.action]]
@@ -476,6 +485,97 @@ class ProgramViewSet(viewsets.ModelViewSet):
         instance = self.get_object()
         serializer = self.get_serializer(instance)
         return Response(serializer.data)
+
+    @action(detail=True, methods=['get'], url_path='poster', permission_classes=[AllowAny])
+    def poster(self, request, pk=None):
+        """Proxy endpoint for SD program poster images. Nginx caches the response."""
+        import requests as http_requests
+        from apps.epg.tasks import SD_BASE_URL
+
+        program = self.get_object()
+        poster_sd_url = (program.custom_properties or {}).get('sd_icon')
+        if not poster_sd_url:
+            return Response(status=status.HTTP_404_NOT_FOUND)
+
+        source = program.epg.epg_source if program.epg else None
+        if not source or source.source_type != 'schedules_direct':
+            return Response(status=status.HTTP_404_NOT_FOUND)
+
+        error_cache = ProgramViewSet._sd_poster_error_cache.get(source.id)
+        if error_cache and time.time() < error_cache['until']:
+            return Response(
+                {'error': f"SD temporarily unavailable: {error_cache['reason']}"},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+        cached = ProgramViewSet._sd_poster_token_cache.get(source.id)
+        token = cached['token'] if cached and time.time() < cached['expires'] else None
+
+        if not token:
+            sha1_password = hashlib.sha1(source.password.encode('utf-8')).hexdigest()
+            try:
+                auth_resp = http_requests.post(
+                    f"{SD_BASE_URL}/token",
+                    json={'username': source.username, 'password': sha1_password},
+                    headers={'Content-Type': 'application/json'},
+                    timeout=10,
+                )
+                auth_data = auth_resp.json()
+                token = auth_data.get('token')
+                if not token:
+                    ProgramViewSet._sd_poster_error_cache[source.id] = {
+                        'until': time.time() + 3600,
+                        'reason': auth_data.get('message', 'Authentication failed'),
+                    }
+                    return Response(status=status.HTTP_502_BAD_GATEWAY)
+                token_expires = auth_data.get('tokenExpires', time.time() + 86400)
+                ProgramViewSet._sd_poster_token_cache[source.id] = {
+                    'token': token,
+                    'expires': token_expires,
+                }
+            except http_requests.exceptions.RequestException:
+                ProgramViewSet._sd_poster_error_cache[source.id] = {
+                    'until': time.time() + 300,
+                    'reason': 'Network error reaching Schedules Direct',
+                }
+                return Response(status=status.HTTP_502_BAD_GATEWAY)
+
+        try:
+            img_resp = http_requests.get(
+                poster_sd_url,
+                headers={'token': token},
+                timeout=15,
+                allow_redirects=True,
+            )
+            if img_resp.status_code in (401, 403):
+                ProgramViewSet._sd_poster_token_cache.pop(source.id, None)
+                ProgramViewSet._sd_poster_error_cache[source.id] = {
+                    'until': time.time() + 3600,
+                    'reason': f'SD returned {img_resp.status_code}',
+                }
+                return Response(status=status.HTTP_502_BAD_GATEWAY)
+            if img_resp.status_code == 400:
+                try:
+                    err_code = img_resp.json().get('code')
+                except Exception:
+                    err_code = None
+                if err_code == 5002:
+                    ProgramViewSet._sd_poster_error_cache[source.id] = {
+                        'until': time.time() + 3600,
+                        'reason': 'Daily image download limit reached (SD error 5002)',
+                    }
+                return Response(status=status.HTTP_429_TOO_MANY_REQUESTS)
+            if img_resp.status_code != 200:
+                return Response(status=status.HTTP_502_BAD_GATEWAY)
+
+            from django.http import HttpResponse
+            content_type = img_resp.headers.get('Content-Type', 'image/jpeg')
+            response = HttpResponse(img_resp.content, content_type=content_type)
+            response['Cache-Control'] = 'public, max-age=86400'
+            return response
+
+        except http_requests.exceptions.RequestException:
+            return Response(status=status.HTTP_502_BAD_GATEWAY)
 
     def list(self, request, *args, **kwargs):
         logger.debug("Listing all EPG programs.")

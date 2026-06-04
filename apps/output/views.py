@@ -1646,6 +1646,7 @@ def generate_epg(request, profile_name=None, user=None):
             # to avoid skipping/duplicating rows if the table changes mid-stream.
             last_epg_id = 0
             last_id = 0
+            _poster_url_base = build_absolute_uri_with_port(request, "/api/epg/programs/")
 
             while True:
                 program_chunk = list(
@@ -1849,6 +1850,8 @@ def generate_epg(request, profile_name=None, user=None):
 
                         if "icon" in custom_data:
                             program_xml.append(f'    <icon src="{html.escape(custom_data["icon"])}" />')
+                        elif "sd_icon" in custom_data:
+                            program_xml.append(f'    <icon src="{html.escape(_poster_url_base)}{prog["id"]}/poster/" />')
 
                         # Add special flags as proper tags with enhanced handling
                         if custom_data.get("previously_shown", False):

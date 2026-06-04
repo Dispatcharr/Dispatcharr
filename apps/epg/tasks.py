@@ -3048,7 +3048,7 @@ def fetch_schedules_direct(source, stations_only=False, force=False):
                             # Complete the URL if it's relative
                             if not poster_url.startswith('http'):
                                 poster_url = f"{SD_BASE_URL}/image/{poster_url}"
-                            artwork_map[entry_pid] = poster_url
+                            artwork_map[entry_pid] = poster_url  # raw SD endpoint URL
 
                     logger.info(f"Artwork batch {batch_idx + 1}/{total_art_batches}: "
                                 f"{len(artwork_map)} posters found so far.")
@@ -3067,7 +3067,7 @@ def fetch_schedules_direct(source, stations_only=False, force=False):
                     poster = artwork_map.get(art_key) if art_key else None
                     if poster:
                         cp = prog.custom_properties or {}
-                        cp['poster_url'] = poster
+                        cp['sd_icon'] = poster
                         prog.custom_properties = cp
                         programs_to_update.append(prog)
 
@@ -3154,37 +3154,6 @@ def fetch_schedules_direct(source, stations_only=False, force=False):
             logger.info(f"Pruned {pruned_prog_md5_count} stale SDProgramMD5 records no longer referenced by live ProgramData.")
     except Exception as prune_err:
         logger.warning(f"Failed to prune stale SDProgramMD5 records: {prune_err}")
-
-    # -------------------------------------------------------------------------
-    # Prune stale poster cache files (>30 days old or orphaned)
-    # -------------------------------------------------------------------------
-    try:
-        cache_dir = '/data/cache/posters'
-        if os.path.exists(cache_dir):
-            import time as time_module
-            # Collect all poster hashes currently referenced by ProgramData
-            active_hashes = set()
-            for url in ProgramData.objects.filter(
-                epg__epg_source=source,
-                custom_properties__has_key='poster_url',
-            ).values_list('custom_properties__poster_url', flat=True):
-                if url:
-                    active_hashes.add(url.rsplit('/', 1)[-1])
-
-            pruned_posters = 0
-            for fname in os.listdir(cache_dir):
-                fpath = os.path.join(cache_dir, fname)
-                if not os.path.isfile(fpath):
-                    continue
-                file_age = time_module.time() - os.path.getmtime(fpath)
-                # Remove if older than 30 days OR not referenced by any current program
-                if file_age > 30 * 24 * 3600 or fname not in active_hashes:
-                    os.remove(fpath)
-                    pruned_posters += 1
-            if pruned_posters:
-                logger.info(f"Pruned {pruned_posters} stale poster cache files.")
-    except Exception as poster_prune_err:
-        logger.warning(f"Failed to prune poster cache: {poster_prune_err}")
 
     # -------------------------------------------------------------------------
     # Done

@@ -155,6 +155,12 @@ class ProgramDetailSerializer(ProgramDataSerializer):
         data['icon'] = cp.get('icon')
         data['images'] = cp.get('images') or []
 
+        # SD poster: expose as proxy URL so frontend never needs SD auth
+        if cp.get('sd_icon'):
+            data['poster_url'] = f"/api/epg/programs/{obj.id}/poster/"
+        else:
+            data['poster_url'] = None
+
         return data
 
 
