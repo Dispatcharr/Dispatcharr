@@ -298,6 +298,37 @@ export default function ProgramDetailModal({
           </>
         )}
 
+        {d.content_advisory?.length > 0 && (
+          <Text size="xs" c="orange" fs="italic">
+            {d.content_advisory.join(', ')}
+          </Text>
+        )}
+
+        {d.event_details && (
+          <>
+            <Divider color="#333" />
+            <Stack gap={4}>
+              {d.event_details.venue100 && (
+                <Text size="sm" c="dimmed">
+                  <Text span fw={600}>Venue: </Text>
+                  {d.event_details.venue100}
+                </Text>
+              )}
+              {d.event_details.teams?.length > 0 && (
+                <Text size="sm" c="dimmed">
+                  <Text span fw={600}>Teams: </Text>
+                  {d.event_details.teams.map((t, i) => (
+                    <Text span key={i}>
+                      {i > 0 ? ' vs ' : ''}
+                      {t.name}{t.isHome ? ' (Home)' : ''}
+                    </Text>
+                  ))}
+                </Text>
+              )}
+            </Stack>
+          </>
+        )}
+
         {hasCredits && (
           <>
             <Divider color="#333" />
@@ -330,27 +361,27 @@ export default function ProgramDetailModal({
           </>
         )}
 
-        {(d.country ||
-          d.language ||
+        {(d.language ||
           d.original_air_date ||
+          (d.production_date && d.is_previously_shown) ||
           starRatings.length > 0) && (
           <>
             <Divider color="#333" />
             <Group gap="md" wrap="wrap">
-              {d.country && (
-                <Text size="sm" c="dimmed">
-                  <Text span fw={600}>
-                    Country:{' '}
-                  </Text>
-                  {d.country}
-                </Text>
-              )}
               {d.language && (
                 <Text size="sm" c="dimmed">
                   <Text span fw={600}>
                     Language:{' '}
                   </Text>
                   {d.language}
+                </Text>
+              )}
+              {d.production_date && d.is_previously_shown && (
+                <Text size="sm" c="dimmed">
+                  <Text span fw={600}>
+                    First aired:{' '}
+                  </Text>
+                  {d.production_date}
                 </Text>
               )}
               {d.original_air_date && (

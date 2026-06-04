@@ -146,6 +146,20 @@ class ProgramDetailSerializer(ProgramDataSerializer):
         previously_shown = cp.get('previously_shown_details') or {}
         data['original_air_date'] = previously_shown.get('start')
 
+        # Content advisory (SD)
+        data['content_advisory'] = cp.get('content_advisory') or []
+
+        # Full content ratings array (SD — all regional ratings)
+        data['content_ratings'] = cp.get('content_ratings') or []
+
+        # Sports event details (SD)
+        data['event_details'] = cp.get('event_details')
+
+        # Runtime (duration without commercials)
+        length = cp.get('length') or {}
+        data['runtime'] = length.get('value') if length else None
+        data['runtime_units'] = length.get('units') if length else None
+
         # External IDs
         data['imdb_id'] = cp.get('imdb.com_id')
         data['tmdb_id'] = cp.get('themoviedb.org_id')
