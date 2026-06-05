@@ -1427,7 +1427,7 @@ def parse_channels_only(source):
 
 
 @shared_task(time_limit=3600, soft_time_limit=3500)
-def parse_programs_for_tvg_id(epg_id):
+def parse_programs_for_tvg_id(epg_id, force=False):
     # Skip XMLTV file parsing for Schedules Direct sources. Program data is
     # fetched and persisted directly by fetch_schedules_direct().
     try:
@@ -1479,7 +1479,7 @@ def parse_programs_for_tvg_id(epg_id):
             release_task_lock('parse_epg_programs', epg_id)
             return
 
-        if not Channel.objects.filter(epg_data=epg).exists():
+        if not force and not Channel.objects.filter(epg_data=epg).exists():
             logger.info(f"No channels matched to EPG {epg.tvg_id}")
             lock_renewer.stop()
             release_task_lock('parse_epg_programs', epg_id)
