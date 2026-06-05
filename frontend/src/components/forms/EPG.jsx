@@ -102,16 +102,59 @@ const SD_POSTER_STYLES = [
   },
 ];
 
-// ─── SD Settings: Logo toggle + style selector + Poster toggle ──────────────
+const autoApplyEpgLogosEnabled = (customProperties) =>
+  !!(customProperties || {}).auto_apply_epg_logos;
+
+// ─── Auto-apply EPG logos (XMLTV + SD) ─────────────────────────────────────
+const AutoApplyEpgLogosSwitch = ({
+  sourceId,
+  customProperties,
+  description,
+}) => {
+  const storeCustomProps = useEPGsStore((s) =>
+    sourceId ? s.epgs[sourceId]?.custom_properties : null
+  );
+  const resolvedCp = storeCustomProps || customProperties || {};
+
+  const [enabled, setEnabled] = useState(autoApplyEpgLogosEnabled(resolvedCp));
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    const newCp = storeCustomProps || customProperties || {};
+    setEnabled(autoApplyEpgLogosEnabled(newCp));
+  }, [storeCustomProps, customProperties]);
+
+  const handleToggle = async (checked) => {
+    setEnabled(checked);
+    setSaving(true);
+    try {
+      await API.updateEpgSourceSettings(sourceId, {
+        auto_apply_epg_logos: checked,
+      });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Switch
+      label="Auto-Apply EPG Logos to Channels"
+      description={description}
+      checked={enabled}
+      onChange={(e) => handleToggle(e.currentTarget.checked)}
+      disabled={saving}
+      size="sm"
+    />
+  );
+};
+
+// ─── SD Settings: Logo style selector + Poster toggle ───────────────────────
 const SDSettings = ({ sourceId, customProperties }) => {
   const storeCustomProps = useEPGsStore((s) =>
     sourceId ? s.epgs[sourceId]?.custom_properties : null
   );
   const resolvedCp = storeCustomProps || customProperties || {};
 
-  const [autoApplySDLogos, setAutoApplySDLogos] = useState(
-    !!resolvedCp.auto_apply_sd_logos
-  );
   const [logoStyle, setLogoStyle] = useState(resolvedCp.logo_style || 'dark');
   const [fetchPosters, setFetchPosters] = useState(!!resolvedCp.fetch_posters);
   const [posterStyle, setPosterStyle] = useState(
@@ -122,7 +165,6 @@ const SDSettings = ({ sourceId, customProperties }) => {
   // Sync from store (preferred) or parent props when the form opens or settings save
   useEffect(() => {
     const newCp = storeCustomProps || customProperties || {};
-    setAutoApplySDLogos(!!newCp.auto_apply_sd_logos);
     setLogoStyle(newCp.logo_style || 'dark');
     setFetchPosters(!!newCp.fetch_posters);
     setPosterStyle(newCp.poster_style || 'sd_recommended');
@@ -131,15 +173,10 @@ const SDSettings = ({ sourceId, customProperties }) => {
   const saveSetting = async (key, value) => {
     setSaving(true);
     try {
-      await API.updateSDSettings(sourceId, { [key]: value });
+      await API.updateEpgSourceSettings(sourceId, { [key]: value });
     } finally {
       setSaving(false);
     }
-  };
-
-  const handleAutoApplyToggle = (checked) => {
-    setAutoApplySDLogos(checked);
-    saveSetting('auto_apply_sd_logos', checked);
   };
 
   const handleLogoChange = (style) => {
@@ -213,14 +250,10 @@ const SDSettings = ({ sourceId, customProperties }) => {
         ))}
       </Group>
 
-      <Switch
-        label="Auto-Apply SD Logos to Channels"
+      <AutoApplyEpgLogosSwitch
+        sourceId={sourceId}
+        customProperties={customProperties}
         description="When enabled, matched channels are updated to use the SD logo on each refresh. When disabled, logos are still fetched into EPG data and can be applied manually via Set Logo from EPG."
-        checked={autoApplySDLogos}
-        onChange={(e) => handleAutoApplyToggle(e.currentTarget.checked)}
-        disabled={saving}
-        size="sm"
-        mb="sm"
       />
 
       <Divider my="sm" />
@@ -901,6 +934,14 @@ const EPG = ({ epg = null, isOpen, onClose }) => {
                 {...form.getInputProps('priority')}
                 key={form.key('priority')}
               />
+
+              {sourceType === 'xmltv' && savedEpgId && (
+                <AutoApplyEpgLogosSwitch
+                  sourceId={savedEpgId}
+                  customProperties={sdCustomProps}
+                  description="When enabled, matched channels are updated from EPG channel icons on each refresh. When disabled, icons are still stored in EPG data and can be applied manually via Set Logo from EPG."
+                />
+              )}
 
               <Box style={{ marginTop: 0 }}>
                 <Text size="sm" fw={500} mb={3}>

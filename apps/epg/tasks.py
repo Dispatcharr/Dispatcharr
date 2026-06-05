@@ -1364,6 +1364,9 @@ def parse_channels_only(source):
 
         logger.info(f"Finished parsing channel info. Found {processed_channels} channels.")
 
+        from apps.channels.utils import maybe_auto_apply_epg_logos
+        maybe_auto_apply_epg_logos(source)
+
         return True
 
     except FileNotFoundError:
@@ -2295,39 +2298,8 @@ def fetch_schedules_direct(source, stations_only=False, force=False):
         elif fetch_posters:
             logger.info("Poster fetch enabled but all mapped programs already have artwork.")
 
-        auto_apply_sd_logos = (source.custom_properties or {}).get('auto_apply_sd_logos', False)
-        if auto_apply_sd_logos:
-            try:
-                from apps.channels.models import Channel as ChannelModel, Logo
-
-                channels_to_update = []
-                logos_created = 0
-                for channel in ChannelModel.objects.filter(
-                    epg_data__epg_source=source,
-                    epg_data__isnull=False,
-                ).select_related('epg_data', 'logo'):
-                    icon_url = (channel.epg_data.icon_url or '').strip()
-                    if not icon_url:
-                        continue
-                    if channel.logo and channel.logo.url == icon_url:
-                        continue
-                    try:
-                        logo = Logo.objects.get(url=icon_url)
-                    except Logo.DoesNotExist:
-                        logo_name = channel.epg_data.name or f"SD Logo {channel.epg_data.tvg_id}"
-                        logo = Logo.objects.create(name=logo_name, url=icon_url)
-                        logos_created += 1
-                    channel.logo = logo
-                    channels_to_update.append(channel)
-
-                if channels_to_update:
-                    ChannelModel.objects.bulk_update(channels_to_update, ['logo'], batch_size=100)
-                    logger.info(f"Applied SD logos to {len(channels_to_update)} channels "
-                                f"({logos_created} new logos created).")
-                else:
-                    logger.info("All matched channels already have current SD logos.")
-            except Exception as logo_error:
-                logger.warning(f"SD logo application failed (non-fatal): {logo_error}", exc_info=True)
+        from apps.channels.utils import maybe_auto_apply_epg_logos
+        maybe_auto_apply_epg_logos(source)
 
         today_utc = datetime(today.year, today.month, today.day, tzinfo=dt_timezone.utc)
         try:

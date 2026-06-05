@@ -9,10 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **EPG logo auto-apply for XMLTV and Schedules Direct.** Channel logos are applied from `EPGData.icon_url` through a shared helper used by bulk "Set Logos from EPG", optional per-source auto-apply on refresh (`auto_apply_epg_logos` in source `custom_properties`), and a new `epg_source_id` option on the set-logos-from-epg API. Large libraries are processed in 500-channel chunks without loading every mapped row into memory.
 - **Schedules Direct EPG integration.** Dispatcharr now supports Schedules Direct as a first-class EPG source type alongside XMLTV and dummy EPG, with credential auth, lineup management, and guide refresh through the existing EPG pipeline and WebSocket progress. (Closes #1246) — Thanks [@Shokkstokk](https://github.com/Shokkstokk)
   - Lineup manager in EPG source settings: search by postal code, add/remove up to four active lineups, with SD's six-adds-per-24-hours limit and midnight-UTC reset surfaced in the UI.
   - MD5 delta refresh skips unchanged schedule and program downloads; a two-hour minimum interval between full refreshes is enforced (bypassable via force refresh).
-  - Station logos in dark, light, gray, or white variants, with an optional auto-apply toggle to push logos onto matched channels.
+  - Station logos in dark, light, gray, or white variants (`logo_style`), stored in `EPGData.icon_url` alongside XMLTV channel icons.
   - Optional program poster fetch (off by default): configurable style preference (SD Recommended via Gracenote's `primary` flag, or portrait/landscape banner/iconic variants with fallbacks), served through a backend proxy cached by nginx on first view.
   - XMLTV-compatible cast output (`role` for character names, `guest` for guest stars).
   - Lightweight stations-only fetch on source creation so EPG entries exist for auto-matching before the first full schedule pull.

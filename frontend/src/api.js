@@ -1530,13 +1530,10 @@ export default class API {
   }
 
   static async getCurrentProgramForEpg(epgId) {
-    const response = await request(
-      `${host}/api/epg/current-programs/`,
-      {
-        method: 'POST',
-        body: { epg_data_ids: [epgId] },
-      }
-    );
+    const response = await request(`${host}/api/epg/current-programs/`, {
+      method: 'POST',
+      body: { epg_data_ids: [epgId] },
+    });
 
     if (response && response.length > 0) {
       if (response[0].parsing) {
@@ -3879,7 +3876,7 @@ export default class API {
     }
   }
 
-  static async updateSDSettings(sourceId, settings) {
+  static async updateEpgSourceSettings(sourceId, settings) {
     try {
       // Read current custom_properties from the store to merge, not replace
       const epgs = useEPGsStore.getState().epgs;
@@ -3894,8 +3891,12 @@ export default class API {
       useEPGsStore.getState().updateEPG(response);
       return response;
     } catch (e) {
-      errorNotification('Failed to update Schedules Direct settings', e);
+      errorNotification('Failed to update EPG source settings', e);
     }
+  }
+
+  static async updateSDSettings(sourceId, settings) {
+    return API.updateEpgSourceSettings(sourceId, settings);
   }
 
   static async searchSDLineups(sourceId, country, postalcode) {
