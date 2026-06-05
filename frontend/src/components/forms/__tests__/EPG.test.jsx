@@ -235,6 +235,17 @@ vi.mock('@mantine/core', async () => ({
       {label}
     </label>
   ),
+  UnstyledButton: ({ children, onClick, ...props }) => (
+    <button type="button" onClick={onClick} {...props}>{children}</button>
+  ),
+  Alert: ({ children, title, color, icon }) => (
+    <div data-testid="alert" data-color={color}><strong>{title}</strong>{children}</div>
+  ),
+  Stack: ({ children, gap }) => <div data-testid="stack">{children}</div>,
+  Text: ({ children, ...props }) => <span>{children}</span>,
+  TextInput: ({ label, value, onChange, placeholder, ...props }) => (
+    <label>{label}<input type="text" value={value || ""} onChange={onChange} placeholder={placeholder} /></label>
+  ),
 }));
 
 // ── Imports after mocks ────────────────────────────────────────────────────────
