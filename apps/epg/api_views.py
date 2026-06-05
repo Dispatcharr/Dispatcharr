@@ -516,10 +516,14 @@ class ProgramViewSet(viewsets.ModelViewSet):
         if not token:
             sha1_password = hashlib.sha1(source.password.encode('utf-8')).hexdigest()
             try:
+                from version import __version__ as dispatcharr_version
                 auth_resp = http_requests.post(
                     f"{SD_BASE_URL}/token",
                     json={'username': source.username, 'password': sha1_password},
-                    headers={'Content-Type': 'application/json'},
+                    headers={
+                        'Content-Type': 'application/json',
+                        'User-Agent': f'Dispatcharr/{dispatcharr_version}',
+                    },
                     timeout=10,
                 )
                 auth_data = auth_resp.json()

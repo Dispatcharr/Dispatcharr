@@ -2799,7 +2799,12 @@ def fetch_schedules_direct(source, stations_only=False, force=False):
                 if categories:
                     custom_props['categories'] = categories
 
-                # Cast — top-billed only, store characterName, drop role noise
+                # Cast — top-billed only. SD's 'role' field = job type (Actor/Guest Star);
+                # SD's 'characterName' = the character played. We store characterName under
+                # the key 'role' to match the XMLTV parser convention
+                #
+                # Guest stars are stored with guest=True so the XMLTV generator emits
+                # <actor role="Character" guest="yes"> per the XMLTV DTD standard.
                 cast = meta.get('cast', [])
                 crew = meta.get('crew', [])
                 credits = {}
@@ -2809,16 +2814,29 @@ def fetch_schedules_direct(source, stations_only=False, force=False):
                         [p for p in cast if p.get('name')],
                         key=lambda p: int(p.get('billingOrder', '999'))
                     )
-                    # Separate main cast from guest stars
+                    # Separate regular cast from guest stars (SD 'role' = job type here)
                     main_cast = [p for p in sorted_cast if p.get('role', '').lower() != 'guest star']
-                    # Store top-billed main cast (matching XMLTV parity)
-                    credits['actor'] = [
+                    guest_stars = [p for p in sorted_cast if p.get('role', '').lower() == 'guest star']
+                    # Use main cast if available, otherwise fall back to full sorted list
+                    primary = main_cast[:6] if main_cast else sorted_cast[:6]
+                    actors = [
                         {
                             'name': p.get('name', ''),
-                            **(({'character': p['characterName']} ) if p.get('characterName') else {}),
+                            **(({'role': p['characterName']}) if p.get('characterName') else {}),
                         }
-                        for p in (main_cast[:6] if main_cast else sorted_cast[:6])
+                        for p in primary
                     ]
+                    # Append notable guest stars with XMLTV guest="yes" marker (cap at 3)
+                    actors += [
+                        {
+                            'name': p.get('name', ''),
+                            **(({'role': p['characterName']}) if p.get('characterName') else {}),
+                            'guest': True,
+                        }
+                        for p in guest_stars[:3]
+                    ]
+                    if actors:
+                        credits['actor'] = actors
                 if crew:
                     for member in crew:
                         role = member.get('role', '').lower()
