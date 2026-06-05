@@ -223,6 +223,18 @@ vi.mock('@mantine/core', async () => ({
   ScrollArea: ({ children }) => <div data-testid="scroll-area">{children}</div>,
   Table: ({ children }) => <table>{children}</table>,
   Tooltip: ({ children }) => <div>{children}</div>,
+  Switch: ({ label, checked, onChange, disabled, description }) => (
+    <label>
+      <input
+        type="checkbox"
+        data-testid={`switch-${label?.toString().toLowerCase().replace(/\s+/g, '-')}`}
+        checked={checked ?? false}
+        onChange={(e) => onChange?.(e)}
+        disabled={disabled}
+      />
+      {label}
+    </label>
+  ),
 }));
 
 // ── Imports after mocks ────────────────────────────────────────────────────────
