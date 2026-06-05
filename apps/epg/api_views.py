@@ -471,6 +471,8 @@ class ProgramViewSet(viewsets.ModelViewSet):
     _sd_poster_error_cache: dict = {}
 
     def get_permissions(self):
+        if self.action == 'poster':
+            return [AllowAny()]
         try:
             return [perm() for perm in permission_classes_by_action[self.action]]
         except KeyError:
