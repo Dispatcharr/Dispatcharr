@@ -399,7 +399,7 @@ const EPGsTable = () => {
   const [sorting, setSorting] = useState([]);
 
   const editEPG = async (epg = null) => {
-    const freshEpg = epg?.id ? (epgs[epg.id] || epg) : epg;
+    const freshEpg = epg?.id ? epgs[epg.id] || epg : epg;
     setEPG(freshEpg);
     // Open the appropriate modal based on source type
     if (epg?.source_type === 'dummy') {
@@ -740,10 +740,12 @@ const EPGsTable = () => {
 Name: ${epgToDelete.name}
 Source Type: ${epgToDelete.source_type}
 ${
-  epgToDelete.url
-    ? `URL: ${epgToDelete.url}`
-    : epgToDelete.password
-      ? `API Key: ${epgToDelete.password}`
+  epgToDelete.source_type === 'schedules_direct'
+    ? epgToDelete.username
+      ? `Username: ${epgToDelete.username}`
+      : '(credentials set)'
+    : epgToDelete.url
+      ? `URL: ${epgToDelete.url}`
       : epgToDelete.file_path
         ? `File Path: ${epgToDelete.file_path}`
         : ''

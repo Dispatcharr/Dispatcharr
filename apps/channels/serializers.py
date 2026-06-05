@@ -22,7 +22,7 @@ from django.db import connection, transaction
 from django.urls import reverse
 from rest_framework import serializers
 from django.utils import timezone
-from core.utils import validate_flexible_url
+from core.utils import validate_flexible_url, build_absolute_uri_with_port
 
 
 class LogoSerializer(serializers.ModelSerializer):
@@ -67,7 +67,7 @@ class LogoSerializer(serializers.ModelSerializer):
         cache_url = f"{base_path}?v={url_hash}"
         request = self.context.get("request")
         if request:
-            return request.build_absolute_uri(cache_url)
+            return build_absolute_uri_with_port(request, cache_url)
         return cache_url
 
     def get_channel_count(self, obj):

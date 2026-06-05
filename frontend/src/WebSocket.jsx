@@ -970,6 +970,12 @@ export const WebsocketProvider = ({ children }) => {
               break;
             }
 
+            case 'ip_lookup_complete': {
+              const { type: _t, ...ipData } = parsedEvent.data;
+              useSettingsStore.getState().setEnvironmentFields(ipData);
+              break;
+            }
+
             default:
               console.error(
                 `Unknown websocket event type: ${parsedEvent.data?.type}`

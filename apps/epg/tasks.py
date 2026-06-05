@@ -2087,6 +2087,180 @@ def fetch_schedules_direct(source, stations_only=False, force=False):
             h['token'] = token
         return h
 
+    def _sd_post_refresh_tasks(mapped_epg_ids, program_metadata, today):
+        """Poster fetch, logo auto-apply, and pruning — runs even when schedules are unchanged."""
+        from apps.epg.models import SDProgramMD5
+
+        fetch_posters = (source.custom_properties or {}).get('fetch_posters', False)
+        poster_program_ids = set(program_metadata.keys()) if program_metadata else set()
+        if fetch_posters and not poster_program_ids:
+            poster_program_ids = set(
+                ProgramData.objects.filter(
+                    epg_id__in=mapped_epg_ids,
+                    program_id__isnull=False,
+                ).exclude(custom_properties__has_key='sd_icon')
+                .values_list('program_id', flat=True)
+            )
+            if poster_program_ids:
+                logger.info(
+                    f"Poster backfill: {len(poster_program_ids)} programs missing sd_icon."
+                )
+
+        if fetch_posters and poster_program_ids:
+            logger.info("Poster fetch enabled — retrieving program artwork from Schedules Direct.")
+            _sd_send_ws_sync(source.id, "parsing_programs", 98,
+                            message="Fetching program artwork...")
+            try:
+                artwork_lookup_ids = set()
+                pid_to_artwork_key = {}
+                for pid in poster_program_ids:
+                    if pid.startswith('EP'):
+                        sh_root = 'SH' + pid[2:10] + '0000'
+                        artwork_lookup_ids.add(sh_root)
+                        pid_to_artwork_key[pid] = sh_root
+                    else:
+                        artwork_lookup_ids.add(pid)
+                        pid_to_artwork_key[pid] = pid
+
+                artwork_map = {}
+                artwork_list = list(artwork_lookup_ids)
+                SD_ARTWORK_BATCH_SIZE = 500
+                total_art_batches = max(1, (len(artwork_list) + SD_ARTWORK_BATCH_SIZE - 1) // SD_ARTWORK_BATCH_SIZE)
+                logger.info(f"Fetching artwork index for {len(artwork_list)} unique program/series IDs "
+                            f"in {total_art_batches} batch(es).")
+
+                for batch_idx in range(total_art_batches):
+                    batch = artwork_list[batch_idx * SD_ARTWORK_BATCH_SIZE:(batch_idx + 1) * SD_ARTWORK_BATCH_SIZE]
+                    try:
+                        art_response = requests.post(
+                            f"{SD_BASE_URL}/metadata/programs/",
+                            json=batch,
+                            headers=_sd_headers(token),
+                            timeout=120,
+                        )
+                        art_response.raise_for_status()
+                        art_data = art_response.json()
+
+                        for entry in art_data:
+                            if not isinstance(entry, dict):
+                                continue
+                            entry_pid = entry.get('programID')
+                            images = entry.get('data') or []
+                            if not entry_pid or not images:
+                                continue
+                            images = [img for img in images if isinstance(img, dict)]
+                            if not images:
+                                continue
+
+                            poster_url = None
+                            for min_width in [240, 135, 120]:
+                                for pref_cat in ['Banner-L1', 'Iconic']:
+                                    match = next((img for img in images
+                                                 if img.get('aspect') in ('2x3', '3x4')
+                                                 and img.get('category') == pref_cat
+                                                 and (img.get('width', 0) or 0) >= min_width), None)
+                                    if match:
+                                        poster_url = match.get('uri')
+                                        break
+                                if poster_url:
+                                    break
+                            if not poster_url:
+                                portrait = next((img for img in images
+                                                if img.get('aspect') in ('2x3', '3x4')), None)
+                                if portrait:
+                                    poster_url = portrait.get('uri')
+                            if poster_url:
+                                if not poster_url.startswith('http'):
+                                    poster_url = f"{SD_BASE_URL}/image/{poster_url}"
+                                artwork_map[entry_pid] = poster_url
+
+                        logger.info(f"Artwork batch {batch_idx + 1}/{total_art_batches}: "
+                                    f"{len(artwork_map)} posters found so far.")
+                    except requests.exceptions.RequestException as e:
+                        logger.warning(f"Failed to fetch artwork batch {batch_idx + 1}: {e}")
+
+                if artwork_map:
+                    programs_to_update = []
+                    for prog in ProgramData.objects.filter(
+                        epg_id__in=mapped_epg_ids,
+                        program_id__isnull=False,
+                    ).only('id', 'program_id', 'custom_properties'):
+                        art_key = pid_to_artwork_key.get(prog.program_id)
+                        poster = artwork_map.get(art_key) if art_key else None
+                        if poster:
+                            cp = prog.custom_properties or {}
+                            cp['sd_icon'] = poster
+                            prog.custom_properties = cp
+                            programs_to_update.append(prog)
+                    if programs_to_update:
+                        ProgramData.objects.bulk_update(
+                            programs_to_update, ['custom_properties'], batch_size=1000
+                        )
+                        logger.info(f"Updated {len(programs_to_update)} programs with poster artwork.")
+                    else:
+                        logger.info("No poster artwork matched committed programs.")
+                else:
+                    logger.info("No poster artwork found from Schedules Direct.")
+            except Exception as art_error:
+                logger.warning(f"Poster artwork fetch failed (non-fatal): {art_error}", exc_info=True)
+        elif fetch_posters:
+            logger.info("Poster fetch enabled but all mapped programs already have artwork.")
+
+        auto_apply_sd_logos = (source.custom_properties or {}).get('auto_apply_sd_logos', False)
+        if auto_apply_sd_logos:
+            try:
+                from apps.channels.models import Channel as ChannelModel, Logo
+
+                channels_to_update = []
+                logos_created = 0
+                for channel in ChannelModel.objects.filter(
+                    epg_data__epg_source=source,
+                    epg_data__isnull=False,
+                ).select_related('epg_data', 'logo'):
+                    icon_url = (channel.epg_data.icon_url or '').strip()
+                    if not icon_url:
+                        continue
+                    if channel.logo and channel.logo.url == icon_url:
+                        continue
+                    try:
+                        logo = Logo.objects.get(url=icon_url)
+                    except Logo.DoesNotExist:
+                        logo_name = channel.epg_data.name or f"SD Logo {channel.epg_data.tvg_id}"
+                        logo = Logo.objects.create(name=logo_name, url=icon_url)
+                        logos_created += 1
+                    channel.logo = logo
+                    channels_to_update.append(channel)
+
+                if channels_to_update:
+                    ChannelModel.objects.bulk_update(channels_to_update, ['logo'], batch_size=100)
+                    logger.info(f"Applied SD logos to {len(channels_to_update)} channels "
+                                f"({logos_created} new logos created).")
+                else:
+                    logger.info("All matched channels already have current SD logos.")
+            except Exception as logo_error:
+                logger.warning(f"SD logo application failed (non-fatal): {logo_error}", exc_info=True)
+
+        today_utc = datetime(today.year, today.month, today.day, tzinfo=dt_timezone.utc)
+        try:
+            expired_count = ProgramData.objects.filter(epg_id__in=mapped_epg_ids, end_time__lt=today_utc).delete()[0]
+            if expired_count:
+                logger.info(f"Pruned {expired_count} expired SD ProgramData records (end_time before {today}).")
+        except Exception as prune_err:
+            logger.warning(f"Failed to prune expired SD ProgramData: {prune_err}")
+
+        try:
+            live_program_ids = set(
+                ProgramData.objects.filter(epg_id__in=mapped_epg_ids, program_id__isnull=False)
+                .values_list('program_id', flat=True)
+            )
+            pruned_prog_md5_count = SDProgramMD5.objects.filter(epg_source=source).exclude(
+                program_id__in=live_program_ids
+            ).delete()[0]
+            if pruned_prog_md5_count:
+                logger.info(f"Pruned {pruned_prog_md5_count} stale SDProgramMD5 records no longer referenced by live ProgramData.")
+        except Exception as prune_err:
+            logger.warning(f"Failed to prune stale SDProgramMD5 records: {prune_err}")
+
     # -------------------------------------------------------------------------
     # Step 1: Authenticate and obtain session token
     # The SD API requires the password to be SHA1-hashed before transmission.
@@ -2438,6 +2612,14 @@ def fetch_schedules_direct(source, stations_only=False, force=False):
 
     if not changed_by_station:
         logger.info("No schedule changes detected, skipping schedule and program downloads.")
+        from apps.channels.models import Channel as ChannelModel
+        mapped_epg_ids_no_change = set(
+            ChannelModel.objects.filter(
+                epg_data__epg_source=source,
+                epg_data__isnull=False,
+            ).values_list('epg_data_id', flat=True)
+        )
+        _sd_post_refresh_tasks(mapped_epg_ids_no_change, {}, today)
         _sd_send_ws_sync(source.id, "parsing_programs", 100, status="success",
                         message="No schedule changes detected since last refresh. Guide data is up to date.")
         source.status = EPGSource.STATUS_SUCCESS
@@ -2992,215 +3174,9 @@ def fetch_schedules_direct(source, stations_only=False, force=False):
         gc.collect()
 
     # -------------------------------------------------------------------------
-    # Step 8: Fetch program artwork (posters) if enabled
+    # Step 8–9: Posters, logo auto-apply, and pruning
     # -------------------------------------------------------------------------
-    fetch_posters = (source.custom_properties or {}).get('fetch_posters', False)
-    poster_program_ids = set(program_metadata.keys()) if program_metadata else set()
-    if fetch_posters and not poster_program_ids:
-        # Backfill when posters were enabled after initial fetch, or a delta
-        # refresh skipped program metadata but programs still lack sd_icon.
-        poster_program_ids = set(
-            ProgramData.objects.filter(
-                epg_id__in=mapped_epg_ids,
-                program_id__isnull=False,
-            ).exclude(custom_properties__has_key='sd_icon')
-            .values_list('program_id', flat=True)
-        )
-        if poster_program_ids:
-            logger.info(
-                f"Poster backfill: {len(poster_program_ids)} programs missing sd_icon."
-            )
-
-    if fetch_posters and poster_program_ids:
-        logger.info("Poster fetch enabled — retrieving program artwork from Schedules Direct.")
-        _sd_send_ws_sync(source.id, "parsing_programs", 98,
-                        message="Fetching program artwork...")
-
-        try:
-            # Build a set of unique artwork lookup IDs.
-            # For episodes (EP...), use the series root (SH...0000) so we get
-            # series-level artwork — one poster per series instead of per-episode.
-            artwork_lookup_ids = set()
-            pid_to_artwork_key = {}  # maps original programID -> the key we looked up
-
-            for pid in poster_program_ids:
-                if pid.startswith('EP'):
-                    sh_root = 'SH' + pid[2:10] + '0000'
-                    artwork_lookup_ids.add(sh_root)
-                    pid_to_artwork_key[pid] = sh_root
-                else:
-                    artwork_lookup_ids.add(pid)
-                    pid_to_artwork_key[pid] = pid
-
-            artwork_map = {}  # artwork_key -> poster_url
-            artwork_list = list(artwork_lookup_ids)
-            SD_ARTWORK_BATCH_SIZE = 500
-
-            total_art_batches = max(1, (len(artwork_list) + SD_ARTWORK_BATCH_SIZE - 1) // SD_ARTWORK_BATCH_SIZE)
-            logger.info(f"Fetching artwork index for {len(artwork_list)} unique program/series IDs "
-                        f"in {total_art_batches} batch(es).")
-
-            for batch_idx in range(total_art_batches):
-                batch = artwork_list[batch_idx * SD_ARTWORK_BATCH_SIZE:(batch_idx + 1) * SD_ARTWORK_BATCH_SIZE]
-                try:
-                    art_response = requests.post(
-                        f"{SD_BASE_URL}/metadata/programs/",
-                        json=batch,
-                        headers=_sd_headers(token),
-                        timeout=120,
-                    )
-                    art_response.raise_for_status()
-                    art_data = art_response.json()
-
-                    for entry in art_data:
-                        if not isinstance(entry, dict):
-                            continue
-                        entry_pid = entry.get('programID')
-                        images = entry.get('data') or []
-                        if not entry_pid or not images:
-                            continue
-
-                        # Filter to only dict entries — SD sometimes returns bare strings
-                        images = [img for img in images if isinstance(img, dict)]
-                        if not images:
-                            continue
-
-                        # Pick the best poster image:
-                        # Prefer portrait orientation (2x3, 3x4) in larger sizes
-                        # SD categories include: Iconic, Banner-L1, Banner-L2, Logo
-                        # SD uses width/height instead of a "size" field
-                        poster_url = None
-
-                        # First pass: portrait images (2x3 or 3x4) at decent size, prefer Iconic
-                        for min_width in [240, 135, 120]:
-                            for pref_cat in ['Banner-L1', 'Iconic']:
-                                match = next((img for img in images
-                                             if img.get('aspect') in ('2x3', '3x4')
-                                             and img.get('category') == pref_cat
-                                             and (img.get('width', 0) or 0) >= min_width), None)
-                                if match:
-                                    poster_url = match.get('uri')
-                                    break
-                            if poster_url:
-                                break
-
-                        # Fallback: any portrait image at any size
-                        if not poster_url:
-                            portrait = next((img for img in images
-                                            if img.get('aspect') in ('2x3', '3x4')), None)
-                            if portrait:
-                                poster_url = portrait.get('uri')
-
-                        if poster_url:
-                            # Complete the URL if it's relative
-                            if not poster_url.startswith('http'):
-                                poster_url = f"{SD_BASE_URL}/image/{poster_url}"
-                            artwork_map[entry_pid] = poster_url  # raw SD endpoint URL
-
-                    logger.info(f"Artwork batch {batch_idx + 1}/{total_art_batches}: "
-                                f"{len(artwork_map)} posters found so far.")
-
-                except requests.exceptions.RequestException as e:
-                    logger.warning(f"Failed to fetch artwork batch {batch_idx + 1}: {e}")
-
-            # Bulk-update ProgramData records with poster URLs
-            if artwork_map:
-                programs_to_update = []
-                for prog in ProgramData.objects.filter(
-                    epg_id__in=mapped_epg_ids,
-                    program_id__isnull=False,
-                ).only('id', 'program_id', 'custom_properties'):
-                    art_key = pid_to_artwork_key.get(prog.program_id)
-                    poster = artwork_map.get(art_key) if art_key else None
-                    if poster:
-                        cp = prog.custom_properties or {}
-                        cp['sd_icon'] = poster
-                        prog.custom_properties = cp
-                        programs_to_update.append(prog)
-
-                if programs_to_update:
-                    ProgramData.objects.bulk_update(
-                        programs_to_update, ['custom_properties'], batch_size=1000
-                    )
-                    logger.info(f"Updated {len(programs_to_update)} programs with poster artwork.")
-                else:
-                    logger.info("No poster artwork matched committed programs.")
-            else:
-                logger.info("No poster artwork found from Schedules Direct.")
-
-        except Exception as art_error:
-            logger.warning(f"Poster artwork fetch failed (non-fatal): {art_error}", exc_info=True)
-
-    elif fetch_posters:
-        logger.info("Poster fetch enabled but all mapped programs already have artwork.")
-
-    # -------------------------------------------------------------------------
-    # Step 9: Apply SD station logos to matched channels if enabled
-    # -------------------------------------------------------------------------
-    auto_apply_sd_logos = (source.custom_properties or {}).get('auto_apply_sd_logos', False)
-    if auto_apply_sd_logos:
-        try:
-            from apps.channels.models import Channel as ChannelModel, Logo
-
-            channels_to_update = []
-            logos_created = 0
-
-            for channel in ChannelModel.objects.filter(
-                epg_data__epg_source=source,
-                epg_data__isnull=False,
-            ).select_related('epg_data', 'logo'):
-                icon_url = (channel.epg_data.icon_url or '').strip()
-                if not icon_url:
-                    continue
-
-                # Skip if channel already has this logo URL
-                if channel.logo and channel.logo.url == icon_url:
-                    continue
-
-                # Find or create a Logo object for this URL
-                try:
-                    logo = Logo.objects.get(url=icon_url)
-                except Logo.DoesNotExist:
-                    logo_name = channel.epg_data.name or f"SD Logo {channel.epg_data.tvg_id}"
-                    logo = Logo.objects.create(name=logo_name, url=icon_url)
-                    logos_created += 1
-
-                channel.logo = logo
-                channels_to_update.append(channel)
-
-            if channels_to_update:
-                ChannelModel.objects.bulk_update(channels_to_update, ['logo'], batch_size=100)
-                logger.info(f"Applied SD logos to {len(channels_to_update)} channels "
-                            f"({logos_created} new logos created).")
-            else:
-                logger.info("All matched channels already have current SD logos.")
-
-        except Exception as logo_error:
-            logger.warning(f"SD logo application failed (non-fatal): {logo_error}", exc_info=True)
-
-    # Prune ProgramData whose end_time has passed. With surgical per-date deletes,
-    # programs from dates that have rolled off the window are never explicitly removed.
-    today_utc = datetime(today.year, today.month, today.day, tzinfo=dt_timezone.utc)
-    try:
-        expired_count = ProgramData.objects.filter(epg_id__in=mapped_epg_ids, end_time__lt=today_utc).delete()[0]
-        if expired_count:
-            logger.info(f"Pruned {expired_count} expired SD ProgramData records (end_time before {today}).")
-    except Exception as prune_err:
-        logger.warning(f"Failed to prune expired SD ProgramData: {prune_err}")
-
-    # Prune SDProgramMD5 rows no longer referenced by any live ProgramData for this source.
-    try:
-        live_program_ids = set(
-            ProgramData.objects.filter(epg_id__in=mapped_epg_ids, program_id__isnull=False)
-            .values_list('program_id', flat=True)
-        )
-        pruned_prog_md5_count = SDProgramMD5.objects.filter(epg_source=source).exclude(
-            program_id__in=live_program_ids
-        ).delete()[0]
-        if pruned_prog_md5_count:
-            logger.info(f"Pruned {pruned_prog_md5_count} stale SDProgramMD5 records no longer referenced by live ProgramData.")
-    except Exception as prune_err:
-        logger.warning(f"Failed to prune stale SDProgramMD5 records: {prune_err}")
+    _sd_post_refresh_tasks(mapped_epg_ids, program_metadata, today)
 
     # -------------------------------------------------------------------------
     # Done
