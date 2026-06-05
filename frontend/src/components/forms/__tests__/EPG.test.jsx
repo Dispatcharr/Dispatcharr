@@ -245,7 +245,14 @@ vi.mock('@mantine/core', async () => ({
   Stack: ({ children, gap }) => <div data-testid="stack">{children}</div>,
   Text: ({ children, ...props }) => <span>{children}</span>,
   TextInput: ({ label, value, onChange, placeholder, ...props }) => (
-    <label>{label}<input type="text" value={value || ""} onChange={onChange} placeholder={placeholder} /></label>
+    <input
+      type="text"
+      aria-label={label}
+      data-testid={`input-${label?.toString().toLowerCase().replace(/\s+/g, '-')}`}
+      value={value || ''}
+      onChange={onChange}
+      placeholder={placeholder}
+    />
   ),
 }));
 
