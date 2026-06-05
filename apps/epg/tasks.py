@@ -35,6 +35,161 @@ SD_BASE_URL = 'https://json.schedulesdirect.org/20141201'
 SD_DAYS_TO_FETCH = 20
 SD_PROGRAM_BATCH_SIZE = 5000
 
+SD_POSTER_CATEGORIES = (
+    'Iconic', 'Banner-L1', 'Banner-L2', 'Banner-L3', 'Banner',
+    'Staple', 'Poster Art', 'Box Art',
+)
+
+SD_POSTER_STYLE_CONFIG = {
+    'portrait_iconic': {
+        'aspect_groups': (('2x3', '3x4'),),
+        'categories': ('Iconic',),
+    },
+    'portrait_banner': {
+        'aspect_groups': (('2x3', '3x4'),),
+        'categories': ('Banner-L1', 'Banner-L2', 'Banner-L3', 'Banner'),
+    },
+    'landscape_iconic': {
+        'aspect_groups': (('16x9', '4x3'),),
+        'categories': ('Iconic',),
+    },
+    'landscape_banner': {
+        'aspect_groups': (('16x9', '4x3'),),
+        'categories': ('Banner-L1', 'Banner-L2', 'Banner-L3', 'Banner'),
+    },
+    'square_iconic': {
+        'aspect_groups': (('1x1',),),
+        'categories': ('Iconic',),
+    },
+}
+
+
+def _sd_image_width(img):
+    try:
+        return int(img.get('width') or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _sd_is_primary(img):
+    val = img.get('primary')
+    if val is True:
+        return True
+    if isinstance(val, str):
+        return val.lower() in ('true', '1', 'yes')
+    return False
+
+
+def _sd_matching_images(images, *, categories=None, aspects=None, min_width=0, primary_only=False):
+    matches = []
+    for img in images:
+        if not isinstance(img, dict):
+            continue
+        if primary_only and not _sd_is_primary(img):
+            continue
+        if categories is not None and img.get('category') not in categories:
+            continue
+        if aspects is not None and img.get('aspect') not in aspects:
+            continue
+        if _sd_image_width(img) < min_width:
+            continue
+        if img.get('uri'):
+            matches.append(img)
+    return matches
+
+
+def _sd_best_image(matches):
+    if not matches:
+        return None
+    best = max(matches, key=lambda img: (_sd_is_primary(img), _sd_image_width(img)))
+    return best.get('uri')
+
+
+def _sd_find_image(images, *, categories=None, aspects=None, min_width=0, primary_only=False):
+    return _sd_best_image(_sd_matching_images(
+        images,
+        categories=categories,
+        aspects=aspects,
+        min_width=min_width,
+        primary_only=primary_only,
+    ))
+
+
+SD_POSTER_STYLE_DEFAULT = 'sd_recommended'
+SD_POSTER_PORTRAIT_FALLBACK = 'portrait_iconic'
+
+
+def _sd_pick_recommended_poster_url(images):
+    """Use Gracenote's primary flag, then fall back to portrait iconic."""
+    min_widths = (240, 135, 120, 0)
+    for min_w in min_widths:
+        uri = _sd_find_image(
+            images,
+            categories=SD_POSTER_CATEGORIES,
+            aspects=None,
+            min_width=min_w,
+            primary_only=True,
+        )
+        if uri:
+            return uri
+    for min_w in min_widths:
+        uri = _sd_find_image(
+            images,
+            categories=None,
+            aspects=None,
+            min_width=min_w,
+            primary_only=True,
+        )
+        if uri:
+            return uri
+    return _sd_pick_poster_url(images, SD_POSTER_PORTRAIT_FALLBACK)
+
+
+def _sd_pick_poster_url(images, poster_style=SD_POSTER_STYLE_DEFAULT):
+    """Pick the best SD poster URI for the user's style preference, with fallbacks."""
+    if poster_style == 'sd_recommended':
+        return _sd_pick_recommended_poster_url(images)
+
+    config = SD_POSTER_STYLE_CONFIG.get(poster_style)
+    if not config:
+        return _sd_pick_recommended_poster_url(images)
+    min_widths = (240, 135, 120, 0)
+
+    for min_w in min_widths:
+        for cat in config['categories']:
+            for aspects in config['aspect_groups']:
+                uri = _sd_find_image(images, categories=(cat,), aspects=aspects, min_width=min_w)
+                if uri:
+                    return uri
+
+    for min_w in min_widths:
+        for aspects in config['aspect_groups']:
+            uri = _sd_find_image(images, categories=SD_POSTER_CATEGORIES, aspects=aspects, min_width=min_w)
+            if uri:
+                return uri
+
+    for aspects in config['aspect_groups']:
+        uri = _sd_find_image(images, categories=None, aspects=aspects, min_width=0)
+        if uri:
+            return uri
+
+    # Fallback: SD primary among poster categories (any aspect)
+    for min_w in min_widths:
+        uri = _sd_find_image(
+            images,
+            categories=SD_POSTER_CATEGORIES,
+            aspects=None,
+            min_width=min_w,
+            primary_only=True,
+        )
+        if uri:
+            return uri
+
+    if poster_style != SD_POSTER_PORTRAIT_FALLBACK:
+        return _sd_pick_poster_url(images, SD_POSTER_PORTRAIT_FALLBACK)
+
+    return None
+
 # DOCTYPE internal subset for XMLTV files.  Declares all 252 HTML 4 named
 # entities so lxml/libxml2 can resolve references like &eacute; correctly
 # instead of silently dropping them in recovery mode.
@@ -2092,18 +2247,24 @@ def fetch_schedules_direct(source, stations_only=False, force=False):
         from apps.epg.models import SDProgramMD5
 
         fetch_posters = (source.custom_properties or {}).get('fetch_posters', False)
-        poster_program_ids = set(program_metadata.keys()) if program_metadata else set()
-        if fetch_posters and not poster_program_ids:
+        poster_style = (source.custom_properties or {}).get('poster_style', SD_POSTER_STYLE_DEFAULT)
+        poster_program_ids = set()
+        if fetch_posters:
+            needs_poster_q = (
+                Q(custom_properties__isnull=True)
+                | ~Q(custom_properties__has_key='sd_icon')
+                | ~Q(custom_properties__sd_poster_style=poster_style)
+            )
             poster_program_ids = set(
                 ProgramData.objects.filter(
                     epg_id__in=mapped_epg_ids,
                     program_id__isnull=False,
-                ).exclude(custom_properties__has_key='sd_icon')
-                .values_list('program_id', flat=True)
+                ).filter(needs_poster_q).values_list('program_id', flat=True)
             )
             if poster_program_ids:
                 logger.info(
-                    f"Poster backfill: {len(poster_program_ids)} programs missing sd_icon."
+                    f"Poster fetch: {len(poster_program_ids)} programs need artwork "
+                    f"(missing, style change, or first fetch; style={poster_style})."
                 )
 
         if fetch_posters and poster_program_ids:
@@ -2152,23 +2313,7 @@ def fetch_schedules_direct(source, stations_only=False, force=False):
                             if not images:
                                 continue
 
-                            poster_url = None
-                            for min_width in [240, 135, 120]:
-                                for pref_cat in ['Banner-L1', 'Iconic']:
-                                    match = next((img for img in images
-                                                 if img.get('aspect') in ('2x3', '3x4')
-                                                 and img.get('category') == pref_cat
-                                                 and (img.get('width', 0) or 0) >= min_width), None)
-                                    if match:
-                                        poster_url = match.get('uri')
-                                        break
-                                if poster_url:
-                                    break
-                            if not poster_url:
-                                portrait = next((img for img in images
-                                                if img.get('aspect') in ('2x3', '3x4')), None)
-                                if portrait:
-                                    poster_url = portrait.get('uri')
+                            poster_url = _sd_pick_poster_url(images, poster_style)
                             if poster_url:
                                 if not poster_url.startswith('http'):
                                     poster_url = f"{SD_BASE_URL}/image/{poster_url}"
@@ -2183,6 +2328,7 @@ def fetch_schedules_direct(source, stations_only=False, force=False):
                     programs_to_update = []
                     for prog in ProgramData.objects.filter(
                         epg_id__in=mapped_epg_ids,
+                        program_id__in=poster_program_ids,
                         program_id__isnull=False,
                     ).only('id', 'program_id', 'custom_properties'):
                         art_key = pid_to_artwork_key.get(prog.program_id)
@@ -2190,6 +2336,7 @@ def fetch_schedules_direct(source, stations_only=False, force=False):
                         if poster:
                             cp = prog.custom_properties or {}
                             cp['sd_icon'] = poster
+                            cp['sd_poster_style'] = poster_style
                             prog.custom_properties = cp
                             programs_to_update.append(prog)
                     if programs_to_update:

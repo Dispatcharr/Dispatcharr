@@ -261,3 +261,174 @@ class SDSourceSignalTests(TestCase):
         )
 
         mock_parse.delay.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Poster selection tests
+# ---------------------------------------------------------------------------
+
+class SDPosterSelectionTests(TestCase):
+    """_sd_pick_poster_url must honour style preference with sensible fallbacks."""
+
+    def _images(self):
+        return [
+            {
+                'uri': 'assets/iconic_portrait.jpg',
+                'width': '960',
+                'aspect': '2x3',
+                'category': 'Iconic',
+            },
+            {
+                'uri': 'assets/banner_portrait.jpg',
+                'width': '360',
+                'aspect': '2x3',
+                'category': 'Banner-L1',
+            },
+            {
+                'uri': 'assets/iconic_landscape.jpg',
+                'width': '1920',
+                'aspect': '16x9',
+                'category': 'Iconic',
+            },
+            {
+                'uri': 'assets/banner_landscape.jpg',
+                'width': '1280',
+                'aspect': '16x9',
+                'category': 'Banner-L1',
+            },
+        ]
+
+    def test_portrait_iconic_prefers_iconic_over_banner(self):
+        from apps.epg.tasks import _sd_pick_poster_url
+
+        self.assertEqual(
+            _sd_pick_poster_url(self._images(), 'portrait_iconic'),
+            'assets/iconic_portrait.jpg',
+        )
+
+    def test_portrait_banner_prefers_banner(self):
+        from apps.epg.tasks import _sd_pick_poster_url
+
+        self.assertEqual(
+            _sd_pick_poster_url(self._images(), 'portrait_banner'),
+            'assets/banner_portrait.jpg',
+        )
+
+    def test_landscape_iconic_prefers_landscape_iconic(self):
+        from apps.epg.tasks import _sd_pick_poster_url
+
+        self.assertEqual(
+            _sd_pick_poster_url(self._images(), 'landscape_iconic'),
+            'assets/iconic_landscape.jpg',
+        )
+
+    def test_landscape_falls_back_to_portrait_when_unavailable(self):
+        from apps.epg.tasks import _sd_pick_poster_url
+
+        images = [img for img in self._images() if img['aspect'] in ('2x3', '3x4')]
+        self.assertEqual(
+            _sd_pick_poster_url(images, 'landscape_iconic'),
+            'assets/iconic_portrait.jpg',
+        )
+
+    def test_unknown_style_defaults_to_sd_recommended(self):
+        from apps.epg.tasks import _sd_pick_poster_url
+
+        self.assertEqual(
+            _sd_pick_poster_url(self._images(), 'not_a_real_style'),
+            'assets/iconic_portrait.jpg',
+        )
+
+    def test_prefers_primary_when_category_and_aspect_match(self):
+        from apps.epg.tasks import _sd_pick_poster_url
+
+        images = [
+            {
+                'uri': 'assets/banner_small.jpg',
+                'width': '120',
+                'aspect': '2x3',
+                'category': 'Banner-L1',
+            },
+            {
+                'uri': 'assets/banner_primary.jpg',
+                'width': '360',
+                'aspect': '2x3',
+                'category': 'Banner-L1',
+                'primary': 'true',
+            },
+        ]
+        self.assertEqual(
+            _sd_pick_poster_url(images, 'portrait_banner'),
+            'assets/banner_primary.jpg',
+        )
+
+    def test_sd_recommended_uses_primary_poster_category(self):
+        from apps.epg.tasks import _sd_pick_poster_url
+
+        images = [
+            {
+                'uri': 'assets/cast_primary.jpg',
+                'width': '500',
+                'aspect': '3x4',
+                'category': 'Cast in Character',
+                'primary': 'true',
+            },
+            {
+                'uri': 'assets/iconic_primary.jpg',
+                'width': '300',
+                'aspect': '16x9',
+                'category': 'Iconic',
+                'primary': 'true',
+            },
+        ]
+        self.assertEqual(
+            _sd_pick_poster_url(images, 'sd_recommended'),
+            'assets/iconic_primary.jpg',
+        )
+
+    def test_sd_recommended_falls_back_to_portrait_iconic(self):
+        from apps.epg.tasks import _sd_pick_poster_url
+
+        self.assertEqual(
+            _sd_pick_poster_url(self._images(), 'sd_recommended'),
+            'assets/iconic_portrait.jpg',
+        )
+
+    def test_default_style_is_sd_recommended(self):
+        from apps.epg.tasks import _sd_pick_poster_url, SD_POSTER_STYLE_DEFAULT
+
+        self.assertEqual(SD_POSTER_STYLE_DEFAULT, 'sd_recommended')
+        images = [
+            {
+                'uri': 'assets/primary.jpg',
+                'width': '960',
+                'aspect': '16x9',
+                'category': 'Iconic',
+                'primary': 'true',
+            },
+        ]
+        self.assertEqual(_sd_pick_poster_url(images), 'assets/primary.jpg')
+
+    def test_style_fallback_uses_primary_before_cross_orientation(self):
+        from apps.epg.tasks import _sd_pick_poster_url
+
+        images = [
+            {
+                'uri': 'assets/iconic_portrait.jpg',
+                'width': '960',
+                'aspect': '2x3',
+                'category': 'Iconic',
+            },
+            {
+                'uri': 'assets/landscape_primary.jpg',
+                'width': '1920',
+                'aspect': '16x9',
+                'category': 'Iconic',
+                'primary': 'true',
+            },
+        ]
+        # square_iconic has no 1x1 images; should pick SD primary before portrait iconic fallback
+        self.assertEqual(
+            _sd_pick_poster_url(images, 'square_iconic'),
+            'assets/landscape_primary.jpg',
+        )

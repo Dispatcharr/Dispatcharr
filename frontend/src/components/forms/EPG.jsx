@@ -75,6 +75,33 @@ const SD_LOGO_STYLES = [
   },
 ];
 
+const SD_POSTER_STYLES = [
+  {
+    value: 'sd_recommended',
+    label: 'SD Recommended (primary artwork)',
+  },
+  {
+    value: 'portrait_banner',
+    label: 'Portrait, Banner with title (2×3 / 3×4)',
+  },
+  {
+    value: 'portrait_iconic',
+    label: 'Portrait, Iconic (2×3 / 3×4)',
+  },
+  {
+    value: 'landscape_iconic',
+    label: 'Landscape, Iconic (16×9 / 4×3)',
+  },
+  {
+    value: 'landscape_banner',
+    label: 'Landscape, Banner with title (16×9 / 4×3)',
+  },
+  {
+    value: 'square_iconic',
+    label: 'Square, Iconic (1×1)',
+  },
+];
+
 // ─── SD Settings: Logo toggle + style selector + Poster toggle ──────────────
 const SDSettings = ({ sourceId, customProperties }) => {
   const storeCustomProps = useEPGsStore((s) =>
@@ -87,6 +114,9 @@ const SDSettings = ({ sourceId, customProperties }) => {
   );
   const [logoStyle, setLogoStyle] = useState(resolvedCp.logo_style || 'dark');
   const [fetchPosters, setFetchPosters] = useState(!!resolvedCp.fetch_posters);
+  const [posterStyle, setPosterStyle] = useState(
+    resolvedCp.poster_style || 'sd_recommended'
+  );
   const [saving, setSaving] = useState(false);
 
   // Sync from store (preferred) or parent props when the form opens or settings save
@@ -95,6 +125,7 @@ const SDSettings = ({ sourceId, customProperties }) => {
     setAutoApplySDLogos(!!newCp.auto_apply_sd_logos);
     setLogoStyle(newCp.logo_style || 'dark');
     setFetchPosters(!!newCp.fetch_posters);
+    setPosterStyle(newCp.poster_style || 'sd_recommended');
   }, [storeCustomProps, customProperties]);
 
   const saveSetting = async (key, value) => {
@@ -119,6 +150,12 @@ const SDSettings = ({ sourceId, customProperties }) => {
   const handlePosterToggle = (checked) => {
     setFetchPosters(checked);
     saveSetting('fetch_posters', checked);
+  };
+
+  const handlePosterStyleChange = (style) => {
+    if (!style) return;
+    setPosterStyle(style);
+    saveSetting('poster_style', style);
   };
 
   return (
@@ -195,7 +232,21 @@ const SDSettings = ({ sourceId, customProperties }) => {
         onChange={(e) => handlePosterToggle(e.currentTarget.checked)}
         disabled={saving}
         size="sm"
+        mb={fetchPosters ? 'xs' : undefined}
       />
+
+      {fetchPosters && (
+        <Select
+          label="Poster Style"
+          description="SD Recommended uses Gracenote's primary flag, then portrait iconic. Other styles match your preference, then SD primary, then portrait iconic."
+          data={SD_POSTER_STYLES}
+          value={posterStyle}
+          onChange={handlePosterStyleChange}
+          disabled={saving}
+          size="sm"
+          allowDeselect={false}
+        />
+      )}
     </Box>
   );
 };
@@ -618,11 +669,19 @@ const EPG = ({ epg = null, isOpen, onClose }) => {
       await updateEPG(values, epgObj);
       onClose();
     } else {
-      const result = await addEPG(values);
+      const payload = { ...values };
+      if (payload.source_type === 'schedules_direct') {
+        payload.custom_properties = {
+          logo_style: 'dark',
+          poster_style: 'sd_recommended',
+        };
+      }
+      const result = await addEPG(payload);
       if (result?.id) {
         setSavedEpgId(result.id);
-        // Load custom_properties for the new source
-        setSdCustomProps(result.custom_properties || {});
+        setSdCustomProps(
+          result.custom_properties || payload.custom_properties || {}
+        );
       } else {
         form.reset();
         onClose();
