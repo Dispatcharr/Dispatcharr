@@ -12,6 +12,7 @@ vi.mock('../../../api.js', () => ({
     addSDLineup: vi.fn().mockResolvedValue({ success: true }),
     deleteSDLineup: vi.fn().mockResolvedValue({ success: true }),
     searchSDLineups: vi.fn().mockResolvedValue([]),
+    updateSDSettings: vi.fn().mockResolvedValue({}),
   },
 }));
 
