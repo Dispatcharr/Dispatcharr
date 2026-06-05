@@ -312,6 +312,34 @@ class TaskLockRenewer:
         return False
 
 
+def _is_gevent_monkey_patched():
+    try:
+        import gevent.monkey
+        return gevent.monkey.is_module_patched('threading')
+    except Exception:
+        return False
+
+
+def _is_celery_worker_context():
+    """True when executing inside an active Celery task (prefork worker)."""
+    try:
+        from celery import current_task
+        request = getattr(current_task, 'request', None)
+        return bool(request and getattr(request, 'id', None))
+    except Exception:
+        return False
+
+
+def _should_use_sync_websocket_send():
+    """
+    Use synchronous Redis delivery when gevent is monkey-patched but no gevent
+    hub is driving the process — e.g. Celery prefork workers that inherit
+    gevent patching from uWSGI imports. gevent.spawn in that context schedules
+    coroutines that never run.
+    """
+    return _is_gevent_monkey_patched() and _is_celery_worker_context()
+
+
 def _gevent_ws_send(group_name, message):
     """
     Publishes a WebSocket group message synchronously through Redis.
@@ -363,6 +391,12 @@ def _gevent_ws_send(group_name, message):
         logger.warning(f"Failed to send WebSocket update: {e}")
 
 
+def send_websocket_update_sync(group_name, event_type, data):
+    """Send a WebSocket group message synchronously via Redis (channels_redis wire format)."""
+    message = {'type': event_type, 'data': data}
+    _gevent_ws_send(group_name, message)
+
+
 def send_websocket_update(group_name, event_type, data, collect_garbage=False):
     """
     Sends a WebSocket group message.
@@ -370,27 +404,24 @@ def send_websocket_update(group_name, event_type, data, collect_garbage=False):
     In gevent-patched uWSGI workers, asyncio event loop creation fails because
     monkey-patching removes select.epoll. For those contexts a synchronous Redis
     path is used instead, matching the channels_redis 4.x wire format.
+
+    Celery prefork workers may inherit gevent monkey-patching without a running
+    gevent hub; in that case gevent.spawn would never execute, so delivery is
+    synchronous via Redis instead.
     """
-    channel_layer = get_channel_layer()
     message = {'type': event_type, 'data': data}
 
-    def _do_send():
+    if _should_use_sync_websocket_send():
+        _gevent_ws_send(group_name, message)
+    elif _is_gevent_monkey_patched():
+        import gevent
+        gevent.spawn(_gevent_ws_send, group_name, message)
+    else:
+        # Not gevent-patched (plain Celery, tests) — use asyncio channel layer
         try:
-            async_to_sync(channel_layer.group_send)(group_name, message)
+            async_to_sync(get_channel_layer().group_send)(group_name, message)
         except Exception as e:
             logger.warning(f"Failed to send WebSocket update: {e}")
-
-    try:
-        import gevent.monkey
-        if gevent.monkey.is_module_patched('threading'):
-            import gevent
-            gevent.spawn(_gevent_ws_send, group_name, message)
-            return
-    except Exception:
-        pass
-
-    # Not in a gevent-patched environment (Celery, tests) — use asyncio path
-    _do_send()
 
     if collect_garbage:
         gc.collect()

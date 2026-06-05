@@ -1650,11 +1650,11 @@ export default class API {
     }
   }
 
-  static async refreshEPG(id) {
+  static async refreshEPG(id, force = false) {
     try {
       const response = await request(`${host}/api/epg/import/`, {
         method: 'POST',
-        body: { id },
+        body: { id, force },
       });
 
       return response;
@@ -3835,6 +3835,81 @@ export default class API {
       );
     } catch (e) {
       errorNotification('Failed to fetch connect logs', e);
+    }
+  }
+
+  static async getSDLineups(sourceId) {
+    try {
+      const response = await request(
+        `${host}/api/epg/sources/${sourceId}/sd-lineups/`
+      );
+      return response;
+    } catch (e) {
+      errorNotification('Failed to retrieve Schedules Direct lineups', e);
+    }
+  }
+
+  static async addSDLineup(sourceId, lineup) {
+    try {
+      const response = await request(
+        `${host}/api/epg/sources/${sourceId}/sd-lineups/`,
+        {
+          method: 'POST',
+          body: { lineup },
+        }
+      );
+      return response;
+    } catch (e) {
+      errorNotification(`Failed to add lineup ${lineup}`, e);
+    }
+  }
+
+  static async deleteSDLineup(sourceId, lineup) {
+    try {
+      const response = await request(
+        `${host}/api/epg/sources/${sourceId}/sd-lineups/`,
+        {
+          method: 'DELETE',
+          body: { lineup },
+        }
+      );
+      return response;
+    } catch (e) {
+      errorNotification(`Failed to remove lineup ${lineup}`, e);
+    }
+  }
+
+  static async updateSDSettings(sourceId, settings) {
+    try {
+      // Read current custom_properties from the store to merge, not replace
+      const epgs = useEPGsStore.getState().epgs;
+      const source = epgs[sourceId];
+      const cp = { ...(source?.custom_properties || {}), ...settings };
+
+      const response = await request(`${host}/api/epg/sources/${sourceId}/`, {
+        method: 'PATCH',
+        body: { custom_properties: cp },
+      });
+
+      useEPGsStore.getState().updateEPG(response);
+      return response;
+    } catch (e) {
+      errorNotification('Failed to update Schedules Direct settings', e);
+    }
+  }
+
+  static async searchSDLineups(sourceId, country, postalcode) {
+    try {
+      const response = await request(
+        `${host}/api/epg/sources/${sourceId}/sd-lineups/search/`,
+        {
+          method: 'POST',
+          body: { country, postalcode },
+        }
+      );
+      return response;
+    } catch (e) {
+      errorNotification('Failed to search Schedules Direct lineups', e);
     }
   }
 }
