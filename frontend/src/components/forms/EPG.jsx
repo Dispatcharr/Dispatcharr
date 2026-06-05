@@ -27,6 +27,7 @@ import ScheduleInput from './ScheduleInput';
 import { addEPG, updateEPG } from '../../utils/forms/DummyEpgUtils.js';
 import { showNotification } from '../../utils/notificationUtils.js';
 import API from '../../api.js';
+import useEPGsStore from '../../store/epgs';
 
 // Countries are fetched dynamically from the SD API on component mount.
 // Fallback list used if the API call fails.
@@ -49,34 +50,52 @@ const SD_COUNTRIES_FALLBACK = [
 
 // ESPN HD logo previews — packaged as static URLs so no API call is needed.
 // These are publicly accessible S3 URLs that don't require authentication.
-const SD_LOGO_PREVIEW_BASE = 'https://schedulesdirect-api20141201-logos.s3.dualstack.us-east-1.amazonaws.com/stationLogos/s32645';
+const SD_LOGO_PREVIEW_BASE =
+  'https://schedulesdirect-api20141201-logos.s3.dualstack.us-east-1.amazonaws.com/stationLogos/s32645';
 const SD_LOGO_STYLES = [
-  { value: 'dark', label: 'Dark', url: `${SD_LOGO_PREVIEW_BASE}_dark_360w_270h.png` },
-  { value: 'white', label: 'White', url: `${SD_LOGO_PREVIEW_BASE}_white_360w_270h.png` },
-  { value: 'gray', label: 'Gray', url: `${SD_LOGO_PREVIEW_BASE}_gray_360w_270h.png` },
-  { value: 'light', label: 'Light', url: `${SD_LOGO_PREVIEW_BASE}_light_360w_270h.png` },
+  {
+    value: 'dark',
+    label: 'Dark',
+    url: `${SD_LOGO_PREVIEW_BASE}_dark_360w_270h.png`,
+  },
+  {
+    value: 'white',
+    label: 'White',
+    url: `${SD_LOGO_PREVIEW_BASE}_white_360w_270h.png`,
+  },
+  {
+    value: 'gray',
+    label: 'Gray',
+    url: `${SD_LOGO_PREVIEW_BASE}_gray_360w_270h.png`,
+  },
+  {
+    value: 'light',
+    label: 'Light',
+    url: `${SD_LOGO_PREVIEW_BASE}_light_360w_270h.png`,
+  },
 ];
 
 // ─── SD Settings: Logo toggle + style selector + Poster toggle ──────────────
 const SDSettings = ({ sourceId, customProperties }) => {
-  const cp = customProperties || {};
-  const [useSDLogos, setUseSDLogos] = useState(cp.use_sd_logos || false);
-  const [logoStyle, setLogoStyle] = useState(cp.logo_style || 'dark');
-  const [fetchPosters, setFetchPosters] = useState(cp.fetch_posters || false);
+  const storeCustomProps = useEPGsStore((s) =>
+    sourceId ? s.epgs[sourceId]?.custom_properties : null
+  );
+  const resolvedCp = storeCustomProps || customProperties || {};
+
+  const [autoApplySDLogos, setAutoApplySDLogos] = useState(
+    !!resolvedCp.auto_apply_sd_logos
+  );
+  const [logoStyle, setLogoStyle] = useState(resolvedCp.logo_style || 'dark');
+  const [fetchPosters, setFetchPosters] = useState(!!resolvedCp.fetch_posters);
   const [saving, setSaving] = useState(false);
 
-  // Sync from parent when customProperties changes
+  // Sync from store (preferred) or parent props when the form opens or settings save
   useEffect(() => {
-    const newCp = customProperties || {};
-    setUseSDLogos(newCp.use_sd_logos || false);
+    const newCp = storeCustomProps || customProperties || {};
+    setAutoApplySDLogos(!!newCp.auto_apply_sd_logos);
     setLogoStyle(newCp.logo_style || 'dark');
-    setFetchPosters(newCp.fetch_posters || false);
-
-    // Persist the default logo_style if not already set
-    if (sourceId && !newCp.logo_style) {
-      API.updateSDSettings(sourceId, { logo_style: 'dark' });
-    }
-  }, [customProperties, sourceId]);
+    setFetchPosters(!!newCp.fetch_posters);
+  }, [storeCustomProps, customProperties]);
 
   const saveSetting = async (key, value) => {
     setSaving(true);
@@ -87,9 +106,9 @@ const SDSettings = ({ sourceId, customProperties }) => {
     }
   };
 
-  const handleLogoToggle = (checked) => {
-    setUseSDLogos(checked);
-    saveSetting('use_sd_logos', checked);
+  const handleAutoApplyToggle = (checked) => {
+    setAutoApplySDLogos(checked);
+    saveSetting('auto_apply_sd_logos', checked);
   };
 
   const handleLogoChange = (style) => {
@@ -102,25 +121,14 @@ const SDSettings = ({ sourceId, customProperties }) => {
     saveSetting('fetch_posters', checked);
   };
 
-  const logosDisabled = false;
-
   return (
     <Box>
-      <Switch
-        label="Use SD Station Logos"
-        description="Apply Schedules Direct station logos to matched channels during refresh."
-        checked={useSDLogos}
-        onChange={(e) => handleLogoToggle(e.currentTarget.checked)}
-        disabled={saving}
-        size="sm"
-        mb="sm"
-      />
-
-      <Text size="sm" fw={500} mb="xs" c={logosDisabled ? 'dimmed' : undefined}>
+      <Text size="sm" fw={500} mb="xs">
         Station Logo Style
       </Text>
       <Text size="xs" c="dimmed" mb="xs">
-        Choose which logo variant to use for SD stations.
+        Choose which logo variant to store in EPG data. Available for Set Logo
+        from EPG even when auto-apply is disabled.
       </Text>
       <Group gap={6} mb="md">
         {SD_LOGO_STYLES.map((style) => (
@@ -128,16 +136,17 @@ const SDSettings = ({ sourceId, customProperties }) => {
             key={style.value}
             onClick={() => handleLogoChange(style.value)}
             style={{
-              border: !logosDisabled && logoStyle === style.value
-                ? '2px solid var(--mantine-color-blue-5)'
-                : '2px solid var(--mantine-color-default-border)',
+              border:
+                logoStyle === style.value
+                  ? '2px solid var(--mantine-color-blue-5)'
+                  : '2px solid var(--mantine-color-default-border)',
               borderRadius: 'var(--mantine-radius-sm)',
               padding: 3,
-              opacity: logosDisabled ? 0.3 : (saving ? 0.6 : 1),
-              cursor: logosDisabled ? 'not-allowed' : (saving ? 'wait' : 'pointer'),
+              opacity: saving ? 0.6 : 1,
+              cursor: saving ? 'wait' : 'pointer',
               flex: 1,
               textAlign: 'center',
-              pointerEvents: logosDisabled ? 'none' : 'auto',
+              pointerEvents: saving ? 'none' : 'auto',
             }}
           >
             <img
@@ -148,20 +157,34 @@ const SDSettings = ({ sourceId, customProperties }) => {
                 height: 50,
                 objectFit: 'contain',
                 display: 'block',
-                backgroundColor: style.value === 'white' || style.value === 'light'
-                  ? '#333'
-                  : 'transparent',
+                backgroundColor:
+                  style.value === 'white' || style.value === 'light'
+                    ? '#333'
+                    : 'transparent',
                 borderRadius: 2,
-                filter: logosDisabled ? 'grayscale(100%)' : 'none',
               }}
             />
-            <Text size="xs" ta="center" mt={2} fw={!logosDisabled && logoStyle === style.value ? 600 : 400}
-                  c={logosDisabled ? 'dimmed' : undefined}>
+            <Text
+              size="xs"
+              ta="center"
+              mt={2}
+              fw={logoStyle === style.value ? 600 : 400}
+            >
               {style.label}
             </Text>
           </UnstyledButton>
         ))}
       </Group>
+
+      <Switch
+        label="Auto-Apply SD Logos to Channels"
+        description="When enabled, matched channels are updated to use the SD logo on each refresh. When disabled, logos are still fetched into EPG data and can be applied manually via Set Logo from EPG."
+        checked={autoApplySDLogos}
+        onChange={(e) => handleAutoApplyToggle(e.currentTarget.checked)}
+        disabled={saving}
+        size="sm"
+        mb="sm"
+      />
 
       <Divider my="sm" />
 
@@ -192,7 +215,8 @@ const SDLineupManager = ({ sourceId }) => {
   const [addingLineup, setAddingLineup] = useState(null);
   const [removingLineup, setRemovingLineup] = useState(null);
   const maxLineups = 4;
-  const SD_DOCS_URL = 'https://github.com/SchedulesDirect/JSON-Service/wiki/API-20141201#tasks-your-client-must-perform';
+  const SD_DOCS_URL =
+    'https://github.com/SchedulesDirect/JSON-Service/wiki/API-20141201#tasks-your-client-must-perform';
 
   const fetchActiveLineups = useCallback(async () => {
     setLoadingLineups(true);
@@ -219,12 +243,12 @@ const SDLineupManager = ({ sourceId }) => {
       fetchActiveLineups();
       // Fetch country list from SD API per their recommendation to not hardcode
       fetch('https://json.schedulesdirect.org/20141201/available/countries')
-        .then(r => r.json())
-        .then(data => {
+        .then((r) => r.json())
+        .then((data) => {
           const all = Object.values(data).flat();
           const mapped = all
-            .filter(c => c.shortName && c.fullName)
-            .map(c => ({ value: c.shortName, label: c.fullName }))
+            .filter((c) => c.shortName && c.fullName)
+            .map((c) => ({ value: c.shortName, label: c.fullName }))
             .sort((a, b) => a.label.localeCompare(b.label));
           if (mapped.length > 0) setCountries(mapped);
         })
@@ -237,7 +261,11 @@ const SDLineupManager = ({ sourceId }) => {
     setSearching(true);
     setSearchResults([]);
     try {
-      const data = await API.searchSDLineups(sourceId, country, postalCode.trim());
+      const data = await API.searchSDLineups(
+        sourceId,
+        country,
+        postalCode.trim()
+      );
       if (data) {
         setSearchResults(data.lineups || []);
       }
@@ -253,7 +281,10 @@ const SDLineupManager = ({ sourceId }) => {
       if (!result) return;
 
       // Update changesRemaining from response
-      if (result.changes_remaining !== undefined && result.changes_remaining !== null) {
+      if (
+        result.changes_remaining !== undefined &&
+        result.changes_remaining !== null
+      ) {
         setChangesRemaining(result.changes_remaining);
       }
 
@@ -264,22 +295,38 @@ const SDLineupManager = ({ sourceId }) => {
       }
 
       if (result.error === 'duplicate_lineup') {
-        showNotification({ title: 'Already added', message: result.message, color: 'yellow' });
+        showNotification({
+          title: 'Already added',
+          message: result.message,
+          color: 'yellow',
+        });
         return;
       }
 
       if (result.error === 'max_lineups_reached') {
-        showNotification({ title: 'Maximum lineups reached', message: result.message, color: 'orange' });
+        showNotification({
+          title: 'Maximum lineups reached',
+          message: result.message,
+          color: 'orange',
+        });
         return;
       }
 
       if (result.error) {
-        showNotification({ title: 'Unable to add lineup', message: result.message, color: 'red' });
+        showNotification({
+          title: 'Unable to add lineup',
+          message: result.message,
+          color: 'red',
+        });
         return;
       }
 
       if (result.code === 0) {
-        showNotification({ title: 'Lineup added', message: lineup.name, color: 'green' });
+        showNotification({
+          title: 'Lineup added',
+          message: lineup.name,
+          color: 'green',
+        });
         await fetchActiveLineups();
       }
     } finally {
@@ -292,8 +339,15 @@ const SDLineupManager = ({ sourceId }) => {
     try {
       const result = await API.deleteSDLineup(sourceId, lineup.lineup);
       if (result && result.code === 0) {
-        showNotification({ title: 'Lineup removed', message: lineup.name, color: 'blue' });
-        if (result.changes_remaining !== undefined && result.changes_remaining !== null) {
+        showNotification({
+          title: 'Lineup removed',
+          message: lineup.name,
+          color: 'blue',
+        });
+        if (
+          result.changes_remaining !== undefined &&
+          result.changes_remaining !== null
+        ) {
           setChangesRemaining(result.changes_remaining);
         }
         await fetchActiveLineups();
@@ -344,7 +398,9 @@ const SDLineupManager = ({ sourceId }) => {
               }}
             >
               <Box>
-                <Text size="sm" fw={500}>{lineup.name}</Text>
+                <Text size="sm" fw={500}>
+                  {lineup.name}
+                </Text>
                 <Text size="xs" c="dimmed">
                   {lineup.transport} · {lineup.location} · {lineup.lineup}
                 </Text>
@@ -370,33 +426,67 @@ const SDLineupManager = ({ sourceId }) => {
       </Text>
 
       {atMax && (
-        <Alert color="orange" variant="light" mb="xs" icon={<TriangleAlert size={14} />}>
+        <Alert
+          color="orange"
+          variant="light"
+          mb="xs"
+          icon={<TriangleAlert size={14} />}
+        >
           Maximum of {maxLineups} lineups reached. Remove one to add another.
         </Alert>
       )}
 
       {changesRemaining === 0 && (
-        <Alert color="red" variant="light" mb="xs" icon={<TriangleAlert size={14} />}>
-          You have reached your daily Schedules Direct lineup addition limit. SD allows 6 adds per 24-hour period.{' '}
+        <Alert
+          color="red"
+          variant="light"
+          mb="xs"
+          icon={<TriangleAlert size={14} />}
+        >
+          You have reached your daily Schedules Direct lineup addition limit. SD
+          allows 6 adds per 24-hour period.{' '}
           {changesResetAt && (
-            <span>Limit resets at <strong>{new Date(changesResetAt).toUTCString()}</strong>. </span>
+            <span>
+              Limit resets at{' '}
+              <strong>{new Date(changesResetAt).toUTCString()}</strong>.{' '}
+            </span>
           )}
-          {!changesResetAt && <span>Limit resets 24 hours after the first add of the day. </span>}
-          <a href={SD_DOCS_URL} target="_blank" rel="noopener noreferrer">Learn more</a>
+          {!changesResetAt && (
+            <span>Limit resets 24 hours after the first add of the day. </span>
+          )}
+          <a href={SD_DOCS_URL} target="_blank" rel="noopener noreferrer">
+            Learn more
+          </a>
         </Alert>
       )}
 
       {changesRemaining === 1 && (
-        <Alert color="orange" variant="light" mb="xs" icon={<TriangleAlert size={14} />}>
-          You have <strong>1 lineup addition remaining</strong> today. Use it carefully — Schedules Direct limits adds to 6 per 24-hour period.{' '}
-          <a href={SD_DOCS_URL} target="_blank" rel="noopener noreferrer">Learn more</a>
+        <Alert
+          color="orange"
+          variant="light"
+          mb="xs"
+          icon={<TriangleAlert size={14} />}
+        >
+          You have <strong>1 lineup addition remaining</strong> today. Use it
+          carefully — Schedules Direct limits adds to 6 per 24-hour period.{' '}
+          <a href={SD_DOCS_URL} target="_blank" rel="noopener noreferrer">
+            Learn more
+          </a>
         </Alert>
       )}
 
       {changesRemaining === 2 && (
-        <Alert color="yellow" variant="light" mb="xs" icon={<TriangleAlert size={14} />}>
-          You have <strong>2 lineup additions remaining</strong> today. Schedules Direct limits adds to 6 per 24-hour period.{' '}
-          <a href={SD_DOCS_URL} target="_blank" rel="noopener noreferrer">Learn more</a>
+        <Alert
+          color="yellow"
+          variant="light"
+          mb="xs"
+          icon={<TriangleAlert size={14} />}
+        >
+          You have <strong>2 lineup additions remaining</strong> today.
+          Schedules Direct limits adds to 6 per 24-hour period.{' '}
+          <a href={SD_DOCS_URL} target="_blank" rel="noopener noreferrer">
+            Learn more
+          </a>
         </Alert>
       )}
 
@@ -430,7 +520,13 @@ const SDLineupManager = ({ sourceId }) => {
       </Group>
 
       {searchResults.length > 0 && (
-        <ScrollArea h={180} style={{ border: '1px solid var(--mantine-color-default-border)', borderRadius: 'var(--mantine-radius-sm)' }}>
+        <ScrollArea
+          h={180}
+          style={{
+            border: '1px solid var(--mantine-color-default-border)',
+            borderRadius: 'var(--mantine-radius-sm)',
+          }}
+        >
           <Table striped highlightOnHover withRowBorders={false} fz="xs">
             <Table.Tbody>
               {searchResults.map((lineup) => {
@@ -438,12 +534,20 @@ const SDLineupManager = ({ sourceId }) => {
                 return (
                   <Table.Tr key={lineup.lineup}>
                     <Table.Td>
-                      <Text size="xs" fw={500}>{lineup.name}</Text>
-                      <Text size="xs" c="dimmed">{lineup.transport} · {lineup.location}</Text>
+                      <Text size="xs" fw={500}>
+                        {lineup.name}
+                      </Text>
+                      <Text size="xs" c="dimmed">
+                        {lineup.transport} · {lineup.location}
+                      </Text>
                     </Table.Td>
-                    <Table.Td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
+                    <Table.Td
+                      style={{ textAlign: 'right', whiteSpace: 'nowrap' }}
+                    >
                       {isActive ? (
-                        <Badge color="green" variant="light" size="sm">Active</Badge>
+                        <Badge color="green" variant="light" size="sm">
+                          Active
+                        </Badge>
                       ) : (
                         <Button
                           size="xs"
@@ -528,21 +632,22 @@ const EPG = ({ epg = null, isOpen, onClose }) => {
 
   useEffect(() => {
     if (epg) {
+      const storedEpg = useEPGsStore.getState().epgs[epg.id] || epg;
       const values = {
-        name: epg.name,
-        source_type: epg.source_type,
-        url: epg.url,
-        username: epg.username || '',
-        password: epg.password || '',
-        is_active: epg.is_active,
-        refresh_interval: epg.refresh_interval,
-        cron_expression: epg.cron_expression || '',
-        priority: epg.priority ?? 0,
+        name: storedEpg.name,
+        source_type: storedEpg.source_type,
+        url: storedEpg.url,
+        username: storedEpg.username || '',
+        password: storedEpg.password || '',
+        is_active: storedEpg.is_active,
+        refresh_interval: storedEpg.refresh_interval,
+        cron_expression: storedEpg.cron_expression || '',
+        priority: storedEpg.priority ?? 0,
       };
       form.setValues(values);
-      setSourceType(epg.source_type);
-      setSavedEpgId(epg.id);
-      setSdCustomProps(epg.custom_properties || {});
+      setSourceType(storedEpg.source_type);
+      setSavedEpgId(storedEpg.id);
+      setSdCustomProps(storedEpg.custom_properties || {});
       setScheduleType(
         epg.cron_expression && epg.cron_expression.trim() !== ''
           ? 'cron'
@@ -581,7 +686,12 @@ const EPG = ({ epg = null, isOpen, onClose }) => {
 
   return (
     <>
-      <Modal opened={isOpen} onClose={handleClose} title="EPG Source" size={hasSDPanel ? 1100 : 700}>
+      <Modal
+        opened={isOpen}
+        onClose={handleClose}
+        title="EPG Source"
+        size={hasSDPanel ? 1100 : 700}
+      >
         <form onSubmit={form.onSubmit(onSubmit)}>
           <Group justify="space-between" align="top" wrap="nowrap">
             {/* Left Column */}
@@ -618,10 +728,11 @@ const EPG = ({ epg = null, isOpen, onClose }) => {
                   variant="light"
                   title="Schedules Direct API Limits"
                 >
-                  Schedules Direct enforces a limit of approximately 200 requests per 2 hours.
-                  Each refresh uses ~15 requests. Avoid frequent manual refreshes to prevent
-                  your account from being temporarily blocked. A 24-hour refresh interval
-                  is recommended.
+                  Schedules Direct enforces a limit of approximately 200
+                  requests per 2 hours. Each refresh uses ~15 requests. Avoid
+                  frequent manual refreshes to prevent your account from being
+                  temporarily blocked. A 24-hour refresh interval is
+                  recommended.
                 </Alert>
               )}
 
@@ -647,11 +758,14 @@ const EPG = ({ epg = null, isOpen, onClose }) => {
                   variant="light"
                   title="Schedules Direct Rate Limit Warning"
                 >
-                  <strong>Exceeding SD's rate limits may result in a permanent account ban.</strong>{' '}
-                  Schedules Direct enforces a limit of ~200 API requests per 2-hour window.
-                  Your cron schedule must not trigger a refresh more than once every 2 hours.
-                  The recommended minimum schedule is{' '}
-                  <code>0 */2 * * *</code> (every 2 hours).{' '}
+                  <strong>
+                    Exceeding SD's rate limits may result in a permanent account
+                    ban.
+                  </strong>{' '}
+                  Schedules Direct enforces a limit of ~200 API requests per
+                  2-hour window. Your cron schedule must not trigger a refresh
+                  more than once every 2 hours. The recommended minimum schedule
+                  is <code>0 */2 * * *</code> (every 2 hours).{' '}
                   <a
                     href="https://github.com/SchedulesDirect/JSON-Service/wiki/API-20141201#tasks-your-client-must-perform"
                     target="_blank"
@@ -662,18 +776,25 @@ const EPG = ({ epg = null, isOpen, onClose }) => {
                 </Alert>
               )}
 
-              {isSD && scheduleType === 'interval' && form.getValues().refresh_interval > 0 && form.getValues().refresh_interval < 2 && (
-                <Alert
-                  icon={<TriangleAlert size={16} />}
-                  color="red"
-                  variant="light"
-                  title="Interval Too Short"
-                >
-                  <strong>Schedules Direct requires a minimum refresh interval of 2 hours.</strong>{' '}
-                  Setting a shorter interval may result in your account being banned.
-                  Please set the interval to 2 or higher, or use 0 to disable auto-refresh.
-                </Alert>
-              )}
+              {isSD &&
+                scheduleType === 'interval' &&
+                form.getValues().refresh_interval > 0 &&
+                form.getValues().refresh_interval < 2 && (
+                  <Alert
+                    icon={<TriangleAlert size={16} />}
+                    color="red"
+                    variant="light"
+                    title="Interval Too Short"
+                  >
+                    <strong>
+                      Schedules Direct requires a minimum refresh interval of 2
+                      hours.
+                    </strong>{' '}
+                    Setting a shorter interval may result in your account being
+                    banned. Please set the interval to 2 or higher, or use 0 to
+                    disable auto-refresh.
+                  </Alert>
+                )}
             </Stack>
 
             <Divider size="sm" orientation="vertical" />
@@ -771,7 +892,8 @@ const EPG = ({ epg = null, isOpen, onClose }) => {
 
             {isSD && !savedEpgId && (
               <Text size="xs" c="dimmed" mb="sm">
-                Save this source first to manage Schedules Direct settings and lineups.
+                Save this source first to manage Schedules Direct settings and
+                lineups.
               </Text>
             )}
 
@@ -780,7 +902,7 @@ const EPG = ({ epg = null, isOpen, onClose }) => {
                 Cancel
               </Button>
               <Button type="submit" variant="filled" disabled={form.submitting}>
-                {(epg?.id || savedEpgId) ? 'Update' : 'Create'} EPG Source
+                {epg?.id || savedEpgId ? 'Update' : 'Create'} EPG Source
               </Button>
             </Group>
           </Box>

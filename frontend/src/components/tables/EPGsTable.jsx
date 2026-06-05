@@ -399,7 +399,8 @@ const EPGsTable = () => {
   const [sorting, setSorting] = useState([]);
 
   const editEPG = async (epg = null) => {
-    setEPG(epg);
+    const freshEpg = epg?.id ? (epgs[epg.id] || epg) : epg;
+    setEPG(freshEpg);
     // Open the appropriate modal based on source type
     if (epg?.source_type === 'dummy') {
       setDummyEpgModalOpen(true);

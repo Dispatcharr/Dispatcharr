@@ -3137,8 +3137,8 @@ def fetch_schedules_direct(source, stations_only=False, force=False):
     # -------------------------------------------------------------------------
     # Step 9: Apply SD station logos to matched channels if enabled
     # -------------------------------------------------------------------------
-    use_sd_logos = (source.custom_properties or {}).get('use_sd_logos', False)
-    if use_sd_logos:
+    auto_apply_sd_logos = (source.custom_properties or {}).get('auto_apply_sd_logos', False)
+    if auto_apply_sd_logos:
         try:
             from apps.channels.models import Channel as ChannelModel, Logo
 
