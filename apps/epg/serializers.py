@@ -1,4 +1,4 @@
-from core.utils import validate_flexible_url
+from core.utils import validate_flexible_url, build_absolute_uri_with_port
 from rest_framework import serializers
 from .models import EPGSource, EPGData, ProgramData
 from apps.channels.models import Channel, Stream
@@ -169,9 +169,14 @@ class ProgramDetailSerializer(ProgramDataSerializer):
         data['icon'] = cp.get('icon')
         data['images'] = cp.get('images') or []
 
-        # SD poster: expose as proxy URL so frontend never needs SD auth
+        # SD poster: expose as absolute proxy URL so frontend/img tags never need SD auth
         if cp.get('sd_icon'):
-            data['poster_url'] = f"/api/epg/programs/{obj.id}/poster/"
+            poster_path = f"/api/epg/programs/{obj.id}/poster/"
+            request = self.context.get('request')
+            if request:
+                data['poster_url'] = build_absolute_uri_with_port(request, poster_path)
+            else:
+                data['poster_url'] = poster_path
         else:
             data['poster_url'] = None
 

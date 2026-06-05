@@ -168,7 +168,7 @@ const SDSettings = ({ sourceId, customProperties }) => {
 
       <Switch
         label="Fetch Program Posters"
-        description="WARNING: USES ADDITIONAL API REQUESTS. Poster images are fetched on-demand and cached locally for 30 days. Initial viewing of new programs will consume API requests against your Schedules Direct rate limit."
+        description="WARNING: USES ADDITIONAL API REQUESTS. Poster artwork is fetched during EPG refresh; image bytes are cached by nginx on first view (24h). Initial fetch and viewing new programs consume API requests against your Schedules Direct rate limit."
         checked={fetchPosters}
         onChange={(e) => handlePosterToggle(e.currentTarget.checked)}
         disabled={saving}

@@ -2995,7 +2995,23 @@ def fetch_schedules_direct(source, stations_only=False, force=False):
     # Step 8: Fetch program artwork (posters) if enabled
     # -------------------------------------------------------------------------
     fetch_posters = (source.custom_properties or {}).get('fetch_posters', False)
-    if fetch_posters and program_metadata:
+    poster_program_ids = set(program_metadata.keys()) if program_metadata else set()
+    if fetch_posters and not poster_program_ids:
+        # Backfill when posters were enabled after initial fetch, or a delta
+        # refresh skipped program metadata but programs still lack sd_icon.
+        poster_program_ids = set(
+            ProgramData.objects.filter(
+                epg_id__in=mapped_epg_ids,
+                program_id__isnull=False,
+            ).exclude(custom_properties__has_key='sd_icon')
+            .values_list('program_id', flat=True)
+        )
+        if poster_program_ids:
+            logger.info(
+                f"Poster backfill: {len(poster_program_ids)} programs missing sd_icon."
+            )
+
+    if fetch_posters and poster_program_ids:
         logger.info("Poster fetch enabled — retrieving program artwork from Schedules Direct.")
         _sd_send_ws_sync(source.id, "parsing_programs", 98,
                         message="Fetching program artwork...")
@@ -3007,7 +3023,7 @@ def fetch_schedules_direct(source, stations_only=False, force=False):
             artwork_lookup_ids = set()
             pid_to_artwork_key = {}  # maps original programID -> the key we looked up
 
-            for pid in program_metadata:
+            for pid in poster_program_ids:
                 if pid.startswith('EP'):
                     sh_root = 'SH' + pid[2:10] + '0000'
                     artwork_lookup_ids.add(sh_root)
@@ -3116,7 +3132,7 @@ def fetch_schedules_direct(source, stations_only=False, force=False):
             logger.warning(f"Poster artwork fetch failed (non-fatal): {art_error}", exc_info=True)
 
     elif fetch_posters:
-        logger.info("Poster fetch enabled but no new program metadata downloaded — skipping artwork.")
+        logger.info("Poster fetch enabled but all mapped programs already have artwork.")
 
     # -------------------------------------------------------------------------
     # Step 9: Apply SD station logos to matched channels if enabled

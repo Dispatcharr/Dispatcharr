@@ -40,11 +40,19 @@ function formatDurationMinutes(startTime, endTime) {
   return `${minutes}m`;
 }
 
+function resolveApiUrl(url) {
+  if (!url || url.startsWith('http')) return url;
+  const apiHost = import.meta.env.DEV
+    ? `http://${window.location.hostname}:5656`
+    : '';
+  return `${apiHost}${url}`;
+}
+
 function resolveImageUrl(detail) {
   if (detail?.tmdb_poster_url) return detail.tmdb_poster_url;
-  if (detail?.poster_url) return detail.poster_url;
-  if (detail?.images?.length > 0) return detail.images[0].url;
-  if (detail?.icon) return detail.icon;
+  if (detail?.poster_url) return resolveApiUrl(detail.poster_url);
+  if (detail?.images?.length > 0) return resolveApiUrl(detail.images[0].url);
+  if (detail?.icon) return resolveApiUrl(detail.icon);
   return null;
 }
 
