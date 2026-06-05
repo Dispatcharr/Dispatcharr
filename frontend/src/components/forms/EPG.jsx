@@ -93,7 +93,6 @@ const SDSettings = ({ sourceId, customProperties }) => {
   };
 
   const handleLogoChange = (style) => {
-    if (!useSDLogos) return;
     setLogoStyle(style);
     saveSetting('logo_style', style);
   };
