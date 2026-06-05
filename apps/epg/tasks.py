@@ -341,64 +341,6 @@ def send_epg_update(source_id, action, progress, **kwargs):
         gc.collect()
 
 
-def _sd_send_ws_sync(source_id, action, progress, **kwargs):
-    """
-    Sends a WebSocket progress update synchronously via Redis, bypassing gevent.spawn.
-
-    In Celery prefork workers that inherit gevent monkey-patching from uWSGI,
-    gevent.spawn schedules coroutines that never execute because there is no
-    running gevent hub in the worker process. This function writes directly to
-    Redis using the channels_redis 4.x wire format, guaranteeing delivery
-    regardless of the execution context.
-    """
-    try:
-        import msgpack
-        import redis as redis_lib
-        from django.conf import settings
-
-        data = {"progress": progress, "type": "epg_refresh", "source": source_id, "action": action}
-        data.update(kwargs)
-        message = {"type": "update", "data": data}
-
-        redis_url = getattr(settings, "CELERY_BROKER_URL", "redis://localhost:6379/0")
-        r = redis_lib.from_url(redis_url, decode_responses=False)
-
-        prefix = "asgi"
-        group_name = "updates"
-        group_key = f"{prefix}:group:{group_name}"
-        group_expiry = 86400
-        channel_expiry = 60
-        rand_len = 12
-        now = time.time()
-
-        r.zremrangebyscore(group_key, 0, now - group_expiry)
-        raw = r.zrange(group_key, 0, -1)
-        if not raw:
-            return
-
-        channels = [m.decode("utf-8") if isinstance(m, bytes) else m for m in raw]
-        nonlocal_map = {}
-        for ch in channels:
-            pos = ch.find("!")
-            nl = ch[:pos + 1] if pos >= 0 else ch
-            nonlocal_map.setdefault(nl, []).append(ch)
-
-        pipe = r.pipeline(transaction=False)
-        for nl, chs in nonlocal_map.items():
-            channel_key = prefix + nl
-            msg = dict(message)
-            msg["__asgi_channel__"] = chs
-            serialized = os.urandom(rand_len) + msgpack.packb(msg)
-            pipe.zadd(channel_key, {serialized: now})
-            pipe.expire(channel_key, channel_expiry)
-        pipe.execute()
-        r.close()
-    except Exception as e:
-        logger.warning(f"SD WebSocket sync send failed: {e}")
-        # Fall back to standard path
-        send_epg_update(source_id, action, progress, **kwargs)
-
-
 def delete_epg_refresh_task_by_id(epg_id):
     """
     Delete the periodic task associated with an EPG source ID.
@@ -2188,7 +2130,7 @@ def fetch_schedules_direct(source, stations_only=False, force=False):
         source.status = EPGSource.STATUS_ERROR
         source.last_message = msg
         source.save(update_fields=['status', 'last_message'])
-        _sd_send_ws_sync(source.id, "refresh", 100, status="error", error=msg)
+        send_epg_update(source.id, "refresh", 100, status="error", error=msg)
         return
 
     # -------------------------------------------------------------------------
@@ -2218,7 +2160,7 @@ def fetch_schedules_direct(source, stations_only=False, force=False):
                 source.status = EPGSource.STATUS_IDLE
                 source.last_message = msg
                 source.save(update_fields=['status', 'last_message'])
-                _sd_send_ws_sync(source.id, "refresh", 100, status="idle", message=msg)
+                send_epg_update(source.id, "refresh", 100, status="idle", message=msg)
                 return
         else:
             logger.info(f"SD source {source.id}: No prior full refresh detected, skipping 2-hour guard for first full fetch.")
@@ -2269,7 +2211,7 @@ def fetch_schedules_direct(source, stations_only=False, force=False):
 
         if fetch_posters and poster_program_ids:
             logger.info("Poster fetch enabled — retrieving program artwork from Schedules Direct.")
-            _sd_send_ws_sync(source.id, "parsing_programs", 98,
+            send_epg_update(source.id, "parsing_programs", 98,
                             message="Fetching program artwork...")
             try:
                 artwork_lookup_ids = set()
@@ -2417,7 +2359,7 @@ def fetch_schedules_direct(source, stations_only=False, force=False):
     source.status = EPGSource.STATUS_FETCHING
     source.last_message = "Authenticating with Schedules Direct..."
     source.save(update_fields=['status', 'last_message'])
-    _sd_send_ws_sync(source.id, "parsing_programs", 2, message="Authenticating with Schedules Direct...")
+    send_epg_update(source.id, "parsing_programs", 2, message="Authenticating with Schedules Direct...")
 
     try:
         sha1_password = hashlib.sha1(password.encode('utf-8')).hexdigest()
@@ -2448,7 +2390,7 @@ def fetch_schedules_direct(source, stations_only=False, force=False):
             source.status = EPGSource.STATUS_ERROR
             source.last_message = msg
             source.save(update_fields=['status', 'last_message'])
-            _sd_send_ws_sync(source.id, "refresh", 100, status="error", error=msg)
+            send_epg_update(source.id, "refresh", 100, status="error", error=msg)
             return
 
         token = token_data.get('token')
@@ -2458,7 +2400,7 @@ def fetch_schedules_direct(source, stations_only=False, force=False):
             source.status = EPGSource.STATUS_ERROR
             source.last_message = msg
             source.save(update_fields=['status', 'last_message'])
-            _sd_send_ws_sync(source.id, "refresh", 100, status="error", error=msg)
+            send_epg_update(source.id, "refresh", 100, status="error", error=msg)
             return
 
         logger.info("Schedules Direct authentication successful.")
@@ -2469,7 +2411,7 @@ def fetch_schedules_direct(source, stations_only=False, force=False):
         source.status = EPGSource.STATUS_ERROR
         source.last_message = msg
         source.save(update_fields=['status', 'last_message'])
-        _sd_send_ws_sync(source.id, "refresh", 100, status="error", error=msg)
+        send_epg_update(source.id, "refresh", 100, status="error", error=msg)
         return
 
     # -------------------------------------------------------------------------
@@ -2493,7 +2435,7 @@ def fetch_schedules_direct(source, stations_only=False, force=False):
             source.status = EPGSource.STATUS_IDLE
             source.last_message = msg
             source.save(update_fields=['status', 'last_message'])
-            _sd_send_ws_sync(source.id, "refresh", 100, status="idle", message=msg)
+            send_epg_update(source.id, "refresh", 100, status="idle", message=msg)
             return
         logger.debug(f"Schedules Direct system status: {system_status}")
     except requests.exceptions.RequestException as e:
@@ -2502,7 +2444,7 @@ def fetch_schedules_direct(source, stations_only=False, force=False):
     # -------------------------------------------------------------------------
     # Step 3: Fetch subscribed lineups and build station map
     # -------------------------------------------------------------------------
-    _sd_send_ws_sync(source.id, "parsing_programs", 10, message="Fetching subscribed lineups...")
+    send_epg_update(source.id, "parsing_programs", 10, message="Fetching subscribed lineups...")
     try:
         lineups_response = requests.get(
             f"{SD_BASE_URL}/lineups",
@@ -2520,7 +2462,7 @@ def fetch_schedules_direct(source, stations_only=False, force=False):
                 source.status = EPGSource.STATUS_IDLE
                 source.last_message = msg
                 source.save(update_fields=['status', 'last_message'])
-                _sd_send_ws_sync(source.id, "refresh", 100, status="idle", message=msg)
+                send_epg_update(source.id, "refresh", 100, status="idle", message=msg)
                 return
         lineups_response.raise_for_status()
         lineups_data = lineups_response.json()
@@ -2531,7 +2473,7 @@ def fetch_schedules_direct(source, stations_only=False, force=False):
             source.status = EPGSource.STATUS_IDLE
             source.last_message = msg
             source.save(update_fields=['status', 'last_message'])
-            _sd_send_ws_sync(source.id, "refresh", 100, status="idle", message=msg)
+            send_epg_update(source.id, "refresh", 100, status="idle", message=msg)
             return
         logger.info(f"Found {len(lineups)} lineup(s) in SD account.")
 
@@ -2549,12 +2491,12 @@ def fetch_schedules_direct(source, stations_only=False, force=False):
         source.status = EPGSource.STATUS_ERROR
         source.last_message = msg
         source.save(update_fields=['status', 'last_message'])
-        _sd_send_ws_sync(source.id, "refresh", 100, status="error", error=msg)
+        send_epg_update(source.id, "refresh", 100, status="error", error=msg)
         return
 
     # Build station metadata map: stationID -> {name, callsign, logo_url}
     station_map = {}
-    _sd_send_ws_sync(source.id, "parsing_programs", 18, message=f"Fetching station metadata for {len(lineups)} lineup(s)...")
+    send_epg_update(source.id, "parsing_programs", 18, message=f"Fetching station metadata for {len(lineups)} lineup(s)...")
     for lineup in lineups:
         lineup_id = lineup.get('lineupID') or lineup.get('lineup')
         if not lineup_id:
@@ -2595,7 +2537,7 @@ def fetch_schedules_direct(source, stations_only=False, force=False):
         source.status = EPGSource.STATUS_ERROR
         source.last_message = msg
         source.save(update_fields=['status', 'last_message'])
-        _sd_send_ws_sync(source.id, "refresh", 100, status="error", error=msg)
+        send_epg_update(source.id, "refresh", 100, status="error", error=msg)
         return
 
     logger.info(f"Built station map with {len(station_map)} stations.")
@@ -2606,7 +2548,7 @@ def fetch_schedules_direct(source, stations_only=False, force=False):
     source.status = EPGSource.STATUS_PARSING
     source.last_message = f"Syncing {len(station_map)} stations..."
     source.save(update_fields=['status', 'last_message'])
-    _sd_send_ws_sync(source.id, "parsing_programs", 28, message=f"Syncing {len(station_map)} stations to database...")
+    send_epg_update(source.id, "parsing_programs", 28, message=f"Syncing {len(station_map)} stations to database...")
 
     existing_epg_map = {
         epg.tvg_id: epg
@@ -2662,7 +2604,7 @@ def fetch_schedules_direct(source, stations_only=False, force=False):
     # We deliberately do NOT send parsing_channels at 100 with status=success here
     # because that would cause the frontend to mark the source as complete and
     # stop rendering progress updates for the subsequent program fetch phases.
-    _sd_send_ws_sync(source.id, "parsing_programs", 30,
+    send_epg_update(source.id, "parsing_programs", 30,
                     message=f"Stations synced ({len(station_map)} stations). Preparing schedule fetch...")
 
     # -------------------------------------------------------------------------
@@ -2679,7 +2621,7 @@ def fetch_schedules_direct(source, stations_only=False, force=False):
         source.last_message = success_msg
         source.updated_at = timezone.now()
         source.save(update_fields=['status', 'last_message', 'updated_at'])
-        _sd_send_ws_sync(source.id, "parsing_channels", 100, status="success",
+        send_epg_update(source.id, "parsing_channels", 100, status="success",
                         message=success_msg, channels_count=len(station_map))
         logger.info(f"Stations-only fetch complete for source: {source.name} ({len(station_map)} stations)")
         return
@@ -2694,7 +2636,7 @@ def fetch_schedules_direct(source, stations_only=False, force=False):
     from apps.epg.models import SDScheduleMD5
     from django.utils.dateparse import parse_datetime
 
-    _sd_send_ws_sync(source.id, "parsing_programs", 33, message=f"Checking schedule MD5s for {len(station_map)} stations over {SD_DAYS_TO_FETCH} days...")
+    send_epg_update(source.id, "parsing_programs", 33, message=f"Checking schedule MD5s for {len(station_map)} stations over {SD_DAYS_TO_FETCH} days...")
     station_ids = list(station_map.keys())
     today = date.today()
     date_list = [(today + timedelta(days=i)).strftime('%Y-%m-%d') for i in range(SD_DAYS_TO_FETCH)]
@@ -2750,7 +2692,7 @@ def fetch_schedules_direct(source, stations_only=False, force=False):
     total_changed = sum(len(v) for v in changed_by_station.values())
     total_possible = len(station_ids) * len(date_list)
     logger.info(f"Schedule MD5 check: {len(server_md5s)} hashes checked, {total_changed} station/date combinations changed (of {total_possible} possible).")
-    _sd_send_ws_sync(source.id, "parsing_programs", 38,
+    send_epg_update(source.id, "parsing_programs", 38,
                     message=f"MD5 check complete: {len(changed_by_station)} stations have schedule updates.")
 
     # schedules_by_station: stationID -> list of {programID, airDateTime, duration, ...}
@@ -2767,7 +2709,7 @@ def fetch_schedules_direct(source, stations_only=False, force=False):
             ).values_list('epg_data_id', flat=True)
         )
         _sd_post_refresh_tasks(mapped_epg_ids_no_change, {}, today)
-        _sd_send_ws_sync(source.id, "parsing_programs", 100, status="success",
+        send_epg_update(source.id, "parsing_programs", 100, status="success",
                         message="No schedule changes detected since last refresh. Guide data is up to date.")
         source.status = EPGSource.STATUS_SUCCESS
         source.last_message = "No schedule changes detected. Guide data is up to date."
@@ -2790,7 +2732,7 @@ def fetch_schedules_direct(source, stations_only=False, force=False):
         # Notify frontend at the start of each batch so progress updates immediately
         pre_progress = 38 + int((batch_idx / len(date_batches)) * 22)
         logger.info(f"Fetching schedule batch {batch_idx + 1} of {len(date_batches)}...")
-        _sd_send_ws_sync(source.id, "parsing_programs", min(59, pre_progress),
+        send_epg_update(source.id, "parsing_programs", min(59, pre_progress),
                         message=f"Fetching schedules: batch {batch_idx + 1} of {len(date_batches)}...")
         # Yield to gevent hub so the WebSocket update is delivered before the blocking request
         try:
@@ -2854,7 +2796,7 @@ def fetch_schedules_direct(source, stations_only=False, force=False):
                             pass
 
             progress = 38 + int(((batch_idx + 1) / len(date_batches)) * 22)
-            _sd_send_ws_sync(source.id, "parsing_programs", min(60, progress),
+            send_epg_update(source.id, "parsing_programs", min(60, progress),
                             message=f"Fetching changed schedules: batch {batch_idx + 1}/{len(date_batches)} ({len(program_ids_needed):,} programs found)")
 
         except requests.exceptions.RequestException as e:
@@ -2874,7 +2816,7 @@ def fetch_schedules_direct(source, stations_only=False, force=False):
         source.status = EPGSource.STATUS_ERROR
         source.last_message = msg
         source.save(update_fields=['status', 'last_message'])
-        _sd_send_ws_sync(source.id, "parsing_programs", 100, status="error", error=msg)
+        send_epg_update(source.id, "parsing_programs", 100, status="error", error=msg)
         return
 
     # -------------------------------------------------------------------------
@@ -2922,7 +2864,7 @@ def fetch_schedules_direct(source, stations_only=False, force=False):
             # Notify frontend at the start of each batch so progress updates immediately
             pre_progress = 60 + int((batch_idx / total_batches) * 20)
             logger.info(f"Fetching program metadata batch {batch_idx + 1} of {total_batches} ({batch_idx * SD_PROGRAM_BATCH_SIZE:,} of {len(program_id_list):,} programs)...")
-            _sd_send_ws_sync(source.id, "parsing_programs", min(79, pre_progress),
+            send_epg_update(source.id, "parsing_programs", min(79, pre_progress),
                             message=f"Fetching program data: batch {batch_idx + 1} of {total_batches} ({batch_idx * SD_PROGRAM_BATCH_SIZE:,} of {len(program_id_list):,} programs)")
             # Yield to gevent hub so the WebSocket update is delivered before the blocking request
             try:
@@ -2945,7 +2887,7 @@ def fetch_schedules_direct(source, stations_only=False, force=False):
                         program_metadata[pid] = prog
 
                 progress = 60 + int(((batch_idx + 1) / total_batches) * 20)
-                _sd_send_ws_sync(source.id, "parsing_programs", min(80, progress),
+                send_epg_update(source.id, "parsing_programs", min(80, progress),
                                 message=f"Fetching program details: batch {batch_idx + 1}/{total_batches} ({len(program_metadata):,} programs loaded)")
                 logger.debug(f"Fetched program metadata batch {batch_idx + 1}/{total_batches}")
 
@@ -2953,7 +2895,7 @@ def fetch_schedules_direct(source, stations_only=False, force=False):
                 logger.warning(f"Failed to fetch program metadata batch {batch_idx + 1}: {e}")
     else:
         logger.info("All program metadata unchanged - skipping program download.")
-        _sd_send_ws_sync(source.id, "parsing_programs", 80, message="Program metadata unchanged - using cached data.")
+        send_epg_update(source.id, "parsing_programs", 80, message="Program metadata unchanged - using cached data.")
 
     gc.collect()
 
@@ -2961,7 +2903,7 @@ def fetch_schedules_direct(source, stations_only=False, force=False):
     # Step 7: Build ProgramData records and persist atomically
     # -------------------------------------------------------------------------
     logger.info("Building program records...")
-    _sd_send_ws_sync(source.id, "parsing_programs", 80)
+    send_epg_update(source.id, "parsing_programs", 80)
 
     # Only process stations that are mapped to channels to match the existing
     # XMLTV flow (parse_programs_for_source only processes mapped channels).
@@ -3247,7 +3189,7 @@ def fetch_schedules_direct(source, stations_only=False, force=False):
     logger.info(f"Built {total_programs} program records "
                 f"({skipped_unmapped} skipped for unmapped stations).")
 
-    _sd_send_ws_sync(source.id, "parsing_programs", 88)
+    send_epg_update(source.id, "parsing_programs", 88)
 
     # Build a map of epg_db_id -> list of (day_start_utc, day_end_utc) for each changed date.
     # Only programs that fall within changed station/date pairs will be deleted and replaced;
@@ -3283,7 +3225,7 @@ def fetch_schedules_direct(source, stations_only=False, force=False):
             for i in range(0, len(all_programs_to_create), BATCH_SIZE):
                 ProgramData.objects.bulk_create(all_programs_to_create[i:i + BATCH_SIZE])
                 progress = 88 + int(((i + BATCH_SIZE) / max(len(all_programs_to_create), 1)) * 10)
-                _sd_send_ws_sync(source.id, "parsing_programs", min(98, progress))
+                send_epg_update(source.id, "parsing_programs", min(98, progress))
 
         logger.info(f"Committed {total_programs} Schedules Direct programs to database.")
 
@@ -3314,7 +3256,7 @@ def fetch_schedules_direct(source, stations_only=False, force=False):
         source.status = EPGSource.STATUS_ERROR
         source.last_message = msg
         source.save(update_fields=['status', 'last_message'])
-        _sd_send_ws_sync(source.id, "parsing_programs", 100, status="error", error=msg)
+        send_epg_update(source.id, "parsing_programs", 100, status="error", error=msg)
         return
     finally:
         all_programs_to_create = None
@@ -3337,7 +3279,7 @@ def fetch_schedules_direct(source, stations_only=False, force=False):
     source.last_message = success_msg
     source.updated_at = timezone.now()
     source.save(update_fields=['status', 'last_message', 'updated_at'])
-    _sd_send_ws_sync(source.id, "parsing_programs", 100, status="success", message=success_msg)
+    send_epg_update(source.id, "parsing_programs", 100, status="success", message=success_msg)
     log_system_event(
         event_type='epg_refresh',
         source_name=source.name,
