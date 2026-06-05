@@ -45,6 +45,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Security
 
 - **M3U endpoint no longer reflects POST body content in error responses.** The error message for disallowed POST requests previously echoed the raw request body back to the caller in a `text/html` response, which could be used for reflected XSS. The body is no longer included in the response. - Thanks [@sebastiondev](https://github.com/sebastiondev)
+- Updated frontend npm dependencies to resolve 5 audit vulnerabilities (2 moderate, 2 high, 1 critical):
+  - Updated `react-router` and `react-router-dom` 7.13.0 → 7.17.0, resolving **high** unauthenticated RCE via turbo-stream TYPE_ERROR deserialization ([GHSA-49rj-9fvp-4h2h](https://github.com/advisories/GHSA-49rj-9fvp-4h2h)), **high** open redirect via protocol-relative `//` paths ([GHSA-2j2x-hqr9-3h42](https://github.com/advisories/GHSA-2j2x-hqr9-3h42)), **high** XSS in unstable RSC redirect handling via `javascript:` targets ([GHSA-8646-j5j9-6r62](https://github.com/advisories/GHSA-8646-j5j9-6r62)), **high** stored XSS via unescaped `Location` header in prerendered redirect HTML ([GHSA-f22v-gfqf-p8f3](https://github.com/advisories/GHSA-f22v-gfqf-p8f3)), **high** DoS via unbounded path expansion in the `__manifest` endpoint ([GHSA-8x6r-g9mw-2r78](https://github.com/advisories/GHSA-8x6r-g9mw-2r78)), and **high** DoS via reflected user input in single-fetch ([GHSA-rxv8-25v2-qmq8](https://github.com/advisories/GHSA-rxv8-25v2-qmq8))
+  - Updated `vitest` 3.2.4 → 4.1.8, resolving **critical** arbitrary file read and execution when the Vitest UI server is listening ([GHSA-5xrq-8626-4rwp](https://github.com/advisories/GHSA-5xrq-8626-4rwp))
+  - Updated `brace-expansion` 5.0.5 → 5.0.6, resolving **moderate** DoS when large numeric ranges defeat the documented `max` limit ([GHSA-jxxr-4gwj-5jf2](https://github.com/advisories/GHSA-jxxr-4gwj-5jf2))
+  - Updated `ws` 8.19.0 → 8.21.0, resolving **moderate** uninitialized memory disclosure ([GHSA-58qx-3vcg-4xpx](https://github.com/advisories/GHSA-58qx-3vcg-4xpx))
 
 ### Fixed
 
