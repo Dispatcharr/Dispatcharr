@@ -103,7 +103,7 @@ const SDSettings = ({ sourceId, customProperties }) => {
     saveSetting('fetch_posters', checked);
   };
 
-  const logosDisabled = !useSDLogos;
+  const logosDisabled = false;
 
   return (
     <Box>
