@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Schedules Direct EPG integration.** Dispatcharr now supports Schedules Direct as a first-class EPG source type alongside XMLTV and dummy EPG, with credential auth, lineup management, and guide refresh through the existing EPG pipeline and WebSocket progress. — Thanks [@Shokkstokk](https://github.com/Shokkstokk)
+- **Schedules Direct EPG integration.** Dispatcharr now supports Schedules Direct as a first-class EPG source type alongside XMLTV and dummy EPG, with credential auth, lineup management, and guide refresh through the existing EPG pipeline and WebSocket progress. (Closes #1246) — Thanks [@Shokkstokk](https://github.com/Shokkstokk)
   - Lineup manager in EPG source settings: search by postal code, add/remove up to four active lineups, with SD's six-adds-per-24-hours limit and midnight-UTC reset surfaced in the UI.
   - MD5 delta refresh skips unchanged schedule and program downloads; a two-hour minimum interval between full refreshes is enforced (bypassable via force refresh).
   - Station logos in dark, light, gray, or white variants, with an optional auto-apply toggle to push logos onto matched channels.
