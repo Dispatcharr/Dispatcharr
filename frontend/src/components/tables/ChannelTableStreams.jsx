@@ -557,9 +557,18 @@ const ChannelStreams = ({ channel }) => {
     [patchChannelStreamStats]
   );
 
-  // Refresh once when the row is expanded.
+  // Refresh once on expand, then poll every 15 seconds while the row remains open.
+  // Pass since=null on interval ticks so we always fetch the full current stats
+  // rather than relying on a delta cursor that could miss updates.
   useEffect(() => {
     refreshStats();
+    const interval = setInterval(() => {
+      API.getChannelStreamStats(channelRef.current?.id, null).then((updates) => {
+        if (!updates || updates.length === 0) return;
+        patchChannelStreamStats(channelRef.current?.id, updates);
+      });
+    }, 15000);
+    return () => clearInterval(interval);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
