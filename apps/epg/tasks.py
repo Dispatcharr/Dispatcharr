@@ -1360,8 +1360,6 @@ def parse_channels_only(source):
             channels_count=processed_channels
         )
 
-        send_websocket_update('updates', 'update', {"success": True, "type": "epg_channels"})
-
         logger.info(f"Finished parsing channel info. Found {processed_channels} channels.")
 
         from apps.channels.utils import maybe_auto_apply_epg_logos

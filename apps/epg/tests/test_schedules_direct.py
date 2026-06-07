@@ -18,7 +18,7 @@ from unittest.mock import MagicMock, patch
 from django.test import TestCase
 from django.utils import timezone
 
-from apps.epg.models import EPGSource
+from apps.epg.models import EPGSource, EPGData
 from apps.epg.serializers import EPGSourceSerializer
 
 
@@ -199,6 +199,75 @@ class FetchSchedulesDirectAuthTests(TestCase):
 
         source.refresh_from_db()
         self.assertEqual(source.status, EPGSource.STATUS_ERROR)
+
+
+class FetchSchedulesDirectStationsOnlyTests(TestCase):
+    """stations_only fetch must signal channel parsing completion to the frontend."""
+
+    @patch('apps.epg.tasks.send_epg_update')
+    @patch('apps.epg.tasks.requests.get')
+    @patch('apps.epg.tasks.requests.post')
+    def test_stations_only_sends_parsing_channels_complete(
+        self, mock_post, mock_get, mock_send_epg_update
+    ):
+        from apps.epg.tasks import fetch_schedules_direct
+
+        mock_post.return_value = MagicMock(
+            status_code=200,
+            json=MagicMock(return_value={'code': 0, 'token': 'tok123'}),
+        )
+
+        def get_side_effect(url, **kwargs):
+            if url.endswith('/status'):
+                return MagicMock(
+                    status_code=200,
+                    json=MagicMock(return_value={'systemStatus': [{'status': 'Online'}]}),
+                )
+            if url.endswith('/lineups'):
+                return MagicMock(
+                    status_code=200,
+                    json=MagicMock(return_value={
+                        'lineups': [{'lineupID': 'USA-TEST-X'}],
+                    }),
+                )
+            if '/lineups/USA-TEST-X' in url:
+                return MagicMock(
+                    status_code=200,
+                    json=MagicMock(return_value={
+                        'stations': [{
+                            'stationID': '10001',
+                            'name': 'Test Station',
+                            'callsign': 'TEST',
+                        }],
+                    }),
+                )
+            raise AssertionError(f'Unexpected GET URL: {url}')
+
+        mock_get.side_effect = get_side_effect
+
+        source = EPGSource.objects.create(
+            name='SD Stations Only',
+            source_type='schedules_direct',
+            username='sduser',
+            password='sdpass',
+        )
+
+        fetch_schedules_direct(source, stations_only=True)
+
+        source.refresh_from_db()
+        self.assertEqual(source.status, EPGSource.STATUS_SUCCESS)
+        self.assertEqual(EPGData.objects.filter(epg_source=source).count(), 1)
+
+        parsing_channel_complete = [
+            c
+            for c in mock_send_epg_update.call_args_list
+            if c[0][1] == 'parsing_channels' and c[0][2] == 100
+        ]
+        self.assertEqual(len(parsing_channel_complete), 1)
+        complete_call = parsing_channel_complete[0]
+        self.assertEqual(complete_call[0][0], source.id)
+        self.assertEqual(complete_call[1]['status'], 'success')
+        self.assertEqual(complete_call[1]['channels_count'], 1)
 
 
 # ---------------------------------------------------------------------------
