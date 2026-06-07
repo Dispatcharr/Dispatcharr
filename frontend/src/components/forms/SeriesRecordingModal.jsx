@@ -16,6 +16,19 @@ const TITLE_MODE_LABEL = {
   regex: 'Title regex',
 };
 
+const renderRuleSummary = (r) => {
+  const titleMode = (r.title_mode || 'exact').toLowerCase();
+  const parts = [];
+  parts.push(r.mode === 'new' ? 'New episodes' : 'Every episode');
+  if (r.title) {
+    parts.push(`${TITLE_MODE_LABEL[titleMode] || titleMode}: "${r.title}"`);
+  }
+  if (r.description) {
+    parts.push(`Description: "${r.description}"`);
+  }
+  return parts.join(' | ');
+};
+
 export default function SeriesRecordingModal({
   opened,
   onClose,
@@ -57,19 +70,6 @@ export default function SeriesRecordingModal({
   const handleEditorSaved = async () => {
     const updated = await fetchRules();
     onRulesUpdate(updated);
-  };
-
-  const renderRuleSummary = (r) => {
-    const titleMode = (r.title_mode || 'exact').toLowerCase();
-    const parts = [];
-    parts.push(r.mode === 'new' ? 'New episodes' : 'Every episode');
-    if (r.title) {
-      parts.push(`${TITLE_MODE_LABEL[titleMode] || titleMode}: "${r.title}"`);
-    }
-    if (r.description) {
-      parts.push(`Description: "${r.description}"`);
-    }
-    return parts.join(' | ');
   };
 
   return (

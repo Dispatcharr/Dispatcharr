@@ -1736,6 +1736,190 @@ def _build_output_paths(channel, program, start_time, end_time, recording_id):
     return final_path, hls_dir, os.path.basename(final_path)
 
 
+def _dvr_ffmpeg_retry_window_seconds():
+    """Max continuous outage duration before giving up on FFmpeg restarts.
+    """
+    try:
+        from apps.proxy.live_proxy.config_helper import ConfigHelper
+        return ConfigHelper.stream_timeout() + ConfigHelper.failover_grace_period()
+    except Exception:
+        return 80.0
+
+
+def _dvr_count_hls_segments(hls_dir):
+    """Return the number of HLS segment files in hls_dir."""
+    if not hls_dir or not os.path.isdir(hls_dir):
+        return 0
+    try:
+        return sum(
+            1 for f in os.listdir(hls_dir)
+            if f.startswith("seg_") and f.endswith(".ts")
+        )
+    except OSError:
+        return 0
+
+
+def _dvr_max_hls_segment_index(hls_dir):
+    """Return the highest ``seg_NNNNN.ts`` index in hls_dir, or -1 if none."""
+    if not hls_dir or not os.path.isdir(hls_dir):
+        return -1
+    max_idx = -1
+    try:
+        for f in os.listdir(hls_dir):
+            if not (f.startswith("seg_") and f.endswith(".ts")):
+                continue
+            try:
+                max_idx = max(max_idx, int(f[4:9]))
+            except ValueError:
+                continue
+    except OSError:
+        return -1
+    return max_idx
+
+
+def _dvr_hls_playlist_has_segments(hls_m3u8):
+    """Return True if the m3u8 lists at least one segment URI."""
+    if not hls_m3u8 or not os.path.isfile(hls_m3u8):
+        return False
+    try:
+        with open(hls_m3u8) as _f:
+            for _line in _f:
+                _line = _line.strip()
+                if _line and not _line.startswith('#'):
+                    return True
+    except OSError:
+        pass
+    return False
+
+
+def _dvr_hls_start_number(hls_dir, hls_m3u8):
+    """Return FFmpeg ``-start_number`` for an HLS recording (re)start.
+
+    With ``append_list``, FFmpeg reloads existing segments from ``index.m3u8``
+    and increments its internal sequence counter for each one.  Passing our
+    segment count as ``-start_number`` double-counts (e.g. 14 on disk plus
+    14 from ``-start_number`` → first new segment written as ``seg_00028.ts``).
+    When the playlist already lists segments, use 0 and let ``append_list``
+    derive the continuation.  When only loose ``.ts`` files remain, seed from
+    the highest filename index + 1.
+    """
+    if _dvr_hls_playlist_has_segments(hls_m3u8):
+        return 0
+    max_idx = _dvr_max_hls_segment_index(hls_dir)
+    return max_idx + 1 if max_idx >= 0 else 0
+
+
+def _dvr_ffmpeg_retry_backoff_seconds(retry_index):
+    """Backoff delay before FFmpeg restart (1-based retry index).
+
+    Matches live-proxy StreamManager reconnect pacing so more attempts fit
+    inside the outage window than a long exponential series would allow.
+    """
+    return min(0.25 * retry_index, 3.0)
+
+
+def _dvr_build_ffmpeg_cmd(stream_url, recording_id, hls_m3u8, hls_seg_pattern, hls_start_number):
+    """Build the FFmpeg command for DVR HLS segment recording."""
+    return [
+        "ffmpeg", "-y",
+        "-reconnect", "1",
+        "-reconnect_streamed", "1",
+        "-reconnect_delay_max", "5",
+        "-user_agent", f"Dispatcharr-DVR/recording-{recording_id}",
+        # Regenerate monotonic PTS to handle erratic/discontinuous timestamps
+        # from IPTV sources.
+        "-fflags", "+genpts",
+        # Tolerate minor TS corruption without aborting the whole process.
+        "-err_detect", "ignore_err",
+        "-i", stream_url,
+        "-c", "copy",
+        # Shift output timestamps so they start from 0, fixing negative PTS
+        # values that can prevent segment boundary detection in the HLS muxer.
+        "-avoid_negative_ts", "make_zero",
+        "-f", "hls",
+        "-hls_time", "4",
+        "-hls_list_size", "0",
+        "-hls_flags", "append_list+omit_endlist+independent_segments",
+        "-start_number", str(hls_start_number),
+        "-hls_segment_filename", hls_seg_pattern,
+        hls_m3u8,
+    ]
+
+
+def _dvr_build_hls_concat_cmd(concat_list_path, output_path, extra_args=None):
+    """Build an error-tolerant FFmpeg concat command for HLS ``.ts`` segments.
+
+    Tolerates truncated tail segments, timestamp discontinuities at FFmpeg
+    restart splices, and minor MPEG-TS corruption from IPTV sources.  The
+    concat demuxer already re-bases timestamps between files; ``genpts``,
+    ``igndts``, and ``avoid_negative_ts`` keep the copied stream muxable.
+    """
+    cmd = [
+        "ffmpeg", "-y",
+        "-fflags", "+genpts+igndts+discardcorrupt",
+        "-err_detect", "ignore_err",
+        "-f", "concat", "-safe", "0",
+        "-i", concat_list_path,
+        "-c", "copy",
+        "-avoid_negative_ts", "make_zero",
+    ]
+    if extra_args:
+        cmd.extend(extra_args)
+    cmd.append(output_path)
+    return cmd
+
+
+def _dvr_drain_ffmpeg_stderr(proc, rec_id, tail):
+    """Drain FFmpeg stderr in a background thread (see run_recording for rationale)."""
+    try:
+        buf = bytearray()
+        stream = proc.stderr
+        while True:
+            byte = stream.read(1)
+            if not byte:
+                break
+            if byte in (b'\r', b'\n'):
+                if buf:
+                    line = buf.decode('utf-8', errors='replace').strip()
+                    buf.clear()
+                    if line:
+                        tail.append(line)
+                        low = line.lower()
+                        if 'error' in low or 'failed' in low or 'invalid' in low:
+                            logger.warning(f"DVR recording {rec_id} ffmpeg: {line}")
+                        else:
+                            logger.debug(f"DVR recording {rec_id} ffmpeg: {line}")
+                continue
+            buf.append(byte[0])
+            if len(buf) > 4096:
+                line = buf.decode('utf-8', errors='replace').strip()
+                buf.clear()
+                if line:
+                    tail.append(line)
+                    logger.debug(f"DVR recording {rec_id} ffmpeg: {line}")
+        if buf:
+            line = buf.decode('utf-8', errors='replace').strip()
+            if line:
+                tail.append(line)
+                logger.debug(f"DVR recording {rec_id} ffmpeg: {line}")
+    except Exception as _de:
+        logger.debug(f"DVR recording {rec_id}: stderr drain ended: {_de}")
+
+
+def _dvr_ensure_ffmpeg_exited(ffmpeg_proc, timeout=5):
+    """Wait for FFmpeg to exit, force-kill if necessary."""
+    if ffmpeg_proc is None or ffmpeg_proc.poll() is not None:
+        return
+    try:
+        ffmpeg_proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        ffmpeg_proc.kill()
+        try:
+            ffmpeg_proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            pass
+
+
 def get_dvr_stream_base_url():
     """Return the single correct base URL for DVR to reach the TS stream proxy.
 
@@ -2046,294 +2230,372 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
         except Exception:
             pass
 
-    if not interrupted:
+    end_timestamp = end_time.timestamp()
+    _stop_poll_interval = 2.0
+    _first_segment_timeout = 15.0
+    _stall_timeout = 60.0  # seconds without new segments → source stream gone
+    _active_lock_refresh_interval = 15.0
+    _ffmpeg_stderr_tail = deque(maxlen=200)
+    _break_reason = None
+    _ffmpeg_retry_count = 0
+    _ffmpeg_outage_started = None
+    _ffmpeg_retry_window = _dvr_ffmpeg_retry_window_seconds()
+
+    if not interrupted and hls_dir:
         stream_url = f"{base}/proxy/ts/stream/{channel.uuid}"
         logger.info(f"DVR recording {recording_id}: stream URL: {stream_url}")
-
-    if not interrupted:
-
-        # Continue segment numbering from any previous session (server-restart resume)
-        existing_segs = sorted(
-            f for f in os.listdir(hls_dir) if f.startswith("seg_") and f.endswith(".ts")
-        ) if hls_dir else []
-        hls_start_number = len(existing_segs)
-
-        ffmpeg_cmd = [
-            "ffmpeg", "-y",
-            "-reconnect", "1",
-            "-reconnect_streamed", "1",
-            "-reconnect_delay_max", "5",
-            "-user_agent", f"Dispatcharr-DVR/recording-{recording_id}",
-            # Regenerate monotonic PTS to handle erratic/discontinuous timestamps
-            # from IPTV sources.
-            "-fflags", "+genpts",
-            "-i", stream_url,
-            "-c", "copy",
-            # Shift output timestamps so they start from 0, fixing negative PTS
-            # values that can prevent segment boundary detection in the HLS muxer.
-            "-avoid_negative_ts", "make_zero",
-            "-f", "hls",
-            "-hls_time", "4",
-            "-hls_list_size", "0",
-            "-hls_flags", "append_list+omit_endlist+independent_segments",
-            "-start_number", str(hls_start_number),
-            "-hls_segment_filename", hls_seg_pattern,
-            hls_m3u8,
-        ]
-
-        logger.info(f"DVR recording {recording_id}: starting FFmpeg — stream URL: {stream_url}")
         logger.info(f"DVR recording {recording_id}: HLS output dir: {hls_dir}")
-        logger.debug(f"DVR recording {recording_id}: FFmpeg command: {' '.join(str(a) for a in ffmpeg_cmd)}")
-        # Rolling tail of FFmpeg stderr lines for post-mortem diagnostics
-        _ffmpeg_stderr_tail = deque(maxlen=200)
-        try:
-            ffmpeg_proc = subprocess.Popen(
-                ffmpeg_cmd,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE,
+        logger.info(
+            f"DVR recording {recording_id}: FFmpeg outage retry window "
+            f"is {_ffmpeg_retry_window:.0f}s (stream_timeout + failover_grace_period)"
+        )
+
+        while (
+            not interrupted
+            and time.time() < end_timestamp
+            and not _DVR_SHUTTING_DOWN
+            and (
+                _ffmpeg_outage_started is None
+                or time.time() - _ffmpeg_outage_started < _ffmpeg_retry_window
             )
-        except Exception as _fe:
-            last_error = str(_fe)
-            logger.warning(f"DVR recording {recording_id}: failed to launch FFmpeg: {_fe}")
-            ffmpeg_proc = None
-
-        # Drain FFmpeg stderr in a background thread to prevent the OS pipe
-        # buffer (~64 KB on Linux) from filling up, which would block FFmpeg's
-        # writes and cause it to silently stop demuxing/segmenting after a few
-        # minutes of normal progress output. Lines are logged to the Dispatcharr
-        # log and tail-buffered for diagnostics.
-        def _drain_ffmpeg_stderr(proc, rec_id, tail):
-            # FFmpeg emits progress lines terminated with \r (carriage return)
-            # so it can rewrite them in place; only non-progress messages end
-            # with \n. Split on either to capture both kinds.
-            try:
-                buf = bytearray()
-                stream = proc.stderr
-                while True:
-                    byte = stream.read(1)
-                    if not byte:
-                        break
-                    if byte in (b'\r', b'\n'):
-                        if buf:
-                            line = buf.decode('utf-8', errors='replace').strip()
-                            buf.clear()
-                            if line:
-                                tail.append(line)
-                                low = line.lower()
-                                if 'error' in low or 'failed' in low or 'invalid' in low:
-                                    logger.warning(f"DVR recording {rec_id} ffmpeg: {line}")
-                                else:
-                                    logger.debug(f"DVR recording {rec_id} ffmpeg: {line}")
-                        continue
-                    buf.append(byte[0])
-                    # Safety net: flush absurdly long lines so a malformed
-                    # stream can't grow the buffer without bound.
-                    if len(buf) > 4096:
-                        line = buf.decode('utf-8', errors='replace').strip()
-                        buf.clear()
-                        if line:
-                            tail.append(line)
-                            logger.debug(f"DVR recording {rec_id} ffmpeg: {line}")
-                # Flush any trailing content
-                if buf:
-                    line = buf.decode('utf-8', errors='replace').strip()
-                    if line:
-                        tail.append(line)
-                        logger.debug(f"DVR recording {rec_id} ffmpeg: {line}")
-            except Exception as _de:
-                logger.debug(f"DVR recording {rec_id}: stderr drain ended: {_de}")
-
-        if ffmpeg_proc is not None and ffmpeg_proc.stderr is not None:
-            _stderr_thread = threading.Thread(
-                target=_drain_ffmpeg_stderr,
-                args=(ffmpeg_proc, recording_id, _ffmpeg_stderr_tail),
-                daemon=True,
-                name=f"dvr-ffmpeg-stderr-{recording_id}",
-            )
-            _stderr_thread.start()
-
-        end_timestamp = end_time.timestamp()
-        _stop_poll_interval = 2.0
-        _last_stop_poll = time.time()
-        _ffmpeg_start = time.time()
-        _first_segment_timeout = 15.0
-        _stall_timeout = 60.0  # seconds without new segments → source stream gone
-        _stream_confirmed = False
-        _last_seg_count = hls_start_number
-        _last_new_seg_time = time.time()
-        _last_active_lock_refresh = 0.0
-        _active_lock_refresh_interval = 15.0
-
-        while ffmpeg_proc.poll() is None:
-            time.sleep(0.5)
-            now = time.time()
-
-            # Refresh the per-recording active lock so a concurrent worker
-            # cannot acquire it and start a duplicate ffmpeg.
-            if (
-                _active_lock_redis is not None
-                and now - _last_active_lock_refresh >= _active_lock_refresh_interval
-            ):
-                try:
-                    _active_lock_redis.expire(_active_lock_key, _active_lock_ttl)
-                except Exception:
-                    pass
-                _last_active_lock_refresh = now
-
-            segs_now = [
-                f for f in os.listdir(hls_dir)
-                if f.startswith("seg_") and f.endswith(".ts")
-            ] if hls_dir else []
-
-            # Wait for the first segment to confirm data is flowing
-            if not _stream_confirmed:
-                if segs_now:
-                    _stream_confirmed = True
-                    _last_seg_count = len(segs_now)
-                    _last_new_seg_time = now
-                    logger.info(
-                        f"DVR recording {recording_id}: first HLS segment written, stream confirmed"
-                    )
-                elif now - _ffmpeg_start > _first_segment_timeout:
+        ):
+            if _ffmpeg_retry_count > 0:
+                _outage_elapsed = time.time() - _ffmpeg_outage_started
+                _backoff = min(
+                    _dvr_ffmpeg_retry_backoff_seconds(_ffmpeg_retry_count),
+                    max(0.0, _ffmpeg_retry_window - _outage_elapsed),
+                )
+                if _backoff <= 0:
                     logger.warning(
-                        f"DVR recording {recording_id}: no HLS segments produced after "
-                        f"{_first_segment_timeout}s from {base} — stream unavailable"
+                        f"DVR recording {recording_id}: FFmpeg outage window "
+                        f"({_ffmpeg_retry_window:.0f}s) exhausted after "
+                        f"{_outage_elapsed:.0f}s (last reason={_break_reason})"
                     )
-                    ffmpeg_proc.kill()
-                    try:
-                        ffmpeg_proc.wait(timeout=5)
-                    except subprocess.TimeoutExpired:
-                        pass
-                    last_error = f"no_segments_in_{_first_segment_timeout}s_from_{base}"
-                    ffmpeg_proc = None
                     break
-            else:
-                # Stream was confirmed, detect source stalls (e.g. proxy ghost-kills the client)
-                if len(segs_now) > _last_seg_count:
-                    _last_seg_count = len(segs_now)
-                    _last_new_seg_time = now
-                else:
-                    # Also treat a recently-modified segment file as activity.
-                    # With erratic source timestamps, FFmpeg may buffer data inside
-                    # a partially-written segment for longer than hls_time, so the
-                    # segment count won't increase even though data is flowing.
-                    # Only stat the most recent segment (highest filename) to keep
-                    # this O(1) per tick instead of O(N) over a long recording.
+                logger.info(
+                    f"DVR recording {recording_id}: retrying FFmpeg in {_backoff:.0f}s "
+                    f"(outage {_outage_elapsed:.0f}s / {_ffmpeg_retry_window:.0f}s, "
+                    f"attempt {_ffmpeg_retry_count + 1}, last reason={_break_reason})"
+                )
+                _backoff_deadline = time.time() + _backoff
+                while time.time() < _backoff_deadline:
+                    if _DVR_SHUTTING_DOWN or time.time() >= end_timestamp:
+                        break
+                    if (
+                        _ffmpeg_outage_started is not None
+                        and time.time() - _ffmpeg_outage_started >= _ffmpeg_retry_window
+                    ):
+                        break
                     try:
-                        if segs_now and hls_dir:
-                            _newest = max(segs_now)
-                            _newest_mtime = os.path.getmtime(
-                                os.path.join(hls_dir, _newest)
-                            )
-                            if _newest_mtime > _last_new_seg_time:
-                                _last_new_seg_time = _newest_mtime
+                        _pre_retry = Recording.objects.filter(
+                            id=recording_id
+                        ).only("custom_properties").first()
+                        if _pre_retry is None:
+                            interrupted = True
+                            interrupted_reason = "recording_deleted"
+                            break
+                        if (_pre_retry.custom_properties or {}).get("status") == "stopped":
+                            _break_reason = "stopped"
+                            break
                     except Exception:
                         pass
-                if now - _last_new_seg_time > _stall_timeout:
+                    time.sleep(0.5)
+                if interrupted or _break_reason == "stopped" or _DVR_SHUTTING_DOWN:
+                    break
+                if time.time() >= end_timestamp:
+                    break
+                if (
+                    _ffmpeg_outage_started is not None
+                    and time.time() - _ffmpeg_outage_started >= _ffmpeg_retry_window
+                ):
                     logger.warning(
-                        f"DVR recording {recording_id}: no new HLS segments for "
-                        f"{_stall_timeout:.0f}s — source stream stalled, stopping FFmpeg"
+                        f"DVR recording {recording_id}: FFmpeg outage window "
+                        f"({_ffmpeg_retry_window:.0f}s) exhausted during backoff "
+                        f"(last reason={_break_reason})"
                     )
-                    ffmpeg_proc.send_signal(signal.SIGINT)
-                    try:
-                        ffmpeg_proc.wait(timeout=10)
-                    except subprocess.TimeoutExpired:
-                        ffmpeg_proc.kill()
                     break
 
-            # Duration check — SIGINT lets FFmpeg write #EXT-X-ENDLIST cleanly
-            if now >= end_timestamp:
-                logger.info(
-                    f"DVR recording {recording_id}: scheduled end time reached, stopping FFmpeg"
+            hls_start_number = _dvr_hls_start_number(hls_dir, hls_m3u8)
+            ffmpeg_cmd = _dvr_build_ffmpeg_cmd(
+                stream_url, recording_id, hls_m3u8, hls_seg_pattern, hls_start_number,
+            )
+
+            logger.info(
+                f"DVR recording {recording_id}: starting FFmpeg "
+                f"(attempt {_ffmpeg_retry_count + 1}, segment start={hls_start_number}, "
+                f"{_dvr_count_hls_segments(hls_dir)} existing segment(s))"
+            )
+            logger.debug(
+                f"DVR recording {recording_id}: FFmpeg command: "
+                f"{' '.join(str(a) for a in ffmpeg_cmd)}"
+            )
+
+            ffmpeg_proc = None
+            _break_reason = None
+            _attempt_stream_confirmed = False
+
+            try:
+                ffmpeg_proc = subprocess.Popen(
+                    ffmpeg_cmd,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE,
                 )
-                ffmpeg_proc.send_signal(signal.SIGINT)
-                try:
-                    ffmpeg_proc.wait(timeout=10)
-                except subprocess.TimeoutExpired:
-                    ffmpeg_proc.kill()
+            except Exception as _fe:
+                last_error = str(_fe)
+                logger.warning(
+                    f"DVR recording {recording_id}: failed to launch FFmpeg: {_fe}"
+                )
+                _break_reason = "launch_failed"
+
+            if ffmpeg_proc is not None and ffmpeg_proc.stderr is not None:
+                _stderr_thread = threading.Thread(
+                    target=_dvr_drain_ffmpeg_stderr,
+                    args=(ffmpeg_proc, recording_id, _ffmpeg_stderr_tail),
+                    daemon=True,
+                    name=f"dvr-ffmpeg-stderr-{recording_id}-{_ffmpeg_retry_count}",
+                )
+                _stderr_thread.start()
+
+            _last_stop_poll = time.time()
+            _ffmpeg_start = time.time()
+            _last_seg_count = hls_start_number
+            _last_new_seg_time = time.time()
+            _last_active_lock_refresh = 0.0
+
+            if ffmpeg_proc is not None:
+                while ffmpeg_proc.poll() is None:
+                    time.sleep(0.5)
+                    now = time.time()
+
+                    if _DVR_SHUTTING_DOWN:
+                        logger.info(
+                            f"DVR recording {recording_id}: worker shutting down — stopping FFmpeg"
+                        )
+                        ffmpeg_proc.send_signal(signal.SIGINT)
+                        try:
+                            ffmpeg_proc.wait(timeout=10)
+                        except subprocess.TimeoutExpired:
+                            ffmpeg_proc.kill()
+                        _break_reason = "server_shutdown"
+                        break
+
+                    if (
+                        _active_lock_redis is not None
+                        and now - _last_active_lock_refresh >= _active_lock_refresh_interval
+                    ):
+                        try:
+                            _active_lock_redis.expire(_active_lock_key, _active_lock_ttl)
+                        except Exception:
+                            pass
+                        _last_active_lock_refresh = now
+
+                    segs_now = [
+                        f for f in os.listdir(hls_dir)
+                        if f.startswith("seg_") and f.endswith(".ts")
+                    ]
+
+                    if not _attempt_stream_confirmed:
+                        if len(segs_now) > _last_seg_count:
+                            _attempt_stream_confirmed = True
+                            _stream_confirmed = True
+                            _ffmpeg_outage_started = None
+                            _ffmpeg_retry_count = 0
+                            _last_seg_count = len(segs_now)
+                            _last_new_seg_time = now
+                            logger.info(
+                                f"DVR recording {recording_id}: HLS segment written, "
+                                f"stream confirmed"
+                            )
+                        else:
+                            try:
+                                if segs_now:
+                                    _newest = max(segs_now)
+                                    _newest_mtime = os.path.getmtime(
+                                        os.path.join(hls_dir, _newest)
+                                    )
+                                    if _newest_mtime >= _ffmpeg_start:
+                                        _attempt_stream_confirmed = True
+                                        _stream_confirmed = True
+                                        _ffmpeg_outage_started = None
+                                        _ffmpeg_retry_count = 0
+                                        _last_new_seg_time = _newest_mtime
+                                        logger.info(
+                                            f"DVR recording {recording_id}: HLS segment "
+                                            f"activity detected, stream confirmed"
+                                        )
+                            except Exception:
+                                pass
+                        if (
+                            not _attempt_stream_confirmed
+                            and now - _ffmpeg_start > _first_segment_timeout
+                        ):
+                            logger.warning(
+                                f"DVR recording {recording_id}: no HLS segments produced "
+                                f"after {_first_segment_timeout}s from {base} — stream unavailable"
+                            )
+                            ffmpeg_proc.kill()
+                            try:
+                                ffmpeg_proc.wait(timeout=5)
+                            except subprocess.TimeoutExpired:
+                                pass
+                            last_error = f"no_segments_in_{_first_segment_timeout}s_from_{base}"
+                            _break_reason = "no_segments"
+                            break
+                    else:
+                        if len(segs_now) > _last_seg_count:
+                            _last_seg_count = len(segs_now)
+                            _last_new_seg_time = now
+                        else:
+                            try:
+                                if segs_now:
+                                    _newest = max(segs_now)
+                                    _newest_mtime = os.path.getmtime(
+                                        os.path.join(hls_dir, _newest)
+                                    )
+                                    if _newest_mtime > _last_new_seg_time:
+                                        _last_new_seg_time = _newest_mtime
+                            except Exception:
+                                pass
+                        if now - _last_new_seg_time > _stall_timeout:
+                            logger.warning(
+                                f"DVR recording {recording_id}: no new HLS segments for "
+                                f"{_stall_timeout:.0f}s — source stream stalled, stopping FFmpeg"
+                            )
+                            ffmpeg_proc.send_signal(signal.SIGINT)
+                            try:
+                                ffmpeg_proc.wait(timeout=10)
+                            except subprocess.TimeoutExpired:
+                                ffmpeg_proc.kill()
+                            _break_reason = "stall"
+                            break
+
+                    if now >= end_timestamp:
+                        logger.info(
+                            f"DVR recording {recording_id}: scheduled end time reached, "
+                            f"stopping FFmpeg"
+                        )
+                        ffmpeg_proc.send_signal(signal.SIGINT)
+                        try:
+                            ffmpeg_proc.wait(timeout=10)
+                        except subprocess.TimeoutExpired:
+                            ffmpeg_proc.kill()
+                        _break_reason = "end_time"
+                        break
+
+                    if now - _last_stop_poll >= _stop_poll_interval:
+                        _last_stop_poll = now
+                        try:
+                            _sc = Recording.objects.filter(
+                                id=recording_id
+                            ).only("custom_properties", "end_time").first()
+                            if _sc is None:
+                                logger.info(
+                                    f"DVR recording {recording_id}: deleted — stopping FFmpeg"
+                                )
+                                ffmpeg_proc.send_signal(signal.SIGINT)
+                                try:
+                                    ffmpeg_proc.wait(timeout=10)
+                                except subprocess.TimeoutExpired:
+                                    ffmpeg_proc.kill()
+                                interrupted = False
+                                _break_reason = "deleted"
+                                break
+                            if (_sc.custom_properties or {}).get("status") == "stopped":
+                                logger.info(
+                                    f"DVR recording {recording_id}: stop requested — stopping FFmpeg"
+                                )
+                                ffmpeg_proc.send_signal(signal.SIGINT)
+                                try:
+                                    ffmpeg_proc.wait(timeout=10)
+                                except subprocess.TimeoutExpired:
+                                    ffmpeg_proc.kill()
+                                _break_reason = "stopped"
+                                break
+                            try:
+                                new_end = _sc.end_time
+                                if new_end is not None:
+                                    if _tz.is_naive(new_end):
+                                        new_end = _tz.make_aware(new_end)
+                                    new_ts = new_end.timestamp()
+                                    if new_ts > end_timestamp:
+                                        logger.info(
+                                            f"DVR recording {recording_id}: end_time extended "
+                                            f"to {new_end}"
+                                        )
+                                        end_timestamp = new_ts
+                            except Exception:
+                                pass
+                        except Exception:
+                            pass
+
+                if _break_reason is None:
+                    if time.time() >= end_timestamp:
+                        _break_reason = "end_time"
+                    elif ffmpeg_proc.poll() is not None:
+                        _break_reason = "unexpected_exit"
+                        _exit_code = ffmpeg_proc.poll()
+                        if _stream_confirmed and _exit_code not in (0, None):
+                            logger.warning(
+                                f"DVR recording {recording_id}: FFmpeg exited unexpectedly "
+                                f"(rc={_exit_code}) after stream was confirmed — "
+                                f"source stream likely disconnected"
+                            )
+                        elif not _stream_confirmed:
+                            last_error = f"rc={_exit_code} from {base}"
+                            _tail_text = "\n".join(_ffmpeg_stderr_tail)
+                            if _tail_text:
+                                logger.warning(
+                                    f"DVR recording {recording_id}: FFmpeg exited "
+                                    f"(rc={_exit_code}) for {base} without producing "
+                                    f"segments.\nFFmpeg stderr tail:\n{_tail_text[-1000:]}"
+                                )
+                            else:
+                                logger.warning(
+                                    f"DVR recording {recording_id}: FFmpeg exited "
+                                    f"(rc={_exit_code}) for {base} without producing "
+                                    f"segments (no stderr output)"
+                                )
+
+            _dvr_ensure_ffmpeg_exited(ffmpeg_proc)
+
+            if _break_reason in ("end_time", "stopped", "deleted"):
                 break
 
-            # Periodic DB poll: stop, delete, end_time extension
-            if now - _last_stop_poll >= _stop_poll_interval:
-                _last_stop_poll = now
-                try:
-                    _sc = Recording.objects.filter(
-                        id=recording_id
-                    ).only("custom_properties", "end_time").first()
-                    if _sc is None:
-                        logger.info(
-                            f"DVR recording {recording_id}: deleted — stopping FFmpeg"
-                        )
-                        ffmpeg_proc.send_signal(signal.SIGINT)
-                        try:
-                            ffmpeg_proc.wait(timeout=10)
-                        except subprocess.TimeoutExpired:
-                            ffmpeg_proc.kill()
-                        interrupted = False
-                        break
-                    if (_sc.custom_properties or {}).get("status") == "stopped":
-                        logger.info(
-                            f"DVR recording {recording_id}: stop requested — stopping FFmpeg"
-                        )
-                        ffmpeg_proc.send_signal(signal.SIGINT)
-                        try:
-                            ffmpeg_proc.wait(timeout=10)
-                        except subprocess.TimeoutExpired:
-                            ffmpeg_proc.kill()
-                        break
-                    # Handle end_time extension — just update the deadline, no restart needed
-                    try:
-                        new_end = _sc.end_time
-                        if new_end is not None:
-                            if _tz.is_naive(new_end):
-                                new_end = _tz.make_aware(new_end)
-                            new_ts = new_end.timestamp()
-                            if new_ts > end_timestamp:
-                                logger.info(
-                                    f"DVR recording {recording_id}: end_time extended to {new_end}"
-                                )
-                                end_timestamp = new_ts
-                    except Exception:
-                        pass
-                except Exception:
-                    pass
+            if _DVR_SHUTTING_DOWN or time.time() >= end_timestamp:
+                break
 
-        # If FFmpeg exited after confirming the stream, log the exit code so we know why it stopped.
-        if _stream_confirmed and ffmpeg_proc is not None:
-            _exit_code = ffmpeg_proc.poll()
-            if _exit_code is not None and _exit_code != 0:
+            if _ffmpeg_outage_started is None:
+                _ffmpeg_outage_started = time.time()
+
+            _outage_elapsed = time.time() - _ffmpeg_outage_started
+            if _outage_elapsed >= _ffmpeg_retry_window:
                 logger.warning(
-                    f"DVR recording {recording_id}: FFmpeg exited unexpectedly (rc={_exit_code}) "
-                    f"after stream was confirmed — source stream likely disconnected"
+                    f"DVR recording {recording_id}: FFmpeg outage window "
+                    f"({_ffmpeg_retry_window:.0f}s) exhausted "
+                    f"(last reason={_break_reason})"
                 )
+                break
 
-        # If FFmpeg exited without the stream being confirmed, log the tail of
-        # captured stderr for diagnosis. Lines were already logged live by the
-        # drain thread; this surfaces the recent context in a single message.
-        elif not _stream_confirmed and ffmpeg_proc is not None:
-            try:
-                _exit_code = ffmpeg_proc.poll()
-                last_error = f"rc={_exit_code} from {base}"
-                _tail_text = "\n".join(_ffmpeg_stderr_tail)
-                if _tail_text:
-                    logger.warning(
-                        f"DVR recording {recording_id}: FFmpeg exited (rc={_exit_code}) "
-                        f"for {base} without producing segments.\nFFmpeg stderr tail:\n{_tail_text[-1000:]}"
-                    )
-                else:
-                    logger.warning(
-                        f"DVR recording {recording_id}: FFmpeg exited (rc={_exit_code}) "
-                        f"for {base} without producing segments (no stderr output)"
-                    )
-            except Exception:
-                pass
+            _ffmpeg_retry_count += 1
+            logger.info(
+                f"DVR recording {recording_id}: FFmpeg stopped early "
+                f"(reason={_break_reason}), scheduling retry "
+                f"({_outage_elapsed:.0f}s / {_ffmpeg_retry_window:.0f}s into outage window)"
+            )
 
-    # Ensure FFmpeg has fully exited (covers cases where the loop broke early)
-    if ffmpeg_proc is not None and ffmpeg_proc.poll() is None:
-        try:
-            ffmpeg_proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            ffmpeg_proc.kill()
+    _dvr_ensure_ffmpeg_exited(ffmpeg_proc)
+
+    if (
+        _stream_confirmed
+        and not interrupted
+        and _break_reason not in ("end_time", "stopped", "deleted", "server_shutdown")
+        and time.time() < end_timestamp
+        and not _DVR_SHUTTING_DOWN
+    ):
+        interrupted = True
+        interrupted_reason = (
+            f"ffmpeg_outage_window_exhausted: {_break_reason or last_error or 'unknown'}"
+        )
 
     # If the loop broke because the Celery worker is shutting down (e.g.
     # docker stop, container update) and the recording window is still open,
@@ -2504,13 +2766,7 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
                     _cl.write(f"file '{_escaped}'\n")
 
             concat_result = subprocess.run(
-                [
-                    "ffmpeg", "-y",
-                    "-f", "concat", "-safe", "0",
-                    "-i", concat_list_path,
-                    "-c", "copy",
-                    final_path,
-                ],
+                _dvr_build_hls_concat_cmd(concat_list_path, final_path),
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
             )
             _ok = (
@@ -2544,14 +2800,11 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
                 except OSError:
                     pass
                 _mp4_concat = subprocess.run(
-                    [
-                        "ffmpeg", "-y",
-                        "-f", "concat", "-safe", "0",
-                        "-i", concat_list_path,
-                        "-c", "copy",
-                        "-bsf:a", "aac_adtstoasc",
+                    _dvr_build_hls_concat_cmd(
+                        concat_list_path,
                         _intermediate_mp4,
-                    ],
+                        extra_args=["-bsf:a", "aac_adtstoasc"],
+                    ),
                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                 )
                 if (
@@ -2562,6 +2815,7 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
                     _mp4_to_mkv = subprocess.run(
                         [
                             "ffmpeg", "-y",
+                            "-err_detect", "ignore_err",
                             "-i", _intermediate_mp4,
                             "-c", "copy",
                             final_path,
@@ -2994,12 +3248,7 @@ def recover_recordings_on_startup():
                                     _escaped = _s.replace("'", "'\\''")
                                     _cl.write(f"file '{_escaped}'\n")
                             _res = subprocess.run(
-                                [
-                                    "ffmpeg", "-y",
-                                    "-f", "concat", "-safe", "0",
-                                    "-i", _concat_txt,
-                                    "-c", "copy", mkv_path,
-                                ],
+                                _dvr_build_hls_concat_cmd(_concat_txt, mkv_path),
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                             )
                             if _res.returncode == 0 and os.path.exists(mkv_path) and os.path.getsize(mkv_path) > 0:
@@ -4088,96 +4337,135 @@ def set_channels_names_from_epg(self, channel_ids):
 
 
 @shared_task(bind=True)
-def set_channels_logos_from_epg(self, channel_ids):
+def set_channels_logos_from_epg(self, channel_ids=None, epg_source_id=None):
     """
-    Celery task to set channel logos from EPG data for multiple channels
-    Creates logos from EPG icon URLs if they don't exist
+    Celery task to set channel logos from EPG data.
+
+    Accepts either an explicit channel_ids list or an epg_source_id to target
+    all channels mapped to that source.
     """
-    from .models import Logo
     from core.utils import send_websocket_update
-    import requests
-    from urllib.parse import urlparse
+    from .utils import (
+        EPG_LOGO_APPLY_BATCH_SIZE,
+        EPG_LOGO_APPLY_MAX_ERRORS,
+        apply_logos_from_epg_icon_url,
+        channels_with_epg_icon_queryset,
+    )
 
     task_id = self.request.id
-    total_channels = len(channel_ids)
     updated_count = 0
     created_logos_count = 0
     errors = []
+    total_channels = 0
+    batch_size = EPG_LOGO_APPLY_BATCH_SIZE
 
     try:
-        logger.info(f"Starting EPG logo setting task for {total_channels} channels")
+        if epg_source_id:
+            channels_qs = channels_with_epg_icon_queryset(epg_source_id=epg_source_id)
+            total_channels = channels_qs.count()
+            logger.info(
+                f"Starting EPG logo setting task for {total_channels} channels "
+                f"(source {epg_source_id})"
+            )
 
-        # Send initial progress
-        send_websocket_update('updates', 'update', {
-            'type': 'epg_logo_setting_progress',
-            'task_id': task_id,
-            'progress': 0,
-            'total': total_channels,
-            'status': 'running',
-            'message': 'Starting EPG logo setting...'
-        })
-
-        batch_size = 50  # Smaller batch for logo processing
-        for i in range(0, total_channels, batch_size):
-            batch_ids = channel_ids[i:i + batch_size]
-            batch_updates = []
-
-            # Get channels and their EPG data
-            channels = Channel.objects.filter(id__in=batch_ids).select_related('epg_data', 'logo')
-
-            for channel in channels:
-                try:
-                    if channel.epg_data and channel.epg_data.icon_url:
-                        icon_url = channel.epg_data.icon_url.strip()
-
-                        # Try to find existing logo with this URL
-                        try:
-                            logo = Logo.objects.get(url=icon_url)
-                        except Logo.DoesNotExist:
-                            # Create new logo from EPG icon URL
-                            try:
-                                # Generate a name for the logo
-                                logo_name = channel.epg_data.name or f"Logo for {channel.epg_data.tvg_id}"
-
-                                # Create the logo record
-                                logo = Logo.objects.create(
-                                    name=logo_name,
-                                    url=icon_url
-                                )
-                                created_logos_count += 1
-                                logger.info(f"Created new logo from EPG: {logo_name} - {icon_url}")
-
-                            except Exception as create_error:
-                                errors.append(f"Channel {channel.id}: Failed to create logo from {icon_url}: {str(create_error)}")
-                                logger.error(f"Failed to create logo for channel {channel.id}: {create_error}")
-                                continue
-
-                        # Update channel logo if different
-                        if channel.logo != logo:
-                            channel.logo = logo
-                            batch_updates.append(channel)
-                            updated_count += 1
-
-                except Exception as e:
-                    errors.append(f"Channel {channel.id}: {str(e)}")
-                    logger.error(f"Error processing channel {channel.id}: {e}")
-
-            # Bulk update the batch
-            if batch_updates:
-                Channel.objects.bulk_update(batch_updates, ['logo'])
-
-            # Send progress update
-            progress = min(i + batch_size, total_channels)
             send_websocket_update('updates', 'update', {
                 'type': 'epg_logo_setting_progress',
                 'task_id': task_id,
-                'progress': progress,
+                'progress': 0,
                 'total': total_channels,
                 'status': 'running',
-                'message': f'Updated {updated_count} channel logos, created {created_logos_count} new logos...',
-                'updated_count': updated_count,
-                'created_logos_count': created_logos_count
+                'message': 'Starting EPG logo setting...'
             })
+
+            processed = 0
+            pending_ids = []
+            for channel_id in channels_qs.order_by('id').values_list('id', flat=True).iterator(
+                chunk_size=batch_size,
+            ):
+                pending_ids.append(channel_id)
+                if len(pending_ids) < batch_size:
+                    continue
+
+                batch = Channel.objects.filter(
+                    id__in=pending_ids,
+                ).select_related('epg_data', 'logo')
+                batch_stats = apply_logos_from_epg_icon_url(batch)
+                updated_count += batch_stats['updated_count']
+                created_logos_count += batch_stats['created_logos_count']
+                remaining = EPG_LOGO_APPLY_MAX_ERRORS - len(errors)
+                if remaining > 0:
+                    errors.extend(batch_stats['errors'][:remaining])
+
+                processed += len(pending_ids)
+                pending_ids = []
+                send_websocket_update('updates', 'update', {
+                    'type': 'epg_logo_setting_progress',
+                    'task_id': task_id,
+                    'progress': processed,
+                    'total': total_channels,
+                    'status': 'running',
+                    'message': (
+                        f'Updated {updated_count} channel logos, '
+                        f'created {created_logos_count} new logos...'
+                    ),
+                    'updated_count': updated_count,
+                    'created_logos_count': created_logos_count,
+                })
+
+            if pending_ids:
+                batch = Channel.objects.filter(
+                    id__in=pending_ids,
+                ).select_related('epg_data', 'logo')
+                batch_stats = apply_logos_from_epg_icon_url(batch)
+                updated_count += batch_stats['updated_count']
+                created_logos_count += batch_stats['created_logos_count']
+                remaining = EPG_LOGO_APPLY_MAX_ERRORS - len(errors)
+                if remaining > 0:
+                    errors.extend(batch_stats['errors'][:remaining])
+                processed += len(pending_ids)
+
+        elif channel_ids:
+            total_channels = len(channel_ids)
+            logger.info(f"Starting EPG logo setting task for {total_channels} channels")
+
+            send_websocket_update('updates', 'update', {
+                'type': 'epg_logo_setting_progress',
+                'task_id': task_id,
+                'progress': 0,
+                'total': total_channels,
+                'status': 'running',
+                'message': 'Starting EPG logo setting...'
+            })
+
+            for i in range(0, total_channels, batch_size):
+                batch_ids = channel_ids[i:i + batch_size]
+                channels = Channel.objects.filter(
+                    id__in=batch_ids,
+                ).select_related('epg_data', 'logo')
+
+                batch_stats = apply_logos_from_epg_icon_url(channels)
+                updated_count += batch_stats['updated_count']
+                created_logos_count += batch_stats['created_logos_count']
+                remaining = EPG_LOGO_APPLY_MAX_ERRORS - len(errors)
+                if remaining > 0:
+                    errors.extend(batch_stats['errors'][:remaining])
+
+                progress = min(i + batch_size, total_channels)
+                send_websocket_update('updates', 'update', {
+                    'type': 'epg_logo_setting_progress',
+                    'task_id': task_id,
+                    'progress': progress,
+                    'total': total_channels,
+                    'status': 'running',
+                    'message': (
+                        f'Updated {updated_count} channel logos, '
+                        f'created {created_logos_count} new logos...'
+                    ),
+                    'updated_count': updated_count,
+                    'created_logos_count': created_logos_count,
+                })
+        else:
+            raise ValueError("channel_ids or epg_source_id is required")
 
         # Send completion notification
         send_websocket_update('updates', 'update', {

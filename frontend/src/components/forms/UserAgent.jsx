@@ -1,26 +1,12 @@
 // Modal.js
 import React, { useEffect, useMemo } from 'react';
 import { useForm } from 'react-hook-form';
-import { yupResolver } from '@hookform/resolvers/yup';
-import * as Yup from 'yup';
-import API from '../../api';
+import { Button, Checkbox, Flex, Modal, Space, TextInput } from '@mantine/core';
 import {
-  LoadingOverlay,
-  TextInput,
-  Button,
-  Checkbox,
-  Modal,
-  Flex,
-  NativeSelect,
-  FileInput,
-  Space,
-} from '@mantine/core';
-import { NETWORK_ACCESS_OPTIONS } from '../../constants';
-
-const schema = Yup.object({
-  name: Yup.string().required('Name is required'),
-  user_agent: Yup.string().required('User-Agent is required'),
-});
+  addUserAgent,
+  getResolver,
+  updateUserAgent,
+} from '../../utils/forms/UserAgentUtils.js';
 
 const UserAgent = ({ userAgent = null, isOpen, onClose }) => {
   const defaultValues = useMemo(
@@ -42,14 +28,14 @@ const UserAgent = ({ userAgent = null, isOpen, onClose }) => {
     watch,
   } = useForm({
     defaultValues,
-    resolver: yupResolver(schema),
+    resolver: getResolver(),
   });
 
   const onSubmit = async (values) => {
     if (userAgent?.id) {
-      await API.updateUserAgent({ id: userAgent.id, ...values });
+      await updateUserAgent(userAgent.id, values);
     } else {
-      await API.addUserAgent(values);
+      await addUserAgent(values);
     }
 
     reset();

@@ -94,10 +94,15 @@ export const getProviderFormValue = (channel, field) => {
   return channel?.[field] ?? '';
 };
 
-// Form value differs from the channel's provider value. Manual
-// channels always return false (no provider value to compare to).
+// Whether a field carries an override. Manual channels return false (no
+// provider value to override). True when a persisted override row holds a
+// value for the field, OR the live form value diverges from provider. The
+// persisted check keeps the reset control available when an override's
+// value coincides with the provider value.
 export const isFormFieldOverridden = (channel, field, formValue) => {
   if (!channel?.auto_created) return false;
+  const persisted = channel.override?.[field];
+  if (persisted !== null && persisted !== undefined) return true;
   const normalizedForm = normalizeFieldValue(field, formValue);
   const normalizedProvider = normalizeFieldValue(field, channel[field]);
   return normalizedForm !== normalizedProvider;

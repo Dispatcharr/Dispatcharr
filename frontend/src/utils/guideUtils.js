@@ -11,7 +11,7 @@ import {
   getNow,
   getNowMs,
   roundToNearest,
-} from '../utils/dateTimeUtils.js';
+} from './dateTimeUtils.js';
 import API from '../api.js';
 
 export const PROGRAM_HEIGHT = 90;
@@ -309,25 +309,12 @@ export const getRuleByProgram = (rules, program) => {
   );
 };
 
-export const createRecording = async (channel, program) => {
-  await API.createRecording({
-    channel: `${channel.id}`,
-    start_time: program.start_time,
-    end_time: program.end_time,
-    custom_properties: { program },
-  });
+export const createRecording = async (values) => {
+  await API.createRecording(values);
 };
 
-export const createSeriesRule = async (program, mode) => {
-  await API.createSeriesRule({
-    tvg_id: program.tvg_id,
-    mode,
-    title: program.title,
-  });
-};
-
-export const evaluateSeriesRule = async (program) => {
-  await API.evaluateSeriesRules(program.tvg_id);
+export const createSeriesRule = async (values) => {
+  await API.createSeriesRule(values);
 };
 
 export const calculateLeftScrollPosition = (program, start) => {

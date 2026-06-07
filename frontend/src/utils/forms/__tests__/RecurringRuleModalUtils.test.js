@@ -10,111 +10,22 @@ vi.mock('../../../api.js', () => ({
   },
 }));
 
+vi.mock('../../dateTimeUtils.js', () => ({
+  toTimeString: vi.fn((t) => {
+    if (!t) return '00:00';
+    const match = String(t).match(/T(\d{2}:\d{2})/);
+    return match ? match[1] : t;
+  }),
+  parseDate: vi.fn((d) => (d ? dayjs(d).toDate() : null)),
+  toDate: vi.fn((d) => (d ? dayjs(d).toDate() : new Date())),
+  getNow: vi.fn(() => dayjs()),
+  isAfter: vi.fn((a, b) => dayjs(a).isAfter(dayjs(b))),
+  format: vi.fn((d, fmt) => (d ? dayjs(d).format(fmt) : null)),
+}));
+
 describe('RecurringRuleModalUtils', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-  });
-
-  describe('getChannelOptions', () => {
-    it('should return sorted channel options by channel number', () => {
-      const channels = {
-        ch1: { id: 1, channel_number: '10', name: 'ABC' },
-        ch2: { id: 2, channel_number: '5', name: 'NBC' },
-        ch3: { id: 3, channel_number: '15', name: 'CBS' },
-      };
-
-      const result = RecurringRuleModalUtils.getChannelOptions(channels);
-
-      expect(result).toEqual([
-        { value: '2', label: 'NBC' },
-        { value: '1', label: 'ABC' },
-        { value: '3', label: 'CBS' },
-      ]);
-    });
-
-    it('should sort alphabetically by name when channel numbers are equal', () => {
-      const channels = {
-        ch1: { id: 1, channel_number: '10', name: 'ZBC' },
-        ch2: { id: 2, channel_number: '10', name: 'ABC' },
-        ch3: { id: 3, channel_number: '10', name: 'MBC' },
-      };
-
-      const result = RecurringRuleModalUtils.getChannelOptions(channels);
-
-      expect(result).toEqual([
-        { value: '2', label: 'ABC' },
-        { value: '3', label: 'MBC' },
-        { value: '1', label: 'ZBC' },
-      ]);
-    });
-
-    it('should handle missing channel numbers', () => {
-      const channels = {
-        ch1: { id: 1, name: 'ABC' },
-        ch2: { id: 2, channel_number: '5', name: 'NBC' },
-      };
-
-      const result = RecurringRuleModalUtils.getChannelOptions(channels);
-
-      expect(result).toEqual([
-        { value: '1', label: 'ABC' },
-        { value: '2', label: 'NBC' },
-      ]);
-    });
-
-    it('should use fallback label when name is missing', () => {
-      const channels = {
-        ch1: { id: 1, channel_number: '10' },
-        ch2: { id: 2, channel_number: '5', name: '' },
-      };
-
-      const result = RecurringRuleModalUtils.getChannelOptions(channels);
-
-      expect(result).toEqual([
-        { value: '2', label: 'Channel 2' },
-        { value: '1', label: 'Channel 1' },
-      ]);
-    });
-
-    it('should handle empty channels object', () => {
-      const result = RecurringRuleModalUtils.getChannelOptions({});
-
-      expect(result).toEqual([]);
-    });
-
-    it('should handle null channels', () => {
-      const result = RecurringRuleModalUtils.getChannelOptions(null);
-
-      expect(result).toEqual([]);
-    });
-
-    it('should handle undefined channels', () => {
-      const result = RecurringRuleModalUtils.getChannelOptions(undefined);
-
-      expect(result).toEqual([]);
-    });
-
-    it('should convert channel id to string value', () => {
-      const channels = {
-        ch1: { id: 123, channel_number: '10', name: 'ABC' },
-      };
-
-      const result = RecurringRuleModalUtils.getChannelOptions(channels);
-
-      expect(result[0].value).toBe('123');
-      expect(typeof result[0].value).toBe('string');
-    });
-
-    it('should handle non-numeric channel numbers', () => {
-      const channels = {
-        ch1: { id: 1, channel_number: 'HD1', name: 'ABC' },
-        ch2: { id: 2, channel_number: '5', name: 'NBC' },
-      };
-
-      const result = RecurringRuleModalUtils.getChannelOptions(channels);
-
-      expect(result).toHaveLength(2);
-    });
   });
 
   describe('getUpcomingOccurrences', () => {
@@ -310,11 +221,11 @@ describe('RecurringRuleModalUtils', () => {
       const values = {
         channel_id: '5',
         days_of_week: ['1', '3', '5'],
-        start_time: '14:30',
-        end_time: '16:00',
-        start_date: '2024-01-01',
-        end_date: '2024-12-31',
-        rule_name: 'My Rule',
+        start_time: '10:00',
+        end_time: '11:00',
+        start_date: dayjs('2024-06-15'),
+        end_date: dayjs('2024-12-25'),
+        rule_name: '  Test Rule  ',
         enabled: true,
       };
 
@@ -323,11 +234,11 @@ describe('RecurringRuleModalUtils', () => {
       expect(API.updateRecurringRule).toHaveBeenCalledWith(1, {
         channel: '5',
         days_of_week: [1, 3, 5],
-        start_time: '14:30',
-        end_time: '16:00',
-        start_date: '2024-01-01',
-        end_date: '2024-12-31',
-        name: 'My Rule',
+        start_time: '10:00',
+        end_time: '11:00',
+        start_date: '2024-06-15',
+        end_date: '2024-12-25',
+        name: 'Test Rule',
         enabled: true,
       });
     });
@@ -527,6 +438,34 @@ describe('RecurringRuleModalUtils', () => {
 
       expect(API.updateRecurringRule).toHaveBeenCalledWith(1, {
         enabled: false,
+      });
+    });
+  });
+
+  describe('getFormDefaults', () => {
+    it('should return formatted defaults from rule', () => {
+      const rule = {
+        channel: 5,
+        days_of_week: [1, 3, 5],
+        name: 'Test Rule',
+        start_time: '2024-06-15T10:00:00',
+        end_time: '2024-06-15T11:00:00',
+        start_date: '2024-06-15',
+        end_date: '2024-12-25',
+        enabled: true,
+      };
+
+      const result = RecurringRuleModalUtils.getFormDefaults(rule);
+
+      expect(result).toEqual({
+        channel_id: '5',
+        days_of_week: ['1', '3', '5'],
+        rule_name: 'Test Rule',
+        start_time: '10:00',
+        end_time: '11:00',
+        start_date: dayjs('2024-06-15').toDate(),
+        end_date: dayjs('2024-12-25').toDate(),
+        enabled: true,
       });
     });
   });

@@ -1,16 +1,15 @@
 import useChannelsStore from '../../store/channels.jsx';
-import API from '../../api.js';
 import {
-  parseDate,
+  format,
+  getNow,
   RECURRING_DAY_OPTIONS,
+  toDate,
   toTimeString,
   useDateTimeFormat,
   useTimeHelpers,
 } from '../../utils/dateTimeUtils.js';
 import React, { useEffect, useMemo, useState } from 'react';
 import { useForm } from '@mantine/form';
-import dayjs from 'dayjs';
-import { notifications } from '@mantine/notifications';
 import {
   Badge,
   Button,
@@ -28,11 +27,18 @@ import { DatePickerInput, TimeInput } from '@mantine/dates';
 import { deleteRecordingById } from '../../utils/cards/RecordingCardUtils.js';
 import {
   deleteRecurringRuleById,
-  getChannelOptions,
+  getFormDefaults,
   getUpcomingOccurrences,
   updateRecurringRule,
   updateRecurringRuleEnabled,
 } from '../../utils/forms/RecurringRuleModalUtils.js';
+import { showNotification } from '../../utils/notificationUtils.js';
+import {
+  getChannelsSummary,
+  getRecurringFormDefaults,
+  recurringFormValidators,
+  sortedChannelOptions,
+} from '../../utils/forms/RecordingUtils.js';
 
 const RecurringRuleModal = ({
   opened,
@@ -56,66 +62,18 @@ const RecurringRuleModal = ({
   const rule = recurringRules.find((r) => r.id === ruleId);
 
   const channelOptions = useMemo(() => {
-    return getChannelOptions(allChannels);
+    return sortedChannelOptions(allChannels);
   }, [allChannels]);
 
   const form = useForm({
     mode: 'controlled',
-    initialValues: {
-      channel_id: '',
-      days_of_week: [],
-      rule_name: '',
-      start_time: dayjs().startOf('hour').format('HH:mm'),
-      end_time: dayjs().startOf('hour').add(1, 'hour').format('HH:mm'),
-      start_date: dayjs().toDate(),
-      end_date: dayjs().toDate(),
-      enabled: true,
-    },
-    validate: {
-      channel_id: (value) => (value ? null : 'Select a channel'),
-      days_of_week: (value) =>
-        value && value.length ? null : 'Pick at least one day',
-      end_time: (value, values) => {
-        if (!value) return 'Select an end time';
-        const startValue = dayjs(
-          values.start_time,
-          ['HH:mm', 'hh:mm A', 'h:mm A'],
-          true
-        );
-        const endValue = dayjs(value, ['HH:mm', 'hh:mm A', 'h:mm A'], true);
-        if (
-          startValue.isValid() &&
-          endValue.isValid() &&
-          endValue.diff(startValue, 'minute') === 0
-        ) {
-          return 'End time must differ from start time';
-        }
-        return null;
-      },
-      end_date: (value, values) => {
-        const endDate = dayjs(value);
-        const startDate = dayjs(values.start_date);
-        if (!value) return 'Select an end date';
-        if (startDate.isValid() && endDate.isBefore(startDate, 'day')) {
-          return 'End date cannot be before start date';
-        }
-        return null;
-      },
-    },
+    initialValues: { ...getRecurringFormDefaults(), enabled: true },
+    validate: recurringFormValidators,
   });
 
   useEffect(() => {
     if (opened && rule) {
-      form.setValues({
-        channel_id: `${rule.channel}`,
-        days_of_week: (rule.days_of_week || []).map((d) => String(d)),
-        rule_name: rule.name || '',
-        start_time: toTimeString(rule.start_time),
-        end_time: toTimeString(rule.end_time),
-        start_date: parseDate(rule.start_date) || dayjs().toDate(),
-        end_date: parseDate(rule.end_date),
-        enabled: Boolean(rule.enabled),
-      });
+      form.setValues(getFormDefaults(rule));
     } else {
       form.reset();
     }
@@ -127,7 +85,7 @@ const RecurringRuleModal = ({
     let cancelled = false;
     (async () => {
       try {
-        const chans = await API.getChannelsSummary();
+        const chans = await getChannelsSummary();
         if (!cancelled) setAllChannels(Array.isArray(chans) ? chans : []);
       } catch (e) {
         console.warn('Failed to load channels for recurring rule modal', e);
@@ -149,7 +107,7 @@ const RecurringRuleModal = ({
     try {
       await updateRecurringRule(ruleId, values);
       await fetchRecurringRules(); // recordings_refreshed WS event handles recording list update
-      notifications.show({
+      showNotification({
         title: 'Recurring rule updated',
         message: 'Schedule adjustments saved',
         color: 'green',
@@ -169,7 +127,7 @@ const RecurringRuleModal = ({
     try {
       await deleteRecurringRuleById(ruleId);
       await fetchRecurringRules(); // recordings_refreshed WS event handles recording list update
-      notifications.show({
+      showNotification({
         title: 'Recurring rule removed',
         message: 'All future occurrences were cancelled',
         color: 'red',
@@ -189,7 +147,7 @@ const RecurringRuleModal = ({
     try {
       await updateRecurringRuleEnabled(ruleId, checked);
       await fetchRecurringRules(); // recordings_refreshed WS event handles recording list update
-      notifications.show({
+      showNotification({
         title: checked ? 'Recurring rule enabled' : 'Recurring rule paused',
         message: checked
           ? 'Future occurrences will resume'
@@ -210,7 +168,7 @@ const RecurringRuleModal = ({
     try {
       await deleteRecordingById(occurrence.id);
       // recording_cancelled WS event handles recording list update
-      notifications.show({
+      showNotification({
         title: 'Occurrence cancelled',
         message: 'The selected airing was removed',
         color: 'yellow',
@@ -246,7 +204,7 @@ const RecurringRuleModal = ({
                     setDeleting(true);
                     try {
                       await deleteRecordingById(sourceRecording.id);
-                      notifications.show({
+                      showNotification({
                         title: 'Recording deleted',
                         color: 'green',
                         autoClose: 2500,
@@ -275,7 +233,7 @@ const RecurringRuleModal = ({
   };
 
   const handleStartDateChange = (value) => {
-    form.setFieldValue('start_date', value || dayjs().toDate());
+    form.setFieldValue('start_date', value || toDate(getNow()));
   };
 
   const handleEndDateChange = (value) => {
@@ -302,10 +260,11 @@ const RecurringRuleModal = ({
               <Group justify="space-between" align="center">
                 <Stack gap={2} flex={1}>
                   <Text fw={600} size="sm">
-                    {occStart.format(`${dateformat}, YYYY`)}
+                    {format(occStart, `${dateformat}, YYYY`)}
                   </Text>
                   <Text size="xs" c="dimmed">
-                    {occStart.format(timeformat)} – {occEnd.format(timeformat)}
+                    {format(occStart, timeformat)} –{' '}
+                    {format(occEnd, timeformat)}
                   </Text>
                 </Stack>
                 <Group gap={6}>

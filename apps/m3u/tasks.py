@@ -978,7 +978,7 @@ def process_xc_category_direct(account_id, batch, groups, hash_keys):
         existing_streams = {
             s.stream_hash: s
             for s in Stream.objects.filter(stream_hash__in=stream_hashes.keys()).select_related('m3u_account').only(
-                'id', 'stream_hash', 'name', 'url', 'logo_url', 'tvg_id', 'custom_properties', 'last_seen', 'updated_at', 'm3u_account', 'stream_id', 'stream_chno'
+                'id', 'stream_hash', 'name', 'url', 'logo_url', 'tvg_id', 'custom_properties', 'last_seen', 'updated_at', 'm3u_account', 'stream_id', 'stream_chno', 'channel_group_id'
             )
         }
 
@@ -994,7 +994,8 @@ def process_xc_category_direct(account_id, batch, groups, hash_keys):
                     obj.custom_properties != stream_props["custom_properties"] or
                     obj.is_adult != stream_props["is_adult"] or
                     obj.stream_id != stream_props["stream_id"] or
-                    obj.stream_chno != stream_props["stream_chno"]
+                    obj.stream_chno != stream_props["stream_chno"] or
+                    obj.channel_group_id != stream_props["channel_group_id"]
                 )
 
                 if changed:
@@ -1030,7 +1031,7 @@ def process_xc_category_direct(account_id, batch, groups, hash_keys):
                     # Simplified bulk update for better performance
                     Stream.objects.bulk_update(
                         streams_to_update,
-                        ['name', 'url', 'logo_url', 'tvg_id', 'custom_properties', 'is_adult', 'last_seen', 'updated_at', 'is_stale', 'stream_id', 'stream_chno'],
+                        ['name', 'url', 'logo_url', 'tvg_id', 'custom_properties', 'is_adult', 'last_seen', 'updated_at', 'is_stale', 'stream_id', 'stream_chno', 'channel_group_id'],
                         batch_size=150  # Smaller batch size for XC processing
                     )
 
@@ -1200,7 +1201,7 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys):
     existing_streams = {
         s.stream_hash: s
         for s in Stream.objects.filter(stream_hash__in=stream_hashes.keys()).select_related('m3u_account').only(
-            'id', 'stream_hash', 'name', 'url', 'logo_url', 'tvg_id', 'custom_properties', 'last_seen', 'updated_at', 'm3u_account', 'stream_id', 'stream_chno'
+            'id', 'stream_hash', 'name', 'url', 'logo_url', 'tvg_id', 'custom_properties', 'last_seen', 'updated_at', 'm3u_account', 'stream_id', 'stream_chno', 'channel_group_id'
         )
     }
 
@@ -1216,7 +1217,8 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys):
                 obj.custom_properties != stream_props["custom_properties"] or
                 obj.is_adult != stream_props["is_adult"] or
                 obj.stream_id != stream_props["stream_id"] or
-                obj.stream_chno != stream_props["stream_chno"]
+                obj.stream_chno != stream_props["stream_chno"] or
+                obj.channel_group_id != stream_props["channel_group_id"]
             )
 
             # Always update last_seen
@@ -1232,6 +1234,7 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys):
                 obj.is_adult = stream_props["is_adult"]
                 obj.stream_id = stream_props["stream_id"]
                 obj.stream_chno = stream_props["stream_chno"]
+                obj.channel_group_id = stream_props["channel_group_id"]
                 obj.updated_at = timezone.now()
 
             # Always mark as not stale since we saw it in this refresh
@@ -1254,7 +1257,7 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys):
                 # Update all streams in a single bulk operation
                 Stream.objects.bulk_update(
                     streams_to_update,
-                    ['name', 'url', 'logo_url', 'tvg_id', 'custom_properties', 'is_adult', 'last_seen', 'updated_at', 'is_stale', 'stream_id', 'stream_chno'],
+                    ['name', 'url', 'logo_url', 'tvg_id', 'custom_properties', 'is_adult', 'last_seen', 'updated_at', 'is_stale', 'stream_id', 'stream_chno', 'channel_group_id'],
                     batch_size=200
                 )
     except Exception as e:
@@ -2955,7 +2958,7 @@ def refresh_account_profiles(account_id):
                         existing_props = profile.custom_properties or {}
                         existing_props.update(profile_account_info)
                         profile.custom_properties = existing_props
-                        profile.save(update_fields=['custom_properties', 'exp_date'])
+                        profile.save(update_fields=['custom_properties'])
 
                         profiles_updated += 1
                         logger.info(f"Updated account information for profile '{profile.name}' ({profiles_updated}/{profiles.count()})")

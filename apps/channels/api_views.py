@@ -1525,32 +1525,52 @@ class ChannelViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=["post"], url_path="set-logos-from-epg")
     def set_logos_from_epg(self, request):
         """
-        Trigger a Celery task to set channel logos from EPG data
+        Trigger a Celery task to set channel logos from EPG data.
+        Provide channel_ids or epg_source_id (not both).
         """
         from .tasks import set_channels_logos_from_epg
 
         data = request.data
-        channel_ids = data.get("channel_ids", [])
+        channel_ids = data.get("channel_ids")
+        epg_source_id = data.get("epg_source_id")
 
-        if not channel_ids:
+        if channel_ids and epg_source_id:
             return Response(
-                {"error": "channel_ids is required"},
+                {"error": "Provide either channel_ids or epg_source_id, not both"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        if not isinstance(channel_ids, list):
+        if not channel_ids and not epg_source_id:
             return Response(
-                {"error": "channel_ids must be a list"},
+                {"error": "channel_ids or epg_source_id is required"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # Start the Celery task
-        task = set_channels_logos_from_epg.delay(channel_ids)
+        if channel_ids is not None:
+            if not isinstance(channel_ids, list):
+                return Response(
+                    {"error": "channel_ids must be a list"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if not channel_ids:
+                return Response(
+                    {"error": "channel_ids cannot be empty"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            task = set_channels_logos_from_epg.delay(channel_ids=channel_ids)
+            channel_count = len(channel_ids)
+        else:
+            from .utils import channels_with_epg_icon_queryset
+
+            task = set_channels_logos_from_epg.delay(epg_source_id=epg_source_id)
+            channel_count = channels_with_epg_icon_queryset(
+                epg_source_id=epg_source_id,
+            ).count()
 
         return Response({
-            "message": f"Started EPG logo setting task for {len(channel_ids)} channels",
+            "message": f"Started EPG logo setting task for {channel_count} channels",
             "task_id": task.id,
-            "channel_count": len(channel_ids)
+            "channel_count": channel_count,
         })
 
     @action(detail=False, methods=["post"], url_path="set-tvg-ids-from-epg")

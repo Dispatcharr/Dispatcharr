@@ -312,6 +312,34 @@ class TaskLockRenewer:
         return False
 
 
+def _is_gevent_monkey_patched():
+    try:
+        import gevent.monkey
+        return gevent.monkey.is_module_patched('threading')
+    except Exception:
+        return False
+
+
+def _is_celery_worker_context():
+    """True when executing inside an active Celery task (prefork worker)."""
+    try:
+        from celery import current_task
+        request = getattr(current_task, 'request', None)
+        return bool(request and getattr(request, 'id', None))
+    except Exception:
+        return False
+
+
+def _should_use_sync_websocket_send():
+    """
+    Use synchronous Redis delivery when gevent is monkey-patched but no gevent
+    hub is driving the process — e.g. Celery prefork workers that inherit
+    gevent patching from uWSGI imports. gevent.spawn in that context schedules
+    coroutines that never run.
+    """
+    return _is_gevent_monkey_patched() and _is_celery_worker_context()
+
+
 def _gevent_ws_send(group_name, message):
     """
     Publishes a WebSocket group message synchronously through Redis.
@@ -363,6 +391,12 @@ def _gevent_ws_send(group_name, message):
         logger.warning(f"Failed to send WebSocket update: {e}")
 
 
+def send_websocket_update_sync(group_name, event_type, data):
+    """Send a WebSocket group message synchronously via Redis (channels_redis wire format)."""
+    message = {'type': event_type, 'data': data}
+    _gevent_ws_send(group_name, message)
+
+
 def send_websocket_update(group_name, event_type, data, collect_garbage=False):
     """
     Sends a WebSocket group message.
@@ -370,27 +404,24 @@ def send_websocket_update(group_name, event_type, data, collect_garbage=False):
     In gevent-patched uWSGI workers, asyncio event loop creation fails because
     monkey-patching removes select.epoll. For those contexts a synchronous Redis
     path is used instead, matching the channels_redis 4.x wire format.
+
+    Celery prefork workers may inherit gevent monkey-patching without a running
+    gevent hub; in that case gevent.spawn would never execute, so delivery is
+    synchronous via Redis instead.
     """
-    channel_layer = get_channel_layer()
     message = {'type': event_type, 'data': data}
 
-    def _do_send():
+    if _should_use_sync_websocket_send():
+        _gevent_ws_send(group_name, message)
+    elif _is_gevent_monkey_patched():
+        import gevent
+        gevent.spawn(_gevent_ws_send, group_name, message)
+    else:
+        # Not gevent-patched (plain Celery, tests) — use asyncio channel layer
         try:
-            async_to_sync(channel_layer.group_send)(group_name, message)
+            async_to_sync(get_channel_layer().group_send)(group_name, message)
         except Exception as e:
             logger.warning(f"Failed to send WebSocket update: {e}")
-
-    try:
-        import gevent.monkey
-        if gevent.monkey.is_module_patched('threading'):
-            import gevent
-            gevent.spawn(_gevent_ws_send, group_name, message)
-            return
-    except Exception:
-        pass
-
-    # Not in a gevent-patched environment (Celery, tests) — use asyncio path
-    _do_send()
 
     if collect_garbage:
         gc.collect()
@@ -750,6 +781,76 @@ def send_websocket_notification(notification):
         logger.debug(f"Sent WebSocket notification: {notification_data.get('title', 'Unknown')}")
     except Exception as e:
         logger.error(f"Failed to send WebSocket notification: {e}")
+
+
+def get_host_and_port(request):
+    """
+    Returns (host, port) for building absolute URIs.
+    - Prefers X-Forwarded-Host/X-Forwarded-Port (nginx).
+    - Falls back to Host header.
+    - Returns None for port if using standard ports (80/443) to omit from URLs.
+    - In dev, uses 5656 as a guess if port cannot be determined.
+    """
+    scheme = request.META.get("HTTP_X_FORWARDED_PROTO", request.scheme)
+    standard_port = "443" if scheme == "https" else "80"
+
+    # 1. Try X-Forwarded-Host (may include port) - set by our nginx
+    xfh = request.META.get("HTTP_X_FORWARDED_HOST")
+    if xfh:
+        if ":" in xfh:
+            host, port = xfh.split(":", 1)
+            if port == standard_port:
+                return host, None
+            return host, port
+        else:
+            host = xfh
+
+        port = request.META.get("HTTP_X_FORWARDED_PORT")
+        if port:
+            return host, None if port == standard_port else port
+        if request.META.get("HTTP_X_FORWARDED_PROTO"):
+            return host, None
+
+    # 2. Try Host header
+    raw_host = request.get_host()
+    if ":" in raw_host:
+        host, port = raw_host.split(":", 1)
+        return host, None if port == standard_port else port
+    else:
+        host = raw_host
+
+    # 3. Check for X-Forwarded-Port (when Host header has no port but we're behind a reverse proxy)
+    port = request.META.get("HTTP_X_FORWARDED_PORT")
+    if port:
+        return host, None if port == standard_port else port
+
+    # 4. Behind a reverse proxy with no port info - assume standard port
+    if request.META.get("HTTP_X_FORWARDED_PROTO") or request.META.get("HTTP_X_FORWARDED_FOR"):
+        return host, None
+
+    # 5. Try SERVER_PORT from META (only if NOT behind reverse proxy)
+    port = request.META.get("SERVER_PORT")
+    if port:
+        return host, None if port == standard_port else port
+
+    # 6. Dev fallback
+    if os.environ.get("DISPATCHARR_ENV") == "dev" or host in ("localhost", "127.0.0.1"):
+        return host, "5656"
+
+    # 7. Final fallback: assume standard port for scheme
+    return host, None
+
+
+def build_absolute_uri_with_port(request, path):
+    """
+    Build an absolute URI with optional port.
+    Port is omitted from URL if None (standard port for scheme).
+    """
+    host, port = get_host_and_port(request)
+    scheme = request.META.get("HTTP_X_FORWARDED_PROTO", request.scheme)
+    if port:
+        return f"{scheme}://{host}:{port}{path}"
+    return f"{scheme}://{host}{path}"
 
 
 def send_notification_dismissed(notification_key):
