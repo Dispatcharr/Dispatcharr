@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.26.0] - 2026-06-07
+
 ### Added
 
 - **EPG logo auto-apply for XMLTV and Schedules Direct.** Channel logos are applied from `EPGData.icon_url` through a shared helper used by bulk "Set Logos from EPG", optional per-source auto-apply on refresh (`auto_apply_epg_logos` in source `custom_properties`), and a new `epg_source_id` option on the set-logos-from-epg API. Large libraries are processed in 500-channel chunks without loading every mapped row into memory.
