@@ -1433,6 +1433,13 @@ def generate_epg(request, profile_name=None, user=None):
                     channel_num_map[channel.id] = candidate
                     used_numbers.add(candidate)
 
+        # Host/port/scheme are constant per request; precompute logo URL prefix once.
+        _base_url = build_absolute_uri_with_port(request, "")
+        _sample_logo_path = reverse("api:channels:logo-cache", args=[0])
+        _logo_prefix_raw, _, _logo_suffix_raw = _sample_logo_path.partition("/0/")
+        _logo_url_prefix = _base_url + _logo_prefix_raw + "/"
+        _logo_url_suffix = "/" + _logo_suffix_raw
+
         # Process channels for the <channel> section
         for channel in channels:
             effective_name = channel.effective_name
@@ -1512,14 +1519,14 @@ def generate_epg(request, profile_name=None, user=None):
             # If no custom dummy logo, use regular logo logic
             if not tvg_logo and effective_logo:
                 if use_cached_logos:
-                    tvg_logo = build_absolute_uri_with_port(request, reverse('api:channels:logo-cache', args=[effective_logo.id]))
+                    tvg_logo = f"{_logo_url_prefix}{effective_logo.id}{_logo_url_suffix}"
                 else:
                     # Use direct URL if available, otherwise fall back to cached version
                     direct_logo = effective_logo.url if effective_logo.url.startswith(('http://', 'https://')) else None
                     if direct_logo:
                         tvg_logo = direct_logo
                     else:
-                        tvg_logo = build_absolute_uri_with_port(request, reverse('api:channels:logo-cache', args=[effective_logo.id]))
+                        tvg_logo = f"{_logo_url_prefix}{effective_logo.id}{_logo_url_suffix}"
             display_name = effective_name
             xml_lines.append(f'  <channel id="{html.escape(channel_id)}">')
             xml_lines.append(f'    <display-name>{html.escape(display_name)}</display-name>')
