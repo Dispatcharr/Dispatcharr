@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **EPG auto-match overhaul** — matching logic moved to `apps/channels/epg_matching.py`; Celery tasks in `tasks.py` are thin wrappers.
+  - Single-channel auto-match is now asynchronous: the API returns `202 Accepted` and pushes the result over WebSocket (`single_channel_epg_match`), so large EPG libraries no longer hit the previous 30-second HTTP timeout.
+  - Progress, bulk completion, and single-channel results use `send_websocket_update` instead of `async_to_sync(channel_layer.group_send)`, so notifications work reliably under gevent-patched uWSGI and Celery workers.
+  - Single-channel and selected-channel auto-match always run, even when the channel already has EPG assigned; match-all (no channel IDs) still only processes channels without EPG.
+  - Rematching to the same EPG no longer re-saves the channel or queues program-parse tasks; only assignments that actually change are written and refreshed.
+
+### Performance
+
+- **EPG auto-match memory and throughput improvements.**
+  - Single-channel matching streams active EPG rows and keeps only the best match plus the top 20 candidates in memory; ML validates at most 21 names per channel instead of embedding the full catalog.
+  - Strong fuzzy matches (≥75% single channel, ≥80% bulk) skip ML entirely, avoiding a ~500MB PyTorch load when the fuzzy result is already reliable.
+  - Bulk matching uses a single fuzzy pass per channel instead of scanning the full catalog twice for best match and top candidates.
+  - Bulk exact `tvg_id` / Gracenote matching uses an in-memory index built alongside the EPG catalog (`build_epg_matching_catalog()`), giving O(1) lookups with no extra database queries.
+  - Bulk match apply uses batched queries (two fetches plus `bulk_update`) instead of one `EPGData.objects.get()` per matched channel.
+  - EPG normalization settings are cached once per matching run, avoiding repeated `CoreSettings` reads when normalizing thousands of names.
+
+### Fixed
+
+- **EPG auto-match reliability fixes.**
+  - Memory could spike to multiple GB on large EPG sources when building a full in-memory catalog before fuzzy matching; single-channel matching now streams rows and bounds ML work to a small candidate set.
+  - Wrong channel assignments from global ML similarity; ML validation now checks the fuzzy best match (or top fuzzy candidates as a last resort) instead of scoring the entire catalog.
+  - Channel form auto-match spinner could stick after errors or early task exits; all single-channel outcomes now push a WebSocket result, and the UI clears loading state after a 3-minute timeout.
+  - Bulk auto-match completion no longer calls `batch-set-epg` from the WebSocket handler, which had been re-applying every match and queueing redundant `parse_programs_for_tvg_id` tasks even when assignments were unchanged.
+
 ## [0.26.0] - 2026-06-07
 
 ### Added

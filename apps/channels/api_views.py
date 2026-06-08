@@ -2087,7 +2087,7 @@ class ChannelViewSet(viewsets.ModelViewSet):
             fields={
                 'channel_ids': serializers.ListField(
                     child=serializers.IntegerField(),
-                    help_text='List of channel IDs to process. If empty or not provided, all channels without EPG will be processed.',
+                    help_text='List of channel IDs to process (includes channels that already have EPG). If empty or not provided, only channels without EPG are processed.',
                     required=False,
                 )
             }
@@ -2120,23 +2120,15 @@ class ChannelViewSet(viewsets.ModelViewSet):
     def match_channel_epg(self, request, pk=None):
         channel = self.get_object()
 
-        # Import the matching logic
-        from apps.channels.tasks import match_single_channel_epg
-
-        try:
-            # Try to match this specific channel - call synchronously for immediate response
-            result = match_single_channel_epg.apply_async(args=[channel.id]).get(timeout=30)
-
-            # Refresh the channel from DB to get any updates
-            channel.refresh_from_db()
-
-            return Response({
-                "message": result.get("message", "Channel matching completed"),
-                "matched": result.get("matched", False),
-                "channel": self.get_serializer(channel).data
-            })
-        except Exception as e:
-            return Response({"error": str(e)}, status=400)
+        match_single_channel_epg.delay(channel.id)
+        return Response(
+            {
+                "message": f"EPG matching started for channel '{channel.name}'",
+                "accepted": True,
+                "channel_id": channel.id,
+            },
+            status=status.HTTP_202_ACCEPTED,
+        )
 
     # ─────────────────────────────────────────────────────────
     # 7) Set EPG and Refresh
@@ -2321,7 +2313,6 @@ class ChannelViewSet(viewsets.ModelViewSet):
 
         # Extract channel IDs upfront
         channel_updates = {}
-        unique_epg_ids = set()
 
         for assoc in associations:
             channel_id = assoc.get("channel_id")
@@ -2331,24 +2322,28 @@ class ChannelViewSet(viewsets.ModelViewSet):
                 continue
 
             channel_updates[channel_id] = epg_data_id
-            if epg_data_id:
-                unique_epg_ids.add(epg_data_id)
 
         # Batch fetch all channels (single query)
         channels_dict = {
             c.id: c for c in Channel.objects.filter(id__in=channel_updates.keys())
         }
 
-        # Collect channels to update
+        # Collect channels whose EPG assignment actually changes
         channels_to_update = []
+        changed_epg_ids = set()
         for channel_id, epg_data_id in channel_updates.items():
             if channel_id not in channels_dict:
                 logger.error(f"Channel with ID {channel_id} not found")
                 continue
 
             channel = channels_dict[channel_id]
+            if channel.epg_data_id == epg_data_id:
+                continue
+
             channel.epg_data_id = epg_data_id
             channels_to_update.append(channel)
+            if epg_data_id:
+                changed_epg_ids.add(epg_data_id)
 
         # Bulk update all channels (single query)
         if channels_to_update:
@@ -2361,25 +2356,25 @@ class ChannelViewSet(viewsets.ModelViewSet):
 
         channels_updated = len(channels_to_update)
 
-        # Trigger program refresh for unique EPG data IDs (skip dummy EPGs)
+        # Trigger program refresh only for EPG ids newly assigned (skip dummy/SD)
         from apps.epg.tasks import parse_programs_for_tvg_id
         from apps.epg.models import EPGData
 
         # Batch fetch EPG data (single query)
         epg_data_dict = {
             epg.id: epg
-            for epg in EPGData.objects.filter(id__in=unique_epg_ids).select_related('epg_source')
+            for epg in EPGData.objects.filter(id__in=changed_epg_ids).select_related('epg_source')
         }
 
         programs_refreshed = 0
-        for epg_id in unique_epg_ids:
+        for epg_id in changed_epg_ids:
             epg_data = epg_data_dict.get(epg_id)
             if not epg_data:
                 logger.error(f"EPGData with ID {epg_id} not found")
                 continue
 
-            # Only refresh non-dummy EPG sources
-            if epg_data.epg_source.source_type != 'dummy':
+            source_type = epg_data.epg_source.source_type if epg_data.epg_source else None
+            if source_type not in ('dummy', 'schedules_direct'):
                 parse_programs_for_tvg_id.delay(epg_id)
                 programs_refreshed += 1
 
