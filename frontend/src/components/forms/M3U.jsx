@@ -6,7 +6,6 @@ import M3UProfiles from './M3UProfiles';
 import {
   Box,
   Button,
-  Checkbox,
   Divider,
   FileInput,
   Flex,
@@ -58,7 +57,8 @@ const M3U = ({
   const [filterModalOpen, setFilterModalOpen] = useState(false);
   const [scheduleType, setScheduleType] = useState('interval');
   const [serverGroupsManagerOpen, setServerGroupsManagerOpen] = useState(false);
-  const [serverGroupsCreateOnOpen, setServerGroupsCreateOnOpen] = useState(false);
+  const [serverGroupsCreateOnOpen, setServerGroupsCreateOnOpen] =
+    useState(false);
 
   const form = useForm({
     mode: 'uncontrolled',
@@ -212,7 +212,7 @@ const M3U = ({
   return (
     <>
       <Modal
-        size={700}
+        size={960}
         opened={isOpen}
         onClose={close}
         title="M3U Account"
@@ -225,10 +225,9 @@ const M3U = ({
         <LoadingOverlay visible={form.submitting} overlayBlur={2} />
 
         <form onSubmit={form.onSubmit(onSubmit)}>
-          <Group justify="space-between" align="top">
-            <Stack gap="5" style={{ flex: 1, minWidth: 0 }}>
+          <Group align="flex-start" gap="md" wrap="nowrap">
+            <Stack gap="xs" style={{ flex: 1, minWidth: 0 }}>
               <TextInput
-                style={{ width: '100%' }}
                 id="name"
                 name="name"
                 label="Name"
@@ -237,7 +236,6 @@ const M3U = ({
                 key={form.key('name')}
               />
               <TextInput
-                style={{ width: '100%' }}
                 id="server_url"
                 name="server_url"
                 label="URL"
@@ -245,7 +243,6 @@ const M3U = ({
                 {...form.getInputProps('server_url')}
                 key={form.key('server_url')}
               />
-
               <Select
                 id="account_type"
                 name="account_type"
@@ -257,49 +254,15 @@ const M3U = ({
                   </>
                 }
                 data={[
-                  {
-                    value: 'STD',
-                    label: 'Standard',
-                  },
-                  {
-                    value: 'XC',
-                    label: 'Xtream Codes',
-                  },
+                  { value: 'STD', label: 'Standard' },
+                  { value: 'XC', label: 'Xtream Codes' },
                 ]}
                 key={form.key('account_type')}
                 {...form.getInputProps('account_type')}
               />
 
               {form.getValues().account_type == 'XC' && (
-                <Box>
-                  {!m3uAccount && (
-                    <Group justify="space-between">
-                      <Box>Create EPG</Box>
-                      <Switch
-                        id="create_epg"
-                        name="create_epg"
-                        description="Automatically create matching EPG source for this Xtream account"
-                        key={form.key('create_epg')}
-                        {...form.getInputProps('create_epg', {
-                          type: 'checkbox',
-                        })}
-                      />
-                    </Group>
-                  )}
-
-                  <Group justify="space-between">
-                    <Box>Enable VOD Scanning</Box>
-                    <Switch
-                      id="enable_vod"
-                      name="enable_vod"
-                      description="Scan and import VOD content (movies/series) from this Xtream account"
-                      key={form.key('enable_vod')}
-                      {...form.getInputProps('enable_vod', {
-                        type: 'checkbox',
-                      })}
-                    />
-                  </Group>
-
+                <>
                   <TextInput
                     id="username"
                     name="username"
@@ -307,7 +270,6 @@ const M3U = ({
                     description="Username for Xtream Codes authentication"
                     {...form.getInputProps('username')}
                   />
-
                   <PasswordInput
                     id="password"
                     name="password"
@@ -315,7 +277,7 @@ const M3U = ({
                     description="Password for Xtream Codes authentication (leave empty to keep existing)"
                     {...form.getInputProps('password')}
                   />
-                </Box>
+                </>
               )}
 
               {form.getValues().account_type != 'XC' && (
@@ -335,7 +297,6 @@ const M3U = ({
                       },
                     }}
                   />
-
                   <DateTimePicker
                     label="Expiration Date"
                     description="Set an expiration date to receive a warning notification"
@@ -351,9 +312,8 @@ const M3U = ({
 
             <Divider size="sm" orientation="vertical" />
 
-            <Stack gap="5" style={{ flex: 1 }}>
+            <Stack gap="xs" style={{ flex: 1, minWidth: 0 }}>
               <NumberInput
-                style={{ width: '100%' }}
                 id="max_streams"
                 name="max_streams"
                 label="Max Streams"
@@ -363,7 +323,6 @@ const M3U = ({
                 {...form.getInputProps('max_streams')}
                 key={form.key('max_streams')}
               />
-
               <Select
                 id="server_group"
                 name="server_group"
@@ -399,7 +358,6 @@ const M3U = ({
               >
                 Manage server groups
               </Button>
-
               <Select
                 id="user_agent"
                 name="user_agent"
@@ -414,7 +372,11 @@ const M3U = ({
                   }))
                 )}
               />
+            </Stack>
 
+            <Divider size="sm" orientation="vertical" />
+
+            <Stack gap="xs" style={{ flex: 1, minWidth: 0 }}>
               <ScheduleInput
                 scheduleType={scheduleType}
                 onScheduleTypeChange={setScheduleType}
@@ -435,7 +397,6 @@ const M3U = ({
                   </>
                 }
               />
-
               <NumberInput
                 min={0}
                 max={365}
@@ -444,74 +405,114 @@ const M3U = ({
                 {...form.getInputProps('stale_stream_days')}
               />
 
-              <NumberInput
-                min={0}
-                max={999}
-                label="VOD Priority"
-                description="Priority for VOD provider selection (higher numbers = higher priority). Used when multiple providers offer the same content."
-                {...form.getInputProps('priority')}
-                key={form.key('priority')}
-              />
+              {form.getValues().account_type == 'XC' && (
+                <Box>
+                  <NumberInput
+                    min={0}
+                    max={999}
+                    label="VOD Priority"
+                    description="Priority for VOD provider selection (higher numbers = higher priority). Used when multiple providers offer the same content."
+                    {...form.getInputProps('priority')}
+                    key={form.key('priority')}
+                  />
+
+                  <Group justify="space-between">
+                    <Box>Enable VOD Scanning</Box>
+                    <Switch
+                      id="enable_vod"
+                      name="enable_vod"
+                      description="Scan and import VOD content (movies/series) from this Xtream account"
+                      key={form.key('enable_vod')}
+                      {...form.getInputProps('enable_vod', {
+                        type: 'checkbox',
+                      })}
+                    />
+                  </Group>
+
+                  {!m3uAccount && (
+                    <Group justify="space-between">
+                      <Box>Create EPG</Box>
+                      <Switch
+                        id="create_epg"
+                        name="create_epg"
+                        description="Automatically create matching EPG source for this Xtream account"
+                        key={form.key('create_epg')}
+                        {...form.getInputProps('create_epg', {
+                          type: 'checkbox',
+                        })}
+                      />
+                    </Group>
+                  )}
+                </Box>
+              )}
             </Stack>
           </Group>
 
           <Divider my="md" />
 
-          <Flex gap="xl" wrap="wrap">
-            <Checkbox
+          <Flex
+            gap="md"
+            justify="space-between"
+            align="center"
+            wrap="wrap"
+            mih={50}
+          >
+            <Switch
+              id="is_active"
+              name="is_active"
               label="Is Active"
               description="Enable or disable this M3U account"
-              {...form.getInputProps('is_active', { type: 'checkbox' })}
               key={form.key('is_active')}
+              {...form.getInputProps('is_active', { type: 'checkbox' })}
             />
-          </Flex>
 
-          <Flex mih={50} gap="xs" justify="flex-end" align="flex-end">
-            {playlist && (
-              <>
-                <Button
-                  variant="filled"
-                  size="sm"
-                  onClick={() => setFilterModalOpen(true)}
-                >
-                  Filters
-                </Button>
-                <Button
-                  variant="filled"
-                  // color={theme.custom.colors.buttonPrimary}
-                  size="sm"
-                  onClick={() => {
-                    // If this is an XC account with VOD enabled, fetch VOD categories
-                    if (
-                      m3uAccount?.account_type === 'XC' &&
-                      m3uAccount?.enable_vod
-                    ) {
-                      fetchCategories();
-                    }
-                    setGroupFilterModalOpen(true);
-                  }}
-                >
-                  Groups
-                </Button>
-                <Button
-                  variant="filled"
-                  // color={theme.custom.colors.buttonPrimary}
-                  size="sm"
-                  onClick={() => setProfileModalOpen(true)}
-                >
-                  Profiles
-                </Button>
-              </>
-            )}
+            <Flex gap="xs" align="center">
+              {playlist && (
+                <>
+                  <Button
+                    variant="filled"
+                    size="sm"
+                    onClick={() => setFilterModalOpen(true)}
+                  >
+                    Filters
+                  </Button>
+                  <Button
+                    variant="filled"
+                    // color={theme.custom.colors.buttonPrimary}
+                    size="sm"
+                    onClick={() => {
+                      // If this is an XC account with VOD enabled, fetch VOD categories
+                      if (
+                        m3uAccount?.account_type === 'XC' &&
+                        m3uAccount?.enable_vod
+                      ) {
+                        fetchCategories();
+                      }
+                      setGroupFilterModalOpen(true);
+                    }}
+                  >
+                    Groups
+                  </Button>
+                  <Button
+                    variant="filled"
+                    // color={theme.custom.colors.buttonPrimary}
+                    size="sm"
+                    onClick={() => setProfileModalOpen(true)}
+                  >
+                    Profiles
+                  </Button>
+                </>
+              )}
 
-            <Button
-              type="submit"
-              variant="filled"
-              disabled={form.submitting}
-              size="sm"
-            >
-              Save
-            </Button>
+              <Button
+                type="submit"
+                variant="filled"
+                disabled={form.submitting}
+                size="sm"
+              >
+                Save
+              </Button>
+            </Flex>
           </Flex>
         </form>
       </Modal>
