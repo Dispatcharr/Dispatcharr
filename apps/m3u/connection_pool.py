@@ -209,9 +209,7 @@ def move_credential_slot_on_profile_switch(
     if old_fp == new_fp:
         return True
 
-    released = _release_credential_slot_by_profile_id(old_profile.id, redis_client)
-    if not released:
-        _release_server_group_slot_for_profile(old_profile, redis_client)
+    _release_credential_slot_by_profile_id(old_profile.id, redis_client)
 
     cred_reserved, cred_key = _reserve_server_group_slot_for_profile(
         new_profile, redis_client
@@ -279,15 +277,6 @@ def _reserve_server_group_slot_for_profile(
     return False, None
 
 
-def _release_server_group_slot_for_profile(profile, redis_client) -> None:
-    group = get_enforced_server_group_for_profile(profile)
-    if not group or profile.max_streams == 0:
-        return
-    cred_key = _credential_counter_key(profile, group)
-    if cred_key:
-        _safe_decr(redis_client, cred_key)
-
-
 def reserve_profile_slot(
     profile, redis_client
 ) -> Tuple[bool, int, Optional[ReserveFailureReason]]:
@@ -326,26 +315,9 @@ def reserve_profile_slot(
 
 def release_profile_slot(profile_id: int, redis_client) -> None:
     """Release profile and shared credential slots after a stream end."""
-    released_via_stored_key = _release_credential_slot_by_profile_id(
-        profile_id, redis_client
-    )
+    _release_credential_slot_by_profile_id(profile_id, redis_client)
 
     profile_key = profile_connections_key(profile_id)
     current = int(redis_client.get(profile_key) or 0)
     if current > 0:
         redis_client.decr(profile_key)
-
-    if released_via_stored_key:
-        return
-
-    # Legacy fallback for reservations made before credential release keys were stored.
-    from apps.m3u.models import M3UAccountProfile
-
-    try:
-        profile = M3UAccountProfile.objects.select_related(
-            "m3u_account__server_group"
-        ).get(id=profile_id)
-    except M3UAccountProfile.DoesNotExist:
-        return
-
-    _release_server_group_slot_for_profile(profile, redis_client)
