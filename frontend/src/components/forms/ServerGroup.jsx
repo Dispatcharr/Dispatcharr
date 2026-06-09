@@ -3,20 +3,21 @@ import { useForm } from 'react-hook-form';
 import { yupResolver } from '@hookform/resolvers/yup';
 import * as Yup from 'yup';
 import API from '../../api';
-import { Button, Flex, Modal, NumberInput, TextInput } from '@mantine/core';
+import { Button, Flex, Modal, TextInput } from '@mantine/core';
 
 const schema = Yup.object({
   name: Yup.string().required('Name is required'),
-  max_streams: Yup.number()
-    .min(0, 'Must be 0 or greater')
-    .required('Max streams is required'),
 });
 
-const ServerGroupForm = ({ serverGroup = null, isOpen, onClose }) => {
+const ServerGroupForm = ({
+  serverGroup = null,
+  isOpen,
+  onClose,
+  onSaved,
+}) => {
   const defaultValues = useMemo(
     () => ({
       name: serverGroup?.name || '',
-      max_streams: serverGroup?.max_streams ?? 0,
     }),
     [serverGroup]
   );
@@ -26,23 +27,21 @@ const ServerGroupForm = ({ serverGroup = null, isOpen, onClose }) => {
     handleSubmit,
     formState: { errors, isSubmitting },
     reset,
-    setValue,
-    watch,
   } = useForm({
     defaultValues,
     resolver: yupResolver(schema),
   });
 
   const onSubmit = async (values) => {
-    const payload = {
-      ...values,
-      max_streams: Number(values.max_streams),
-    };
-
+    let response;
     if (serverGroup?.id) {
-      await API.updateServerGroup({ id: serverGroup.id, ...payload });
+      response = await API.updateServerGroup({ id: serverGroup.id, ...values });
     } else {
-      await API.addServerGroup(payload);
+      response = await API.addServerGroup(values);
+    }
+
+    if (response) {
+      onSaved?.(response);
     }
 
     reset();
@@ -57,24 +56,21 @@ const ServerGroupForm = ({ serverGroup = null, isOpen, onClose }) => {
     return null;
   }
 
-  const maxStreams = watch('max_streams');
-
   return (
-    <Modal opened={isOpen} onClose={onClose} title="Server Group">
+    <Modal
+      opened={isOpen}
+      onClose={onClose}
+      title="Server Group"
+      centered
+      withinPortal
+      zIndex={400}
+    >
       <form onSubmit={handleSubmit(onSubmit)}>
         <TextInput
           label="Name"
+          description="Accounts in this group share connection limits when they use the same provider login. Limits come from each account profile's max streams."
           {...register('name')}
           error={errors.name?.message}
-        />
-
-        <NumberInput
-          label="Max Streams"
-          description="Set above 0 to enable shared login pooling. Per-login limits use each account profile's max streams. Unlimited profiles (0) skip cross-account enforcement."
-          min={0}
-          value={maxStreams}
-          onChange={(value) => setValue('max_streams', value ?? 0)}
-          error={errors.max_streams?.message}
         />
 
         <Flex mih={50} gap="xs" justify="flex-end" align="flex-end">

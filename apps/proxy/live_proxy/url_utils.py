@@ -8,7 +8,10 @@ from typing import Optional, Tuple, List
 from django.shortcuts import get_object_or_404
 from apps.channels.models import Channel, Stream
 from apps.m3u.models import M3UAccount, M3UAccountProfile
-from apps.m3u.connection_pool import profile_connections_key
+from apps.m3u.connection_pool import (
+    get_profile_connection_count,
+    profile_available_for_channel_switch,
+)
 from core.models import UserAgent, CoreSettings, StreamProfile
 from .utils import get_logger
 from uuid import UUID
@@ -54,12 +57,14 @@ def get_stream_object(id: str):
         logger.info(f"Fetching stream hash {id}")
         return get_object_or_404(Stream, stream_hash=id)
 
-def generate_stream_url(channel_id: str) -> Tuple[str, str, bool, Optional[int], bool]:
+def generate_stream_url(
+    channel_id: str,
+) -> Tuple[str, str, bool, Optional[int], bool, Optional[str]]:
     """
     Generate the appropriate stream URL for a channel or stream based on its profile settings.
 
     Returns:
-        Tuple: (stream_url, user_agent, transcode_flag, profile_id, slot_reserved)
+        Tuple: (stream_url, user_agent, transcode_flag, profile_id, slot_reserved, error_reason)
     """
     try:
         channel_or_stream = get_stream_object(channel_id)
@@ -71,12 +76,12 @@ def generate_stream_url(channel_id: str) -> Tuple[str, str, bool, Optional[int],
 
             if not stream.m3u_account:
                 logger.error(f"Stream {stream.id} has no M3U account")
-                return None, None, False, None, False
+                return None, None, False, None, False, "Stream has no M3U account"
 
             stream_id, profile_id, error_reason, slot_reserved = stream.get_stream()
             if not stream_id or not profile_id:
                 logger.error(f"No profile available for stream {stream.id}: {error_reason}")
-                return None, None, False, None, False
+                return None, None, False, None, False, error_reason
 
             try:
                 profile = M3UAccountProfile.objects.get(id=profile_id)
@@ -95,24 +100,23 @@ def generate_stream_url(channel_id: str) -> Tuple[str, str, bool, Optional[int],
                 transcode = not stream_profile.is_proxy()
                 stream_profile_id = stream_profile.id
 
-                return stream_url, stream_user_agent, transcode, stream_profile_id, slot_reserved
+                return stream_url, stream_user_agent, transcode, stream_profile_id, slot_reserved, None
             except Exception as e:
                 logger.error(f"Error generating stream URL for stream {stream.id}: {e}")
                 if slot_reserved:
                     stream.release_stream()
-                return None, None, False, None, False
+                return None, None, False, None, False, str(e)
 
 
         # Handle channel preview (existing logic)
         channel = channel_or_stream
 
         # Get stream and profile for this channel
-        # Note: get_stream now returns 3 values (stream_id, profile_id, error_reason)
         stream_id, profile_id, error_reason, slot_reserved = channel.get_stream()
 
         if not stream_id or not profile_id:
             logger.error(f"No stream available for channel {channel_id}: {error_reason}")
-            return None, None, False, None, False
+            return None, None, False, None, False, error_reason
 
         # get_stream() allocated a connection slot - ensure it's released on any error
         try:
@@ -142,16 +146,16 @@ def generate_stream_url(channel_id: str) -> Tuple[str, str, bool, Optional[int],
 
             stream_profile_id = stream_profile.id
 
-            return stream_url, stream_user_agent, transcode, stream_profile_id, slot_reserved
+            return stream_url, stream_user_agent, transcode, stream_profile_id, slot_reserved, None
         except Exception as e:
             logger.error(f"Error generating stream URL for channel {channel_id}: {e}")
             if slot_reserved:
                 if not channel.release_stream():
                     logger.warning(f"Failed to release stream for channel {channel_id} after URL generation error")
-            return None, None, False, None, False
+            return None, None, False, None, False, str(e)
     except Exception as e:
         logger.error(f"Error generating stream URL: {e}")
-        return None, None, False, None, False
+        return None, None, False, None, False, str(e)
 
 def transform_url(input_url: str, search_pattern: str, replace_pattern: str) -> str:
     """
@@ -229,10 +233,6 @@ def get_stream_info_for_switch(channel_id: str, target_stream_id: Optional[int] 
             selected_profile = None
             for profile in profiles:
                 if redis_client:
-                    current_connections = int(
-                        redis_client.get(profile_connections_key(profile.id)) or 0
-                    )
-
                     channel_using_profile = False
                     existing_stream_id = redis_client.get(f"channel_stream:{channel.id}")
                     if existing_stream_id:
@@ -242,20 +242,22 @@ def get_stream_info_for_switch(channel_id: str, target_stream_id: Optional[int] 
                         if existing_profile_id and int(existing_profile_id) == profile.id:
                             channel_using_profile = True
 
-                    effective_connections = current_connections - (
-                        1 if channel_using_profile else 0
-                    )
-
-                    if profile.max_streams == 0 or effective_connections < profile.max_streams:
+                    if profile_available_for_channel_switch(
+                        profile,
+                        redis_client,
+                        channel_already_on_profile=channel_using_profile,
+                    ):
+                        current_connections = get_profile_connection_count(
+                            profile, redis_client
+                        )
                         selected_profile = profile
                         logger.debug(
                             f"Selected profile {profile.id} with "
-                            f"{effective_connections}/{profile.max_streams} effective connections"
+                            f"{current_connections}/{profile.max_streams} connections"
                         )
                         break
                     logger.debug(
-                        f"Profile {profile.id} at max connections: "
-                        f"{effective_connections}/{profile.max_streams}"
+                        f"Profile {profile.id} unavailable for channel switch"
                     )
                 else:
                     selected_profile = profile
@@ -368,38 +370,38 @@ def get_alternate_streams(channel_id: str, current_stream_id: Optional[int] = No
 
                 selected_profile = None
                 for profile in profiles:
-                    # Check connection availability
                     if redis_client:
-                        profile_connections_key = f"profile_connections:{profile.id}"
-                        current_connections = int(redis_client.get(profile_connections_key) or 0)
-
-                        # Check if this channel is already using this profile
                         channel_using_profile = False
                         existing_stream_id = redis_client.get(f"channel_stream:{channel.id}")
                         if existing_stream_id:
-                            # Decode bytes to string/int for proper Redis key lookup
-                            existing_stream_id = existing_stream_id
-                            existing_profile_id = redis_client.get(f"stream_profile:{existing_stream_id}")
+                            existing_profile_id = redis_client.get(
+                                f"stream_profile:{existing_stream_id}"
+                            )
                             if existing_profile_id and int(existing_profile_id) == profile.id:
                                 channel_using_profile = True
-                                logger.debug(f"Channel {channel.id} already using profile {profile.id}")
+                                logger.debug(
+                                    f"Channel {channel.id} already using profile {profile.id}"
+                                )
 
-                        # Calculate effective connections (subtract 1 if channel already using this profile)
-                        effective_connections = current_connections - (1 if channel_using_profile else 0)
-
-                        # Check if profile has available slots
-                        if profile.max_streams == 0 or effective_connections < profile.max_streams:
+                        if profile_available_for_channel_switch(
+                            profile,
+                            redis_client,
+                            channel_already_on_profile=channel_using_profile,
+                        ):
+                            current_connections = get_profile_connection_count(
+                                profile, redis_client
+                            )
                             selected_profile = profile
                             logger.debug(
                                 f"Found available profile {profile.id} for stream {stream.id}: "
-                                f"{effective_connections}/{profile.max_streams} effective "
-                                f"(current: {current_connections}, already using: {channel_using_profile})"
+                                f"{current_connections}/{profile.max_streams} "
+                                f"(already using: {channel_using_profile})"
                             )
                             break
-                        else:
-                            logger.debug(f"Profile {profile.id} at max connections: {effective_connections}/{profile.max_streams} (current: {current_connections}, already using: {channel_using_profile})")
+                        logger.debug(
+                            f"Profile {profile.id} unavailable for alternate stream {stream.id}"
+                        )
                     else:
-                        # No Redis available, assume first active profile is okay
                         selected_profile = profile
                         break
 

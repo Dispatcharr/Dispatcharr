@@ -2,8 +2,7 @@
 Shared connection pool enforcement for M3U accounts in the same ServerGroup.
 
 Profile selection rotates across M3UAccountProfile rows using each profile's own
-Redis counter (the pre-pool behavior). When an account belongs to a ServerGroup
-with max_streams > 0, a credential-scoped counter is checked on reserve/release
+Redis counter (the pre-pool behavior). When an account belongs to a ServerGroup, a credential-scoped counter is checked on reserve/release
 so accounts sharing the same provider login share one limit without blocking
 unrelated logins on the same group. Account profiles with max_streams=0 skip
 credential enforcement for that profile.
@@ -129,9 +128,9 @@ def get_profile_credential_fingerprint(profile) -> Optional[str]:
 
 
 def get_enforced_server_group_for_profile(profile):
-    """Return the shared ServerGroup limit for this profile's account, if configured."""
+    """Return the ServerGroup for credential pooling when the account is assigned to one."""
     group = profile.m3u_account.server_group
-    if group and group.max_streams > 0:
+    if group:
         return group
     return None
 
@@ -155,11 +154,6 @@ def get_credential_connection_count(profile, redis_client) -> int:
     if not cred_key:
         return 0
     return int(redis_client.get(cred_key) or 0)
-
-
-def get_group_connection_count(profile, redis_client) -> int:
-    """Backwards-compatible alias for credential-scoped group usage."""
-    return get_credential_connection_count(profile, redis_client)
 
 
 def profile_has_capacity_for_selection(profile, redis_client) -> bool:
@@ -186,6 +180,55 @@ def pool_has_capacity_for_profile(profile, redis_client) -> bool:
     return profile_has_capacity_for_selection(profile, redis_client) and group_has_capacity_for_profile(
         profile, redis_client
     )
+
+
+def profile_available_for_channel_switch(
+    profile, redis_client, *, channel_already_on_profile: bool
+) -> bool:
+    """
+    Non-mutating capacity check when selecting a profile for an in-flight channel.
+
+    If the channel already holds this profile's slots, skip re-checking capacity.
+    """
+    if channel_already_on_profile:
+        return True
+    return pool_has_capacity_for_profile(profile, redis_client)
+
+
+def move_credential_slot_on_profile_switch(
+    old_profile, new_profile, redis_client
+) -> bool:
+    """
+    Move the shared credential counter when switching to a different provider login.
+
+    Profile counters are managed separately by Channel.update_stream_profile().
+    Returns False when the new profile's credential pool is full.
+    """
+    old_fp = get_profile_credential_fingerprint(old_profile)
+    new_fp = get_profile_credential_fingerprint(new_profile)
+    if old_fp == new_fp:
+        return True
+
+    released = _release_credential_slot_by_profile_id(old_profile.id, redis_client)
+    if not released:
+        _release_server_group_slot_for_profile(old_profile, redis_client)
+
+    cred_reserved, cred_key = _reserve_server_group_slot_for_profile(
+        new_profile, redis_client
+    )
+    if not cred_reserved:
+        restore_reserved, restore_key = _reserve_server_group_slot_for_profile(
+            old_profile, redis_client
+        )
+        if restore_reserved and restore_key:
+            _remember_credential_release_key(
+                old_profile.id, restore_key, redis_client
+            )
+        return False
+
+    if cred_key:
+        _remember_credential_release_key(new_profile.id, cred_key, redis_client)
+    return True
 
 
 def _safe_decr(redis_client, key: str) -> None:

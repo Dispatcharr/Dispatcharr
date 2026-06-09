@@ -8,6 +8,7 @@ import React, {
 import API from '../../api';
 import usePlaylistsStore from '../../store/playlists';
 import M3UForm from '../forms/M3U';
+import ServerGroupsManagerModal from '../ServerGroupsManagerModal';
 import { TableHelper } from '../../helpers';
 import {
   useMantineTheme,
@@ -144,6 +145,7 @@ const M3UTable = () => {
   const [data, setData] = useState([]);
   const [sorting, setSorting] = useState([{ id: 'name', desc: '' }]);
   const [deleting, setDeleting] = useState(false);
+  const [serverGroupsManagerOpen, setServerGroupsManagerOpen] = useState(false);
 
   const playlists = usePlaylistsStore((s) => s.playlists);
   const refreshProgress = usePlaylistsStore((s) => s.refreshProgress);
@@ -988,21 +990,31 @@ const M3UTable = () => {
         >
           M3U Accounts
         </Text>
-        <Button
-          leftSection={<SquarePlus size={14} />}
-          variant="light"
-          size="xs"
-          onClick={() => editPlaylist()}
-          p={5}
-          color="green"
-          style={{
-            borderWidth: '1px',
-            borderColor: 'green',
-            color: 'white',
-          }}
-        >
-          Add M3U
-        </Button>
+        <Flex gap={6}>
+          <Button
+            variant="light"
+            size="xs"
+            onClick={() => setServerGroupsManagerOpen(true)}
+            p={5}
+          >
+            Server Groups
+          </Button>
+          <Button
+            leftSection={<SquarePlus size={14} />}
+            variant="light"
+            size="xs"
+            onClick={() => editPlaylist()}
+            p={5}
+            color="green"
+            style={{
+              borderWidth: '1px',
+              borderColor: 'green',
+              color: 'white',
+            }}
+          >
+            Add M3U
+          </Button>
+        </Flex>
       </Flex>
 
       <Paper
@@ -1049,6 +1061,11 @@ const M3UTable = () => {
         isOpen={playlistModalOpen}
         onClose={closeModal}
         playlistCreated={playlistCreated}
+      />
+
+      <ServerGroupsManagerModal
+        isOpen={serverGroupsManagerOpen}
+        onClose={() => setServerGroupsManagerOpen(false)}
       />
 
       <ConfirmationDialog

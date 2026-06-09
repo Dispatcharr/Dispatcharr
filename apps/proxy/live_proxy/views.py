@@ -221,9 +221,14 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
             # Try to get a stream with fixed interval retries
             while should_retry and time.time() - wait_start_time < retry_timeout:
                 attempt += 1
-                stream_url, stream_user_agent, transcode, profile_value, slot_reserved = (
-                    generate_stream_url(channel_id)
-                )
+                (
+                    stream_url,
+                    stream_user_agent,
+                    transcode,
+                    profile_value,
+                    slot_reserved,
+                    error_reason,
+                ) = generate_stream_url(channel_id)
 
                 if stream_url is not None:
                     logger.info(
@@ -233,7 +238,6 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
 
                 # On first failure, check if the error is retryable
                 if attempt == 1:
-                    _, _, error_reason, _ = channel.get_stream()
                     if error_reason and "maximum connection limits" not in error_reason:
                         logger.warning(
                             f"[{client_id}] Can't retry - error not related to connection limits: {error_reason}"
@@ -266,9 +270,14 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
                 logger.info(
                     f"[{client_id}] Making final attempt {attempt} at timeout boundary"
                 )
-                stream_url, stream_user_agent, transcode, profile_value, slot_reserved = (
-                    generate_stream_url(channel_id)
-                )
+                (
+                    stream_url,
+                    stream_user_agent,
+                    transcode,
+                    profile_value,
+                    slot_reserved,
+                    error_reason,
+                ) = generate_stream_url(channel_id)
                 if stream_url is not None:
                     logger.info(
                         f"[{client_id}] Successfully obtained stream on final attempt for channel {channel_id}"

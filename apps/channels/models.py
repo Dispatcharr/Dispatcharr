@@ -607,11 +607,22 @@ class Channel(models.Model):
             ChannelState.CONNECTING,
         )
 
-    def _clear_stream_assignment_keys(self, redis_client, stream_id=None) -> None:
-        """Remove channel/stream profile assignment keys from Redis."""
+    def _release_stale_stream_assignment(self, redis_client, stream_id: int) -> None:
+        """Release pool counters and remove stale channel/stream assignment keys."""
+        profile_id_bytes = redis_client.get(f"stream_profile:{stream_id}")
+        if profile_id_bytes:
+            try:
+                profile_id = int(profile_id_bytes)
+                release_profile_slot(profile_id, redis_client)
+            except (ValueError, TypeError):
+                logger.debug(
+                    "Invalid profile ID for stale assignment on stream %s: %s",
+                    stream_id,
+                    profile_id_bytes,
+                )
+
         redis_client.delete(f"channel_stream:{self.id}")
-        if stream_id is not None:
-            redis_client.delete(f"stream_profile:{stream_id}")
+        redis_client.delete(f"stream_profile:{stream_id}")
 
     def get_stream(self, requester=None):
         """
@@ -659,10 +670,10 @@ class Channel(models.Model):
                             )
                 else:
                     logger.info(
-                        f"Channel {self.uuid}: clearing stale stream assignment "
+                        f"Channel {self.uuid}: releasing stale stream assignment "
                         f"(stream={stream_id}, proxy not active)"
                     )
-                    self._clear_stream_assignment_keys(redis_client, stream_id)
+                    self._release_stale_stream_assignment(redis_client, stream_id)
 
         # No existing active stream, attempt to assign a new one
         has_streams_but_maxed_out = False
@@ -886,9 +897,29 @@ class Channel(models.Model):
         if current_profile_id == new_profile_id:
             return True
 
-        from apps.m3u.connection_pool import profile_connections_key
+        from apps.m3u.connection_pool import (
+            move_credential_slot_on_profile_switch,
+            profile_connections_key,
+        )
+        from apps.m3u.models import M3UAccountProfile
 
-        # Profile counters always move on switch; group totals stay unchanged (one stream).
+        old_profile = M3UAccountProfile.objects.select_related(
+            "m3u_account__server_group"
+        ).get(id=current_profile_id)
+        new_profile = M3UAccountProfile.objects.select_related(
+            "m3u_account__server_group"
+        ).get(id=new_profile_id)
+
+        if not move_credential_slot_on_profile_switch(
+            old_profile, new_profile, redis_client
+        ):
+            logger.warning(
+                "Shared login pool full for profile %s during stream profile switch",
+                new_profile_id,
+            )
+            return False
+
+        # Profile counters always move on switch; credential totals move only when login changes.
         old_profile_connections_key = profile_connections_key(current_profile_id)
         new_profile_connections_key = profile_connections_key(new_profile_id)
         old_count = int(redis_client.get(old_profile_connections_key) or 0)

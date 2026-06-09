@@ -7,7 +7,6 @@ from apps.m3u.connection_pool import (
     extract_credentials_from_stream_url,
     get_credential_connection_count,
     get_enforced_server_group_for_profile,
-    get_group_connection_count,
     get_profile_connection_count,
     get_profile_credential_fingerprint,
     group_has_capacity_for_profile,
@@ -94,8 +93,8 @@ class ExtractCredentialsTests(TestCase):
 
 
 class ManualServerGroupTests(TestCase):
-    def test_group_enforced_when_max_streams_set(self):
-        group = ServerGroup.objects.create(name="provider-a", max_streams=2)
+    def test_group_enforced_when_account_assigned(self):
+        group = ServerGroup.objects.create(name="provider-a")
         account = M3UAccount.objects.create(
             name="Account A",
             account_type="XC",
@@ -108,7 +107,7 @@ class ManualServerGroupTests(TestCase):
         self.assertEqual(get_enforced_server_group_for_profile(profile), group)
 
     def test_accounts_in_same_group_share_credential_counter(self):
-        group = ServerGroup.objects.create(name="shared", max_streams=2)
+        group = ServerGroup.objects.create(name="shared")
         account1 = M3UAccount.objects.create(
             name="XC Account",
             account_type="XC",
@@ -171,10 +170,7 @@ class ManualServerGroupTests(TestCase):
 class PoolEnforcementTests(TestCase):
     def setUp(self):
         self.redis = FakeRedis()
-        self.group = ServerGroup.objects.create(
-            name="test-pool",
-            max_streams=2,
-        )
+        self.group = ServerGroup.objects.create(name="test-pool")
         self.account = M3UAccount.objects.create(
             name="Test Account",
             account_type="XC",
@@ -207,8 +203,8 @@ class PoolEnforcementTests(TestCase):
         self.assertEqual(self.redis._data[cred_key], 0)
         self.assertEqual(self.redis._data[profile_key], 0)
 
-    def test_same_credential_capped_at_profile_max_not_group_max(self):
-        """Maintainer example: group max=2 but each login only allows 1."""
+    def test_same_credential_capped_at_profile_max(self):
+        """Shared credential counter is capped by each profile's max_streams."""
         account2 = M3UAccount.objects.create(
             name="Second Account",
             account_type="XC",
@@ -229,11 +225,8 @@ class PoolEnforcementTests(TestCase):
         cred_key = server_group_connections_key(self.group.id, fp)
         self.assertEqual(self.redis._data[cred_key], 1)
 
-    def test_different_logins_both_stream_when_group_max_is_one(self):
-        """Regression: group max=1 must not block a second login on another profile."""
-        self.group.max_streams = 1
-        self.group.save()
-
+    def test_different_logins_both_stream_in_same_group(self):
+        """Different provider logins keep separate credential counters in one group."""
         account = M3UAccount.objects.create(
             name="Grouped multi-login",
             account_type="XC",
@@ -288,7 +281,7 @@ class PoolEnforcementTests(TestCase):
         ):
             self.assertTrue(reserve_profile_slot(profile, self.redis)[0])
             self.assertEqual(get_credential_connection_count(profile, self.redis), 0)
-            self.assertEqual(get_group_connection_count(profile, self.redis), 0)
+            self.assertEqual(get_credential_connection_count(profile, self.redis), 0)
 
     def test_release_when_profile_row_deleted(self):
         profile_id = self.profile.id
@@ -328,12 +321,55 @@ class PoolEnforcementTests(TestCase):
         self.assertEqual(reason, "credential_full")
 
 
+class StaleAssignmentTests(TestCase):
+    def test_stale_assignment_releases_counters(self):
+        from apps.channels.models import Channel, Stream
+
+        redis = FakeRedis()
+        group = ServerGroup.objects.create(name="stale-group")
+        account = M3UAccount.objects.create(
+            name="Stale Account",
+            account_type="XC",
+            username="user",
+            password="pass",
+            server_url="http://xc.example.com",
+            server_group=group,
+            max_streams=5,
+        )
+        profile = M3UAccountProfile.objects.get(m3u_account=account, is_default=True)
+        profile.max_streams = 1
+        profile.save()
+
+        stream = Stream.objects.create(name="Stale Stream", m3u_account=account)
+        channel = Channel.objects.create(channel_number=502, name="Stale Channel")
+        channel.streams.add(stream)
+
+        reserve_profile_slot(profile, redis)
+        redis.set(f"channel_stream:{channel.id}", stream.id)
+        redis.set(f"stream_profile:{stream.id}", profile.id)
+
+        profile_key = profile_connections_key(profile.id)
+        cred_key = server_group_connections_key(
+            group.id, get_profile_credential_fingerprint(profile)
+        )
+        self.assertEqual(redis._data[profile_key], 1)
+        self.assertEqual(redis._data[cred_key], 1)
+
+        with patch("core.utils.RedisClient.get_client", return_value=redis):
+            channel._release_stale_stream_assignment(redis, stream.id)
+
+        self.assertNotIn(f"channel_stream:{channel.id}", redis._data)
+        self.assertNotIn(f"stream_profile:{stream.id}", redis._data)
+        self.assertEqual(redis._data[profile_key], 0)
+        self.assertEqual(redis._data[cred_key], 0)
+
+
 class UpdateStreamProfileTests(TestCase):
     def test_switch_updates_profile_counters_when_group_assigned(self):
         from apps.channels.models import Channel, Stream
 
         redis = FakeRedis()
-        group = ServerGroup.objects.create(name="switch-group", max_streams=2)
+        group = ServerGroup.objects.create(name="switch-group")
         account = M3UAccount.objects.create(
             name="Switch Account",
             account_type="XC",
@@ -377,6 +413,58 @@ class UpdateStreamProfileTests(TestCase):
         self.assertEqual(redis._data[profile_connections_key(profile_b.id)], 1)
         self.assertEqual(redis._data[cred_key], cred_before)
 
+    def test_switch_moves_credential_counter_when_login_changes(self):
+        from apps.channels.models import Channel, Stream
+
+        redis = FakeRedis()
+        group = ServerGroup.objects.create(name="cred-switch-group")
+        account = M3UAccount.objects.create(
+            name="Cred Switch Account",
+            account_type="XC",
+            username="login_a",
+            password="pass_a",
+            server_url="http://xc.example.com",
+            server_group=group,
+            max_streams=5,
+        )
+        profile_a = M3UAccountProfile.objects.get(m3u_account=account, is_default=True)
+        profile_a.max_streams = 1
+        profile_a.save()
+        profile_b = M3UAccountProfile.objects.create(
+            m3u_account=account,
+            name="alt_login",
+            is_default=False,
+            is_active=True,
+            max_streams=1,
+            search_pattern="",
+            replace_pattern="",
+        )
+
+        fp_a = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        fp_b = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        key_a = server_group_connections_key(group.id, fp_a)
+        key_b = server_group_connections_key(group.id, fp_b)
+
+        stream = Stream.objects.create(name="Cred Switch Stream", m3u_account=account)
+        channel = Channel.objects.create(channel_number=503, name="Cred Switch Channel")
+        channel.streams.add(stream)
+
+        with patch(
+            "apps.m3u.connection_pool.get_profile_credential_fingerprint",
+            side_effect=lambda profile: fp_a if profile.id == profile_a.id else fp_b,
+        ):
+            reserve_profile_slot(profile_a, redis)
+            redis.set(f"channel_stream:{channel.id}", stream.id)
+            redis.set(f"stream_profile:{stream.id}", profile_a.id)
+            self.assertEqual(redis._data[key_a], 1)
+            self.assertNotIn(key_b, redis._data)
+
+            with patch("core.utils.RedisClient.get_client", return_value=redis):
+                self.assertTrue(channel.update_stream_profile(profile_b.id))
+
+            self.assertEqual(redis._data[key_a], 0)
+            self.assertEqual(redis._data[key_b], 1)
+
 
 class VodProfileSelectionTests(TestCase):
     def test_get_m3u_profile_skips_default_when_profile_full(self):
@@ -409,6 +497,69 @@ class VodProfileSelectionTests(TestCase):
 
         with patch("core.utils.RedisClient.get_client", return_value=redis):
             result = _get_m3u_profile(account, None, None)
+
+        self.assertIsNotNone(result)
+        selected, _connections = result
+        self.assertEqual(selected.id, alt.id)
+
+    def test_get_m3u_profile_skips_default_when_credential_pool_full(self):
+        from apps.proxy.vod_proxy.views import _get_m3u_profile
+
+        group = ServerGroup.objects.create(name="vod-cred-pool")
+        account = M3UAccount.objects.create(
+            name="VOD pooled",
+            account_type="XC",
+            username="shared_user",
+            password="shared_pass",
+            server_url="http://xc.example.com",
+            server_group=group,
+            max_streams=5,
+        )
+        default = M3UAccountProfile.objects.get(m3u_account=account, is_default=True)
+        default.max_streams = 1
+        default.save()
+
+        alt = M3UAccountProfile.objects.create(
+            m3u_account=account,
+            name="alt_login",
+            is_default=False,
+            is_active=True,
+            max_streams=1,
+            search_pattern="",
+            replace_pattern="",
+        )
+
+        other_account = M3UAccount.objects.create(
+            name="Other pooled account",
+            account_type="XC",
+            username="shared_user",
+            password="shared_pass",
+            server_url="http://xc.example.com",
+            server_group=group,
+            max_streams=5,
+        )
+        other_profile = M3UAccountProfile.objects.get(
+            m3u_account=other_account, is_default=True
+        )
+        other_profile.max_streams = 1
+        other_profile.save()
+
+        fp_shared = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        fp_alt = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+
+        redis = FakeRedis()
+        with patch(
+            "apps.m3u.connection_pool.get_profile_credential_fingerprint",
+            side_effect=lambda profile: (
+                fp_shared
+                if profile.id in (default.id, other_profile.id)
+                else fp_alt
+            ),
+        ):
+            self.assertTrue(reserve_profile_slot(other_profile, redis)[0])
+
+            with patch("core.utils.RedisClient.get_client", return_value=redis):
+                result = _get_m3u_profile(account, None, None)
 
         self.assertIsNotNone(result)
         selected, _connections = result

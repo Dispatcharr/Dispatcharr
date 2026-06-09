@@ -36,6 +36,7 @@ import {
   prepareSubmitValues,
   updatePlaylist,
 } from '../../utils/forms/M3uUtils.js';
+import ServerGroupsManagerModal from '../ServerGroupsManagerModal';
 
 const M3U = ({
   m3uAccount = null,
@@ -56,6 +57,8 @@ const M3U = ({
   const [groupFilterModalOpen, setGroupFilterModalOpen] = useState(false);
   const [filterModalOpen, setFilterModalOpen] = useState(false);
   const [scheduleType, setScheduleType] = useState('interval');
+  const [serverGroupsManagerOpen, setServerGroupsManagerOpen] = useState(false);
+  const [serverGroupsCreateOnOpen, setServerGroupsCreateOnOpen] = useState(false);
 
   const form = useForm({
     mode: 'uncontrolled',
@@ -366,18 +369,36 @@ const M3U = ({
                 name="server_group"
                 label="Server Group"
                 description="Share login limits across accounts in a server group. Set max streams on each profile (unlimited profiles skip group enforcement)."
-                {...form.getInputProps('server_group')}
                 key={form.key('server_group')}
-                data={[{ value: '0', label: '(None)' }].concat(
-                  serverGroups.map((group) => ({
-                    label:
-                      group.max_streams > 0
-                        ? `${group.name} (max: ${group.max_streams})`
-                        : `${group.name} (unlimited)`,
+                value={form.getValues().server_group}
+                onChange={(value) => {
+                  if (value === '__new__') {
+                    setServerGroupsCreateOnOpen(true);
+                    setServerGroupsManagerOpen(true);
+                    return;
+                  }
+                  form.setFieldValue('server_group', value);
+                }}
+                data={[
+                  { value: '0', label: '(None)' },
+                  ...serverGroups.map((group) => ({
+                    label: group.name,
                     value: `${group.id}`,
-                  }))
-                )}
+                  })),
+                  { value: '__new__', label: '+ Add server group...' },
+                ]}
               />
+              <Button
+                variant="subtle"
+                size="compact-xs"
+                onClick={() => {
+                  setServerGroupsCreateOnOpen(false);
+                  setServerGroupsManagerOpen(true);
+                }}
+                style={{ alignSelf: 'flex-start' }}
+              >
+                Manage server groups
+              </Button>
 
               <Select
                 id="user_agent"
@@ -513,6 +534,20 @@ const M3U = ({
           />
         </>
       )}
+
+      <ServerGroupsManagerModal
+        isOpen={serverGroupsManagerOpen}
+        onClose={() => {
+          setServerGroupsManagerOpen(false);
+          setServerGroupsCreateOnOpen(false);
+        }}
+        openCreateOnMount={serverGroupsCreateOnOpen}
+        onGroupCreated={(group) => {
+          if (group?.id) {
+            form.setFieldValue('server_group', `${group.id}`);
+          }
+        }}
+      />
     </>
   );
 };

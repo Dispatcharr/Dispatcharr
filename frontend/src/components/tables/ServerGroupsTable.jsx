@@ -1,7 +1,10 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import API from '../../api';
 import useServerGroupsStore from '../../store/serverGroups';
+import usePlaylistsStore from '../../store/playlists';
+import useWarningsStore from '../../store/warnings';
 import ServerGroupForm from '../forms/ServerGroup';
+import ConfirmationDialog from '../ConfirmationDialog';
 import {
   ActionIcon,
   Box,
@@ -11,15 +14,15 @@ import {
   Paper,
   Stack,
   Text,
-  Tooltip,
 } from '@mantine/core';
 import { SquareMinus, SquarePen, SquarePlus } from 'lucide-react';
 import { CustomTable, useTable } from './CustomTable';
 import useLocalStorage from '../../hooks/useLocalStorage';
+import './table.css';
 
 const RowActions = ({ row, editServerGroup, deleteServerGroup }) => {
   return (
-    <>
+    <Flex gap={4}>
       <ActionIcon
         variant="transparent"
         size="sm"
@@ -36,35 +39,56 @@ const RowActions = ({ row, editServerGroup, deleteServerGroup }) => {
       >
         <SquareMinus size="18" />
       </ActionIcon>
-    </>
+    </Flex>
   );
 };
 
-const ServerGroupsTable = () => {
+const ServerGroupsTable = ({
+  onGroupCreated,
+  openCreateOnMount = false,
+}) => {
   const [serverGroup, setServerGroup] = useState(null);
   const [serverGroupModalOpen, setServerGroupModalOpen] = useState(false);
+  const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState(null);
+  const [groupToDelete, setGroupToDelete] = useState(null);
+  const [deleting, setDeleting] = useState(false);
+  const openedCreateOnMount = useRef(false);
+
+  const isWarningSuppressed = useWarningsStore((s) => s.isWarningSuppressed);
+  const suppressWarning = useWarningsStore((s) => s.suppressWarning);
 
   const serverGroups = useServerGroupsStore((state) => state.serverGroups);
   const fetchServerGroups = useServerGroupsStore(
     (state) => state.fetchServerGroups
   );
+  const playlists = usePlaylistsStore((state) => state.playlists);
   const [tableSize] = useLocalStorage('table-size', 'default');
+
+  const tableData = useMemo(
+    () =>
+      serverGroups.map((group) => ({
+        ...group,
+        accountCount: playlists.filter(
+          (playlist) => playlist.server_group === group.id
+        ).length,
+      })),
+    [serverGroups, playlists]
+  );
 
   const columns = useMemo(
     () => [
       {
         header: 'Name',
         accessorKey: 'name',
-        size: 175,
+        size: 150,
+        cell: ({ cell }) => <Text size="sm">{cell.getValue()}</Text>,
       },
       {
-        header: 'Max Streams',
-        accessorKey: 'max_streams',
-        size: 100,
-        cell: ({ cell }) => {
-          const value = cell.getValue();
-          return value === 0 ? 'Unlimited' : value;
-        },
+        header: 'Accounts',
+        accessorKey: 'accountCount',
+        size: 80,
+        cell: ({ cell }) => <Text size="sm">{cell.getValue() ?? 0}</Text>,
       },
       {
         id: 'actions',
@@ -82,8 +106,26 @@ const ServerGroupsTable = () => {
     setServerGroupModalOpen(true);
   };
 
-  const deleteServerGroup = async (id) => {
-    await API.deleteServerGroup(id);
+  const executeDeleteServerGroup = async (id) => {
+    setDeleting(true);
+    try {
+      await API.deleteServerGroup(id);
+    } finally {
+      setDeleting(false);
+      setConfirmDeleteOpen(false);
+    }
+  };
+
+  const deleteServerGroup = (id) => {
+    const group = tableData.find((item) => item.id === id);
+    setGroupToDelete(group);
+    setDeleteTarget(id);
+
+    if (isWarningSuppressed('delete-server-group')) {
+      return executeDeleteServerGroup(id);
+    }
+
+    setConfirmDeleteOpen(true);
   };
 
   const closeServerGroupForm = () => {
@@ -91,17 +133,32 @@ const ServerGroupsTable = () => {
     setServerGroupModalOpen(false);
   };
 
+  const handleServerGroupSaved = (savedGroup) => {
+    if (!serverGroup?.id) {
+      onGroupCreated?.(savedGroup);
+    }
+  };
+
   useEffect(() => {
     fetchServerGroups().finally(() => setIsLoading(false));
   }, [fetchServerGroups]);
 
-  const renderHeaderCell = (header) => {
-    return (
-      <Text size="sm" name={header.id}>
-        {header.column.columnDef.header}
-      </Text>
-    );
-  };
+  useEffect(() => {
+    if (!openCreateOnMount) {
+      openedCreateOnMount.current = false;
+      return;
+    }
+    if (!isLoading && !openedCreateOnMount.current) {
+      openedCreateOnMount.current = true;
+      editServerGroup();
+    }
+  }, [openCreateOnMount, isLoading]);
+
+  const renderHeaderCell = (header) => (
+    <Text size="sm" name={header.id}>
+      {header.column.columnDef.header}
+    </Text>
+  );
 
   const renderBodyCell = ({ row }) => {
     return (
@@ -115,14 +172,14 @@ const ServerGroupsTable = () => {
 
   const table = useTable({
     columns,
-    data: serverGroups,
-    allRowIds: serverGroups.map((group) => group.id),
+    data: tableData,
+    allRowIds: tableData.map((group) => group.id),
     bodyCellRenderFns: {
       actions: renderBodyCell,
     },
     headerCellRenderFns: {
       name: renderHeaderCell,
-      max_streams: renderHeaderCell,
+      accountCount: renderHeaderCell,
       actions: renderHeaderCell,
     },
   });
@@ -146,23 +203,22 @@ const ServerGroupsTable = () => {
           }}
         >
           <Flex gap={6}>
-            <Tooltip label="Create a shared connection pool for multiple accounts">
-              <Button
-                leftSection={<SquarePlus size={18} />}
-                variant="light"
-                size="xs"
-                onClick={() => editServerGroup()}
-                p={5}
-                color="green"
-                style={{
-                  borderWidth: '1px',
-                  borderColor: 'green',
-                  color: 'white',
-                }}
-              >
-                Add Server Group
-              </Button>
-            </Tooltip>
+            <Button
+              leftSection={<SquarePlus size={18} />}
+              variant="light"
+              size="xs"
+              onClick={() => editServerGroup()}
+              p={5}
+              color="green"
+              title="Create a shared connection pool for multiple accounts"
+              style={{
+                borderWidth: '1px',
+                borderColor: 'green',
+                color: 'white',
+              }}
+            >
+              Add Server Group
+            </Button>
           </Flex>
         </Box>
       </Paper>
@@ -185,7 +241,7 @@ const ServerGroupsTable = () => {
             borderRadius: 'var(--mantine-radius-default)',
           }}
         >
-          <div style={{ minWidth: 400 }}>
+          <div style={{ minWidth: 320 }}>
             <CustomTable table={table} />
           </div>
         </Box>
@@ -195,6 +251,34 @@ const ServerGroupsTable = () => {
         serverGroup={serverGroup}
         isOpen={serverGroupModalOpen}
         onClose={closeServerGroupForm}
+        onSaved={handleServerGroupSaved}
+      />
+
+      <ConfirmationDialog
+        opened={confirmDeleteOpen}
+        onClose={() => setConfirmDeleteOpen(false)}
+        onConfirm={() => executeDeleteServerGroup(deleteTarget)}
+        loading={deleting}
+        title="Confirm Server Group Deletion"
+        message={
+          groupToDelete ? (
+            <div style={{ whiteSpace: 'pre-line' }}>
+              {`Are you sure you want to delete the following server group?
+
+Name: ${groupToDelete.name}
+Accounts: ${groupToDelete.accountCount ?? 0}
+
+Accounts in this group will no longer share connection limits. This action cannot be undone.`}
+            </div>
+          ) : (
+            'Are you sure you want to delete this server group? This action cannot be undone.'
+          )
+        }
+        confirmLabel="Delete"
+        cancelLabel="Cancel"
+        actionKey="delete-server-group"
+        onSuppressChange={suppressWarning}
+        zIndex={401}
       />
     </Stack>
   );

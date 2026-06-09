@@ -262,7 +262,7 @@ def _get_m3u_profile(m3u_account, profile_id, session_id=None):
         from core.utils import RedisClient
         from apps.m3u.connection_pool import (
             get_profile_connection_count,
-            profile_has_capacity_for_selection,
+            pool_has_capacity_for_profile,
         )
         redis_client = RedisClient.get_client()
 
@@ -316,7 +316,7 @@ def _get_m3u_profile(m3u_account, profile_id, session_id=None):
                 profile_connections_key = f"profile_connections:{profile.id}"
                 current_connections = get_profile_connection_count(profile, redis_client)
 
-                if profile_has_capacity_for_selection(profile, redis_client):
+                if pool_has_capacity_for_profile(profile, redis_client):
                     logger.info(f"[PROFILE-SELECTION] Using requested profile {profile.id}: {current_connections}/{profile.max_streams} connections")
                     return (profile, current_connections)
                 logger.warning(f"[PROFILE-SELECTION] Requested profile {profile.id} is at capacity: {current_connections}/{profile.max_streams}")
@@ -340,11 +340,14 @@ def _get_m3u_profile(m3u_account, profile_id, session_id=None):
         for profile in profiles:
             current_connections = get_profile_connection_count(profile, redis_client)
 
-            if profile_has_capacity_for_selection(profile, redis_client):
+            if pool_has_capacity_for_profile(profile, redis_client):
                 logger.info(f"[PROFILE-SELECTION] Selected profile {profile.id} ({profile.name}): {current_connections}/{profile.max_streams} connections")
                 return (profile, current_connections)
             else:
-                logger.debug(f"[PROFILE-SELECTION] Profile {profile.id} at capacity: {current_connections}/{profile.max_streams}")
+                logger.debug(
+                    f"[PROFILE-SELECTION] Profile {profile.id} unavailable "
+                    f"(profile={current_connections}/{profile.max_streams})"
+                )
 
         # All profiles are at capacity - return None to trigger error response
         logger.error(f"[PROFILE-SELECTION] All profiles at capacity for M3U account {m3u_account.id}, rejecting request")

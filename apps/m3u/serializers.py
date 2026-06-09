@@ -408,4 +408,4 @@ class ServerGroupSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = ServerGroup
-        fields = ["id", "name", "max_streams"]
+        fields = ["id", "name"]
