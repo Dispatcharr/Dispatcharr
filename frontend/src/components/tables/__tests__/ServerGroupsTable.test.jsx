@@ -41,10 +41,6 @@ vi.mock('../../forms/ServerGroup', () => ({
   default: () => null,
 }));
 
-vi.mock('../../../hooks/useLocalStorage', () => ({
-  default: () => ['default', vi.fn()],
-}));
-
 describe('ServerGroupsTable', () => {
   beforeEach(() => {
     vi.clearAllMocks();

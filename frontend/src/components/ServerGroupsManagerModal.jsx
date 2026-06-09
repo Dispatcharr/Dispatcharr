@@ -12,7 +12,7 @@ const ServerGroupsManagerModal = ({
       opened={isOpen}
       onClose={onClose}
       title="Server Groups"
-      size="lg"
+      size="md"
       centered
     >
       {isOpen ? (

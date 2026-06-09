@@ -11,42 +11,39 @@ import {
   Button,
   Center,
   Flex,
-  Paper,
   Stack,
   Text,
 } from '@mantine/core';
 import { SquareMinus, SquarePen, SquarePlus } from 'lucide-react';
 import { CustomTable, useTable } from './CustomTable';
-import useLocalStorage from '../../hooks/useLocalStorage';
 import './table.css';
 
-const RowActions = ({ row, editServerGroup, deleteServerGroup }) => {
-  return (
-    <Flex gap={4}>
-      <ActionIcon
-        variant="transparent"
-        size="sm"
-        color="yellow.5"
-        onClick={() => editServerGroup(row.original)}
-      >
-        <SquarePen size="18" />
-      </ActionIcon>
-      <ActionIcon
-        variant="transparent"
-        size="sm"
-        color="red.9"
-        onClick={() => deleteServerGroup(row.original.id)}
-      >
-        <SquareMinus size="18" />
-      </ActionIcon>
-    </Flex>
-  );
-};
+const TABLE_WIDTH = 360;
+const ACTIONS_COLUMN_SIZE = 76;
+const ACCOUNTS_COLUMN_SIZE = 72;
 
-const ServerGroupsTable = ({
-  onGroupCreated,
-  openCreateOnMount = false,
-}) => {
+const RowActions = ({ row, editServerGroup, deleteServerGroup }) => (
+  <Flex gap={4} justify="center" w="100%">
+    <ActionIcon
+      variant="transparent"
+      size="sm"
+      color="yellow.5"
+      onClick={() => editServerGroup(row.original)}
+    >
+      <SquarePen size="18" />
+    </ActionIcon>
+    <ActionIcon
+      variant="transparent"
+      size="sm"
+      color="red.9"
+      onClick={() => deleteServerGroup(row.original.id)}
+    >
+      <SquareMinus size="18" />
+    </ActionIcon>
+  </Flex>
+);
+
+const ServerGroupsTable = ({ onGroupCreated, openCreateOnMount = false }) => {
   const [serverGroup, setServerGroup] = useState(null);
   const [serverGroupModalOpen, setServerGroupModalOpen] = useState(false);
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
@@ -63,7 +60,6 @@ const ServerGroupsTable = ({
     (state) => state.fetchServerGroups
   );
   const playlists = usePlaylistsStore((state) => state.playlists);
-  const [tableSize] = useLocalStorage('table-size', 'default');
 
   const tableData = useMemo(
     () =>
@@ -81,22 +77,33 @@ const ServerGroupsTable = ({
       {
         header: 'Name',
         accessorKey: 'name',
-        size: 150,
-        cell: ({ cell }) => <Text size="sm">{cell.getValue()}</Text>,
+        grow: true,
+        minSize: 100,
+        cell: ({ cell }) => (
+          <Text size="sm" truncate>
+            {cell.getValue()}
+          </Text>
+        ),
       },
       {
         header: 'Accounts',
         accessorKey: 'accountCount',
-        size: 80,
-        cell: ({ cell }) => <Text size="sm">{cell.getValue() ?? 0}</Text>,
+        size: ACCOUNTS_COLUMN_SIZE,
+        minSize: 65,
+        cell: ({ cell }) => (
+          <Center w="100%">
+            <Text size="sm">{cell.getValue() ?? 0}</Text>
+          </Center>
+        ),
       },
       {
         id: 'actions',
         header: 'Actions',
-        size: tableSize == 'compact' ? 50 : 75,
+        size: ACTIONS_COLUMN_SIZE,
+        minSize: 65,
       },
     ],
-    [tableSize]
+    []
   );
 
   const [isLoading, setIsLoading] = useState(true);
@@ -160,20 +167,19 @@ const ServerGroupsTable = ({
     </Text>
   );
 
-  const renderBodyCell = ({ row }) => {
-    return (
-      <RowActions
-        row={row}
-        editServerGroup={editServerGroup}
-        deleteServerGroup={deleteServerGroup}
-      />
-    );
-  };
+  const renderBodyCell = ({ row }) => (
+    <RowActions
+      row={row}
+      editServerGroup={editServerGroup}
+      deleteServerGroup={deleteServerGroup}
+    />
+  );
 
   const table = useTable({
     columns,
     data: tableData,
     allRowIds: tableData.map((group) => group.id),
+    enableColumnResizing: false,
     bodyCellRenderFns: {
       actions: renderBodyCell,
     },
@@ -186,23 +192,23 @@ const ServerGroupsTable = ({
 
   if (isLoading) {
     return (
-      <Center>
+      <Center py="md">
         <Text size="sm">Loading server groups...</Text>
       </Center>
     );
   }
 
   return (
-    <Stack gap={0} style={{ padding: 0 }}>
-      <Paper>
-        <Box
-          style={{
-            display: 'flex',
-            justifyContent: 'flex-end',
-            padding: 10,
-          }}
-        >
-          <Flex gap={6}>
+    <Stack gap="md">
+      <Text size="sm" c="dimmed">
+        Group accounts that share the same provider login so their connection
+        limits are enforced together. Assign a group when editing an M3U
+        account.
+      </Text>
+
+      <Flex justify="center">
+        <Stack gap="xs" w={TABLE_WIDTH} maw="100%">
+          <Flex justify="flex-end">
             <Button
               leftSection={<SquarePlus size={18} />}
               variant="light"
@@ -220,32 +226,28 @@ const ServerGroupsTable = ({
               Add Server Group
             </Button>
           </Flex>
-        </Box>
-      </Paper>
 
-      <Box
-        style={{
-          display: 'flex',
-          flexDirection: 'column',
-          maxHeight: 300,
-          width: '100%',
-          overflow: 'hidden',
-        }}
-      >
-        <Box
-          style={{
-            flex: 1,
-            overflowY: 'auto',
-            overflowX: 'auto',
-            border: 'solid 1px rgb(68,68,68)',
-            borderRadius: 'var(--mantine-radius-default)',
-          }}
-        >
-          <div style={{ minWidth: 320 }}>
-            <CustomTable table={table} />
-          </div>
-        </Box>
-      </Box>
+          <Box
+            style={{
+              maxHeight: 280,
+              overflowY: 'auto',
+              overflowX: 'auto',
+              border: 'solid 1px rgb(68,68,68)',
+              borderRadius: 'var(--mantine-radius-default)',
+            }}
+          >
+            {tableData.length === 0 ? (
+              <Center py="lg" px="xl">
+                <Text size="sm" c="dimmed">
+                  No server groups yet.
+                </Text>
+              </Center>
+            ) : (
+              <CustomTable table={table} />
+            )}
+          </Box>
+        </Stack>
+      </Flex>
 
       <ServerGroupForm
         serverGroup={serverGroup}
