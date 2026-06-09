@@ -348,10 +348,7 @@ def create_profile_for_m3u_account(sender, instance, created, **kwargs):
             replace_pattern="$1",
         )
     else:
-        profile = M3UAccountProfile.objects.get(
+        M3UAccountProfile.objects.filter(
             m3u_account=instance,
             is_default=True,
-        )
-
-        profile.max_streams = instance.max_streams
-        profile.save()
+        ).update(max_streams=instance.max_streams)
