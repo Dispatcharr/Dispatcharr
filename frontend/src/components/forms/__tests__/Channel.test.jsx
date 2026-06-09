@@ -18,6 +18,12 @@ vi.mock('../../../utils/notificationUtils.js', () => ({
   updateNotification: vi.fn(),
 }));
 
+vi.mock('../../../api', () => ({
+  default: {
+    getCurrentProgramForEpg: vi.fn().mockResolvedValue(null),
+  },
+}));
+
 vi.mock('../../../utils/forms/ChannelUtils.js', () => ({
   addChannel: vi.fn(),
   clearChannelOverrides: vi.fn(),
@@ -117,8 +123,25 @@ vi.mock('@hookform/resolvers/yup', () => ({
 
 // ── lucide-react mock ──────────────────────────────────────────────────────────
 vi.mock('lucide-react', () => ({
+  Blocks: () => <svg data-testid="icon-blocks" />,
+  ChartLine: () => <svg data-testid="icon-chart-line" />,
+  Database: () => <svg data-testid="icon-database" />,
+  Download: () => <svg data-testid="icon-download" />,
+  FileImage: () => <svg data-testid="icon-file-image" />,
+  LayoutGrid: () => <svg data-testid="icon-layout-grid" />,
   ListOrdered: () => <svg data-testid="icon-list-ordered" />,
+  Logs: () => <svg data-testid="icon-logs" />,
+  MonitorCog: () => <svg data-testid="icon-monitor-cog" />,
+  Package: () => <svg data-testid="icon-package" />,
+  Play: () => <svg data-testid="icon-play" />,
+  PlugZap: () => <svg data-testid="icon-plug-zap" />,
+  Radio: () => <svg data-testid="icon-radio" />,
+  Settings: () => <svg data-testid="icon-settings" />,
   SquarePlus: () => <svg data-testid="icon-square-plus" />,
+  Undo2: () => <svg data-testid="icon-undo" />,
+  User: () => <svg data-testid="icon-user" />,
+  Video: () => <svg data-testid="icon-video" />,
+  Webhook: () => <svg data-testid="icon-webhook" />,
   X: () => <svg data-testid="icon-x" />,
   Zap: () => <svg data-testid="icon-zap" />,
 }));
@@ -678,6 +701,25 @@ describe('ChannelForm', () => {
       render(<ChannelForm {...defaultProps({ channel: makeChannel() })} />);
       const autoMatch = screen.getByText('Auto Match');
       expect(autoMatch).not.toBeDisabled();
+    });
+
+    it('shows in-progress notification when matchChannelEpg returns accepted', async () => {
+      const channel = makeChannel();
+      vi.mocked(ChannelUtils.matchChannelEpg).mockResolvedValue({
+        accepted: true,
+        message: 'EPG matching started',
+      });
+      setupMocks({ channel });
+      render(<ChannelForm {...defaultProps({ channel })} />);
+      fireEvent.click(screen.getByText('Auto Match'));
+      await waitFor(() => {
+        expect(showNotification).toHaveBeenCalledWith(
+          expect.objectContaining({
+            title: 'Matching in Progress',
+            color: 'blue',
+          })
+        );
+      });
     });
 
     it('calls matchChannelEpg with the channel on click', async () => {

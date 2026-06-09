@@ -1,7 +1,15 @@
-import React, { useRef, useState, useMemo } from 'react';
+import React, { useState, useMemo } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { copyToClipboard } from '../utils';
-import { Copy, LogOut, ChevronDown, ChevronRight, Heart } from 'lucide-react';
+import {
+  Copy,
+  LogOut,
+  ChevronDown,
+  ChevronRight,
+  Heart,
+  HelpCircle,
+} from 'lucide-react';
+import AboutModal from './AboutModal';
 import { getOrderedNavItems } from '../config/navigation';
 import {
   Avatar,
@@ -10,10 +18,10 @@ import {
   Box,
   Text,
   UnstyledButton,
-  TextInput,
   ActionIcon,
   AppShellNavbar,
   ScrollArea,
+  Skeleton,
   Tooltip,
 } from '@mantine/core';
 import logo from '../images/logo.png';
@@ -153,9 +161,9 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
   const getNavOrder = useAuthStore((s) => s.getNavOrder);
   const getHiddenNav = useAuthStore((s) => s.getHiddenNav);
 
-  const publicIPRef = useRef(null);
-
   const [userFormOpen, setUserFormOpen] = useState(false);
+  const [aboutOpen, setAboutOpen] = useState(false);
+  const [ipRevealed, setIpRevealed] = useState(false);
 
   const closeUserForm = () => setUserFormOpen(false);
 
@@ -280,35 +288,106 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
         }}
       >
         {isAuthenticated && (
-          <Stack gap="sm">
-            {!collapsed && (
-              <TextInput
-                label="Public IP"
-                ref={publicIPRef}
-                value={environment.public_ip}
-                readOnly={true}
-                leftSection={
-                  environment.country_code && (
-                    <img
-                      src={`https://flagcdn.com/16x12/${environment.country_code.toLowerCase()}.png`}
-                      alt={environment.country_name || environment.country_code}
-                      title={
-                        environment.country_name || environment.country_code
-                      }
-                    />
-                  )
-                }
-                rightSection={
-                  <ActionIcon
-                    variant="transparent"
-                    color="gray.9"
-                    onClick={copyPublicIP}
+          <Stack gap="sm" style={{ width: '100%' }}>
+            {!collapsed &&
+              environment.ip_lookup_enabled !== false &&
+              environment.ip_lookup_pending && (
+                <Box>
+                  <Text size="sm" fw={500} mb={4}>
+                    Public IP
+                  </Text>
+                  <Skeleton height={36} radius="sm" />
+                </Box>
+              )}
+
+            {!collapsed &&
+              environment.ip_lookup_enabled !== false &&
+              !environment.ip_lookup_pending &&
+              environment.public_ip &&
+              !environment.public_ip.startsWith('Error') && (
+                <Box
+                  onClick={() => setIpRevealed((v) => !v)}
+                  style={{ cursor: 'pointer' }}
+                >
+                  <Text size="sm" fw={500} mb={4}>
+                    Public IP
+                  </Text>
+                  <Box
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      border: '1px solid var(--mantine-color-default-border)',
+                      borderRadius: 'var(--mantine-radius-sm)',
+                      backgroundColor: 'var(--mantine-color-dark-6)',
+                      height: '36px',
+                      paddingLeft: '10px',
+                      gap: '8px',
+                    }}
                   >
-                    <Copy />
-                  </ActionIcon>
-                }
-              />
-            )}
+                    {environment.country_code && (
+                      <img
+                        src={`https://flagcdn.com/16x12/${environment.country_code.toLowerCase()}.png`}
+                        alt={
+                          environment.country_name || environment.country_code
+                        }
+                        title={[
+                          environment.country_name || environment.country_code,
+                          environment.city,
+                        ]
+                          .filter(Boolean)
+                          .join(', ')}
+                        style={{ flexShrink: 0 }}
+                      />
+                    )}
+                    <Box style={{ flex: 1, overflow: 'hidden' }}>
+                      <span
+                        style={{
+                          display: 'block',
+                          whiteSpace: 'nowrap',
+                          fontSize: 'var(--mantine-font-size-sm)',
+                          color: 'var(--mantine-color-text)',
+                        }}
+                      >
+                        {(() => {
+                          const ip = environment.public_ip;
+                          const isIPv6 = ip.includes(':');
+                          const sep = isIPv6 ? ':' : '.';
+                          const parts = ip.split(sep);
+                          const splitAt = isIPv6 ? 4 : 2;
+                          const visible =
+                            parts.slice(0, splitAt).join(sep) + sep;
+                          const hidden = parts.slice(splitAt).join(sep);
+                          return (
+                            <>
+                              {visible}
+                              <span
+                                style={{
+                                  filter: ipRevealed ? 'none' : 'blur(5px)',
+                                  transition: 'filter 0.15s',
+                                  userSelect: ipRevealed ? 'text' : 'none',
+                                }}
+                              >
+                                {hidden}
+                              </span>
+                            </>
+                          );
+                        })()}
+                      </span>
+                    </Box>
+                    <ActionIcon
+                      variant="transparent"
+                      color="gray.9"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        copyPublicIP();
+                      }}
+                      style={{ flexShrink: 0 }}
+                    >
+                      <Copy />
+                    </ActionIcon>
+                  </Box>
+                </Box>
+              )}
 
             {!collapsed && authUser && (
               <Group
@@ -327,7 +406,7 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
               </Group>
             )}
             {collapsed && (
-              <Group gap="xs">
+              <Group justify="center" style={{ width: '100%' }}>
                 <Avatar src="" radius="xl" />
               </Group>
             )}
@@ -372,6 +451,15 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
             </Text>
           </Tooltip>
           <Group gap="xs" wrap="nowrap">
+            <Tooltip label="About" position="top">
+              <ActionIcon
+                variant="transparent"
+                color="gray"
+                onClick={() => setAboutOpen(true)}
+              >
+                <HelpCircle size={20} />
+              </ActionIcon>
+            </Tooltip>
             <DonateButton />
             {isAuthenticated && <NotificationCenter />}
           </Group>
@@ -389,10 +477,20 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
         >
           {isAuthenticated && <NotificationCenter />}
           <DonateButton tooltipPosition="right" />
+          <Tooltip label="About" position="right">
+            <ActionIcon
+              variant="transparent"
+              color="gray"
+              onClick={() => setAboutOpen(true)}
+            >
+              <HelpCircle size={20} />
+            </ActionIcon>
+          </Tooltip>
         </Box>
       )}
 
       <UserForm user={authUser} isOpen={userFormOpen} onClose={closeUserForm} />
+      <AboutModal isOpen={aboutOpen} onClose={() => setAboutOpen(false)} />
     </AppShellNavbar>
   );
 };

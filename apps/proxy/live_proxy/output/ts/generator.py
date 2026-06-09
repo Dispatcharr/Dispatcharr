@@ -140,11 +140,8 @@ class StreamGenerator:
             self._cleanup()
 
     def _wait_for_initialization(self):
-        """Wait for channel initialization to complete, sending keepalive packets."""
         initialization_start = time.time()
         max_init_wait = ConfigHelper.client_wait_timeout()
-        keepalive_interval = 0.5
-        last_keepalive = 0
         proxy_server = ProxyServer.get_instance()
 
         while time.time() - initialization_start < max_init_wait:
@@ -169,16 +166,7 @@ class StreamGenerator:
                     yield create_ts_packet('error', "Error: Channel is stopping")
                     return False
 
-            # Send PAT+PMT+null so clients recognise a valid TS program and keep
-            # buffering instead of timing out from missing program info.
-            if time.time() - last_keepalive >= keepalive_interval:
-                logger.debug(f"[{self.client_id}] Sending keepalive during initialization")
-                keepalive_data = create_ts_packet('null')
-                yield keepalive_data
-                self.bytes_sent += len(keepalive_data)
-                last_keepalive = time.time()
-            else:
-                gevent.sleep(0.1)
+            gevent.sleep(0.1)
 
         logger.warning(f"[{self.client_id}] Timed out waiting for initialization")
         yield create_ts_packet('error', "Error: Initialization timeout")

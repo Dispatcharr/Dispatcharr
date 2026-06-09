@@ -59,6 +59,8 @@ if REDIS_SSL:
 else:
     print("Redis TLS: disabled")
 
+ENABLE_IP_LOOKUP = os.environ.get("DISPATCHARR_ENABLE_IP_LOOKUP", "true").lower() == "true"
+
 # Set DEBUG to True for development, False for production
 if os.environ.get("DISPATCHARR_DEBUG", "False").lower() == "true":
     DEBUG = True
@@ -111,7 +113,7 @@ XC_PROFILE_REFRESH_DELAY = float(os.environ.get('XC_PROFILE_REFRESH_DELAY', '2.5
 
 # Database optimization settings
 DATABASE_STATEMENT_TIMEOUT = 300  # Seconds before timing out long-running queries
-DATABASE_CONN_MAX_AGE = 0  # Close after each request; gevent makes per-greenlet connections
+DATABASE_CONN_MAX_AGE = 0  # geventpool intercepts close(); pool handles reuse
 
 # Disable atomic requests for performance-sensitive views
 ATOMIC_REQUESTS = False
@@ -221,13 +223,18 @@ if os.getenv("DB_ENGINE", None) == "sqlite":
 else:
     DATABASES = {
         "default": {
-            "ENGINE": "django.db.backends.postgresql",
+            "ENGINE": "django_db_geventpool.backends.postgresql_psycopg3",
             "NAME": os.environ.get("POSTGRES_DB", "dispatcharr"),
             "USER": os.environ.get("POSTGRES_USER", "dispatch"),
             "PASSWORD": os.environ.get("POSTGRES_PASSWORD", "secret"),
             "HOST": os.environ.get("POSTGRES_HOST", "localhost"),
             "PORT": int(os.environ.get("POSTGRES_PORT", 5432)),
             "CONN_MAX_AGE": DATABASE_CONN_MAX_AGE,
+            "OPTIONS": {
+                "MAX_CONNS": 8,   # Per-worker pool size; 4 workers × 8 = 32 total < pg max_connections=100
+                "REUSE_CONNS": 3, # Connections to keep warm between requests
+                "pool": False,    # Disable Django's native psycopg3 pool; geventpool manages connections
+            },
         }
     }
 
@@ -238,9 +245,9 @@ else:
             ("POSTGRES_SSL_KEY", POSTGRES_SSL_KEY),
         ], "PostgreSQL")
 
-        DATABASES["default"]["OPTIONS"] = {
+        DATABASES["default"]["OPTIONS"].update({
             "sslmode": POSTGRES_SSL_MODE,
-        }
+        })
         if POSTGRES_SSL_CA_CERT:
             DATABASES["default"]["OPTIONS"]["sslrootcert"] = POSTGRES_SSL_CA_CERT
         if POSTGRES_SSL_CERT:

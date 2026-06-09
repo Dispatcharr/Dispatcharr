@@ -33,12 +33,10 @@ import { useElementSize } from '@mantine/hooks';
 import { VariableSizeList } from 'react-window';
 import {
   buildChannelIdMap,
-  calculateDesiredScrollPosition,
   calculateEarliestProgramStart,
   calculateEnd,
   calculateHourTimeline,
   calculateLatestProgramEnd,
-  calculateLeftScrollPosition,
   calculateNowPosition,
   calculateScrollPosition,
   calculateScrollPositionByTimeClick,
@@ -47,7 +45,6 @@ import {
   computeRowHeights,
   createRecording,
   createSeriesRule,
-  evaluateSeriesRule,
   fetchPrograms,
   fetchRules,
   filterGuideChannels,
@@ -66,6 +63,7 @@ import {
   PX_PER_MS,
   calcProgressPct,
   sortChannels,
+  evaluateSeriesRulesByTvgId,
 } from '../utils/guideUtils';
 import API from '../api';
 import { getShowVideoUrl } from '../utils/cards/RecordingCardUtils.js';
@@ -739,13 +737,22 @@ export default function TVChannelGuide({ startDate, endDate }) {
       return;
     }
 
-    await createRecording(channel, program);
+    await createRecording({
+      channel: `${channel.id}`,
+      start_time: program.start_time,
+      end_time: program.end_time,
+      custom_properties: { program },
+    });
     showNotification({ title: 'Recording scheduled' });
   }, []);
 
   const saveSeriesRule = useCallback(async (program, mode) => {
-    await createSeriesRule(program, mode);
-    await evaluateSeriesRule(program);
+    await createSeriesRule({
+      tvg_id: program.tvg_id,
+      mode,
+      title: program.title,
+    });
+    await evaluateSeriesRulesByTvgId(program.tvg_id);
     // recordings_refreshed WS event triggers the debounced fetchRecordings()
     showNotification({
       title: mode === 'new' ? 'Record new episodes' : 'Record all episodes',

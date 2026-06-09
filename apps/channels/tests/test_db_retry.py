@@ -196,15 +196,17 @@ class InitialConnectionRetryTests(TestCase):
     base URL before falling back to the next candidate."""
 
     def test_reconnect_max_constant_exists_in_run_recording(self):
-        """run_recording must define a max-reconnect limit to prevent
-        infinite retries on the same broken base URL."""
+        """run_recording must use a time-bounded FFmpeg outage window to prevent
+        infinite restarts when the source stream is permanently down."""
         import inspect
-        from apps.channels.tasks import run_recording
+        from apps.channels.tasks import run_recording, _dvr_ffmpeg_retry_window_seconds
         source = inspect.getsource(run_recording)
 
-        # The reconnection counter pattern must be present
+        self.assertGreater(_dvr_ffmpeg_retry_window_seconds(), 0)
         self.assertIn("reconnect", source.lower(),
-                       "run_recording must contain reconnection logic")
+                       "run_recording must contain input reconnection flags")
+        self.assertIn("_ffmpeg_outage_started", source)
+        self.assertIn("_ffmpeg_retry_window", source)
 
 
 # ---------------------------------------------------------------------------

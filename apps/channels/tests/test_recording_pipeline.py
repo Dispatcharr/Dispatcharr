@@ -365,46 +365,44 @@ class RecordingStatusLifecycleTests(TestCase):
 # =========================================================================
 
 class ConcatFlagsTests(TestCase):
-    """Verify that the finalize phase uses error-tolerant ffmpeg flags
-    when concatenating pre-restart segments."""
+    """Verify error-tolerant FFmpeg flags on the HLS segment concat command."""
 
-    def test_concat_command_includes_error_tolerant_flags(self):
-        """Inspect the source code to confirm error-tolerant flags are present.
-        This is a static analysis test — no ffmpeg execution needed."""
+    def test_hls_concat_cmd_includes_error_tolerant_flags(self):
+        from apps.channels.tasks import _dvr_build_hls_concat_cmd
+
+        cmd = _dvr_build_hls_concat_cmd("/data/concat.txt", "/data/out.mkv")
+        self.assertIn("+genpts+igndts+discardcorrupt", cmd)
+        self.assertIn("-err_detect", cmd)
+        self.assertEqual(cmd[cmd.index("-err_detect") + 1], "ignore_err")
+        self.assertIn("-avoid_negative_ts", cmd)
+        self.assertEqual(cmd[cmd.index("-avoid_negative_ts") + 1], "make_zero")
+        self.assertIn("concat", cmd)
+        self.assertEqual(cmd[-1], "/data/out.mkv")
+
+    def test_hls_concat_cmd_supports_mp4_fallback_extra_args(self):
+        from apps.channels.tasks import _dvr_build_hls_concat_cmd
+
+        cmd = _dvr_build_hls_concat_cmd(
+            "/data/concat.txt",
+            "/data/intermediate.mp4",
+            extra_args=["-bsf:a", "aac_adtstoasc"],
+        )
+        self.assertIn("aac_adtstoasc", cmd)
+        self.assertEqual(cmd[-1], "/data/intermediate.mp4")
+
+    def test_run_recording_uses_hls_concat_helper(self):
         import inspect
         from apps.channels.tasks import run_recording
+
         source = inspect.getsource(run_recording)
+        self.assertIn("_dvr_build_hls_concat_cmd", source)
 
-        # The concat subprocess.run call must include these flags
-        self.assertIn("+genpts+igndts+discardcorrupt", source,
-                       "Concat must use +genpts+igndts+discardcorrupt fflags")
-        self.assertIn("ignore_err", source,
-                       "Concat must use -err_detect ignore_err")
-        self.assertIn("-f", source)
-        self.assertIn("concat", source)
-
-    def test_concat_goes_directly_to_mkv(self):
-        """Concat must produce MKV directly (not intermediate .ts) to
-        preserve timestamp boundaries and avoid playback freeze at splice."""
+    def test_recover_recordings_uses_hls_concat_helper(self):
         import inspect
-        from apps.channels.tasks import run_recording
-        source = inspect.getsource(run_recording)
+        from apps.channels.tasks import recover_recordings_on_startup
 
-        # Must contain reset_timestamps for proper segment boundary handling
-        self.assertIn("reset_timestamps", source,
-                       "Concat must use -reset_timestamps 1 for seamless seeking")
-        # Must write directly to final_path (MKV), not an intermediate .ts
-        self.assertIn("_concat_did_remux", source,
-                       "Concat path must set flag to skip separate remux step")
-
-    def test_segment_time_metadata_present(self):
-        """Verify concat uses -segment_time_metadata for boundary awareness."""
-        import inspect
-        from apps.channels.tasks import run_recording
-        source = inspect.getsource(run_recording)
-
-        self.assertIn("segment_time_metadata", source,
-                       "Concat must use -segment_time_metadata 1 for segment boundary handling")
+        source = inspect.getsource(recover_recordings_on_startup)
+        self.assertIn("_dvr_build_hls_concat_cmd", source)
 
 
 # =========================================================================
@@ -484,6 +482,92 @@ class RecoverySkipListTests(TestCase):
 
         # Should NOT have dispatched a recovery task
         mock_run.apply_async.assert_not_called()
+
+
+# =========================================================================
+# 7. FFmpeg in-process retry loop
+# =========================================================================
+
+class FfmpegRetryTests(TestCase):
+    """Verify FFmpeg restart logic for mid-recording crashes and stalls."""
+
+    def test_ffmpeg_retry_constants_and_helpers_exist(self):
+        from apps.channels import tasks as dvr_tasks
+
+        self.assertGreater(dvr_tasks._dvr_ffmpeg_retry_window_seconds(), 0)
+        self.assertEqual(dvr_tasks._dvr_count_hls_segments(None), 0)
+        self.assertEqual(dvr_tasks._dvr_count_hls_segments("/nonexistent"), 0)
+        self.assertEqual(dvr_tasks._dvr_ffmpeg_retry_backoff_seconds(1), 0.25)
+        self.assertEqual(dvr_tasks._dvr_ffmpeg_retry_backoff_seconds(12), 3.0)
+
+    @patch("apps.proxy.live_proxy.config_helper.ConfigHelper.stream_timeout", return_value=60)
+    @patch("apps.proxy.live_proxy.config_helper.ConfigHelper.failover_grace_period", return_value=20)
+    def test_retry_window_matches_live_proxy_timeouts(self, _grace, _stream):
+        from apps.channels.tasks import _dvr_ffmpeg_retry_window_seconds
+
+        self.assertEqual(_dvr_ffmpeg_retry_window_seconds(), 80.0)
+
+    def test_hls_start_number_zero_when_playlist_exists(self):
+        import tempfile
+        from apps.channels.tasks import _dvr_hls_start_number
+
+        with tempfile.TemporaryDirectory() as tmp:
+            m3u8 = os.path.join(tmp, "index.m3u8")
+            open(os.path.join(tmp, "seg_00000.ts"), "wb").write(b"\x00")
+            open(os.path.join(tmp, "seg_00013.ts"), "wb").write(b"\x00")
+            with open(m3u8, "w") as f:
+                f.write("#EXTM3U\n#EXT-X-TARGETDURATION:4\n")
+                f.write("seg_00000.ts\nseg_00013.ts\n")
+            # append_list reloads playlist entries; start_number must stay 0.
+            self.assertEqual(_dvr_hls_start_number(tmp, m3u8), 0)
+
+    def test_hls_start_number_from_max_index_without_playlist(self):
+        import tempfile
+        from apps.channels.tasks import _dvr_hls_start_number
+
+        with tempfile.TemporaryDirectory() as tmp:
+            open(os.path.join(tmp, "seg_00000.ts"), "wb").write(b"\x00")
+            open(os.path.join(tmp, "seg_00013.ts"), "wb").write(b"\x00")
+            self.assertEqual(_dvr_hls_start_number(tmp, os.path.join(tmp, "index.m3u8")), 14)
+
+    def test_hls_start_number_zero_on_fresh_dir(self):
+        import tempfile
+        from apps.channels.tasks import _dvr_hls_start_number
+
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(_dvr_hls_start_number(tmp, os.path.join(tmp, "index.m3u8")), 0)
+
+    def test_build_ffmpeg_cmd_continues_hls_numbering(self):
+        from apps.channels.tasks import _dvr_build_ffmpeg_cmd
+
+        cmd = _dvr_build_ffmpeg_cmd(
+            "http://127.0.0.1:5656/proxy/ts/stream/uuid",
+            71,
+            "/data/recordings/.dvr_71_hls/index.m3u8",
+            "/data/recordings/.dvr_71_hls/seg_%05d.ts",
+            42,
+        )
+        self.assertIn("-start_number", cmd)
+        self.assertEqual(cmd[cmd.index("-start_number") + 1], "42")
+        hls_flags = cmd[cmd.index("-hls_flags") + 1]
+        self.assertIn("append_list", hls_flags)
+        self.assertIn("omit_endlist", hls_flags)
+        self.assertIn("-err_detect", cmd)
+        self.assertEqual(cmd[cmd.index("-err_detect") + 1], "ignore_err")
+
+    def test_run_recording_has_retry_loop(self):
+        import inspect
+        from apps.channels.tasks import run_recording
+
+        source = inspect.getsource(run_recording)
+        self.assertIn("_ffmpeg_retry_count", source)
+        self.assertIn("_ffmpeg_outage_started", source)
+        self.assertIn("_ffmpeg_retry_window", source)
+        self.assertIn("_break_reason", source)
+        self.assertIn("ffmpeg_outage_window_exhausted", source)
+        self.assertIn("_dvr_build_ffmpeg_cmd", source)
+        self.assertIn("_dvr_hls_start_number", source)
+        self.assertIn("_ffmpeg_retry_count = 0", source)
 
 
 # =========================================================================

@@ -1,0 +1,65 @@
+on:
+  pull_request_target:
+    types: [opened, reopened, edited]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+
+      # Request a bot user token
+      - uses: actions/create-github-app-token@v1
+        id: app-token
+        with:
+          app-id: ${{ secrets.BOT_APP_ID }}
+          private-key: ${{ secrets.BOT_PRIVATE_KEY }}
+
+      # Delete old bot comments before posting fresh ones
+      - uses: Dispatcharr/repo-bot/actions/comment-collapse@v1
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          mode: delete
+
+      # Template + Agreement Check
+      - uses: Dispatcharr/repo-bot/actions/template-enforcer@v1
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          event-type: pull_request
+          required-markers: "## How was it tested?, ## Checklist, - [x] I agree to the [Contributor License Agreement](../blob/dev/CONTRIBUTING.md#contributor-license-agreement)"
+          enforcement: comment-only
+          bypass-for-members: true
+          close-comment: |
+            ## PR requirements not met
+
+
+            Your PR description is missing one or more required sections. Please ensure all of the following are present and filled out exactly as they appear in the [PR template](../blob/dev/.github/pull_request_template.md).:
+
+            - **How was it tested?** Heading (describe how you verified your changes)
+            - **Checklist** Heading (completed from the [pull request template](../blob/dev/.github/pull_request_template.md))
+            - **Contributor License Agreement** Checklist Item (the following item must appear checked in your description):
+
+            > - [x] I agree to the [Contributor License Agreement](../blob/dev/CONTRIBUTING.md#contributor-license-agreement)
+
+
+            Edit your PR description to add any missing items. See [CONTRIBUTING.md](../blob/dev/CONTRIBUTING.md) for full contribution guidelines. Pull requests that do not follow the template, or that are wholly AI-generated or CLI-created, will be closed.
+
+      # Target Check
+      - uses: Dispatcharr/repo-bot/actions/branch-guard@v1
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          allowed-targets: "dev"
+          enforcement: comment-only
+          bypass-for-members: true
+          comment: |
+            ## Wrong target branch
+
+
+            This PR targets `{target-branch}`, but all contributions must target the `dev` branch.
+
+            > **To fix this:**
+            > 1. Open the PR and click **Edit** next to the title
+            > 2. Change the base branch from `{target-branch}` to `dev`
+            > 3. Save the change
+
+
+            Unsure about our contribution guidelines? See [CONTRIBUTING.md](../blob/dev/CONTRIBUTING.md).

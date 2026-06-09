@@ -7,17 +7,20 @@ import time
 import random
 import logging
 import requests
+from urllib.parse import urlencode
 from django.http import  JsonResponse, Http404, HttpResponse
 from django.shortcuts import get_object_or_404
 from django.views.decorators.csrf import csrf_exempt
-from apps.vod.models import Movie, Series, Episode
+from apps.vod.models import Movie, Series, Episode, M3UMovieRelation, M3UEpisodeRelation
 from apps.m3u.models import  M3UAccountProfile
 from apps.proxy.vod_proxy.multi_worker_connection_manager import MultiWorkerVODConnectionManager, infer_content_type_from_url, get_vod_client_stop_key
 from .utils import get_client_info
-from rest_framework.decorators import api_view, permission_classes
+from rest_framework.decorators import api_view, authentication_classes, permission_classes
 from rest_framework.permissions import AllowAny
 from apps.accounts.models import User
 from apps.accounts.permissions import IsAdmin
+from rest_framework_simplejwt.authentication import JWTAuthentication
+from apps.accounts.authentication import ApiKeyAuthentication, QueryParamJWTAuthentication
 from apps.proxy.utils import check_user_stream_limits
 from dispatcharr.utils import network_access_allowed
 
@@ -36,7 +39,49 @@ def _get_content_and_relation(content_type, content_id, preferred_m3u_account_id
             logger.info(f"[CONTENT-LOOKUP] Preferred stream ID: {preferred_stream_id}")
 
         if content_type == 'movie':
-            content_obj = get_object_or_404(Movie, uuid=content_id)
+            content_obj = Movie.objects.filter(uuid=content_id).first()
+            if content_obj is None and preferred_stream_id:
+                # UUIDs are regenerated when process_movie_batch
+                # (apps/vod/tasks.py) creates duplicate vod_movie records
+                # during refresh — see #961 / #973. stream_id is stable
+                # (unique per (m3u_account, stream_id)) so it's a safe
+                # fallback for previously-cached external player URLs.
+                # Strictest-match first: prefer the requested account, then
+                # any active account by priority (matches the existing
+                # relation-selection ordering below).
+                rel = None
+                if preferred_m3u_account_id:
+                    rel = (
+                        M3UMovieRelation.objects
+                        .filter(stream_id=preferred_stream_id,
+                                m3u_account_id=preferred_m3u_account_id,
+                                m3u_account__is_active=True)
+                        .select_related('movie', 'm3u_account')
+                        .first()
+                    )
+                if rel is None:
+                    rel = (
+                        M3UMovieRelation.objects
+                        .filter(stream_id=preferred_stream_id,
+                                m3u_account__is_active=True)
+                        .select_related('movie', 'm3u_account')
+                        .order_by('-m3u_account__priority', 'id')
+                        .first()
+                    )
+                if rel is not None:
+                    content_obj = rel.movie
+                    logger.warning(
+                        f"[STREAMID-FALLBACK] Movie UUID {content_id} not "
+                        f"found; resolved via stream_id "
+                        f"{preferred_stream_id} -> movie uuid "
+                        f"{content_obj.uuid} (provider: "
+                        f"{rel.m3u_account.name})"
+                    )
+            if content_obj is None:
+                raise Http404(
+                    f"Movie not found by uuid {content_id} "
+                    f"or stream_id {preferred_stream_id}"
+                )
             logger.info(f"[CONTENT-FOUND] Movie: {content_obj.name} (ID: {content_obj.id})")
 
             # Filter by preferred stream ID first (most specific)
@@ -67,7 +112,44 @@ def _get_content_and_relation(content_type, content_id, preferred_m3u_account_id
             return content_obj, relation
 
         elif content_type == 'episode':
-            content_obj = get_object_or_404(Episode, uuid=content_id)
+            content_obj = Episode.objects.filter(uuid=content_id).first()
+            if content_obj is None and preferred_stream_id:
+                # Same rationale as the movie branch above — episode UUIDs
+                # are regenerated when process_series_batch creates
+                # duplicate vod_episode records during refresh.
+                rel = None
+                if preferred_m3u_account_id:
+                    rel = (
+                        M3UEpisodeRelation.objects
+                        .filter(stream_id=preferred_stream_id,
+                                m3u_account_id=preferred_m3u_account_id,
+                                m3u_account__is_active=True)
+                        .select_related('episode', 'm3u_account')
+                        .first()
+                    )
+                if rel is None:
+                    rel = (
+                        M3UEpisodeRelation.objects
+                        .filter(stream_id=preferred_stream_id,
+                                m3u_account__is_active=True)
+                        .select_related('episode', 'm3u_account')
+                        .order_by('-m3u_account__priority', 'id')
+                        .first()
+                    )
+                if rel is not None:
+                    content_obj = rel.episode
+                    logger.warning(
+                        f"[STREAMID-FALLBACK] Episode UUID {content_id} not "
+                        f"found; resolved via stream_id "
+                        f"{preferred_stream_id} -> episode uuid "
+                        f"{content_obj.uuid} (provider: "
+                        f"{rel.m3u_account.name})"
+                    )
+            if content_obj is None:
+                raise Http404(
+                    f"Episode not found by uuid {content_id} "
+                    f"or stream_id {preferred_stream_id}"
+                )
             logger.info(f"[CONTENT-FOUND] Episode: {content_obj.name} (ID: {content_obj.id}, Series: {content_obj.series.name})")
 
             # Filter by preferred stream ID first (most specific)
@@ -298,6 +380,7 @@ def _transform_url(original_url, m3u_profile):
         return original_url
 
 @api_view(["GET"])
+@authentication_classes([JWTAuthentication, ApiKeyAuthentication, QueryParamJWTAuthentication])
 @permission_classes([AllowAny])
 def stream_vod(request, content_type, content_id, session_id=None, profile_id=None, user=None):
     """
@@ -311,7 +394,8 @@ def stream_vod(request, content_type, content_id, session_id=None, profile_id=No
     """
     if not network_access_allowed(request, "STREAMS"):
         return JsonResponse({"error": "Forbidden"}, status=403)
-
+    if user is None and hasattr(request, "user") and request.user.is_authenticated:
+        user = request.user
     logger.info(f"[VOD-REQUEST] Starting VOD stream request: {content_type}/{content_id}, session: {session_id}, profile: {profile_id}")
     logger.info(f"[VOD-REQUEST] Full request path: {request.get_full_path()}")
     logger.info(f"[VOD-REQUEST] Request method: {request.method}")
@@ -389,38 +473,65 @@ def stream_vod(request, content_type, content_id, session_id=None, profile_id=No
             new_session_id = f"vod_{int(time.time() * 1000)}_{random.randint(1000, 9999)}"
             logger.info(f"[VOD-SESSION] Creating new session: {new_session_id}")
 
-            # Preserve any query parameters (except session_id)
+            # Preserve any query parameters (except session_id and token)
             query_params = dict(request.GET)
-            query_params.pop('session_id', None)  # Remove if present
+            query_params.pop('session_id', None)
+            query_params.pop('token', None)  # Token not needed after session is established
 
-            if user:
-                redirect_url = f"{request.path}?session_id={new_session_id}"
-                if query_params:
-                    query_string = urlencode(query_params, doseq=True)
-                    redirect_url = f"{redirect_url}&{query_string}"
-            else:
-                # Build redirect URL with session ID in path, preserve query parameters
+            # The VOD proxy URL patterns accept session_id in the path, so we redirect
+            # to a path-based URL. XC endpoints (/movie/<user>/<pass>/<id>.<ext>) have
+            # a fixed shape and instead read session_id from a query parameter.
+            is_vod_proxy_path = request.path.startswith('/proxy/vod/')
+
+            if is_vod_proxy_path:
                 path_parts = request.path.rstrip('/').split('/')
-
-                # Construct new path: /vod/movie/UUID/SESSION_ID or /vod/movie/UUID/SESSION_ID/PROFILE_ID/
                 if profile_id:
                     new_path = f"{'/'.join(path_parts)}/{new_session_id}/{profile_id}/"
                 else:
                     new_path = f"{'/'.join(path_parts)}/{new_session_id}"
 
                 if query_params:
-                    from urllib.parse import urlencode
                     query_string = urlencode(query_params, doseq=True)
                     redirect_url = f"{new_path}?{query_string}"
                 else:
                     redirect_url = new_path
+            else:
+                # XC path: keep the original path, put session_id in the query string
+                query_params['session_id'] = new_session_id
+                query_string = urlencode(query_params, doseq=True)
+                redirect_url = f"{request.path}?{query_string}"
 
             logger.info(f"[VOD-SESSION] Redirecting to path-based URL: {redirect_url}")
+
+            # Persist the authenticated user to Redis so the streaming request
+            # (which arrives without the token after the redirect) can resolve it.
+            if user:
+                try:
+                    from core.utils import RedisClient
+                    _r = RedisClient.get_client()
+                    if _r:
+                        _r.set(f"vod_session_user:{new_session_id}", user.id, ex=300)
+                except Exception:
+                    pass
 
             return HttpResponse(
                 status=301,
                 headers={'Location': redirect_url}
             )
+
+        # Resolve user from Redis session mapping when the streaming request
+        # arrives without auth credentials (token was stripped from redirect URL).
+        # Only needed on the first streaming request - skip if connection already exists.
+        if user is None:
+            try:
+                from core.utils import RedisClient
+                _r = RedisClient.get_client()
+                if _r and not _r.exists(f"vod_persistent_connection:{session_id}"):
+                    stored_uid = _r.get(f"vod_session_user:{session_id}")
+                    if stored_uid:
+                        user = User.objects.filter(id=int(stored_uid)).first()
+            except Exception:
+                pass
 
         if user:
             if not check_user_stream_limits(user, session_id, media_id=content_id):
@@ -511,6 +622,7 @@ def stream_vod(request, content_type, content_id, session_id=None, profile_id=No
         return HttpResponse(f"Streaming error: {str(e)}", status=500)
 
 @api_view(["HEAD"])
+@authentication_classes([JWTAuthentication, ApiKeyAuthentication, QueryParamJWTAuthentication])
 @permission_classes([AllowAny])
 def head_vod(request, content_type, content_id, session_id=None, profile_id=None):
     """

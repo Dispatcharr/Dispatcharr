@@ -1,7 +1,6 @@
 import hashlib
 import ipaddress
 import logging
-import io
 import json
 import re
 import socket
@@ -9,6 +8,7 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status, serializers
 from drf_spectacular.utils import extend_schema, inline_serializer
+from django.core.cache import cache
 from django.conf import settings
 from django.core.files.uploadedfile import UploadedFile
 from django.http import FileResponse
@@ -335,6 +335,21 @@ def _save_fetched_manifest_to_repo(repo, data, verified):
     return None
 
 
+def _invalidate_plugin_detail_cache(repo_id, manifest_data):
+    manifest = manifest_data.get("manifest", manifest_data)
+    root_url = manifest.get("root_url", "").rstrip("/")
+    keys = []
+    for p in manifest.get("plugins", []):
+        url = p.get("manifest_url", "")
+        if not url:
+            continue
+        if root_url and not url.startswith(("http://", "https://")):
+            url = f"{root_url}/{url}"
+        keys.append(f"plugin_detail:{repo_id}:{hashlib.md5(url.encode()).hexdigest()}")
+    if keys:
+        cache.delete_many(keys)
+
+
 def _unmanage_dropped_slugs(repo, new_manifest_data):
     """After a manifest refresh, clear source_repo on any installed plugins
     whose slug is no longer listed in the repo's manifest.  Also syncs the
@@ -571,6 +586,7 @@ class PluginDeleteAPIView(PluginAuthMixin, APIView):
 # ---------------------------------------------------------------------------
 
 MANIFEST_FETCH_TIMEOUT = 15
+PLUGIN_DETAIL_CACHE_TTL = 300  # seconds
 
 OFFICIAL_KEY_PATH = os.path.join(
     os.path.dirname(__file__), "keys", "dispatcharr-plugins.pub"
@@ -589,6 +605,101 @@ def _normalize_pgp_key(text):
     return text
 
 
+def _gpg_run(cmd, input_data=None, timeout=30):
+    """
+    Run a GPG command using os.posix_spawn.
+
+    os.posix_spawn skips pthread_atfork handlers, avoiding the indefinite hang
+    that fork()-based approaches suffer under gevent+uWSGI.  select.select()
+    and time.sleep() are gevent-patched so reads and the waitpid poll yield to
+    the hub cooperatively.
+
+    Returns (returncode, stdout_bytes, stderr_bytes).
+    """
+    import select as _select
+    import signal as _signal
+    import time as _time
+
+    stdin_r,  stdin_w  = os.pipe()
+    stdout_r, stdout_w = os.pipe()
+    stderr_r, stderr_w = os.pipe()
+
+    try:
+        executable = shutil.which(cmd[0]) or cmd[0]
+        pid = os.posix_spawn(
+            executable, cmd, os.environ,
+            file_actions=[
+                (os.POSIX_SPAWN_DUP2,  stdin_r,  0),
+                (os.POSIX_SPAWN_DUP2,  stdout_w, 1),
+                (os.POSIX_SPAWN_DUP2,  stderr_w, 2),
+                (os.POSIX_SPAWN_CLOSE, stdin_r),
+                (os.POSIX_SPAWN_CLOSE, stdin_w),
+                (os.POSIX_SPAWN_CLOSE, stdout_w),
+                (os.POSIX_SPAWN_CLOSE, stderr_w),
+                (os.POSIX_SPAWN_CLOSE, stdout_r),
+                (os.POSIX_SPAWN_CLOSE, stderr_r),
+            ],
+        )
+    except Exception:
+        for fd in (stdin_r, stdin_w, stdout_r, stdout_w, stderr_r, stderr_w):
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        raise
+
+    for fd in (stdin_r, stdout_w, stderr_w):
+        os.close(fd)
+
+    try:
+        if input_data:
+            os.write(stdin_w, input_data)
+    finally:
+        os.close(stdin_w)
+
+    out, err = [], []
+    done = set()
+    deadline = _time.monotonic() + timeout
+    try:
+        while len(done) < 2:
+            remaining = deadline - _time.monotonic()
+            if remaining <= 0:
+                try:
+                    os.kill(pid, _signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                break
+            fds = [fd for fd in (stdout_r, stderr_r) if fd not in done]
+            readable, _, _ = _select.select(fds, [], [], min(remaining, 0.5))
+            for fd in readable:
+                data = os.read(fd, 8192)
+                if data:
+                    (out if fd == stdout_r else err).append(data)
+                else:
+                    done.add(fd)
+    finally:
+        for fd in (stdout_r, stderr_r):
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+    deadline = _time.monotonic() + 5.0
+    while _time.monotonic() < deadline:
+        try:
+            wpid, st = os.waitpid(pid, os.WNOHANG)
+        except ChildProcessError:
+            return -1, b"".join(out), b"".join(err)
+        if wpid == pid:
+            if os.WIFEXITED(st):
+                return os.WEXITSTATUS(st), b"".join(out), b"".join(err)
+            if os.WIFSIGNALED(st):
+                return -os.WTERMSIG(st), b"".join(out), b"".join(err)
+            return -1, b"".join(out), b"".join(err)
+        _time.sleep(0.01)
+    return -1, b"".join(out), b"".join(err)
+
+
 def _verify_manifest_signature(manifest_obj, signature_armored, public_key_text=None):
     """Verify a detached GPG signature over the canonical manifest JSON.
 
@@ -597,7 +708,7 @@ def _verify_manifest_signature(manifest_obj, signature_armored, public_key_text=
     repos).  When *None* the bundled official key is used instead.
 
     Returns True if valid, False if invalid/error, None if verification
-    could not be attempted (no signature, no key, gnupg missing, etc.).
+    could not be attempted (no signature, no key, gpg binary missing, etc.).
     """
     if not signature_armored:
         return None
@@ -614,18 +725,19 @@ def _verify_manifest_signature(manifest_obj, signature_armored, public_key_text=
         logger.debug("No GPG public key available; skipping verification")
         return None
 
-    try:
-        import gnupg
-    except ImportError:
-        logger.debug("python-gnupg not installed; skipping signature verification")
-        return None
-
     tmp_home = tempfile.mkdtemp(prefix="gpg_verify_")
     try:
-        gpg = gnupg.GPG(gnupghome=tmp_home)
-        import_result = gpg.import_keys(key_text)
-        if not import_result.fingerprints:
-            logger.warning("Failed to import GPG public key")
+        key_bytes = key_text.encode("utf-8") if isinstance(key_text, str) else key_text
+        rc, _, import_stderr = _gpg_run(
+            ["gpg", "--batch", "--no-tty", "--status-fd", "2",
+             "--homedir", tmp_home, "--import"],
+            input_data=key_bytes,
+        )
+        if logger.isEnabledFor(logging.DEBUG):
+            for line in import_stderr.decode("utf-8", errors="replace").splitlines():
+                logger.debug("gpg import: %s", line)
+        if rc != 0:
+            logger.warning("GPG key import failed (rc=%d)", rc)
             return None
 
         # Must match what the signing script produces: jq -c '.manifest'
@@ -639,8 +751,18 @@ def _verify_manifest_signature(manifest_obj, signature_armored, public_key_text=
         with open(sig_path, "w") as sf:
             sf.write(signature_armored)
 
-        verified = gpg.verify_data(sig_path, manifest_bytes)
-        return bool(verified)
+        rc, _, verify_stderr = _gpg_run(
+            ["gpg", "--batch", "--no-tty", "--status-fd", "2",
+             "--homedir", tmp_home, "--verify", sig_path, "-"],
+            input_data=manifest_bytes,
+        )
+        if logger.isEnabledFor(logging.DEBUG):
+            for line in verify_stderr.decode("utf-8", errors="replace").splitlines():
+                logger.debug("gpg verify: %s", line)
+        return rc == 0 and b"VALIDSIG" in verify_stderr
+    except FileNotFoundError:
+        logger.debug("gpg binary not found; skipping signature verification")
+        return None
     except Exception:
         logger.exception("GPG signature verification error")
         return False
@@ -881,6 +1003,7 @@ class PluginRepoRefreshAPIView(PluginAuthMixin, APIView):
         if err:
             return Response({"error": err}, status=status.HTTP_400_BAD_REQUEST)
         _unmanage_dropped_slugs(repo, data)
+        _invalidate_plugin_detail_cache(repo.id, data)
         return Response(PluginRepoSerializer(repo).data)
 
 
@@ -1017,6 +1140,12 @@ class PluginDetailManifestAPIView(PluginAuthMixin, APIView):
             _validate_fetch_url(manifest_url)
         except ValueError as e:
             return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+        cache_key = f"plugin_detail:{repo_id}:{hashlib.md5(manifest_url.encode()).hexdigest()}"
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return Response(cached)
+
         try:
             resp = http_requests.get(manifest_url, timeout=MANIFEST_FETCH_TIMEOUT)
             resp.raise_for_status()
@@ -1045,10 +1174,12 @@ class PluginDetailManifestAPIView(PluginAuthMixin, APIView):
                     if url_val and not url_val.startswith(("http://", "https://")):
                         manifest_obj["latest"][url_field] = f"{root_url}/{url_val}"
 
-            return Response({
+            result = {
                 "manifest": manifest_obj,
                 "signature_verified": verified,
-            })
+            }
+            cache.set(cache_key, result, PLUGIN_DETAIL_CACHE_TTL)
+            return Response(result)
         except Exception as e:
             logger.exception("Failed to fetch plugin manifest from %s", manifest_url)
             return Response(

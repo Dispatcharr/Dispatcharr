@@ -288,7 +288,7 @@ describe('useVODStore', () => {
       movieDetails = await result.current.fetchMovieDetailsFromProvider(1);
     });
 
-    expect(api.getMovieProviderInfo).toHaveBeenCalledWith(1);
+    expect(api.getMovieProviderInfo).toHaveBeenCalledWith(1, null);
     expect(movieDetails.name).toBe('Provider Movie');
     expect(movieDetails.description).toBe('From provider');
     expect(movieDetails.backdrop_path).toEqual(['path1', 'path2']);
@@ -446,7 +446,7 @@ describe('useVODStore', () => {
       seriesInfo = await result.current.fetchSeriesInfo(1);
     });
 
-    expect(api.getSeriesInfo).toHaveBeenCalledWith(1);
+    expect(api.getSeriesInfo).toHaveBeenCalledWith(1, null);
     expect(seriesInfo.id).toBe(1);
     expect(seriesInfo.name).toBe('Test Series');
     expect(seriesInfo.episodesList).toHaveLength(2);

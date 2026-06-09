@@ -40,11 +40,19 @@ function formatDurationMinutes(startTime, endTime) {
   return `${minutes}m`;
 }
 
+function resolveApiUrl(url) {
+  if (!url || url.startsWith('http')) return url;
+  const apiHost = import.meta.env.DEV
+    ? `http://${window.location.hostname}:5656`
+    : '';
+  return `${apiHost}${url}`;
+}
+
 function resolveImageUrl(detail) {
   if (detail?.tmdb_poster_url) return detail.tmdb_poster_url;
-  if (detail?.poster_url) return detail.poster_url;
-  if (detail?.images?.length > 0) return detail.images[0].url;
-  if (detail?.icon) return detail.icon;
+  if (detail?.poster_url) return resolveApiUrl(detail.poster_url);
+  if (detail?.images?.length > 0) return resolveApiUrl(detail.images[0].url);
+  if (detail?.icon) return resolveApiUrl(detail.icon);
   return null;
 }
 
@@ -298,6 +306,37 @@ export default function ProgramDetailModal({
           </>
         )}
 
+        {d.content_advisory?.length > 0 && (
+          <Text size="xs" c="orange" fs="italic">
+            {d.content_advisory.join(', ')}
+          </Text>
+        )}
+
+        {d.event_details && (
+          <>
+            <Divider color="#333" />
+            <Stack gap={4}>
+              {d.event_details.venue100 && (
+                <Text size="sm" c="dimmed">
+                  <Text span fw={600}>Venue: </Text>
+                  {d.event_details.venue100}
+                </Text>
+              )}
+              {d.event_details.teams?.length > 0 && (
+                <Text size="sm" c="dimmed">
+                  <Text span fw={600}>Teams: </Text>
+                  {d.event_details.teams.map((t, i) => (
+                    <Text span key={i}>
+                      {i > 0 ? ' vs ' : ''}
+                      {t.name}{t.isHome ? ' (Home)' : ''}
+                    </Text>
+                  ))}
+                </Text>
+              )}
+            </Stack>
+          </>
+        )}
+
         {hasCredits && (
           <>
             <Divider color="#333" />
@@ -330,27 +369,27 @@ export default function ProgramDetailModal({
           </>
         )}
 
-        {(d.country ||
-          d.language ||
+        {(d.language ||
           d.original_air_date ||
+          (d.production_date && d.is_previously_shown) ||
           starRatings.length > 0) && (
           <>
             <Divider color="#333" />
             <Group gap="md" wrap="wrap">
-              {d.country && (
-                <Text size="sm" c="dimmed">
-                  <Text span fw={600}>
-                    Country:{' '}
-                  </Text>
-                  {d.country}
-                </Text>
-              )}
               {d.language && (
                 <Text size="sm" c="dimmed">
                   <Text span fw={600}>
                     Language:{' '}
                   </Text>
                   {d.language}
+                </Text>
+              )}
+              {d.production_date && d.is_previously_shown && (
+                <Text size="sm" c="dimmed">
+                  <Text span fw={600}>
+                    First aired:{' '}
+                  </Text>
+                  {d.production_date}
                 </Text>
               )}
               {d.original_air_date && (
