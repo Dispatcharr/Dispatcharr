@@ -2445,6 +2445,55 @@ class ProviderNumberingHonorsProviderNumberTests(TestCase):
         created = Channel.objects.get(auto_created=True, auto_created_by=account)
         self.assertEqual(created.channel_number, 150.0)
 
+    def test_duplicate_provider_numbers_keep_one_and_fall_back_the_other(self):
+        # Two streams claim the same provider number (common in messy event
+        # feeds). One keeps it; the colliding one falls back to a different free
+        # number rather than being dropped or overwriting the first.
+        account = _make_account()
+        group = _make_group(name="PPV")
+        rel = _attach_group_to_account(account, group)
+        rel.custom_properties = {
+            "channel_numbering_mode": "provider",
+            "channel_numbering_fallback": 1,
+        }
+        rel.save()
+        _make_stream(account, group, name="A", tvg_id="a", stream_chno=77250)
+        _make_stream(account, group, name="B", tvg_id="b", stream_chno=77250)
+
+        result = _sync(account)
+
+        self.assertEqual(result["status"], "ok")
+        numbers = sorted(
+            Channel.objects.filter(
+                auto_created=True, auto_created_by=account
+            ).values_list("channel_number", flat=True)
+        )
+        self.assertEqual(len(numbers), 2)
+        self.assertIn(77250.0, numbers)
+        self.assertNotEqual(numbers[0], numbers[1])
+
+    def test_provider_number_colliding_with_manual_channel_falls_back(self):
+        # A provider number matching an existing channel must not overwrite it;
+        # the auto-created channel falls back to a different free number.
+        account = _make_account()
+        group = _make_group(name="PPV")
+        rel = _attach_group_to_account(account, group)
+        rel.custom_properties = {
+            "channel_numbering_mode": "provider",
+            "channel_numbering_fallback": 1,
+        }
+        rel.save()
+        manual = Channel.objects.create(name="Manual", channel_number=88250)
+        _make_stream(account, group, name="P", tvg_id="p", stream_chno=88250)
+
+        result = _sync(account)
+
+        self.assertEqual(result["status"], "ok")
+        created = Channel.objects.get(auto_created=True, auto_created_by=account)
+        self.assertNotEqual(created.channel_number, 88250.0)
+        manual.refresh_from_db()
+        self.assertEqual(manual.channel_number, 88250.0)
+
 
 class CrossModeNumberingFieldTests(TestCase):
     """
@@ -2468,7 +2517,7 @@ class CrossModeNumberingFieldTests(TestCase):
         # Fail signature: streams beyond the End fail = next_available honoring
         # a hidden cap.
         account = _make_account()
-        group = _make_group(name="Sports")
+        group = _make_group(name="PPV")
         rel = _attach_group_to_account(account, group)
         rel.auto_sync_channel_start = 1
         rel.auto_sync_channel_end = 3  # stale cap from a prior mode
@@ -2517,7 +2566,7 @@ class CrossModeNumberingFieldTests(TestCase):
         # Same gate for next_available: tightening a stale End must not delete
         # already-assigned channels (range enforcement is fixed-mode only).
         account = _make_account()
-        group = _make_group(name="Sports")
+        group = _make_group(name="PPV")
         rel = _attach_group_to_account(account, group)
         rel.auto_sync_channel_start = 1
         rel.auto_sync_channel_end = None
