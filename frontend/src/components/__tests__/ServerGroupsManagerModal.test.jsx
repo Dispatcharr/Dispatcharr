@@ -16,6 +16,8 @@ vi.mock('../../store/serverGroups', () => ({
         { id: 1, name: 'Pool A' },
         { id: 2, name: 'Pool B' },
       ],
+      isLoading: false,
+      error: null,
       fetchServerGroups: vi.fn().mockResolvedValue(undefined),
     }),
 }));

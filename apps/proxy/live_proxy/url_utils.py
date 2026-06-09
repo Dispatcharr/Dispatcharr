@@ -203,6 +203,8 @@ def get_stream_info_for_switch(channel_id: str, target_stream_id: Optional[int] 
     Returns:
         dict: Stream information including URL, user agent and transcode flag
     """
+    slot_reserved = False
+    channel = None
     try:
         from core.utils import RedisClient
 
@@ -268,28 +270,18 @@ def get_stream_info_for_switch(channel_id: str, target_stream_id: Optional[int] 
 
             m3u_profile_id = selected_profile.id
         else:
-            stream_id, m3u_profile_id, error_reason, _slot_reserved = channel.get_stream()
+            stream_id, m3u_profile_id, error_reason, slot_reserved = channel.get_stream()
             if stream_id is None or m3u_profile_id is None:
                 return {'error': error_reason or 'No stream assigned to channel'}
 
-        # Get the stream and profile objects directly
         stream = get_object_or_404(Stream, pk=stream_id)
         profile = get_object_or_404(M3UAccountProfile, pk=m3u_profile_id)
 
-        # Check connections left
         m3u_account = M3UAccount.objects.get(id=profile.m3u_account.id)
-        #connections_left = get_connections_left(m3u_profile_id)
-
-        #if connections_left <= 0:
-            #logger.warning(f"No connections left for M3U account {m3u_account.id}")
-            #return {'error': 'No connections left'}
-
-        # Get the user agent from the M3U account
         user_agent = m3u_account.get_user_agent().user_agent
 
         stream_url = _resolve_live_stream_url(stream, m3u_account, profile)
 
-        # Get transcode info from the channel's stream profile
         stream_profile = channel.get_stream_profile()
         transcode = not (stream_profile.is_proxy() or stream_profile is None)
         profile_value = stream_profile.id
@@ -304,6 +296,8 @@ def get_stream_info_for_switch(channel_id: str, target_stream_id: Optional[int] 
             'stream_name': stream.name,
         }
     except Exception as e:
+        if slot_reserved and channel is not None:
+            channel.release_stream()
         logger.error(f"Error getting stream info for switch: {e}", exc_info=True)
         return {'error': f'Error: {str(e)}'}
 

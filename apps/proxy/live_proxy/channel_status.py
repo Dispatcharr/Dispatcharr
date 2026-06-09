@@ -501,15 +501,7 @@ class ChannelStatus:
             m3u_profile_id = metadata.get(ChannelMetadataField.M3U_PROFILE)
             if m3u_profile_id:
                 try:
-                    profile_id_int = int(m3u_profile_id)
-                    info['m3u_profile_id'] = profile_id_int
-                    try:
-                        from apps.m3u.models import M3UAccountProfile
-                        m3u_profile = M3UAccountProfile.objects.filter(id=profile_id_int).first()
-                        if m3u_profile:
-                            info['m3u_profile_name'] = m3u_profile.name
-                    except Exception as e:
-                        logger.warning(f"Failed to get M3U profile name for ID {profile_id_int}: {e}")
+                    info['m3u_profile_id'] = int(m3u_profile_id)
                 except ValueError:
                     logger.warning(f"Invalid m3u_profile_id format in Redis: {m3u_profile_id}")
 

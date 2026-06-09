@@ -186,6 +186,18 @@ class PoolEnforcementTests(TestCase):
         self.profile.max_streams = 1
         self.profile.save()
 
+    def test_group_has_capacity_reads_credential_counter_directly(self):
+        cred_key = server_group_connections_key(
+            self.group.id,
+            get_profile_credential_fingerprint(self.profile),
+        )
+        self.redis.set(cred_key, 1)
+
+        self.assertFalse(group_has_capacity_for_profile(self.profile, self.redis))
+
+        self.redis.set(cred_key, 0)
+        self.assertTrue(group_has_capacity_for_profile(self.profile, self.redis))
+
     def test_reserve_and_release_both_counters(self):
         reserved, count, _ = reserve_profile_slot(self.profile, self.redis)
         self.assertTrue(reserved)
@@ -300,6 +312,22 @@ class PoolEnforcementTests(TestCase):
         self.assertEqual(self.redis._data[profile_connections_key(profile_id)], 0)
         self.assertEqual(self.redis._data[cred_key], 0)
         self.assertNotIn(profile_credential_release_key(profile_id), self.redis._data)
+
+    def test_release_uses_stored_credential_key_without_db_lookup(self):
+        profile_id = self.profile.id
+        cred_key = server_group_connections_key(
+            self.group.id,
+            get_profile_credential_fingerprint(self.profile),
+        )
+
+        self.assertTrue(reserve_profile_slot(self.profile, self.redis)[0])
+
+        with patch("apps.m3u.models.M3UAccountProfile.objects.get") as mock_get:
+            release_profile_slot(profile_id, self.redis)
+            mock_get.assert_not_called()
+
+        self.assertEqual(self.redis._data[profile_connections_key(profile_id)], 0)
+        self.assertEqual(self.redis._data[cred_key], 0)
 
     def test_reserve_returns_failure_reason_without_extra_checks(self):
         account2 = M3UAccount.objects.create(

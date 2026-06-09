@@ -228,7 +228,7 @@ class Stream(models.Model):
         ]
 
         for profile in profiles:
-            logger.info(profile)
+            logger.debug("Evaluating profile %s for stream %s", profile.id, self.id)
             # Skip inactive profiles
             if profile.is_active == False:
                 continue
@@ -607,6 +607,23 @@ class Channel(models.Model):
             ChannelState.CONNECTING,
         )
 
+    def _stream_assignment_is_reusable(self, redis_client, stream_id: int) -> bool:
+        """
+        Return True when an existing channel_stream assignment should be reused.
+
+        Reuse when the proxy is active, or when metadata is not written yet
+        (between get_stream() reserving slots and initialize_channel() starting).
+        When metadata exists but the proxy is inactive, the assignment is stale.
+        """
+        if self._channel_proxy_is_active(redis_client):
+            return True
+
+        metadata_key = RedisKeys.channel_metadata(str(self.uuid))
+        if not redis_client.exists(metadata_key):
+            return redis_client.get(f"stream_profile:{stream_id}") is not None
+
+        return False
+
     def _release_stale_stream_assignment(self, redis_client, stream_id: int) -> None:
         """Release pool counters and remove stale channel/stream assignment keys."""
         profile_id_bytes = redis_client.get(f"stream_profile:{stream_id}")
@@ -654,13 +671,13 @@ class Channel(models.Model):
                 stream_id = None
 
             if stream_id is not None:
-                if self._channel_proxy_is_active(redis_client):
+                if self._stream_assignment_is_reusable(redis_client, stream_id):
                     profile_id_bytes = redis_client.get(f"stream_profile:{stream_id}")
                     if profile_id_bytes:
                         try:
                             profile_id = int(profile_id_bytes)
                             logger.debug(
-                                f"Channel {self.uuid}: reusing active assignment "
+                                f"Channel {self.uuid}: reusing stream assignment "
                                 f"stream={stream_id} profile={profile_id}"
                             )
                             return stream_id, profile_id, None, False

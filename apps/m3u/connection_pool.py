@@ -172,7 +172,7 @@ def group_has_capacity_for_profile(profile, redis_client) -> bool:
     cred_key = _credential_counter_key(profile, group)
     if not cred_key:
         return True
-    return get_credential_connection_count(profile, redis_client) < profile.max_streams
+    return int(redis_client.get(cred_key) or 0) < profile.max_streams
 
 
 def pool_has_capacity_for_profile(profile, redis_client) -> bool:
@@ -326,22 +326,26 @@ def reserve_profile_slot(
 
 def release_profile_slot(profile_id: int, redis_client) -> None:
     """Release profile and shared credential slots after a stream end."""
-    from apps.m3u.models import M3UAccountProfile
-
     released_via_stored_key = _release_credential_slot_by_profile_id(
         profile_id, redis_client
     )
 
-    try:
-        profile = M3UAccountProfile.objects.get(id=profile_id)
-    except M3UAccountProfile.DoesNotExist:
-        profile = None
-
     profile_key = profile_connections_key(profile_id)
-    if profile is None or profile.max_streams > 0:
-        current = int(redis_client.get(profile_key) or 0)
-        if current > 0:
-            redis_client.decr(profile_key)
+    current = int(redis_client.get(profile_key) or 0)
+    if current > 0:
+        redis_client.decr(profile_key)
 
-    if profile and not released_via_stored_key:
-        _release_server_group_slot_for_profile(profile, redis_client)
+    if released_via_stored_key:
+        return
+
+    # Legacy fallback for reservations made before credential release keys were stored.
+    from apps.m3u.models import M3UAccountProfile
+
+    try:
+        profile = M3UAccountProfile.objects.select_related(
+            "m3u_account__server_group"
+        ).get(id=profile_id)
+    except M3UAccountProfile.DoesNotExist:
+        return
+
+    _release_server_group_slot_for_profile(profile, redis_client)

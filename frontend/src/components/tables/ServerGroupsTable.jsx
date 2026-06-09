@@ -56,6 +56,8 @@ const ServerGroupsTable = ({ onGroupCreated, openCreateOnMount = false }) => {
   const suppressWarning = useWarningsStore((s) => s.suppressWarning);
 
   const serverGroups = useServerGroupsStore((state) => state.serverGroups);
+  const isLoading = useServerGroupsStore((state) => state.isLoading);
+  const error = useServerGroupsStore((state) => state.error);
   const fetchServerGroups = useServerGroupsStore(
     (state) => state.fetchServerGroups
   );
@@ -106,8 +108,6 @@ const ServerGroupsTable = ({ onGroupCreated, openCreateOnMount = false }) => {
     []
   );
 
-  const [isLoading, setIsLoading] = useState(true);
-
   const editServerGroup = (group = null) => {
     setServerGroup(group);
     setServerGroupModalOpen(true);
@@ -147,7 +147,7 @@ const ServerGroupsTable = ({ onGroupCreated, openCreateOnMount = false }) => {
   };
 
   useEffect(() => {
-    fetchServerGroups().finally(() => setIsLoading(false));
+    fetchServerGroups();
   }, [fetchServerGroups]);
 
   useEffect(() => {
@@ -179,7 +179,6 @@ const ServerGroupsTable = ({ onGroupCreated, openCreateOnMount = false }) => {
     columns,
     data: tableData,
     allRowIds: tableData.map((group) => group.id),
-    enableColumnResizing: false,
     bodyCellRenderFns: {
       actions: renderBodyCell,
     },
@@ -194,6 +193,16 @@ const ServerGroupsTable = ({ onGroupCreated, openCreateOnMount = false }) => {
     return (
       <Center py="md">
         <Text size="sm">Loading server groups...</Text>
+      </Center>
+    );
+  }
+
+  if (error) {
+    return (
+      <Center py="md">
+        <Text size="sm" c="red">
+          {error}
+        </Text>
       </Center>
     );
   }
