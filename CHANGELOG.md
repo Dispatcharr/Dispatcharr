@@ -7,8 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Manual Server Groups for shared M3U connection limits.** The existing `ServerGroup` model and account FK are now wired into live and VOD playback. Accounts assigned to the same group share a credential-scoped Redis counter when their provider logins match (hashed fingerprint); unrelated logins in the same group keep separate counters. Enforcement uses each profile's `max_streams` - not a group-wide cap - and profiles with `max_streams=0` skip credential pooling for that profile while still rotating on their own per-profile counter. New `apps/m3u/connection_pool.py` centralizes reserve/release, profile rotation, and credential moves on profile switch. (Closes #1137) — Thanks [@Goldenfreddy0703](https://github.com/Goldenfreddy0703)
+  - **Server Groups manager UI** on the M3U Accounts page: create, rename, and delete groups with account counts and delete confirmation. Groups load on login via a new Zustand store and REST helpers (`/api/m3u/server-groups/`).
+  - **M3U account form** adds a Server Group picker (including inline “add group”), reorganized into three columns (source/auth, connection limits, sync/content), and a Manage server groups shortcut.
+  - **VOD profile selection** uses `pool_has_capacity_for_profile()` so grouped accounts respect shared credential limits before a profile is chosen (non-grouped accounts behave as before).
+  - **Live profile switches** move the shared credential counter when the new profile uses a different provider login; same-login switches leave the credential counter unchanged.
+  - **Credential release keys** stored at reserve time allow counters to be released even if the M3U profile row is deleted afterward.
+
 ### Changed
 
+- **Live and VOD connection slot logic now routes through `connection_pool`.** `Channel.get_stream()`, direct `Stream.get_stream()`, VOD profile selection, and the multi-worker VOD connection manager all call `reserve_profile_slot()` / `release_profile_slot()` instead of inline Redis INCR/DECR. VOD profile selection also checks `pool_has_capacity_for_profile()` before choosing a profile.
+- **Live XC upstream URLs use current credentials.** `_resolve_live_stream_url()` builds `/live/{user}/{pass}/{stream_id}.ts` from transformed account credentials and the stream's provider `stream_id`, so playback stays aligned with the active login after credential or profile changes instead of reusing a stale `stream.url` from sync.
+- **Channel stream switches check pooled capacity.** `get_stream_info_for_switch()` uses `profile_available_for_channel_switch()` when targeting a specific stream, and releases a reserved slot if URL assembly fails after `get_stream()` allocated one.
+- **Live proxy init reads Redis assignment once.** After `generate_stream_url()` reserves a slot, the stream handler reads `channel_stream` / `stream_profile` from Redis instead of calling `get_stream()` again, avoiding double INCR under concurrent release.
 - **EPG auto-match overhaul** — matching logic moved to `apps/channels/epg_matching.py`; Celery tasks in `tasks.py` are thin wrappers.
   - Single-channel auto-match is now asynchronous: the API returns `202 Accepted` and pushes the result over WebSocket (`single_channel_epg_match`), so large EPG libraries no longer hit the previous 30-second HTTP timeout.
   - Progress, bulk completion, and single-channel results use `send_websocket_update` instead of `async_to_sync(channel_layer.group_send)`, so notifications work reliably under gevent-patched uWSGI and Celery workers.
@@ -27,6 +40,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Stale `channel_stream` Redis keys after a channel stopped could skip connection accounting on retune.** On `dev`, `get_stream()` reused any existing `channel_stream` / `stream_profile` assignment without reserving a new slot. If those keys were left behind after a stop, the next tune-in could reach the provider without incrementing Redis counters. `get_stream()` now releases stale assignments when proxy metadata shows the channel is inactive, then reserves fresh slots.
 - **EPG auto-match reliability fixes.**
   - Memory could spike to multiple GB on large EPG sources when building a full in-memory catalog before fuzzy matching; single-channel matching now streams rows and bounds ML work to a small candidate set.
   - Wrong channel assignments from global ML similarity; ML validation now checks the fuzzy best match (or top fuzzy candidates as a last resort) instead of scoring the entire catalog.

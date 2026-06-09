@@ -260,6 +260,10 @@ def _get_m3u_profile(m3u_account, profile_id, session_id=None):
     """
     try:
         from core.utils import RedisClient
+        from apps.m3u.connection_pool import (
+            get_profile_connection_count,
+            pool_has_capacity_for_profile,
+        )
         redis_client = RedisClient.get_client()
 
         if not redis_client:
@@ -296,7 +300,11 @@ def _get_m3u_profile(m3u_account, profile_id, session_id=None):
                     except Exception as e:
                         logger.warning(f"[PROFILE-SELECTION] Error checking existing profile for session {session_id}: {e}")
                 else:
-                    logger.debug(f"[PROFILE-SELECTION] Session {session_id} exists but has no profile ID stored")            # If specific profile requested, try to use it
+                    logger.debug(
+                        f"[PROFILE-SELECTION] Session {session_id} exists but has no profile ID stored"
+                    )
+
+        # If specific profile requested, try to use it
         if profile_id:
             try:
                 profile = M3UAccountProfile.objects.get(
@@ -306,13 +314,12 @@ def _get_m3u_profile(m3u_account, profile_id, session_id=None):
                 )
                 # Check Redis-based current connections
                 profile_connections_key = f"profile_connections:{profile.id}"
-                current_connections = int(redis_client.get(profile_connections_key) or 0)
+                current_connections = get_profile_connection_count(profile, redis_client)
 
-                if profile.max_streams == 0 or current_connections < profile.max_streams:
+                if pool_has_capacity_for_profile(profile, redis_client):
                     logger.info(f"[PROFILE-SELECTION] Using requested profile {profile.id}: {current_connections}/{profile.max_streams} connections")
                     return (profile, current_connections)
-                else:
-                    logger.warning(f"[PROFILE-SELECTION] Requested profile {profile.id} is at capacity: {current_connections}/{profile.max_streams}")
+                logger.warning(f"[PROFILE-SELECTION] Requested profile {profile.id} is at capacity: {current_connections}/{profile.max_streams}")
             except M3UAccountProfile.DoesNotExist:
                 logger.warning(f"[PROFILE-SELECTION] Requested profile {profile_id} not found")
 
@@ -331,15 +338,16 @@ def _get_m3u_profile(m3u_account, profile_id, session_id=None):
         profiles = [default_profile] + list(m3u_profiles.filter(is_default=False))
 
         for profile in profiles:
-            profile_connections_key = f"profile_connections:{profile.id}"
-            current_connections = int(redis_client.get(profile_connections_key) or 0)
+            current_connections = get_profile_connection_count(profile, redis_client)
 
-            # Check if profile has available connection slots
-            if profile.max_streams == 0 or current_connections < profile.max_streams:
+            if pool_has_capacity_for_profile(profile, redis_client):
                 logger.info(f"[PROFILE-SELECTION] Selected profile {profile.id} ({profile.name}): {current_connections}/{profile.max_streams} connections")
                 return (profile, current_connections)
             else:
-                logger.debug(f"[PROFILE-SELECTION] Profile {profile.id} at capacity: {current_connections}/{profile.max_streams}")
+                logger.debug(
+                    f"[PROFILE-SELECTION] Profile {profile.id} unavailable "
+                    f"(profile={current_connections}/{profile.max_streams})"
+                )
 
         # All profiles are at capacity - return None to trigger error response
         logger.error(f"[PROFILE-SELECTION] All profiles at capacity for M3U account {m3u_account.id}, rejecting request")
@@ -906,13 +914,14 @@ def build_vod_stats_data(redis_client):
                         if m3u_profile_id:
                             try:
                                 from apps.m3u.models import M3UAccountProfile
+
                                 profile = M3UAccountProfile.objects.select_related('m3u_account').get(id=m3u_profile_id)
                                 m3u_profile_info = {
                                     'profile_name': profile.name,
                                     'account_name': profile.m3u_account.name,
                                     'account_id': profile.m3u_account.id,
                                     'max_streams': profile.m3u_account.max_streams,
-                                    'm3u_profile_id': int(m3u_profile_id)
+                                    'm3u_profile_id': int(m3u_profile_id),
                                 }
                             except Exception as e:
                                 logger.warning(f"Could not fetch M3U profile {m3u_profile_id}: {e}")

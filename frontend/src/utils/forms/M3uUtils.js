@@ -50,5 +50,9 @@ export const prepareSubmitValues = (values, expDate) => {
     prepared.user_agent = null;
   }
 
+  if (prepared.server_group == '0') {
+    prepared.server_group = null;
+  }
+
   return prepared;
 };
