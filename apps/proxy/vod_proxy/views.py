@@ -911,15 +911,9 @@ def build_vod_stats_data(redis_client):
                         # Get M3U profile information
                         m3u_profile_info = {}
                         m3u_profile_id = combined_data.get('m3u_profile_id')
-                        stream_url_for_creds = (
-                            combined_data.get('final_url')
-                            or combined_data.get('stream_url')
-                            or ''
-                        )
                         if m3u_profile_id:
                             try:
                                 from apps.m3u.models import M3UAccountProfile
-                                from apps.m3u.connection_pool import extract_credentials_from_stream_url
 
                                 profile = M3UAccountProfile.objects.select_related('m3u_account').get(id=m3u_profile_id)
                                 m3u_profile_info = {
@@ -929,12 +923,6 @@ def build_vod_stats_data(redis_client):
                                     'max_streams': profile.m3u_account.max_streams,
                                     'm3u_profile_id': int(m3u_profile_id),
                                 }
-                                if stream_url_for_creds:
-                                    provider_user, _ = extract_credentials_from_stream_url(
-                                        stream_url_for_creds
-                                    )
-                                    if provider_user:
-                                        m3u_profile_info['provider_username'] = provider_user
                             except Exception as e:
                                 logger.warning(f"Could not fetch M3U profile {m3u_profile_id}: {e}")
 

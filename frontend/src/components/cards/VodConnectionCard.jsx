@@ -349,13 +349,6 @@ const VodConnectionCard = ({ vodContent, stopVODClient }) => {
                       {connection.m3u_profile.profile_name || 'Default Profile'}
                     </Text>
                   </Tooltip>
-                  {connection.m3u_profile.provider_username && (
-                    <Tooltip label="Provider login used for this stream (from stream URL)">
-                      <Text size="xs" c="dimmed" ff="monospace">
-                        Login: {connection.m3u_profile.provider_username}
-                      </Text>
-                    </Tooltip>
-                  )}
                 </Stack>
               </Group>
             </Flex>

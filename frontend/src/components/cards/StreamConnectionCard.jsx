@@ -500,7 +500,6 @@ const StreamConnectionCard = ({
     channel.m3u_profile?.name ||
     channel.m3u_profile_name ||
     'Unknown M3U Profile';
-  const providerUsername = channel.provider_username;
 
   // Create select options for available streams
   const streamOptions = getStreamOptions(availableStreams, m3uAccountsMap);
@@ -602,21 +601,12 @@ const StreamConnectionCard = ({
 
         {/* M3U Profile on right - absolutely positioned */}
         <Box pos="absolute" top={95} right={16} style={{ zIndex: 1 }}>
-          <Stack gap={2} align="flex-end">
-            <Group gap={5}>
-              <HardDriveUpload size="18" />
-              <Tooltip label="Current M3U Profile">
-                <Text size="xs">{m3uProfileName}</Text>
-              </Tooltip>
-            </Group>
-            {providerUsername && (
-              <Tooltip label="Provider login used for this stream (from stream URL)">
-                <Text size="xs" c="dimmed" ff="monospace">
-                  Login: {providerUsername}
-                </Text>
-              </Tooltip>
-            )}
-          </Stack>
+          <Group gap={5}>
+            <HardDriveUpload size="18" />
+            <Tooltip label="Current M3U Profile">
+              <Text size="xs">{m3uProfileName}</Text>
+            </Tooltip>
+          </Group>
         </Box>
 
         {/* Channel Name on left */}

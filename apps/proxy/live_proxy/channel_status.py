@@ -390,12 +390,11 @@ class ChannelStatus:
             created_at = float(init_time_bytes)
             uptime = time.time() - created_at if created_at > 0 else 0
 
-            stream_url = metadata.get(ChannelMetadataField.URL, "") or ""
             # Simplified info
             info = {
                 'channel_id': channel_id,
                 'state': metadata.get(ChannelMetadataField.STATE),
-                'url': stream_url,
+                'url': metadata.get(ChannelMetadataField.URL, ""),
                 'stream_profile': metadata.get(ChannelMetadataField.STREAM_PROFILE, ""),
                 'owner': metadata.get(ChannelMetadataField.OWNER),
                 'buffer_index': int(buffer_index_value) if buffer_index_value else 0,
@@ -403,15 +402,6 @@ class ChannelStatus:
                 'uptime': uptime,
                 'started_at': created_at if created_at > 0 else None,
             }
-            if stream_url:
-                try:
-                    from apps.m3u.connection_pool import extract_credentials_from_stream_url
-
-                    provider_user, _ = extract_credentials_from_stream_url(stream_url)
-                    if provider_user:
-                        info['provider_username'] = provider_user
-                except Exception as e:
-                    logger.debug(f"Could not parse provider username from stream URL: {e}")
 
             channel_name = metadata.get(ChannelMetadataField.CHANNEL_NAME)
             if channel_name:
