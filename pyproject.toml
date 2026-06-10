@@ -18,7 +18,7 @@ dependencies = [
     "python-vlc",
     "yt-dlp",
     "gevent==26.4.0",
-    "django-db-geventpool",
+    "django-db-geventpool>=4.0.8",
     "daphne",
     "uwsgi",
     "django-cors-headers",

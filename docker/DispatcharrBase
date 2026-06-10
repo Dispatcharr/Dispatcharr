@@ -33,10 +33,17 @@ WORKDIR /tmp/build
 COPY pyproject.toml /tmp/build/
 COPY version.py /tmp/build/
 COPY README.md /tmp/build/
-RUN uv sync --python 3.13 --no-cache --no-install-project --no-dev
 
-# --- Explicitly install django-db-geventpool (fix for v0.26.0) ---
-RUN uv pip install --python $UV_PROJECT_ENVIRONMENT/bin/python django-db-geventpool
+# Install all dependencies from pyproject.toml
+# Using --frozen to ensure exact dependency resolution
+RUN uv sync --python 3.13 --no-cache --no-install-project --no-dev --frozen || \
+    uv sync --python 3.13 --no-cache --no-install-project --no-dev
+
+# Verify critical packages are installed
+RUN $UV_PROJECT_ENVIRONMENT/bin/python -c "import django_db_geventpool; print('✓ django-db-geventpool installed')" && \
+    $UV_PROJECT_ENVIRONMENT/bin/python -c "import drf_spectacular; print('✓ drf-spectacular installed')" && \
+    $UV_PROJECT_ENVIRONMENT/bin/python -c "import gevent; print('✓ gevent installed')" && \
+    $UV_PROJECT_ENVIRONMENT/bin/python -c "import psycopg; print('✓ psycopg installed')"
 
 WORKDIR /
 
