@@ -1786,14 +1786,47 @@ class StreamManager:
 
     def _try_next_stream(self):
         """
+    def _try_next_stream(self):
+        """
         Try to switch to the next available stream for this channel.
         Implements profile failover - tries different profiles for the same stream before moving to next stream.
+        Includes cooldown system to prevent rapid retries of failed combinations.
 
         Returns:
             bool: True if successfully switched to a new stream, False otherwise
         """
         try:
             logger.info(f"Trying to find alternative stream for channel {self.channel_id}, current stream ID: {self.current_stream_id}, current profile ID: {self.current_profile_id}")
+
+            # Mark current combination as tried and set cooldown
+            if self.current_stream_id and self.current_profile_id:
+                self.tried_combinations.add((self.current_stream_id, self.current_profile_id))
+                # Set cooldown in Redis (survives channel restarts, auto-expires via TTL)
+                if ConfigHelper.stream_cooldown_enabled() and hasattr(self.buffer, 'redis_client') and self.buffer.redis_client:
+                    cooldown_secs = ConfigHelper.stream_cooldown_seconds()
+                    cooldown_key = RedisKeys.stream_cooldown(self.channel_id, self.current_stream_id, self.current_profile_id)
+                    failed_at = time.time()
+                    retry_at = failed_at + cooldown_secs
+                    self.buffer.redis_client.setex(
+                        cooldown_key, 
+                        cooldown_secs, 
+                        f"{failed_at}:{retry_at}"
+                    )
+                    mins = int(cooldown_secs // 60)
+                    secs = int(cooldown_secs % 60)
+                    logger.info(
+                        f"\033[31m[COOLDOWN]\033[0m Set cooldown for stream {self.current_stream_id}/profile "
+                        f"{self.current_profile_id} on channel {self.channel_id} for {mins}m {secs}s"
+                    ) 
+                        cooldown_secs, 
+                        f"{failed_at}:{retry_at}"
+                    )
+                    mins = int(cooldown_secs // 60)
+                    secs = int(cooldown_secs % 60)
+                    logger.info(
+                        f"\033[31m[COOLDOWN]\033[0m Set cooldown for stream {self.current_stream_id}/profile "
+                        f"{self.current_profile_id} on channel {self.channel_id} for {mins}m {secs}s"
+                    )
 
             # Get alternate streams with ALL profiles (not just default)
             # Pass current_profile_id so we can skip only the failing stream+profile combination
@@ -1806,6 +1839,26 @@ class StreamManager:
                 if (s['stream_id'], s['profile_id']) not in self.tried_combinations
             ]
             
+            # Additionally filter out combinations on cooldown in Redis
+            if ConfigHelper.stream_cooldown_enabled() and hasattr(self.buffer, 'redis_client') and self.buffer.redis_client:
+                cooled_down = []
+                for s in untried_combinations:
+                    cooldown_key = RedisKeys.stream_cooldown(self.channel_id, s['stream_id'], s['profile_id'])
+                    if self.buffer.redis_client.exists(cooldown_key):
+                        ttl = self.buffer.redis_client.ttl(cooldown_key)
+                        mins = int(ttl // 60)
+                        secs = int(ttl % 60)
+                        logger.debug(
+                            f"\033[31m[COOLDOWN]\033[0m Skipping stream {s['stream_id']}/profile {s['profile_id']} "
+                            f"- blocked for {mins}m {secs}s more"
+                        )
+                    else:
+                        cooled_down.append(s)
+                skipped = len(untried_combinations) - len(cooled_down)
+                if skipped > 0:
+                    logger.info(f"\033[31m[COOLDOWN]\033[0m Skipped {skipped} combinations on cooldown for channel {self.channel_id}")
+                untried_combinations = cooled_down
+            
             if untried_combinations:
                 combos_to_try = ', '.join([f"({s['stream_id']},{s['profile_id']})" for s in untried_combinations])
                 logger.info(f"Found {len(untried_combinations)} untried stream+profile combinations for channel {self.channel_id}: [{combos_to_try}]")
@@ -1816,7 +1869,35 @@ class StreamManager:
                 # Check if we have streams but they've all been tried
                 if alternate_streams and len(self.tried_combinations) > 0:
                     logger.warning(f"All {len(alternate_streams)} alternate stream+profile combinations have been tried for channel {self.channel_id}")
-                return False
+
+                # LAST RESORT: If cooldown is enabled and all combinations are blocked,
+                # clear all cooldowns for this channel and retry everything from scratch
+                if (ConfigHelper.stream_cooldown_enabled()
+                        and hasattr(self.buffer, 'redis_client')
+                        and self.buffer.redis_client
+                        and alternate_streams):
+                    cooldown_pattern = f"live:channel:{self.channel_id}:cooldown:*"
+                    cursor = 0
+                    deleted = 0
+                    while True:
+                        cursor, keys = self.buffer.redis_client.scan(cursor, match=cooldown_pattern, count=100)
+                        if keys:
+                            self.buffer.redis_client.delete(*keys)
+                            deleted += len(keys)
+                        if cursor == 0:
+                            break
+                    if deleted > 0:
+                        logger.info(
+                            f"\033[31m[COOLDOWN]\033[0m Last resort: cleared {deleted} cooldown(s) for channel "
+                            f"{self.channel_id} - retrying all combinations"
+                        )
+                        # Also reset tried_combinations so everything is fresh
+                        self.tried_combinations.clear()
+                        # Retry immediately with the full list
+                        untried_combinations = alternate_streams
+
+                if not untried_combinations:
+                    return False
 
             for next_stream in untried_combinations:
                 stream_id = next_stream['stream_id']

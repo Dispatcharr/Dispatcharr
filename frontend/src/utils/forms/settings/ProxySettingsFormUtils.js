@@ -15,5 +15,7 @@ export const getProxySettingDefaults = () => {
     channel_shutdown_delay: 0,
     channel_init_grace_period: 5,
     new_client_behind_seconds: 5,
+    stream_cooldown_enabled: false,
+    stream_cooldown_minutes: 10,
   };
 };

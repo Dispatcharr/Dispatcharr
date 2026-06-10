@@ -60,6 +60,16 @@ export const PROXY_SETTINGS_OPTIONS = {
     description:
       'Seconds of received buffer to start behind live when a new client connects (0 = start at live). Note: this is chunk receive time, not video duration.',
   },
+  stream_cooldown_enabled: {
+    label: 'Stream Cooldown Enabled',
+    description:
+      'Enable cooldown system to prevent rapid retries of failed stream/profile combinations',
+  },
+  stream_cooldown_minutes: {
+    label: 'Stream Cooldown Duration (minutes)',
+    description:
+      'How long to wait before retrying a failed stream/profile combination (prevents endless loops)',
+  },
 };
 
 export const USER_LIMITS_OPTIONS = {

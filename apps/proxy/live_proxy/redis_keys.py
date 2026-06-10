@@ -130,3 +130,9 @@ class RedisKeys:
         """Sorted set mapping fragment receive-timestamps to fragment indices."""
         return f"live:channel:{channel_id}:output:{fmt}:buffer:chunk_timestamps"
 
+    @staticmethod
+    def stream_cooldown(channel_id, stream_id, profile_id):
+        """Key for stream/profile combination cooldown (failed combinations).
+        TTL = stream_cooldown_minutes * 60. Redis auto-deletes after expiry."""
+        return f"live:channel:{channel_id}:cooldown:{stream_id}:{profile_id}"
+

@@ -1,0 +1,254 @@
+# Stream Cooldown System for v0.26.0
+# Prevents endless loops in profile failover by adding Redis-based cooldown
+# Per default DISABLED - can be enabled in UI (Settings → Proxy Settings)
+
+# ===== Backend Changes =====
+
+--- a/apps/proxy/config.py
++++ b/apps/proxy/config.py
+@@ -54,6 +54,8 @@ class BaseConfig:
+                 "chunk_timeout": 5,
+                 "initial_behind_chunks": 4,
+                 "chunk_batch_size": 5,
+                 "health_check_interval": 5,
++                "stream_cooldown_enabled": False,
++                "stream_cooldown_minutes": 10,
+             }
+
+--- a/apps/proxy/live_proxy/config_helper.py
++++ b/apps/proxy/live_proxy/config_helper.py
+@@ -154,3 +154,15 @@ class ConfigHelper:
+         """Get chunk batch size from database or default"""
+         settings = Config.get_proxy_settings()
+         return settings.get("chunk_batch_size", 5)
++
++    @staticmethod
++    def stream_cooldown_enabled():
++        """Get whether stream cooldown is enabled from database or default"""
++        settings = Config.get_proxy_settings()
++        return settings.get("stream_cooldown_enabled", False)
++
++    @staticmethod
++    def stream_cooldown_seconds():
++        """Get stream cooldown duration in seconds (converted from minutes) from database or default"""
++        settings = Config.get_proxy_settings()
++        minutes = settings.get("stream_cooldown_minutes", 10)
++        return int(minutes) * 60
+
+--- a/apps/proxy/live_proxy/redis_keys.py
++++ b/apps/proxy/live_proxy/redis_keys.py
+@@ -119,3 +119,9 @@ class RedisKeys:
+     def output_chunk_timestamps(channel_id, fmt):
+         """Sorted set mapping fragment receive-timestamps to fragment indices."""
+         return f"live:channel:{channel_id}:output:{fmt}:buffer:chunk_timestamps"
++
++    @staticmethod
++    def stream_cooldown(channel_id, stream_id, profile_id):
++        """Key for stream/profile combination cooldown (failed combinations).
++        TTL = stream_cooldown_minutes * 60. Redis auto-deletes after expiry."""
++        return f"live:channel:{channel_id}:cooldown:{stream_id}:{profile_id}"
+
+--- a/apps/proxy/live_proxy/input/manager.py
++++ b/apps/proxy/live_proxy/input/manager.py
+@@ -1789,13 +1789,52 @@ class StreamManager:
+     def _try_next_stream(self):
+         """
+         Try to switch to the next available stream for this channel.
+         Implements profile failover - tries different profiles for the same stream before moving to next stream.
++        Includes cooldown system to prevent rapid retries of failed combinations.
+
+         Returns:
+             bool: True if successfully switched to a new stream, False otherwise
+         """
+         try:
+             logger.info(f"Trying to find alternative stream for channel {self.channel_id}, current stream ID: {self.current_stream_id}, current profile ID: {self.current_profile_id}")
+
++            # Mark current combination as tried and set cooldown
++            if self.current_stream_id and self.current_profile_id:
++                self.tried_combinations.add((self.current_stream_id, self.current_profile_id))
++                # Set cooldown in Redis (survives channel restarts, auto-expires via TTL)
++                if ConfigHelper.stream_cooldown_enabled() and hasattr(self.buffer, 'redis_client') and self.buffer.redis_client:
++                    cooldown_secs = ConfigHelper.stream_cooldown_seconds()
++                    cooldown_key = RedisKeys.stream_cooldown(self.channel_id, self.current_stream_id, self.current_profile_id)
++                    failed_at = time.time()
++                    retry_at = failed_at + cooldown_secs
++                    self.buffer.redis_client.setex(
++                        cooldown_key, 
++                        cooldown_secs, 
++                        f"{failed_at}:{retry_at}"
++                    )
++                    mins = int(cooldown_secs // 60)
++                    secs = int(cooldown_secs % 60)
++                    logger.info(
++                        f"\033[31m[COOLDOWN]\033[0m Set cooldown for stream {self.current_stream_id}/profile "
++                        f"{self.current_profile_id} on channel {self.channel_id} for {mins}m {secs}s"
++                    )
++
+             # Get alternate streams with ALL profiles (not just default)
+             # Pass current_profile_id so we can skip only the failing stream+profile combination
+             alternate_streams = get_alternate_streams(self.channel_id, self.current_stream_id, self.current_profile_id)
+@@ -1806,7 +1845,27 @@ class StreamManager:
+                 s for s in alternate_streams 
+                 if (s['stream_id'], s['profile_id']) not in self.tried_combinations
+             ]
+             
++            # Additionally filter out combinations on cooldown in Redis
++            if ConfigHelper.stream_cooldown_enabled() and hasattr(self.buffer, 'redis_client') and self.buffer.redis_client:
++                cooled_down = []
++                for s in untried_combinations:
++                    cooldown_key = RedisKeys.stream_cooldown(self.channel_id, s['stream_id'], s['profile_id'])
++                    if self.buffer.redis_client.exists(cooldown_key):
++                        ttl = self.buffer.redis_client.ttl(cooldown_key)
++                        mins = int(ttl // 60)
++                        secs = int(ttl % 60)
++                        logger.debug(
++                            f"\033[31m[COOLDOWN]\033[0m Skipping stream {s['stream_id']}/profile {s['profile_id']} "
++                            f"- blocked for {mins}m {secs}s more"
++                        )
++                    else:
++                        cooled_down.append(s)
++                skipped = len(untried_combinations) - len(cooled_down)
++                if skipped > 0:
++                    logger.info(f"\033[31m[COOLDOWN]\033[0m Skipped {skipped} combinations on cooldown for channel {self.channel_id}")
++                untried_combinations = cooled_down
++            
+             if untried_combinations:
+                 combos_to_try = ', '.join([f"({s['stream_id']},{s['profile_id']})" for s in untried_combinations])
+                 logger.info(f"Found {len(untried_combinations)} untried stream+profile combinations for channel {self.channel_id}: [{combos_to_try}]")
+@@ -1818,6 +1877,32 @@ class StreamManager:
+                 if alternate_streams and len(self.tried_combinations) > 0:
+                     logger.warning(f"All {len(alternate_streams)} alternate stream+profile combinations have been tried for channel {self.channel_id}")
++
++                # LAST RESORT: If cooldown is enabled and all combinations are blocked,
++                # clear all cooldowns for this channel and retry everything from scratch
++                if (ConfigHelper.stream_cooldown_enabled()
++                        and hasattr(self.buffer, 'redis_client')
++                        and self.buffer.redis_client
++                        and alternate_streams):
++                    cooldown_pattern = f"live:channel:{self.channel_id}:cooldown:*"
++                    cursor = 0
++                    deleted = 0
++                    while True:
++                        cursor, keys = self.buffer.redis_client.scan(cursor, match=cooldown_pattern, count=100)
++                        if keys:
++                            self.buffer.redis_client.delete(*keys)
++                            deleted += len(keys)
++                        if cursor == 0:
++                            break
++                    if deleted > 0:
++                        logger.info(
++                            f"\033[31m[COOLDOWN]\033[0m Last resort: cleared {deleted} cooldown(s) for channel "
++                            f"{self.channel_id} - retrying all combinations"
++                        )
++                        # Also reset tried_combinations so everything is fresh
++                        self.tried_combinations.clear()
++                        # Retry immediately with the full list
++                        untried_combinations = alternate_streams
++
++                if not untried_combinations:
+                 return False
+
+             for next_stream in untried_combinations:
+
+# ===== Frontend Changes =====
+
+--- a/frontend/src/constants.js
++++ b/frontend/src/constants.js
+@@ -63,6 +63,14 @@ export const PROXY_SETTINGS_OPTIONS = {
+     description:
+       'Seconds of received buffer to start behind live when a new client connects (0 = start at live). Note: this is chunk receive time, not video duration.',
+   },
++  stream_cooldown_enabled: {
++    label: 'Stream Cooldown Enabled',
++    description:
++      'Enable cooldown system to prevent rapid retries of failed stream/profile combinations',
++  },
++  stream_cooldown_minutes: {
++    label: 'Stream Cooldown Duration (minutes)',
++    description:
++      'How long to wait before retrying a failed stream/profile combination (prevents endless loops)',
++  },
+ };
+
+--- a/frontend/src/components/forms/settings/ProxySettingsForm.jsx
++++ b/frontend/src/components/forms/settings/ProxySettingsForm.jsx
+@@ -5,6 +5,7 @@ import { updateSetting } from '../../../utils/pages/SettingsUtils.js';
+ import {
+   Alert,
+   Button,
++  Checkbox,
+   Flex,
+   NumberInput,
+   Stack,
+@@ -18,6 +19,9 @@ import {
+ } from '../../../utils/forms/settings/ProxySettingsFormUtils.js';
+
+ const ProxySettingsOptions = React.memo(({ proxySettingsForm }) => {
++  const isBooleanField = (key) => {
++    return ['stream_cooldown_enabled'].includes(key);
++  };
+   const isNumericField = (key) => {
+     // Determine if this field should be a NumberInput
+     return [
+@@ -26,6 +30,7 @@ const ProxySettingsOptions = React.memo(({ proxySettingsForm }) => {
+       'channel_shutdown_delay',
+       'channel_init_grace_period',
+       'new_client_behind_seconds',
++      'stream_cooldown_minutes',
+     ].includes(key);
+   };
+   const isFloatField = (key) => {
+@@ -39,13 +44,24 @@ const ProxySettingsOptions = React.memo(({ proxySettingsForm }) => {
+           ? 300
+           : key === 'new_client_behind_seconds'
+             ? 120
++            : key === 'stream_cooldown_minutes'
++              ? 1440
+             : 60;
+   };
+   return (
+     <>
+       {Object.entries(PROXY_SETTINGS_OPTIONS).map(([key, config]) => {
+-        if (isNumericField(key)) {
++        if (isBooleanField(key)) {
++          return (
++            <Checkbox
++              key={key}
++              label={config.label}
++              {...proxySettingsForm.getInputProps(key, { type: 'checkbox' })}
++              description={config.description || null}
++            />
++          );
++        } else if (isNumericField(key)) {
+           return (
+             <NumberInput
+               key={key}
+
+--- a/frontend/src/utils/forms/settings/ProxySettingsFormUtils.js
++++ b/frontend/src/utils/forms/settings/ProxySettingsFormUtils.js
+@@ -14,5 +14,7 @@ export const getProxySettingDefaults = () => {
+     channel_shutdown_delay: 0,
+     channel_init_grace_period: 5,
+     new_client_behind_seconds: 5,
++    stream_cooldown_enabled: false,
++    stream_cooldown_minutes: 10,
+   };
+ };
+
+# ===== Summary =====
+#
+# Files Modified:
+# - Backend: 4 files (config.py, config_helper.py, redis_keys.py, manager.py)
+# - Frontend: 3 files (constants.js, ProxySettingsForm.jsx, ProxySettingsFormUtils.js)
+#
+# Features:
+# - Redis-based cooldown system (10 minutes default)
+# - Last resort: clears all cooldowns when all combinations tried
+# - Per default DISABLED (stream_cooldown_enabled: false)
+# - UI: Checkbox + NumberInput (0-1440 minutes = 0-24 hours)
+# - Prevents endless loops via tried_combinations.clear()
+#
+# Testing:
+# 1. Default (disabled): Should behave like v0.26.0 without cooldown
+# 2. Enabled: Should show [COOLDOWN] logs
+# 3. Last resort: Should trigger after all combinations fail twice

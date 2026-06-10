@@ -5,6 +5,7 @@ import { updateSetting } from '../../../utils/pages/SettingsUtils.js';
 import {
   Alert,
   Button,
+  Checkbox,
   Flex,
   NumberInput,
   Stack,
@@ -17,6 +18,9 @@ import {
 } from '../../../utils/forms/settings/ProxySettingsFormUtils.js';
 
 const ProxySettingsOptions = React.memo(({ proxySettingsForm }) => {
+  const isBooleanField = (key) => {
+    return ['stream_cooldown_enabled'].includes(key);
+  };
   const isNumericField = (key) => {
     // Determine if this field should be a NumberInput
     return [
@@ -25,6 +29,7 @@ const ProxySettingsOptions = React.memo(({ proxySettingsForm }) => {
       'channel_shutdown_delay',
       'channel_init_grace_period',
       'new_client_behind_seconds',
+      'stream_cooldown_minutes',
     ].includes(key);
   };
   const isFloatField = (key) => {
@@ -39,12 +44,23 @@ const ProxySettingsOptions = React.memo(({ proxySettingsForm }) => {
           ? 300
           : key === 'new_client_behind_seconds'
             ? 120
-            : 60;
+            : key === 'stream_cooldown_minutes'
+              ? 1440
+              : 60;
   };
   return (
     <>
       {Object.entries(PROXY_SETTINGS_OPTIONS).map(([key, config]) => {
-        if (isNumericField(key)) {
+        if (isBooleanField(key)) {
+          return (
+            <Checkbox
+              key={key}
+              label={config.label}
+              {...proxySettingsForm.getInputProps(key, { type: 'checkbox' })}
+              description={config.description || null}
+            />
+          );
+        } else if (isNumericField(key)) {
           return (
             <NumberInput
               key={key}

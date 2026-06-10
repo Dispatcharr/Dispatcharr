@@ -53,6 +53,8 @@ class BaseConfig:
                 "initial_behind_chunks": 4,
                 "chunk_batch_size": 5,
                 "health_check_interval": 5,
+                "stream_cooldown_enabled": False,
+                "stream_cooldown_minutes": 10,
             }
 
         finally:
