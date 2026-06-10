@@ -1452,11 +1452,15 @@ def refresh_m3u_groups(account_id, use_cache=False, full_refresh=False, scan_sta
             logger.info(
                 f"Creating XCClient with URL: {account.server_url}, Username: {account.username}, User-Agent: {user_agent_string}"
             )
+            
+            # Debug: Log proxy configuration
+            proxy_url = account.get_proxy_for_api()
+            logger.info(f"Account {account.name}: proxy='{account.proxy}', proxy_for_api={account.proxy_for_api}, resolved_proxy='{proxy_url}'")
 
             # Create XCClient with explicit error handling
             try:
                 with XCClient(
-                    account.server_url, account.username, account.password, user_agent_string, account.get_proxy_for_api()
+                    account.server_url, account.username, account.password, user_agent_string, proxy_url
                 ) as xc_client:
                     logger.info(f"XCClient instance created successfully")
 
