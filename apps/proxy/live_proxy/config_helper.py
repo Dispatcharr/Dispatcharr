@@ -87,7 +87,7 @@ class ConfigHelper:
     @staticmethod
     def retry_wait_interval():
         """Get wait interval between connection retries in seconds"""
-        return ConfigHelper.get('RETRY_WAIT_INTERVAL', 0.5)  # Default to 0.5 second
+        return ConfigHelper.get('RETRY_WAIT_INTERVAL', 0.5)
 
     @staticmethod
     def url_switch_timeout():
@@ -97,7 +97,7 @@ class ConfigHelper:
 
     @staticmethod
     def failover_grace_period():
-        """Get extra time (in seconds) to allow for stream switching from database or default"""
+        """Get failover grace period in seconds from database or default"""
         settings = Config.get_proxy_settings()
         return settings.get("failover_grace_period", 20)
 
@@ -118,11 +118,7 @@ class ConfigHelper:
 
     @staticmethod
     def chunk_timeout():
-        """
-        Get chunk timeout in seconds from database or default.
-        This controls how long we wait for each chunk before timing out.
-        Set this higher (e.g., 30s) for slow providers that may have intermittent delays.
-        """
+        """Get chunk timeout in seconds from database or default"""
         settings = Config.get_proxy_settings()
         return settings.get("chunk_timeout", 5)
 

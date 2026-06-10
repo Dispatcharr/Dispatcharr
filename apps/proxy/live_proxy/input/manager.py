@@ -70,12 +70,11 @@ class StreamManager:
 
         # Add tracking for tried streams and current stream
         self.current_stream_id = stream_id
-        self.current_profile_id = None  # BUGFIX: profile_id was always None before
+        self.current_profile_id = None  # BUGFIX: Track current profile for failover
         self.tried_combinations = set()  # Track (stream_id, profile_id) combinations
         self.tried_stream_ids = set()  # Keep for backward compatibility
         self.last_stream_switch_time = 0  # For adaptive health monitor
 
-        # IMPROVED LOGGING: Better handle and track stream ID
         if stream_id:
             self.tried_stream_ids.add(stream_id)
             logger.info(f"Initialized stream manager for channel {buffer.channel_id} with stream ID {stream_id}")
@@ -113,7 +112,7 @@ class StreamManager:
                         logger.warning(f"No stream_id found in Redis for channel {channel_id}. "
                                      f"Stream switching will rely on URL comparison to avoid selecting the same stream.")
 
-                    # Also load profile_id
+                    # BUGFIX: Also load profile_id
                     profile_id_bytes = buffer.redis_client.hget(metadata_key, "m3u_profile")
                     if profile_id_bytes:
                         self.current_profile_id = int(profile_id_bytes.decode('utf-8') if isinstance(profile_id_bytes, bytes) else profile_id_bytes)
@@ -254,7 +253,7 @@ class StreamManager:
                         logger.info(f"Health-requested stream switch successful for channel {self.channel_id}")
                         stream_switch_attempts += 1
                         self.retry_count = 0  # Reset retries for new stream
-                        self.last_stream_switch_time = time.time()
+                        self.last_stream_switch_time = time.time()  # Track switch time
                         continue  # Go back to main loop with new stream
                     else:
                         logger.error(f"Health-requested stream switch failed for channel {self.channel_id}")
@@ -391,7 +390,7 @@ class StreamManager:
                     if switch_result:
                         # Successfully switched to a new stream, continue with the new URL
                         stream_switch_attempts += 1
-                        self.last_stream_switch_time = time.time()
+                        self.last_stream_switch_time = time.time()  # Track switch time
                         logger.info(f"Successfully switched to new URL: {self.url} (switch attempt {stream_switch_attempts}/{max_stream_switches}) for channel: {self.channel_id}")
                         # Reset retry count for the new stream - important for the loop to work correctly
                         self.retry_count = 0
@@ -535,9 +534,9 @@ class StreamManager:
                     from apps.channels.models import Stream
                     stream = Stream.objects.get(id=self.current_stream_id)
                     if hasattr(stream, 'm3u_account') and stream.m3u_account:
-                        proxy = stream.m3u_account.proxy
+                        proxy = stream.m3u_account.get_proxy_for_streaming()
                         if proxy:
-                            logger.info(f"Using proxy {proxy} for channel {self.channel_id}")
+                            logger.info(f"Using proxy {proxy} for transcoding channel {self.channel_id}")
             except Exception as e:
                 logger.debug(f"Could not get proxy: {e}")
 
@@ -1032,18 +1031,18 @@ class StreamManager:
                     from apps.channels.models import Stream
                     stream = Stream.objects.get(id=self.current_stream_id)
                     if hasattr(stream, 'm3u_account') and stream.m3u_account:
-                        proxy = stream.m3u_account.proxy
+                        proxy = stream.m3u_account.get_proxy_for_streaming()
                         if proxy:
-                            logger.info(f"Using HTTP proxy {proxy} for channel {self.channel_id}")
+                            logger.info(f"Using proxy {proxy} for HTTP streaming channel {self.channel_id}")
             except Exception as e:
-                logger.debug(f"Could not get HTTP proxy: {e}")
+                logger.debug(f"Could not get proxy for HTTP streaming: {e}")
 
             # Create and start the HTTP stream reader
             self.http_reader = HTTPStreamReader(
                 url=self.url,
                 user_agent=self.user_agent,
                 chunk_size=self.chunk_size,
-                proxy=proxy
+                proxy=proxy,
             )
 
             # Start the reader thread and get the read end of the pipe
@@ -1321,32 +1320,15 @@ class StreamManager:
             try:
                 now = time.time()
                 inactivity_duration = now - self.last_data_time
+                timeout_threshold = getattr(Config, 'CONNECTION_TIMEOUT', 10)
 
-                # NEW: Check if HTTP reader encountered an error (timeout, connection error, etc.)
-                if hasattr(self, 'http_reader') and self.http_reader and hasattr(self.http_reader, 'error_occurred') and self.http_reader.error_occurred:
-                    logger.warning(f"HTTP reader error detected for channel {self.channel_id} - triggering stream switch")
-                    self.healthy = False
-                    if not self.needs_stream_switch:
+                # Check for HTTP reader errors (immediate failover)
+                if hasattr(self, 'http_reader') and self.http_reader and hasattr(self.http_reader, 'error_occurred'):
+                    if self.http_reader.error_occurred and not self.needs_stream_switch:
+                        logger.warning(f"HTTP reader error detected for channel {self.channel_id}, triggering immediate stream switch")
                         self.needs_stream_switch = True
                         self.last_health_action_time = now
-                    # Reset the error flag
-                    self.http_reader.error_occurred = False
-
-                # Adaptive thresholds based on time since last switch
-                last_switch_time = getattr(self, 'last_stream_switch_time', 0)
-                time_since_switch = now - last_switch_time if last_switch_time > 0 else float('inf')
-                recently_switched = time_since_switch < 30
-
-                # After a recent switch: detect problems faster (5s timeout, 1 check, 0s cooldown)
-                # Normal operation: standard thresholds (10s timeout, 3 checks, 30s cooldown)
-                if recently_switched:
-                    timeout_threshold = 5
-                    max_unhealthy_checks = 1
-                    action_cooldown = 0
-                else:
-                    timeout_threshold = getattr(Config, 'CONNECTION_TIMEOUT', 10)
-                    max_unhealthy_checks = 3
-                    action_cooldown = 30
+                        consecutive_unhealthy_checks = 0
 
                 if inactivity_duration > timeout_threshold and self.connected:
                     if self.healthy:
@@ -1804,114 +1786,111 @@ class StreamManager:
 
     def _try_next_stream(self):
         """
-        Try to switch to the next available stream/profile combination for this channel.
-        Tracks tried (stream_id, profile_id) combinations to avoid retrying failed ones.
+        Try to switch to the next available stream for this channel.
+        Implements profile failover - tries different profiles for the same stream before moving to next stream.
 
         Returns:
             bool: True if successfully switched to a new stream, False otherwise
         """
         try:
-            logger.info(f"Trying to find alternative stream for channel {self.channel_id}, "
-                       f"current stream ID: {self.current_stream_id}, current profile ID: {self.current_profile_id}")
+            logger.info(f"Trying to find alternative stream for channel {self.channel_id}, current stream ID: {self.current_stream_id}, current profile ID: {self.current_profile_id}")
 
-            # Mark current combination as tried
-            if self.current_stream_id and self.current_profile_id:
-                self.tried_combinations.add((self.current_stream_id, self.current_profile_id))
+            # Get alternate streams with ALL profiles (not just default)
+            alternate_streams = get_alternate_streams(self.channel_id, self.current_stream_id)
+            logger.info(f"Found {len(alternate_streams)} potential alternate stream+profile combinations for channel {self.channel_id}")
 
-            # Get alternate streams/profiles excluding the current combination
-            alternate_streams = get_alternate_streams(
-                self.channel_id,
-                self.current_stream_id,
-                self.current_profile_id
-            )
-
-            # Filter out combinations we've already tried
+            # Filter out stream+profile combinations we've already tried
             untried_combinations = [
                 s for s in alternate_streams 
                 if (s['stream_id'], s['profile_id']) not in self.tried_combinations
             ]
             
             if untried_combinations:
-                entries = ', '.join([f"{s['stream_id']}:{s['profile_id']}" for s in untried_combinations])
-                logger.info(f"Found {len(untried_combinations)} untried combinations for channel {self.channel_id}: [{entries}]")
+                combos_to_try = ', '.join([f"({s['stream_id']},{s['profile_id']})" for s in untried_combinations])
+                logger.info(f"Found {len(untried_combinations)} untried stream+profile combinations for channel {self.channel_id}: [{combos_to_try}]")
             else:
-                logger.warning(f"No untried combinations available for channel {self.channel_id}, tried: {self.tried_combinations}")
+                logger.warning(f"No untried stream+profile combinations available for channel {self.channel_id}, tried: {self.tried_combinations}")
 
             if not untried_combinations:
-                # Check if we have combinations but they've all been tried
+                # Check if we have streams but they've all been tried
                 if alternate_streams and len(self.tried_combinations) > 0:
-                    logger.warning(f"All {len(alternate_streams)} alternate combinations have been tried for channel {self.channel_id}")
+                    logger.warning(f"All {len(alternate_streams)} alternate stream+profile combinations have been tried for channel {self.channel_id}")
                 return False
 
-            # Try multiple combinations until we find one that works
             for next_stream in untried_combinations:
                 stream_id = next_stream['stream_id']
-                profile_id = next_stream['profile_id']
+                profile_id = next_stream['profile_id']  # M3U profile ID from get_alternate_streams
 
                 # Add to tried combinations
                 self.tried_combinations.add((stream_id, profile_id))
-                self.tried_stream_ids.add(stream_id)
 
-                # Get stream info for this specific combination
-                logger.info(f"Trying stream ID {stream_id} with profile ID {profile_id} for channel {self.channel_id}")
-                stream_info = get_stream_info_for_profile(
-                    self.channel_id,
-                    stream_id,
-                    profile_id
-                )
+                # Get stream info using the SPECIFIC profile from get_alternate_streams
+                # This is the key to profile failover - we use the exact profile suggested
+                logger.info(f"Trying next stream ID {stream_id} with profile ID {profile_id} for channel {self.channel_id}")
+                stream_info = get_stream_info_for_profile(self.channel_id, stream_id, profile_id)
 
-                if 'error' in stream_info or not stream_info.get('url'):
-                    logger.error(f"Error getting info for stream {stream_id}/profile {profile_id} for channel {self.channel_id}: {stream_info.get('error', 'No URL')}")
+                if not stream_info or 'stream_url' not in stream_info:
+                    logger.error(f"Error getting info for stream {stream_id} with profile {profile_id} for channel {self.channel_id}")
                     continue  # Try next combination
 
                 # Update URL and user agent
-                new_url = stream_info['url']
+                new_url = stream_info['stream_url']
                 new_user_agent = stream_info['user_agent']
                 new_transcode = stream_info['transcode']
 
                 # Check if the new URL is the same as current URL
                 if new_url == self.url:
-                    logger.warning(f"Stream ID {stream_id}/profile {profile_id} generates the same URL as current stream ({new_url}). "
+                    logger.warning(f"Stream ID {stream_id} with profile {profile_id} generates the same URL as current stream ({new_url}). "
                                  f"Skipping this combination and trying next alternative.")
                     continue  # Try next combination
 
-                logger.info(f"Switching from URL {self.url} to {new_url} for channel {self.channel_id}")
+                logger.info(f"Switching from URL {self.url} to {new_url} for channel {self.channel_id} (stream={stream_id}, profile={profile_id})")
 
                 # Just update the URL, don't stop the channel or release resources
                 switch_result = self.update_url(new_url, stream_id, profile_id)
                 if not switch_result:
-                    logger.error(f"Failed to update URL for stream ID {stream_id}/profile {profile_id} for channel {self.channel_id}")
+                    logger.error(f"Failed to update URL for stream ID {stream_id} with profile {profile_id} for channel {self.channel_id}")
                     continue  # Try next combination
 
-                # Update stream ID and profile ID tracking
+                # Update tracking variables
                 self.current_stream_id = stream_id
                 self.current_profile_id = profile_id
+                self.last_stream_switch_time = time.time()
 
                 # Store the new user agent and transcode settings
                 self.user_agent = new_user_agent
                 self.transcode = new_transcode
 
-                # Update stream metadata in Redis
+                # Update stream metadata in Redis with the specific profile ID
                 if hasattr(self.buffer, 'redis_client') and self.buffer.redis_client:
                     metadata_key = RedisKeys.channel_metadata(self.channel_id)
+                    
+                    # Get channel's stream profile ID
+                    from apps.channels.models import Channel
+                    try:
+                        channel = Channel.objects.get(uuid=self.channel_id)
+                        stream_profile_id = channel.get_stream_profile().id
+                    except:
+                        stream_profile_id = 1  # Fallback to default
+                    
                     self.buffer.redis_client.hset(metadata_key, mapping={
                         ChannelMetadataField.URL: new_url,
                         ChannelMetadataField.USER_AGENT: new_user_agent,
-                        ChannelMetadataField.STREAM_PROFILE: stream_info['stream_profile'],
-                        ChannelMetadataField.M3U_PROFILE: str(profile_id),
+                        ChannelMetadataField.STREAM_PROFILE: str(stream_profile_id),
+                        ChannelMetadataField.M3U_PROFILE: str(profile_id),  # Use the profile_id from get_alternate_streams
                         ChannelMetadataField.STREAM_ID: str(stream_id),
                         ChannelMetadataField.STREAM_SWITCH_TIME: str(time.time()),
-                        ChannelMetadataField.STREAM_SWITCH_REASON: "max_retries_exceeded"
+                        ChannelMetadataField.STREAM_SWITCH_REASON: "profile_failover"
                     })
 
                     # Log the switch
                     logger.info(f"Stream metadata updated for channel {self.channel_id} to stream ID {stream_id} with M3U profile {profile_id}")
 
-                logger.info(f"Successfully switched to stream ID {stream_id}/profile {profile_id} with URL {new_url} for channel {self.channel_id}")
+                logger.info(f"Successfully switched to stream ID {stream_id} with profile {profile_id} and URL {new_url} for channel {self.channel_id}")
                 return True
 
             # If we get here, we tried all combinations but none worked
-            logger.error(f"Tried {len(untried_combinations)} alternate combinations but none were suitable for channel {self.channel_id}")
+            logger.error(f"Tried {len(untried_combinations)} alternate stream+profile combinations but none were suitable for channel {self.channel_id}")
             return False
 
         except Exception as e:

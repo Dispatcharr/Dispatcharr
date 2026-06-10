@@ -1,4 +1,4 @@
-from core.utils import validate_flexible_url
+from core.utils import validate_flexible_url, build_absolute_uri_with_port
 from rest_framework import serializers
 from .models import EPGSource, EPGData, ProgramData
 from apps.channels.models import Channel, Stream
@@ -22,7 +22,8 @@ class EPGSourceSerializer(serializers.ModelSerializer):
             'name',
             'source_type',
             'url',
-            'api_key',
+            'username',
+            'password',
             'is_active',
             'file_path',
             'refresh_interval',
@@ -36,6 +37,7 @@ class EPGSourceSerializer(serializers.ModelSerializer):
             'epg_data_count',
             'has_channels',
         ]
+        extra_kwargs = {'password': {'write_only': True}}
 
     def get_epg_data_count(self, obj):
         """Return the count of EPG data entries instead of all IDs to prevent large payloads"""
@@ -66,6 +68,8 @@ class EPGSourceSerializer(serializers.ModelSerializer):
                 cron_expr = f'{ct.minute} {ct.hour} {ct.day_of_month} {ct.month_of_year} {ct.day_of_week}'
         instance._cron_expression = cron_expr
         for attr, value in validated_data.items():
+            if attr == 'password' and not value:
+                continue
             setattr(instance, attr, value)
         instance.save()
         return instance
@@ -142,6 +146,20 @@ class ProgramDetailSerializer(ProgramDataSerializer):
         previously_shown = cp.get('previously_shown_details') or {}
         data['original_air_date'] = previously_shown.get('start')
 
+        # Content advisory (SD)
+        data['content_advisory'] = cp.get('content_advisory') or []
+
+        # Full content ratings array (SD — all regional ratings)
+        data['content_ratings'] = cp.get('content_ratings') or []
+
+        # Sports event details (SD)
+        data['event_details'] = cp.get('event_details')
+
+        # Runtime (duration without commercials)
+        length = cp.get('length') or {}
+        data['runtime'] = length.get('value') if length else None
+        data['runtime_units'] = length.get('units') if length else None
+
         # External IDs
         data['imdb_id'] = cp.get('imdb.com_id')
         data['tmdb_id'] = cp.get('themoviedb.org_id')
@@ -150,6 +168,17 @@ class ProgramDetailSerializer(ProgramDataSerializer):
         # Images
         data['icon'] = cp.get('icon')
         data['images'] = cp.get('images') or []
+
+        # SD poster: expose as absolute proxy URL so frontend/img tags never need SD auth
+        if cp.get('sd_icon'):
+            poster_path = f"/api/epg/programs/{obj.id}/poster/"
+            request = self.context.get('request')
+            if request:
+                data['poster_url'] = build_absolute_uri_with_port(request, poster_path)
+            else:
+                data['poster_url'] = poster_path
+        else:
+            data['poster_url'] = None
 
         return data
 

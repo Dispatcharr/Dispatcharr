@@ -60,46 +60,6 @@ export const PROXY_SETTINGS_OPTIONS = {
     description:
       'Seconds of received buffer to start behind live when a new client connects (0 = start at live). Note: this is chunk receive time, not video duration.',
   },
-  max_retries: {
-    label: 'Max Retries',
-    description: 'Maximum number of retry attempts before switching streams',
-  },
-  url_switch_timeout: {
-    label: 'URL Switch Timeout (seconds)',
-    description: 'Maximum time allowed for stream switching operations',
-  },
-  max_stream_switches: {
-    label: 'Max Stream Switches',
-    description: 'Maximum number of stream/profile combinations to try before giving up',
-  },
-  connection_timeout: {
-    label: 'Connection Timeout (seconds)',
-    description: 'Maximum time to wait for initial connection to a stream',
-  },
-  failover_grace_period: {
-    label: 'Failover Grace Period (seconds)',
-    description: 'Grace period after stream switch before applying normal health checks',
-  },
-  chunk_timeout: {
-    label: 'Chunk Timeout (seconds)',
-    description: 'Maximum time to wait for a single chunk before considering stream unhealthy',
-  },
-  initial_behind_chunks: {
-    label: 'Initial Behind Chunks',
-    description: 'Number of chunks to buffer before starting playback',
-  },
-  stream_cooldown_enabled: {
-    label: 'Stream Cooldown Enabled',
-    description: 'When enabled, failed stream/profile combinations are skipped for a configurable time period',
-  },
-  stream_cooldown_minutes: {
-    label: 'Stream Cooldown (minutes)',
-    description: 'How long (in minutes) a failed stream/profile combination is skipped before being retried (0 = disabled)',
-  },
-  health_check_interval: {
-    label: 'Health Check Interval (seconds)',
-    description: 'Interval between stream health checks',
-  },
 };
 
 export const USER_LIMITS_OPTIONS = {

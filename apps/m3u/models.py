@@ -104,11 +104,27 @@ class M3UAccount(models.Model):
         max_length=255,
         blank=True,
         null=True,
-        help_text="HTTP proxy URL (e.g., http://proxy.example.com:8080) for this M3U account",
+        help_text="HTTP proxy URL for streaming (e.g., http://proxy.example.com:8080)",
     )
-
+    proxy_for_api = models.BooleanField(
+        default=False,
+        help_text="When enabled, the HTTP proxy will also be used for API calls (M3U download, XC API). When disabled, proxy is only used for streaming.",
+    )
+    
     def __str__(self):
         return self.name
+
+    def get_proxy_for_api(self):
+        """Get proxy URL for API calls only if proxy_for_api is enabled."""
+        if self.proxy and self.proxy.strip() and self.proxy_for_api:
+            return self.proxy
+        return None
+    
+    def get_proxy_for_streaming(self):
+        """Get proxy URL for streaming (always returns if configured)."""
+        if self.proxy and self.proxy.strip():
+            return self.proxy
+        return None
 
     def clean(self):
         if self.max_streams < 0:

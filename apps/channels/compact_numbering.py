@@ -44,20 +44,38 @@ def is_compact_group(group_relation):
 def get_group_relation_for_channel(channel):
     """Resolve the ChannelGroupM3UAccount that owns this auto-created
     channel. Returns None for manual channels, or when the relation has
-    been deleted."""
-    if (
-        not channel.auto_created
-        or not channel.auto_created_by_id
-        or not channel.channel_group_id
-    ):
+    been deleted.
+
+    With a Channel Group Override active, sync stores the channel under
+    the override target group's id, not the source group's id recorded on
+    the relation. The direct lookup then misses, so fall back to scanning
+    the account's relations for one whose group_override points at the
+    channel's current group. The fallback runs only on a direct miss, so
+    the common no-override path keeps its single SELECT.
+    """
+    if not channel.auto_created or not channel.auto_created_by_id:
         return None
+    if not channel.channel_group_id:
+        return None
+
     try:
         return ChannelGroupM3UAccount.objects.get(
             m3u_account_id=channel.auto_created_by_id,
             channel_group_id=channel.channel_group_id,
         )
     except ChannelGroupM3UAccount.DoesNotExist:
-        return None
+        pass
+
+    # group_override may be stored as int or str; compare as strings so
+    # the match is type-agnostic.
+    target = str(channel.channel_group_id)
+    for rel in ChannelGroupM3UAccount.objects.filter(
+        m3u_account_id=channel.auto_created_by_id
+    ):
+        cp = _custom_properties_as_dict(rel.custom_properties)
+        if str(cp.get("group_override", "")) == target:
+            return rel
+    return None
 
 
 def build_reserved_set(exclude_channel_ids=None, range_start=None, range_end=None):
@@ -150,6 +168,29 @@ def assign_compact_numbers_for_channels(channel_ids):
     )
     for rel in relations_qs:
         relations_by_pair[(rel.m3u_account_id, rel.channel_group_id)] = rel
+
+    # Override fallback: pairs the direct lookup missed carry an override-
+    # target channel_group_id. Resolve them with one extra query over the
+    # unresolved accounts (not one per pair), so the common path keeps its
+    # single narrow query.
+    unresolved = [k for k in pair_keys if k not in relations_by_pair]
+    if unresolved:
+        override_relations = {}
+        for rel in ChannelGroupM3UAccount.objects.filter(
+            m3u_account_id__in={k[0] for k in unresolved}
+        ):
+            cp = _custom_properties_as_dict(rel.custom_properties)
+            target = cp.get("group_override")
+            if not target:
+                continue
+            try:
+                override_relations[(rel.m3u_account_id, int(target))] = rel
+            except (TypeError, ValueError):
+                continue
+        for key in unresolved:
+            rel = override_relations.get(key)
+            if rel is not None:
+                relations_by_pair[key] = rel
 
     by_relation = {}
     for key, group_channels in by_pair.items():
@@ -265,12 +306,35 @@ def _repack_inner(group_relation):
         else None
     )
 
+    # Match the override target group too: channels created under an
+    # override live under the target's id, not the source group's.
+    group_ids = {group_id}
+    override_group_id = cp.get("group_override")
+    if override_group_id:
+        try:
+            group_ids.add(int(override_group_id))
+        except (TypeError, ValueError):
+            logger.warning(
+                "Ignoring non-numeric group_override %r on relation %s",
+                override_group_id,
+                group_relation.id,
+            )
+
+    # Known limitation: if two source groups on the same account override
+    # into the SAME target group, their channels are indistinguishable
+    # here (channels carry no source-group back-reference), so each repack
+    # renumbers the shared target's channels into its own range.
+    # order_by("id") makes the pack deterministic. Without it the query
+    # returns rows in unspecified physical order, which shifts after the
+    # renumber's own UPDATEs and autovacuum, so the default "provider" sort
+    # below would repack channels into different numbers on every sync.
+    # id order is creation order, which tracks the provider stream order.
     channels = list(
         Channel.objects.filter(
             auto_created=True,
             auto_created_by_id=account_id,
-            channel_group_id=group_id,
-        ).select_related("override")
+            channel_group_id__in=group_ids,
+        ).select_related("override").order_by("id")
     )
 
     visible = []
@@ -285,21 +349,22 @@ def _repack_inner(group_relation):
             visible.append(ch)
 
     # Sort the visible set by the group's configured channel_sort_order.
-    # Provider order (the default) preserves DB-iteration order which is
-    # roughly creation order; treat unrecognized values the same way.
+    # Provider order (the default) keeps the id order from the query above.
+    # Each explicit sort carries c.id as a secondary key so equal values
+    # (e.g. blank tvg_id) break ties deterministically instead of churning.
     if sort_order == "name":
         visible.sort(
-            key=lambda c: natural_sort_key(c.name or ""),
+            key=lambda c: (natural_sort_key(c.name or ""), c.id),
             reverse=sort_reverse,
         )
     elif sort_order == "tvg_id":
         visible.sort(
-            key=lambda c: c.tvg_id or "",
+            key=lambda c: (c.tvg_id or "", c.id),
             reverse=sort_reverse,
         )
     elif sort_order == "updated_at":
         visible.sort(
-            key=lambda c: c.updated_at,
+            key=lambda c: (c.updated_at, c.id),
             reverse=sort_reverse,
         )
 

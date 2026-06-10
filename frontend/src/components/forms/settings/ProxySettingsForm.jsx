@@ -7,7 +7,6 @@ import {
   Button,
   Flex,
   NumberInput,
-  Select,
   Stack,
   TextInput,
 } from '@mantine/core';
@@ -26,22 +25,10 @@ const ProxySettingsOptions = React.memo(({ proxySettingsForm }) => {
       'channel_shutdown_delay',
       'channel_init_grace_period',
       'new_client_behind_seconds',
-      'max_retries',
-      'url_switch_timeout',
-      'max_stream_switches',
-      'connection_timeout',
-      'failover_grace_period',
-      'chunk_timeout',
-      'initial_behind_chunks',
-      'stream_cooldown_minutes',
-      'health_check_interval',
     ].includes(key);
   };
   const isFloatField = (key) => {
     return key === 'buffering_speed';
-  };
-  const isSelectField = (key) => {
-    return key === 'stream_cooldown_enabled';
   };
   const getNumericFieldMax = (key) => {
     return key === 'buffering_timeout'
@@ -52,25 +39,7 @@ const ProxySettingsOptions = React.memo(({ proxySettingsForm }) => {
           ? 300
           : key === 'new_client_behind_seconds'
             ? 120
-            : key === 'max_retries'
-              ? 10
-              : key === 'url_switch_timeout'
-                ? 60
-                : key === 'max_stream_switches'
-                  ? 500
-                  : key === 'connection_timeout'
-                    ? 60
-                    : key === 'failover_grace_period'
-                      ? 60
-                      : key === 'chunk_timeout'
-                        ? 30
-                        : key === 'initial_behind_chunks'
-                          ? 20
-                          : key === 'stream_cooldown_minutes'
-                            ? 1440
-                            : key === 'health_check_interval'
-                              ? 30
-                              : 60;
+            : 60;
   };
   return (
     <>
@@ -97,22 +66,6 @@ const ProxySettingsOptions = React.memo(({ proxySettingsForm }) => {
               max={10.0}
               step={0.01}
               precision={1}
-            />
-          );
-        } else if (isSelectField(key)) {
-          return (
-            <Select
-              key={key}
-              label={config.label}
-              description={config.description || null}
-              data={[
-                { value: 'false', label: 'Disabled' },
-                { value: 'true', label: 'Active' },
-              ]}
-              value={String(proxySettingsForm.getValues()[key] ?? false)}
-              onChange={(val) =>
-                proxySettingsForm.setFieldValue(key, val === 'true')
-              }
             />
           );
         } else {

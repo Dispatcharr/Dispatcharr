@@ -124,20 +124,15 @@ class StreamProfile(models.Model):
             return True
         return False
 
-    def build_command(self, stream_url, user_agent, proxy=None):
+    def build_command(self, stream_url, user_agent):
 
         if self.is_proxy():
-            # Proxy type doesn't use external commands
             return []
 
         replacements = {
             "{streamUrl}": stream_url,
             "{userAgent}": user_agent,
         }
-        
-        # Add proxy to replacements if provided
-        if proxy:
-            replacements["{proxy}"] = proxy
 
         # Split the command and iterate through each part to apply replacements
         cmd = [self.command] + [
@@ -412,6 +407,7 @@ class CoreSettings(models.Model):
             "max_system_events": 100,
             "preferred_region": None,
             "auto_import_mapped_files": True,
+            "enable_ip_lookup": True,
         })
 
     @classmethod

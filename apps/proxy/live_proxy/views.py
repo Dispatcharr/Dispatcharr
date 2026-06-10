@@ -468,14 +468,11 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
 
             if proxy_server.redis_client:
                 metadata_key = RedisKeys.channel_metadata(channel_id)
-                url_bytes = proxy_server.redis_client.hget(
-                    metadata_key, ChannelMetadataField.URL
-                )
-                ua_bytes = proxy_server.redis_client.hget(
-                    metadata_key, ChannelMetadataField.USER_AGENT
-                )
-                profile_bytes = proxy_server.redis_client.hget(
-                    metadata_key, ChannelMetadataField.STREAM_PROFILE
+                url_bytes, ua_bytes, profile_bytes = proxy_server.redis_client.hmget(
+                    metadata_key,
+                    ChannelMetadataField.URL,
+                    ChannelMetadataField.USER_AGENT,
+                    ChannelMetadataField.STREAM_PROFILE,
                 )
 
                 if url_bytes:
@@ -630,7 +627,12 @@ def stream_xc(request, username, password, channel_id):
     else:
         channel = get_object_or_404(Channel, id=channel_id)
 
-    force_format = 'fmp4' if extension.lower() == '.mp4' else 'mpegts'
+    if extension.lower() == '.mp4':
+        force_format = 'fmp4'
+    elif extension.lower() == '.ts':
+        force_format = 'mpegts'
+    else:
+        force_format = None
     return stream_ts(request._request, str(channel.uuid), user, force_output_format=force_format)
 
 

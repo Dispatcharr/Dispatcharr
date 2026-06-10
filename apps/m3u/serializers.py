@@ -176,6 +176,7 @@ class M3UAccountSerializer(serializers.ModelSerializer):
             "stale_stream_days",
             "priority",
             "proxy",
+            "proxy_for_api",
             "status",
             "last_message",
             "enable_vod",

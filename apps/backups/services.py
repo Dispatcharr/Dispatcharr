@@ -23,8 +23,7 @@ def get_backup_dir() -> Path:
 
 
 def _is_postgresql() -> bool:
-    """Check if we're using PostgreSQL."""
-    return settings.DATABASES["default"]["ENGINE"] == "django.db.backends.postgresql"
+    return "postgresql" in settings.DATABASES["default"]["ENGINE"]
 
 
 def _get_pg_env() -> dict:
@@ -171,30 +170,25 @@ def _restore_postgresql(dump_file: Path) -> None:
 
 
 def _dump_sqlite(output_file: Path) -> None:
-    """Dump SQLite database using sqlite3 .backup command."""
-    logger.info("Dumping SQLite database with sqlite3 .backup...")
+    import sqlite3 as _sqlite3
+    logger.info("Dumping SQLite database...")
     db_path = Path(settings.DATABASES["default"]["NAME"])
 
     if not db_path.exists():
         raise FileNotFoundError(f"SQLite database not found: {db_path}")
 
-    # Use sqlite3 .backup command via stdin for reliable execution
-    result = subprocess.run(
-        ["sqlite3", str(db_path)],
-        input=f".backup '{output_file}'\n",
-        capture_output=True,
-        text=True,
-    )
+    src = _sqlite3.connect(str(db_path))
+    dst = _sqlite3.connect(str(output_file))
+    try:
+        src.backup(dst)
+    finally:
+        dst.close()
+        src.close()
 
-    if result.returncode != 0:
-        logger.error(f"sqlite3 backup failed: {result.stderr}")
-        raise RuntimeError(f"sqlite3 backup failed: {result.stderr}")
-
-    # Verify the backup file was created
     if not output_file.exists():
-        raise RuntimeError("sqlite3 backup failed: output file not created")
+        raise RuntimeError("SQLite backup failed: output file not created")
 
-    logger.info(f"sqlite3 backup completed successfully: {output_file}")
+    logger.info(f"SQLite backup completed successfully: {output_file}")
 
 
 def _restore_sqlite(dump_file: Path) -> None:
@@ -216,23 +210,20 @@ def _restore_sqlite(dump_file: Path) -> None:
     # We can simply copy it over the existing database
     shutil.copy2(dump_file, db_path)
 
-    # Verify the restore worked by checking if sqlite3 can read it
-    result = subprocess.run(
-        ["sqlite3", str(db_path)],
-        input=".tables\n",
-        capture_output=True,
-        text=True,
-    )
-
-    if result.returncode != 0:
-        logger.error(f"sqlite3 verification failed: {result.stderr}")
-        # Try to restore from backup
+    # Verify the restore worked by checking if the file is a readable SQLite database
+    import sqlite3 as _sqlite3
+    try:
+        conn = _sqlite3.connect(str(db_path))
+        conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+        conn.close()
+    except _sqlite3.DatabaseError as exc:
+        logger.error(f"SQLite verification failed: {exc}")
         if backup_current and backup_current.exists():
             shutil.copy2(backup_current, db_path)
             logger.info("Restored original database from backup")
-        raise RuntimeError(f"sqlite3 restore verification failed: {result.stderr}")
+        raise RuntimeError(f"SQLite restore verification failed: {exc}") from exc
 
-    logger.info("sqlite3 restore completed successfully")
+    logger.info("SQLite restore completed successfully")
 
 
 def create_backup() -> Path:

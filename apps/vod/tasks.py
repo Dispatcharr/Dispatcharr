@@ -40,7 +40,7 @@ def refresh_vod_content(account_id):
             account.username,
             account.password,
             account.get_user_agent().user_agent,
-            account.proxy,
+            account.get_proxy_for_api(),
         ) as client:
 
             movie_categories, series_categories = refresh_categories(account.id, client)
@@ -92,7 +92,8 @@ def refresh_categories(account_id, client=None):
             account.server_url,
             account.username,
             account.password,
-            account.get_user_agent().user_agent
+            account.get_user_agent().user_agent,
+            account.get_proxy_for_api(),
         )
     logger.info(f"Refreshing movie categories for account {account.name}")
 
@@ -440,6 +441,26 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
             trailer = extract_string_from_array_or_string(trailer_raw) if trailer_raw else None
             logo_url = movie_data.get('stream_icon') or ''
 
+            director = extract_string_from_array_or_string(
+                movie_data.get('director') or ''
+            )
+            actors_raw = movie_data.get('actors') or movie_data.get('cast') or ''
+            if isinstance(actors_raw, list):
+                actors = ', '.join(s.strip() for s in actors_raw if s and str(s).strip()) or None
+            else:
+                actors = actors_raw.strip() if actors_raw else None
+            release_date = movie_data.get('release_date') or movie_data.get('releasedate') or ''
+
+            custom_props = {}
+            if trailer:
+                custom_props['youtube_trailer'] = trailer
+            if director:
+                custom_props['director'] = director
+            if actors:
+                custom_props['actors'] = actors
+            if release_date:
+                custom_props['release_date'] = release_date
+
             movie_props = {
                 'name': name,
                 'year': year,
@@ -449,7 +470,7 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
                 'rating': rating,
                 'genre': genre,
                 'duration_secs': duration_secs,
-                'custom_properties': {'trailer': trailer} if trailer else None,
+                'custom_properties': custom_props or None,
             }
 
             movie_keys[movie_key] = {
@@ -549,8 +570,18 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
 
             for field, value in movie_props.items():
                 if field == 'custom_properties':
-                    if value != movie.custom_properties:
-                        movie.custom_properties = value
+                    # Merge: preserve advanced-refresh keys; don't overwrite director/actors/release_date if already set.
+                    existing_cp = movie.custom_properties or {}
+                    incoming_cp = value or {}
+                    merged = dict(existing_cp)
+                    for k, v in incoming_cp.items():
+                        if k in ('director', 'actors', 'release_date'):
+                            if not existing_cp.get(k):
+                                merged[k] = v
+                        else:
+                            merged[k] = v
+                    if merged != existing_cp:
+                        movie.custom_properties = merged
                         updated = True
                 elif getattr(movie, field) != value:
                     setattr(movie, field, value)
@@ -565,8 +596,6 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
                         movie._logo_to_update = new_logo
                         logo_updated = True
                 elif movie.logo_id:
-                    # Logo URL exists but logo creation failed or logo not found
-                    # Clear the orphaned logo reference
                     logger.warning(f"Logo URL provided but logo not found in database for movie '{movie.name}', clearing logo reference")
                     movie._logo_to_update = None
                     logo_updated = True
@@ -785,7 +814,14 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
                 value = series_data.get(key)
                 if value:
                     # For string-like fields that might be arrays, extract clean strings
-                    if key in ['poster_path', 'youtube_trailer', 'cast', 'director']:
+                    if key == 'cast':
+                        if isinstance(value, list):
+                            clean_value = ', '.join(s.strip() for s in value if s and str(s).strip()) or None
+                        else:
+                            clean_value = extract_string_from_array_or_string(value)
+                        if clean_value:
+                            additional_metadata[key] = clean_value
+                    elif key in ['poster_path', 'youtube_trailer', 'director']:
                         clean_value = extract_string_from_array_or_string(value)
                         if clean_value:
                             additional_metadata[key] = clean_value
@@ -1228,7 +1264,7 @@ def refresh_series_episodes(account, series, external_series_id, episodes_data=N
                 account.username,
                 account.password,
                 account.get_user_agent().user_agent,
-                account.proxy,
+                account.get_proxy_for_api(),
             ) as client:
                 series_info = client.get_series_info(external_series_id)
                 if series_info:
@@ -1588,7 +1624,7 @@ def batch_refresh_series_episodes(account_id, series_ids=None):
             account.username,
             account.password,
             account.get_user_agent().user_agent,
-            account.proxy,
+            account.get_proxy_for_api(),
         ) as client:
 
             refreshed_count = 0
@@ -2076,7 +2112,7 @@ def refresh_movie_advanced_data(m3u_movie_relation_id, force_refresh=False):
             username=account.username,
             password=account.password,
             user_agent=account.get_user_agent().user_agent,
-            proxy=account.proxy,
+            proxy=account.get_proxy_for_api(),
         ) as client:
             vod_info = client.get_vod_info(relation.stream_id)
             if vod_info and 'info' in vod_info:
@@ -2160,26 +2196,25 @@ def refresh_movie_advanced_data(m3u_movie_relation_id, force_refresh=False):
                             movie.imdb_id = imdb_id_to_set
                             updated = True
                             logger.debug(f"Set imdb_id {imdb_id_to_set} on movie {movie.id}")
-                # Only update trailer if we have a non-empty value and either no existing value or existing value is empty
                 if should_update_field(custom_props.get('youtube_trailer'), info.get('trailer')):
                     custom_props['youtube_trailer'] = extract_string_from_array_or_string(info.get('trailer'))
                     updated = True
                 if should_update_field(custom_props.get('youtube_trailer'), info.get('youtube_trailer')):
                     custom_props['youtube_trailer'] = extract_string_from_array_or_string(info.get('youtube_trailer'))
                     updated = True
-                # Only update backdrop_path if we have a non-empty value and either no existing value or existing value is empty
                 if should_update_field(custom_props.get('backdrop_path'), info.get('backdrop_path')):
                     backdrop_url = extract_string_from_array_or_string(info.get('backdrop_path'))
                     custom_props['backdrop_path'] = [backdrop_url] if backdrop_url else None
                     updated = True
-                # Only update actors if we have a non-empty value and either no existing value or existing value is empty
-                if should_update_field(custom_props.get('actors'), info.get('actors')):
-                    custom_props['actors'] = extract_string_from_array_or_string(info.get('actors'))
-                    updated = True
-                if should_update_field(custom_props.get('actors'), info.get('cast')):
-                    custom_props['actors'] = extract_string_from_array_or_string(info.get('cast'))
-                    updated = True
-                # Only update director if we have a non-empty value and either no existing value or existing value is empty
+                for actors_key in ('actors', 'cast'):
+                    actors_raw = info.get(actors_key)
+                    if should_update_field(custom_props.get('actors'), actors_raw):
+                        if isinstance(actors_raw, list):
+                            custom_props['actors'] = ', '.join(s.strip() for s in actors_raw if s and str(s).strip()) or None
+                        else:
+                            custom_props['actors'] = extract_string_from_array_or_string(actors_raw)
+                        updated = True
+                        break
                 if should_update_field(custom_props.get('director'), info.get('director')):
                     custom_props['director'] = extract_string_from_array_or_string(info.get('director'))
                     updated = True

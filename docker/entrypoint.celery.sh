@@ -1,8 +1,4 @@
 #!/bin/bash
-
-# CRITICAL: Install missing dependencies FIRST using uv
-/bin/uv pip install --python /dispatcharrpy/bin/python django-redis 2>/dev/null || true
-
 set -e
 
 cd /app

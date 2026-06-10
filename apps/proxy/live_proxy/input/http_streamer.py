@@ -26,7 +26,7 @@ class HTTPStreamReader:
         self.pipe_read = None
         self.pipe_write = None
         self.running = False
-        self.error_occurred = False  # NEW: Track if an error occurred
+        self.error_occurred = False  # Track if an error occurred during streaming
 
     def start(self):
         """Start the HTTP stream reader thread"""
@@ -55,18 +55,16 @@ class HTTPStreamReader:
             if self.user_agent:
                 headers['User-Agent'] = self.user_agent
 
+            # Build proxies dict if proxy is configured
+            proxies = None
+            if self.proxy:
+                proxies = {'http': self.proxy, 'https': self.proxy}
+                logger.info(f"HTTP reader using proxy: {self.proxy}")
+
             logger.info(f"HTTP reader connecting to {self.url}")
 
             # Create session
             self.session = requests.Session()
-
-            # Configure proxy if provided
-            if self.proxy:
-                logger.info(f"Configuring HTTP proxy: {self.proxy}")
-                self.session.proxies = {
-                    'http': self.proxy,
-                    'https': self.proxy
-                }
 
             # Disable retries for faster failure detection
             adapter = HTTPAdapter(max_retries=0, pool_connections=1, pool_maxsize=1)
@@ -78,7 +76,8 @@ class HTTPStreamReader:
                 self.url,
                 headers=headers,
                 stream=True,
-                timeout=(5, 30)  # 5s connect, 30s read
+                timeout=(5, 30),  # 5s connect, 30s read
+                proxies=proxies,
             )
 
             if self.response.status_code != 200:
@@ -91,55 +90,51 @@ class HTTPStreamReader:
 
             # Stream chunks to pipe
             chunk_count = 0
-            try:
-                for chunk in self.response.iter_content(chunk_size=self.chunk_size):
-                    if not self.running:
-                        break
+            for chunk in self.response.iter_content(chunk_size=self.chunk_size):
+                if not self.running:
+                    break
 
-                    if chunk:
-                        # Write the chunk in a non-blocking loop. The pipe write end is
-                        # set O_NONBLOCK in start(), so os.write() raises BlockingIOError
-                        # instead of stalling the OS thread. We use select.select on the
-                        # write fd (gevent-patched - yields to hub) to wait for space,
-                        # then retry. Partial writes are handled by advancing the offset.
-                        offset = 0
-                        write_error = False
-                        while offset < len(chunk) and self.running:
-                            try:
-                                n = os.write(self.pipe_write, chunk[offset:])
-                                offset += n
-                            except BlockingIOError:
-                                _, writable, _ = _select.select([], [self.pipe_write], [], 1.0)
-                                if not writable and not self.running:
-                                    write_error = True
-                                    break
-                            except OSError as e:
-                                logger.error(f"Pipe write error: {e}")
+                if chunk:
+                    # Write the chunk in a non-blocking loop. The pipe write end is
+                    # set O_NONBLOCK in start(), so os.write() raises BlockingIOError
+                    # instead of stalling the OS thread. We use select.select on the
+                    # write fd (gevent-patched - yields to hub) to wait for space,
+                    # then retry. Partial writes are handled by advancing the offset.
+                    offset = 0
+                    write_error = False
+                    while offset < len(chunk) and self.running:
+                        try:
+                            n = os.write(self.pipe_write, chunk[offset:])
+                            offset += n
+                        except BlockingIOError:
+                            _, writable, _ = _select.select([], [self.pipe_write], [], 1.0)
+                            if not writable and not self.running:
                                 write_error = True
                                 break
-                        if write_error:
+                        except OSError as e:
+                            logger.error(f"Pipe write error: {e}")
+                            write_error = True
                             break
+                    if write_error:
+                        break
 
-                        chunk_count += 1
-                        if chunk_count % 1000 == 0:
-                            logger.debug(f"HTTP reader streamed {chunk_count} chunks")
-
-            except (AttributeError, OSError) as e:
-                # Catch race condition when stop() closes response while iterating
-                if self.running:
-                    logger.error(f"HTTP reader stream error: {e}")
-                    self.error_occurred = True
-                # else: Normal shutdown, ignore the error
+                    chunk_count += 1
+                    if chunk_count % 1000 == 0:
+                        logger.debug(f"HTTP reader streamed {chunk_count} chunks")
 
             logger.info("HTTP stream ended")
 
         except requests.exceptions.RequestException as e:
             logger.error(f"HTTP reader request error: {e}")
-            # Signal error to StreamManager so it can trigger failover
             self.error_occurred = True
+        except (AttributeError, OSError) as e:
+            # Catch race condition during shutdown - response might be None
+            if self.running:
+                logger.error(f"HTTP reader error: {e}")
+                self.error_occurred = True
+            # If not running, this is expected during cleanup
         except Exception as e:
             logger.error(f"HTTP reader unexpected error: {e}", exc_info=True)
-            # Signal error to StreamManager so it can trigger failover
             self.error_occurred = True
         finally:
             self.running = False
@@ -156,7 +151,10 @@ class HTTPStreamReader:
         logger.info("Stopping HTTP stream reader")
         self.running = False
 
-        # Close response (but don't set to None - thread may still be iterating)
+        # Do NOT set self.response = None here (race condition fix)
+        # The read loop might still be accessing it during shutdown
+
+        # Close response (but keep reference)
         if self.response:
             try:
                 self.response.close()
@@ -178,6 +176,6 @@ class HTTPStreamReader:
             except:
                 pass
 
-        # Wait for thread to finish
+        # Wait for thread
         if self.thread and self.thread.is_alive():
             self.thread.join(timeout=2.0)

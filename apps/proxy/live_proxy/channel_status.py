@@ -419,7 +419,8 @@ class ChannelStatus:
                 info['stream_name'] = stream_name
 
             # Add data throughput information to basic info
-            total_bytes_bytes = proxy_server.redis_client.hget(metadata_key, ChannelMetadataField.TOTAL_BYTES)
+            # TOTAL_BYTES is already present in the hgetall result — avoid a redundant round-trip
+            total_bytes_bytes = metadata.get(ChannelMetadataField.TOTAL_BYTES)
             if total_bytes_bytes:
                 total_bytes = int(total_bytes_bytes)
                 info['total_bytes'] = total_bytes
@@ -460,29 +461,31 @@ class ChannelStatus:
 
                     client_key = RedisKeys.client_metadata(channel_id, client_id)
 
+                    # Fetch only the fields we need in one round-trip (hmget returns a list
+                    # in the same order as the requested keys; values are None if absent)
+                    ua, ip, connected_at, user_id, output_format, raw_profile_id = (
+                        proxy_server.redis_client.hmget(
+                            client_key,
+                            'user_agent', 'ip_address', 'connected_at', 'user_id',
+                            'output_format', 'output_profile_id',
+                        )
+                    )
+
                     client_info = {
                         'client_id': client_id,
+                        'user_agent': ua,
+                        'output_format': output_format or 'mpegts',
                     }
 
-                    user_agent_bytes = proxy_server.redis_client.hget(client_key, 'user_agent')
-                    client_info['user_agent'] = user_agent_bytes
+                    if ip:
+                        client_info['ip_address'] = ip
 
-                    ip_address_bytes = proxy_server.redis_client.hget(client_key, 'ip_address')
-                    if ip_address_bytes:
-                        client_info['ip_address'] = ip_address_bytes
+                    if connected_at:
+                        client_info['connected_at'] = float(connected_at)
 
-                    connected_at_bytes = proxy_server.redis_client.hget(client_key, 'connected_at')
-                    if connected_at_bytes:
-                        client_info['connected_at'] = float(connected_at_bytes)
+                    if user_id:
+                        client_info['user_id'] = user_id
 
-                    user_id_bytes = proxy_server.redis_client.hget(client_key, 'user_id')
-                    if user_id_bytes:
-                        client_info['user_id'] = user_id_bytes
-
-                    output_format = proxy_server.redis_client.hget(client_key, 'output_format')
-                    client_info['output_format'] = output_format or 'mpegts'
-
-                    raw_profile_id = proxy_server.redis_client.hget(client_key, 'output_profile_id')
                     if raw_profile_id and raw_profile_id not in ('None', '0', ''):
                         client_info['output_profile_id'] = int(raw_profile_id)
                     else:

@@ -1,8 +1,5 @@
 #!/bin/bash
 
-# CRITICAL: Install missing dependencies FIRST using uv
-/bin/uv pip install --python /dispatcharrpy/bin/python django-redis 2>/dev/null || true
-
 # Run Django migrations and collect static files
 python manage.py collectstatic --noinput
 python manage.py migrate --noinput

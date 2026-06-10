@@ -62,6 +62,24 @@ describe('dateTimeUtils', () => {
       const result = dateTimeUtils.initializeTime(date);
       expect(result.format()).toBe(dayjs(date).format());
     });
+
+    it('should handle custom format and locale', () => {
+      const result = dateTimeUtils.initializeTime('15/01/2024', 'DD/MM/YYYY');
+      expect(result.isValid()).toBe(true);
+      expect(result.date()).toBe(15);
+      expect(result.month()).toBe(0); // January = 0
+      expect(result.year()).toBe(2024);
+    });
+
+    it('should handle strict parsing', () => {
+      // With strict=true, a date that doesn't match the format should be invalid
+      const invalid = dateTimeUtils.initializeTime('15-01-2024', 'YYYY-MM-DD', null, true);
+      expect(invalid.isValid()).toBe(false);
+
+      // With strict=true and a matching format, it should be valid
+      const valid = dateTimeUtils.initializeTime('2024-01-15', 'YYYY-MM-DD', null, true);
+      expect(valid.isValid()).toBe(true);
+    });
   });
 
   describe('startOfDay', () => {
@@ -433,7 +451,7 @@ describe('dateTimeUtils', () => {
     });
 
     it('should return original string for unparseable format', () => {
-      expect(dateTimeUtils.toTimeString('2:30 PM')).toBe('2:30 PM');
+      expect(dateTimeUtils.toTimeString('not-a-time')).toBe('not-a-time');
     });
 
     it('should return original string for invalid format', () => {
@@ -710,6 +728,63 @@ describe('dateTimeUtils', () => {
       dateTimeUtils.MONTH_NAMES.forEach((name, i) => {
         expect(name.startsWith(dateTimeUtils.MONTH_ABBR[i])).toBe(true);
       });
+    });
+  });
+
+  describe('isValid', () => {
+    it('should return true for a valid date string', () => {
+      expect(dateTimeUtils.isValid('2024-01-15T10:00:00Z')).toBe(true);
+    });
+
+    it('should return false for an invalid date string', () => {
+      expect(dateTimeUtils.isValid('not-a-date')).toBe(false);
+    });
+
+    it('should return true for a Date object', () => {
+      expect(dateTimeUtils.isValid(new Date())).toBe(true);
+    });
+
+    it('should return false for an invalid Date object', () => {
+      expect(dateTimeUtils.isValid(new Date('invalid'))).toBe(false);
+    });
+  });
+
+  describe('toDate', () => {
+    it('should convert a date string to a Date object', () => {
+      const result = dateTimeUtils.toDate('2024-01-15T10:00:00Z');
+      expect(result).toBeInstanceOf(Date);
+    });
+
+    it('should convert a dayjs object to a Date object', () => {
+      const djs = dayjs('2024-01-15T10:00:00Z');
+      const result = dateTimeUtils.toDate(djs);
+      expect(result).toBeInstanceOf(Date);
+    });
+  });
+
+  describe('setMillisecond', () => {
+    it('should set the millisecond on a date', () => {
+      const date = dayjs.utc('2024-01-15T10:00:00.000Z');
+      const result = dateTimeUtils.setMillisecond(date, 500);
+      expect(result.millisecond()).toBe(500);
+    });
+
+    it('should return 0 milliseconds when set to 0', () => {
+      const date = dayjs.utc('2024-01-15T10:00:00.999Z');
+      const result = dateTimeUtils.setMillisecond(date, 0);
+      expect(result.millisecond()).toBe(0);
+    });
+  });
+
+  describe('getMillisecond', () => {
+    it('should return the millisecond from a date', () => {
+      const date = dayjs.utc('2024-01-15T14:00:00.123Z');
+      expect(dateTimeUtils.getMillisecond(date)).toBe(123);
+    });
+
+    it('should return 0 for a date with no milliseconds', () => {
+      const date = dayjs.utc('2024-01-15T14:00:00.000Z');
+      expect(dateTimeUtils.getMillisecond(date)).toBe(0);
     });
   });
 });

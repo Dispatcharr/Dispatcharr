@@ -1,6 +1,5 @@
 from django.http import HttpResponse, JsonResponse, Http404, HttpResponseForbidden, StreamingHttpResponse
 import json
-from rest_framework.response import Response
 from django.urls import reverse
 from apps.channels.models import Channel, ChannelProfile, ChannelGroup, Stream
 from apps.channels.utils import format_channel_number
@@ -16,7 +15,7 @@ from datetime import datetime, timedelta
 import html
 import time
 from tzlocal import get_localzone
-from urllib.parse import urlparse
+from urllib.parse import urlencode
 import base64
 import logging
 from django.db.models.functions import Lower
@@ -24,17 +23,16 @@ import os
 from apps.m3u.utils import calculate_tuner_count
 from apps.proxy.utils import get_user_active_connections
 import regex
-from core.utils import log_system_event
+from core.utils import log_system_event, build_absolute_uri_with_port
 import hashlib
 
 logger = logging.getLogger(__name__)
 
+
 def get_basic_auth_user(request):
     """
-    Extract and validate user from HTTP Basic Authentication header.
-    
-    Returns:
-        User object if authentication successful, None otherwise
+    Extract and authenticate user from HTTP Basic Auth header.
+    Returns User object if valid, None otherwise.
     """
     auth_header = request.META.get('HTTP_AUTHORIZATION', '')
     
@@ -42,33 +40,21 @@ def get_basic_auth_user(request):
         return None
     
     try:
-        # Decode Base64 credentials
-        encoded_credentials = auth_header[6:]  # Remove 'Basic ' prefix
-        decoded_credentials = base64.b64decode(encoded_credentials).decode('utf-8')
-        username, password = decoded_credentials.split(':', 1)
+        # Decode base64 credentials
+        auth_decoded = base64.b64decode(auth_header[6:]).decode('utf-8')
+        username, password = auth_decoded.split(':', 1)
         
-        # Get user from database
-        try:
-            user = User.objects.get(username=username)
-        except User.DoesNotExist:
-            logger.warning(f"Basic Auth failed: User '{username}' not found")
-            return None
+        # Authenticate
+        from django.contrib.auth import authenticate
+        user = authenticate(username=username, password=password)
         
-        # Check password
-        if not user.check_password(password):
-            logger.warning(f"Basic Auth failed: Invalid password for user '{username}'")
-            return None
-        
-        # Check if user is active
-        if not user.is_active:
-            logger.warning(f"Basic Auth failed: User '{username}' is inactive")
-            return None
-        
-        return user
-        
+        if user and user.is_active:
+            return user
     except Exception as e:
-        logger.warning(f"Basic Auth failed: {e}")
-        return None
+        logger.error(f"Basic auth failed: {e}")
+    
+    return None
+
 
 def require_basic_auth(request):
     """
@@ -77,6 +63,7 @@ def require_basic_auth(request):
     response = HttpResponse('Unauthorized', status=401)
     response['WWW-Authenticate'] = 'Basic realm="Dispatcharr"'
     return response
+
 
 def get_client_identifier(request):
     """Get client information including IP, user agent, and a unique hash identifier
@@ -102,13 +89,6 @@ def get_client_identifier(request):
 
 def m3u_endpoint(request, profile_name=None, user=None):
     logger.debug("m3u_endpoint called: method=%s, profile=%s", request.method, profile_name)
-    
-    # Require Basic Auth if no user provided
-    if user is None:
-        user = get_basic_auth_user(request)
-        if user is None:
-            return require_basic_auth(request)
-    
     if not network_access_allowed(request, "M3U_EPG"):
         # Log blocked M3U download
         from core.utils import log_system_event
@@ -123,6 +103,12 @@ def m3u_endpoint(request, profile_name=None, user=None):
         )
         return JsonResponse({"error": "Forbidden"}, status=403)
 
+    # Require Basic Auth if no user provided
+    if user is None:
+        user = get_basic_auth_user(request)
+        if user is None:
+            return require_basic_auth(request)
+
     # Handle HEAD requests efficiently without generating content
     if request.method == "HEAD":
         logger.debug("Handling HEAD request for M3U")
@@ -134,13 +120,6 @@ def m3u_endpoint(request, profile_name=None, user=None):
 
 def epg_endpoint(request, profile_name=None, user=None):
     logger.debug("epg_endpoint called: method=%s, profile=%s", request.method, profile_name)
-    
-    # Require Basic Auth if no user provided
-    if user is None:
-        user = get_basic_auth_user(request)
-        if user is None:
-            return require_basic_auth(request)
-    
     if not network_access_allowed(request, "M3U_EPG"):
         # Log blocked EPG download
         from core.utils import log_system_event
@@ -154,6 +133,12 @@ def epg_endpoint(request, profile_name=None, user=None):
             user_agent=user_agent,
         )
         return JsonResponse({"error": "Forbidden"}, status=403)
+
+    # Require Basic Auth if no user provided
+    if user is None:
+        user = get_basic_auth_user(request)
+        if user is None:
+            return require_basic_auth(request)
 
     # Handle HEAD requests efficiently without generating content
     if request.method == "HEAD":
@@ -190,7 +175,7 @@ def generate_m3u(request, profile_name=None, user=None):
     # Check if this is a POST request with data (which we don't want to allow)
     if request.method == "POST" and request.body:
         if request.body.decode() != '{}':
-            return HttpResponseForbidden("POST requests with body are not allowed, body is: {}".format(request.body.decode()))
+            return HttpResponseForbidden("POST requests with body are not allowed.")
 
     if user is not None:
         if user.user_level < 10:
@@ -269,12 +254,26 @@ def generate_m3u(request, profile_name=None, user=None):
     xc_username = request.GET.get('username')
     xc_password = request.GET.get('password')
     is_xc_request = user is not None and xc_username and xc_password
+    _base_url = build_absolute_uri_with_port(request, '')
 
     if is_xc_request:
         # This is an XC API request - use XC-style EPG URL
-        base_url = build_absolute_uri_with_port(request, '')
-        epg_url = f"{base_url}/xmltv.php?username={xc_username}&password={xc_password}"
+        epg_url = f"{_base_url}/xmltv.php?username={xc_username}&password={xc_password}"
+        # Build the query-string suffix for stream URLs once - it's the same for every channel
+        xc_qs = {}
+        if output_profile_id:
+            xc_qs['output_profile'] = output_profile_id
+        if output_format_param:
+            xc_qs['output_format'] = output_format_param
+        xc_qs_suffix = f"?{urlencode(xc_qs)}" if xc_qs else ""
     else:
+        # Pre-compute proxy query-string suffix (same for every channel in this request)
+        proxy_qs = {}
+        if output_profile_id:
+            proxy_qs['output_profile'] = output_profile_id
+        if output_format_param:
+            proxy_qs['output_format'] = output_format_param
+        proxy_qs_suffix = f"?{urlencode(proxy_qs)}" if proxy_qs else ""
         # Regular request - use standard EPG endpoint
         epg_base_url = build_absolute_uri_with_port(request, reverse('output:epg_endpoint', args=[profile_name]) if profile_name else reverse('output:epg_endpoint'))
 
@@ -282,13 +281,19 @@ def generate_m3u(request, profile_name=None, user=None):
         preserved_params = ['tvg_id_source', 'cachedlogos', 'days', 'prev_days']
         query_params = {k: v for k, v in request.GET.items() if k in preserved_params}
         if query_params:
-            from urllib.parse import urlencode
             epg_url = f"{epg_base_url}?{urlencode(query_params)}"
         else:
             epg_url = epg_base_url
 
     # Add x-tvg-url and url-tvg attribute for EPG URL
     m3u_content = f'#EXTM3U x-tvg-url="{epg_url}" url-tvg="{epg_url}"\n'
+
+    # Host/port/scheme are constant per request; precompute URL prefixes once.
+    _stream_url_prefix = None if is_xc_request else f"{_base_url}/proxy/ts/stream/"
+    _sample_logo_path = reverse("api:channels:logo-cache", args=[0])
+    _logo_prefix_raw, _, _logo_suffix_raw = _sample_logo_path.partition("/0/")
+    _logo_url_prefix = _base_url + _logo_prefix_raw + "/"
+    _logo_url_suffix = "/" + _logo_suffix_raw
 
     # Start building M3U content
     channel_count = 0
@@ -319,8 +324,7 @@ def generate_m3u(request, profile_name=None, user=None):
         tvg_logo = ""
         if effective_logo:
             if use_cached_logos:
-                # Use cached logo as before
-                tvg_logo = build_absolute_uri_with_port(request, reverse('api:channels:logo-cache', args=[effective_logo.id]))
+                tvg_logo = f"{_logo_url_prefix}{effective_logo.id}{_logo_url_suffix}"
             else:
                 # Try to find direct logo URL from channel's streams
                 direct_logo = effective_logo.url if effective_logo.url.startswith(('http://', 'https://')) else None
@@ -328,7 +332,7 @@ def generate_m3u(request, profile_name=None, user=None):
                 if direct_logo:
                     tvg_logo = direct_logo
                 else:
-                    tvg_logo = build_absolute_uri_with_port(request, reverse('api:channels:logo-cache', args=[effective_logo.id]))
+                    tvg_logo = f"{_logo_url_prefix}{effective_logo.id}{_logo_url_suffix}"
 
         # create possible gracenote id insertion
         tvc_guide_stationid = ""
@@ -344,9 +348,7 @@ def generate_m3u(request, profile_name=None, user=None):
 
         # Determine the stream URL based on request type
         if is_xc_request:
-            # XC API request - use XC-style stream URL format
-            base_url = build_absolute_uri_with_port(request, '')
-            stream_url = f"{base_url}/live/{xc_username}/{xc_password}/{channel.id}"
+            stream_url = f"{_base_url}/live/{xc_username}/{xc_password}/{channel.id}{xc_qs_suffix}"
         elif use_direct_urls:
             # Try to get the first stream's direct URL
             all_streams = channel.streams.all()
@@ -356,20 +358,10 @@ def generate_m3u(request, profile_name=None, user=None):
                 stream_url = first_stream.url
             else:
                 # Fall back to proxy URL if no direct URL available
-                stream_url = build_absolute_uri_with_port(request, f"/proxy/ts/stream/{channel.uuid}")
+                stream_url = f"{_stream_url_prefix}{channel.uuid}"
         else:
             # Standard behavior - use proxy URL
-            base_stream_url = build_absolute_uri_with_port(request, f"/proxy/ts/stream/{channel.uuid}")
-            qs_parts = {}
-            if output_profile_id:
-                qs_parts['output_profile'] = output_profile_id
-            if output_format_param:
-                qs_parts['output_format'] = output_format_param
-            if qs_parts:
-                from urllib.parse import urlencode
-                stream_url = f"{base_stream_url}?{urlencode(qs_parts)}"
-            else:
-                stream_url = base_stream_url
+            stream_url = f"{_stream_url_prefix}{channel.uuid}{proxy_qs_suffix}"
 
         m3u_content += extinf_line + stream_url + "\n"
 
@@ -1490,6 +1482,13 @@ def generate_epg(request, profile_name=None, user=None):
                     channel_num_map[channel.id] = candidate
                     used_numbers.add(candidate)
 
+        # Host/port/scheme are constant per request; precompute logo URL prefix once.
+        _base_url = build_absolute_uri_with_port(request, "")
+        _sample_logo_path = reverse("api:channels:logo-cache", args=[0])
+        _logo_prefix_raw, _, _logo_suffix_raw = _sample_logo_path.partition("/0/")
+        _logo_url_prefix = _base_url + _logo_prefix_raw + "/"
+        _logo_url_suffix = "/" + _logo_suffix_raw
+
         # Process channels for the <channel> section
         for channel in channels:
             effective_name = channel.effective_name
@@ -1569,14 +1568,14 @@ def generate_epg(request, profile_name=None, user=None):
             # If no custom dummy logo, use regular logo logic
             if not tvg_logo and effective_logo:
                 if use_cached_logos:
-                    tvg_logo = build_absolute_uri_with_port(request, reverse('api:channels:logo-cache', args=[effective_logo.id]))
+                    tvg_logo = f"{_logo_url_prefix}{effective_logo.id}{_logo_url_suffix}"
                 else:
                     # Use direct URL if available, otherwise fall back to cached version
                     direct_logo = effective_logo.url if effective_logo.url.startswith(('http://', 'https://')) else None
                     if direct_logo:
                         tvg_logo = direct_logo
                     else:
-                        tvg_logo = build_absolute_uri_with_port(request, reverse('api:channels:logo-cache', args=[effective_logo.id]))
+                        tvg_logo = f"{_logo_url_prefix}{effective_logo.id}{_logo_url_suffix}"
             display_name = effective_name
             xml_lines.append(f'  <channel id="{html.escape(channel_id)}">')
             xml_lines.append(f'    <display-name>{html.escape(display_name)}</display-name>')
@@ -1708,6 +1707,7 @@ def generate_epg(request, profile_name=None, user=None):
             # to avoid skipping/duplicating rows if the table changes mid-stream.
             last_epg_id = 0
             last_id = 0
+            _poster_url_base = build_absolute_uri_with_port(request, "/api/epg/programs/")
 
             while True:
                 program_chunk = list(
@@ -1911,6 +1911,8 @@ def generate_epg(request, profile_name=None, user=None):
 
                         if "icon" in custom_data:
                             program_xml.append(f'    <icon src="{html.escape(custom_data["icon"])}" />')
+                        elif "sd_icon" in custom_data:
+                            program_xml.append(f'    <icon src="{html.escape(_poster_url_base)}{prog["id"]}/poster/" />')
 
                         # Add special flags as proper tags with enhanced handling
                         if custom_data.get("previously_shown", False):
@@ -2611,60 +2613,79 @@ def xc_get_vod_categories(user):
 
 def xc_get_vod_streams(request, user, category_id=None):
     """Get VOD streams (movies) for XtreamCodes API"""
-    from apps.vod.models import Movie, M3UMovieRelation
-    from django.db.models import Prefetch
+    from apps.vod.models import M3UMovieRelation
+    from django.db import connection
+
+    rel_filters = {"m3u_account__is_active": True}
+    if category_id:
+        rel_filters["category_id"] = category_id
+
+    base_qs = (
+        M3UMovieRelation.objects
+        .filter(**rel_filters)
+        .select_related('movie', 'movie__logo', 'category')
+    )
+
+    if connection.vendor == 'postgresql':
+        # DISTINCT ON returns one row per movie (highest-priority active relation)
+        # in a single query. ORDER BY must lead with the DISTINCT field.
+        relations = list(
+            base_qs.order_by('movie_id', '-m3u_account__priority', 'id')
+            .distinct('movie_id')
+        )
+    else:
+        # SQLite fallback: fetch all matching relations, deduplicate in Python.
+        seen: dict = {}
+        for rel in base_qs.order_by('-m3u_account__priority', 'id'):
+            if rel.movie_id not in seen:
+                seen[rel.movie_id] = rel
+        relations = list(seen.values())
+
+    # Precompute logo URL prefix/suffix once (mirrors _xc_live_streams_setup)
+    # so each row only needs a string concat instead of reverse() + URI build.
+    _base_url = build_absolute_uri_with_port(request, "")
+    _sample_logo_path = reverse("api:vod:vodlogo-cache", args=[0])
+    _logo_prefix_raw, _, _logo_suffix_raw = _sample_logo_path.partition("/0/")
+    _logo_url_prefix = _base_url + _logo_prefix_raw + "/"
+    _logo_url_suffix = "/" + _logo_suffix_raw
+
+    # Sort by name (DISTINCT ON forces ORDER BY movie_id; SQLite path is unsorted).
+    relations.sort(key=lambda r: (r.movie.name or "").lower())
 
     streams = []
+    append = streams.append
+    for num, relation in enumerate(relations, 1):
+        movie = relation.movie
+        custom_props = movie.custom_properties or {}
+        category = relation.category
+        category_id_str = str(category.id) if category else "0"
+        category_id_list = [category.id] if category else []
+        rating = movie.rating
+        logo = movie.logo
 
-    # All authenticated users get access to VOD from all active M3U accounts
-    filters = {"m3u_relations__m3u_account__is_active": True}
-
-    if category_id:
-        filters["m3u_relations__category_id"] = category_id
-
-    # Optimize with prefetch_related to eliminate N+1 queries
-    # This loads all relations in a single query instead of one per movie
-    movies = Movie.objects.filter(**filters).select_related('logo').prefetch_related(
-        Prefetch(
-            'm3u_relations',
-            queryset=M3UMovieRelation.objects.filter(
-                m3u_account__is_active=True
-            ).select_related('m3u_account', 'category').order_by('-m3u_account__priority', 'id'),
-            to_attr='active_relations'
-        )
-    ).distinct()
-
-    for movie in movies:
-        # Get the first (highest priority) relation from prefetched data
-        # This avoids the N+1 query problem entirely
-        if hasattr(movie, 'active_relations') and movie.active_relations:
-            relation = movie.active_relations[0]
-        else:
-            # Fallback - should rarely be needed with proper prefetching
-            continue
-
-        streams.append({
-            "num": movie.id,
+        append({
+            "num": num,
             "name": movie.name,
             "stream_type": "movie",
             "stream_id": movie.id,
             "stream_icon": (
-                None if not movie.logo
-                else build_absolute_uri_with_port(
-                    request,
-                    reverse("api:vod:vodlogo-cache", args=[movie.logo.id])
-                )
+                f"{_logo_url_prefix}{logo.id}{_logo_url_suffix}" if logo else None
             ),
-            #'stream_icon': movie.logo.url if movie.logo else '',
-            "rating": movie.rating or "0",
-            "rating_5based": round(float(movie.rating or 0) / 2, 2) if movie.rating else 0,
+            "rating": rating or "0",
+            "rating_5based": round(float(rating or 0) / 2, 2) if rating else 0,
             "added": str(int(movie.created_at.timestamp())),
             "is_adult": 0,
             "tmdb_id": movie.tmdb_id or "",
             "imdb_id": movie.imdb_id or "",
-            "trailer": (movie.custom_properties or {}).get('trailer') or "",
-            "category_id": str(relation.category.id) if relation.category else "0",
-            "category_ids": [int(relation.category.id)] if relation.category else [],
+            "trailer": custom_props.get('youtube_trailer') or "",
+            "plot": movie.description or "",
+            "genre": movie.genre or "",
+            "year": movie.year or "",
+            "director": custom_props.get('director', ''),
+            "cast": custom_props.get('actors', ''),
+            "release_date": custom_props.get('release_date', ''),
+            "category_id": category_id_str,
+            "category_ids": category_id_list,
             "container_extension": relation.container_extension or "mp4",
             "custom_sid": None,
             "direct_source": "",
@@ -2698,47 +2719,70 @@ def xc_get_series_categories(user):
 def xc_get_series(request, user, category_id=None):
     """Get series list for XtreamCodes API"""
     from apps.vod.models import M3USeriesRelation
+    from django.db import connection
 
-    series_list = []
-
-    # All authenticated users get access to series from all active M3U accounts
-    filters = {"m3u_account__is_active": True}
-
+    rel_filters = {"m3u_account__is_active": True}
     if category_id:
-        filters["category_id"] = category_id
+        rel_filters["category_id"] = category_id
 
-    # Get series relations instead of series directly
-    series_relations = M3USeriesRelation.objects.filter(**filters).select_related(
-        'series', 'series__logo', 'category', 'm3u_account'
+    base_qs = (
+        M3USeriesRelation.objects
+        .filter(**rel_filters)
+        .select_related('series', 'series__logo', 'category')
     )
 
-    for relation in series_relations:
+    if connection.vendor == 'postgresql':
+        relations = list(
+            base_qs.order_by('series_id', '-m3u_account__priority', 'id')
+            .distinct('series_id')
+        )
+    else:
+        seen: dict = {}
+        for rel in base_qs.order_by('-m3u_account__priority', 'id'):
+            if rel.series_id not in seen:
+                seen[rel.series_id] = rel
+        relations = list(seen.values())
+
+    _base_url = build_absolute_uri_with_port(request, "")
+    _sample_logo_path = reverse("api:vod:vodlogo-cache", args=[0])
+    _logo_prefix_raw, _, _logo_suffix_raw = _sample_logo_path.partition("/0/")
+    _logo_url_prefix = _base_url + _logo_prefix_raw + "/"
+    _logo_url_suffix = "/" + _logo_suffix_raw
+
+    relations.sort(key=lambda r: (r.series.name or "").lower())
+
+    series_list = []
+    append = series_list.append
+    for num, relation in enumerate(relations, 1):
         series = relation.series
-        series_list.append({
-            "num": relation.id,  # Use relation ID
+        custom_props = series.custom_properties or {}
+        category = relation.category
+        rating = series.rating
+        logo = series.logo
+        year_str = str(series.year) if series.year else ""
+        release_date = custom_props.get('release_date', year_str)
+
+        append({
+            "num": num,
             "name": series.name,
-            "series_id": relation.id,  # Use relation ID
+            "series_id": relation.id,
             "cover": (
-                None if not series.logo
-                else build_absolute_uri_with_port(
-                    request,
-                    reverse("api:vod:vodlogo-cache", args=[series.logo.id])
-                )
+                f"{_logo_url_prefix}{logo.id}{_logo_url_suffix}" if logo else None
             ),
             "plot": series.description or "",
-            "cast": series.custom_properties.get('cast', '') if series.custom_properties else "",
-            "director": series.custom_properties.get('director', '') if series.custom_properties else "",
+            "cast": custom_props.get('cast', ''),
+            "director": custom_props.get('director', ''),
             "genre": series.genre or "",
-            "release_date": series.custom_properties.get('release_date', str(series.year) if series.year else "") if series.custom_properties else (str(series.year) if series.year else ""),
-            "releaseDate": series.custom_properties.get('release_date', str(series.year) if series.year else "") if series.custom_properties else (str(series.year) if series.year else ""),
+            "release_date": release_date,
+            "releaseDate": release_date,
             "last_modified": str(int(relation.updated_at.timestamp())),
-            "rating": str(series.rating or "0"),
-            "rating_5based": str(round(float(series.rating or 0) / 2, 2)) if series.rating else "0",
-            "backdrop_path": series.custom_properties.get('backdrop_path', []) if series.custom_properties else [],
-            "youtube_trailer": series.custom_properties.get('youtube_trailer', '') if series.custom_properties else "",
-            "episode_run_time": series.custom_properties.get('episode_run_time', '') if series.custom_properties else "",
-            "category_id": str(relation.category.id) if relation.category else "0",
-            "category_ids": [int(relation.category.id)] if relation.category else [],
+            "rating": str(rating or "0"),
+            "rating_5based": str(round(float(rating or 0) / 2, 2)) if rating else "0",
+            "backdrop_path": custom_props.get('backdrop_path', []),
+            "youtube_trailer": custom_props.get('youtube_trailer', ''),
+            "episode_run_time": custom_props.get('episode_run_time', ''),
+            "category_id": str(category.id) if category else "0",
+            "category_ids": [category.id] if category else [],
             "tmdb_id": series.tmdb_id or "",
             "imdb_id": series.imdb_id or "",
         })
@@ -3170,87 +3214,6 @@ def xc_series_stream(request, username, password, stream_id, extension):
 
     return HttpResponseRedirect(vod_url)
 
-
-def get_host_and_port(request):
-    """
-    Returns (host, port) for building absolute URIs.
-    - Prefers X-Forwarded-Host/X-Forwarded-Port (nginx).
-    - Falls back to Host header.
-    - Returns None for port if using standard ports (80/443) to omit from URLs.
-    - In dev, uses 5656 as a guess if port cannot be determined.
-    """
-    # Determine the scheme first - needed for standard port detection
-    scheme = request.META.get("HTTP_X_FORWARDED_PROTO", request.scheme)
-    standard_port = "443" if scheme == "https" else "80"
-
-    # 1. Try X-Forwarded-Host (may include port) - set by our nginx
-    xfh = request.META.get("HTTP_X_FORWARDED_HOST")
-    if xfh:
-        if ":" in xfh:
-            host, port = xfh.split(":", 1)
-            # Omit standard ports from URLs
-            if port == standard_port:
-                return host, None
-            # Non-standard port in X-Forwarded-Host - return it
-            # This handles reverse proxies on non-standard ports (e.g., https://example.com:8443)
-            return host, port
-        else:
-            host = xfh
-
-        # Check for X-Forwarded-Port header (if we didn't find a port in X-Forwarded-Host)
-        port = request.META.get("HTTP_X_FORWARDED_PORT")
-        if port:
-            # Omit standard ports from URLs
-            return host, None if port == standard_port else port
-        # If X-Forwarded-Proto is set but no valid port, assume standard
-        if request.META.get("HTTP_X_FORWARDED_PROTO"):
-            return host, None
-
-    # 2. Try Host header
-    raw_host = request.get_host()
-    if ":" in raw_host:
-        host, port = raw_host.split(":", 1)
-        # Omit standard ports from URLs
-        return host, None if port == standard_port else port
-    else:
-        host = raw_host
-
-    # 3. Check for X-Forwarded-Port (when Host header has no port but we're behind a reverse proxy)
-    port = request.META.get("HTTP_X_FORWARDED_PORT")
-    if port:
-        # Omit standard ports from URLs
-        return host, None if port == standard_port else port
-
-    # 4. Check if we're behind a reverse proxy (X-Forwarded-Proto or X-Forwarded-For present)
-    # If so, assume standard port for the scheme (don't trust SERVER_PORT in this case)
-    if request.META.get("HTTP_X_FORWARDED_PROTO") or request.META.get("HTTP_X_FORWARDED_FOR"):
-        return host, None
-
-    # 5. Try SERVER_PORT from META (only if NOT behind reverse proxy)
-    port = request.META.get("SERVER_PORT")
-    if port:
-        # Omit standard ports from URLs
-        return host, None if port == standard_port else port
-
-    # 6. Dev fallback: guess port 5656
-    if os.environ.get("DISPATCHARR_ENV") == "dev" or host in ("localhost", "127.0.0.1"):
-        return host, "5656"
-
-    # 7. Final fallback: assume standard port for scheme (omit from URL)
-    return host, None
-
-def build_absolute_uri_with_port(request, path):
-    """
-    Build an absolute URI with optional port.
-    Port is omitted from URL if None (standard port for scheme).
-    """
-    host, port = get_host_and_port(request)
-    scheme = request.META.get("HTTP_X_FORWARDED_PROTO", request.scheme)
-
-    if port:
-        return f"{scheme}://{host}:{port}{path}"
-    else:
-        return f"{scheme}://{host}{path}"
 
 def format_duration_hms(seconds):
     """

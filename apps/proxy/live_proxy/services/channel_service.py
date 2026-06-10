@@ -39,8 +39,10 @@ class ChannelService:
             bool: Success status
         """
         proxy_server = ProxyServer.get_instance()
-        # FIXED: First, ensure that Redis metadata including stream_id AND m3u_profile_id
-        # is set BEFORE channel initialization so StreamManager can load profile_id on startup
+        
+        # BUGFIX: Write profile_id to Redis BEFORE initialize_channel()
+        # This is critical for profile failover to work - the StreamManager __init__
+        # loads profile_id from Redis, and if it's not set yet, profile failover is broken
         if stream_id and proxy_server.redis_client:
             metadata_key = RedisKeys.channel_metadata(channel_id)
             # Check if metadata already exists
@@ -49,18 +51,20 @@ class ChannelService:
                 update = {ChannelMetadataField.STREAM_ID: str(stream_id)}
                 if m3u_profile_id:
                     update[ChannelMetadataField.M3U_PROFILE] = str(m3u_profile_id)
+                    logger.info(f"Pre-set profile ID {m3u_profile_id} in Redis for channel {channel_id} BEFORE initialize_channel()")
                 proxy_server.redis_client.hset(metadata_key, mapping=update)
-                logger.info(f"Pre-set stream ID {stream_id} and profile ID {m3u_profile_id} in Redis for channel {channel_id}")
+                logger.info(f"Pre-set stream ID {stream_id} in Redis for channel {channel_id}")
             else:
-                # Create initial metadata with essential values
+                # Create initial metadata with essential values INCLUDING profile_id
                 initial_metadata = {
                     ChannelMetadataField.STREAM_ID: str(stream_id),
                     "temp_init": str(time.time())
                 }
                 if m3u_profile_id:
                     initial_metadata[ChannelMetadataField.M3U_PROFILE] = str(m3u_profile_id)
+                    logger.info(f"Created initial metadata with profile_id {m3u_profile_id} for channel {channel_id} BEFORE initialize_channel()")
                 proxy_server.redis_client.hset(metadata_key, mapping=initial_metadata)
-                logger.info(f"Created initial metadata with stream_id {stream_id} and profile_id {m3u_profile_id} for channel {channel_id}")
+                logger.info(f"Created initial metadata with stream_id {stream_id} for channel {channel_id}")
 
             # Verify the stream_id was set
             stream_id_value = proxy_server.redis_client.hget(metadata_key, ChannelMetadataField.STREAM_ID)

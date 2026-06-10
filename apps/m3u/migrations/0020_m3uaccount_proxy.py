@@ -1,21 +1,21 @@
-# Generated migration for adding proxy field to M3UAccount
+# Generated migration for proxy field
+from django.db import migrations, models
 
-from django.db import migrations
 
-
-def add_proxy_field_if_not_exists(apps, schema_editor):
-    """Add proxy field only if it doesn't exist (idempotent)"""
-    from django.db import connection
-    with connection.cursor() as cursor:
+def add_proxy_field(apps, schema_editor):
+    """Idempotent migration - checks if column exists before adding"""
+    with schema_editor.connection.cursor() as cursor:
         cursor.execute("""
-            SELECT column_name
-            FROM information_schema.columns
+            SELECT COUNT(*) FROM information_schema.columns 
             WHERE table_name='m3u_m3uaccount' AND column_name='proxy'
         """)
-        if not cursor.fetchone():
+        exists = cursor.fetchone()[0] > 0
+    
+    if not exists:
+        with schema_editor.connection.cursor() as cursor:
             cursor.execute("""
-                ALTER TABLE m3u_m3uaccount
-                ADD COLUMN proxy varchar(255) NULL
+                ALTER TABLE m3u_m3uaccount 
+                ADD COLUMN proxy VARCHAR(255) DEFAULT '' NULL
             """)
 
 
@@ -26,5 +26,5 @@ class Migration(migrations.Migration):
     ]
 
     operations = [
-        migrations.RunPython(add_proxy_field_if_not_exists, migrations.RunPython.noop),
+        migrations.RunPython(add_proxy_field, migrations.RunPython.noop),
     ]

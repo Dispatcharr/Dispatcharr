@@ -64,11 +64,12 @@ def fetch_m3u_lines(account, use_cache=False):
                 headers = {"User-Agent": user_agent}
                 logger.info(f"Fetching from URL {account.server_url}")
 
-                # Build proxy config if account has a proxy configured
+                # Build proxy config if account has HTTP proxy configured AND proxy_for_api is enabled
                 proxies = None
-                if account.proxy:
-                    proxies = {'http': account.proxy, 'https': account.proxy}
-                    logger.info(f"Using HTTP proxy {account.proxy} for M3U download of account {account.name}")
+                proxy_url = account.get_proxy_for_api()
+                if proxy_url:
+                    proxies = {'http': proxy_url, 'https': proxy_url}
+                    logger.info(f"Using HTTP proxy {proxy_url} for M3U download of account {account.name} (proxy_for_api enabled)")
 
                 # Set account status to FETCHING before starting download
                 account.status = M3UAccount.Status.FETCHING
@@ -808,14 +809,12 @@ def collect_xc_streams(account_id, enabled_groups):
             }
 
     try:
-        # Only use proxy if it's configured (not empty or None)
-        proxy = account.proxy if account.proxy and account.proxy.strip() else None
         with XCClient(
             account.server_url,
             account.username,
             account.password,
             account.get_user_agent(),
-            proxy,
+            account.get_proxy_for_api(),
         ) as xc_client:
 
             # Fetch ALL live streams in a single API call (much more efficient)
@@ -892,14 +891,12 @@ def process_xc_category_direct(account_id, batch, groups, hash_keys):
     stream_hashes = {}
 
     try:
-        # Only use proxy if it's configured (not empty or None)
-        proxy = account.proxy if account.proxy and account.proxy.strip() else None
         with XCClient(
             account.server_url,
             account.username,
             account.password,
             account.get_user_agent(),
-            proxy,
+            account.get_proxy_for_api(),
         ) as xc_client:
             # Log the batch details to help with debugging
             logger.debug(f"Processing XC batch: {batch}")
@@ -991,7 +988,7 @@ def process_xc_category_direct(account_id, batch, groups, hash_keys):
         existing_streams = {
             s.stream_hash: s
             for s in Stream.objects.filter(stream_hash__in=stream_hashes.keys()).select_related('m3u_account').only(
-                'id', 'stream_hash', 'name', 'url', 'logo_url', 'tvg_id', 'custom_properties', 'last_seen', 'updated_at', 'm3u_account', 'stream_id', 'stream_chno'
+                'id', 'stream_hash', 'name', 'url', 'logo_url', 'tvg_id', 'custom_properties', 'last_seen', 'updated_at', 'm3u_account', 'stream_id', 'stream_chno', 'channel_group_id'
             )
         }
 
@@ -1007,7 +1004,8 @@ def process_xc_category_direct(account_id, batch, groups, hash_keys):
                     obj.custom_properties != stream_props["custom_properties"] or
                     obj.is_adult != stream_props["is_adult"] or
                     obj.stream_id != stream_props["stream_id"] or
-                    obj.stream_chno != stream_props["stream_chno"]
+                    obj.stream_chno != stream_props["stream_chno"] or
+                    obj.channel_group_id != stream_props["channel_group_id"]
                 )
 
                 if changed:
@@ -1043,7 +1041,7 @@ def process_xc_category_direct(account_id, batch, groups, hash_keys):
                     # Simplified bulk update for better performance
                     Stream.objects.bulk_update(
                         streams_to_update,
-                        ['name', 'url', 'logo_url', 'tvg_id', 'custom_properties', 'is_adult', 'last_seen', 'updated_at', 'is_stale', 'stream_id', 'stream_chno'],
+                        ['name', 'url', 'logo_url', 'tvg_id', 'custom_properties', 'is_adult', 'last_seen', 'updated_at', 'is_stale', 'stream_id', 'stream_chno', 'channel_group_id'],
                         batch_size=150  # Smaller batch size for XC processing
                     )
 
@@ -1213,7 +1211,7 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys):
     existing_streams = {
         s.stream_hash: s
         for s in Stream.objects.filter(stream_hash__in=stream_hashes.keys()).select_related('m3u_account').only(
-            'id', 'stream_hash', 'name', 'url', 'logo_url', 'tvg_id', 'custom_properties', 'last_seen', 'updated_at', 'm3u_account', 'stream_id', 'stream_chno'
+            'id', 'stream_hash', 'name', 'url', 'logo_url', 'tvg_id', 'custom_properties', 'last_seen', 'updated_at', 'm3u_account', 'stream_id', 'stream_chno', 'channel_group_id'
         )
     }
 
@@ -1229,7 +1227,8 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys):
                 obj.custom_properties != stream_props["custom_properties"] or
                 obj.is_adult != stream_props["is_adult"] or
                 obj.stream_id != stream_props["stream_id"] or
-                obj.stream_chno != stream_props["stream_chno"]
+                obj.stream_chno != stream_props["stream_chno"] or
+                obj.channel_group_id != stream_props["channel_group_id"]
             )
 
             # Always update last_seen
@@ -1245,6 +1244,7 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys):
                 obj.is_adult = stream_props["is_adult"]
                 obj.stream_id = stream_props["stream_id"]
                 obj.stream_chno = stream_props["stream_chno"]
+                obj.channel_group_id = stream_props["channel_group_id"]
                 obj.updated_at = timezone.now()
 
             # Always mark as not stale since we saw it in this refresh
@@ -1267,7 +1267,7 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys):
                 # Update all streams in a single bulk operation
                 Stream.objects.bulk_update(
                     streams_to_update,
-                    ['name', 'url', 'logo_url', 'tvg_id', 'custom_properties', 'is_adult', 'last_seen', 'updated_at', 'is_stale', 'stream_id', 'stream_chno'],
+                    ['name', 'url', 'logo_url', 'tvg_id', 'custom_properties', 'is_adult', 'last_seen', 'updated_at', 'is_stale', 'stream_id', 'stream_chno', 'channel_group_id'],
                     batch_size=200
                 )
     except Exception as e:
@@ -1455,10 +1455,8 @@ def refresh_m3u_groups(account_id, use_cache=False, full_refresh=False, scan_sta
 
             # Create XCClient with explicit error handling
             try:
-                # Only use proxy if it's configured (not empty or None)
-                proxy = account.proxy if account.proxy and account.proxy.strip() else None
                 with XCClient(
-                    account.server_url, account.username, account.password, user_agent_string, proxy
+                    account.server_url, account.username, account.password, user_agent_string, account.get_proxy_for_api()
                 ) as xc_client:
                     logger.info(f"XCClient instance created successfully")
 
@@ -2954,15 +2952,13 @@ def refresh_account_profiles(account_id):
                 # Get transformed credentials for this specific profile
                 profile_url, profile_username, profile_password = get_transformed_credentials(account, profile)
 
-                # Only use proxy if it's configured (not empty or None)
-                proxy = account.proxy if account.proxy and account.proxy.strip() else None
                 # Create a separate XC client for this profile's credentials
                 with XCClient(
                     profile_url,
                     profile_username,
                     profile_password,
                     user_agent_string,
-                    proxy,
+                    account.get_proxy_for_api(),
                 ) as profile_client:
                     # Authenticate with this profile's credentials
                     if profile_client.authenticate():
@@ -2973,7 +2969,7 @@ def refresh_account_profiles(account_id):
                         existing_props = profile.custom_properties or {}
                         existing_props.update(profile_account_info)
                         profile.custom_properties = existing_props
-                        profile.save(update_fields=['custom_properties', 'exp_date'])
+                        profile.save(update_fields=['custom_properties'])
 
                         profiles_updated += 1
                         logger.info(f"Updated account information for profile '{profile.name}' ({profiles_updated}/{profiles.count()})")
@@ -3020,15 +3016,13 @@ def refresh_account_info(profile_id):
         # Get transformed credentials using the helper function
         transformed_url, transformed_username, transformed_password = get_transformed_credentials(account, profile)
 
-        # Only use proxy if it's configured (not empty or None)
-        proxy = account.proxy if account.proxy and account.proxy.strip() else None
         # Initialize XtreamCodes client with extracted/transformed credentials
         client = XCClient(
             transformed_url,
             transformed_username,
             transformed_password,
             account.get_user_agent(),
-            proxy,
+            account.get_proxy_for_api(),
         )        # Authenticate and get account info
         auth_result = client.authenticate()
         if not auth_result:

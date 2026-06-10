@@ -7,6 +7,12 @@ import useSettingsStore from '../../store/settings';
 import { copyToClipboard } from '../../utils';
 
 // Mock stores
+vi.mock('../../store/auth', () => ({
+  default: {
+    getState: () => ({ accessToken: null }),
+  },
+}));
+
 vi.mock('../../store/useVODStore', () => ({
   default: vi.fn(),
 }));

@@ -71,8 +71,9 @@ const M3U = ({
       password: '',
       stale_stream_days: 7,
       priority: 0,
-      proxy: '',
       enable_vod: false,
+      proxy: '',
+      proxy_for_api: false,
     },
 
     validate: {
@@ -104,8 +105,9 @@ const M3U = ({
           m3uAccount.priority !== undefined && m3uAccount.priority !== null
             ? m3uAccount.priority
             : 0,
-        proxy: m3uAccount.proxy || '',
         enable_vod: m3uAccount.enable_vod || false,
+        proxy: m3uAccount.proxy || '',
+        proxy_for_api: m3uAccount.proxy_for_api || false,
       });
       setExpDate(m3uAccount.exp_date ? new Date(m3uAccount.exp_date) : null);
 
@@ -413,9 +415,16 @@ const M3U = ({
               <TextInput
                 label="HTTP Proxy"
                 placeholder="http://proxy.example.com:8080"
-                description="Optional HTTP proxy URL for this M3U account (used for stream connections)"
+                description="HTTP proxy URL for streaming (always used when configured)"
                 {...form.getInputProps('proxy')}
                 key={form.key('proxy')}
+              />
+
+              <Switch
+                label="Use Proxy for API Calls"
+                description="When enabled, the HTTP proxy will also be used for API calls (M3U download, XC API). When disabled, proxy is only used for streaming."
+                {...form.getInputProps('proxy_for_api', { type: 'checkbox' })}
+                key={form.key('proxy_for_api')}
               />
             </Stack>
           </Group>

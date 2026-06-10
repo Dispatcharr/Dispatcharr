@@ -50,7 +50,6 @@ export const WebsocketProvider = ({ children }) => {
 
   const epgs = useEPGsStore((s) => s.epgs);
   const updateEPG = useEPGsStore((s) => s.updateEPG);
-  const updateEPGProgress = useEPGsStore((s) => s.updateEPGProgress);
 
   const updatePlaylist = usePlaylistsStore((s) => s.updatePlaylist);
 
@@ -380,6 +379,11 @@ export const WebsocketProvider = ({ children }) => {
               ) {
                 API.batchSetEPG(parsedEvent.data.associations);
               }
+
+              // Refresh EPG store first, then requery channels so the table
+              // cross-references updated epg_data_id assignments immediately
+              fetchEPGData();
+              API.requeryChannels();
               break;
 
             case 'epg_matching_progress': {
@@ -635,81 +639,87 @@ export const WebsocketProvider = ({ children }) => {
               }
               break;
 
-            case 'epg_refresh':
-              // If we have source/account info, check if EPG exists before processing
-              if (parsedEvent.data.source || parsedEvent.data.account) {
-                const sourceId =
-                  parsedEvent.data.source || parsedEvent.data.account;
-                const epg = epgs[sourceId];
+            case 'epg_refresh': {
+              const sourceId =
+                parsedEvent.data.source || parsedEvent.data.account;
+              if (!sourceId) break;
 
-                // Only update progress if the EPG still exists in the store
-                // This prevents crashes when receiving updates for deleted EPGs
-                if (epg) {
-                  // Update the store with progress information
-                  updateEPGProgress(parsedEvent.data);
-                } else {
-                  // EPG was deleted, ignore this update
-                  console.debug(
-                    `Ignoring EPG refresh update for deleted EPG ${sourceId}`
+              // Read from the store directly. connectWebSocket closes over a stale
+              // epgs snapshot, so a newly created source is missed and the old early-
+              // return path never reached fetchEPGData on parsing_channels completion.
+              let { epgs: epgsState, updateEPG, updateEPGProgress, fetchEPGs, fetchEPGData } =
+                useEPGsStore.getState();
+
+              if (!epgsState[sourceId]) {
+                try {
+                  await fetchEPGs();
+                } catch (e) {
+                  console.warn(
+                    'Failed to refresh EPG sources for progress update:',
+                    e
                   );
-                  break;
                 }
+                epgsState = useEPGsStore.getState().epgs;
+              }
 
-                if (epg) {
-                  // Check for any indication of an error (either via status or error field)
-                  const hasError =
-                    parsedEvent.data.status === 'error' ||
-                    !!parsedEvent.data.error ||
-                    (parsedEvent.data.message &&
-                      parsedEvent.data.message.toLowerCase().includes('error'));
+              updateEPGProgress(parsedEvent.data);
 
-                  if (hasError) {
-                    // Handle error state
-                    const errorMessage =
-                      parsedEvent.data.error ||
-                      parsedEvent.data.message ||
-                      'Unknown error occurred';
+              const epg = epgsState[sourceId];
+              if (!epg) break;
 
-                    updateEPG({
-                      ...epg,
-                      status: 'error',
-                      last_message: errorMessage,
-                    });
+              const hasError =
+                parsedEvent.data.status === 'error' ||
+                !!parsedEvent.data.error ||
+                (parsedEvent.data.message &&
+                  parsedEvent.data.message.toLowerCase().includes('error'));
 
-                    // Show notification for the error
-                    notifications.show({
-                      title: 'EPG Refresh Error',
-                      message: errorMessage,
-                      color: 'red.5',
-                    });
-                  }
-                  // Update status on completion only if no errors
-                  else if (parsedEvent.data.progress === 100) {
-                    updateEPG({
-                      ...epg,
-                      status: parsedEvent.data.status || 'success',
-                      last_message:
-                        parsedEvent.data.message || epg.last_message,
-                      // Use the timestamp from the backend if provided
-                      ...(parsedEvent.data.updated_at && {
-                        updated_at: parsedEvent.data.updated_at,
-                      }),
-                    });
+              if (hasError) {
+                const errorMessage =
+                  parsedEvent.data.error ||
+                  parsedEvent.data.message ||
+                  'Unknown error occurred';
 
-                    // Only show success notification if we've finished parsing programs and had no errors
-                    if (parsedEvent.data.action === 'parsing_programs') {
-                      notifications.show({
-                        title: 'EPG Processing Complete',
-                        message: 'EPG data has been updated successfully',
-                        color: 'green.5',
-                      });
+                updateEPG({
+                  ...epg,
+                  status: 'error',
+                  last_message: errorMessage,
+                });
 
-                      fetchEPGData();
-                    }
-                  }
+                notifications.show({
+                  title: 'EPG Refresh Error',
+                  message: errorMessage,
+                  color: 'red.5',
+                });
+              } else if (parsedEvent.data.progress === 100) {
+                updateEPG({
+                  ...epg,
+                  status: parsedEvent.data.status || 'success',
+                  last_message:
+                    parsedEvent.data.message || epg.last_message,
+                  ...(parsedEvent.data.updated_at && {
+                    updated_at: parsedEvent.data.updated_at,
+                  }),
+                });
+
+                if (parsedEvent.data.action === 'parsing_channels') {
+                  notifications.show({
+                    message: 'EPG channels updated!',
+                    color: 'green.5',
+                  });
+
+                  await fetchEPGData();
+                } else if (parsedEvent.data.action === 'parsing_programs') {
+                  notifications.show({
+                    title: 'EPG Processing Complete',
+                    message: 'EPG data has been updated successfully',
+                    color: 'green.5',
+                  });
+
+                  await fetchEPGData();
                 }
               }
               break;
+            }
 
             case 'epg_sources_changed':
               // A plugin or backend process signaled that the EPG sources changed
@@ -962,6 +972,12 @@ export const WebsocketProvider = ({ children }) => {
             case 'notifications_cleared': {
               // Handle bulk notification clearing (e.g., when version is updated)
               API.getNotifications();
+              break;
+            }
+
+            case 'ip_lookup_complete': {
+              const { type: _t, ...ipData } = parsedEvent.data;
+              useSettingsStore.getState().setEnvironmentFields(ipData);
               break;
             }
 
