@@ -1815,15 +1815,6 @@ class StreamManager:
                     logger.info(
                         f"\033[31m[COOLDOWN]\033[0m Set cooldown for stream {self.current_stream_id}/profile "
                         f"{self.current_profile_id} on channel {self.channel_id} for {mins}m {secs}s"
-                    ) 
-                        cooldown_secs, 
-                        f"{failed_at}:{retry_at}"
-                    )
-                    mins = int(cooldown_secs // 60)
-                    secs = int(cooldown_secs % 60)
-                    logger.info(
-                        f"\033[31m[COOLDOWN]\033[0m Set cooldown for stream {self.current_stream_id}/profile "
-                        f"{self.current_profile_id} on channel {self.channel_id} for {mins}m {secs}s"
                     )
 
             # Get alternate streams with ALL profiles (not just default)
