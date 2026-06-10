@@ -4,11 +4,11 @@
   flex-wrap: nowrap;
   align-items: center;
   gap: 12px;
-  padding: 5px 8px !important;
+  padding: 8px 10px !important;
   border-radius: 6px;
   background-color: transparent; /* Default background when not active */
   border: 1px solid transparent;
-  transition: all 0.3s ease;
+  transition: background-color 0.3s ease, border-color 0.3s ease, color 0.3s ease;
   margin-left: 2px;
 }
 
@@ -34,6 +34,7 @@
 /* Collapse condition for justifyContent */
 .navlink.navlink-collapsed {
   justify-content: center;
+  padding: 8px !important;
 }
 
 .navlink:not(.navlink-collapsed) {
