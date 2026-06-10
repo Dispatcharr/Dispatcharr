@@ -13,9 +13,22 @@ Die folgenden Änderungen wurden vorgenommen:
 - Stellt sicher, dass die neueste kompatible Version installiert wird
 
 ### 2. docker/DispatcharrBase
-- Verbesserte Abhängigkeitsinstallation mit `uv sync`
-- Hinzugefügt: Verifizierung der kritischen Pakete nach der Installation
-- Fallback-Mechanismus falls `--frozen` fehlschlägt
+- **HAUPTÄNDERUNG**: Gewechselt von `uv sync` zu `uv pip compile` + `uv pip install`
+  - **Grund**: Es existiert keine `uv.lock` Datei im Projekt, daher schlägt `uv sync --frozen` fehl
+  - **Lösung**: `uv pip compile` erstellt requirements.txt aus pyproject.toml, dann Installation daraus
+- Verbesserte Installationsschritte:
+  1. Virtuelles Environment explizit mit `uv venv` erstellen
+  2. Requirements aus pyproject.toml kompilieren
+  3. Pakete aus den kompilierten Requirements installieren
+- Verifizierung der kritischen Pakete im Builder-Stage
+- **ZUSÄTZLICHER FALLBACK**: Im Final-Stage werden fehlende Pakete automatisch nachinstalliert
+  - Falls beim Kopieren des venv Pakete verloren gehen
+  - Explizite Nachinstallation von `django-db-geventpool` und `drf-spectacular`
+- Final-Stage Verifizierung stellt sicher, dass alle Pakete im fertigen Image verfügbar sind
+
+### 3. docker/debug_packages.sh (neu)
+- Debug-Script zum Überprüfen der installierten Pakete im Container
+- Hilfreich für Troubleshooting bei Paketproblemen
 
 ## Build-Befehle
 
@@ -58,8 +71,10 @@ docker run --rm sbeimel/dispatcharr:base /dispatcharrpy/bin/python -c "import dj
 
 ## Änderungsprotokoll
 
-### v0.26.0 Fixes
+### v0.26.0 Fixes - Update 2
 - ✅ `django-db-geventpool>=4.0.8` zu pyproject.toml hinzugefügt
-- ✅ Verifizierung der Installation kritischer Pakete
-- ✅ Fallback-Mechanismus für uv sync
-- ✅ Detaillierte Fehlerausgabe bei fehlenden Modulen
+- ✅ **Gewechselt von `uv sync` zu `uv pip compile` + `uv pip install`** (Hauptfix)
+- ✅ Verifizierung der Installation kritischer Pakete im Builder-Stage
+- ✅ Fallback-Installation im Final-Stage für fehlende Pakete
+- ✅ Detaillierte Fehlerausgabe und Debugging-Informationen
+- ✅ Debug-Script für Container-Diagnose hinzugefügt

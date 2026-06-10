@@ -34,16 +34,25 @@ COPY pyproject.toml /tmp/build/
 COPY version.py /tmp/build/
 COPY README.md /tmp/build/
 
-# Install all dependencies from pyproject.toml
-# Using --frozen to ensure exact dependency resolution
-RUN uv sync --python 3.13 --no-cache --no-install-project --no-dev --frozen || \
-    uv sync --python 3.13 --no-cache --no-install-project --no-dev
+# Create the virtual environment
+RUN uv venv --python 3.13 $UV_PROJECT_ENVIRONMENT
 
-# Verify critical packages are installed
-RUN $UV_PROJECT_ENVIRONMENT/bin/python -c "import django_db_geventpool; print('✓ django-db-geventpool installed')" && \
-    $UV_PROJECT_ENVIRONMENT/bin/python -c "import drf_spectacular; print('✓ drf-spectacular installed')" && \
-    $UV_PROJECT_ENVIRONMENT/bin/python -c "import gevent; print('✓ gevent installed')" && \
-    $UV_PROJECT_ENVIRONMENT/bin/python -c "import psycopg; print('✓ psycopg installed')"
+# Extract and install dependencies from pyproject.toml
+# uv pip compile creates a resolved requirements.txt from pyproject.toml
+RUN uv pip compile /tmp/build/pyproject.toml -o /tmp/requirements.txt --python-version 3.13 && \
+    cat /tmp/requirements.txt && \
+    uv pip install --python $UV_PROJECT_ENVIRONMENT/bin/python -r /tmp/requirements.txt
+
+# Verify critical packages are installed in builder stage
+RUN echo "=== Verifying critical packages in builder ===" && \
+    $UV_PROJECT_ENVIRONMENT/bin/python -c "import django_db_geventpool; print('✓ django-db-geventpool installed in builder')" && \
+    $UV_PROJECT_ENVIRONMENT/bin/python -c "import drf_spectacular; print('✓ drf-spectacular installed in builder')" && \
+    $UV_PROJECT_ENVIRONMENT/bin/python -c "import gevent; print('✓ gevent installed in builder')" && \
+    $UV_PROJECT_ENVIRONMENT/bin/python -c "import psycopg; print('✓ psycopg installed in builder')"
+
+# List critical packages for debugging
+RUN echo "=== Critical packages in builder ===" && \
+    uv pip list --python $UV_PROJECT_ENVIRONMENT/bin/python | grep -E "(django-db-geventpool|drf-spectacular|gevent|psycopg|Django)" || true
 
 WORKDIR /
 
@@ -95,6 +104,26 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 # --- Copy prebuilt virtual environment and legacy NumPy wheel from the builder ---
 COPY --from=builder /dispatcharrpy /dispatcharrpy
 COPY --from=builder /opt/numpy-*.whl /opt/
+
+# --- Verify and fix missing packages in the final image ---
+# Sometimes packages don't copy correctly, so we reinstall critical ones
+COPY pyproject.toml /tmp/pyproject.toml
+COPY version.py /tmp/version.py
+COPY README.md /tmp/README.md
+
+# Ensure django-db-geventpool and other critical packages are present
+RUN cd /tmp && \
+    /dispatcharrpy/bin/python -c "import django_db_geventpool" 2>/dev/null || \
+    uv pip install --python /dispatcharrpy/bin/python django-db-geventpool>=4.0.8 && \
+    /dispatcharrpy/bin/python -c "import drf_spectacular" 2>/dev/null || \
+    uv pip install --python /dispatcharrpy/bin/python drf-spectacular>=0.29.0 && \
+    rm -rf /tmp/pyproject.toml /tmp/version.py /tmp/README.md
+
+# Final verification
+RUN /dispatcharrpy/bin/python -c "import django_db_geventpool; print('✓ django-db-geventpool available in final image')" && \
+    /dispatcharrpy/bin/python -c "import drf_spectacular; print('✓ drf-spectacular available in final image')" && \
+    /dispatcharrpy/bin/python -c "import gevent; print('✓ gevent available in final image')" && \
+    /dispatcharrpy/bin/python -c "import psycopg; print('✓ psycopg available in final image')"
 
 # --- Set up Redis 7.x ---
 RUN curl -fsSL https://packages.redis.io/gpg | gpg --dearmor -o /usr/share/keyrings/redis-archive-keyring.gpg && \
