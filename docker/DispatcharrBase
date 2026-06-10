@@ -39,6 +39,12 @@ RUN uv sync --python 3.13 --no-cache --no-install-project --no-dev && \
 
 WORKDIR /
 
+# EXPLICIT installation of critical packages that uv sync might miss
+RUN echo "=== Ensuring critical packages are installed ===" && \
+    uv pip install --python $UV_PROJECT_ENVIRONMENT/bin/python \
+    django-db-geventpool>=4.0.8 \
+    drf-spectacular>=0.29.0
+
 # Verify critical packages are installed
 RUN echo "=== Verifying critical packages ===" && \
     $UV_PROJECT_ENVIRONMENT/bin/python -c "import django_db_geventpool; print('✓ django-db-geventpool')" && \
@@ -81,4 +87,5 @@ RUN curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | gpg --dearmo
 # Create render group for hardware acceleration support with GID 109
 RUN groupadd -r -g 109 render || true
 
-ENTRYPOINT ["/app/docker/entrypoint.sh"]
+# NOTE: No ENTRYPOINT in base image - it will be set in the final Dockerfile
+# This allows testing the base image directly without needing /app/docker/entrypoint.sh

@@ -21,10 +21,31 @@ ARG REPO_NAME
 ARG BASE_TAG
 
 # --- Final image based on the dynamic base ---
-FROM ghcr.io/${REPO_OWNER}/${REPO_NAME}:${BASE_TAG} AS final
+# For local builds, Docker will automatically find local images first before checking registries
+# When building locally with --build-arg REPO_OWNER=sbeimel, it will use the local sbeimel/dispatcharr:base
+FROM ${REPO_OWNER}/${REPO_NAME}:${BASE_TAG} AS final
 ENV VIRTUAL_ENV=/dispatcharrpy
 ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 WORKDIR /app
+
+# IMPORTANT: Verify Python packages are still available after base image
+RUN echo "=== Verifying packages in final stage ===" && \
+    /dispatcharrpy/bin/python -c "import django_db_geventpool; print('✓ django-db-geventpool in final')" || \
+    echo "⚠️ WARNING: django-db-geventpool NOT found in final stage!"
+
+# Fallback: Install critical packages if they're missing
+RUN /dispatcharrpy/bin/python -c "import django_db_geventpool" 2>/dev/null || \
+    (echo "Installing missing django-db-geventpool..." && \
+    uv pip install --python /dispatcharrpy/bin/python django-db-geventpool>=4.0.8)
+
+RUN /dispatcharrpy/bin/python -c "import drf_spectacular" 2>/dev/null || \
+    (echo "Installing missing drf-spectacular..." && \
+    uv pip install --python /dispatcharrpy/bin/python drf-spectacular>=0.29.0)
+
+# Final verification - fail build if packages are still missing
+RUN echo "=== Final verification ===" && \
+    /dispatcharrpy/bin/python -c "import django_db_geventpool; print('✓ django-db-geventpool available')" && \
+    /dispatcharrpy/bin/python -c "import drf_spectacular; print('✓ drf-spectacular available')"
 
 # Copy application code
 COPY . /app
