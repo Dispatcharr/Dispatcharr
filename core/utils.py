@@ -670,7 +670,7 @@ def log_system_event(event_type, channel_id=None, channel_name=None, **details):
 
     Args:
         event_type: Type of event (e.g., 'channel_start', 'client_connect')
-        channel_id: Optional UUID of the channel
+        channel_id: Optional UUID of the channel (or stream hash for stream preview)
         channel_name: Optional name of the channel
         **details: Additional details to store in the event (stored as JSON)
 
@@ -679,12 +679,23 @@ def log_system_event(event_type, channel_id=None, channel_name=None, **details):
                         stream_url='http://...', user='admin')
     """
     from core.models import SystemEvent, CoreSettings
+    import uuid as uuid_module
 
     try:
+        # Validate channel_id is a valid UUID - stream previews use stream_hash (not UUID)
+        safe_channel_id = None
+        if channel_id is not None:
+            try:
+                uuid_module.UUID(str(channel_id))
+                safe_channel_id = channel_id
+            except (ValueError, AttributeError):
+                # Not a valid UUID (e.g. stream hash) - store as detail instead
+                details['stream_hash'] = str(channel_id)
+
         # Create the event
         SystemEvent.objects.create(
             event_type=event_type,
-            channel_id=channel_id,
+            channel_id=safe_channel_id,
             channel_name=channel_name,
             details=details
         )

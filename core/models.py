@@ -124,7 +124,7 @@ class StreamProfile(models.Model):
             return True
         return False
 
-    def build_command(self, stream_url, user_agent):
+    def build_command(self, stream_url, user_agent, proxy=None):
 
         if self.is_proxy():
             return []
@@ -139,6 +139,17 @@ class StreamProfile(models.Model):
             self._replace_in_part(part, replacements)
             for part in shlex_split(self.parameters) # use shlex to handle quoted strings
         ]
+
+        # Inject proxy into ffmpeg command if proxy is configured
+        # ffmpeg uses -http_proxy for HTTP streams
+        if proxy and self.command.lower() in ('ffmpeg',):
+            # Insert -http_proxy before the -i argument
+            try:
+                i_index = cmd.index('-i')
+                cmd.insert(i_index, proxy)
+                cmd.insert(i_index, '-http_proxy')
+            except ValueError:
+                pass  # No -i flag found, skip proxy injection
 
         return cmd
 
