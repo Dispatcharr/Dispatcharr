@@ -1,7 +1,7 @@
 from django.db.models.signals import post_save, post_delete, pre_save
 from django.dispatch import receiver
 from .models import EPGSource, EPGData
-from .tasks import refresh_epg_data, delete_epg_refresh_task_by_id
+from .tasks import refresh_epg_data, delete_epg_refresh_task_by_id, fetch_schedules_direct_stations
 from core.scheduling import create_or_update_periodic_task, delete_periodic_task
 from core.utils import is_protected_path, send_websocket_update
 import json
@@ -12,9 +12,16 @@ logger = logging.getLogger(__name__)
 
 @receiver(post_save, sender=EPGSource)
 def trigger_refresh_on_new_epg_source(sender, instance, created, **kwargs):
-    # Trigger refresh only if the source is newly created, active, and not a dummy EPG
+    # Trigger refresh only if the source is newly created, active, and not a dummy EPG.
+    # For Schedules Direct sources, run a stations-only fetch on creation so the user
+    # can run Auto-match EPG before committing to a full schedule/program fetch.
+    # A short countdown gives the frontend time to receive the API response and
+    # populate the store before WebSocket updates arrive.
     if created and instance.is_active and instance.source_type != 'dummy':
-        refresh_epg_data.delay(instance.id)
+        if instance.source_type == 'schedules_direct':
+            fetch_schedules_direct_stations.apply_async((instance.id,), countdown=3)
+        else:
+            refresh_epg_data.delay(instance.id)
 
 @receiver(post_save, sender=EPGSource)
 def create_dummy_epg_data(sender, instance, created, **kwargs):

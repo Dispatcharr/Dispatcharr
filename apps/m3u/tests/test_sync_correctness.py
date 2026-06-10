@@ -6,7 +6,10 @@ first (fails on HEAD prior to the Tier 2 patch), then is flipped to assert
 the correct post-fix behavior. Comments call out the failure mode and the
 fix location.
 """
-from django.test import TestCase
+from unittest import skipUnless
+
+from django.db import connection
+from django.test import TestCase, TransactionTestCase
 from django.utils import timezone
 
 from apps.channels.models import (
@@ -2194,4 +2197,106 @@ class CompactNumberingWithGroupOverrideTests(TestCase):
             small,
             large,
             f"repack query count scaled with channel count: {small} -> {large}",
+        )
+
+
+@skipUnless(
+    connection.vendor == "postgresql",
+    "Idempotency repro forces a physical heap reorder via CLUSTER, which is "
+    "PostgreSQL-specific (the suite's target DB).",
+)
+class CompactNumberingIdempotencyTests(TransactionTestCase):
+    """
+    A compact repack must be idempotent: with no change to hide state or
+    overrides, repacking again must leave every channel on the same number.
+
+    The unpatched _repack_inner read its channels with no ORDER BY, so the
+    pack followed PostgreSQL's physical row order. That order drifts after
+    the UPDATEs each repack issues (and after autovacuum), so successive
+    syncs packed the same channels into different numbers. That is the daily
+    channel-number churn users reported.
+
+    This test forces the divergence deterministically. After the first pack
+    it rewrites every channel_number to the reverse of id order, then
+    physically clusters the table on that column so the heap order becomes
+    the reverse of id order. An unordered SELECT then returns the rows in the
+    opposite order from the first pass. Unpatched, the second pack assigns
+    numbers in that reversed order and the channel->number mapping flips;
+    patched, .order_by("id") keeps both packs identical.
+
+    Fail signature: channel->number mapping differs between the two repacks
+    = _repack_inner is following physical row order instead of id order.
+
+    Fix location: apps/channels/compact_numbering.py (_repack_inner channel
+    query .order_by("id")).
+    """
+
+    # TransactionTestCase commits its rows (TestCase's savepoint rollback
+    # would hide them from CLUSTER, which also cannot run inside the
+    # transaction block TestCase wraps each test in).
+
+    def _mapping(self, account):
+        return {
+            c.id: c.channel_number
+            for c in Channel.objects.filter(
+                auto_created=True, auto_created_by=account
+            )
+        }
+
+    def test_repack_is_idempotent_under_physical_reorder(self):
+        from apps.channels.compact_numbering import repack_group
+
+        account = _make_account()
+        group = _make_group(name="Sports")
+        rel = _attach_group_to_account(
+            account, group, custom_properties={"compact_numbering": True}
+        )
+        rel.auto_sync_channel_start = 8000
+        rel.auto_sync_channel_end = 8099
+        rel.save()
+
+        # Eight visible auto channels; ascending id is creation order.
+        channels = [
+            Channel.objects.create(
+                name=f"C{i}",
+                channel_group=group,
+                auto_created=True,
+                auto_created_by=account,
+            )
+            for i in range(8)
+        ]
+
+        repack_group(rel)
+        first = self._mapping(account)
+        # Provider-order pack (the default) assigns by id, so the lowest id
+        # takes the range start.
+        lowest_id = min(c.id for c in channels)
+        self.assertEqual(first[lowest_id], 8000)
+
+        # Set channel_number to the reverse of id order, then cluster the
+        # heap on that column so physical order becomes reverse-id order.
+        # Values sit above the range so they cannot collide with the pack.
+        table = Channel._meta.db_table
+        with connection.cursor() as cur:
+            for pos, ch in enumerate(channels):
+                cur.execute(
+                    f"UPDATE {table} SET channel_number = %s WHERE id = %s",
+                    [9000 - pos, ch.id],
+                )
+            cur.execute(
+                f"CREATE INDEX IF NOT EXISTS churn_cn_idx "
+                f"ON {table} (channel_number)"
+            )
+            cur.execute(f"CLUSTER {table} USING churn_cn_idx")
+            cur.execute("DROP INDEX IF EXISTS churn_cn_idx")
+
+        repack_group(rel)
+        second = self._mapping(account)
+
+        self.assertEqual(
+            first,
+            second,
+            "Repack is not idempotent: channel numbers changed on a second "
+            "pass with no hide or override change. _repack_inner is following "
+            "physical row order instead of id order.",
         )

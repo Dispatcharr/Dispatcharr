@@ -7,6 +7,7 @@
 DATA_DIRS=(
     "/data/backups"
     "/data/logos"
+    "/data/logo_cache"
     "/data/recordings"
     "/data/uploads/m3us"
     "/data/uploads/epgs"
@@ -19,7 +20,6 @@ DATA_DIRS=(
 
 # APP_DIRS live on the image layer and are always locally writable.
 APP_DIRS=(
-    "/app/logo_cache"
     "/app/media"
     "/app/static"
 )

@@ -207,11 +207,11 @@ def generate_m3u(request, profile_name=None, user=None):
     xc_username = request.GET.get('username')
     xc_password = request.GET.get('password')
     is_xc_request = user is not None and xc_username and xc_password
+    _base_url = build_absolute_uri_with_port(request, '')
 
     if is_xc_request:
         # This is an XC API request - use XC-style EPG URL
-        base_url = build_absolute_uri_with_port(request, '')
-        epg_url = f"{base_url}/xmltv.php?username={xc_username}&password={xc_password}"
+        epg_url = f"{_base_url}/xmltv.php?username={xc_username}&password={xc_password}"
         # Build the query-string suffix for stream URLs once - it's the same for every channel
         xc_qs = {}
         if output_profile_id:
@@ -240,6 +240,13 @@ def generate_m3u(request, profile_name=None, user=None):
 
     # Add x-tvg-url and url-tvg attribute for EPG URL
     m3u_content = f'#EXTM3U x-tvg-url="{epg_url}" url-tvg="{epg_url}"\n'
+
+    # Host/port/scheme are constant per request; precompute URL prefixes once.
+    _stream_url_prefix = None if is_xc_request else f"{_base_url}/proxy/ts/stream/"
+    _sample_logo_path = reverse("api:channels:logo-cache", args=[0])
+    _logo_prefix_raw, _, _logo_suffix_raw = _sample_logo_path.partition("/0/")
+    _logo_url_prefix = _base_url + _logo_prefix_raw + "/"
+    _logo_url_suffix = "/" + _logo_suffix_raw
 
     # Start building M3U content
     channel_count = 0
@@ -270,8 +277,7 @@ def generate_m3u(request, profile_name=None, user=None):
         tvg_logo = ""
         if effective_logo:
             if use_cached_logos:
-                # Use cached logo as before
-                tvg_logo = build_absolute_uri_with_port(request, reverse('api:channels:logo-cache', args=[effective_logo.id]))
+                tvg_logo = f"{_logo_url_prefix}{effective_logo.id}{_logo_url_suffix}"
             else:
                 # Try to find direct logo URL from channel's streams
                 direct_logo = effective_logo.url if effective_logo.url.startswith(('http://', 'https://')) else None
@@ -279,7 +285,7 @@ def generate_m3u(request, profile_name=None, user=None):
                 if direct_logo:
                     tvg_logo = direct_logo
                 else:
-                    tvg_logo = build_absolute_uri_with_port(request, reverse('api:channels:logo-cache', args=[effective_logo.id]))
+                    tvg_logo = f"{_logo_url_prefix}{effective_logo.id}{_logo_url_suffix}"
 
         # create possible gracenote id insertion
         tvc_guide_stationid = ""
@@ -295,7 +301,7 @@ def generate_m3u(request, profile_name=None, user=None):
 
         # Determine the stream URL based on request type
         if is_xc_request:
-            stream_url = f"{base_url}/live/{xc_username}/{xc_password}/{channel.id}{xc_qs_suffix}"
+            stream_url = f"{_base_url}/live/{xc_username}/{xc_password}/{channel.id}{xc_qs_suffix}"
         elif use_direct_urls:
             # Try to get the first stream's direct URL
             all_streams = channel.streams.all()
@@ -305,11 +311,10 @@ def generate_m3u(request, profile_name=None, user=None):
                 stream_url = first_stream.url
             else:
                 # Fall back to proxy URL if no direct URL available
-                stream_url = build_absolute_uri_with_port(request, f"/proxy/ts/stream/{channel.uuid}")
+                stream_url = f"{_stream_url_prefix}{channel.uuid}"
         else:
             # Standard behavior - use proxy URL
-            base_stream_url = build_absolute_uri_with_port(request, f"/proxy/ts/stream/{channel.uuid}")
-            stream_url = f"{base_stream_url}{proxy_qs_suffix}"
+            stream_url = f"{_stream_url_prefix}{channel.uuid}{proxy_qs_suffix}"
 
         m3u_content += extinf_line + stream_url + "\n"
 
@@ -1450,6 +1455,13 @@ def generate_epg(request, profile_name=None, user=None):
                     channel_num_map[channel.id] = candidate
                     used_numbers.add(candidate)
 
+        # Host/port/scheme are constant per request; precompute logo URL prefix once.
+        _base_url = build_absolute_uri_with_port(request, "")
+        _sample_logo_path = reverse("api:channels:logo-cache", args=[0])
+        _logo_prefix_raw, _, _logo_suffix_raw = _sample_logo_path.partition("/0/")
+        _logo_url_prefix = _base_url + _logo_prefix_raw + "/"
+        _logo_url_suffix = "/" + _logo_suffix_raw
+
         # Process channels for the <channel> section
         for channel in channels:
             effective_name = channel.effective_name
@@ -1529,14 +1541,14 @@ def generate_epg(request, profile_name=None, user=None):
             # If no custom dummy logo, use regular logo logic
             if not tvg_logo and effective_logo:
                 if use_cached_logos:
-                    tvg_logo = build_absolute_uri_with_port(request, reverse('api:channels:logo-cache', args=[effective_logo.id]))
+                    tvg_logo = f"{_logo_url_prefix}{effective_logo.id}{_logo_url_suffix}"
                 else:
                     # Use direct URL if available, otherwise fall back to cached version
                     direct_logo = effective_logo.url if effective_logo.url.startswith(('http://', 'https://')) else None
                     if direct_logo:
                         tvg_logo = direct_logo
                     else:
-                        tvg_logo = build_absolute_uri_with_port(request, reverse('api:channels:logo-cache', args=[effective_logo.id]))
+                        tvg_logo = f"{_logo_url_prefix}{effective_logo.id}{_logo_url_suffix}"
             display_name = effective_name
             xml_lines.append(f'  <channel id="{html.escape(channel_id)}">')
             xml_lines.append(f'    <display-name>{html.escape(display_name)}</display-name>')
@@ -1668,6 +1680,7 @@ def generate_epg(request, profile_name=None, user=None):
             # to avoid skipping/duplicating rows if the table changes mid-stream.
             last_epg_id = 0
             last_id = 0
+            _poster_url_base = build_absolute_uri_with_port(request, "/api/epg/programs/")
 
             while True:
                 program_chunk = list(
@@ -1871,6 +1884,8 @@ def generate_epg(request, profile_name=None, user=None):
 
                         if "icon" in custom_data:
                             program_xml.append(f'    <icon src="{html.escape(custom_data["icon"])}" />')
+                        elif "sd_icon" in custom_data:
+                            program_xml.append(f'    <icon src="{html.escape(_poster_url_base)}{prog["id"]}/poster/" />')
 
                         # Add special flags as proper tags with enhanced handling
                         if custom_data.get("previously_shown", False):

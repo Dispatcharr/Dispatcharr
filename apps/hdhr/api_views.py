@@ -19,6 +19,7 @@ from django.utils.decorators import method_decorator
 from django.contrib.auth.decorators import login_required
 from django.views.decorators.csrf import csrf_exempt
 from dispatcharr.utils import network_access_allowed
+from core.utils import build_absolute_uri_with_port
 
 # Configure logger
 logger = logging.getLogger(__name__)
@@ -75,7 +76,7 @@ class DiscoverAPIView(APIView):
             uri_parts.append("output_profile")
             uri_parts.append(str(output_profile_id))
 
-        base_url = request.build_absolute_uri(f'/{"/".join(uri_parts)}/').rstrip("/")
+        base_url = build_absolute_uri_with_port(request, f'/{"/".join(uri_parts)}/').rstrip("/")
         device = HDHRDevice.objects.first()
 
         from apps.m3u.utils import calculate_tuner_count
@@ -166,6 +167,13 @@ class LineupAPIView(APIView):
 
         resolved_output_profile_id = _resolve_hdhr_output_profile_id(output_profile_id)
 
+        _stream_url_prefix = build_absolute_uri_with_port(request, "/proxy/ts/stream/")
+        _output_profile_qs = (
+            f"?output_profile={resolved_output_profile_id}"
+            if resolved_output_profile_id is not None
+            else ""
+        )
+
         lineup = []
         for ch in channels:
             formatted = format_channel_number(ch.effective_channel_number, empty=None)
@@ -173,9 +181,7 @@ class LineupAPIView(APIView):
                 continue
             formatted_channel_number = str(formatted)
 
-            stream_url = request.build_absolute_uri(f"/proxy/ts/stream/{ch.uuid}")
-            if resolved_output_profile_id is not None:
-                stream_url += f"?output_profile={resolved_output_profile_id}"
+            stream_url = f"{_stream_url_prefix}{ch.uuid}{_output_profile_qs}"
 
             lineup.append(
                 {
@@ -224,7 +230,7 @@ class HDHRDeviceXMLAPIView(APIView):
         if blocked is not None:
             return blocked
 
-        base_url = request.build_absolute_uri("/hdhr/").rstrip("/")
+        base_url = build_absolute_uri_with_port(request, "/hdhr/").rstrip("/")
 
         xml_response = f"""<?xml version="1.0" encoding="utf-8"?>
         <root>

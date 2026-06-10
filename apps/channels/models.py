@@ -4,7 +4,7 @@ from django.conf import settings
 from core.models import StreamProfile, CoreSettings
 from core.utils import RedisClient
 from apps.proxy.live_proxy.redis_keys import RedisKeys
-from apps.proxy.live_proxy.constants import ChannelMetadataField
+from apps.proxy.live_proxy.constants import ChannelMetadataField, ChannelState
 import logging
 import uuid
 from django.utils import timezone
@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 
 # If you have an M3UAccount model in apps.m3u, you can still import it:
 from apps.m3u.models import M3UAccount
+from apps.m3u.connection_pool import reserve_profile_slot, release_profile_slot
 
 
 # Add fallback functions if Redis isn't available
@@ -222,13 +223,14 @@ class Stream(models.Model):
         Finds an available profile for this stream and reserves a connection slot.
 
         Returns:
-            Tuple[Optional[int], Optional[int], Optional[str]]: (stream_id, profile_id, error_reason)
+            Tuple[Optional[int], Optional[int], Optional[str], bool]:
+            (stream_id, profile_id, error_reason, slot_reserved)
         """
         redis_client = RedisClient.get_client()
         profile_id = redis_client.get(f"stream_profile:{self.id}")
         if profile_id:
             profile_id = int(profile_id)
-            return self.id, profile_id, None
+            return self.id, profile_id, None, False
 
         # Retrieve the M3U account associated with the stream.
         m3u_account = self.m3u_account
@@ -239,29 +241,22 @@ class Stream(models.Model):
         ]
 
         for profile in profiles:
-            logger.info(profile)
+            logger.debug("Evaluating profile %s for stream %s", profile.id, self.id)
             # Skip inactive profiles
             if profile.is_active == False:
                 continue
 
-            # Atomic slot reservation: INCR first, check, rollback if over capacity
-            if profile.max_streams == 0:
-                reserved = True
-            else:
-                profile_connections_key = f"profile_connections:{profile.id}"
-                new_count = redis_client.incr(profile_connections_key)
-                if new_count <= profile.max_streams:
-                    reserved = True
-                else:
-                    redis_client.decr(profile_connections_key)
-                    reserved = False
+            # Atomic slot reservation via shared connection pool helper
+            reserved, _count, _failure_reason = reserve_profile_slot(
+                profile, redis_client
+            )
 
             if reserved:
                 redis_client.set(f"channel_stream:{self.id}", self.id)
                 redis_client.set(f"stream_profile:{self.id}", profile.id)
-                return self.id, profile.id, None
+                return self.id, profile.id, None, True
 
-        return None, None, "All active M3U profiles have reached maximum connection limits"
+        return None, None, "All active M3U profiles have reached maximum connection limits", False
 
     def release_stream(self):
         """
@@ -290,12 +285,7 @@ class Stream(models.Model):
             f"Stream {stream_id}: found profile_id={profile_id}"
         )
 
-        profile_connections_key = f"profile_connections:{profile_id}"
-
-        # Only decrement if the profile had a max_connections limit
-        current_count = int(redis_client.get(profile_connections_key) or 0)
-        if current_count > 0:
-            redis_client.decr(profile_connections_key)
+        release_profile_slot(profile_id, redis_client)
 
         return True
 
@@ -625,44 +615,65 @@ class Channel(models.Model):
 
         return victim_id
 
-    def _check_and_reserve_profile_slot(self, profile, redis_client):
+    def _channel_proxy_is_active(self, redis_client) -> bool:
+        """True when live proxy metadata shows this channel is still running."""
+        metadata_key = RedisKeys.channel_metadata(str(self.uuid))
+        if not redis_client.exists(metadata_key):
+            return False
+        state = redis_client.hget(metadata_key, ChannelMetadataField.STATE)
+        if state is None:
+            return False
+        if isinstance(state, bytes):
+            state = state.decode()
+        return state in (
+            ChannelState.ACTIVE,
+            ChannelState.WAITING_FOR_CLIENTS,
+            ChannelState.BUFFERING,
+            ChannelState.INITIALIZING,
+            ChannelState.CONNECTING,
+        )
+
+    def _stream_assignment_is_reusable(self, redis_client, stream_id: int) -> bool:
         """
-        Atomically check and reserve a connection slot for the given profile.
+        Return True when an existing channel_stream assignment should be reused.
 
-        Uses an INCR-first-then-check pattern to eliminate the TOCTOU race
-        condition where separate GET + check + INCR operations could allow
-        concurrent requests to both pass the capacity check.
-
-        For profiles with max_streams=0 (unlimited), no reservation is needed.
-
-        Args:
-            profile: M3UAccountProfile instance
-            redis_client: Redis client instance
-
-        Returns:
-            tuple: (reserved: bool, current_count: int)
+        Reuse when the proxy is active, or when metadata is not written yet
+        (between get_stream() reserving slots and initialize_channel() starting).
+        When metadata exists but the proxy is inactive, the assignment is stale.
         """
-        if profile.max_streams == 0:
-            return (True, 0)
+        if self._channel_proxy_is_active(redis_client):
+            return True
 
-        profile_connections_key = f"profile_connections:{profile.id}"
+        metadata_key = RedisKeys.channel_metadata(str(self.uuid))
+        if not redis_client.exists(metadata_key):
+            return redis_client.get(f"stream_profile:{stream_id}") is not None
 
-        # Atomically increment first — this is a single Redis command
-        new_count = redis_client.incr(profile_connections_key)
+        return False
 
-        if new_count <= profile.max_streams:
-            return (True, new_count)
+    def _release_stale_stream_assignment(self, redis_client, stream_id: int) -> None:
+        """Release pool counters and remove stale channel/stream assignment keys."""
+        profile_id_bytes = redis_client.get(f"stream_profile:{stream_id}")
+        if profile_id_bytes:
+            try:
+                profile_id = int(profile_id_bytes)
+                release_profile_slot(profile_id, redis_client)
+            except (ValueError, TypeError):
+                logger.debug(
+                    "Invalid profile ID for stale assignment on stream %s: %s",
+                    stream_id,
+                    profile_id_bytes,
+                )
 
-        # Over capacity — roll back the increment
-        redis_client.decr(profile_connections_key)
-        return (False, new_count - 1)
+        redis_client.delete(f"channel_stream:{self.id}")
+        redis_client.delete(f"stream_profile:{stream_id}")
 
     def get_stream(self, requester=None):
         """
         Finds an available stream for the requested channel and returns the selected stream and profile.
 
         Returns:
-            Tuple[Optional[int], Optional[int], Optional[str]]: (stream_id, profile_id, error_reason)
+            Tuple[Optional[int], Optional[int], Optional[str], bool]:
+            (stream_id, profile_id, error_reason, slot_reserved)
         """
         redis_client = RedisClient.get_client()
         error_reason = None
@@ -670,26 +681,42 @@ class Channel(models.Model):
         # Check if this channel has any streams
         if not self.streams.exists():
             error_reason = "No streams assigned to channel"
-            return None, None, error_reason
+            return None, None, error_reason, False
 
-        # Check if a stream is already active for this channel
+        # Reuse assignment only when this channel is still active in the proxy.
+        # Stale channel_stream keys after stop/disconnect skip INCR and break pool
+        # accounting, which lets a second stream reach the provider and fail validation.
         stream_id_bytes = redis_client.get(f"channel_stream:{self.id}")
         if stream_id_bytes:
             try:
                 stream_id = int(stream_id_bytes)
-                profile_id_bytes = redis_client.get(f"stream_profile:{stream_id}")
-                if profile_id_bytes:
-                    try:
-                        profile_id = int(profile_id_bytes)
-                        return stream_id, profile_id, None
-                    except (ValueError, TypeError):
-                        logger.debug(
-                            f"Invalid profile ID retrieved from Redis: {profile_id_bytes}"
-                        )
             except (ValueError, TypeError):
                 logger.debug(
                     f"Invalid stream ID retrieved from Redis: {stream_id_bytes}"
                 )
+                stream_id = None
+
+            if stream_id is not None:
+                if self._stream_assignment_is_reusable(redis_client, stream_id):
+                    profile_id_bytes = redis_client.get(f"stream_profile:{stream_id}")
+                    if profile_id_bytes:
+                        try:
+                            profile_id = int(profile_id_bytes)
+                            logger.debug(
+                                f"Channel {self.uuid}: reusing stream assignment "
+                                f"stream={stream_id} profile={profile_id}"
+                            )
+                            return stream_id, profile_id, None, False
+                        except (ValueError, TypeError):
+                            logger.debug(
+                                f"Invalid profile ID retrieved from Redis: {profile_id_bytes}"
+                            )
+                else:
+                    logger.info(
+                        f"Channel {self.uuid}: releasing stale stream assignment "
+                        f"(stream={stream_id}, proxy not active)"
+                    )
+                    self._release_stale_stream_assignment(redis_client, stream_id)
 
         # No existing active stream, attempt to assign a new one
         has_streams_but_maxed_out = False
@@ -723,7 +750,7 @@ class Channel(models.Model):
                 has_active_profiles = True
 
                 # Atomically check and reserve a slot (INCR-first pattern)
-                reserved, current_count = self._check_and_reserve_profile_slot(
+                reserved, current_count, failure_reason = reserve_profile_slot(
                     profile, redis_client
                 )
 
@@ -731,11 +758,16 @@ class Channel(models.Model):
                     # Slot reserved — assign stream to this channel
                     redis_client.set(f"channel_stream:{self.id}", stream.id)
                     redis_client.set(f"stream_profile:{stream.id}", profile.id)
+                    logger.info(
+                        f"Channel {self.uuid}: assigned stream {stream.id} "
+                        f"profile {profile.id} ({profile.name})"
+                    )
 
                     return (
                         stream.id,
                         profile.id,
                         None,
+                        True,
                     )  # Return newly assigned stream and matched profile
                 else:
                     # At capacity: try to preempt a lower-impact channel on this profile
@@ -749,12 +781,21 @@ class Channel(models.Model):
                         logger.info(f"Preempting channel {victim_channel_id} for new stream on profile {profile.id}")
                         # return self.id, profile.id, victim_channel_id
 
-                    # This profile is at max connections
                     has_streams_but_maxed_out = True
-                    logger.debug(
-                        f"Profile {profile.id} at max connections: "
-                        f"{current_count}/{profile.max_streams}"
-                    )
+                    if failure_reason == "profile_full":
+                        logger.info(
+                            f"Profile {profile.id} at max connections: "
+                            f"{current_count}/{profile.max_streams}, trying next profile"
+                        )
+                    elif failure_reason == "credential_full":
+                        logger.info(
+                            f"Profile {profile.id} shared login pool full, trying next profile"
+                        )
+                    else:
+                        logger.debug(
+                            f"Profile {profile.id} reservation failed: "
+                            f"{current_count}/{profile.max_streams}"
+                        )
 
         # No available streams - determine specific reason
         if has_streams_but_maxed_out:
@@ -764,7 +805,7 @@ class Channel(models.Model):
         else:
             error_reason = "No active profiles found for any assigned stream"
 
-        return None, None, error_reason
+        return None, None, error_reason, False
 
     def release_stream(self):
         """
@@ -808,12 +849,7 @@ class Channel(models.Model):
                     ChannelMetadataField.M3U_PROFILE,
                 )
 
-                profile_connections_key = f"profile_connections:{profile_id}"
-                current_count = int(
-                    redis_client.get(profile_connections_key) or 0
-                )
-                if current_count > 0:
-                    redis_client.decr(profile_connections_key)
+                release_profile_slot(profile_id, redis_client)
                 return True
 
             logger.debug(
@@ -858,12 +894,7 @@ class Channel(models.Model):
             f"stream {stream_id}"
         )
 
-        profile_connections_key = f"profile_connections:{profile_id}"
-
-        # Only decrement if the profile had a max_connections limit
-        current_count = int(redis_client.get(profile_connections_key) or 0)
-        if current_count > 0:
-            redis_client.decr(profile_connections_key)
+        release_profile_slot(profile_id, redis_client)
 
         # Clear metadata fields so duplicate release_stream() calls
         # (e.g. from _clean_redis_keys or ChannelService.stop_channel)
@@ -909,10 +940,31 @@ class Channel(models.Model):
         if current_profile_id == new_profile_id:
             return True
 
-        # Use pipeline for atomic profile switch to prevent counter drift
-        # if an exception occurs between DECR and INCR
-        old_profile_connections_key = f"profile_connections:{current_profile_id}"
-        new_profile_connections_key = f"profile_connections:{new_profile_id}"
+        from apps.m3u.connection_pool import (
+            move_credential_slot_on_profile_switch,
+            profile_connections_key,
+        )
+        from apps.m3u.models import M3UAccountProfile
+
+        old_profile = M3UAccountProfile.objects.select_related(
+            "m3u_account__server_group"
+        ).get(id=current_profile_id)
+        new_profile = M3UAccountProfile.objects.select_related(
+            "m3u_account__server_group"
+        ).get(id=new_profile_id)
+
+        if not move_credential_slot_on_profile_switch(
+            old_profile, new_profile, redis_client
+        ):
+            logger.warning(
+                "Shared login pool full for profile %s during stream profile switch",
+                new_profile_id,
+            )
+            return False
+
+        # Profile counters always move on switch; credential totals move only when login changes.
+        old_profile_connections_key = profile_connections_key(current_profile_id)
+        new_profile_connections_key = profile_connections_key(new_profile_id)
         old_count = int(redis_client.get(old_profile_connections_key) or 0)
 
         pipe = redis_client.pipeline()

@@ -163,12 +163,24 @@ const ChannelForm = ({ channel: channelProp = null, isOpen, onClose }) => {
     }
 
     setAutoMatchLoading(true);
+    let accepted = false;
     try {
       const response = await matchChannelEpg(channel);
 
+      if (response?.accepted) {
+        accepted = true;
+        showNotification({
+          title: 'Matching in Progress',
+          message:
+            response.message ||
+            'EPG auto-match is running. Results will appear when complete.',
+          color: 'blue',
+        });
+        return;
+      }
+
       if (response.matched) {
-        // Update the form with the new EPG data
-        if (response.channel && response.channel.epg_data_id) {
+        if (response.channel?.epg_data_id) {
           setValue('epg_data_id', response.channel.epg_data_id);
         }
 
@@ -192,7 +204,9 @@ const ChannelForm = ({ channel: channelProp = null, isOpen, onClose }) => {
       });
       console.error('Auto-match error:', error);
     } finally {
-      setAutoMatchLoading(false);
+      if (!accepted) {
+        setAutoMatchLoading(false);
+      }
     }
   };
 
@@ -353,6 +367,48 @@ const ChannelForm = ({ channel: channelProp = null, isOpen, onClose }) => {
     defaultValues,
     resolver: yupResolver(validationSchema),
   });
+
+  useEffect(() => {
+    const onMatchResult = (event) => {
+      const data = event.detail;
+      if (!channel?.id || String(data.channel_id) !== String(channel.id)) {
+        return;
+      }
+
+      if (data.matched && data.channel?.epg_data_id) {
+        setValue('epg_data_id', data.channel.epg_data_id);
+      }
+
+      showNotification({
+        title: data.matched ? 'Success' : 'No Match Found',
+        message: data.message,
+        color: data.matched ? 'green' : 'orange',
+      });
+      setAutoMatchLoading(false);
+    };
+
+    window.addEventListener('single-channel-epg-match', onMatchResult);
+    return () =>
+      window.removeEventListener('single-channel-epg-match', onMatchResult);
+  }, [channel?.id, setValue]);
+
+  useEffect(() => {
+    if (!autoMatchLoading) {
+      return undefined;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      setAutoMatchLoading(false);
+      showNotification({
+        title: 'Matching Timed Out',
+        message:
+          'EPG auto-match is taking longer than expected. Check back shortly or try again.',
+        color: 'orange',
+      });
+    }, 180_000);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [autoMatchLoading]);
 
   const clearOverrides = async () => {
     if (!channel) return;

@@ -6,6 +6,7 @@ import useEPGsStore from './epgs';
 import useStreamProfilesStore from './streamProfiles';
 import useOutputProfilesStore from './outputProfiles';
 import useUserAgentsStore from './userAgents';
+import useServerGroupsStore from './serverGroups';
 import useUsersStore from './users';
 import API from '../api';
 import { USER_LEVELS } from '../constants';
@@ -124,6 +125,7 @@ const useAuthStore = create((set, get) => ({
         useStreamProfilesStore.getState().fetchProfiles(),
         useOutputProfilesStore.getState().fetchProfiles(),
         useUserAgentsStore.getState().fetchUserAgents(),
+        useServerGroupsStore.getState().fetchServerGroups(),
         useChannelsStore.getState().fetchChannelIds(),
       ]);
 

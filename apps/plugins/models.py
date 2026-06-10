@@ -36,9 +36,7 @@ class PluginConfig(models.Model):
         return f"{self.name} ({self.key})"
 
 
-OFFICIAL_REPO_URL = (
-    "https://raw.githubusercontent.com/Dispatcharr/Plugins/releases/manifest.json"
-)
+OFFICIAL_REPO_URL = "https://dispatcharr.github.io/Plugins/manifest.json"
 
 
 class PluginRepo(models.Model):
