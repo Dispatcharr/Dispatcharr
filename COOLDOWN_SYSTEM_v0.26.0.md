@@ -341,3 +341,42 @@ A: Cooldown funktioniert auch für Stream Preview! Gleiche Logik, nur dass Profi
 ✅ **Konfigurierbar** (0-1440 Minuten)  
 
 **Nächster Schritt:** Docker Image neu bauen und testen!
+
+
+---
+
+## ⚠️ WICHTIGE BUG-FIXES (nachträglich entdeckt)
+
+### KRITISCH: StreamProfile.build_command() - Transcode-Streams komplett kaputt
+
+**Datei:** `core/models.py`
+
+**Problem:** `manager.py` rief `build_command(url, user_agent, proxy)` mit 3 Argumenten auf. Die Methode akzeptierte aber nur 2. Alle Transcode-Streams (ffmpeg/vlc/streamlink) schlugen sofort fehl.
+
+**Symptom in Logs:**
+```
+ERROR live_proxy.manager Error establishing transcode connection:
+  StreamProfile.build_command() takes 3 positional arguments but 4 were given
+```
+
+**Folge:** Das Failover-System raste in Sekundenschnelle durch alle 66+ Stream+Profil-Kombinationen ohne je zu streamen.
+
+**Fix:** `proxy=None` als optionalen Parameter + `{proxy}` Platzhalter + automatische ffmpeg `-http_proxy` Injection.
+
+---
+
+### Stream-Preview UUID-Fehler
+
+**Datei:** `core/utils.py`
+
+**Problem:** Stream-Preview-Channels nutzen `stream_hash` als channel_id (kein UUID-Format). `log_system_event()` versuchte diesen Hash in ein UUID-Datenbankfeld zu schreiben.
+
+**Symptom in Logs:**
+```
+ERROR core.utils Failed to log system event client_connect:
+  ['"fd387fea67ce..." is not a valid UUID.']
+```
+
+**Folge:** Harmloser aber lauter Fehler-Log bei jedem Stream-Preview-Event.
+
+**Fix:** UUID-Validierung in `log_system_event()` - ungültige UUIDs werden als `details['stream_hash']` gespeichert statt in `channel_id`.

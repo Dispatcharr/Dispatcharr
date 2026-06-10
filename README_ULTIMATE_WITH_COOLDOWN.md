@@ -9,6 +9,8 @@ Dieser Patch enthält **ALLE Fixes und Features** für Dispatcharr v0.26.0:
 3. ✅ **Stream Preview Profile Failover**
 4. ✅ **v0.25.1 Enhancements** (HTTP Proxy, Extended Timeouts, etc.)
 5. ✅ **Stream Cooldown System** (verhindert Endlosschleifen) **[NEU!]**
+6. ✅ **CRITICAL: StreamProfile.build_command() Proxy-Fix** (Transcode-Streams kaputt) **[KRITISCH!]**
+7. ✅ **Stream-Preview UUID-Fix** (log_system_event Fehler)
 
 ---
 
@@ -129,6 +131,10 @@ Stream 2 + Profile 3 → wird probiert
 17. `apps/proxy/live_proxy/redis_keys.py` - Cooldown Redis key
 18. `apps/proxy/live_proxy/input/manager.py` - Cooldown logic
 
+**⚠️ KRITISCHE BUG-FIXES:**
+19. `core/models.py` - StreamProfile.build_command() Proxy-Fix (Transcode-Streams)
+20. `core/utils.py` - log_system_event() UUID-Validierung (Stream-Preview)
+
 ### Frontend (8 Dateien)
 
 **HTTP Proxy UI:**
@@ -176,6 +182,68 @@ Stream 2 + Profile 3 → wird probiert
 - Per Default deaktiviert
 - UI: Checkbox + NumberInput (0-1440 Minuten)
 - Verhindert Endlosschleifen via `tried_combinations.clear()`
+
+### 6. ⚠️ KRITISCHER BUG-FIX: StreamProfile.build_command() Proxy-Fix
+
+**Problem:** `manager.py` rief `build_command(url, user_agent, proxy)` mit 3 Argumenten auf, aber `StreamProfile.build_command()` in `core/models.py` akzeptierte nur 2 (`url, user_agent`).
+
+**Auswirkung:** **ALLE Transcode-Streams** (ffmpeg/vlc/streamlink Profile) schlugen sofort fehl mit:
+```
+TypeError: StreamProfile.build_command() takes 3 positional arguments but 4 were given
+```
+Das System raste durch alle Failover-Kombinationen ohne je zu streamen.
+
+**Fix in `core/models.py`:**
+- `proxy=None` als optionalen Parameter hinzugefügt
+- `{proxy}` Platzhalter in Replacements unterstützt
+- Automatische `-http_proxy` Injection für ffmpeg wenn Proxy konfiguriert
+
+```python
+# Vorher (KAPUTT):
+def build_command(self, stream_url, user_agent):
+
+# Nachher (FIXED):
+def build_command(self, stream_url, user_agent, proxy=None):
+    replacements = {
+        "{streamUrl}": stream_url,
+        "{userAgent}": user_agent,
+        "{proxy}": proxy or "",
+    }
+    # ...
+    # Automatische ffmpeg -http_proxy Injection wenn kein {proxy} Platzhalter
+    if proxy and self.command.lower() in ('ffmpeg',) and '{proxy}' not in self.parameters:
+        i_index = cmd.index('-i')
+        cmd.insert(i_index, proxy)
+        cmd.insert(i_index, '-http_proxy')
+```
+
+**Betroffene Dateien:**
+- `core/models.py` - StreamProfile.build_command() erweitert
+
+### 7. Stream-Preview UUID-Fix
+
+**Problem:** Stream-Preview-Channels nutzen `stream_hash` als channel_id (kein UUID-Format). `log_system_event()` versuchte diesen Hash in ein UUID-Datenbankfeld zu schreiben → Fehler in den Logs.
+
+**Auswirkung:** Harmloser Error-Log bei jedem Stream-Preview-Event:
+```
+ERROR core.utils Failed to log system event client_connect: ['"fd387fea..." is not a valid UUID.']
+```
+
+**Fix in `core/utils.py`:**
+```python
+# UUID-Validierung vor dem Speichern
+safe_channel_id = None
+if channel_id is not None:
+    try:
+        uuid_module.UUID(str(channel_id))
+        safe_channel_id = channel_id
+    except (ValueError, AttributeError):
+        # stream_hash → als Detail speichern statt als channel_id
+        details['stream_hash'] = str(channel_id)
+```
+
+**Betroffene Dateien:**
+- `core/utils.py` - log_system_event() UUID-Validierung
 
 ---
 
@@ -394,6 +462,8 @@ redis-cli --scan --pattern "live:channel:*:cooldown:*" | xargs redis-cli del
 ✅ **Stream Preview** - Failover auch für direkten Stream-Zugriff  
 ✅ **v0.25.1 Features** - HTTP Proxy, Timeouts, etc.  
 ✅ **Cooldown System** - Verhindert Endlosschleifen  
+🔴 **KRITISCH: build_command() Fix** - Transcode-Streams (ffmpeg/vlc) funktionierten gar nicht!  
+✅ **UUID-Fix** - Stream-Preview log_system_event Fehler behoben  
 
 **Failover-Reihenfolge:**
 1. Erst alle Profile von Stream 1
