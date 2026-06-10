@@ -26,6 +26,10 @@ def backfill_stream_catchup(apps, schema_editor):
               AND custom_properties != 'null'::jsonb
               AND (
                   custom_properties->>'tv_archive' = '1'
+                  -- JSON booleans extract as lowercase 'true' via ->>; the
+                  -- 'True' spelling covers Python-str values stored by
+                  -- older import code.
+                  OR custom_properties->>'tv_archive' = 'true'
                   OR custom_properties->>'tv_archive' = 'True'
               )
         """)

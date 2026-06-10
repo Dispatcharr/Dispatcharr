@@ -65,9 +65,15 @@ def attempt_stream_termination(user_id, requesting_client_id, active_connections
             elif t['type'] == 'timeshift':
                 # Timeshift uses the same Redis key pattern as live
                 # (RedisKeys.client_stop).  The stream_generator in
-                # apps/timeshift/views.py checks this key every 100 chunks.
+                # apps/timeshift/views.py polls this key on its 5-second
+                # heartbeat cadence.
                 redis_client = RedisClient.get_client()
                 if not redis_client:
+                    # Without Redis the stop key cannot be set, so the old
+                    # stream cannot be terminated.  Failing the whole attempt
+                    # is the safe outcome: the caller then denies the NEW
+                    # stream instead of letting the user exceed the provider's
+                    # connection limit (which escalates to an IP ban).
                     return False
                 stop_key = RedisKeys.client_stop(t['media_id'], t['client_id'])
                 redis_client.setex(stop_key, 60, "true")

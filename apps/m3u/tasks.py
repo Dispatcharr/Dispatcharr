@@ -1845,7 +1845,9 @@ def rollup_channel_catchup_fields(account_id):
                 SELECT
                     cs.channel_id,
                     bool_or(s.is_catchup)  AS any_catchup,
-                    MAX(s.catchup_days)    AS max_days
+                    -- Only catch-up streams contribute their archive depth:
+                    -- a non-catchup stream may carry a stale catchup_days value.
+                    MAX(s.catchup_days) FILTER (WHERE s.is_catchup) AS max_days
                 FROM dispatcharr_channels_channelstream cs
                 JOIN dispatcharr_channels_stream s ON s.id = cs.stream_id
                 WHERE cs.channel_id IN (

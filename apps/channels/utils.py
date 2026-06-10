@@ -41,7 +41,6 @@ def get_channel_catchup_info(channel):
     return {
         "stream": stream,
         "props": stream.custom_properties or {},
-        "tv_archive_duration": channel.catchup_days or 7,
     }
 
 

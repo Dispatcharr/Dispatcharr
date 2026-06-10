@@ -382,16 +382,19 @@ def update_channel_catchup_fields(sender, instance, **kwargs):
 
     Covers the UI/API path (admin adds/removes a stream from a channel).
     The bulk-import path bypasses signals and uses explicit SQL instead —
-    see apps/m3u/tasks.py after ChannelStream.objects.bulk_create().
+    see rollup_channel_catchup_fields() in apps/m3u/tasks.py. Same semantics
+    as that rollup: is_catchup = any catch-up stream, catchup_days = MAX of
+    the catch-up streams' archive depth.
     """
+    from django.db.models import Max
+
     channel = instance.channel
-    best = (
+    max_days = (
         channel.streams
         .filter(is_catchup=True)
-        .order_by("channelstream__order")
-        .first()
+        .aggregate(max_days=Max("catchup_days"))["max_days"]
     )
     Channel.objects.filter(pk=channel.pk).update(
-        is_catchup=best is not None,
-        catchup_days=best.catchup_days if best else 0,
+        is_catchup=max_days is not None,
+        catchup_days=max_days or 0,
     )
