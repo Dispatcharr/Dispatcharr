@@ -62,14 +62,14 @@ const NavItem = ({ item, isActive, collapsed }) => {
         to={item.path}
         className={`navlink${isActive ? ' navlink-active' : ''}${collapsed ? ' navlink-collapsed' : ''}`}
       >
-        {Icon && <Icon size={20} />}
+        {Icon && <Icon size={18} />}
         {!collapsed && (
-          <Text size="sm" style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', flex: 1, minWidth: 0 }}>
+          <Text size="xs" style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', flex: 1, minWidth: 0 }}>
             {item.label}
           </Text>
         )}
         {!collapsed && item.badge && (
-          <Text size="sm" style={{ color: '#D4D4D8', whiteSpace: 'nowrap' }}>
+          <Text size="xs" style={{ color: '#D4D4D8', whiteSpace: 'nowrap' }}>
             {item.badge}
           </Text>
         )}
@@ -105,10 +105,10 @@ function NavGroup({ label, paths, location, collapsed, onSettingsClick, settings
                   className={`navlink${isActive ? ' navlink-active' : ''}${collapsed ? ' navlink-collapsed' : ''}`}
                   style={{ width: '100%' }}
                 >
-                  {Icon && <Icon size={20} />}
+                  {Icon && <Icon size={18} />}
                   {!collapsed && (
                     <>
-                      <Text size="sm" style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', flex: 1, minWidth: 0 }}>
+                      <Text size="xs" style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', flex: 1, minWidth: 0 }}>
                         {child.label}
                       </Text>
                       <ChevronRight size={14} style={{ flexShrink: 0, opacity: 0.5 }} />
@@ -135,9 +135,9 @@ const BackButton = ({ label, collapsed, onClick }) => (
       className={`navlink${collapsed ? ' navlink-collapsed' : ''}`}
       style={{ width: '100%' }}
     >
-      <ArrowLeft size={20} />
+      <ArrowLeft size={18} />
       {!collapsed && (
-        <Text size="sm" fw={500} style={{ whiteSpace: 'nowrap' }}>
+        <Text size="xs" fw={500} style={{ whiteSpace: 'nowrap' }}>
           {label}
         </Text>
       )}
@@ -242,7 +242,7 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
                   className={`navlink${isActive ? ' navlink-active' : ''}${collapsed ? ' navlink-collapsed' : ''}`}
                   style={{ width: '100%' }}
                 >
-                  {Icon && <Icon size={20} />}
+                  {Icon && <Icon size={18} />}
                   {!collapsed && (
                     <>
                       <Text style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', flex: 1, minWidth: 0 }}>
@@ -291,29 +291,31 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
                     {group.label}
                   </Text>
                 )}
-                {group.sections.map((section) => {
-                  const Icon = section.icon;
-                  return (
-                    <Tooltip
-                      key={section.id}
-                      label={section.label}
-                      position="right"
-                      withArrow
-                      disabled={!collapsed}
-                    >
-                      <UnstyledButton
-                        onClick={() => navigate(`/settings#${section.id}`, { replace: true })}
-                        className={`navlink${activeSettingsId === section.id ? ' navlink-active' : ''}${collapsed ? ' navlink-collapsed' : ''}`}
-                        style={{ width: '100%' }}
+                <Stack gap={4}>
+                  {group.sections.map((section) => {
+                    const Icon = section.icon;
+                    return (
+                      <Tooltip
+                        key={section.id}
+                        label={section.label}
+                        position="right"
+                        withArrow
+                        disabled={!collapsed}
                       >
-                        <Icon size={20} />
-                        {!collapsed && (
-                          <Text size="sm" style={{ whiteSpace: 'nowrap' }}>{section.label}</Text>
-                        )}
-                      </UnstyledButton>
-                    </Tooltip>
-                  );
-                })}
+                        <UnstyledButton
+                          onClick={() => navigate(`/settings#${section.id}`, { replace: true })}
+                          className={`navlink${activeSettingsId === section.id ? ' navlink-active' : ''}${collapsed ? ' navlink-collapsed' : ''}`}
+                          style={{ width: '100%' }}
+                        >
+                          <Icon size={18} />
+                          {!collapsed && (
+                            <Text size="xs" style={{ whiteSpace: 'nowrap' }}>{section.label}</Text>
+                          )}
+                        </UnstyledButton>
+                      </Tooltip>
+                    );
+                  })}
+                </Stack>
               </Box>
             ))}
         </Stack>
@@ -387,7 +389,7 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
               environment.ip_lookup_enabled !== false &&
               environment.ip_lookup_pending && (
                 <Box>
-                  <Text size="sm" fw={500} mb={4}>Public IP</Text>
+                  <Text size="xs" fw={500} mb={4}>Public IP</Text>
                   <Skeleton height={36} radius="sm" />
                 </Box>
               )}
@@ -398,7 +400,7 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
               environment.public_ip &&
               !environment.public_ip.startsWith('Error') && (
                 <Box onClick={() => setIpRevealed((v) => !v)} style={{ cursor: 'pointer' }}>
-                  <Text size="sm" fw={500} mb={4}>Public IP</Text>
+                  <Text size="xs" fw={500} mb={4}>Public IP</Text>
                   <Box
                     style={{
                       display: 'flex',
@@ -454,7 +456,7 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
                     {authUser.first_name || authUser.username}
                   </UnstyledButton>
                 </Group>
-                <ActionIcon variant="transparent" color="white" size="sm">
+                <ActionIcon variant="transparent" color="white" size="xs">
                   <LogOut onClick={logout} />
                 </ActionIcon>
               </Group>
