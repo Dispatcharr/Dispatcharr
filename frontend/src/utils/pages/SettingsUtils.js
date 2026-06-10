@@ -70,12 +70,7 @@ export const saveChangedSettings = async (settings, changedSettings) => {
     'auto_import_mapped_files',
     'enable_ip_lookup',
   ];
-  const timeshiftFields = [
-    'timeshift_default_timezone',
-    'timeshift_default_language',
-    'xmltv_prev_days_override',
-    'timeshift_debug_logging',
-  ];
+  const timeshiftFields = ['xmltv_prev_days_override'];
 
   for (const formKey in changedSettings) {
     let value = changedSettings[formKey];
@@ -142,22 +137,11 @@ export const saveChangedSettings = async (settings, changedSettings) => {
       'comskip_enabled',
       'schedule_enabled',
       'auto_import_mapped_files',
-      'timeshift_debug_logging',
       'enable_ip_lookup',
     ];
     if (booleanFields.includes(formKey) && value != null) {
       value = typeof value === 'boolean' ? value : Boolean(value);
     }
-
-    // Map UI form keys (with timeshift_ prefix) to the storage subkeys used in
-    // CoreSettings.value. The prefix lets us share form keys across groups
-    // without ambiguity but the JSON storage uses short keys.
-    const timeshiftFormKeyToStorage = {
-      timeshift_default_timezone: 'default_timezone',
-      timeshift_default_language: 'default_language',
-      xmltv_prev_days_override: 'xmltv_prev_days_override',
-      timeshift_debug_logging: 'debug_logging',
-    };
 
     // Route to appropriate group
     if (streamFields.includes(formKey)) {
@@ -171,8 +155,7 @@ export const saveChangedSettings = async (settings, changedSettings) => {
     } else if (systemFields.includes(formKey)) {
       groupedChanges.system_settings[formKey] = value;
     } else if (timeshiftFields.includes(formKey)) {
-      const storageKey = timeshiftFormKeyToStorage[formKey];
-      groupedChanges.timeshift_settings[storageKey] = value;
+      groupedChanges.timeshift_settings[formKey] = value;
     }
   }
 
@@ -388,26 +371,16 @@ export const parseSettings = (settings) => {
         : true;
   }
 
-  // Timeshift settings - direct mapping with timeshift_ prefixed form keys
+  // Timeshift settings - direct key mapping.
+  // The only key is the XMLTV lookback override: the XC API surface is strictly
+  // UTC (no timezone setting) and verbose logging follows the standard logger level.
   const timeshiftSettings = settings['timeshift_settings']?.value;
-  parsed.timeshift_default_timezone =
-    timeshiftSettings && timeshiftSettings.default_timezone
-      ? String(timeshiftSettings.default_timezone)
-      : 'UTC';
-  parsed.timeshift_default_language =
-    timeshiftSettings && timeshiftSettings.default_language
-      ? String(timeshiftSettings.default_language)
-      : 'en';
   parsed.xmltv_prev_days_override =
     timeshiftSettings && timeshiftSettings.xmltv_prev_days_override != null
       ? typeof timeshiftSettings.xmltv_prev_days_override === 'number'
         ? timeshiftSettings.xmltv_prev_days_override
         : parseInt(timeshiftSettings.xmltv_prev_days_override, 10) || 0
       : 0;
-  parsed.timeshift_debug_logging =
-    timeshiftSettings && timeshiftSettings.debug_logging != null
-      ? Boolean(timeshiftSettings.debug_logging)
-      : false;
 
   // Proxy and network access are already grouped objects
   if (settings['proxy_settings']?.value) {

@@ -197,11 +197,13 @@ EPG_SETTINGS_KEY = "epg_settings"
 USER_LIMITS_SETTINGS_KEY = "user_limit_settings"
 TIMESHIFT_SETTINGS_KEY = "timeshift_settings"
 
+# The XC API surface is strictly UTC, so there is no timezone setting here:
+# server_info.timezone, the EPG start/end strings and time_now are all UTC, and
+# any provider-local catch-up conversion happens at proxy time against the
+# serving provider's own server_info.timezone (apps/timeshift/views).
+# Verbose timeshift logging follows the standard logger DEBUG level, not a toggle.
 TIMESHIFT_DEFAULTS = {
-    "default_timezone": "UTC",
-    "default_language": "en",
     "xmltv_prev_days_override": 0,
-    "debug_logging": False,
 }
 
 
@@ -448,18 +450,18 @@ class CoreSettings(models.Model):
     # Timeshift Settings (XC catch-up)
     @classmethod
     def get_timeshift_settings(cls):
-        """Return all timeshift-related settings, falling back to neutral defaults."""
+        """Return all timeshift-related settings, falling back to neutral defaults.
+
+        Keys not in TIMESHIFT_DEFAULTS are ignored, so stale stored values from
+        removed settings are filtered out automatically. Writes go through the
+        generic settings API (same path as every other settings group).
+        """
         stored = cls._get_group(TIMESHIFT_SETTINGS_KEY, {}) or {}
         merged = dict(TIMESHIFT_DEFAULTS)
         for key, value in stored.items():
             if key in merged and value is not None:
                 merged[key] = value
         return merged
-
-    @classmethod
-    def update_timeshift_settings(cls, updates):
-        clean = {k: v for k, v in (updates or {}).items() if k in TIMESHIFT_DEFAULTS}
-        return cls._update_group(TIMESHIFT_SETTINGS_KEY, "Timeshift Settings", clean)
 
 
 class SystemEvent(models.Model):

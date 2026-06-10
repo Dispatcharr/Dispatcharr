@@ -12,11 +12,9 @@ from dispatcharr.utils import network_access_allowed
 from django.utils import timezone as django_timezone
 from django.shortcuts import get_object_or_404
 from datetime import datetime, timedelta, timezone as dt_timezone
-from zoneinfo import ZoneInfo
 import html
 import time
-from tzlocal import get_localzone
-from urllib.parse import urlencode, urlparse
+from urllib.parse import urlencode
 import base64
 import logging
 from django.db.models.functions import Lower
@@ -2018,24 +2016,22 @@ def _build_xc_server_info(request, hostname, port):
     The timezone, time_now, and xc_get_epg start/end fields form a "timezone
     triple" that MUST all use the same zone — XC clients (iPlayTV, TiviMate)
     use server_info.timezone to interpret start/end strings and calculate seek
-    offsets into catch-up archives. A mismatch makes the wrong programme play.
-    Learned from plugin v1.1.4 → v1.2.6 (6 iterations of timezone bugs).
+    offsets into catch-up archives. We keep the whole triple in **UTC**: the EPG
+    surface stays timezone-neutral and any provider-local conversion happens at
+    catch-up request time, against the serving provider's own zone (see
+    apps/timeshift/views.timeshift_proxy). This is what keeps multi-provider
+    setups consistent. Learned from plugin v1.1.4 → v1.2.6 (the earlier
+    per-instance timezone shifting caused 6 iterations of wrong-programme bugs).
     """
-    tz_name = CoreSettings.get_timeshift_settings().get("default_timezone", "UTC")
-    try:
-        tz = ZoneInfo(tz_name)
-    except (KeyError, Exception):
-        # Invalid timezone in settings — fall back to UTC so XC clients
-        # can still connect instead of getting a 500 error.
-        tz = ZoneInfo("UTC")
-        tz_name = "UTC"
+    # datetime.timezone.utc, not ZoneInfo("UTC"): the latter can read a mis-set
+    # host /etc/timezone in some Docker setups.
     return {
         "url": hostname,
         "server_protocol": request.scheme,
         "port": port,
-        "timezone": tz_name,
+        "timezone": "UTC",
         "timestamp_now": int(time.time()),
-        "time_now": datetime.now(tz).strftime("%Y-%m-%d %H:%M:%S"),
+        "time_now": datetime.now(dt_timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
         "process": True,
     }
 
@@ -2198,72 +2194,10 @@ def xc_xmltv(request):
         )
         return JsonResponse({'error': 'Unauthorized'}, status=401)
 
-    response = generate_epg(request, None, user)
-    return _convert_xmltv_to_local_timezone(response)
-
-
-# Pre-compiled pattern for XMLTV timestamp attributes: `20251128143000 +0000`.
-_XMLTV_TS_PATTERN = regex.compile(rb'(\d{14}) ([+-]\d{4})')
-
-
-def _convert_xmltv_to_local_timezone(response):
-    """Rewrite UTC timestamps in an XMLTV streaming response to the configured
-    catch-up local time zone.
-
-    Catch-up clients such as TiviMate display the wall-clock part of XMLTV
-    timestamps verbatim and ignore the trailing offset, so a programme
-    emitted as `start="20260512170000 +0000"` (correct UTC) ends up shown
-    as 17:00 even when the user is in Brussels and expects 19:00. Rewriting
-    the same instant as `start="20260512190000 +0200"` keeps the wall-clock
-    in the EPG aligned with the user's perception while the timestamp still
-    points at the same moment.
-
-    The conversion runs only on the `/xmltv.php` catch-up endpoint — the
-    plain `/output/...epg.xml` consumers keep the UTC representation.
-    """
-    timeshift_settings = CoreSettings.get_timeshift_settings()
-    tz_name = timeshift_settings.get('default_timezone', 'UTC')
-    if tz_name == 'UTC':
-        return response  # No rewrite needed — timestamps are already UTC
-    try:
-        local_tz = ZoneInfo(tz_name)
-    except Exception:
-        return response
-
-    # Use the builtin UTC, not ZoneInfo('UTC'), because the latter can pick
-    # up the host's mis-set /etc/timezone in some Docker setups.
-    # dt_timezone imported at module level
-    utc = dt_timezone.utc
-
-    def _convert(match):
-        ts_bytes, _zone = match.group(1), match.group(2)
-        try:
-            ts_str = ts_bytes.decode('ascii')
-            utc_time = datetime.strptime(ts_str, '%Y%m%d%H%M%S').replace(tzinfo=utc)
-            local_time = utc_time.astimezone(local_tz)
-            return local_time.strftime('%Y%m%d%H%M%S %z').encode('ascii')
-        except Exception:
-            return match.group(0)
-
-    # generate_epg may return either StreamingHttpResponse (large EPGs) or a
-    # plain HttpResponse (small EPGs or some error paths) — handle both.
-    if hasattr(response, 'streaming_content'):
-        source = response.streaming_content
-    else:
-        body = response.content
-        if isinstance(body, str):
-            body = body.encode('utf-8')
-        source = iter([body])
-
-    def _rewrite():
-        for chunk in source:
-            if isinstance(chunk, str):
-                chunk = chunk.encode('utf-8')
-            if b'start="' in chunk or b'stop="' in chunk:
-                chunk = _XMLTV_TS_PATTERN.sub(_convert, chunk)
-            yield chunk
-
-    return StreamingHttpResponse(_rewrite(), content_type=response.get('Content-Type', 'application/xml'))
+    # XMLTV is emitted in UTC — the XC API surface is strictly UTC. Catch-up
+    # clients build their seek from the UTC wall-clock; the timeshift proxy
+    # applies any provider-local offset at request time. No per-instance rewrite.
+    return generate_epg(request, None, user)
 
 
 def xc_get_live_categories(user):
@@ -2587,9 +2521,10 @@ def xc_get_epg(request, user, short=False):
     # prev_days and expect the response to already contain archived entries
     # marked with has_archive=1 — they use that list to populate the catch-up
     # programme menu.
-    # Use denormalized catch-up fields (zero DB queries).
+    # Use denormalized catch-up fields (zero DB queries). Clamp to the same
+    # 30-day ceiling applied to explicit prev_days values.
     _channel_is_catchup = getattr(channel, "is_catchup", False)
-    _channel_catchup_days = getattr(channel, "catchup_days", 0)
+    _channel_catchup_days = min(getattr(channel, "catchup_days", 0) or 0, 30)
     if _channel_is_catchup and prev_days == 0:
         prev_days = _channel_catchup_days
 
@@ -2644,19 +2579,16 @@ def xc_get_epg(request, user, short=False):
     else:
         archive_window = None
 
-    # start/end must be in the SAME timezone reported by server_info.timezone.
-    # XC clients display these strings verbatim AND use server_info.timezone
-    # to calculate seek offsets into catch-up archives. If these don't match,
-    # the wrong programme plays. Learned from plugin v1.1.4 → v1.2.6 (6
-    # iterations of timezone bugs all converged on this rule).
-    # start_timestamp/stop_timestamp (epoch) stay in UTC — they're inherently
-    # timezone-agnostic and clients use them for their own conversions.
-    _ts_settings = CoreSettings.get_timeshift_settings()
-    _epg_tz_name = _ts_settings.get("default_timezone", "UTC")
-    try:
-        _epg_tz = ZoneInfo(_epg_tz_name)
-    except Exception:
-        _epg_tz = None
+    # start/end are emitted in UTC — the whole XC API surface is strictly UTC,
+    # so the "timezone triple" (server_info.timezone, these start/end strings,
+    # and time_now) is consistently UTC. XC clients display these strings and
+    # use server_info.timezone (also UTC) to build the catch-up URL; the proxy
+    # then converts that UTC instant to the SERVING provider's own local zone at
+    # request time (see apps/timeshift/views.timeshift_proxy). Keeping the EPG
+    # UTC is what makes multi-provider setups consistent — we cannot know at EPG
+    # time which provider will serve a given catch-up.
+    # start_timestamp/stop_timestamp (epoch) are inherently timezone-agnostic.
+    _epg_utc = dt_timezone.utc
 
     for program in programs:
         title = program['title'] if isinstance(program, dict) else program.title
@@ -2682,8 +2614,8 @@ def xc_get_epg(request, user, short=False):
             "epg_id": epg_id,
             "title": base64.b64encode((title or "").encode()).decode(),
             "lang": "",
-            "start": start.astimezone(_epg_tz).strftime("%Y-%m-%d %H:%M:%S") if _epg_tz else start.strftime("%Y-%m-%d %H:%M:%S"),
-            "end": end.astimezone(_epg_tz).strftime("%Y-%m-%d %H:%M:%S") if _epg_tz else end.strftime("%Y-%m-%d %H:%M:%S"),
+            "start": start.astimezone(_epg_utc).strftime("%Y-%m-%d %H:%M:%S"),
+            "end": end.astimezone(_epg_utc).strftime("%Y-%m-%d %H:%M:%S"),
             "description": base64.b64encode((description or "").encode()).decode(),
             "channel_id": str(channel_num_int),
             "start_timestamp": str(int(start.timestamp())),

@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 from django.test import RequestFactory, TestCase
 
 from apps.timeshift import views
-from apps.proxy.live_proxy.input.http_streamer import find_ts_sync as _find_ts_sync, _TS_PACKET_SIZE
+from apps.proxy.live_proxy.input.http_streamer import find_ts_sync as _find_ts_sync
 
 
 class FindTsSyncTests(TestCase):
@@ -98,6 +98,16 @@ class StreamFromProviderStatusMappingTests(TestCase):
         self.assertEqual(mocked_open.call_count, 1)
 
     @patch.object(views, "_open_upstream")
+    def test_upstream_302_short_circuits_loop(self, mocked_open):
+        # Any 3xx is decisive: for XC providers a 302 is the first sign of
+        # an IP ban, so the cascade must STOP hammering immediately instead
+        # of retrying other URL shapes (which escalates the ban).
+        mocked_open.return_value = _fake_upstream(302)
+        response = views._stream_from_provider(**self.kwargs)
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(mocked_open.call_count, 1)
+
+    @patch.object(views, "_open_upstream")
     def test_upstream_500_continues_to_next_candidate(self, mocked_open):
         # A 5xx is format-specific on many XC servers (PHP fatal with
         # display_errors off turns an "Undefined array key" warning into a
@@ -166,6 +176,12 @@ class StreamFromProviderStatusMappingTests(TestCase):
         """Once a candidate succeeds for an account, the next request reorders
         the list so the cached winner is tried first — saving cascade
         overhead on fast-forward."""
+        # The format cache lives in django.core.cache (Redis-backed), which
+        # persists across test runs — clear this account's key so the first
+        # request starts from the unordered candidate list.
+        from django.core.cache import cache as django_cache
+        django_cache.delete(views._FORMAT_CACHE_KEY.format(999))
+
         # First request: candidate index 1 wins after index 0 returns 404.
         mocked_open.side_effect = [
             _fake_upstream(404),
@@ -212,3 +228,93 @@ class StreamFromProviderStatusMappingTests(TestCase):
         self.assertEqual(response.status_code, 200)
         # PHP response was rejected, second candidate accepted
         self.assertEqual(mocked_open.call_count, 2)
+
+
+class RedactUrlTests(TestCase):
+    """`_redact_url` is the guard that keeps XC credentials out of logs —
+    both URL forms carry them (query params in format A, path segments in
+    format B)."""
+
+    def test_redacts_query_credentials(self):
+        url = "http://example.test/streaming/timeshift.php?username=u&password=p&stream=1"
+        self.assertEqual(views._redact_url(url), "http://example.test/...")
+
+    def test_redacts_path_credentials(self):
+        url = "http://example.test/timeshift/user/pass/60/2026-05-12:17-00/1.ts"
+        self.assertEqual(views._redact_url(url), "http://example.test/...")
+
+    def test_redacts_userinfo_credentials(self):
+        url = "http://user:pass@example.test/timeshift/1.ts"
+        self.assertEqual(views._redact_url(url), "http://example.test/...")
+
+    def test_passes_through_non_urls(self):
+        self.assertEqual(views._redact_url("not a url"), "not a url")
+        self.assertIsNone(views._redact_url(None))
+
+
+class TimeshiftProxyTimestampWiringTests(TestCase):
+    """`timeshift_proxy` must convert the client's UTC timestamp to the
+    serving provider's zone for the upstream URL, while keeping the ORIGINAL
+    UTC timestamp for the EPG duration lookup — the only timezone conversion
+    in the chain."""
+
+    def setUp(self):
+        self.factory = RequestFactory()
+
+    def _make_catchup(self, provider_tz):
+        profile = MagicMock()
+        profile.id = 31
+        profile.custom_properties = {"server_info": {"timezone": provider_tz}}
+        m3u_account = MagicMock()
+        m3u_account.account_type = "XC"
+        m3u_account.id = 9
+        m3u_account.profiles.filter.return_value.first.return_value = profile
+        stream = MagicMock()
+        stream.m3u_account = m3u_account
+        return {"stream": stream, "props": {"stream_id": "22372"}}
+
+    def _call(self, timestamp, provider_tz="Europe/Brussels"):
+        request = self.factory.get(f"/timeshift/u/p/8/{timestamp}/8.ts")
+        sentinel = MagicMock()
+        with patch.object(views, "_authenticate_user", return_value=MagicMock()), \
+             patch.object(views, "Channel") as channel_cls, \
+             patch.object(views, "_user_can_access_channel", return_value=True), \
+             patch.object(views, "get_channel_catchup_info",
+                          return_value=self._make_catchup(provider_tz)), \
+             patch.object(views, "get_programme_duration", return_value=40) as duration_mock, \
+             patch.object(views, "build_timeshift_candidate_urls",
+                          return_value=["http://example.test/x.ts"]) as build_mock, \
+             patch.object(views, "check_user_stream_limits", return_value=True), \
+             patch.object(views, "_stream_from_provider", return_value=sentinel) as stream_mock:
+            channel_cls.objects.get.return_value = MagicMock(id=8, name="Test", logo_id=None)
+            response = views.timeshift_proxy(request, "u", "p", "8", timestamp, "8.ts")
+        return response, sentinel, build_mock, duration_mock, stream_mock
+
+    def test_candidates_get_provider_local_timestamp(self):
+        # June → CEST: 17:00 UTC must reach the URL builder as 19:00 Brussels.
+        response, sentinel, build_mock, duration_mock, _ = self._call("2026-06-08:17-00")
+        self.assertIs(response, sentinel)
+        self.assertEqual(build_mock.call_args[0][2], "2026-06-08:19-00")
+
+    def test_duration_lookup_keeps_original_utc_timestamp(self):
+        # The EPG is stored in UTC — the duration lookup must NOT receive the
+        # provider-converted value.
+        _, _, _, duration_mock, _ = self._call("2026-06-08:17-00")
+        self.assertEqual(duration_mock.call_args[0][1], "2026-06-08:17-00")
+
+    def test_utc_provider_passes_timestamp_unchanged(self):
+        _, _, build_mock, _, _ = self._call("2026-06-08:17-00", provider_tz="UTC")
+        self.assertEqual(build_mock.call_args[0][2], "2026-06-08:17-00")
+
+    def test_invalid_timestamp_rejected_before_upstream(self):
+        request = self.factory.get("/timeshift/u/p/8/garbage/8.ts")
+        with patch.object(views, "_authenticate_user", return_value=MagicMock()), \
+             patch.object(views, "Channel") as channel_cls, \
+             patch.object(views, "_user_can_access_channel", return_value=True), \
+             patch.object(views, "get_channel_catchup_info") as catchup_mock, \
+             patch.object(views, "_stream_from_provider") as stream_mock:
+            channel_cls.objects.get.return_value = MagicMock(id=8)
+            response = views.timeshift_proxy(request, "u", "p", "8", "garbage", "8.ts")
+        self.assertEqual(response.status_code, 400)
+        catchup_mock.assert_not_called()
+        stream_mock.assert_not_called()

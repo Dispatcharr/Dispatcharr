@@ -32,15 +32,13 @@ from apps.proxy.live_proxy.redis_keys import RedisKeys
 from apps.proxy.live_proxy.utils import get_client_ip
 from apps.proxy.live_proxy.input.http_streamer import find_ts_sync
 from apps.proxy.utils import check_user_stream_limits
-from core.models import CoreSettings
 from core.utils import RedisClient
 
 from .helpers import (
-    build_timeshift_url_format_a,
-    build_timeshift_url_format_b,
-    format_timestamp_as_sql_datetime,
-    format_timestamp_as_underscore,
+    build_timeshift_candidate_urls,
+    convert_timestamp_to_provider_tz,
     get_programme_duration,
+    parse_catchup_timestamp,
 )
 
 logger = logging.getLogger(__name__)
@@ -66,6 +64,13 @@ def timeshift_proxy(request, username, password, stream_id, timestamp, duration)
     if not _user_can_access_channel(user, channel):
         return HttpResponseForbidden("Access denied")
 
+    # Reject malformed timestamps up front: every shape helper falls back to
+    # pass-through on parse failure, so an unvalidated value would be forwarded
+    # verbatim into the upstream URL (query-injection vector + a pointless
+    # provider request).
+    if parse_catchup_timestamp(timestamp) is None:
+        return HttpResponseBadRequest("Invalid timestamp")
+
     catchup = get_channel_catchup_info(channel)
     if catchup is None:
         return HttpResponseBadRequest("Timeshift not supported for this channel")
@@ -76,44 +81,48 @@ def timeshift_proxy(request, username, password, stream_id, timestamp, duration)
     if m3u_account is None or m3u_account.account_type != "XC":
         return HttpResponseBadRequest("Channel not from Xtream Codes provider")
 
-    timeshift_settings = CoreSettings.get_timeshift_settings()
-    debug = bool(timeshift_settings.get("debug_logging", False))
+    # Verbose timeshift logging follows the standard logger level (set via
+    # DISPATCHARR_LOG_LEVEL / the logging config), not a per-feature toggle.
+    debug = logger.isEnabledFor(logging.DEBUG)
 
-    # The client-supplied timestamp is already in UTC (derived from the
-    # start_timestamp epoch in the EPG data). Pass it through to the
-    # provider as-is — no timezone conversion. Converting here was the
-    # root cause of the "wrong programme plays" bug: the provider indexes
-    # archives in UTC, so shifting to Brussels meant requesting a programme
-    # 1-2 hours later than intended.
-    # Learned from plugin history v1.1.4 → v1.2.6: 6 iterations of timezone
-    # bugs all converged on "never convert the provider URL timestamp".
-    underscore_timestamp = format_timestamp_as_underscore(timestamp)
-    sql_timestamp = format_timestamp_as_sql_datetime(timestamp)
-    duration_minutes = get_programme_duration(channel, timestamp)
     stream_id_value = (props or {}).get("stream_id")
     if stream_id_value is None:
         return HttpResponseBadRequest("Cannot build timeshift URL")
 
-    # Build a prioritised set of upstream candidates. Different XC servers (or
-    # even different code paths inside the same server) accept different
-    # timestamp shapes and URL layouts:
-    #
-    # • Underscore (YYYY-MM-DD_HH-MM): canonical format for many XC
-    #   providers. Works for ALL archives — recent and old. Tried first.
-    # • Colon-dash (YYYY-MM-DD:HH-MM): legacy shape used by older servers /
-    #   the lenient parser. Resolves only finalised archives (> ~5–6 h old).
-    # • SQL-datetime (YYYY-MM-DD HH:MM:SS): alternative modern shape accepted
-    #   by some servers' strict parser for recently-indexed archives.
-    # • Format B (path layout): the only shape some Stalker-style portals expose.
-    #
-    # We try them in order until one returns a 2xx — see `_stream_from_provider`.
-    candidate_urls = [
-        build_timeshift_url_format_a(m3u_account, stream_id_value, underscore_timestamp, duration_minutes),
-        build_timeshift_url_format_b(m3u_account, stream_id_value, underscore_timestamp, duration_minutes),
-        build_timeshift_url_format_a(m3u_account, stream_id_value, sql_timestamp, duration_minutes),
-        build_timeshift_url_format_a(m3u_account, stream_id_value, timestamp, duration_minutes),
-        build_timeshift_url_format_b(m3u_account, stream_id_value, timestamp, duration_minutes),
-    ]
+    # The client supplies the catch-up timestamp in UTC — Dispatcharr's XC API
+    # surface is strictly UTC (server_info.timezone="UTC", EPG start/end in UTC),
+    # and the client builds the URL from those UTC strings. Real XC providers,
+    # however, index their archive in their OWN local zone (the
+    # server_info.timezone they report on auth). So convert the UTC instant to
+    # the serving provider's zone before building the upstream URL — empirically
+    # a provider reads `17-00` as 17:00 LOCAL, not UTC, so skipping this would
+    # seek ~1-2h off. The EPG duration lookup stays on the original UTC timestamp
+    # (the EPG is UTC too). This is the ONLY timezone conversion in the chain.
+    duration_minutes = get_programme_duration(channel, timestamp)
+
+    # Default profile carries the provider's server_info (its reported timezone)
+    # and is reused below for the Stats card's M3U profile name.
+    default_profile = m3u_account.profiles.filter(is_default=True).first()
+    provider_tz_name = None
+    if default_profile is not None:
+        _server_info = (default_profile.custom_properties or {}).get("server_info") or {}
+        if isinstance(_server_info, dict):
+            provider_tz_name = _server_info.get("timezone")
+    provider_timestamp = convert_timestamp_to_provider_tz(timestamp, provider_tz_name)
+    if debug and provider_timestamp != timestamp:
+        logger.debug(
+            "Timeshift tz convert: %s UTC -> %s (provider tz=%s)",
+            timestamp, provider_timestamp, provider_tz_name,
+        )
+
+    # Ordered upstream candidates, PATH form first — see
+    # build_timeshift_candidate_urls() for the full rationale (the QUERY form is
+    # a last-resort fallback because some providers return LIVE on it, ignoring
+    # the requested timestamp). We try them in order until one returns a
+    # streamable MPEG-TS response — see `_stream_from_provider`.
+    candidate_urls = build_timeshift_candidate_urls(
+        m3u_account, stream_id_value, provider_timestamp, duration_minutes
+    )
 
     try:
         user_agent = m3u_account.get_user_agent().user_agent
@@ -126,10 +135,9 @@ def timeshift_proxy(request, username, password, stream_id, timestamp, duration)
     client_ip = get_client_ip(request)
     range_header = request.META.get("HTTP_RANGE")
 
-    # Resolve channel logo + M3U default profile so the Stats card can render
-    # the same logo + M3U profile name as for live streams.
+    # Channel logo + M3U default-profile id for the Stats card (default_profile
+    # was already resolved above for the provider timezone).
     channel_logo_id = getattr(channel, "logo_id", None)
-    default_profile = m3u_account.profiles.filter(is_default=True).first()
     m3u_profile_id = default_profile.id if default_profile is not None else None
 
     # Free the provider slot before connecting upstream.
@@ -147,7 +155,7 @@ def timeshift_proxy(request, username, password, stream_id, timestamp, duration)
     # streams on the same channel.
 
     if debug:
-        logger.info(
+        logger.debug(
             "Timeshift request: channel=%s ts=%s provider_sid=%s vid=%s client=%s range=%s",
             channel.name,
             timestamp,
@@ -313,7 +321,9 @@ def _unregister_stats_client(redis_client, virtual_channel_id, client_id):
 
 def _open_upstream(url, user_agent, range_header):
     """Open the upstream HTTP request (status + headers known synchronously)."""
-    headers = {}
+    # identity: the TS-sync peek reads raw bytes (response.raw), which are NOT
+    # transparently decompressed — a gzip-encoded body would fail the sync check.
+    headers = {"Accept-Encoding": "identity"}
     if user_agent:
         headers["User-Agent"] = user_agent
     if range_header:
@@ -396,12 +406,18 @@ def _stream_from_provider(
         try:
             response = _open_upstream(url, user_agent, range_header)
         except requests.exceptions.RequestException as exc:
-            logger.error("Timeshift provider unreachable: %s", exc)
+            # Log only the exception class and a redacted URL: requests
+            # exceptions embed the full URL, which carries the XC credentials
+            # (path segments in format B, query params in format A).
+            logger.error(
+                "Timeshift provider unreachable (%s): %s",
+                _redact_url(url), type(exc).__name__,
+            )
             return HttpResponseBadRequest("Provider connection error")
         last_status = response.status_code
         last_url = url
         if debug:
-            logger.info(
+            logger.debug(
                 "Timeshift cascade[%d]: status=%d type=%s url=%s",
                 orig_idx, response.status_code,
                 response.headers.get("Content-Type", "?"),
@@ -505,15 +521,17 @@ def _stream_from_provider(
                 total_yielded += len(data)
                 chunk_count += 1
 
-                # Check stop signal every 100 chunks (mirrors VOD pattern)
-                if chunk_count % 100 == 0:
+                # Stop-signal + stats heartbeat on the same 5-second cadence.
+                # Time-based (not chunk-modulo) so the provider slot is freed
+                # within seconds of a stream-limit termination regardless of
+                # bitrate — at 256 KB chunks a 100-chunk interval would mean
+                # ~25 MB (~27 s at typical FHD rates) before noticing the stop.
+                now = time.time()
+                if now - last_heartbeat >= 5:
                     if redis_client and redis_client.exists(stop_key):
                         logger.info("Timeshift client %s received stop signal", client_id)
                         redis_client.delete(stop_key)
                         break
-
-                now = time.time()
-                if now - last_heartbeat >= 5:
                     _heartbeat_stats_client(
                         redis_client, virtual_channel_id, client_id,
                         bytes_delta=bytes_since_heartbeat,
@@ -533,7 +551,7 @@ def _stream_from_provider(
                 )
             if debug and total_yielded > 0:
                 mbps = (total_yielded * 8) / elapsed / 1_000_000 if elapsed > 0 else 0
-                logger.info(
+                logger.debug(
                     "Timeshift disconnect: vid=%s client=%s yielded=%d bytes in %.1fs (%.2f Mbps avg)",
                     virtual_channel_id, client_id, total_yielded, elapsed, mbps,
                 )
