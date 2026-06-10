@@ -8,6 +8,7 @@ global.fetch = vi.fn().mockResolvedValue({
 
 vi.mock('../../../api.js', () => ({
   default: {
+    getSDCountries: vi.fn().mockResolvedValue({}),
     getSDLineups: vi.fn().mockResolvedValue([]),
     addSDLineup: vi.fn().mockResolvedValue({ success: true }),
     deleteSDLineup: vi.fn().mockResolvedValue({ success: true }),

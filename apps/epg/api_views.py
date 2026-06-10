@@ -53,7 +53,7 @@ class EPGSourceViewSet(viewsets.ModelViewSet):
         try:
             return [perm() for perm in permission_classes_by_action[self.action]]
         except KeyError:
-            if self.action in ('sd_lineups', 'sd_lineups_search'):
+            if self.action in ('sd_lineups', 'sd_lineups_search', 'sd_countries'):
                 if self.request.method == 'GET':
                     return [IsStandardUser()]
                 return [IsAdmin()]
@@ -389,6 +389,31 @@ class EPGSourceViewSet(viewsets.ModelViewSet):
                     {"error": f"Failed to remove lineup: {str(e)}"},
                     status=status.HTTP_502_BAD_GATEWAY
                 )
+
+    @action(detail=True, methods=["get"], url_path="sd-countries")
+    def sd_countries(self, request, pk=None):
+        """Proxy /available/countries from the SD API to avoid browser CORS restrictions."""
+        import requests as http_requests
+        from apps.epg.tasks import SD_BASE_URL
+
+        source = self.get_object()
+        if source.source_type != 'schedules_direct':
+            return Response(
+                {"error": "This action is only available for Schedules Direct sources."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            resp = http_requests.get(
+                f"{SD_BASE_URL}/available/countries",
+                timeout=15,
+            )
+            resp.raise_for_status()
+            return Response(resp.json())
+        except http_requests.exceptions.RequestException as e:
+            return Response(
+                {"error": f"Failed to fetch countries: {str(e)}"},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
 
     @action(detail=True, methods=["post"], url_path="sd-lineups/search")
     def sd_lineups_search(self, request, pk=None):

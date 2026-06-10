@@ -3889,6 +3889,14 @@ export default class API {
     }
   }
 
+  static async getSDCountries(sourceId) {
+    try {
+      return await request(`${host}/api/epg/sources/${sourceId}/sd-countries/`);
+    } catch (e) {
+      return null;
+    }
+  }
+
   static async getSDLineups(sourceId) {
     try {
       const response = await request(

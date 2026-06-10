@@ -325,18 +325,16 @@ const SDLineupManager = ({ sourceId }) => {
   useEffect(() => {
     if (sourceId) {
       fetchActiveLineups();
-      // Fetch country list from SD API per their recommendation to not hardcode
-      fetch('https://json.schedulesdirect.org/20141201/available/countries')
-        .then((r) => r.json())
-        .then((data) => {
-          const all = Object.values(data).flat();
-          const mapped = all
-            .filter((c) => c.shortName && c.fullName)
-            .map((c) => ({ value: c.shortName, label: c.fullName }))
-            .sort((a, b) => a.label.localeCompare(b.label));
-          if (mapped.length > 0) setCountries(mapped);
-        })
-        .catch(() => {}); // fallback list remains if fetch fails
+      // Fetch country list via backend proxy to avoid browser CORS restrictions
+      API.getSDCountries(sourceId).then((data) => {
+        if (!data) return;
+        const all = Object.values(data).flat();
+        const mapped = all
+          .filter((c) => c.shortName && c.fullName)
+          .map((c) => ({ value: c.shortName, label: c.fullName }))
+          .sort((a, b) => a.label.localeCompare(b.label));
+        if (mapped.length > 0) setCountries(mapped);
+      });
     }
   }, [sourceId, fetchActiveLineups]);
 
