@@ -2665,6 +2665,49 @@ def fetch_schedules_direct(source, stations_only=False, force=False):
     send_epg_update(source.id, "parsing_programs", 38,
                     message=f"MD5 check complete: {len(changed_by_station)} stations have schedule updates.")
 
+    # Force-fetch for mapped stations with no existing ProgramData.
+    # The MD5 cache stores hashes for all lineup stations, including unmapped ones.
+    # If a station was in the lineup (MD5 cached) but not yet mapped to a channel
+    # (no ProgramData created), a later mapping causes those cached dates to appear
+    # "unchanged", skipping the fetch and leaving the channel with no guide data.
+    mapped_epg_ids_early = set(
+        Channel.objects.filter(
+            epg_data__epg_source=source, epg_data__isnull=False
+        ).values_list('epg_data_id', flat=True)
+    )
+    mapped_tvg_ids_early = set(
+        EPGData.objects.filter(
+            id__in=mapped_epg_ids_early, epg_source=source
+        ).values_list('tvg_id', flat=True)
+    )
+    newly_mapped = set()
+    if mapped_tvg_ids_early:
+        stations_with_data = set(
+            ProgramData.objects.filter(
+                epg__epg_source=source,
+                tvg_id__in=mapped_tvg_ids_early,
+            ).values_list('tvg_id', flat=True).distinct()
+        )
+        newly_mapped = mapped_tvg_ids_early - stations_with_data
+        if newly_mapped:
+            server_dates_by_sid = {}
+            for (sid, ds) in server_md5s:
+                if sid in newly_mapped:
+                    server_dates_by_sid.setdefault(sid, set()).add(ds)
+            forced_count = 0
+            for sid in newly_mapped:
+                available = server_dates_by_sid.get(sid, set())
+                already_changing = set(changed_by_station.get(sid, []))
+                force_dates = [ds for ds in date_list if ds in available and ds not in already_changing]
+                if force_dates:
+                    changed_by_station.setdefault(sid, []).extend(force_dates)
+                    forced_count += len(force_dates)
+            if forced_count:
+                logger.info(
+                    f"Force-fetching {forced_count} station/date combinations for "
+                    f"{len(newly_mapped)} stations with no existing ProgramData (newly mapped channels)."
+                )
+
     # schedules_by_station: stationID -> list of {programID, airDateTime, duration, ...}
     schedules_by_station = {sid: [] for sid in station_ids}
     program_ids_needed = set()
@@ -2813,6 +2856,16 @@ def fetch_schedules_direct(source, stations_only=False, force=False):
             program_id__in=program_ids_needed,
         ).only('program_id', 'md5')
     }
+
+    # For newly mapped stations with no ProgramData, invalidate cached program MD5s so
+    # metadata gets re-fetched. Without this, programs whose MD5s were cached when the
+    # station was unmapped would be skipped, producing "No Title" records.
+    if newly_mapped:
+        for sid in newly_mapped:
+            for airing in schedules_by_station.get(sid, []):
+                pid = airing.get('programID')
+                if pid:
+                    cached_prog_md5s.pop(pid, None)
 
     # Only fetch programs where MD5 differs from our cached value
     programs_to_fetch = {
