@@ -1,0 +1,145 @@
+========================================
+STREAM PREVIEW PROFILE FAILOVER PATCH
+========================================
+This patch enables profile failover for Stream Preview (direct stream access).
+
+Before: Stream Preview gives up after first profile fails
+After: Stream Preview tries all available profiles for that stream
+
+Apply with: patch -p0 < stream_preview_profile_failover.patch
+
+========================================
+
+--- a/apps/proxy/live_proxy/url_utils.py
++++ b/apps/proxy/live_proxy/url_utils.py
+@@ -284,15 +284,82 @@ def get_stream_info_for_switch(channel_id: str, target_stream_id: Optional[int]
+ 
+ def get_alternate_streams(channel_id: str, current_stream_id: Optional[int] = None, current_profile_id: Optional[int] = None) -> List[dict]:
+     """
+-    Get alternative streams for a channel when the current stream fails.
++    Get alternative streams for a channel OR alternative profiles for a stream when the current stream fails.
++    
++    For Channels: Returns all stream+profile combinations (profile failover across streams)
++    For Stream Preview: Returns all profiles for THIS stream only (profile failover within stream)
+ 
+     Args:
+-        channel_id: The UUID of the channel
+-        current_stream_id: The currently failing stream ID
++        channel_id: The UUID of the channel OR stream hash
++        current_stream_id: The currently failing stream ID (for channels)
+         current_profile_id: The currently failing profile ID to exclude
+ 
+     Returns:
+         List[dict]: List of stream information dictionaries with stream_id and profile_id
+     """
+     try:
+         from core.utils import RedisClient
+ 
+-        # Get channel object
+-        channel = get_stream_object(channel_id)
+-        if isinstance(channel, Stream):
+-            logger.error(f"Stream is not a channel")
+-            return []
++        # Get channel or stream object
++        channel_or_stream = get_stream_object(channel_id)
++
++        # ============================================================
++        # STREAM PREVIEW: Return all profiles for THIS stream only
++        # ============================================================
++        if isinstance(channel_or_stream, Stream):
++            stream = channel_or_stream
++            logger.info(f"Stream preview: Getting alternate profiles for stream {stream.id}")
++            
++            # Get all profiles for this specific stream
++            m3u_account = stream.m3u_account
++            if not m3u_account:
++                logger.warning(f"Stream {stream.id} has no M3U account")
++                return []
++            
++            if not m3u_account.is_active:
++                logger.warning(f"M3U account {m3u_account.id} is inactive")
++                return []
++            
++            # Get all active profiles
++            m3u_profiles = m3u_account.profiles.filter(is_active=True)
++            default_profile = next((obj for obj in m3u_profiles if obj.is_default), None)
++            
++            if not default_profile:
++                logger.warning(f"M3U account {m3u_account.id} has no default profile")
++                return []
++            
++            # Order: default first, then others
++            profiles = [default_profile] + [obj for obj in m3u_profiles if not obj.is_default]
++            
++            alternate_profiles = []
++            redis_client = RedisClient.get_client()
++            
++            for profile in profiles:
++                # Skip the currently failing profile
++                if current_profile_id and profile.id == current_profile_id:
++                    logger.debug(f"Skipping current failing profile {profile.id} for stream {stream.id}")
++                    continue
++                
++                # Check connection availability
++                if redis_client:
++                    profile_connections_key = f"profile_connections:{profile.id}"
++                    current_connections = int(redis_client.get(profile_connections_key) or 0)
++                    
++                    if profile.max_streams == 0 or current_connections < profile.max_streams:
++                        logger.debug(f"Found available profile {profile.id} for stream {stream.id}: {current_connections}/{profile.max_streams}")
++                        alternate_profiles.append({
++                            'stream_id': stream.id,
++                            'profile_id': profile.id,
++                            'name': stream.name
++                        })
++                    else:
++                        logger.debug(f"Profile {profile.id} at max connections: {current_connections}/{profile.max_streams}")
++                else:
++                    alternate_profiles.append({
++                        'stream_id': stream.id,
++                        'profile_id': profile.id,
++                        'name': stream.name
++                    })
++            
++            if alternate_profiles:
++                profile_ids = ', '.join([str(p['profile_id']) for p in alternate_profiles])
++                logger.info(f"Found {len(alternate_profiles)} alternate profiles for stream preview {stream.id}: [{profile_ids}]")
++            else:
++                logger.warning(f"No alternate profiles found for stream preview {stream.id}")
++            
++            return alternate_profiles
++
++        # ============================================================
++        # CHANNEL: Return all stream+profile combinations
++        # ============================================================
++        channel = channel_or_stream
+ 
+         redis_client = RedisClient.get_client()
+         logger.debug(f"Looking for alternate streams for channel {channel_id}, current stream ID: {current_stream_id}")
+
+========================================
+END OF PATCH
+========================================
+
+WHAT THIS FIX DOES:
+✅ Stream Preview now supports profile failover
+✅ Tries all profiles for the SAME stream (no stream switching)
+✅ Respects connection limits
+✅ Skips currently failing profile
+✅ Same behavior as channel profile failover
+
+EXAMPLE:
+Stream "ZDF Raw" with 3 profiles (3402, 3403, 3404)
+Before: Profile 3402 fails → gives up
+After: Profile 3402 fails → tries 3403 → tries 3404
+
+TEST:
+1. Open stream preview: http://dispatcharr/stream/{stream_hash}/stream.m3u8
+2. Make first profile fail (disconnect provider)
+3. Watch logs: Should see "Found X alternate profiles for stream preview"
+4. Stream should failover to next profile
+
+COMPATIBILITY:
+✅ Works with v0.26.0 ULTIMATE patch
+✅ Does not affect channel failover
+✅ Only 1 file changed (url_utils.py)

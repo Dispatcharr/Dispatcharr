@@ -1796,7 +1796,8 @@ class StreamManager:
             logger.info(f"Trying to find alternative stream for channel {self.channel_id}, current stream ID: {self.current_stream_id}, current profile ID: {self.current_profile_id}")
 
             # Get alternate streams with ALL profiles (not just default)
-            alternate_streams = get_alternate_streams(self.channel_id, self.current_stream_id)
+            # Pass current_profile_id so we can skip only the failing stream+profile combination
+            alternate_streams = get_alternate_streams(self.channel_id, self.current_stream_id, self.current_profile_id)
             logger.info(f"Found {len(alternate_streams)} potential alternate stream+profile combinations for channel {self.channel_id}")
 
             # Filter out stream+profile combinations we've already tried

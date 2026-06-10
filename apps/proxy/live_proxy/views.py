@@ -339,8 +339,8 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
                     # Track tried streams to avoid loops
                     tried_streams = {stream_id}
 
-                    # Get alternate streams
-                    alternates = get_alternate_streams(channel_id, stream_id)
+                    # Get alternate streams (pass profile_id for proper failover)
+                    alternates = get_alternate_streams(channel_id, stream_id, m3u_profile_id)
 
                     # Try each alternate until one works
                     for alt in alternates:
