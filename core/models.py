@@ -132,6 +132,7 @@ class StreamProfile(models.Model):
         replacements = {
             "{streamUrl}": stream_url,
             "{userAgent}": user_agent,
+            "{proxy}": proxy or "",
         }
 
         # Split the command and iterate through each part to apply replacements
@@ -140,9 +141,9 @@ class StreamProfile(models.Model):
             for part in shlex_split(self.parameters) # use shlex to handle quoted strings
         ]
 
-        # Inject proxy into ffmpeg command if proxy is configured
+        # Inject proxy into ffmpeg command if proxy is configured and no {proxy} placeholder used
         # ffmpeg uses -http_proxy for HTTP streams
-        if proxy and self.command.lower() in ('ffmpeg',):
+        if proxy and self.command.lower() in ('ffmpeg',) and '{proxy}' not in self.parameters:
             # Insert -http_proxy before the -i argument
             try:
                 i_index = cmd.index('-i')
