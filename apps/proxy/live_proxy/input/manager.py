@@ -1786,8 +1786,6 @@ class StreamManager:
 
     def _try_next_stream(self):
         """
-    def _try_next_stream(self):
-        """
         Try to switch to the next available stream for this channel.
         Implements profile failover - tries different profiles for the same stream before moving to next stream.
         Includes cooldown system to prevent rapid retries of failed combinations.
