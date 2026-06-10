@@ -4,6 +4,7 @@ import {
   Box,
   Divider,
   Loader,
+  Paper,
   Text,
 } from '@mantine/core';
 import { SETTINGS_GROUPS } from '../config/settingsNav';
@@ -83,9 +84,9 @@ const SettingsPage = () => {
   const ActiveComponent = activeSectionConfig ? COMPONENT_MAP[activeSectionConfig.id] : null;
 
   return (
-    <Box p={10}>
+    <Box p={10} maw={900} mx="auto">
       {ActiveComponent ? (
-        <Box>
+        <Paper withBorder p="md" radius="md">
           <Text size="lg" fw={600} mb={6}>
             {activeSectionConfig.label}
           </Text>
@@ -95,7 +96,7 @@ const SettingsPage = () => {
               <ActiveComponent active={true} />
             </Suspense>
           </ErrorBoundary>
-        </Box>
+        </Paper>
       ) : (
         <Box
           style={{

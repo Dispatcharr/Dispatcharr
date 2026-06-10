@@ -69,6 +69,7 @@ vi.mock('@mantine/core', async () => ({
   Box: ({ children }) => <div>{children}</div>,
   Divider: () => <hr />,
   Loader: () => <div data-testid="loader">Loading...</div>,
+  Paper: ({ children }) => <div>{children}</div>,
   Text: ({ children }) => <span>{children}</span>,
 }));
 
