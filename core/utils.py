@@ -271,6 +271,15 @@ def release_task_lock(task_name, id):
     redis_client.delete(lock_id)
 
 
+def is_task_lock_held(task_name, id):
+    """Return True when another worker holds the task lock (read-only check)."""
+    redis_client = RedisClient.get_client()
+    if redis_client is None:
+        return False
+    lock_id = f"task_lock_{task_name}_{id}"
+    return bool(redis_client.exists(lock_id))
+
+
 class TaskLockRenewer:
     """Periodically renews a Redis task lock to prevent expiry during long-running tasks.
 

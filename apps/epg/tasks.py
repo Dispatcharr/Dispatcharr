@@ -27,14 +27,24 @@ from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 
 from .models import EPGSource, EPGData, ProgramData, SDScheduleMD5, SDProgramMD5
-from core.utils import acquire_task_lock, release_task_lock, TaskLockRenewer, send_websocket_update, cleanup_memory, log_system_event
+from core.utils import (
+    acquire_task_lock,
+    is_task_lock_held,
+    release_task_lock,
+    TaskLockRenewer,
+    send_websocket_update,
+    cleanup_memory,
+    log_system_event,
+)
 
 logger = logging.getLogger(__name__)
 
 SD_BASE_URL = 'https://json.schedulesdirect.org/20141201'
 SD_DAYS_TO_FETCH = 20
 SD_PROGRAM_BATCH_SIZE = 5000
-
+SD_BULK_GUIDE_FETCH_THRESHOLD = 3
+SD_MAPPED_GUIDE_BATCH_DEFER_SECONDS = 90
+SD_MAPPED_GUIDE_FETCH_DEFER_MAX_RETRIES = 2
 
 def _sd_compute_schedule_changes_from_md5(server_md5s, cached_md5s, date_list):
     """Return station_id -> [date_str] for dates whose schedule MD5 differs from cache."""
@@ -2136,6 +2146,24 @@ def parse_programs_for_source(epg_source, tvg_id=None):
             process = None
 
 
+def _sd_fetch_lineup_country(token, sd_headers_fn):
+    """Return country code prefix from the first subscribed lineup (poster metadata)."""
+    try:
+        lineups_response = requests.get(
+            f"{SD_BASE_URL}/lineups",
+            headers=sd_headers_fn(token),
+            timeout=30,
+        )
+        if lineups_response.ok:
+            for lineup in lineups_response.json().get('lineups', []):
+                lid = lineup.get('lineupID') or lineup.get('lineup') or ''
+                if '-' in lid:
+                    return lid.split('-')[0]
+    except requests.exceptions.RequestException as e:
+        logger.warning(f"Could not fetch lineups for country code: {e}")
+    return None
+
+
 def _sd_setup_single_epg_fetch(source, epg_id, token, sd_headers_fn):
     """Build station_map / epg_id_map for a single mapped EPG entry."""
     epg = EPGData.objects.filter(id=epg_id, epg_source=source).first()
@@ -2147,33 +2175,179 @@ def _sd_setup_single_epg_fetch(source, epg_id, token, sd_headers_fn):
         send_epg_update(source.id, "parsing_programs", 100, status="error", error=msg)
         return None
 
-    sd_lineup_country = None
-    try:
-        lineups_response = requests.get(
-            f"{SD_BASE_URL}/lineups",
-            headers=sd_headers_fn(token),
-            timeout=30,
-        )
-        if lineups_response.ok:
-            for lineup in lineups_response.json().get('lineups', []):
-                lid = lineup.get('lineupID') or lineup.get('lineup') or ''
-                if '-' in lid:
-                    sd_lineup_country = lid.split('-')[0]
-                    break
-    except requests.exceptions.RequestException as e:
-        logger.warning(f"Could not fetch lineups for country code: {e}")
+    sd_lineup_country = _sd_fetch_lineup_country(token, sd_headers_fn)
 
     send_epg_update(
         source.id, "parsing_programs", 15,
         message=f"Fetching guide data for {epg.name or epg.tvg_id}...",
     )
-    station_map = {epg.tvg_id: {'name': epg.name or epg.tvg_id}}
+    station_map = {epg.tvg_id: {'name': epg.name or epg.tvg_id, 'logo_url': epg.icon_url}}
     epg_id_map = {epg.tvg_id: epg.id}
     return station_map, epg_id_map, sd_lineup_country, epg
 
 
+def _sd_setup_mapped_guide_fetch(source, token, sd_headers_fn):
+    """Build station_map / epg_id_map for all channels mapped to this SD source."""
+    from apps.channels.models import Channel
+
+    mapped_epg_ids = set(
+        Channel.objects.filter(
+            epg_data__epg_source=source,
+            epg_data__isnull=False,
+        ).values_list('epg_data_id', flat=True)
+    )
+    if not mapped_epg_ids:
+        msg = "No channels mapped to this Schedules Direct source."
+        logger.info(msg)
+        source.last_message = msg
+        source.save(update_fields=['last_message'])
+        send_epg_update(source.id, "parsing_programs", 100, status="idle", message=msg)
+        return None
+
+    station_map = {}
+    epg_id_map = {}
+    for epg in EPGData.objects.filter(id__in=mapped_epg_ids, epg_source=source):
+        if not epg.tvg_id:
+            continue
+        station_map[epg.tvg_id] = {
+            'name': epg.name or epg.tvg_id,
+            'logo_url': epg.icon_url,
+        }
+        epg_id_map[epg.tvg_id] = epg.id
+
+    if not station_map:
+        msg = "Mapped channels have no valid Schedules Direct station IDs."
+        logger.warning(msg)
+        source.last_message = msg
+        source.save(update_fields=['last_message'])
+        send_epg_update(source.id, "parsing_programs", 100, status="error", error=msg)
+        return None
+
+    sd_lineup_country = _sd_fetch_lineup_country(token, sd_headers_fn)
+    send_epg_update(
+        source.id, "parsing_programs", 15,
+        message=f"Fetching guide data for {len(station_map)} mapped stations...",
+    )
+    return station_map, epg_id_map, sd_lineup_country
+
+
+def dispatch_program_refresh_for_epg_ids(epg_ids):
+    """
+    Queue guide/program refresh for newly assigned EPGData rows.
+
+    XMLTV and other non-SD sources use parse_programs_for_tvg_id per id.
+    Schedules Direct uses per-EPG fetches for small batches and one batched
+    mapped-station fetch per source when the threshold is exceeded.
+    """
+    if not epg_ids:
+        return 0
+
+    epg_ids = {eid for eid in epg_ids if eid}
+    if not epg_ids:
+        return 0
+
+    epgs = list(
+        EPGData.objects.filter(id__in=epg_ids).select_related('epg_source')
+    )
+    epgs_with_program_data = set(
+        ProgramData.objects.filter(epg_id__in=epg_ids)
+        .values_list('epg_id', flat=True)
+        .distinct()
+    )
+
+    non_sd_epg_ids = []
+    sd_by_source = {}
+    for epg in epgs:
+        if not epg.epg_source:
+            non_sd_epg_ids.append(epg.id)
+            continue
+        source_type = epg.epg_source.source_type
+        if source_type == 'dummy':
+            continue
+        if source_type == 'schedules_direct':
+            sd_by_source.setdefault(epg.epg_source_id, []).append(epg)
+        else:
+            non_sd_epg_ids.append(epg.id)
+
+    dispatched = 0
+    for epg_id in non_sd_epg_ids:
+        parse_programs_for_tvg_id.delay(epg_id)
+        dispatched += 1
+
+    for source_id, source_epgs in sd_by_source.items():
+        needs_fetch = [
+            epg for epg in source_epgs
+            if epg.id not in epgs_with_program_data
+        ]
+        if not needs_fetch:
+            continue
+        if len(needs_fetch) >= SD_BULK_GUIDE_FETCH_THRESHOLD:
+            logger.info(
+                f"SD source {source_id}: {len(needs_fetch)} new mapping(s) exceed "
+                f"threshold ({SD_BULK_GUIDE_FETCH_THRESHOLD}); "
+                "queueing batched mapped guide fetch"
+            )
+            fetch_sd_mapped_guide_batch.delay(source_id)
+            dispatched += 1
+        else:
+            for epg in needs_fetch:
+                parse_programs_for_tvg_id.delay(epg.id)
+                dispatched += 1
+
+    return dispatched
+
+
 @shared_task(time_limit=3600, soft_time_limit=3500)
-def fetch_sd_guide_for_epg(epg_id, force=False):
+def fetch_sd_mapped_guide_batch(source_id, force=False, _defer_retry=0):
+    """
+    Fetch Schedules Direct guide data for all mapped stations on one source.
+
+    Used when bulk EPG assignment would otherwise queue many per-EPG tasks.
+    """
+    try:
+        source = EPGSource.objects.get(id=source_id)
+    except EPGSource.DoesNotExist:
+        logger.error(f"EPGSource {source_id} not found for SD mapped guide batch")
+        return
+
+    if source.source_type != 'schedules_direct':
+        return "Not a Schedules Direct source"
+
+    if not acquire_task_lock('sd_mapped_guide_fetch', source_id):
+        if _defer_retry < SD_MAPPED_GUIDE_FETCH_DEFER_MAX_RETRIES:
+            logger.info(
+                f"SD mapped guide batch for source {source_id} already in progress, "
+                f"deferring retry {_defer_retry + 1}/"
+                f"{SD_MAPPED_GUIDE_FETCH_DEFER_MAX_RETRIES}"
+            )
+            fetch_sd_mapped_guide_batch.apply_async(
+                args=[source_id],
+                kwargs={
+                    'force': force,
+                    '_defer_retry': _defer_retry + 1,
+                },
+                countdown=SD_MAPPED_GUIDE_BATCH_DEFER_SECONDS,
+            )
+            return "Deferred - batch already in progress"
+        logger.warning(
+            f"SD mapped guide batch for source {source_id} still locked after "
+            f"{_defer_retry} deferrals; giving up"
+        )
+        return "Task already running"
+
+    lock_renewer = TaskLockRenewer('sd_mapped_guide_fetch', source_id)
+    lock_renewer.start()
+    try:
+        logger.info(f"Fetching Schedules Direct guide for mapped stations (source: {source.name})")
+        fetch_schedules_direct(source, mapped_guide_batch=True, force=force)
+        return "SD mapped guide batch complete"
+    finally:
+        lock_renewer.stop()
+        release_task_lock('sd_mapped_guide_fetch', source_id)
+
+
+@shared_task(time_limit=3600, soft_time_limit=3500)
+def fetch_sd_guide_for_epg(epg_id, force=False, _defer_retry=0):
     """
     Fetch Schedules Direct guide data for one mapped EPG entry (channel map flow).
 
@@ -2187,6 +2361,28 @@ def fetch_sd_guide_for_epg(epg_id, force=False):
     if not force and ProgramData.objects.filter(epg_id=epg_id).exists():
         logger.info(f"SD guide fetch skipped for EPG {epg_id}: ProgramData already present")
         return "Guide data already present"
+
+    source_id = epg.epg_source_id
+    if is_task_lock_held('sd_mapped_guide_fetch', source_id):
+        if _defer_retry < SD_MAPPED_GUIDE_FETCH_DEFER_MAX_RETRIES:
+            logger.info(
+                f"SD mapped batch in progress for source {source_id}; "
+                f"deferring single-EPG fetch for {epg_id} "
+                f"(retry {_defer_retry + 1}/{SD_MAPPED_GUIDE_FETCH_DEFER_MAX_RETRIES})"
+            )
+            fetch_sd_guide_for_epg.apply_async(
+                args=[epg_id],
+                kwargs={
+                    'force': force,
+                    '_defer_retry': _defer_retry + 1,
+                },
+                countdown=SD_MAPPED_GUIDE_BATCH_DEFER_SECONDS,
+            )
+            return "Deferred - mapped batch in progress"
+        logger.warning(
+            f"SD mapped batch still running for source {source_id} after "
+            f"{_defer_retry} deferrals; proceeding with single-EPG fetch for {epg_id}"
+        )
 
     if not acquire_task_lock('parse_epg_programs', epg_id):
         logger.info(f"SD guide fetch for EPG {epg_id} already in progress, skipping duplicate task")
@@ -2218,7 +2414,13 @@ def fetch_schedules_direct_stations(self, source_id):
     fetch_schedules_direct(source, stations_only=True)
 
 
-def fetch_schedules_direct(source, stations_only=False, force=False, epg_id_only=None):
+def fetch_schedules_direct(
+    source,
+    stations_only=False,
+    force=False,
+    epg_id_only=None,
+    mapped_guide_batch=False,
+):
     """
     Fetch EPG data from the Schedules Direct JSON API and persist it to the
     EPGData / ProgramData models.
@@ -2250,10 +2452,16 @@ def fetch_schedules_direct(source, stations_only=False, force=False, epg_id_only
     from datetime import date
 
     single_epg_fetch = epg_id_only is not None
+    lightweight_sd_fetch = single_epg_fetch or mapped_guide_batch
 
     if single_epg_fetch:
         logger.info(
             f"Fetching Schedules Direct guide for EPG {epg_id_only} "
+            f"(source: {source.name})"
+        )
+    elif mapped_guide_batch:
+        logger.info(
+            f"Fetching Schedules Direct guide for mapped stations "
             f"(source: {source.name})"
         )
     else:
@@ -2284,7 +2492,7 @@ def fetch_schedules_direct(source, stations_only=False, force=False, epg_id_only
     # updated_at, which would otherwise incorrectly trigger this guard). Always
     # allow the first full refresh through so guide data is immediately available.
     # -------------------------------------------------------------------------
-    if not stations_only and not force and not single_epg_fetch and source.updated_at:
+    if not stations_only and not force and not lightweight_sd_fetch and source.updated_at:
         from apps.epg.models import SDScheduleMD5 as _SDScheduleMD5
         has_prior_full_refresh = _SDScheduleMD5.objects.filter(epg_source=source).exists()
         if has_prior_full_refresh:
@@ -2305,7 +2513,7 @@ def fetch_schedules_direct(source, stations_only=False, force=False, epg_id_only
                 return
         else:
             logger.info(f"SD source {source.id}: No prior full refresh detected, skipping 2-hour guard for first full fetch.")
-    elif force and not stations_only and not single_epg_fetch:
+    elif force and not stations_only and not lightweight_sd_fetch:
         logger.info(f"SD source {source.id}: Force flag set, bypassing 2-hour refresh guard.")
 
     # -------------------------------------------------------------------------
@@ -2344,7 +2552,7 @@ def fetch_schedules_direct(source, stations_only=False, force=False, epg_id_only
                 )
 
         if fetch_posters and poster_program_ids:
-            logger.info("Poster fetch enabled — retrieving program artwork from Schedules Direct.")
+            logger.info("Poster fetch enabled, retrieving program artwork from Schedules Direct.")
             send_epg_update(source.id, "parsing_programs", 98,
                             message="Fetching program artwork...")
             try:
@@ -2477,7 +2685,7 @@ def fetch_schedules_direct(source, stations_only=False, force=False, epg_id_only
     # This is a requirement of the Schedules Direct API specification, not an
     # architectural choice.
     # -------------------------------------------------------------------------
-    if not single_epg_fetch:
+    if not lightweight_sd_fetch:
         source.status = EPGSource.STATUS_FETCHING
         source.last_message = "Authenticating with Schedules Direct..."
         source.save(update_fields=['status', 'last_message'])
@@ -2572,6 +2780,11 @@ def fetch_schedules_direct(source, stations_only=False, force=False, epg_id_only
         if setup is None:
             return
         station_map, epg_id_map, sd_lineup_country, _single_epg = setup
+    elif mapped_guide_batch:
+        setup = _sd_setup_mapped_guide_fetch(source, token, _sd_headers)
+        if setup is None:
+            return
+        station_map, epg_id_map, sd_lineup_country = setup
     else:
         # -------------------------------------------------------------------------
         # Step 3: Fetch subscribed lineups and build station map
@@ -2608,7 +2821,7 @@ def fetch_schedules_direct(source, stations_only=False, force=False, epg_id_only
                 send_epg_update(source.id, "refresh", 100, status="idle", message=msg)
                 return
             logger.info(f"Found {len(lineups)} lineup(s) in SD account.")
-    
+
             # Extract country from lineup IDs (format: "USA-NJ29486-X", "GBR-...", etc.)
             sd_lineup_country = None
             for l in lineups:
@@ -2625,7 +2838,7 @@ def fetch_schedules_direct(source, stations_only=False, force=False, epg_id_only
             source.save(update_fields=['status', 'last_message'])
             send_epg_update(source.id, "refresh", 100, status="error", error=msg)
             return
-    
+
         # Build station metadata map: stationID -> {name, callsign, logo_url}
         station_map = {}
         send_epg_update(source.id, "parsing_programs", 18, message=f"Fetching station metadata for {len(lineups)} lineup(s)...")
@@ -2662,7 +2875,7 @@ def fetch_schedules_direct(source, stations_only=False, force=False, epg_id_only
                 logger.debug(f"Fetched {len(detail_data.get('stations', []))} stations from lineup {lineup_id}")
             except requests.exceptions.RequestException as e:
                 logger.warning(f"Failed to fetch lineup details for {lineup_id}: {e}")
-    
+
         if not station_map:
             msg = "No stations found across all Schedules Direct lineups."
             logger.warning(msg)
@@ -2671,9 +2884,9 @@ def fetch_schedules_direct(source, stations_only=False, force=False, epg_id_only
             source.save(update_fields=['status', 'last_message'])
             send_epg_update(source.id, "refresh", 100, status="error", error=msg)
             return
-    
+
         logger.info(f"Built station map with {len(station_map)} stations.")
-    
+
         # -------------------------------------------------------------------------
         # Step 4: Persist station metadata to EPGData
         # -------------------------------------------------------------------------
@@ -2681,23 +2894,23 @@ def fetch_schedules_direct(source, stations_only=False, force=False, epg_id_only
         source.last_message = f"Syncing {len(station_map)} stations..."
         source.save(update_fields=['status', 'last_message'])
         send_epg_update(source.id, "parsing_programs", 28, message=f"Syncing {len(station_map)} stations to database...")
-    
+
         existing_epg_map = {
             epg.tvg_id: epg
             for epg in EPGData.objects.filter(epg_source=source)
         }
-    
+
         epgs_to_create = []
         epgs_to_update = []
         icon_max_length = EPGData._meta.get_field('icon_url').max_length
         name_max_length = EPGData._meta.get_field('name').max_length
-    
+
         for sid, info in station_map.items():
             display_name = (info['name'] or sid)[:name_max_length]
             logo = info['logo_url']
             if logo and len(logo) > icon_max_length:
                 logo = None
-    
+
             if sid in existing_epg_map:
                 epg_obj = existing_epg_map[sid]
                 needs_update = False
@@ -2716,29 +2929,29 @@ def fetch_schedules_direct(source, stations_only=False, force=False, epg_id_only
                     icon_url=logo,
                     epg_source=source,
                 ))
-    
+
         if epgs_to_create:
             EPGData.objects.bulk_create(epgs_to_create, ignore_conflicts=True)
             logger.info(f"Created {len(epgs_to_create)} new EPGData entries.")
         if epgs_to_update:
             EPGData.objects.bulk_update(epgs_to_update, ['name', 'icon_url'])
             logger.info(f"Updated {len(epgs_to_update)} existing EPGData entries.")
-    
+
         gc.collect()
-    
+
         # Rebuild map with fresh DB ids for all stations
         epg_id_map = {
             epg.tvg_id: epg.id
             for epg in EPGData.objects.filter(epg_source=source, tvg_id__in=list(station_map.keys()))
         }
-    
+
         # Station sync complete. Send progress update before continuing into programs phase.
         # We deliberately do NOT send parsing_channels at 100 with status=success here
         # because that would cause the frontend to mark the source as complete and
         # stop rendering progress updates for the subsequent program fetch phases.
         send_epg_update(source.id, "parsing_programs", 30,
                         message=f"Stations synced ({len(station_map)} stations). Preparing schedule fetch...")
-    
+
         # -------------------------------------------------------------------------
         # Stations-only mode. Used on initial source creation.
         # Stop here so the user can run Auto-match EPG before the full program fetch.
@@ -2757,7 +2970,7 @@ def fetch_schedules_direct(source, stations_only=False, force=False, epg_id_only
                             message=success_msg, channels_count=len(station_map))
             logger.info(f"Stations-only fetch complete for source: {source.name} ({len(station_map)} stations)")
             return
-    
+
     # -------------------------------------------------------------------------
     # Step 5: MD5-delta schedule fetch
     # Only mapped channels need guide data. Fetch MD5 hashes and schedules for
@@ -2804,6 +3017,12 @@ def fetch_schedules_direct(source, stations_only=False, force=False, epg_id_only
         _sd_post_refresh_tasks(mapped_epg_ids, {}, today)
         if single_epg_fetch:
             msg = "No mapped channel found for this EPG entry; guide fetch skipped."
+            source.last_message = msg
+            source.save(update_fields=['last_message'])
+            send_epg_update(source.id, "parsing_programs", 100, status="idle", message=msg)
+            return
+        if mapped_guide_batch:
+            msg = "No mapped channels with guide data to fetch."
             source.last_message = msg
             source.save(update_fields=['last_message'])
             send_epg_update(source.id, "parsing_programs", 100, status="idle", message=msg)
@@ -2916,7 +3135,7 @@ def fetch_schedules_direct(source, stations_only=False, force=False, epg_id_only
     if not changed_by_station:
         logger.info("No schedule changes detected, skipping schedule and program downloads.")
         _sd_post_refresh_tasks(mapped_epg_ids, {}, today)
-        if single_epg_fetch:
+        if lightweight_sd_fetch:
             msg = "No schedule updates needed; guide data is up to date."
             source.last_message = msg
             source.save(update_fields=['last_message'])
@@ -3496,6 +3715,25 @@ def fetch_schedules_direct(source, stations_only=False, force=False, epg_id_only
         logger.info(f"Schedules Direct single-EPG fetch complete for source: {source.name}")
         return
 
+    if mapped_guide_batch:
+        success_msg = (
+            f"Fetched {total_programs:,} programs for "
+            f"{len(mapped_tvg_ids)} mapped stations from Schedules Direct "
+            f"({skipped_unmapped:,} programs skipped for unmapped stations)."
+        )
+        source.last_message = success_msg
+        source.save(update_fields=['last_message'])
+        send_epg_update(source.id, "parsing_programs", 100, status="success", message=success_msg)
+        log_system_event(
+            event_type='epg_refresh',
+            source_name=source.name,
+            programs=total_programs,
+            channels=len(mapped_tvg_ids),
+            skipped_programs=skipped_unmapped,
+        )
+        logger.info(f"Schedules Direct mapped guide batch complete for source: {source.name}")
+        return
+
     success_msg = (
         f"Successfully fetched {total_programs:,} programs for "
         f"{len(mapped_tvg_ids)} mapped stations from Schedules Direct "
@@ -3565,9 +3803,7 @@ def parse_xmltv_time(time_str):
 def parse_schedules_direct_time(time_str):
     try:
         dt_obj = datetime.strptime(time_str, '%Y-%m-%dT%H:%M:%SZ')
-        aware_dt = timezone.make_aware(dt_obj, timezone=dt_timezone.utc)
-        logger.debug(f"Parsed Schedules Direct time '{time_str}' to {aware_dt}")
-        return aware_dt
+        return timezone.make_aware(dt_obj, timezone=dt_timezone.utc)
     except Exception as e:
         logger.error(f"Error parsing Schedules Direct time '{time_str}': {e}", exc_info=True)
         raise

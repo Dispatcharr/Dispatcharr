@@ -2348,27 +2348,9 @@ class ChannelViewSet(viewsets.ModelViewSet):
 
         channels_updated = len(channels_to_update)
 
-        # Trigger program refresh only for EPG ids newly assigned (skip dummy/SD)
-        from apps.epg.tasks import parse_programs_for_tvg_id
-        from apps.epg.models import EPGData
+        from apps.epg.tasks import dispatch_program_refresh_for_epg_ids
 
-        # Batch fetch EPG data (single query)
-        epg_data_dict = {
-            epg.id: epg
-            for epg in EPGData.objects.filter(id__in=changed_epg_ids).select_related('epg_source')
-        }
-
-        programs_refreshed = 0
-        for epg_id in changed_epg_ids:
-            epg_data = epg_data_dict.get(epg_id)
-            if not epg_data:
-                logger.error(f"EPGData with ID {epg_id} not found")
-                continue
-
-            source_type = epg_data.epg_source.source_type if epg_data.epg_source else None
-            if source_type != 'dummy':
-                parse_programs_for_tvg_id.delay(epg_id)
-                programs_refreshed += 1
+        programs_refreshed = dispatch_program_refresh_for_epg_ids(changed_epg_ids)
 
         return Response(
             {

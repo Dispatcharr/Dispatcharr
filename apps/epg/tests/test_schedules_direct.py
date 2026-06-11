@@ -770,6 +770,235 @@ class ParseSchedulesDirectTimeTests(TestCase):
 
 
 # ---------------------------------------------------------------------------
+# dispatch_program_refresh_for_epg_ids tests
+# ---------------------------------------------------------------------------
+
+class SDDispatchProgramRefreshTests(TestCase):
+    """Bulk SD assignment should batch guide fetches above the threshold."""
+
+    STATION = '10001'
+
+    def _make_sd_source(self):
+        return EPGSource.objects.create(
+            name='SD Dispatch Test',
+            source_type='schedules_direct',
+            username='sduser',
+            password='sdpass',
+        )
+
+    def _make_xml_source(self):
+        return EPGSource.objects.create(
+            name='XML Dispatch Test',
+            source_type='xmltv',
+            url='http://example.com/epg.xml',
+        )
+
+    @patch('apps.epg.tasks.fetch_sd_mapped_guide_batch.delay')
+    @patch('apps.epg.tasks.parse_programs_for_tvg_id.delay')
+    def test_xmltv_still_uses_parse_programs_per_id(
+        self, mock_parse_delay, mock_batch_delay,
+    ):
+        from apps.epg.tasks import dispatch_program_refresh_for_epg_ids
+
+        xml_source = self._make_xml_source()
+        epg = EPGData.objects.create(
+            tvg_id='xml-1',
+            name='XML Channel',
+            epg_source=xml_source,
+        )
+
+        count = dispatch_program_refresh_for_epg_ids({epg.id})
+
+        self.assertEqual(count, 1)
+        mock_parse_delay.assert_called_once_with(epg.id)
+        mock_batch_delay.assert_not_called()
+
+    @patch('apps.epg.tasks.fetch_sd_mapped_guide_batch.delay')
+    @patch('apps.epg.tasks.parse_programs_for_tvg_id.delay')
+    def test_sd_below_threshold_uses_per_epg_tasks(
+        self, mock_parse_delay, mock_batch_delay,
+    ):
+        from apps.epg.tasks import dispatch_program_refresh_for_epg_ids
+
+        source = self._make_sd_source()
+        epgs = [
+            EPGData.objects.create(
+                tvg_id=f'{self.STATION}{i}',
+                name=f'Station {i}',
+                epg_source=source,
+            )
+            for i in range(2)
+        ]
+
+        count = dispatch_program_refresh_for_epg_ids({e.id for e in epgs})
+
+        self.assertEqual(count, 2)
+        self.assertEqual(mock_parse_delay.call_count, 2)
+        mock_batch_delay.assert_not_called()
+
+    @patch('apps.epg.tasks.fetch_sd_mapped_guide_batch.delay')
+    @patch('apps.epg.tasks.parse_programs_for_tvg_id.delay')
+    def test_sd_at_threshold_uses_batched_fetch(
+        self, mock_parse_delay, mock_batch_delay,
+    ):
+        from apps.epg.tasks import dispatch_program_refresh_for_epg_ids
+
+        source = self._make_sd_source()
+        epgs = [
+            EPGData.objects.create(
+                tvg_id=f'{self.STATION}{i}',
+                name=f'Station {i}',
+                epg_source=source,
+            )
+            for i in range(3)
+        ]
+
+        count = dispatch_program_refresh_for_epg_ids({e.id for e in epgs})
+
+        self.assertEqual(count, 1)
+        mock_batch_delay.assert_called_once_with(source.id)
+        mock_parse_delay.assert_not_called()
+
+    @patch('apps.epg.tasks.fetch_sd_mapped_guide_batch.delay')
+    @patch('apps.epg.tasks.parse_programs_for_tvg_id.delay')
+    def test_sd_skips_when_program_data_exists(
+        self, mock_parse_delay, mock_batch_delay,
+    ):
+        from apps.epg.tasks import dispatch_program_refresh_for_epg_ids
+
+        source = self._make_sd_source()
+        epg = EPGData.objects.create(
+            tvg_id=self.STATION,
+            name='Has Data',
+            epg_source=source,
+        )
+        start = timezone.now()
+        ProgramData.objects.create(
+            epg=epg,
+            start_time=start,
+            end_time=start + timedelta(hours=1),
+            title='Show',
+            tvg_id=epg.tvg_id,
+        )
+
+        count = dispatch_program_refresh_for_epg_ids({epg.id})
+
+        self.assertEqual(count, 0)
+        mock_parse_delay.assert_not_called()
+        mock_batch_delay.assert_not_called()
+
+
+class SDGuideFetchCoordinationTests(TestCase):
+    """Batch and single-EPG SD fetches coordinate via locks and deferred retries."""
+
+    STATION = '10001'
+
+    def _make_sd_source(self):
+        return EPGSource.objects.create(
+            name='SD Coordination',
+            source_type='schedules_direct',
+            username='sduser',
+            password='sdpass',
+        )
+
+    @patch('apps.epg.tasks.fetch_schedules_direct')
+    @patch('apps.epg.tasks.acquire_task_lock', return_value=False)
+    @patch('apps.epg.tasks.fetch_sd_mapped_guide_batch.apply_async')
+    def test_batch_fetch_defers_when_lock_held(
+        self, mock_apply_async, mock_acquire, mock_fetch,
+    ):
+        from apps.epg.tasks import (
+            fetch_sd_mapped_guide_batch,
+            SD_MAPPED_GUIDE_BATCH_DEFER_SECONDS,
+        )
+
+        source = self._make_sd_source()
+        result = fetch_sd_mapped_guide_batch(source.id)
+
+        self.assertEqual(result, 'Deferred - batch already in progress')
+        mock_apply_async.assert_called_once_with(
+            args=[source.id],
+            kwargs={'force': False, '_defer_retry': 1},
+            countdown=SD_MAPPED_GUIDE_BATCH_DEFER_SECONDS,
+        )
+        mock_fetch.assert_not_called()
+
+    @patch('apps.epg.tasks.fetch_schedules_direct')
+    @patch('apps.epg.tasks.acquire_task_lock', return_value=False)
+    @patch('apps.epg.tasks.fetch_sd_mapped_guide_batch.apply_async')
+    def test_batch_fetch_stops_after_max_defer_retries(
+        self, mock_apply_async, mock_acquire, mock_fetch,
+    ):
+        from apps.epg.tasks import fetch_sd_mapped_guide_batch
+
+        source = self._make_sd_source()
+        result = fetch_sd_mapped_guide_batch(source.id, _defer_retry=2)
+
+        self.assertEqual(result, 'Task already running')
+        mock_apply_async.assert_not_called()
+        mock_fetch.assert_not_called()
+
+    @patch('apps.epg.tasks.fetch_schedules_direct')
+    @patch('apps.epg.tasks.acquire_task_lock', return_value=True)
+    @patch('apps.epg.tasks.release_task_lock')
+    @patch('apps.epg.tasks.TaskLockRenewer')
+    @patch('apps.epg.tasks.is_task_lock_held', return_value=True)
+    @patch('apps.epg.tasks.fetch_sd_guide_for_epg.apply_async')
+    def test_single_epg_defers_while_batch_running(
+        self, mock_apply_async, mock_batch_held, mock_renewer,
+        mock_release, mock_acquire, mock_fetch,
+    ):
+        from apps.epg.tasks import (
+            fetch_sd_guide_for_epg,
+            SD_MAPPED_GUIDE_BATCH_DEFER_SECONDS,
+        )
+
+        source = self._make_sd_source()
+        epg = EPGData.objects.create(
+            tvg_id=self.STATION,
+            name='Deferred Station',
+            epg_source=source,
+        )
+
+        result = fetch_sd_guide_for_epg(epg.id)
+
+        self.assertEqual(result, 'Deferred - mapped batch in progress')
+        mock_apply_async.assert_called_once_with(
+            args=[epg.id],
+            kwargs={'force': False, '_defer_retry': 1},
+            countdown=SD_MAPPED_GUIDE_BATCH_DEFER_SECONDS,
+        )
+        mock_fetch.assert_not_called()
+        mock_acquire.assert_not_called()
+
+    @patch('apps.epg.tasks.fetch_schedules_direct')
+    @patch('apps.epg.tasks.acquire_task_lock', return_value=True)
+    @patch('apps.epg.tasks.release_task_lock')
+    @patch('apps.epg.tasks.TaskLockRenewer')
+    @patch('apps.epg.tasks.is_task_lock_held', return_value=True)
+    @patch('apps.epg.tasks.fetch_sd_guide_for_epg.apply_async')
+    def test_single_epg_proceeds_after_max_batch_deferrals(
+        self, mock_apply_async, mock_batch_held, mock_renewer,
+        mock_release, mock_acquire, mock_fetch,
+    ):
+        from apps.epg.tasks import fetch_sd_guide_for_epg
+
+        source = self._make_sd_source()
+        epg = EPGData.objects.create(
+            tvg_id=self.STATION,
+            name='Fallback Station',
+            epg_source=source,
+        )
+
+        result = fetch_sd_guide_for_epg(epg.id, _defer_retry=2)
+
+        self.assertEqual(result, 'SD guide fetch complete')
+        mock_apply_async.assert_not_called()
+        mock_fetch.assert_called_once()
+        mock_acquire.assert_called_once_with('parse_epg_programs', epg.id)
+
+
+# ---------------------------------------------------------------------------
 # Signal tests
 # ---------------------------------------------------------------------------
 

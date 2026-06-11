@@ -2570,20 +2570,18 @@ def sync_auto_channels(account_id, scan_start_time=None):
 
                 channels_created += len(channel_objs)
 
-                # One EPG parse task per unique EPGData replaces the
-                # per-channel post_save dispatch bypassed by bulk_create.
-                from apps.epg.tasks import parse_programs_for_tvg_id
+                from apps.epg.tasks import dispatch_program_refresh_for_epg_ids
 
                 unique_epg_ids = {
                     ch.epg_data_id for ch in channel_objs if ch.epg_data_id
                 }
-                for epg_id in unique_epg_ids:
-                    parse_programs_for_tvg_id.delay(epg_id)
+                parse_dispatched = dispatch_program_refresh_for_epg_ids(unique_epg_ids)
 
                 logger.debug(
                     f"Bulk created {len(channel_objs)} channels in group "
                     f"'{channel_group.name}'; dispatched "
-                    f"{len(unique_epg_ids)} unique EPG parse task(s)"
+                    f"{parse_dispatched} EPG refresh task(s) for "
+                    f"{len(unique_epg_ids)} unique EPG id(s)"
                 )
 
             # bulk_update writes only the columns named in `fields` and
@@ -2597,17 +2595,14 @@ def sync_auto_channels(account_id, scan_start_time=None):
                     batch_size=500,
                 )
                 if epg_dirty_channel_ids:
-                    from apps.epg.tasks import parse_programs_for_tvg_id
+                    from apps.epg.tasks import dispatch_program_refresh_for_epg_ids
 
-                    # Dispatch only for channels whose epg_data_id changed.
-                    # Other dirty channels would queue redundant parses.
                     unique_epg_ids = {
                         ch.epg_data_id
                         for ch in existing_dirty_channels
                         if ch.id in epg_dirty_channel_ids and ch.epg_data_id
                     }
-                    for epg_id in unique_epg_ids:
-                        parse_programs_for_tvg_id.delay(epg_id)
+                    dispatch_program_refresh_for_epg_ids(unique_epg_ids)
                 logger.debug(
                     f"Bulk updated {len(existing_dirty_channels)} existing "
                     f"channels (fields: {sorted(existing_dirty_field_set)})"
