@@ -31,6 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Performance
 
+- **Schedules Direct refresh only fetches guide data for mapped channels.** Schedule MD5 checks and schedule downloads now target mapped lineup stations instead of the entire lineup, and schedule MD5 cache for unmapped stations is pruned each refresh. Unmapped lineup entries no longer trigger wasted schedule API calls when their MD5 changes.
 - **EPG auto-match memory and throughput improvements.**
   - Single-channel matching streams active EPG rows and keeps only the best match plus the top 20 candidates in memory; ML validates at most 21 names per channel instead of embedding the full catalog.
   - Strong fuzzy matches (≥75% single channel, ≥80% bulk) skip ML entirely, avoiding a ~500MB PyTorch load when the fuzzy result is already reliable.
@@ -49,6 +50,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Bulk auto-match completion no longer calls `batch-set-epg` from the WebSocket handler, which had been re-applying every match and queueing redundant `parse_programs_for_tvg_id` tasks even when assignments were unchanged.
 - **Schedules Direct lineup search country dropdown.** The country list was fetched directly from the SD API in the browser, which failed due to CORS and silently fell back to a 14-country hardcoded list. Countries are now included in the `GET sd-lineups` response (server-side fetch with proper User-Agent) so the full SD country list populates correctly. — Thanks [@sethwv](https://github.com/sethwv)
 - **Schedules Direct program poster proxy omitted User-Agent on image requests.** The poster endpoint authenticated with SD correctly but fetched images with only the `token` header, which violates SD's API requirements (error 1003). Image requests now include the standard `Dispatcharr/{version}` User-Agent via `dispatcharr_http_headers()`.
+- **Schedules Direct guide data missing after mapping a channel.** Lineup refreshes cached schedule MD5s for all stations, but `ProgramData` was only written for mapped channels. Mapping a channel later could leave MD5s looking unchanged so schedules were skipped and the channel had no guide until dates rolled outside the cached window. Refreshes now backfill fetch-window dates that lack `ProgramData` (including newly mapped stations with stale cache), fetch program metadata when no local `ProgramData` exists for a `programID`, and clean up orphaned `ProgramData` on unmapped `EPGData` entries. — Thanks [@sethwv](https://github.com/sethwv)
 
 ## [0.26.0] - 2026-06-07
 
