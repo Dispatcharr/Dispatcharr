@@ -1181,12 +1181,13 @@ def _dvr_ffmpeg_retry_backoff_seconds(retry_index):
 
 def _dvr_build_ffmpeg_cmd(stream_url, recording_id, hls_m3u8, hls_seg_pattern, hls_start_number):
     """Build the FFmpeg command for DVR HLS segment recording."""
+    from core.utils import dispatcharr_dvr_user_agent
     return [
         "ffmpeg", "-y",
         "-reconnect", "1",
         "-reconnect_streamed", "1",
         "-reconnect_delay_max", "5",
-        "-user_agent", f"Dispatcharr-DVR/recording-{recording_id}",
+        "-user_agent", dispatcharr_dvr_user_agent(recording_id),
         # Regenerate monotonic PTS to handle erratic/discontinuous timestamps
         # from IPTV sources.
         "-fflags", "+genpts",

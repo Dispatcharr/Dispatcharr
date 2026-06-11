@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Live XC upstream URLs use current credentials.** `_resolve_live_stream_url()` builds `/live/{user}/{pass}/{stream_id}.ts` from transformed account credentials and the stream's provider `stream_id`, so playback stays aligned with the active login after credential or profile changes instead of reusing a stale `stream.url` from sync.
 - **Channel stream switches check pooled capacity.** `get_stream_info_for_switch()` uses `profile_available_for_channel_switch()` when targeting a specific stream, and releases a reserved slot if URL assembly fails after `get_stream()` allocated one.
 - **Live proxy init reads Redis assignment once.** After `generate_stream_url()` reserves a slot, the stream handler reads `channel_stream` / `stream_profile` from Redis instead of calling `get_stream()` again, avoiding double INCR under concurrent release.
+- **Centralized Dispatcharr User-Agent construction in `core.utils`.** Outbound HTTP calls (Schedules Direct API, update checks, logo/VOD fallbacks, DVR recording clients) now use `dispatcharr_user_agent()`, `dispatcharr_dvr_user_agent()`, and `dispatcharr_http_headers()` instead of ad-hoc `Dispatcharr/{version}` strings and stale `Dispatcharr/1.0` fallbacks.
 - **EPG auto-match overhaul** — matching logic moved to `apps/channels/epg_matching.py`; Celery tasks in `tasks.py` are thin wrappers.
   - Single-channel auto-match is now asynchronous: the API returns `202 Accepted` and pushes the result over WebSocket (`single_channel_epg_match`), so large EPG libraries no longer hit the previous 30-second HTTP timeout.
   - Progress, bulk completion, and single-channel results use `send_websocket_update` instead of `async_to_sync(channel_layer.group_send)`, so notifications work reliably under gevent-patched uWSGI and Celery workers.
@@ -46,6 +47,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Wrong channel assignments from global ML similarity; ML validation now checks the fuzzy best match (or top fuzzy candidates as a last resort) instead of scoring the entire catalog.
   - Channel form auto-match spinner could stick after errors or early task exits; all single-channel outcomes now push a WebSocket result, and the UI clears loading state after a 3-minute timeout.
   - Bulk auto-match completion no longer calls `batch-set-epg` from the WebSocket handler, which had been re-applying every match and queueing redundant `parse_programs_for_tvg_id` tasks even when assignments were unchanged.
+- **Schedules Direct lineup search country dropdown.** The country list was fetched directly from the SD API in the browser, which failed due to CORS and silently fell back to a 14-country hardcoded list. Countries are now included in the `GET sd-lineups` response (server-side fetch with proper User-Agent) so the full SD country list populates correctly. — Thanks [@sethwv](https://github.com/sethwv)
+- **Schedules Direct program poster proxy omitted User-Agent on image requests.** The poster endpoint authenticated with SD correctly but fetched images with only the `token` header, which violates SD's API requirements (error 1003). Image requests now include the standard `Dispatcharr/{version}` User-Agent via `dispatcharr_http_headers()`.
 
 ## [0.26.0] - 2026-06-07
 

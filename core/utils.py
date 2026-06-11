@@ -21,6 +21,33 @@ logger = logging.getLogger(__name__)
 # Import the command detector
 from .command_utils import is_management_command
 
+
+def dispatcharr_user_agent():
+    """Return the standard Dispatcharr User-Agent string (Dispatcharr/{version})."""
+    from version import __version__
+    return f'Dispatcharr/{__version__}'
+
+
+def dispatcharr_dvr_user_agent(recording_id):
+    """Return the User-Agent string used by DVR FFmpeg clients for a recording."""
+    return f'Dispatcharr-DVR/recording-{recording_id}'
+
+
+def dispatcharr_http_headers(*, token=None, content_type='application/json'):
+    """
+    Build HTTP headers for outbound Dispatcharr requests.
+
+    content_type=None omits Content-Type (e.g. simple GET proxies).
+    token is included when authenticating with Schedules Direct.
+    """
+    headers = {'User-Agent': dispatcharr_user_agent()}
+    if content_type:
+        headers['Content-Type'] = content_type
+    if token:
+        headers['token'] = token
+    return headers
+
+
 def natural_sort_key(text):
     """
     Convert a string into a list of string and number chunks for natural sorting.
