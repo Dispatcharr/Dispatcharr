@@ -6,6 +6,35 @@ from apps.epg.models import EPGSource
 from core.models import CoreSettings, DVR_SETTINGS_KEY, EPG_SETTINGS_KEY
 
 
+class DispatcharrUserAgentTests(TestCase):
+    @patch('version.__version__', '1.2.3')
+    def test_dispatcharr_user_agent(self):
+        from core.utils import dispatcharr_user_agent
+        self.assertEqual(dispatcharr_user_agent(), 'Dispatcharr/1.2.3')
+
+    def test_dispatcharr_dvr_user_agent(self):
+        from core.utils import dispatcharr_dvr_user_agent
+        self.assertEqual(dispatcharr_dvr_user_agent(42), 'Dispatcharr-DVR/recording-42')
+
+    @patch('version.__version__', '1.2.3')
+    def test_dispatcharr_http_headers_with_token(self):
+        from core.utils import dispatcharr_http_headers
+        headers = dispatcharr_http_headers(token='tok123')
+        self.assertEqual(headers, {
+            'User-Agent': 'Dispatcharr/1.2.3',
+            'Content-Type': 'application/json',
+            'token': 'tok123',
+        })
+
+    @patch('version.__version__', '1.2.3')
+    def test_dispatcharr_http_headers_without_content_type(self):
+        from core.utils import dispatcharr_http_headers
+        self.assertEqual(
+            dispatcharr_http_headers(content_type=None),
+            {'User-Agent': 'Dispatcharr/1.2.3'},
+        )
+
+
 class ProgrammeIndexRebuildTests(TestCase):
     def test_startup_rebuild_does_not_lock_out_queued_build_task(self):
         EPGSource.objects.update(

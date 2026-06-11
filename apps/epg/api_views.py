@@ -128,7 +128,7 @@ class EPGSourceViewSet(viewsets.ModelViewSet):
         import hashlib
         import requests as http_requests
         from apps.epg.tasks import SD_BASE_URL
-        from version import __version__ as dispatcharr_version
+        from core.utils import dispatcharr_http_headers
 
         username = (source.username or '').strip()
         password = (source.password or '').strip()
@@ -143,7 +143,7 @@ class EPGSourceViewSet(viewsets.ModelViewSet):
             auth_response = http_requests.post(
                 f"{SD_BASE_URL}/token",
                 json={'username': username, 'password': sha1_password},
-                headers={'Content-Type': 'application/json', 'User-Agent': f'Dispatcharr/{dispatcharr_version}'},
+                headers=dispatcharr_http_headers(),
                 timeout=15,
             )
             auth_response.raise_for_status()
@@ -231,12 +231,12 @@ class EPGSourceViewSet(viewsets.ModelViewSet):
         """Fetch the SD country list (token not required; User-Agent is)."""
         import requests as http_requests
         from apps.epg.tasks import SD_BASE_URL
-        from version import __version__ as dispatcharr_version
+        from core.utils import dispatcharr_http_headers
 
         try:
             resp = http_requests.get(
                 f"{SD_BASE_URL}/available/countries",
-                headers={'User-Agent': f'Dispatcharr/{dispatcharr_version}'},
+                headers=dispatcharr_http_headers(content_type=None),
                 timeout=15,
             )
             resp.raise_for_status()
@@ -254,7 +254,7 @@ class EPGSourceViewSet(viewsets.ModelViewSet):
         """
         import requests as http_requests
         from apps.epg.tasks import SD_BASE_URL
-        from version import __version__ as dispatcharr_version
+        from core.utils import dispatcharr_http_headers
 
         source = self.get_object()
         if source.source_type != 'schedules_direct':
@@ -267,11 +267,7 @@ class EPGSourceViewSet(viewsets.ModelViewSet):
         if error:
             return error
 
-        headers = {
-            'Content-Type': 'application/json',
-            'User-Agent': f'Dispatcharr/{dispatcharr_version}',
-            'token': token,
-        }
+        headers = dispatcharr_http_headers(token=token)
 
         if request.method == "GET":
             countries = self._fetch_sd_countries()
@@ -420,7 +416,7 @@ class EPGSourceViewSet(viewsets.ModelViewSet):
         """
         import requests as http_requests
         from apps.epg.tasks import SD_BASE_URL
-        from version import __version__ as dispatcharr_version
+        from core.utils import dispatcharr_http_headers
 
         source = self.get_object()
         if source.source_type != 'schedules_direct':
@@ -441,11 +437,7 @@ class EPGSourceViewSet(viewsets.ModelViewSet):
         if error:
             return error
 
-        headers = {
-            'Content-Type': 'application/json',
-            'User-Agent': f'Dispatcharr/{dispatcharr_version}',
-            'token': token,
-        }
+        headers = dispatcharr_http_headers(token=token)
 
         try:
             resp = http_requests.get(
@@ -514,6 +506,7 @@ class ProgramViewSet(viewsets.ModelViewSet):
         """Proxy endpoint for SD program poster images. Nginx caches the response."""
         import requests as http_requests
         from apps.epg.tasks import SD_BASE_URL
+        from core.utils import dispatcharr_http_headers
 
         program = self.get_object()
         poster_sd_url = (program.custom_properties or {}).get('sd_icon')
@@ -537,14 +530,10 @@ class ProgramViewSet(viewsets.ModelViewSet):
         if not token:
             sha1_password = hashlib.sha1(source.password.encode('utf-8')).hexdigest()
             try:
-                from version import __version__ as dispatcharr_version
                 auth_resp = http_requests.post(
                     f"{SD_BASE_URL}/token",
                     json={'username': source.username, 'password': sha1_password},
-                    headers={
-                        'Content-Type': 'application/json',
-                        'User-Agent': f'Dispatcharr/{dispatcharr_version}',
-                    },
+                    headers=dispatcharr_http_headers(),
                     timeout=10,
                 )
                 auth_data = auth_resp.json()
@@ -570,7 +559,7 @@ class ProgramViewSet(viewsets.ModelViewSet):
         try:
             img_resp = http_requests.get(
                 poster_sd_url,
-                headers={'token': token},
+                headers=dispatcharr_http_headers(token=token, content_type=None),
                 timeout=15,
                 allow_redirects=True,
             )

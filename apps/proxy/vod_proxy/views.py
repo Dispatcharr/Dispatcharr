@@ -23,6 +23,7 @@ from rest_framework_simplejwt.authentication import JWTAuthentication
 from apps.accounts.authentication import ApiKeyAuthentication, QueryParamJWTAuthentication
 from apps.proxy.utils import check_user_stream_limits
 from dispatcharr.utils import network_access_allowed
+from core.utils import dispatcharr_user_agent
 
 logger = logging.getLogger(__name__)
 
@@ -704,7 +705,7 @@ def head_vod(request, content_type, content_id, session_id=None, profile_id=None
         # Use M3U account's user agent as primary, client user agent as fallback
         m3u_user_agent = m3u_account.get_user_agent().user_agent if m3u_account.get_user_agent() else None
         headers = {
-            'User-Agent': m3u_user_agent or client_user_agent or 'Dispatcharr/1.0',
+            'User-Agent': m3u_user_agent or client_user_agent or dispatcharr_user_agent(),
             'Accept': '*/*',
             'Range': 'bytes=0-1'  # Request only first 2 bytes
         }
