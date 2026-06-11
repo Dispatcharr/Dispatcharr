@@ -1716,43 +1716,36 @@ def _pick_target_number(
     fixed_cursor,
     fallback_start,
     end_number=None,
-    range_start=None,
 ):
     """
-    Return the channel number a given stream should claim under the group's
-    numbering mode, or None if the configured range is exhausted.
+    Return the channel number a stream should claim under the group's numbering
+    mode, or None if the range is exhausted. Shared by the renumber and create
+    passes. Each mode reads only the fields its UI exposes:
 
-    Shared by the existing-channel renumber pass and the new-channel create
-    pass so both honor identical mode semantics: provider-supplied number
-    when available and free, otherwise fall back; or always next-available;
-    or fixed-cursor sequential.
-
-    `range_start`, when provided, is the inclusive lower bound for the
-    group's configured numbering range. Provider-supplied numbers below
-    this bound fall back to the next-available picker so freshly-created
-    channels never land outside the configured range.
+    - provider: the provider number is authoritative and used as-is when free.
+      Start (`channel_numbering_fallback`) and End bound only the fallback for
+      streams with no provider number; `auto_sync_channel_start` does not apply.
+    - next_available: lowest free number from 1; End does not apply (its UI has
+      no range, so a stale End must not cap it).
+    - fixed: sequential from the cursor, bounded by End.
     """
     if mode == "provider":
         chno = stream.stream_chno
-        if (
-            chno is not None
-            and chno not in used_numbers
-            and (range_start is None or chno >= range_start)
-            and (end_number is None or chno <= end_number)
-        ):
+        if chno is not None and chno not in used_numbers:
             return chno
-        # No usable provider number: walk from fallback_start, bumped up
-        # to range_start when set so the fallback never lands below the
-        # configured range.
-        effective_start = (
-            max(fallback_start, range_start)
-            if range_start is not None
-            else fallback_start
-        )
-        return _next_available_number(used_numbers, effective_start, end=end_number)
+        # No usable provider number: fall back into the configured range.
+        return _next_available_number(used_numbers, fallback_start, end=end_number)
     if mode == "next_available":
-        return _next_available_number(used_numbers, 1, end=end_number)
+        return _next_available_number(used_numbers, 1)
     return _next_available_number(used_numbers, fixed_cursor, end=end_number)
+
+
+def _range_exhausted_error(mode, start_number, end_number, fallback_start):
+    """User-facing range text for RANGE_EXHAUSTED failures."""
+    range_start = (
+        int(fallback_start) if mode == "provider" else int(start_number)
+    )
+    return f"Channel number range {range_start}-{int(end_number)} is full"
 
 
 def _custom_properties_as_dict(value):
@@ -2253,7 +2246,6 @@ def sync_auto_channels(account_id, scan_start_time=None):
                         temp_channel_number,
                         channel_numbering_fallback,
                         end_number=end_number,
-                        range_start=start_number,
                     )
 
                     # Range exhausted: leave the channel at its existing
@@ -2290,17 +2282,16 @@ def sync_auto_channels(account_id, scan_start_time=None):
                     f"Renumbered {len(channels_to_renumber)} channels to maintain sort order"
                 )
 
-            # When the group's configured range is narrower than its existing
-            # channels span, any non-hidden auto-created channel whose number
-            # falls outside [start, end] gets deleted. The new-channel
-            # creation loop below picks up the freed stream and re-creates
-            # the channel at a slot inside the new range, so the net user
-            # outcome is a renumber, not a failure. Counted in
-            # channels_deleted; the replacement counts in channels_created.
-            # Hidden channels are preserved. Runs BEFORE new-channel creation
-            # so slots freed by the deletions are available to incoming
-            # streams.
-            if end_number is not None:
+            # Range enforcement runs in fixed mode only: it is the one mode with
+            # a user-set [start, end]. Provider numbers are authoritative and
+            # next_available has no range, so their channels are never deleted
+            # for falling outside start/end.
+            #
+            # Channels outside the range are deleted (hidden ones preserved);
+            # the creation loop below re-adds the freed streams inside the range,
+            # so the net effect is a renumber, not a failure. Runs first so the
+            # freed slots are available.
+            if end_number is not None and channel_numbering_mode == "fixed":
                 overflow_delete_ids = []
                 for stream_id, ch in list(existing_channel_map.items()):
                     if ch.hidden_from_output:
@@ -2461,7 +2452,6 @@ def sync_auto_channels(account_id, scan_start_time=None):
                             current_channel_number,
                             channel_numbering_fallback,
                             end_number=end_number,
-                            range_start=start_number,
                         )
 
                         if target_number is None:
@@ -2472,9 +2462,11 @@ def sync_auto_channels(account_id, scan_start_time=None):
                                     "stream_id": stream.id,
                                     "group": channel_group.name,
                                     "reason": "RANGE_EXHAUSTED",
-                                    "error": (
-                                        f"Channel number range "
-                                        f"{int(start_number)}-{int(end_number)} is full"
+                                    "error": _range_exhausted_error(
+                                        channel_numbering_mode,
+                                        start_number,
+                                        end_number,
+                                        channel_numbering_fallback,
                                     ),
                                 })
                             processed_stream_ids.add(stream.id)
