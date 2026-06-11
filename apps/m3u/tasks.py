@@ -1740,6 +1740,14 @@ def _pick_target_number(
     return _next_available_number(used_numbers, fixed_cursor, end=end_number)
 
 
+def _range_exhausted_error(mode, start_number, end_number, fallback_start):
+    """User-facing range text for RANGE_EXHAUSTED failures."""
+    range_start = (
+        int(fallback_start) if mode == "provider" else int(start_number)
+    )
+    return f"Channel number range {range_start}-{int(end_number)} is full"
+
+
 def _custom_properties_as_dict(value):
     """
     Normalize a JSONField-backed custom_properties value into a dict.
@@ -2454,9 +2462,11 @@ def sync_auto_channels(account_id, scan_start_time=None):
                                     "stream_id": stream.id,
                                     "group": channel_group.name,
                                     "reason": "RANGE_EXHAUSTED",
-                                    "error": (
-                                        f"Channel number range "
-                                        f"{int(start_number)}-{int(end_number)} is full"
+                                    "error": _range_exhausted_error(
+                                        channel_numbering_mode,
+                                        start_number,
+                                        end_number,
+                                        channel_numbering_fallback,
                                     ),
                                 })
                             processed_stream_ids.add(stream.id)

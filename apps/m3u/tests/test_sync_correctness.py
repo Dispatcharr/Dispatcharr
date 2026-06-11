@@ -2494,6 +2494,30 @@ class ProviderNumberingHonorsProviderNumberTests(TestCase):
         manual.refresh_from_db()
         self.assertEqual(manual.channel_number, 88250.0)
 
+    def test_provider_fallback_exhaustion_reports_visible_start(self):
+        # RANGE_EXHAUSTED must cite the fallback range (channel_numbering_fallback
+        # to End), not the hidden auto_sync_channel_start left from another mode.
+        account = _make_account()
+        group = _make_group(name="PPV")
+        rel = _attach_group_to_account(account, group)
+        rel.auto_sync_channel_start = 5000
+        rel.auto_sync_channel_end = 102
+        rel.custom_properties = {
+            "channel_numbering_mode": "provider",
+            "channel_numbering_fallback": 100,
+        }
+        rel.save()
+        for i in range(4):
+            _make_stream(account, group, name=f"S{i}", tvg_id=f"s{i}")
+
+        result = _sync(account)
+
+        self.assertEqual(result["channels_created"], 3)
+        self.assertEqual(result["channels_failed"], 1)
+        error = result["failed_stream_details"][0]["error"]
+        self.assertIn("100-102", error)
+        self.assertNotIn("5000", error)
+
 
 class CrossModeNumberingFieldTests(TestCase):
     """
