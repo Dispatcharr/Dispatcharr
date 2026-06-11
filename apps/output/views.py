@@ -3,7 +3,7 @@ import json
 from django.urls import reverse
 from apps.channels.models import Channel, ChannelProfile, ChannelGroup, Stream
 from apps.channels.utils import format_channel_number
-from django.db.models import Prefetch
+from django.db.models import Prefetch, F
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 from apps.epg.models import ProgramData
@@ -2549,7 +2549,9 @@ def xc_get_vod_categories(user):
     # All authenticated users get access to VOD from all active M3U accounts
     categories = VODCategory.objects.filter(
         category_type='movie',
-        m3umovierelation__m3u_account__is_active=True
+        m3umovierelation__m3u_account__is_active=True,
+        m3u_relations__enabled=True,
+        m3u_relations__m3u_account__is_active=True,
     ).distinct().order_by(Lower("name"))
 
     for category in categories:
@@ -2574,6 +2576,10 @@ def xc_get_vod_streams(request, user, category_id=None):
     base_qs = (
         M3UMovieRelation.objects
         .filter(**rel_filters)
+        .filter(
+            category__m3u_relations__enabled=True,
+            category__m3u_relations__m3u_account=F('m3u_account'),
+        )
         .select_related('movie', 'movie__logo', 'category')
     )
 
@@ -2654,7 +2660,9 @@ def xc_get_series_categories(user):
     # All authenticated users get access to series from all active M3U accounts
     categories = VODCategory.objects.filter(
         category_type='series',
-        m3useriesrelation__m3u_account__is_active=True
+        m3useriesrelation__m3u_account__is_active=True,
+        m3u_relations__enabled=True,
+        m3u_relations__m3u_account__is_active=True,
     ).distinct().order_by(Lower("name"))
 
     for category in categories:
@@ -2679,6 +2687,10 @@ def xc_get_series(request, user, category_id=None):
     base_qs = (
         M3USeriesRelation.objects
         .filter(**rel_filters)
+        .filter(
+            category__m3u_relations__enabled=True,
+            category__m3u_relations__m3u_account=F('m3u_account'),
+        )
         .select_related('series', 'series__logo', 'category')
     )
 
