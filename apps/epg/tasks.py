@@ -2242,17 +2242,10 @@ def fetch_schedules_direct(source, stations_only=False, force=False):
     # SD API spec requires the User-Agent to identify the application and version.
     # SergeantPanda confirmed Dispatcharr should identify itself properly.
     # -------------------------------------------------------------------------
-    from version import __version__ as dispatcharr_version
-    sd_user_agent = f"Dispatcharr/{dispatcharr_version}"
+    from core.utils import dispatcharr_http_headers
 
     def _sd_headers(token=None):
-        h = {
-            'Content-Type': 'application/json',
-            'User-Agent': sd_user_agent,
-        }
-        if token:
-            h['token'] = token
-        return h
+        return dispatcharr_http_headers(token=token)
 
     def _sd_post_refresh_tasks(mapped_epg_ids, program_metadata, today):
         """Poster fetch, logo auto-apply, and pruning — runs even when schedules are unchanged."""

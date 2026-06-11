@@ -2800,8 +2800,9 @@ class LogoViewSet(viewsets.ModelViewSet):
                     user_agent_obj = UserAgent.objects.get(id=int(default_user_agent_id))
                     user_agent = user_agent_obj.user_agent
                 except (CoreSettings.DoesNotExist, UserAgent.DoesNotExist, ValueError):
-                    # Fallback to hardcoded if default not found
-                    user_agent = 'Dispatcharr/1.0'
+                    # Fallback if default not found
+                    from core.utils import dispatcharr_user_agent
+                    user_agent = dispatcharr_user_agent()
 
                 # Hard total timeout (connect + full download) prevents a slow
                 # server dripping bytes from holding a greenlet indefinitely.

@@ -796,11 +796,11 @@ def check_for_version_update():
     from packaging import version as pkg_version
     from version import __version__, __timestamp__
     from core.models import SystemNotification
-    from core.utils import send_websocket_notification
+    from core.utils import dispatcharr_http_headers, send_websocket_notification
 
     try:
         is_dev_build = __timestamp__ is not None
-        DISPATCHARR_HEADERS = {'User-Agent': f'Dispatcharr/{__version__}'}
+        DISPATCHARR_HEADERS = dispatcharr_http_headers(content_type=None)
 
         if is_dev_build:
             # Check Docker Hub for newer dev builds
