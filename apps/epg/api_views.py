@@ -53,7 +53,7 @@ class EPGSourceViewSet(viewsets.ModelViewSet):
         try:
             return [perm() for perm in permission_classes_by_action[self.action]]
         except KeyError:
-            if self.action in ('sd_lineups', 'sd_lineups_search', 'sd_countries'):
+            if self.action in ('sd_lineups', 'sd_lineups_search'):
                 if self.request.method == 'GET':
                     return [IsStandardUser()]
                 return [IsAdmin()]
@@ -227,6 +227,24 @@ class EPGSourceViewSet(viewsets.ModelViewSet):
             f"Lockout set until {reset_at.isoformat()}."
         )
 
+    def _fetch_sd_countries(self):
+        """Fetch the SD country list (token not required; User-Agent is)."""
+        import requests as http_requests
+        from apps.epg.tasks import SD_BASE_URL
+        from version import __version__ as dispatcharr_version
+
+        try:
+            resp = http_requests.get(
+                f"{SD_BASE_URL}/available/countries",
+                headers={'User-Agent': f'Dispatcharr/{dispatcharr_version}'},
+                timeout=15,
+            )
+            resp.raise_for_status()
+            return resp.json()
+        except http_requests.exceptions.RequestException as e:
+            logger.warning(f"Failed to fetch SD countries: {e}")
+            return None
+
     @action(detail=True, methods=["get", "post", "delete"], url_path="sd-lineups")
     def sd_lineups(self, request, pk=None):
         """
@@ -256,6 +274,7 @@ class EPGSourceViewSet(viewsets.ModelViewSet):
         }
 
         if request.method == "GET":
+            countries = self._fetch_sd_countries()
             try:
                 resp = http_requests.get(
                     f"{SD_BASE_URL}/lineups",
@@ -272,6 +291,7 @@ class EPGSourceViewSet(viewsets.ModelViewSet):
                             "changes_remaining": self._get_sd_changes_remaining(source),
                             "changes_reset_at": self._get_sd_reset_at(source),
                             "notice": "No lineups are currently configured on this Schedules Direct account. Use the search below to add one.",
+                            "countries": countries,
                         })
                 resp.raise_for_status()
                 data = resp.json()
@@ -281,6 +301,7 @@ class EPGSourceViewSet(viewsets.ModelViewSet):
                     "max_lineups": 4,
                     "changes_remaining": self._get_sd_changes_remaining(source),
                     "changes_reset_at": self._get_sd_reset_at(source),
+                    "countries": countries,
                 })
             except http_requests.exceptions.RequestException as e:
                 return Response(
@@ -389,31 +410,6 @@ class EPGSourceViewSet(viewsets.ModelViewSet):
                     {"error": f"Failed to remove lineup: {str(e)}"},
                     status=status.HTTP_502_BAD_GATEWAY
                 )
-
-    @action(detail=True, methods=["get"], url_path="sd-countries")
-    def sd_countries(self, request, pk=None):
-        """Proxy /available/countries from the SD API to avoid browser CORS restrictions."""
-        import requests as http_requests
-        from apps.epg.tasks import SD_BASE_URL
-
-        source = self.get_object()
-        if source.source_type != 'schedules_direct':
-            return Response(
-                {"error": "This action is only available for Schedules Direct sources."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        try:
-            resp = http_requests.get(
-                f"{SD_BASE_URL}/available/countries",
-                timeout=15,
-            )
-            resp.raise_for_status()
-            return Response(resp.json())
-        except http_requests.exceptions.RequestException as e:
-            return Response(
-                {"error": f"Failed to fetch countries: {str(e)}"},
-                status=status.HTTP_502_BAD_GATEWAY,
-            )
 
     @action(detail=True, methods=["post"], url_path="sd-lineups/search")
     def sd_lineups_search(self, request, pk=None):
