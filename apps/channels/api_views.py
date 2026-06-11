@@ -2163,22 +2163,14 @@ class ChannelViewSet(viewsets.ModelViewSet):
 
             epg_data = EPGData.objects.get(pk=epg_data_id)
 
-            # Set the EPG data and save
+            # Set the EPG data and save. refresh_epg_programs (post_save) queues
+            # parse_programs_for_tvg_id for non-dummy sources — no second dispatch here.
             channel.epg_data = epg_data
             channel.save(update_fields=["epg_data"])
 
-            # Only trigger program refresh for non-dummy EPG sources
             status_message = None
             if epg_data.epg_source.source_type != 'dummy':
-                # Explicitly trigger program refresh for this EPG
-                from apps.epg.tasks import parse_programs_for_tvg_id
-
-                task_result = parse_programs_for_tvg_id.delay(epg_data.id)
-
-                # Prepare response with task status info
                 status_message = "EPG refresh queued"
-                if task_result.result == "Task already running":
-                    status_message = "EPG refresh already in progress"
 
             # Build response message
             message = f"EPG data set to {epg_data.tvg_id} for channel {channel.name}"
@@ -2374,7 +2366,7 @@ class ChannelViewSet(viewsets.ModelViewSet):
                 continue
 
             source_type = epg_data.epg_source.source_type if epg_data.epg_source else None
-            if source_type not in ('dummy', 'schedules_direct'):
+            if source_type != 'dummy':
                 parse_programs_for_tvg_id.delay(epg_id)
                 programs_refreshed += 1
 

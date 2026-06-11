@@ -327,7 +327,7 @@ def _dispatch_program_parse_for_epg_assignments(changed_associations):
     dispatched = 0
     for epg in EPGData.objects.filter(id__in=epg_ids).select_related("epg_source"):
         source_type = epg.epg_source.source_type if epg.epg_source else None
-        if source_type in ("dummy", "schedules_direct"):
+        if source_type == "dummy":
             continue
         parse_programs_for_tvg_id.delay(epg.id)
         dispatched += 1

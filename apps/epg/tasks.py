@@ -1496,14 +1496,11 @@ def parse_channels_only(source):
 
 @shared_task(time_limit=3600, soft_time_limit=3500)
 def parse_programs_for_tvg_id(epg_id, force=False):
-    # Skip XMLTV file parsing for Schedules Direct sources. Program data is
-    # fetched and persisted directly by fetch_schedules_direct().
     try:
         from apps.epg.models import EPGData
         epg_obj = EPGData.objects.select_related('epg_source').filter(id=epg_id).first()
         if epg_obj and epg_obj.epg_source and epg_obj.epg_source.source_type == 'schedules_direct':
-            logger.info(f"Skipping XMLTV parse for SD EPGData id={epg_id} (source: {epg_obj.epg_source.name})")
-            return "Skipped (Schedules Direct source)"
+            return fetch_sd_guide_for_epg(epg_id, force=force)
     except Exception as e:
         logger.warning(f"Could not check EPG source type for id={epg_id}: {e}")
 
@@ -2139,6 +2136,73 @@ def parse_programs_for_source(epg_source, tvg_id=None):
             process = None
 
 
+def _sd_setup_single_epg_fetch(source, epg_id, token, sd_headers_fn):
+    """Build station_map / epg_id_map for a single mapped EPG entry."""
+    epg = EPGData.objects.filter(id=epg_id, epg_source=source).first()
+    if not epg or not epg.tvg_id:
+        msg = f"Schedules Direct EPG entry {epg_id} not found or missing station ID."
+        logger.error(msg)
+        source.last_message = msg
+        source.save(update_fields=['last_message'])
+        send_epg_update(source.id, "parsing_programs", 100, status="error", error=msg)
+        return None
+
+    sd_lineup_country = None
+    try:
+        lineups_response = requests.get(
+            f"{SD_BASE_URL}/lineups",
+            headers=sd_headers_fn(token),
+            timeout=30,
+        )
+        if lineups_response.ok:
+            for lineup in lineups_response.json().get('lineups', []):
+                lid = lineup.get('lineupID') or lineup.get('lineup') or ''
+                if '-' in lid:
+                    sd_lineup_country = lid.split('-')[0]
+                    break
+    except requests.exceptions.RequestException as e:
+        logger.warning(f"Could not fetch lineups for country code: {e}")
+
+    send_epg_update(
+        source.id, "parsing_programs", 15,
+        message=f"Fetching guide data for {epg.name or epg.tvg_id}...",
+    )
+    station_map = {epg.tvg_id: {'name': epg.name or epg.tvg_id}}
+    epg_id_map = {epg.tvg_id: epg.id}
+    return station_map, epg_id_map, sd_lineup_country, epg
+
+
+@shared_task(time_limit=3600, soft_time_limit=3500)
+def fetch_sd_guide_for_epg(epg_id, force=False):
+    """
+    Fetch Schedules Direct guide data for one mapped EPG entry (channel map flow).
+
+    Skips when ProgramData already exists so additional channels sharing the
+    same EPGData / tvg_id do not trigger redundant API calls.
+    """
+    epg = EPGData.objects.select_related('epg_source').filter(id=epg_id).first()
+    if not epg or not epg.epg_source or epg.epg_source.source_type != 'schedules_direct':
+        return "Not a Schedules Direct EPG entry"
+
+    if not force and ProgramData.objects.filter(epg_id=epg_id).exists():
+        logger.info(f"SD guide fetch skipped for EPG {epg_id}: ProgramData already present")
+        return "Guide data already present"
+
+    if not acquire_task_lock('parse_epg_programs', epg_id):
+        logger.info(f"SD guide fetch for EPG {epg_id} already in progress, skipping duplicate task")
+        return "Task already running"
+
+    lock_renewer = TaskLockRenewer('parse_epg_programs', epg_id)
+    lock_renewer.start()
+    try:
+        logger.info(f"Fetching Schedules Direct guide for EPG {epg_id} ({epg.tvg_id})")
+        fetch_schedules_direct(epg.epg_source, epg_id_only=epg_id, force=force)
+        return "SD guide fetch complete"
+    finally:
+        lock_renewer.stop()
+        release_task_lock('parse_epg_programs', epg_id)
+
+
 @shared_task(bind=True)
 def fetch_schedules_direct_stations(self, source_id):
     """
@@ -2154,7 +2218,7 @@ def fetch_schedules_direct_stations(self, source_id):
     fetch_schedules_direct(source, stations_only=True)
 
 
-def fetch_schedules_direct(source, stations_only=False, force=False):
+def fetch_schedules_direct(source, stations_only=False, force=False, epg_id_only=None):
     """
     Fetch EPG data from the Schedules Direct JSON API and persist it to the
     EPGData / ProgramData models.
@@ -2185,8 +2249,15 @@ def fetch_schedules_direct(source, stations_only=False, force=False):
     import hashlib
     from datetime import date
 
+    single_epg_fetch = epg_id_only is not None
 
-    logger.info(f"Fetching Schedules Direct data for source: {source.name}")
+    if single_epg_fetch:
+        logger.info(
+            f"Fetching Schedules Direct guide for EPG {epg_id_only} "
+            f"(source: {source.name})"
+        )
+    else:
+        logger.info(f"Fetching Schedules Direct data for source: {source.name}")
 
     # -------------------------------------------------------------------------
     # Validate credentials
@@ -2213,7 +2284,7 @@ def fetch_schedules_direct(source, stations_only=False, force=False):
     # updated_at, which would otherwise incorrectly trigger this guard). Always
     # allow the first full refresh through so guide data is immediately available.
     # -------------------------------------------------------------------------
-    if not stations_only and not force and source.updated_at:
+    if not stations_only and not force and not single_epg_fetch and source.updated_at:
         from apps.epg.models import SDScheduleMD5 as _SDScheduleMD5
         has_prior_full_refresh = _SDScheduleMD5.objects.filter(epg_source=source).exists()
         if has_prior_full_refresh:
@@ -2234,7 +2305,7 @@ def fetch_schedules_direct(source, stations_only=False, force=False):
                 return
         else:
             logger.info(f"SD source {source.id}: No prior full refresh detected, skipping 2-hour guard for first full fetch.")
-    elif force and not stations_only:
+    elif force and not stations_only and not single_epg_fetch:
         logger.info(f"SD source {source.id}: Force flag set, bypassing 2-hour refresh guard.")
 
     # -------------------------------------------------------------------------
@@ -2406,9 +2477,10 @@ def fetch_schedules_direct(source, stations_only=False, force=False):
     # This is a requirement of the Schedules Direct API specification, not an
     # architectural choice.
     # -------------------------------------------------------------------------
-    source.status = EPGSource.STATUS_FETCHING
-    source.last_message = "Authenticating with Schedules Direct..."
-    source.save(update_fields=['status', 'last_message'])
+    if not single_epg_fetch:
+        source.status = EPGSource.STATUS_FETCHING
+        source.last_message = "Authenticating with Schedules Direct..."
+        source.save(update_fields=['status', 'last_message'])
     send_epg_update(source.id, "parsing_programs", 2, message="Authenticating with Schedules Direct...")
 
     try:
@@ -2491,191 +2563,201 @@ def fetch_schedules_direct(source, stations_only=False, force=False):
     except requests.exceptions.RequestException as e:
         logger.warning(f"Could not fetch SD system status, proceeding anyway: {e}")
 
-    # -------------------------------------------------------------------------
-    # Step 3: Fetch subscribed lineups and build station map
-    # -------------------------------------------------------------------------
-    send_epg_update(source.id, "parsing_programs", 10, message="Fetching subscribed lineups...")
-    try:
-        lineups_response = requests.get(
-            f"{SD_BASE_URL}/lineups",
-            headers=_sd_headers(token),
-            timeout=30,
-        )
-        # SD returns 400 with code 4102 when no lineups are configured.
-        # This is a valid account state. The user needs to add lineups via
-        # the Manage Lineups UI. Treat as idle rather than error.
-        if lineups_response.status_code == 400:
-            sd_data = lineups_response.json()
-            if sd_data.get('code') == 4102:
+    station_map = None
+    epg_id_map = None
+    sd_lineup_country = None
+
+    if epg_id_only is not None:
+        setup = _sd_setup_single_epg_fetch(source, epg_id_only, token, _sd_headers)
+        if setup is None:
+            return
+        station_map, epg_id_map, sd_lineup_country, _single_epg = setup
+    else:
+        # -------------------------------------------------------------------------
+        # Step 3: Fetch subscribed lineups and build station map
+        # -------------------------------------------------------------------------
+        send_epg_update(source.id, "parsing_programs", 10, message="Fetching subscribed lineups...")
+        try:
+            lineups_response = requests.get(
+                f"{SD_BASE_URL}/lineups",
+                headers=_sd_headers(token),
+                timeout=30,
+            )
+            # SD returns 400 with code 4102 when no lineups are configured.
+            # This is a valid account state. The user needs to add lineups via
+            # the Manage Lineups UI. Treat as idle rather than error.
+            if lineups_response.status_code == 400:
+                sd_data = lineups_response.json()
+                if sd_data.get('code') == 4102:
+                    msg = "No lineups configured. Use the Manage Lineups option in the EPG source settings to add a lineup."
+                    logger.warning(f"SD source {source.id}: no lineups configured on account (4102).")
+                    source.status = EPGSource.STATUS_IDLE
+                    source.last_message = msg
+                    source.save(update_fields=['status', 'last_message'])
+                    send_epg_update(source.id, "refresh", 100, status="idle", message=msg)
+                    return
+            lineups_response.raise_for_status()
+            lineups_data = lineups_response.json()
+            lineups = [l for l in lineups_data.get('lineups', []) if not l.get('isDeleted', False)]
+            if not lineups:
                 msg = "No lineups configured. Use the Manage Lineups option in the EPG source settings to add a lineup."
-                logger.warning(f"SD source {source.id}: no lineups configured on account (4102).")
+                logger.warning(f"SD source {source.id}: no active lineups found.")
                 source.status = EPGSource.STATUS_IDLE
                 source.last_message = msg
                 source.save(update_fields=['status', 'last_message'])
                 send_epg_update(source.id, "refresh", 100, status="idle", message=msg)
                 return
-        lineups_response.raise_for_status()
-        lineups_data = lineups_response.json()
-        lineups = [l for l in lineups_data.get('lineups', []) if not l.get('isDeleted', False)]
-        if not lineups:
-            msg = "No lineups configured. Use the Manage Lineups option in the EPG source settings to add a lineup."
-            logger.warning(f"SD source {source.id}: no active lineups found.")
-            source.status = EPGSource.STATUS_IDLE
+            logger.info(f"Found {len(lineups)} lineup(s) in SD account.")
+    
+            # Extract country from lineup IDs (format: "USA-NJ29486-X", "GBR-...", etc.)
+            sd_lineup_country = None
+            for l in lineups:
+                lid = l.get('lineupID') or l.get('lineup') or ''
+                if '-' in lid:
+                    sd_lineup_country = lid.split('-')[0]
+                    break
+            logger.debug(f"SD lineup country: {sd_lineup_country}")
+        except requests.exceptions.RequestException as e:
+            msg = f"Failed to fetch Schedules Direct lineups: {e}"
+            logger.error(msg, exc_info=True)
+            source.status = EPGSource.STATUS_ERROR
             source.last_message = msg
             source.save(update_fields=['status', 'last_message'])
-            send_epg_update(source.id, "refresh", 100, status="idle", message=msg)
+            send_epg_update(source.id, "refresh", 100, status="error", error=msg)
             return
-        logger.info(f"Found {len(lineups)} lineup(s) in SD account.")
-
-        # Extract country from lineup IDs (format: "USA-NJ29486-X", "GBR-...", etc.)
-        sd_lineup_country = None
-        for l in lineups:
-            lid = l.get('lineupID') or l.get('lineup') or ''
-            if '-' in lid:
-                sd_lineup_country = lid.split('-')[0]
-                break
-        logger.debug(f"SD lineup country: {sd_lineup_country}")
-    except requests.exceptions.RequestException as e:
-        msg = f"Failed to fetch Schedules Direct lineups: {e}"
-        logger.error(msg, exc_info=True)
-        source.status = EPGSource.STATUS_ERROR
-        source.last_message = msg
+    
+        # Build station metadata map: stationID -> {name, callsign, logo_url}
+        station_map = {}
+        send_epg_update(source.id, "parsing_programs", 18, message=f"Fetching station metadata for {len(lineups)} lineup(s)...")
+        for lineup in lineups:
+            lineup_id = lineup.get('lineupID') or lineup.get('lineup')
+            if not lineup_id:
+                continue
+            try:
+                detail_response = requests.get(
+                    f"{SD_BASE_URL}/lineups/{lineup_id}",
+                    headers=_sd_headers(token),
+                    timeout=30,
+                )
+                detail_response.raise_for_status()
+                detail_data = detail_response.json()
+                for station in detail_data.get('stations', []):
+                    sid = station.get('stationID')
+                    if not sid:
+                        continue
+                    logo_url = None
+                    logos = station.get('stationLogo') or station.get('logo') or []
+                    if isinstance(logos, list) and logos:
+                        # Read preferred logo style from source settings; default to 'dark'
+                        logo_style = (source.custom_properties or {}).get('logo_style', 'dark')
+                        preferred = next((l for l in logos if l.get('category') == logo_style), logos[0])
+                        logo_url = preferred.get('URL') or preferred.get('url')
+                    elif isinstance(logos, dict):
+                        logo_url = logos.get('URL') or logos.get('url')
+                    station_map[sid] = {
+                        'name': station.get('name', sid),
+                        'callsign': station.get('callsign', ''),
+                        'logo_url': logo_url,
+                    }
+                logger.debug(f"Fetched {len(detail_data.get('stations', []))} stations from lineup {lineup_id}")
+            except requests.exceptions.RequestException as e:
+                logger.warning(f"Failed to fetch lineup details for {lineup_id}: {e}")
+    
+        if not station_map:
+            msg = "No stations found across all Schedules Direct lineups."
+            logger.warning(msg)
+            source.status = EPGSource.STATUS_ERROR
+            source.last_message = msg
+            source.save(update_fields=['status', 'last_message'])
+            send_epg_update(source.id, "refresh", 100, status="error", error=msg)
+            return
+    
+        logger.info(f"Built station map with {len(station_map)} stations.")
+    
+        # -------------------------------------------------------------------------
+        # Step 4: Persist station metadata to EPGData
+        # -------------------------------------------------------------------------
+        source.status = EPGSource.STATUS_PARSING
+        source.last_message = f"Syncing {len(station_map)} stations..."
         source.save(update_fields=['status', 'last_message'])
-        send_epg_update(source.id, "refresh", 100, status="error", error=msg)
-        return
-
-    # Build station metadata map: stationID -> {name, callsign, logo_url}
-    station_map = {}
-    send_epg_update(source.id, "parsing_programs", 18, message=f"Fetching station metadata for {len(lineups)} lineup(s)...")
-    for lineup in lineups:
-        lineup_id = lineup.get('lineupID') or lineup.get('lineup')
-        if not lineup_id:
-            continue
-        try:
-            detail_response = requests.get(
-                f"{SD_BASE_URL}/lineups/{lineup_id}",
-                headers=_sd_headers(token),
-                timeout=30,
+        send_epg_update(source.id, "parsing_programs", 28, message=f"Syncing {len(station_map)} stations to database...")
+    
+        existing_epg_map = {
+            epg.tvg_id: epg
+            for epg in EPGData.objects.filter(epg_source=source)
+        }
+    
+        epgs_to_create = []
+        epgs_to_update = []
+        icon_max_length = EPGData._meta.get_field('icon_url').max_length
+        name_max_length = EPGData._meta.get_field('name').max_length
+    
+        for sid, info in station_map.items():
+            display_name = (info['name'] or sid)[:name_max_length]
+            logo = info['logo_url']
+            if logo and len(logo) > icon_max_length:
+                logo = None
+    
+            if sid in existing_epg_map:
+                epg_obj = existing_epg_map[sid]
+                needs_update = False
+                if epg_obj.name != display_name:
+                    epg_obj.name = display_name
+                    needs_update = True
+                if epg_obj.icon_url != logo:
+                    epg_obj.icon_url = logo
+                    needs_update = True
+                if needs_update:
+                    epgs_to_update.append(epg_obj)
+            else:
+                epgs_to_create.append(EPGData(
+                    tvg_id=sid,
+                    name=display_name,
+                    icon_url=logo,
+                    epg_source=source,
+                ))
+    
+        if epgs_to_create:
+            EPGData.objects.bulk_create(epgs_to_create, ignore_conflicts=True)
+            logger.info(f"Created {len(epgs_to_create)} new EPGData entries.")
+        if epgs_to_update:
+            EPGData.objects.bulk_update(epgs_to_update, ['name', 'icon_url'])
+            logger.info(f"Updated {len(epgs_to_update)} existing EPGData entries.")
+    
+        gc.collect()
+    
+        # Rebuild map with fresh DB ids for all stations
+        epg_id_map = {
+            epg.tvg_id: epg.id
+            for epg in EPGData.objects.filter(epg_source=source, tvg_id__in=list(station_map.keys()))
+        }
+    
+        # Station sync complete. Send progress update before continuing into programs phase.
+        # We deliberately do NOT send parsing_channels at 100 with status=success here
+        # because that would cause the frontend to mark the source as complete and
+        # stop rendering progress updates for the subsequent program fetch phases.
+        send_epg_update(source.id, "parsing_programs", 30,
+                        message=f"Stations synced ({len(station_map)} stations). Preparing schedule fetch...")
+    
+        # -------------------------------------------------------------------------
+        # Stations-only mode. Used on initial source creation.
+        # Stop here so the user can run Auto-match EPG before the full program fetch.
+        # -------------------------------------------------------------------------
+        if stations_only:
+            success_msg = (
+                f"{len(station_map)} stations loaded from Schedules Direct. "
+                f"Run Auto-match EPG to map your channels, then use the Refresh "
+                f"button to populate guide data."
             )
-            detail_response.raise_for_status()
-            detail_data = detail_response.json()
-            for station in detail_data.get('stations', []):
-                sid = station.get('stationID')
-                if not sid:
-                    continue
-                logo_url = None
-                logos = station.get('stationLogo') or station.get('logo') or []
-                if isinstance(logos, list) and logos:
-                    # Read preferred logo style from source settings; default to 'dark'
-                    logo_style = (source.custom_properties or {}).get('logo_style', 'dark')
-                    preferred = next((l for l in logos if l.get('category') == logo_style), logos[0])
-                    logo_url = preferred.get('URL') or preferred.get('url')
-                elif isinstance(logos, dict):
-                    logo_url = logos.get('URL') or logos.get('url')
-                station_map[sid] = {
-                    'name': station.get('name', sid),
-                    'callsign': station.get('callsign', ''),
-                    'logo_url': logo_url,
-                }
-            logger.debug(f"Fetched {len(detail_data.get('stations', []))} stations from lineup {lineup_id}")
-        except requests.exceptions.RequestException as e:
-            logger.warning(f"Failed to fetch lineup details for {lineup_id}: {e}")
-
-    if not station_map:
-        msg = "No stations found across all Schedules Direct lineups."
-        logger.warning(msg)
-        source.status = EPGSource.STATUS_ERROR
-        source.last_message = msg
-        source.save(update_fields=['status', 'last_message'])
-        send_epg_update(source.id, "refresh", 100, status="error", error=msg)
-        return
-
-    logger.info(f"Built station map with {len(station_map)} stations.")
-
-    # -------------------------------------------------------------------------
-    # Step 4: Persist station metadata to EPGData
-    # -------------------------------------------------------------------------
-    source.status = EPGSource.STATUS_PARSING
-    source.last_message = f"Syncing {len(station_map)} stations..."
-    source.save(update_fields=['status', 'last_message'])
-    send_epg_update(source.id, "parsing_programs", 28, message=f"Syncing {len(station_map)} stations to database...")
-
-    existing_epg_map = {
-        epg.tvg_id: epg
-        for epg in EPGData.objects.filter(epg_source=source)
-    }
-
-    epgs_to_create = []
-    epgs_to_update = []
-    icon_max_length = EPGData._meta.get_field('icon_url').max_length
-    name_max_length = EPGData._meta.get_field('name').max_length
-
-    for sid, info in station_map.items():
-        display_name = (info['name'] or sid)[:name_max_length]
-        logo = info['logo_url']
-        if logo and len(logo) > icon_max_length:
-            logo = None
-
-        if sid in existing_epg_map:
-            epg_obj = existing_epg_map[sid]
-            needs_update = False
-            if epg_obj.name != display_name:
-                epg_obj.name = display_name
-                needs_update = True
-            if epg_obj.icon_url != logo:
-                epg_obj.icon_url = logo
-                needs_update = True
-            if needs_update:
-                epgs_to_update.append(epg_obj)
-        else:
-            epgs_to_create.append(EPGData(
-                tvg_id=sid,
-                name=display_name,
-                icon_url=logo,
-                epg_source=source,
-            ))
-
-    if epgs_to_create:
-        EPGData.objects.bulk_create(epgs_to_create, ignore_conflicts=True)
-        logger.info(f"Created {len(epgs_to_create)} new EPGData entries.")
-    if epgs_to_update:
-        EPGData.objects.bulk_update(epgs_to_update, ['name', 'icon_url'])
-        logger.info(f"Updated {len(epgs_to_update)} existing EPGData entries.")
-
-    gc.collect()
-
-    # Rebuild map with fresh DB ids for all stations
-    epg_id_map = {
-        epg.tvg_id: epg.id
-        for epg in EPGData.objects.filter(epg_source=source, tvg_id__in=list(station_map.keys()))
-    }
-
-    # Station sync complete. Send progress update before continuing into programs phase.
-    # We deliberately do NOT send parsing_channels at 100 with status=success here
-    # because that would cause the frontend to mark the source as complete and
-    # stop rendering progress updates for the subsequent program fetch phases.
-    send_epg_update(source.id, "parsing_programs", 30,
-                    message=f"Stations synced ({len(station_map)} stations). Preparing schedule fetch...")
-
-    # -------------------------------------------------------------------------
-    # Stations-only mode. Used on initial source creation.
-    # Stop here so the user can run Auto-match EPG before the full program fetch.
-    # -------------------------------------------------------------------------
-    if stations_only:
-        success_msg = (
-            f"{len(station_map)} stations loaded from Schedules Direct. "
-            f"Run Auto-match EPG to map your channels, then use the Refresh "
-            f"button to populate guide data."
-        )
-        source.status = EPGSource.STATUS_SUCCESS
-        source.last_message = success_msg
-        source.updated_at = timezone.now()
-        source.save(update_fields=['status', 'last_message', 'updated_at'])
-        send_epg_update(source.id, "parsing_channels", 100, status="success",
-                        message=success_msg, channels_count=len(station_map))
-        logger.info(f"Stations-only fetch complete for source: {source.name} ({len(station_map)} stations)")
-        return
-
+            source.status = EPGSource.STATUS_SUCCESS
+            source.last_message = success_msg
+            source.updated_at = timezone.now()
+            source.save(update_fields=['status', 'last_message', 'updated_at'])
+            send_epg_update(source.id, "parsing_channels", 100, status="success",
+                            message=success_msg, channels_count=len(station_map))
+            logger.info(f"Stations-only fetch complete for source: {source.name} ({len(station_map)} stations)")
+            return
+    
     # -------------------------------------------------------------------------
     # Step 5: MD5-delta schedule fetch
     # Only mapped channels need guide data. Fetch MD5 hashes and schedules for
@@ -2720,6 +2802,12 @@ def fetch_schedules_direct(source, stations_only=False, force=False):
     if not mapped_station_ids:
         logger.info("No channels mapped to this SD source; skipping schedule MD5 check and downloads.")
         _sd_post_refresh_tasks(mapped_epg_ids, {}, today)
+        if single_epg_fetch:
+            msg = "No mapped channel found for this EPG entry; guide fetch skipped."
+            source.last_message = msg
+            source.save(update_fields=['last_message'])
+            send_epg_update(source.id, "parsing_programs", 100, status="idle", message=msg)
+            return
         success_msg = (
             f"{len(station_map)} lineup stations synced. "
             "Map channels to EPG entries, then refresh to populate guide data."
@@ -2828,6 +2916,12 @@ def fetch_schedules_direct(source, stations_only=False, force=False):
     if not changed_by_station:
         logger.info("No schedule changes detected, skipping schedule and program downloads.")
         _sd_post_refresh_tasks(mapped_epg_ids, {}, today)
+        if single_epg_fetch:
+            msg = "No schedule updates needed; guide data is up to date."
+            source.last_message = msg
+            source.save(update_fields=['last_message'])
+            send_epg_update(source.id, "parsing_programs", 100, status="success", message=msg)
+            return
         send_epg_update(source.id, "parsing_programs", 100, status="success",
                         message="No schedule changes detected since last refresh. Guide data is up to date.")
         source.status = EPGSource.STATUS_SUCCESS
@@ -3383,6 +3477,25 @@ def fetch_schedules_direct(source, stations_only=False, force=False):
     # -------------------------------------------------------------------------
     # Done
     # -------------------------------------------------------------------------
+    if single_epg_fetch:
+        epg_label = EPGData.objects.filter(id=epg_id_only).values_list('name', flat=True).first()
+        success_msg = (
+            f"Fetched {total_programs:,} programs for "
+            f"{epg_label or epg_id_only} from Schedules Direct."
+        )
+        source.last_message = success_msg
+        source.save(update_fields=['last_message'])
+        send_epg_update(source.id, "parsing_programs", 100, status="success", message=success_msg)
+        log_system_event(
+            event_type='epg_refresh',
+            source_name=source.name,
+            programs=total_programs,
+            channels=1,
+            skipped_programs=skipped_unmapped,
+        )
+        logger.info(f"Schedules Direct single-EPG fetch complete for source: {source.name}")
+        return
+
     success_msg = (
         f"Successfully fetched {total_programs:,} programs for "
         f"{len(mapped_tvg_ids)} mapped stations from Schedules Direct "

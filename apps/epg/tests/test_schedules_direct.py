@@ -9,7 +9,8 @@ Covers:
 - fetch_schedules_direct: graceful error handling on auth failure
 - fetch_schedules_direct: schedule MD5 delta, backfill, and cache invalidation
 - parse_schedules_direct_time: correct UTC parsing
-- EPG signals: SD sources skip the XMLTV program parser
+- fetch_sd_guide_for_epg: per-channel guide fetch on map
+- EPG signals: SD sources queue guide fetch when a channel is mapped
 """
 
 import hashlib
@@ -772,13 +773,167 @@ class ParseSchedulesDirectTimeTests(TestCase):
 # Signal tests
 # ---------------------------------------------------------------------------
 
+class SDSingleEpgFetchTests(TestCase):
+    """Per-channel SD guide fetch on map (epg_id_only path)."""
+
+    MAPPED_STATION = '10001'
+
+    def _make_sd_source(self, updated_at=None):
+        source = EPGSource.objects.create(
+            name='SD Single EPG',
+            source_type='schedules_direct',
+            username='sduser',
+            password='sdpass',
+        )
+        if updated_at is not None:
+            EPGSource.objects.filter(id=source.id).update(updated_at=updated_at)
+            source.refresh_from_db()
+        return source
+
+    def _lineup_get_side_effect(self, url, **kwargs):
+        if url.endswith('/status'):
+            return MagicMock(
+                status_code=200,
+                json=MagicMock(return_value={'systemStatus': [{'status': 'Online'}]}),
+            )
+        if url.endswith('/lineups'):
+            return MagicMock(
+                status_code=200,
+                json=MagicMock(return_value={'lineups': [{'lineupID': 'USA-TEST-X'}]}),
+            )
+        raise AssertionError(f'Unexpected GET URL: {url}')
+
+    @patch('apps.epg.tasks.acquire_task_lock', return_value=True)
+    @patch('apps.epg.tasks.release_task_lock')
+    @patch('apps.epg.tasks.TaskLockRenewer')
+    def test_fetch_sd_guide_skips_when_program_data_exists(
+        self, mock_renewer, mock_release, mock_acquire,
+    ):
+        from apps.epg.tasks import fetch_sd_guide_for_epg
+
+        source = self._make_sd_source()
+        epg = EPGData.objects.create(
+            tvg_id=self.MAPPED_STATION,
+            name='Mapped',
+            epg_source=source,
+        )
+        start = timezone.now()
+        ProgramData.objects.create(
+            epg=epg,
+            start_time=start,
+            end_time=start + timedelta(hours=1),
+            title='Existing',
+            tvg_id=epg.tvg_id,
+        )
+
+        with patch('apps.epg.tasks.fetch_schedules_direct') as mock_fetch:
+            result = fetch_sd_guide_for_epg(epg.id)
+
+        self.assertEqual(result, 'Guide data already present')
+        mock_fetch.assert_not_called()
+
+    @patch('apps.epg.tasks.acquire_task_lock', return_value=True)
+    @patch('apps.epg.tasks.release_task_lock')
+    @patch('apps.epg.tasks.TaskLockRenewer')
+    def test_parse_programs_for_tvg_id_delegates_to_sd_fetch(
+        self, mock_renewer, mock_release, mock_acquire,
+    ):
+        from apps.epg.tasks import parse_programs_for_tvg_id
+
+        source = self._make_sd_source()
+        epg = EPGData.objects.create(
+            tvg_id=self.MAPPED_STATION,
+            name='Mapped',
+            epg_source=source,
+        )
+
+        with patch('apps.epg.tasks.fetch_sd_guide_for_epg', return_value='SD guide fetch complete') as mock_sd:
+            result = parse_programs_for_tvg_id(epg.id)
+
+        mock_sd.assert_called_once_with(epg.id, force=False)
+        self.assertEqual(result, 'SD guide fetch complete')
+
+    @patch('apps.epg.tasks.SD_DAYS_TO_FETCH', 3)
+    @patch('apps.epg.tasks.send_epg_update')
+    @patch('apps.epg.tasks.requests.get')
+    @patch('apps.epg.tasks.requests.post')
+    def test_single_epg_fetch_skips_lineup_sync_and_updated_at(
+        self, mock_post, mock_get, mock_send_epg_update,
+    ):
+        from apps.epg.tasks import fetch_schedules_direct
+
+        prior_updated = timezone.now() - timedelta(hours=1)
+        source = self._make_sd_source(updated_at=prior_updated)
+        epg = EPGData.objects.create(
+            tvg_id=self.MAPPED_STATION,
+            name='Mapped',
+            epg_source=source,
+        )
+        Channel.objects.create(name='Mapped Ch', epg_data=epg)
+
+        date_list = [
+            (date.today() + timedelta(days=i)).strftime('%Y-%m-%d')
+            for i in range(3)
+        ]
+        mock_get.side_effect = self._lineup_get_side_effect
+
+        schedule_payload = [{
+            'stationID': self.MAPPED_STATION,
+            'metadata': {'startDate': date_list[0], 'md5': 'md5-new', 'modified': '2026-06-11T00:00:00Z'},
+            'programs': [{
+                'programID': 'EP000000000001',
+                'airDateTime': f'{date_list[0]}T12:00:00Z',
+                'duration': 3600,
+                'md5': 'prog-md5-1',
+            }],
+        }]
+        program_payload = [{
+            'programID': 'EP000000000001',
+            'titles': [{'title120': 'Test Show'}],
+        }]
+
+        def post_side_effect(url, **kwargs):
+            if url.endswith('/token'):
+                return MagicMock(
+                    status_code=200,
+                    json=MagicMock(return_value={'code': 0, 'token': 'tok'}),
+                )
+            if url.endswith('/schedules/md5'):
+                return MagicMock(
+                    status_code=200,
+                    json=MagicMock(return_value={
+                        self.MAPPED_STATION: {
+                            ds: {'code': 0, 'md5': f'md5-{ds}', 'lastModified': '2026-06-11T00:00:00Z'}
+                            for ds in date_list
+                        },
+                    }),
+                )
+            if url.endswith('/schedules'):
+                return MagicMock(status_code=200, json=MagicMock(return_value=schedule_payload))
+            if url.endswith('/programs'):
+                return MagicMock(status_code=200, json=MagicMock(return_value=program_payload))
+            raise AssertionError(f'Unexpected POST URL: {url}')
+
+        mock_post.side_effect = post_side_effect
+
+        fetch_schedules_direct(source, epg_id_only=epg.id)
+
+        lineup_detail_calls = [
+            c for c in mock_get.call_args_list
+            if '/lineups/' in c[0][0] and not c[0][0].endswith('/lineups')
+        ]
+        self.assertEqual(lineup_detail_calls, [])
+
+        source.refresh_from_db()
+        self.assertEqual(source.updated_at, prior_updated)
+        self.assertEqual(ProgramData.objects.filter(epg=epg).count(), 1)
+
+
 class SDSourceSignalTests(TestCase):
-    """SD EPG sources must skip the XMLTV program parser signal."""
+    """SD EPG sources queue per-EPG guide fetch when a channel is mapped."""
 
     @patch('apps.channels.signals.parse_programs_for_tvg_id')
-    def test_sd_source_skips_xmltv_parse_on_channel_create(self, mock_parse):
-        """Creating a channel linked to an SD EPG source must not trigger
-        the XMLTV program parser — SD data is handled by fetch_schedules_direct."""
+    def test_sd_source_queues_guide_fetch_on_channel_create(self, mock_parse):
         from apps.epg.models import EPGData
         from apps.channels.models import Channel
 
@@ -799,7 +954,7 @@ class SDSourceSignalTests(TestCase):
             epg_data=epg_data,
         )
 
-        mock_parse.delay.assert_not_called()
+        mock_parse.delay.assert_called_once_with(epg_data.id)
 
 
 # ---------------------------------------------------------------------------
