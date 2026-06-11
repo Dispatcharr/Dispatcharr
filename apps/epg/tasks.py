@@ -35,6 +35,73 @@ SD_BASE_URL = 'https://json.schedulesdirect.org/20141201'
 SD_DAYS_TO_FETCH = 20
 SD_PROGRAM_BATCH_SIZE = 5000
 
+
+def _sd_compute_schedule_changes_from_md5(server_md5s, cached_md5s, date_list):
+    """Return station_id -> [date_str] for dates whose schedule MD5 differs from cache."""
+    changed_by_station = {}
+    for (sid, date_str), server_info in server_md5s.items():
+        if date_str not in date_list:
+            continue
+        cached = cached_md5s.get((sid, date_str))
+        if cached != server_info['md5']:
+            changed_by_station.setdefault(sid, []).append(date_str)
+    return changed_by_station
+
+
+def _sd_backfill_schedule_dates_without_data(
+    changed_by_station,
+    server_md5s,
+    date_list,
+    mapped_station_ids,
+    epg_id_map,
+    dates_with_data,
+    cached_md5s,
+    stations_without_any_data,
+):
+    """
+    Add fetch-window dates that lack ProgramData to changed_by_station.
+
+    Dates with a cached schedule MD5 are treated as already fetched (e.g. legitimately
+    empty airings). Stations with zero ProgramData still backfill all missing dates
+    so stale cache from unmapped lineup refreshes cannot block guide population.
+    """
+    from datetime import date as date_type
+
+    stations_without_any_data = set(stations_without_any_data)
+    backfilled_count = 0
+    for sid in mapped_station_ids:
+        epg_db_id = epg_id_map.get(sid)
+        if not epg_db_id:
+            continue
+        force_despite_cache = sid in stations_without_any_data
+        already_changing = set(changed_by_station.get(sid, []))
+        for ds in date_list:
+            if ds in already_changing or (sid, ds) not in server_md5s:
+                continue
+            if (epg_db_id, date_type.fromisoformat(ds)) in dates_with_data:
+                continue
+            if (sid, ds) in cached_md5s and not force_despite_cache:
+                continue
+            changed_by_station.setdefault(sid, []).append(ds)
+            backfilled_count += 1
+    return backfilled_count
+
+
+def _sd_programs_needing_metadata(
+    program_ids_needed,
+    schedule_program_md5s,
+    cached_prog_md5s,
+    programs_with_data,
+):
+    """Return programIDs that need metadata download from Schedules Direct."""
+    programs_with_data = set(programs_with_data)
+    return {
+        pid for pid in program_ids_needed
+        if schedule_program_md5s.get(pid) != cached_prog_md5s.get(pid)
+        or pid not in programs_with_data
+    }
+
+
 SD_POSTER_CATEGORIES = (
     'Iconic', 'Banner-L1', 'Banner-L2', 'Banner-L3', 'Banner',
     'Staple', 'Poster Art', 'Box Art',
@@ -2070,6 +2137,8 @@ def parse_programs_for_source(epg_source, tvg_id=None):
             logger.info(f"[parse_programs_for_source] Final memory usage: {final_memory:.2f} MB difference: {final_memory - initial_memory:.2f} MB")
             # Explicitly clear the process object to prevent potential memory leaks
             process = None
+
+
 @shared_task(bind=True)
 def fetch_schedules_direct_stations(self, source_id):
     """
@@ -2298,6 +2367,24 @@ def fetch_schedules_direct(source, stations_only=False, force=False):
 
         from apps.channels.utils import maybe_auto_apply_epg_logos
         maybe_auto_apply_epg_logos(source)
+
+        try:
+            unmapped_epg_ids = list(
+                EPGData.objects.filter(epg_source=source).exclude(
+                    id__in=mapped_epg_ids,
+                ).values_list('id', flat=True)
+            )
+            if unmapped_epg_ids:
+                orphaned_count = ProgramData.objects.filter(
+                    epg_id__in=unmapped_epg_ids,
+                ).delete()[0]
+                if orphaned_count:
+                    logger.info(
+                        f"Cleaned up {orphaned_count} orphaned ProgramData records "
+                        f"for {len(unmapped_epg_ids)} unmapped EPG entries."
+                    )
+        except Exception as prune_err:
+            logger.warning(f"Failed to clean up orphaned SD ProgramData: {prune_err}")
 
         today_utc = datetime(today.year, today.month, today.day, tzinfo=dt_timezone.utc)
         try:
@@ -2598,32 +2685,77 @@ def fetch_schedules_direct(source, stations_only=False, force=False):
 
     # -------------------------------------------------------------------------
     # Step 5: MD5-delta schedule fetch
-    # First fetch MD5 hashes for all stations/dates. Compare against our
-    # locally cached hashes to determine which schedules have changed.
-    # Only download schedules that have actually changed; this minimises
-    # API calls against SD's rate-limited endpoints.
+    # Only mapped channels need guide data. Fetch MD5 hashes and schedules for
+    # mapped stations only; never cache schedule MD5s for unmapped lineup entries.
     # -------------------------------------------------------------------------
-    from apps.epg.models import SDScheduleMD5
     from django.utils.dateparse import parse_datetime
 
-    send_epg_update(source.id, "parsing_programs", 33, message=f"Checking schedule MD5s for {len(station_map)} stations over {SD_DAYS_TO_FETCH} days...")
     station_ids = list(station_map.keys())
     today = date.today()
     date_list = [(today + timedelta(days=i)).strftime('%Y-%m-%d') for i in range(SD_DAYS_TO_FETCH)]
 
-    # Prune SDScheduleMD5 records whose dates have rolled off the fetch window.
-    # These accumulate one row per station per day and are never useful once past.
-    pruned_sched_md5_count = SDScheduleMD5.objects.filter(epg_source=source, date__lt=today).delete()[0]
+    mapped_epg_ids = set(
+        Channel.objects.filter(
+            epg_data__epg_source=source,
+            epg_data__isnull=False,
+        ).values_list('epg_data_id', flat=True)
+    )
+    mapped_tvg_ids = set(
+        EPGData.objects.filter(
+            id__in=mapped_epg_ids,
+            epg_source=source,
+        ).values_list('tvg_id', flat=True)
+    )
+    mapped_station_ids = [sid for sid in station_ids if sid in mapped_tvg_ids]
+
+    # Prune expired schedule MD5s and drop cache for unmapped stations.
+    pruned_sched_md5_count = SDScheduleMD5.objects.filter(
+        epg_source=source, date__lt=today,
+    ).delete()[0]
     if pruned_sched_md5_count:
         logger.info(f"Pruned {pruned_sched_md5_count} expired SDScheduleMD5 records (before {today}).")
 
-    # Fetch MD5 hashes for all stations in batches of 5000
+    if mapped_tvg_ids:
+        unmapped_cache_pruned = SDScheduleMD5.objects.filter(
+            epg_source=source,
+        ).exclude(station_id__in=mapped_tvg_ids).delete()[0]
+    else:
+        unmapped_cache_pruned = SDScheduleMD5.objects.filter(epg_source=source).delete()[0]
+    if unmapped_cache_pruned:
+        logger.info(f"Pruned {unmapped_cache_pruned} SDScheduleMD5 records for unmapped lineup stations.")
+
+    if not mapped_station_ids:
+        logger.info("No channels mapped to this SD source; skipping schedule MD5 check and downloads.")
+        _sd_post_refresh_tasks(mapped_epg_ids, {}, today)
+        success_msg = (
+            f"{len(station_map)} lineup stations synced. "
+            "Map channels to EPG entries, then refresh to populate guide data."
+        )
+        source.status = EPGSource.STATUS_SUCCESS
+        source.last_message = success_msg
+        source.updated_at = timezone.now()
+        source.save(update_fields=['status', 'last_message', 'updated_at'])
+        send_epg_update(source.id, "parsing_programs", 100, status="success", message=success_msg)
+        return
+
+    send_epg_update(
+        source.id, "parsing_programs", 33,
+        message=f"Checking schedule MD5s for {len(mapped_station_ids)} mapped stations over {SD_DAYS_TO_FETCH} days...",
+    )
+
+    # Fetch MD5 hashes for mapped stations in batches of 5000
     STATION_BATCH_SIZE = 5000
     server_md5s = {}  # (station_id, date) -> {md5, last_modified}
 
-    logger.info(f"Fetching schedule MD5s for {len(station_ids)} stations over {SD_DAYS_TO_FETCH} days.")
+    logger.info(
+        f"Fetching schedule MD5s for {len(mapped_station_ids)} mapped stations "
+        f"(of {len(station_ids)} lineup stations) over {SD_DAYS_TO_FETCH} days."
+    )
 
-    station_batches = [station_ids[i:i + STATION_BATCH_SIZE] for i in range(0, len(station_ids), STATION_BATCH_SIZE)]
+    station_batches = [
+        mapped_station_ids[i:i + STATION_BATCH_SIZE]
+        for i in range(0, len(mapped_station_ids), STATION_BATCH_SIZE)
+    ]
     for batch in station_batches:
         try:
             md5_response = requests.post(
@@ -2644,84 +2776,65 @@ def fetch_schedules_direct(source, stations_only=False, force=False):
         except requests.exceptions.RequestException as e:
             logger.warning(f"Failed to fetch schedule MD5s: {e}")
 
-    # Load our cached MD5s from DB
+    # Load our cached MD5s from DB (mapped stations only)
     cached_md5s = {
         (r.station_id, r.date.strftime('%Y-%m-%d')): r.md5
-        for r in SDScheduleMD5.objects.filter(epg_source=source, station_id__in=station_ids)
+        for r in SDScheduleMD5.objects.filter(
+            epg_source=source, station_id__in=mapped_station_ids,
+        )
     }
 
-    # Determine which station/date combinations need downloading
-    changed_by_station = {}  # station_id -> [date_str, ...]
-    for (sid, date_str), server_info in server_md5s.items():
-        if date_str not in date_list:
-            continue
-        cached = cached_md5s.get((sid, date_str))
-        if cached != server_info['md5']:
-            changed_by_station.setdefault(sid, []).append(date_str)
+    changed_by_station = _sd_compute_schedule_changes_from_md5(
+        server_md5s, cached_md5s, date_list,
+    )
+
+    window_start = datetime(today.year, today.month, today.day, tzinfo=dt_timezone.utc)
+    window_end = window_start + timedelta(days=SD_DAYS_TO_FETCH)
+    dates_with_data = set()
+    if mapped_epg_ids:
+        for epg_id, start_time in ProgramData.objects.filter(
+            epg_id__in=mapped_epg_ids,
+            start_time__gte=window_start,
+            start_time__lt=window_end,
+        ).values_list('epg_id', 'start_time'):
+            dates_with_data.add((epg_id, start_time.date()))
+
+    stations_without_any_data = mapped_tvg_ids - set(
+        ProgramData.objects.filter(epg_id__in=mapped_epg_ids)
+        .values_list('tvg_id', flat=True).distinct()
+    )
+    backfilled_count = _sd_backfill_schedule_dates_without_data(
+        changed_by_station,
+        server_md5s,
+        date_list,
+        mapped_station_ids,
+        epg_id_map,
+        dates_with_data,
+        cached_md5s,
+        stations_without_any_data,
+    )
+    if backfilled_count:
+        logger.info(
+            f"Backfilling {backfilled_count} station/date combinations with no ProgramData "
+            f"in the {SD_DAYS_TO_FETCH}-day fetch window."
+        )
 
     total_changed = sum(len(v) for v in changed_by_station.values())
-    total_possible = len(station_ids) * len(date_list)
-    logger.info(f"Schedule MD5 check: {len(server_md5s)} hashes checked, {total_changed} station/date combinations changed (of {total_possible} possible).")
+    total_possible = len(mapped_station_ids) * len(date_list)
+    logger.info(
+        f"Schedule MD5 check: {len(server_md5s)} hashes checked, "
+        f"{total_changed} station/date combinations to fetch (of {total_possible} possible)."
+    )
     send_epg_update(source.id, "parsing_programs", 38,
                     message=f"MD5 check complete: {len(changed_by_station)} stations have schedule updates.")
 
-    # Force-fetch for mapped stations with no existing ProgramData.
-    # The MD5 cache stores hashes for all lineup stations, including unmapped ones.
-    # If a station was in the lineup (MD5 cached) but not yet mapped to a channel
-    # (no ProgramData created), a later mapping causes those cached dates to appear
-    # "unchanged", skipping the fetch and leaving the channel with no guide data.
-    mapped_epg_ids_early = set(
-        Channel.objects.filter(
-            epg_data__epg_source=source, epg_data__isnull=False
-        ).values_list('epg_data_id', flat=True)
-    )
-    mapped_tvg_ids_early = set(
-        EPGData.objects.filter(
-            id__in=mapped_epg_ids_early, epg_source=source
-        ).values_list('tvg_id', flat=True)
-    )
-    newly_mapped = set()
-    if mapped_tvg_ids_early:
-        stations_with_data = set(
-            ProgramData.objects.filter(
-                epg__epg_source=source,
-                tvg_id__in=mapped_tvg_ids_early,
-            ).values_list('tvg_id', flat=True).distinct()
-        )
-        newly_mapped = mapped_tvg_ids_early - stations_with_data
-        if newly_mapped:
-            server_dates_by_sid = {}
-            for (sid, ds) in server_md5s:
-                if sid in newly_mapped:
-                    server_dates_by_sid.setdefault(sid, set()).add(ds)
-            forced_count = 0
-            for sid in newly_mapped:
-                available = server_dates_by_sid.get(sid, set())
-                already_changing = set(changed_by_station.get(sid, []))
-                force_dates = [ds for ds in date_list if ds in available and ds not in already_changing]
-                if force_dates:
-                    changed_by_station.setdefault(sid, []).extend(force_dates)
-                    forced_count += len(force_dates)
-            if forced_count:
-                logger.info(
-                    f"Force-fetching {forced_count} station/date combinations for "
-                    f"{len(newly_mapped)} stations with no existing ProgramData (newly mapped channels)."
-                )
-
     # schedules_by_station: stationID -> list of {programID, airDateTime, duration, ...}
-    schedules_by_station = {sid: [] for sid in station_ids}
+    schedules_by_station = {sid: [] for sid in mapped_station_ids}
     program_ids_needed = set()
 
     if not changed_by_station:
         logger.info("No schedule changes detected, skipping schedule and program downloads.")
-        from apps.channels.models import Channel as ChannelModel
-        mapped_epg_ids_no_change = set(
-            ChannelModel.objects.filter(
-                epg_data__epg_source=source,
-                epg_data__isnull=False,
-            ).values_list('epg_data_id', flat=True)
-        )
-        _sd_post_refresh_tasks(mapped_epg_ids_no_change, {}, today)
+        _sd_post_refresh_tasks(mapped_epg_ids, {}, today)
         send_epg_update(source.id, "parsing_programs", 100, status="success",
                         message="No schedule changes detected since last refresh. Guide data is up to date.")
         source.status = EPGSource.STATUS_SUCCESS
@@ -2857,21 +2970,21 @@ def fetch_schedules_direct(source, stations_only=False, force=False):
         ).only('program_id', 'md5')
     }
 
-    # For newly mapped stations with no ProgramData, invalidate cached program MD5s so
-    # metadata gets re-fetched. Without this, programs whose MD5s were cached when the
-    # station was unmapped would be skipped, producing "No Title" records.
-    if newly_mapped:
-        for sid in newly_mapped:
-            for airing in schedules_by_station.get(sid, []):
-                pid = airing.get('programID')
-                if pid:
-                    cached_prog_md5s.pop(pid, None)
+    programs_with_data = set()
+    if program_ids_needed:
+        programs_with_data = set(
+            ProgramData.objects.filter(
+                epg__epg_source=source,
+                program_id__in=program_ids_needed,
+            ).values_list('program_id', flat=True).distinct()
+        )
 
-    # Only fetch programs where MD5 differs from our cached value
-    programs_to_fetch = {
-        pid for pid in program_ids_needed
-        if schedule_program_md5s.get(pid) != cached_prog_md5s.get(pid)
-    }
+    programs_to_fetch = _sd_programs_needing_metadata(
+        program_ids_needed,
+        schedule_program_md5s,
+        cached_prog_md5s,
+        programs_with_data,
+    )
 
     logger.info(
         f"Program MD5 delta: {len(program_ids_needed)} programs in schedules, "
@@ -2927,22 +3040,6 @@ def fetch_schedules_direct(source, stations_only=False, force=False):
     # -------------------------------------------------------------------------
     logger.info("Building program records...")
     send_epg_update(source.id, "parsing_programs", 80)
-
-    # Only process stations that are mapped to channels to match the existing
-    # XMLTV flow (parse_programs_for_source only processes mapped channels).
-    from apps.channels.models import Channel as ChannelModel
-    mapped_epg_ids = set(
-        ChannelModel.objects.filter(
-            epg_data__epg_source=source,
-            epg_data__isnull=False,
-        ).values_list('epg_data_id', flat=True)
-    )
-    mapped_tvg_ids = set(
-        EPGData.objects.filter(
-            id__in=mapped_epg_ids,
-            epg_source=source,
-        ).values_list('tvg_id', flat=True)
-    )
 
     # Cache existing program data for unchanged programs BEFORE surgical delete.
     # When a station/date schedule MD5 changes, ALL airings are re-fetched, but only
