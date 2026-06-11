@@ -28,6 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Progress, bulk completion, and single-channel results use `send_websocket_update` instead of `async_to_sync(channel_layer.group_send)`, so notifications work reliably under gevent-patched uWSGI and Celery workers.
   - Single-channel and selected-channel auto-match always run, even when the channel already has EPG assigned; match-all (no channel IDs) still only processes channels without EPG.
   - Rematching to the same EPG no longer re-saves the channel or queues program-parse tasks; only assignments that actually change are written and refreshed.
+- **Easier EPG search when editing a channel.** The filter in the EPG picker now works more like a normal search box. You can type several words at once (e.g. `sky uk`) and it finds channels where every word appears somewhere in the name or TVG-ID, the order doesn't matter, and a word in the name can pair with one in the ID. Accents are ignored too, so `decale` matches `Décalé` and the other way around. — Thanks [@FiveBoroughs](https://github.com/FiveBoroughs)
 
 ### Performance
 
