@@ -99,52 +99,23 @@ const RowActions = ({ tableSize, row, editEPG, deleteEPG, refreshEPG }) => {
   );
 };
 
-const EPGsTable = () => {
-  const [epg, setEPG] = useState(null);
-  const [epgModalOpen, setEPGModalOpen] = useState(false);
-  const [dummyEpgModalOpen, setDummyEpgModalOpen] = useState(false);
-  const [rowSelection, setRowSelection] = useState([]);
-  const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
-  const [deleteTarget, setDeleteTarget] = useState(null);
-  const [epgToDelete, setEpgToDelete] = useState(null);
-  const [data, setData] = useState([]);
-  const [deleting, setDeleting] = useState(false);
-
-  const epgs = useEPGsStore((s) => s.epgs);
-  const refreshProgress = useEPGsStore((s) => s.refreshProgress);
-
+const EPGStatusCell = ({ epg }) => {
+  // Direct Zustand subscription scoped to this source only.
+  // This component re-renders whenever its source's progress changes,
+  // independent of the parent table's render cycle.
+  const progress = useEPGsStore((s) => s.refreshProgress[epg.id]);
   const theme = useMantineTheme();
-  const { fullDateTimeFormat } = useDateTimeFormat();
-  const [tableSize] = useLocalStorage('table-size', 'default');
-  const isWarningSuppressed = useWarningsStore((s) => s.isWarningSuppressed);
-  const suppressWarning = useWarningsStore((s) => s.suppressWarning);
 
-  const toggleActive = async (epg) => {
-    try {
-      // Validate that epg is a valid object with an id
-      if (!epg || typeof epg !== 'object' || !epg.id) {
-        console.error('toggleActive called with invalid epg:', epg);
-        return;
-      }
+  const isDummyEPG = epg.source_type === 'dummy';
+  if (isDummyEPG) return null;
 
-      // Send only the is_active field to trigger our special handling
-      await API.updateEPG(
-        {
-          id: epg.id,
-          is_active: !epg.is_active,
-        },
-        true
-      ); // Add a new parameter to indicate this is just a toggle
-    } catch (error) {
-      console.error('Error toggling active state:', error);
-    }
-  };
-
-  const buildProgressDisplay = (data) => {
-    const progress = refreshProgress[data.id] || null;
-
-    if (!progress) return null;
-
+  // Show progress bar if an active fetch is in progress
+  if (
+    progress &&
+    (progress.progress < 100 ||
+      progress.status === 'in_progress' ||
+      (progress.action === 'parsing_channels' && epg.status === 'parsing'))
+  ) {
     let label = '';
     switch (progress.action) {
       case 'downloading':
@@ -163,7 +134,6 @@ const EPGsTable = () => {
         return null;
     }
 
-    // Build additional info string from progress data
     let additionalInfo = '';
     if (progress.message) {
       additionalInfo = progress.message;
@@ -201,6 +171,96 @@ const EPGsTable = () => {
         )}
       </Stack>
     );
+  }
+
+  // Show error message
+  if (epg.status === 'error' && epg.last_message) {
+    return (
+      <Tooltip label={epg.last_message} multiline width={300}>
+        <Text
+          c="dimmed"
+          size="xs"
+          lineClamp={2}
+          style={{ color: theme.colors.red[6], lineHeight: 1.3 }}
+        >
+          {epg.last_message}
+        </Text>
+      </Tooltip>
+    );
+  }
+
+  // Show success message
+  if (epg.status === 'success') {
+    const successMessage =
+      epg.last_message || 'EPG data refreshed successfully';
+    return (
+      <Tooltip label={successMessage} multiline width={300}>
+        <Text
+          c="dimmed"
+          size="xs"
+          lineClamp={2}
+          style={{ color: theme.colors.green[6], lineHeight: 1.3 }}
+        >
+          {successMessage}
+        </Text>
+      </Tooltip>
+    );
+  }
+
+  // Show idle message
+  if (epg.status === 'idle' && epg.last_message) {
+    return (
+      <Tooltip label={epg.last_message} multiline width={300}>
+        <Text c="dimmed" size="xs" lineClamp={2} style={{ lineHeight: 1.3 }}>
+          {epg.last_message}
+        </Text>
+      </Tooltip>
+    );
+  }
+
+  return null;
+};
+
+const EPGsTable = () => {
+  const [epg, setEPG] = useState(null);
+  const [epgModalOpen, setEPGModalOpen] = useState(false);
+  const [dummyEpgModalOpen, setDummyEpgModalOpen] = useState(false);
+  const [rowSelection, setRowSelection] = useState([]);
+  const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState(null);
+  const [epgToDelete, setEpgToDelete] = useState(null);
+  const [data, setData] = useState([]);
+  const [deleting, setDeleting] = useState(false);
+  const [confirmSDRefreshOpen, setConfirmSDRefreshOpen] = useState(false);
+  const [sdRefreshTarget, setSDRefreshTarget] = useState(null);
+
+  const epgs = useEPGsStore((s) => s.epgs);
+
+  const theme = useMantineTheme();
+  const { fullDateTimeFormat } = useDateTimeFormat();
+  const [tableSize] = useLocalStorage('table-size', 'default');
+  const isWarningSuppressed = useWarningsStore((s) => s.isWarningSuppressed);
+  const suppressWarning = useWarningsStore((s) => s.suppressWarning);
+
+  const toggleActive = async (epg) => {
+    try {
+      // Validate that epg is a valid object with an id
+      if (!epg || typeof epg !== 'object' || !epg.id) {
+        console.error('toggleActive called with invalid epg:', epg);
+        return;
+      }
+
+      // Send only the is_active field to trigger our special handling
+      await API.updateEPG(
+        {
+          id: epg.id,
+          is_active: !epg.is_active,
+        },
+        true
+      ); // Add a new parameter to indicate this is just a toggle
+    } catch (error) {
+      console.error('Error toggling active state:', error);
+    }
   };
 
   const columns = useMemo(
@@ -214,21 +274,42 @@ const EPGsTable = () => {
       {
         header: 'Type',
         accessorKey: 'source_type',
-        size: 100,
+        size: 130,
+        cell: ({ cell }) => {
+          const typeMap = {
+            xmltv: 'XMLTV',
+            schedules_direct: 'Schedules Direct',
+            dummy: 'Custom Dummy',
+          };
+          return typeMap[cell.getValue()] || cell.getValue();
+        },
       },
       {
-        header: 'URL / API Key / File Path',
+        header: 'Source / Credentials / File Path',
         accessorKey: 'url',
         enableSorting: false,
         minSize: 250,
         cell: ({ cell, row }) => {
-          const value =
-            cell.getValue() ||
-            row.original.api_key ||
-            row.original.file_path ||
-            '';
+          const sourceType = row.original.source_type;
+          let value = '';
+          let tooltip = '';
+
+          if (sourceType === 'schedules_direct') {
+            // Never expose credentials — show username only
+            const username = row.original.username || '';
+            value = username ? `User: ${username}` : '(credentials set)';
+            tooltip = value;
+          } else {
+            value =
+              cell.getValue() ||
+              row.original.password ||
+              row.original.file_path ||
+              '';
+            tooltip = value;
+          }
+
           return (
-            <Tooltip label={value} disabled={!value}>
+            <Tooltip label={tooltip} disabled={!tooltip}>
               <div
                 style={{
                   whiteSpace: 'nowrap',
@@ -267,76 +348,7 @@ const EPGsTable = () => {
         enableSorting: false,
         minSize: 250,
         grow: true,
-        cell: ({ row }) => {
-          const data = row.original;
-          const isDummyEPG = data.source_type === 'dummy';
-
-          // Dummy EPGs don't have status messages
-          if (isDummyEPG) {
-            return null;
-          }
-
-          // Check if there's an active progress for this EPG - show progress first if active
-          if (
-            refreshProgress[data.id] &&
-            refreshProgress[data.id].progress < 100
-          ) {
-            return buildProgressDisplay(data);
-          }
-
-          // Show error message when status is error
-          if (data.status === 'error' && data.last_message) {
-            return (
-              <Tooltip label={data.last_message} multiline width={300}>
-                <Text
-                  c="dimmed"
-                  size="xs"
-                  lineClamp={2}
-                  style={{ color: theme.colors.red[6], lineHeight: 1.3 }}
-                >
-                  {data.last_message}
-                </Text>
-              </Tooltip>
-            );
-          }
-
-          // Show success message for successful sources
-          if (data.status === 'success') {
-            const successMessage =
-              data.last_message || 'EPG data refreshed successfully';
-            return (
-              <Tooltip label={successMessage} multiline width={300}>
-                <Text
-                  c="dimmed"
-                  size="xs"
-                  lineClamp={2}
-                  style={{ color: theme.colors.green[6], lineHeight: 1.3 }}
-                >
-                  {successMessage}
-                </Text>
-              </Tooltip>
-            );
-          }
-
-          // Show last_message for idle sources (from previous refresh)
-          if (data.status === 'idle' && data.last_message) {
-            return (
-              <Tooltip label={data.last_message} multiline width={300}>
-                <Text
-                  c="dimmed"
-                  size="xs"
-                  lineClamp={2}
-                  style={{ lineHeight: 1.3 }}
-                >
-                  {data.last_message}
-                </Text>
-              </Tooltip>
-            );
-          }
-
-          // Otherwise return empty cell
-          return null;
-        },
+        cell: ({ row }) => <EPGStatusCell epg={row.original} />,
       },
       {
         header: 'Updated',
@@ -380,14 +392,15 @@ const EPGsTable = () => {
         size: tableSize == 'compact' ? 75 : 100,
       },
     ],
-    [refreshProgress, fullDateTimeFormat]
+    [fullDateTimeFormat]
   );
 
   const [isLoading, setIsLoading] = useState(true);
   const [sorting, setSorting] = useState([]);
 
   const editEPG = async (epg = null) => {
-    setEPG(epg);
+    const freshEpg = epg?.id ? epgs[epg.id] || epg : epg;
+    setEPG(freshEpg);
     // Open the appropriate modal based on source type
     if (epg?.source_type === 'dummy') {
       setDummyEpgModalOpen(true);
@@ -430,11 +443,25 @@ const EPGsTable = () => {
     }
   };
 
-  const refreshEPG = async (id) => {
-    await API.refreshEPG(id);
+  const refreshEPG = async (id, force = false) => {
+    await API.refreshEPG(id, force);
     notifications.show({
       title: 'EPG refresh initiated',
     });
+  };
+
+  const handleRefreshEPG = (id) => {
+    const epgObj = epgs[id];
+    if (
+      epgObj?.source_type === 'schedules_direct' &&
+      epgObj?.updated_at &&
+      Date.now() - new Date(epgObj.updated_at).getTime() < 2 * 60 * 60 * 1000
+    ) {
+      setSDRefreshTarget(id);
+      setConfirmSDRefreshOpen(true);
+      return;
+    }
+    refreshEPG(id);
   };
 
   const closeEPGForm = () => {
@@ -469,7 +496,7 @@ const EPGsTable = () => {
             row={row}
             editEPG={editEPG}
             deleteEPG={deleteEPG}
-            refreshEPG={refreshEPG}
+            refreshEPG={handleRefreshEPG}
           />
         );
     }
@@ -678,6 +705,28 @@ const EPGsTable = () => {
       />
 
       <ConfirmationDialog
+        opened={confirmSDRefreshOpen}
+        onClose={() => setConfirmSDRefreshOpen(false)}
+        onConfirm={() => {
+          setConfirmSDRefreshOpen(false);
+          refreshEPG(sdRefreshTarget, true);
+        }}
+        title="Refresh Schedules Direct Early?"
+        message={
+          <div>
+            <p>This source was refreshed less than 2 hours ago.</p>
+            <p>
+              Schedules Direct rate-limits requests per account. Refreshing too
+              frequently may cause your account to be temporarily blocked.
+            </p>
+            <p>Are you sure you want to force a refresh now?</p>
+          </div>
+        }
+        confirmLabel="Refresh Anyway"
+        cancelLabel="Cancel"
+      />
+
+      <ConfirmationDialog
         opened={confirmDeleteOpen}
         onClose={() => setConfirmDeleteOpen(false)}
         onConfirm={() => executeDeleteEPG(deleteTarget)}
@@ -691,10 +740,12 @@ const EPGsTable = () => {
 Name: ${epgToDelete.name}
 Source Type: ${epgToDelete.source_type}
 ${
-  epgToDelete.url
-    ? `URL: ${epgToDelete.url}`
-    : epgToDelete.api_key
-      ? `API Key: ${epgToDelete.api_key}`
+  epgToDelete.source_type === 'schedules_direct'
+    ? epgToDelete.username
+      ? `Username: ${epgToDelete.username}`
+      : '(credentials set)'
+    : epgToDelete.url
+      ? `URL: ${epgToDelete.url}`
       : epgToDelete.file_path
         ? `File Path: ${epgToDelete.file_path}`
         : ''

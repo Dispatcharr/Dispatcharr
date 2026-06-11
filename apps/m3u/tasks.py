@@ -978,7 +978,7 @@ def process_xc_category_direct(account_id, batch, groups, hash_keys):
         existing_streams = {
             s.stream_hash: s
             for s in Stream.objects.filter(stream_hash__in=stream_hashes.keys()).select_related('m3u_account').only(
-                'id', 'stream_hash', 'name', 'url', 'logo_url', 'tvg_id', 'custom_properties', 'last_seen', 'updated_at', 'm3u_account', 'stream_id', 'stream_chno'
+                'id', 'stream_hash', 'name', 'url', 'logo_url', 'tvg_id', 'custom_properties', 'last_seen', 'updated_at', 'm3u_account', 'stream_id', 'stream_chno', 'channel_group_id'
             )
         }
 
@@ -994,7 +994,8 @@ def process_xc_category_direct(account_id, batch, groups, hash_keys):
                     obj.custom_properties != stream_props["custom_properties"] or
                     obj.is_adult != stream_props["is_adult"] or
                     obj.stream_id != stream_props["stream_id"] or
-                    obj.stream_chno != stream_props["stream_chno"]
+                    obj.stream_chno != stream_props["stream_chno"] or
+                    obj.channel_group_id != stream_props["channel_group_id"]
                 )
 
                 if changed:
@@ -1030,7 +1031,7 @@ def process_xc_category_direct(account_id, batch, groups, hash_keys):
                     # Simplified bulk update for better performance
                     Stream.objects.bulk_update(
                         streams_to_update,
-                        ['name', 'url', 'logo_url', 'tvg_id', 'custom_properties', 'is_adult', 'last_seen', 'updated_at', 'is_stale', 'stream_id', 'stream_chno'],
+                        ['name', 'url', 'logo_url', 'tvg_id', 'custom_properties', 'is_adult', 'last_seen', 'updated_at', 'is_stale', 'stream_id', 'stream_chno', 'channel_group_id'],
                         batch_size=150  # Smaller batch size for XC processing
                     )
 
@@ -1200,7 +1201,7 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys):
     existing_streams = {
         s.stream_hash: s
         for s in Stream.objects.filter(stream_hash__in=stream_hashes.keys()).select_related('m3u_account').only(
-            'id', 'stream_hash', 'name', 'url', 'logo_url', 'tvg_id', 'custom_properties', 'last_seen', 'updated_at', 'm3u_account', 'stream_id', 'stream_chno'
+            'id', 'stream_hash', 'name', 'url', 'logo_url', 'tvg_id', 'custom_properties', 'last_seen', 'updated_at', 'm3u_account', 'stream_id', 'stream_chno', 'channel_group_id'
         )
     }
 
@@ -1216,7 +1217,8 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys):
                 obj.custom_properties != stream_props["custom_properties"] or
                 obj.is_adult != stream_props["is_adult"] or
                 obj.stream_id != stream_props["stream_id"] or
-                obj.stream_chno != stream_props["stream_chno"]
+                obj.stream_chno != stream_props["stream_chno"] or
+                obj.channel_group_id != stream_props["channel_group_id"]
             )
 
             # Always update last_seen
@@ -1232,6 +1234,7 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys):
                 obj.is_adult = stream_props["is_adult"]
                 obj.stream_id = stream_props["stream_id"]
                 obj.stream_chno = stream_props["stream_chno"]
+                obj.channel_group_id = stream_props["channel_group_id"]
                 obj.updated_at = timezone.now()
 
             # Always mark as not stale since we saw it in this refresh
@@ -1254,7 +1257,7 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys):
                 # Update all streams in a single bulk operation
                 Stream.objects.bulk_update(
                     streams_to_update,
-                    ['name', 'url', 'logo_url', 'tvg_id', 'custom_properties', 'is_adult', 'last_seen', 'updated_at', 'is_stale', 'stream_id', 'stream_chno'],
+                    ['name', 'url', 'logo_url', 'tvg_id', 'custom_properties', 'is_adult', 'last_seen', 'updated_at', 'is_stale', 'stream_id', 'stream_chno', 'channel_group_id'],
                     batch_size=200
                 )
     except Exception as e:
@@ -1713,43 +1716,36 @@ def _pick_target_number(
     fixed_cursor,
     fallback_start,
     end_number=None,
-    range_start=None,
 ):
     """
-    Return the channel number a given stream should claim under the group's
-    numbering mode, or None if the configured range is exhausted.
+    Return the channel number a stream should claim under the group's numbering
+    mode, or None if the range is exhausted. Shared by the renumber and create
+    passes. Each mode reads only the fields its UI exposes:
 
-    Shared by the existing-channel renumber pass and the new-channel create
-    pass so both honor identical mode semantics: provider-supplied number
-    when available and free, otherwise fall back; or always next-available;
-    or fixed-cursor sequential.
-
-    `range_start`, when provided, is the inclusive lower bound for the
-    group's configured numbering range. Provider-supplied numbers below
-    this bound fall back to the next-available picker so freshly-created
-    channels never land outside the configured range.
+    - provider: the provider number is authoritative and used as-is when free.
+      Start (`channel_numbering_fallback`) and End bound only the fallback for
+      streams with no provider number; `auto_sync_channel_start` does not apply.
+    - next_available: lowest free number from 1; End does not apply (its UI has
+      no range, so a stale End must not cap it).
+    - fixed: sequential from the cursor, bounded by End.
     """
     if mode == "provider":
         chno = stream.stream_chno
-        if (
-            chno is not None
-            and chno not in used_numbers
-            and (range_start is None or chno >= range_start)
-            and (end_number is None or chno <= end_number)
-        ):
+        if chno is not None and chno not in used_numbers:
             return chno
-        # No usable provider number: walk from fallback_start, bumped up
-        # to range_start when set so the fallback never lands below the
-        # configured range.
-        effective_start = (
-            max(fallback_start, range_start)
-            if range_start is not None
-            else fallback_start
-        )
-        return _next_available_number(used_numbers, effective_start, end=end_number)
+        # No usable provider number: fall back into the configured range.
+        return _next_available_number(used_numbers, fallback_start, end=end_number)
     if mode == "next_available":
-        return _next_available_number(used_numbers, 1, end=end_number)
+        return _next_available_number(used_numbers, 1)
     return _next_available_number(used_numbers, fixed_cursor, end=end_number)
+
+
+def _range_exhausted_error(mode, start_number, end_number, fallback_start):
+    """User-facing range text for RANGE_EXHAUSTED failures."""
+    range_start = (
+        int(fallback_start) if mode == "provider" else int(start_number)
+    )
+    return f"Channel number range {range_start}-{int(end_number)} is full"
 
 
 def _custom_properties_as_dict(value):
@@ -2250,7 +2246,6 @@ def sync_auto_channels(account_id, scan_start_time=None):
                         temp_channel_number,
                         channel_numbering_fallback,
                         end_number=end_number,
-                        range_start=start_number,
                     )
 
                     # Range exhausted: leave the channel at its existing
@@ -2287,17 +2282,16 @@ def sync_auto_channels(account_id, scan_start_time=None):
                     f"Renumbered {len(channels_to_renumber)} channels to maintain sort order"
                 )
 
-            # When the group's configured range is narrower than its existing
-            # channels span, any non-hidden auto-created channel whose number
-            # falls outside [start, end] gets deleted. The new-channel
-            # creation loop below picks up the freed stream and re-creates
-            # the channel at a slot inside the new range, so the net user
-            # outcome is a renumber, not a failure. Counted in
-            # channels_deleted; the replacement counts in channels_created.
-            # Hidden channels are preserved. Runs BEFORE new-channel creation
-            # so slots freed by the deletions are available to incoming
-            # streams.
-            if end_number is not None:
+            # Range enforcement runs in fixed mode only: it is the one mode with
+            # a user-set [start, end]. Provider numbers are authoritative and
+            # next_available has no range, so their channels are never deleted
+            # for falling outside start/end.
+            #
+            # Channels outside the range are deleted (hidden ones preserved);
+            # the creation loop below re-adds the freed streams inside the range,
+            # so the net effect is a renumber, not a failure. Runs first so the
+            # freed slots are available.
+            if end_number is not None and channel_numbering_mode == "fixed":
                 overflow_delete_ids = []
                 for stream_id, ch in list(existing_channel_map.items()):
                     if ch.hidden_from_output:
@@ -2458,7 +2452,6 @@ def sync_auto_channels(account_id, scan_start_time=None):
                             current_channel_number,
                             channel_numbering_fallback,
                             end_number=end_number,
-                            range_start=start_number,
                         )
 
                         if target_number is None:
@@ -2469,9 +2462,11 @@ def sync_auto_channels(account_id, scan_start_time=None):
                                     "stream_id": stream.id,
                                     "group": channel_group.name,
                                     "reason": "RANGE_EXHAUSTED",
-                                    "error": (
-                                        f"Channel number range "
-                                        f"{int(start_number)}-{int(end_number)} is full"
+                                    "error": _range_exhausted_error(
+                                        channel_numbering_mode,
+                                        start_number,
+                                        end_number,
+                                        channel_numbering_fallback,
                                     ),
                                 })
                             processed_stream_ids.add(stream.id)
@@ -2567,20 +2562,18 @@ def sync_auto_channels(account_id, scan_start_time=None):
 
                 channels_created += len(channel_objs)
 
-                # One EPG parse task per unique EPGData replaces the
-                # per-channel post_save dispatch bypassed by bulk_create.
-                from apps.epg.tasks import parse_programs_for_tvg_id
+                from apps.epg.tasks import dispatch_program_refresh_for_epg_ids
 
                 unique_epg_ids = {
                     ch.epg_data_id for ch in channel_objs if ch.epg_data_id
                 }
-                for epg_id in unique_epg_ids:
-                    parse_programs_for_tvg_id.delay(epg_id)
+                parse_dispatched = dispatch_program_refresh_for_epg_ids(unique_epg_ids)
 
                 logger.debug(
                     f"Bulk created {len(channel_objs)} channels in group "
                     f"'{channel_group.name}'; dispatched "
-                    f"{len(unique_epg_ids)} unique EPG parse task(s)"
+                    f"{parse_dispatched} EPG refresh task(s) for "
+                    f"{len(unique_epg_ids)} unique EPG id(s)"
                 )
 
             # bulk_update writes only the columns named in `fields` and
@@ -2594,17 +2587,14 @@ def sync_auto_channels(account_id, scan_start_time=None):
                     batch_size=500,
                 )
                 if epg_dirty_channel_ids:
-                    from apps.epg.tasks import parse_programs_for_tvg_id
+                    from apps.epg.tasks import dispatch_program_refresh_for_epg_ids
 
-                    # Dispatch only for channels whose epg_data_id changed.
-                    # Other dirty channels would queue redundant parses.
                     unique_epg_ids = {
                         ch.epg_data_id
                         for ch in existing_dirty_channels
                         if ch.id in epg_dirty_channel_ids and ch.epg_data_id
                     }
-                    for epg_id in unique_epg_ids:
-                        parse_programs_for_tvg_id.delay(epg_id)
+                    dispatch_program_refresh_for_epg_ids(unique_epg_ids)
                 logger.debug(
                     f"Bulk updated {len(existing_dirty_channels)} existing "
                     f"channels (fields: {sorted(existing_dirty_field_set)})"
@@ -2955,7 +2945,7 @@ def refresh_account_profiles(account_id):
                         existing_props = profile.custom_properties or {}
                         existing_props.update(profile_account_info)
                         profile.custom_properties = existing_props
-                        profile.save(update_fields=['custom_properties', 'exp_date'])
+                        profile.save(update_fields=['custom_properties'])
 
                         profiles_updated += 1
                         logger.info(f"Updated account information for profile '{profile.name}' ({profiles_updated}/{profiles.count()})")

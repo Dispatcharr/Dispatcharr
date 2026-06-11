@@ -703,6 +703,25 @@ describe('ChannelForm', () => {
       expect(autoMatch).not.toBeDisabled();
     });
 
+    it('shows in-progress notification when matchChannelEpg returns accepted', async () => {
+      const channel = makeChannel();
+      vi.mocked(ChannelUtils.matchChannelEpg).mockResolvedValue({
+        accepted: true,
+        message: 'EPG matching started',
+      });
+      setupMocks({ channel });
+      render(<ChannelForm {...defaultProps({ channel })} />);
+      fireEvent.click(screen.getByText('Auto Match'));
+      await waitFor(() => {
+        expect(showNotification).toHaveBeenCalledWith(
+          expect.objectContaining({
+            title: 'Matching in Progress',
+            color: 'blue',
+          })
+        );
+      });
+    });
+
     it('calls matchChannelEpg with the channel on click', async () => {
       const channel = makeChannel();
       vi.mocked(ChannelUtils.matchChannelEpg).mockResolvedValue({

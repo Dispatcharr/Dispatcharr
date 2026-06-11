@@ -2,6 +2,20 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // ── Utility mocks ──────────────────────────────────────────────────────────────
+global.fetch = vi.fn().mockResolvedValue({
+  json: () => Promise.resolve({}),
+});
+
+vi.mock('../../../api.js', () => ({
+  default: {
+    getSDLineups: vi.fn().mockResolvedValue([]),
+    addSDLineup: vi.fn().mockResolvedValue({ success: true }),
+    deleteSDLineup: vi.fn().mockResolvedValue({ success: true }),
+    searchSDLineups: vi.fn().mockResolvedValue([]),
+    updateSDSettings: vi.fn().mockResolvedValue({}),
+  },
+}));
+
 vi.mock('../../../utils/notificationUtils.js', () => ({
   showNotification: vi.fn(),
 }));
@@ -183,6 +197,75 @@ vi.mock('@mantine/core', async () => ({
       />
       {error && <span data-testid="input-error">{error}</span>}
     </div>
+  ),
+  Alert: ({ children, title, color, icon }) => (
+    <div data-testid="alert" data-color={color}>
+      {title && <div data-testid="alert-title">{title}</div>}
+      {children}
+    </div>
+  ),
+  Select: ({ label, value, onChange, data, placeholder }) => (
+    <select
+      aria-label={label}
+      data-testid={`select-${label?.toString().toLowerCase().replace(/\s+/g, '-')}`}
+      value={value ?? ''}
+      onChange={(e) => onChange?.(e.target.value)}
+    >
+      <option value="">{placeholder}</option>
+      {(data ?? []).map((opt) => {
+        const val = typeof opt === 'string' ? opt : opt.value;
+        const lbl = typeof opt === 'string' ? opt : opt.label;
+        return (
+          <option key={val} value={val}>
+            {lbl}
+          </option>
+        );
+      })}
+    </select>
+  ),
+  Loader: ({ size }) => <div data-testid="loader" data-size={size} />,
+  Badge: ({ children, color }) => (
+    <span data-testid="badge" data-color={color}>
+      {children}
+    </span>
+  ),
+  ScrollArea: ({ children }) => <div data-testid="scroll-area">{children}</div>,
+  Table: ({ children }) => <table>{children}</table>,
+  Tooltip: ({ children }) => <div>{children}</div>,
+  Switch: ({ label, checked, onChange, disabled, description }) => (
+    <label>
+      <input
+        type="checkbox"
+        data-testid={`switch-${label?.toString().toLowerCase().replace(/\s+/g, '-')}`}
+        checked={checked ?? false}
+        onChange={(e) => onChange?.(e)}
+        disabled={disabled}
+      />
+      {label}
+    </label>
+  ),
+  UnstyledButton: ({ children, onClick, ...props }) => (
+    <button type="button" onClick={onClick} {...props}>
+      {children}
+    </button>
+  ),
+  Alert: ({ children, title, color, icon }) => (
+    <div data-testid="alert" data-color={color}>
+      <strong>{title}</strong>
+      {children}
+    </div>
+  ),
+  Stack: ({ children, gap }) => <div data-testid="stack">{children}</div>,
+  Text: ({ children, ...props }) => <span>{children}</span>,
+  TextInput: ({ label, value, onChange, placeholder, ...props }) => (
+    <input
+      type="text"
+      aria-label={label}
+      data-testid={`input-${label?.toString().toLowerCase().replace(/\s+/g, '-')}`}
+      value={value || ''}
+      onChange={onChange}
+      placeholder={placeholder}
+    />
   ),
 }));
 
@@ -373,10 +456,11 @@ describe('EPG', () => {
       expect(screen.queryByTestId('input-api-key')).not.toBeInTheDocument();
     });
 
-    it('shows API key input when source type requires it', () => {
+    it('shows username and password inputs when source type is schedules_direct', () => {
       const epg = makeEPG({ source_type: 'schedules_direct' });
       render(<EPG {...defaultProps({ epg })} />);
-      expect(screen.getByTestId('input-api-key')).toBeInTheDocument();
+      expect(screen.getByTestId('input-username')).toBeInTheDocument();
+      expect(screen.getByTestId('input-password')).toBeInTheDocument();
     });
   });
 

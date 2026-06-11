@@ -324,12 +324,17 @@ def _repack_inner(group_relation):
     # into the SAME target group, their channels are indistinguishable
     # here (channels carry no source-group back-reference), so each repack
     # renumbers the shared target's channels into its own range.
+    # order_by("id") makes the pack deterministic. Without it the query
+    # returns rows in unspecified physical order, which shifts after the
+    # renumber's own UPDATEs and autovacuum, so the default "provider" sort
+    # below would repack channels into different numbers on every sync.
+    # id order is creation order, which tracks the provider stream order.
     channels = list(
         Channel.objects.filter(
             auto_created=True,
             auto_created_by_id=account_id,
             channel_group_id__in=group_ids,
-        ).select_related("override")
+        ).select_related("override").order_by("id")
     )
 
     visible = []
@@ -344,21 +349,22 @@ def _repack_inner(group_relation):
             visible.append(ch)
 
     # Sort the visible set by the group's configured channel_sort_order.
-    # Provider order (the default) preserves DB-iteration order which is
-    # roughly creation order; treat unrecognized values the same way.
+    # Provider order (the default) keeps the id order from the query above.
+    # Each explicit sort carries c.id as a secondary key so equal values
+    # (e.g. blank tvg_id) break ties deterministically instead of churning.
     if sort_order == "name":
         visible.sort(
-            key=lambda c: natural_sort_key(c.name or ""),
+            key=lambda c: (natural_sort_key(c.name or ""), c.id),
             reverse=sort_reverse,
         )
     elif sort_order == "tvg_id":
         visible.sort(
-            key=lambda c: c.tvg_id or "",
+            key=lambda c: (c.tvg_id or "", c.id),
             reverse=sort_reverse,
         )
     elif sort_order == "updated_at":
         visible.sort(
-            key=lambda c: c.updated_at,
+            key=lambda c: (c.updated_at, c.id),
             reverse=sort_reverse,
         )
 

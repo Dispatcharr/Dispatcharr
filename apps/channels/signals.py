@@ -201,10 +201,14 @@ def refresh_epg_programs(sender, instance, created, **kwargs):
     if not created and kwargs.get('update_fields') and 'epg_data' in kwargs['update_fields']:
         logger.info(f"Channel {instance.id} ({instance.name}) EPG data updated, refreshing program data")
         if instance.epg_data:
+            if instance.epg_data.epg_source and instance.epg_data.epg_source.source_type == 'dummy':
+                return
             logger.info(f"Triggering EPG program refresh for {instance.epg_data.tvg_id}")
             parse_programs_for_tvg_id.delay(instance.epg_data.id)
     # For new channels with EPG data, also refresh
     elif created and instance.epg_data:
+        if instance.epg_data.epg_source and instance.epg_data.epg_source.source_type == 'dummy':
+            return
         logger.info(f"New channel {instance.id} ({instance.name}) created with EPG data, refreshing program data")
         parse_programs_for_tvg_id.delay(instance.epg_data.id)
 
