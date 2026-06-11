@@ -609,13 +609,6 @@ def stream_xc(request, username, password, channel_id):
     if custom_properties["xc_password"] != password:
         return Response({"error": "Invalid credentials"}, status=401)
 
-    # Clients always receive channel.id from get_live_streams — straightforward
-    # int lookup, no provider stream_id fallback needed.
-    try:
-        resolved_internal_id = int(channel_id)
-    except (TypeError, ValueError):
-        return JsonResponse({"error": "Not found"}, status=404)
-
     if user.user_level < 10:
         user_profile_count = user.channel_profiles.count()
 
@@ -623,14 +616,14 @@ def stream_xc(request, username, password, channel_id):
         if user_profile_count == 0:
             # No profile filtering - user sees all channels based on user_level
             filters = {
-                "id": resolved_internal_id,
+                "id": int(channel_id),
                 "user_level__lte": user.user_level
             }
             channel = Channel.objects.filter(**filters).first()
         else:
             # User has specific limited profiles assigned
             filters = {
-                "id": resolved_internal_id,
+                "id": int(channel_id),
                 "channelprofilemembership__enabled": True,
                 "user_level__lte": user.user_level,
                 "channelprofilemembership__channel_profile__in": user.channel_profiles.all()
@@ -640,7 +633,7 @@ def stream_xc(request, username, password, channel_id):
         if not channel:
             return JsonResponse({"error": "Not found"}, status=404)
     else:
-        channel = get_object_or_404(Channel, id=resolved_internal_id)
+        channel = get_object_or_404(Channel, id=channel_id)
 
     if extension.lower() == '.mp4':
         force_format = 'fmp4'

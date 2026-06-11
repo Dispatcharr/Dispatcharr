@@ -1323,7 +1323,7 @@ def generate_epg(request, profile_name=None, user=None):
     # Timeshift: prev_days resolution order:
     #   1. URL ?prev_days= (explicit, even 0 means "no past")
     #   2. user.custom_properties.epg_prev_days
-    #   3. CoreSettings.timeshift_settings.xmltv_prev_days_override (>0)
+    #   3. CoreSettings.proxy_settings.xmltv_prev_days_override (>0)
     #   4. Auto-detect: max provider tv_archive_duration capped at 30
     url_prev = request.GET.get('prev_days')
     user_prev = user_custom.get('epg_prev_days') if user_custom else None
@@ -1339,9 +1339,9 @@ def generate_epg(request, profile_name=None, user=None):
             prev_days = 0
     else:
         from apps.timeshift.helpers import compute_provider_archive_days_capped
-        timeshift_settings = CoreSettings.get_timeshift_settings()
+        proxy_settings = CoreSettings.get_proxy_settings()
         try:
-            override = int(timeshift_settings.get("xmltv_prev_days_override", 0) or 0)
+            override = int(proxy_settings.get("xmltv_prev_days_override", 0) or 0)
         except (TypeError, ValueError):
             override = 0
         prev_days = max(0, min(override, 30)) if override > 0 else compute_provider_archive_days_capped()

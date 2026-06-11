@@ -195,16 +195,6 @@ NETWORK_ACCESS_KEY = "network_access"
 SYSTEM_SETTINGS_KEY = "system_settings"
 EPG_SETTINGS_KEY = "epg_settings"
 USER_LIMITS_SETTINGS_KEY = "user_limit_settings"
-TIMESHIFT_SETTINGS_KEY = "timeshift_settings"
-
-# The XC API surface is strictly UTC, so there is no timezone setting here:
-# server_info.timezone, the EPG start/end strings and time_now are all UTC, and
-# any provider-local catch-up conversion happens at proxy time against the
-# serving provider's own server_info.timezone (apps/timeshift/views).
-# Verbose timeshift logging follows the standard logger DEBUG level, not a toggle.
-TIMESHIFT_DEFAULTS = {
-    "xmltv_prev_days_override": 0,
-}
 
 
 class CoreSettings(models.Model):
@@ -406,6 +396,9 @@ class CoreSettings(models.Model):
             "channel_shutdown_delay": 0,
             "channel_init_grace_period": 5,
             "new_client_behind_seconds": 5,
+            # XC catch-up: forced XMLTV lookback window in days (0 = auto-detect
+            # from the providers' largest tv_archive_duration, capped at 30).
+            "xmltv_prev_days_override": 0,
         })
 
     # System Settings
@@ -446,22 +439,6 @@ class CoreSettings(models.Model):
             "ignore_same_channel_connections": False,
             "terminate_oldest": True,
         })
-
-    # Timeshift Settings (XC catch-up)
-    @classmethod
-    def get_timeshift_settings(cls):
-        """Return all timeshift-related settings, falling back to neutral defaults.
-
-        Keys not in TIMESHIFT_DEFAULTS are ignored, so stale stored values from
-        removed settings are filtered out automatically. Writes go through the
-        generic settings API (same path as every other settings group).
-        """
-        stored = cls._get_group(TIMESHIFT_SETTINGS_KEY, {}) or {}
-        merged = dict(TIMESHIFT_DEFAULTS)
-        for key, value in stored.items():
-            if key in merged and value is not None:
-                merged[key] = value
-        return merged
 
 
 class SystemEvent(models.Model):

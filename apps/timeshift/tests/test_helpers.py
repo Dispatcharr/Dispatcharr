@@ -171,3 +171,53 @@ class ConvertTimestampToProviderTzTests(TestCase):
             convert_timestamp_to_provider_tz("garbage", "Europe/Brussels"),
             "garbage",
         )
+
+
+class GetProgrammeDurationTests(TestCase):
+    """Duration window resolution: programme length + buffer, capped, with a
+    safe default whenever the EPG lookup cannot resolve."""
+
+    def _channel_with_programme(self, minutes):
+        from datetime import datetime, timedelta, timezone as dt_timezone
+        from unittest.mock import MagicMock
+
+        start = datetime(2026, 6, 8, 17, 0, tzinfo=dt_timezone.utc)
+        programme = MagicMock(
+            start_time=start, end_time=start + timedelta(minutes=minutes)
+        )
+        channel = MagicMock()
+        channel.epg_data.programs.filter.return_value.first.return_value = programme
+        return channel
+
+    def test_duration_is_programme_length_plus_buffer(self):
+        from apps.timeshift.helpers import get_programme_duration
+        # 40-minute programme + 5-minute buffer.
+        self.assertEqual(
+            get_programme_duration(self._channel_with_programme(40), "2026-06-08:17-00"),
+            45,
+        )
+
+    def test_duration_capped_at_max(self):
+        from apps.timeshift.helpers import get_programme_duration
+        self.assertEqual(
+            get_programme_duration(self._channel_with_programme(1000), "2026-06-08:17-00"),
+            480,
+        )
+
+    def test_no_epg_data_falls_back_to_default(self):
+        from unittest.mock import MagicMock
+        from apps.timeshift.helpers import get_programme_duration
+        channel = MagicMock(epg_data=None)
+        self.assertEqual(get_programme_duration(channel, "2026-06-08:17-00"), 120)
+
+    def test_no_matching_programme_falls_back_to_default(self):
+        from unittest.mock import MagicMock
+        from apps.timeshift.helpers import get_programme_duration
+        channel = MagicMock()
+        channel.epg_data.programs.filter.return_value.first.return_value = None
+        self.assertEqual(get_programme_duration(channel, "2026-06-08:17-00"), 120)
+
+    def test_garbage_timestamp_falls_back_to_default(self):
+        from unittest.mock import MagicMock
+        from apps.timeshift.helpers import get_programme_duration
+        self.assertEqual(get_programme_duration(MagicMock(), "garbage"), 120)

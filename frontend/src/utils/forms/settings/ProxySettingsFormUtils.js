@@ -15,5 +15,6 @@ export const getProxySettingDefaults = () => {
     channel_shutdown_delay: 0,
     channel_init_grace_period: 5,
     new_client_behind_seconds: 5,
+    xmltv_prev_days_override: 0,
   };
 };

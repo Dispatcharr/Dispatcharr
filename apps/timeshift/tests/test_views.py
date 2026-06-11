@@ -2,7 +2,7 @@
 
 from unittest.mock import MagicMock, patch
 
-from django.test import RequestFactory, TestCase
+from django.test import RequestFactory, TestCase, override_settings
 
 from apps.timeshift import views
 from apps.proxy.live_proxy.input.http_streamer import find_ts_sync as _find_ts_sync
@@ -171,14 +171,16 @@ class StreamFromProviderStatusMappingTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(mocked_open.call_count, 3)
 
+    @override_settings(CACHES={
+        "default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}
+    })
     @patch.object(views, "_open_upstream")
     def test_cache_promotes_winning_index_to_first(self, mocked_open):
         """Once a candidate succeeds for an account, the next request reorders
         the list so the cached winner is tried first — saving cascade
         overhead on fast-forward."""
-        # The format cache lives in django.core.cache (Redis-backed), which
-        # persists across test runs — clear this account's key so the first
-        # request starts from the unordered candidate list.
+        # locmem cache: isolates this test from the shared Redis-backed django
+        # cache (which persists across runs and parallel test sessions).
         from django.core.cache import cache as django_cache
         django_cache.delete(views._FORMAT_CACHE_KEY.format(999))
 
@@ -252,6 +254,22 @@ class RedactUrlTests(TestCase):
         self.assertIsNone(views._redact_url(None))
 
 
+def _make_catchup_stream(provider_tz="Europe/Brussels", *, account_id=9,
+                         stream_id="22372", account_type="XC", profile_id=31):
+    """Build a mocked catch-up Stream with its own provider context."""
+    profile = MagicMock()
+    profile.id = profile_id
+    profile.custom_properties = {"server_info": {"timezone": provider_tz}}
+    m3u_account = MagicMock()
+    m3u_account.account_type = account_type
+    m3u_account.id = account_id
+    m3u_account.profiles.filter.return_value.first.return_value = profile
+    stream = MagicMock()
+    stream.m3u_account = m3u_account
+    stream.custom_properties = {"stream_id": stream_id} if stream_id else {}
+    return stream
+
+
 class TimeshiftProxyTimestampWiringTests(TestCase):
     """`timeshift_proxy` must convert the client's UTC timestamp to the
     serving provider's zone for the upstream URL, while keeping the ORIGINAL
@@ -261,26 +279,15 @@ class TimeshiftProxyTimestampWiringTests(TestCase):
     def setUp(self):
         self.factory = RequestFactory()
 
-    def _make_catchup(self, provider_tz):
-        profile = MagicMock()
-        profile.id = 31
-        profile.custom_properties = {"server_info": {"timezone": provider_tz}}
-        m3u_account = MagicMock()
-        m3u_account.account_type = "XC"
-        m3u_account.id = 9
-        m3u_account.profiles.filter.return_value.first.return_value = profile
-        stream = MagicMock()
-        stream.m3u_account = m3u_account
-        return {"stream": stream, "props": {"stream_id": "22372"}}
-
     def _call(self, timestamp, provider_tz="Europe/Brussels"):
         request = self.factory.get(f"/timeshift/u/p/8/{timestamp}/8.ts")
-        sentinel = MagicMock()
+        sentinel = MagicMock(status_code=200)
         with patch.object(views, "_authenticate_user", return_value=MagicMock()), \
+             patch.object(views, "network_access_allowed", return_value=True), \
              patch.object(views, "Channel") as channel_cls, \
              patch.object(views, "_user_can_access_channel", return_value=True), \
-             patch.object(views, "get_channel_catchup_info",
-                          return_value=self._make_catchup(provider_tz)), \
+             patch.object(views, "get_channel_catchup_streams",
+                          return_value=[_make_catchup_stream(provider_tz)]), \
              patch.object(views, "get_programme_duration", return_value=40) as duration_mock, \
              patch.object(views, "build_timeshift_candidate_urls",
                           return_value=["http://example.test/x.ts"]) as build_mock, \
@@ -309,12 +316,378 @@ class TimeshiftProxyTimestampWiringTests(TestCase):
     def test_invalid_timestamp_rejected_before_upstream(self):
         request = self.factory.get("/timeshift/u/p/8/garbage/8.ts")
         with patch.object(views, "_authenticate_user", return_value=MagicMock()), \
+             patch.object(views, "network_access_allowed", return_value=True), \
              patch.object(views, "Channel") as channel_cls, \
              patch.object(views, "_user_can_access_channel", return_value=True), \
-             patch.object(views, "get_channel_catchup_info") as catchup_mock, \
+             patch.object(views, "get_channel_catchup_streams") as catchup_mock, \
              patch.object(views, "_stream_from_provider") as stream_mock:
             channel_cls.objects.get.return_value = MagicMock(id=8)
             response = views.timeshift_proxy(request, "u", "p", "8", "garbage", "8.ts")
         self.assertEqual(response.status_code, 400)
         catchup_mock.assert_not_called()
         stream_mock.assert_not_called()
+
+    def test_network_access_denied_returns_403(self):
+        # Same network-level gate as the live XC endpoint: when the request's
+        # network is not allowed for STREAMS, nothing else runs.
+        request = self.factory.get("/timeshift/u/p/8/2026-06-08:17-00/8.ts")
+        with patch.object(views, "_authenticate_user", return_value=MagicMock()), \
+             patch.object(views, "network_access_allowed", return_value=False) as gate, \
+             patch.object(views, "Channel") as channel_cls, \
+             patch.object(views, "_stream_from_provider") as stream_mock:
+            response = views.timeshift_proxy(
+                request, "u", "p", "8", "2026-06-08:17-00", "8.ts"
+            )
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(gate.call_args[0][1], "STREAMS")
+        channel_cls.objects.get.assert_not_called()
+        stream_mock.assert_not_called()
+
+
+class TimeshiftProxyFailoverTests(TestCase):
+    """When the first catch-up stream's provider cannot serve the archive,
+    the proxy must fail over to the channel's next catch-up stream — each
+    attempt with its own provider context."""
+
+    def setUp(self):
+        self.factory = RequestFactory()
+
+    def _call(self, streams, provider_responses):
+        request = self.factory.get("/timeshift/u/p/8/2026-06-08:17-00/8.ts")
+        with patch.object(views, "_authenticate_user", return_value=MagicMock()), \
+             patch.object(views, "network_access_allowed", return_value=True), \
+             patch.object(views, "Channel") as channel_cls, \
+             patch.object(views, "_user_can_access_channel", return_value=True), \
+             patch.object(views, "get_channel_catchup_streams", return_value=streams), \
+             patch.object(views, "get_programme_duration", return_value=40), \
+             patch.object(views, "build_timeshift_candidate_urls",
+                          return_value=["http://example.test/x.ts"]) as build_mock, \
+             patch.object(views, "check_user_stream_limits", return_value=True) as limits_mock, \
+             patch.object(views, "_stream_from_provider",
+                          side_effect=provider_responses) as stream_mock:
+            channel_cls.objects.get.return_value = MagicMock(id=8, name="Test", logo_id=None)
+            response = views.timeshift_proxy(
+                request, "u", "p", "8", "2026-06-08:17-00", "8.ts"
+            )
+        return response, stream_mock, build_mock, limits_mock
+
+    def test_second_stream_serves_after_first_fails(self):
+        streams = [
+            _make_catchup_stream(account_id=1, stream_id="111"),
+            _make_catchup_stream(account_id=2, stream_id="222"),
+        ]
+        ok = MagicMock(status_code=200)
+        response, stream_mock, build_mock, _ = self._call(
+            streams, [MagicMock(status_code=404), ok]
+        )
+        self.assertIs(response, ok)
+        self.assertEqual(stream_mock.call_count, 2)
+        # Each attempt used its own provider context.
+        self.assertEqual(
+            [c.args[0] for c in build_mock.call_args_list],
+            [streams[0].m3u_account, streams[1].m3u_account],
+        )
+        self.assertEqual(
+            [c.args[1] for c in build_mock.call_args_list], ["111", "222"]
+        )
+        self.assertEqual(
+            [c.kwargs["account_id"] for c in stream_mock.call_args_list], [1, 2]
+        )
+
+    def test_all_streams_fail_returns_last_failure(self):
+        streams = [
+            _make_catchup_stream(account_id=1, stream_id="111"),
+            _make_catchup_stream(account_id=2, stream_id="222"),
+        ]
+        last = MagicMock(status_code=404)
+        response, stream_mock, _, _ = self._call(
+            streams, [MagicMock(status_code=400), last]
+        )
+        self.assertIs(response, last)
+        self.assertEqual(stream_mock.call_count, 2)
+
+    def test_non_xc_and_missing_stream_id_are_skipped(self):
+        streams = [
+            _make_catchup_stream(account_id=1, account_type="M3U"),
+            _make_catchup_stream(account_id=2, stream_id=None),
+            _make_catchup_stream(account_id=3, stream_id="333"),
+        ]
+        ok = MagicMock(status_code=200)
+        response, stream_mock, _, _ = self._call(streams, [ok])
+        self.assertIs(response, ok)
+        # Only the eligible third stream produced an upstream attempt.
+        self.assertEqual(stream_mock.call_count, 1)
+        self.assertEqual(stream_mock.call_args.kwargs["account_id"], 3)
+
+    def test_stream_limits_checked_once_for_the_request(self):
+        streams = [
+            _make_catchup_stream(account_id=1, stream_id="111"),
+            _make_catchup_stream(account_id=2, stream_id="222"),
+        ]
+        _, _, _, limits_mock = self._call(
+            streams, [MagicMock(status_code=404), MagicMock(status_code=200)]
+        )
+        self.assertEqual(limits_mock.call_count, 1)
+
+
+class TimeshiftProxyFailoverHardeningTests(TestCase):
+    """Ban-safety and per-provider context guarantees of the failover loop."""
+
+    def setUp(self):
+        self.factory = RequestFactory()
+
+    def _call(self, streams, provider_responses, limits=True):
+        request = self.factory.get("/timeshift/u/p/8/2026-06-08:17-00/8.ts")
+        with patch.object(views, "_authenticate_user", return_value=MagicMock()), \
+             patch.object(views, "network_access_allowed", return_value=True), \
+             patch.object(views, "Channel") as channel_cls, \
+             patch.object(views, "_user_can_access_channel", return_value=True), \
+             patch.object(views, "get_channel_catchup_streams", return_value=streams), \
+             patch.object(views, "get_programme_duration", return_value=40), \
+             patch.object(views, "build_timeshift_candidate_urls",
+                          return_value=["http://example.test/x.ts"]) as build_mock, \
+             patch.object(views, "check_user_stream_limits", return_value=limits), \
+             patch.object(views, "_stream_from_provider",
+                          side_effect=provider_responses) as stream_mock:
+            channel_cls.objects.get.return_value = MagicMock(id=8, name="Test", logo_id=None)
+            response = views.timeshift_proxy(
+                request, "u", "p", "8", "2026-06-08:17-00", "8.ts"
+            )
+        return response, stream_mock, build_mock
+
+    def test_decisive_failure_skips_same_accounts_other_streams(self):
+        # Account 1 carries two variants (e.g. FHD + HD). A decisive
+        # (auth/ban-class) failure on the first must NOT retry account 1's
+        # second stream — that would hammer a banning provider — but a
+        # DIFFERENT account stays fair game.
+        streams = [
+            _make_catchup_stream(account_id=1, stream_id="111"),
+            _make_catchup_stream(account_id=1, stream_id="112"),
+            _make_catchup_stream(account_id=2, stream_id="222"),
+        ]
+        decisive = MagicMock(status_code=403, timeshift_decisive=True)
+        ok = MagicMock(status_code=200)
+        response, stream_mock, _ = self._call(streams, [decisive, ok])
+        self.assertIs(response, ok)
+        self.assertEqual(stream_mock.call_count, 2)
+        self.assertEqual(
+            [c.kwargs["account_id"] for c in stream_mock.call_args_list], [1, 2]
+        )
+
+    def test_soft_failure_still_tries_same_accounts_other_streams(self):
+        # A soft failure (404: this stream's archive missing) is stream-
+        # specific — the same account's other variant may still have it.
+        streams = [
+            _make_catchup_stream(account_id=1, stream_id="111"),
+            _make_catchup_stream(account_id=1, stream_id="112"),
+        ]
+        soft = MagicMock(status_code=404, timeshift_decisive=False)
+        ok = MagicMock(status_code=200)
+        response, stream_mock, _ = self._call(streams, [soft, ok])
+        self.assertIs(response, ok)
+        self.assertEqual(stream_mock.call_count, 2)
+        self.assertEqual(
+            [c.kwargs["account_id"] for c in stream_mock.call_args_list], [1, 1]
+        )
+
+    def test_each_stream_uses_its_own_provider_timezone(self):
+        # June: 17:00 UTC = 19:00 Brussels (CEST) but 13:00 New York (EDT).
+        # The converted timestamp must be recomputed per attempt.
+        streams = [
+            _make_catchup_stream(account_id=1, stream_id="111",
+                                 provider_tz="Europe/Brussels"),
+            _make_catchup_stream(account_id=2, stream_id="222",
+                                 provider_tz="America/New_York"),
+        ]
+        response, _, build_mock = self._call(
+            streams,
+            [MagicMock(status_code=404, timeshift_decisive=False),
+             MagicMock(status_code=200)],
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            [c.args[2] for c in build_mock.call_args_list],
+            ["2026-06-08:19-00", "2026-06-08:13-00"],
+        )
+
+    def test_stream_limit_exceeded_returns_403_before_upstream(self):
+        streams = [_make_catchup_stream(account_id=1, stream_id="111")]
+        response, stream_mock, _ = self._call(streams, [], limits=False)
+        self.assertEqual(response.status_code, 403)
+        stream_mock.assert_not_called()
+
+    def test_no_catchup_streams_returns_400(self):
+        response, stream_mock, _ = self._call([], [])
+        self.assertEqual(response.status_code, 400)
+        stream_mock.assert_not_called()
+
+    def test_all_streams_ineligible_returns_400(self):
+        streams = [
+            _make_catchup_stream(account_id=1, account_type="M3U"),
+            _make_catchup_stream(account_id=2, stream_id=None),
+        ]
+        response, stream_mock, _ = self._call(streams, [])
+        self.assertEqual(response.status_code, 400)
+        stream_mock.assert_not_called()
+
+
+class XcServerInfoUtcTests(TestCase):
+    """The XC server_info 'timezone triple' guarantee the timeshift chain
+    relies on: server_info.timezone is always UTC and time_now is UTC
+    wall-clock. (Tested here because catch-up seek correctness depends on
+    it: clients build the timeshift URL from this declared zone.)"""
+
+    def test_server_info_is_strictly_utc(self):
+        from datetime import datetime, timezone as dt_timezone
+        from apps.output.views import _build_xc_server_info
+
+        request = MagicMock(scheme="http")
+        info = _build_xc_server_info(request, "example.test", "9191")
+        self.assertEqual(info["timezone"], "UTC")
+        reported = datetime.strptime(info["time_now"], "%Y-%m-%d %H:%M:%S")
+        now_utc = datetime.now(dt_timezone.utc).replace(tzinfo=None)
+        self.assertLess(abs((now_utc - reported).total_seconds()), 60)
+        self.assertIsInstance(info["timestamp_now"], int)
+
+
+class StreamFromProviderDecisiveEdgeTests(TestCase):
+    """Remaining decisive-status and transport-error paths of the cascade."""
+
+    def setUp(self):
+        self.kwargs = dict(
+            candidate_urls=[
+                "http://example.test/timeshift/u/p/60/2026-05-12:17-00/1.ts",
+                "http://example.test/streaming/timeshift.php?stream=1&start=2026-05-12_17-00",
+            ],
+            user_agent="test-agent",
+            range_header=None,
+            virtual_channel_id="timeshift_1_2026-05-12-17-00_1",
+            client_id="timeshift_test456",
+            client_ip="127.0.0.1",
+            user=None,
+            channel_display_name="Test",
+            timestamp_utc="2026-05-12:17-00",
+            channel_logo_id=None,
+            m3u_profile_id=None,
+            debug=False,
+        )
+
+    @patch.object(views, "_open_upstream")
+    def test_406_is_decisive_and_marks_response(self, mocked_open):
+        # 406 = IP-wide block in the XC ban escalation — single attempt,
+        # generic 400 to the client, and the failover loop must see the
+        # decisive marker so it skips this account's other streams.
+        mocked_open.return_value = _fake_upstream(406)
+        response = views._stream_from_provider(**self.kwargs)
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(mocked_open.call_count, 1)
+        self.assertTrue(response.timeshift_decisive)
+
+    @patch.object(views, "_open_upstream")
+    def test_404_failure_is_not_decisive(self, mocked_open):
+        mocked_open.return_value = _fake_upstream(404)
+        response = views._stream_from_provider(**self.kwargs)
+        self.assertEqual(response.status_code, 404)
+        self.assertFalse(response.timeshift_decisive)
+
+    @patch.object(views, "_open_upstream")
+    def test_connection_error_returns_400_after_single_attempt(self, mocked_open):
+        import requests as _requests
+        mocked_open.side_effect = _requests.exceptions.ConnectionError("boom")
+        response = views._stream_from_provider(**self.kwargs)
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(mocked_open.call_count, 1)
+        # Transport errors are host-level, not auth/ban-class: the failover
+        # loop may still try a different account.
+        self.assertFalse(getattr(response, "timeshift_decisive", False))
+
+
+class CatchupStreamsDbTests(TestCase):
+    """get_channel_catchup_streams: the function that defines the failover
+    order — channelstream order, catch-up streams only, active accounts only."""
+
+    @classmethod
+    def setUpTestData(cls):
+        from apps.channels.models import Channel, ChannelStream, Stream
+        from apps.m3u.models import M3UAccount
+
+        cls.active = M3UAccount.objects.create(
+            name="ts-test-active", server_url="http://example.test",
+            account_type="XC", is_active=True,
+        )
+        cls.inactive = M3UAccount.objects.create(
+            name="ts-test-inactive", server_url="http://example.test",
+            account_type="XC", is_active=False,
+        )
+        cls.channel = Channel.objects.create(name="ts-test-channel", is_catchup=True)
+
+        def add(name, account, *, catchup, order):
+            s = Stream.objects.create(
+                name=name, url=f"http://example.test/{name}",
+                m3u_account=account, is_catchup=catchup,
+            )
+            ChannelStream.objects.create(channel=cls.channel, stream=s, order=order)
+            return s
+
+        cls.s_inactive = add("s-inactive", cls.inactive, catchup=True, order=0)
+        cls.s_second = add("s-second", cls.active, catchup=True, order=2)
+        cls.s_first = add("s-first", cls.active, catchup=True, order=1)
+        cls.s_live_only = add("s-live-only", cls.active, catchup=False, order=3)
+
+    def test_ordered_active_catchup_streams_only(self):
+        from apps.channels.utils import get_channel_catchup_streams
+
+        result = get_channel_catchup_streams(self.channel)
+        # Inactive-account and non-catchup streams excluded; channelstream order.
+        self.assertEqual([s.id for s in result], [self.s_first.id, self.s_second.id])
+
+    def test_channel_without_catchup_flag_returns_empty(self):
+        from apps.channels.models import Channel
+        from apps.channels.utils import get_channel_catchup_streams
+
+        ch = Channel.objects.create(name="ts-test-nocatchup", is_catchup=False)
+        self.assertEqual(get_channel_catchup_streams(ch), [])
+
+
+class AuthHelpersDbTests(TestCase):
+    """_authenticate_user (xc_password custom property) and
+    _user_can_access_channel (user_level gate) — exercised against real models
+    instead of being mocked away."""
+
+    @classmethod
+    def setUpTestData(cls):
+        from apps.accounts.models import User
+        from apps.channels.models import Channel
+
+        cls.viewer = User.objects.create(
+            username="ts-test-viewer", user_level=0,
+            custom_properties={"xc_password": "right-pass"},
+        )
+        cls.no_xc = User.objects.create(
+            username="ts-test-noxc", user_level=10,
+            custom_properties={},
+        )
+        cls.basic_channel = Channel.objects.create(name="ts-test-basic", user_level=0)
+        cls.admin_channel = Channel.objects.create(name="ts-test-adult", user_level=10)
+
+    def test_valid_xc_password_authenticates(self):
+        user = views._authenticate_user("ts-test-viewer", "right-pass")
+        self.assertIsNotNone(user)
+        self.assertEqual(user.id, self.viewer.id)
+
+    def test_wrong_xc_password_rejected(self):
+        self.assertIsNone(views._authenticate_user("ts-test-viewer", "wrong"))
+
+    def test_user_without_xc_password_rejected(self):
+        # Accounts with no xc_password set (e.g. admins) must be denied even
+        # if the caller guesses any string — there is nothing to compare to.
+        self.assertIsNone(views._authenticate_user("ts-test-noxc", ""))
+        self.assertIsNone(views._authenticate_user("ts-test-noxc", "anything"))
+
+    def test_unknown_username_rejected(self):
+        self.assertIsNone(views._authenticate_user("ts-test-ghost", "x"))
+
+    def test_user_level_gate(self):
+        # Level-0 viewer with no profiles: allowed on level-0, denied on level-10.
+        self.assertTrue(views._user_can_access_channel(self.viewer, self.basic_channel))
+        self.assertFalse(views._user_can_access_channel(self.viewer, self.admin_channel))

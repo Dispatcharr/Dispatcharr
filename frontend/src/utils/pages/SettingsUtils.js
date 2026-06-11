@@ -24,7 +24,6 @@ export const saveChangedSettings = async (settings, changedSettings) => {
     dvr_settings: {},
     backup_settings: {},
     system_settings: {},
-    timeshift_settings: {},
   };
 
   // Map of field prefixes to their groups
@@ -70,7 +69,6 @@ export const saveChangedSettings = async (settings, changedSettings) => {
     'auto_import_mapped_files',
     'enable_ip_lookup',
   ];
-  const timeshiftFields = ['xmltv_prev_days_override'];
 
   for (const formKey in changedSettings) {
     let value = changedSettings[formKey];
@@ -127,7 +125,6 @@ export const saveChangedSettings = async (settings, changedSettings) => {
       'retention_count',
       'schedule_day_of_week',
       'max_system_events',
-      'xmltv_prev_days_override',
     ];
     if (numericFields.includes(formKey) && value != null) {
       value = typeof value === 'number' ? value : parseInt(value, 10);
@@ -154,8 +151,6 @@ export const saveChangedSettings = async (settings, changedSettings) => {
       groupedChanges.backup_settings[formKey] = value;
     } else if (systemFields.includes(formKey)) {
       groupedChanges.system_settings[formKey] = value;
-    } else if (timeshiftFields.includes(formKey)) {
-      groupedChanges.timeshift_settings[formKey] = value;
     }
   }
 
@@ -371,18 +366,8 @@ export const parseSettings = (settings) => {
         : true;
   }
 
-  // Timeshift settings - direct key mapping.
-  // The only key is the XMLTV lookback override: the XC API surface is strictly
-  // UTC (no timezone setting) and verbose logging follows the standard logger level.
-  const timeshiftSettings = settings['timeshift_settings']?.value;
-  parsed.xmltv_prev_days_override =
-    timeshiftSettings && timeshiftSettings.xmltv_prev_days_override != null
-      ? typeof timeshiftSettings.xmltv_prev_days_override === 'number'
-        ? timeshiftSettings.xmltv_prev_days_override
-        : parseInt(timeshiftSettings.xmltv_prev_days_override, 10) || 0
-      : 0;
-
   // Proxy and network access are already grouped objects
+  // (xmltv_prev_days_override lives inside proxy_settings)
   if (settings['proxy_settings']?.value) {
     parsed.proxy_settings = settings['proxy_settings'].value;
   }

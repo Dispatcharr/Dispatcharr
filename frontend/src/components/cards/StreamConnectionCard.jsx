@@ -450,7 +450,7 @@ const StreamConnectionCard = ({
         </Box>
       );
     },
-    mantineExpandButtonProps: ({ row }) => ({
+    mantineExpandButtonProps: ({ row, table }) => ({
       size: 'xs',
       style: {
         transform: row.getIsExpanded() ? 'rotate(180deg)' : 'rotate(-90deg)',

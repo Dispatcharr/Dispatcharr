@@ -1,5 +1,7 @@
-"""XC catch-up (timeshift) HTTP view — proxies the provider's
-`/streaming/timeshift.php` endpoint to clients like iPlayTV and TiviMate.
+"""XC catch-up (timeshift) HTTP view — proxies the provider's catch-up
+archive (PATH `/timeshift/.../{id}.ts` form first, `/streaming/timeshift.php`
+query form as fallback) to clients like iPlayTV and TiviMate, with
+multi-provider failover across the channel's catch-up streams.
 
 URL parameter quirk matching what iPlayTV / TiviMate emit:
     Position "stream_id"  -> EPG channel number, IGNORED here.
@@ -25,7 +27,7 @@ from django.http import (
 
 from apps.accounts.models import User
 from apps.channels.models import Channel
-from apps.channels.utils import get_channel_catchup_info
+from apps.channels.utils import get_channel_catchup_streams
 from apps.proxy.live_proxy.config_helper import ConfigHelper
 from apps.proxy.live_proxy.constants import ChannelMetadataField, ChannelState
 from apps.proxy.live_proxy.redis_keys import RedisKeys
@@ -33,6 +35,7 @@ from apps.proxy.live_proxy.utils import get_client_ip
 from apps.proxy.live_proxy.input.http_streamer import find_ts_sync
 from apps.proxy.utils import check_user_stream_limits
 from core.utils import RedisClient
+from dispatcharr.utils import network_access_allowed
 
 from .helpers import (
     build_timeshift_candidate_urls,
@@ -56,6 +59,10 @@ def timeshift_proxy(request, username, password, stream_id, timestamp, duration)
     if user is None:
         return HttpResponseForbidden("Invalid credentials")
 
+    # Same network-level gate as the live XC stream endpoint (stream_xc).
+    if not network_access_allowed(request, "STREAMS", user):
+        return HttpResponseForbidden("Access denied")
+
     try:
         channel = Channel.objects.get(id=int(raw_id))
     except (Channel.DoesNotExist, ValueError, TypeError):
@@ -71,115 +78,132 @@ def timeshift_proxy(request, username, password, stream_id, timestamp, duration)
     if parse_catchup_timestamp(timestamp) is None:
         return HttpResponseBadRequest("Invalid timestamp")
 
-    catchup = get_channel_catchup_info(channel)
-    if catchup is None:
+    catchup_streams = get_channel_catchup_streams(channel)
+    if not catchup_streams:
         return HttpResponseBadRequest("Timeshift not supported for this channel")
-
-    catchup_stream = catchup["stream"]
-    props = catchup["props"]
-    m3u_account = catchup_stream.m3u_account
-    if m3u_account is None or m3u_account.account_type != "XC":
-        return HttpResponseBadRequest("Channel not from Xtream Codes provider")
 
     # Verbose timeshift logging follows the standard logger level (set via
     # DISPATCHARR_LOG_LEVEL / the logging config), not a per-feature toggle.
     debug = logger.isEnabledFor(logging.DEBUG)
 
-    stream_id_value = (props or {}).get("stream_id")
-    if stream_id_value is None:
-        return HttpResponseBadRequest("Cannot build timeshift URL")
-
     # The client supplies the catch-up timestamp in UTC — Dispatcharr's XC API
     # surface is strictly UTC (server_info.timezone="UTC", EPG start/end in UTC),
-    # and the client builds the URL from those UTC strings. Real XC providers,
-    # however, index their archive in their OWN local zone (the
-    # server_info.timezone they report on auth). So convert the UTC instant to
-    # the serving provider's zone before building the upstream URL — empirically
-    # a provider reads `17-00` as 17:00 LOCAL, not UTC, so skipping this would
-    # seek ~1-2h off. The EPG duration lookup stays on the original UTC timestamp
-    # (the EPG is UTC too). This is the ONLY timezone conversion in the chain.
+    # and the client builds the URL from those UTC strings. The EPG duration
+    # lookup therefore uses the original UTC value (programmes are stored in
+    # UTC); the per-provider conversion happens inside the failover loop below.
     duration_minutes = get_programme_duration(channel, timestamp)
 
-    # Default profile carries the provider's server_info (its reported timezone)
-    # and is reused below for the Stats card's M3U profile name.
-    default_profile = m3u_account.profiles.filter(is_default=True).first()
-    provider_tz_name = None
-    if default_profile is not None:
-        _server_info = (default_profile.custom_properties or {}).get("server_info") or {}
-        if isinstance(_server_info, dict):
-            provider_tz_name = _server_info.get("timezone")
-    provider_timestamp = convert_timestamp_to_provider_tz(timestamp, provider_tz_name)
-    if debug and provider_timestamp != timestamp:
-        logger.debug(
-            "Timeshift tz convert: %s UTC -> %s (provider tz=%s)",
-            timestamp, provider_timestamp, provider_tz_name,
-        )
-
-    # Ordered upstream candidates, PATH form first — see
-    # build_timeshift_candidate_urls() for the full rationale (the QUERY form is
-    # a last-resort fallback because some providers return LIVE on it, ignoring
-    # the requested timestamp). We try them in order until one returns a
-    # streamable MPEG-TS response — see `_stream_from_provider`.
-    candidate_urls = build_timeshift_candidate_urls(
-        m3u_account, stream_id_value, provider_timestamp, duration_minutes
-    )
-
-    try:
-        user_agent = m3u_account.get_user_agent().user_agent
-    except AttributeError:
-        user_agent = ""
-
     safe_ts = timestamp.replace(":", "-").replace("/", "-")
-    virtual_channel_id = f"timeshift_{channel.id}_{safe_ts}_{stream_id_value}"
     client_id = f"timeshift_{uuid.uuid4().hex[:16]}"
     client_ip = get_client_ip(request)
     range_header = request.META.get("HTTP_RANGE")
-
-    # Channel logo + M3U default-profile id for the Stats card (default_profile
-    # was already resolved above for the provider timezone).
     channel_logo_id = getattr(channel, "logo_id", None)
-    m3u_profile_id = default_profile.id if default_profile is not None else None
 
-    # Free the provider slot before connecting upstream.
-    # 1. Enforce user stream limits — this terminates the oldest active stream
-    #    (live, timeshift, or VOD) via the Redis stop-key mechanism, same as
-    #    the live and VOD proxy entry points.
-    if not check_user_stream_limits(user, client_id, media_id=virtual_channel_id):
+    # Enforce user stream limits once, before connecting upstream — this
+    # terminates the oldest active stream (live, timeshift, or VOD) via the
+    # Redis stop-key mechanism, same as the live and VOD proxy entry points.
+    # (No explicit ChannelService.stop_channel(): that would kill other users'
+    # live streams on the same channel. The media_id only matters for the
+    # live same-channel exemption, so a channel-scoped id is enough.)
+    if not check_user_stream_limits(
+        user, client_id, media_id=f"timeshift_{channel.id}_{safe_ts}"
+    ):
         return HttpResponseForbidden("Stream limit exceeded")
 
-    # Note: no explicit ChannelService.stop_channel() here.  The
-    # check_user_stream_limits() call above already terminates the oldest
-    # active stream (live, timeshift, or VOD) via the Redis stop-key
-    # mechanism — same pattern as the live and VOD proxy entry points.
-    # Calling stop_channel() unconditionally would kill other users' live
-    # streams on the same channel.
+    # Failover: try each catch-up stream in channelstream order — mirroring how
+    # live playback walks a channel's stream list. Every attempt carries ITS
+    # OWN provider context (account, provider stream id, reported timezone,
+    # user-agent, per-account format cache). Ban safety is per ACCOUNT: when an
+    # account fails decisively (401/403/406 — auth or ban-class status), its
+    # other catch-up streams (e.g. FHD/HD variants of the same channel) are
+    # skipped too, so the cascade never hammers a banning provider; a DIFFERENT
+    # account is a different host and remains safe to try.
+    last_response = None
+    decisive_accounts = set()
+    for catchup_stream in catchup_streams:
+        m3u_account = catchup_stream.m3u_account
+        if m3u_account is None or m3u_account.account_type != "XC":
+            continue
+        if m3u_account.id in decisive_accounts:
+            continue
 
-    if debug:
-        logger.debug(
-            "Timeshift request: channel=%s ts=%s provider_sid=%s vid=%s client=%s range=%s",
-            channel.name,
-            timestamp,
-            stream_id_value,
-            virtual_channel_id,
-            client_id,
-            range_header or "(none)",
+        stream_id_value = (catchup_stream.custom_properties or {}).get("stream_id")
+        if stream_id_value is None:
+            continue
+
+        # Real XC providers index their archive in their OWN local zone (the
+        # server_info.timezone they report on auth — stored on the default
+        # profile). Convert the UTC instant to that zone for the upstream URL —
+        # empirically a provider reads `17-00` as 17:00 LOCAL, not UTC, so
+        # skipping this would seek 1-2h off. This is the ONLY timezone
+        # conversion in the chain, and it is per-provider.
+        default_profile = m3u_account.profiles.filter(is_default=True).first()
+        provider_tz_name = None
+        if default_profile is not None:
+            _server_info = (default_profile.custom_properties or {}).get("server_info") or {}
+            if isinstance(_server_info, dict):
+                provider_tz_name = _server_info.get("timezone")
+        provider_timestamp = convert_timestamp_to_provider_tz(timestamp, provider_tz_name)
+
+        # Ordered upstream candidates, PATH form first — see
+        # build_timeshift_candidate_urls() for the full rationale (the QUERY
+        # form is a last-resort fallback because some providers return LIVE on
+        # it, ignoring the requested timestamp).
+        candidate_urls = build_timeshift_candidate_urls(
+            m3u_account, stream_id_value, provider_timestamp, duration_minutes
         )
 
-    return _stream_from_provider(
-        candidate_urls=candidate_urls,
-        user_agent=user_agent,
-        range_header=range_header,
-        virtual_channel_id=virtual_channel_id,
-        client_id=client_id,
-        client_ip=client_ip,
-        user=user,
-        channel_display_name=channel.name,
-        timestamp_utc=timestamp,
-        channel_logo_id=channel_logo_id,
-        m3u_profile_id=m3u_profile_id,
-        debug=debug,
-        account_id=m3u_account.id,
-    )
+        try:
+            user_agent = m3u_account.get_user_agent().user_agent
+        except AttributeError:
+            user_agent = ""
+
+        virtual_channel_id = f"timeshift_{channel.id}_{safe_ts}_{stream_id_value}"
+        m3u_profile_id = default_profile.id if default_profile is not None else None
+
+        if debug:
+            logger.debug(
+                "Timeshift attempt: channel=%s ts=%s (provider tz=%s -> %s) "
+                "account=%s provider_sid=%s vid=%s client=%s range=%s",
+                channel.name, timestamp, provider_tz_name, provider_timestamp,
+                m3u_account.id, stream_id_value, virtual_channel_id, client_id,
+                range_header or "(none)",
+            )
+
+        response = _stream_from_provider(
+            candidate_urls=candidate_urls,
+            user_agent=user_agent,
+            range_header=range_header,
+            virtual_channel_id=virtual_channel_id,
+            client_id=client_id,
+            client_ip=client_ip,
+            user=user,
+            channel_display_name=channel.name,
+            timestamp_utc=timestamp,
+            channel_logo_id=channel_logo_id,
+            m3u_profile_id=m3u_profile_id,
+            debug=debug,
+            account_id=m3u_account.id,
+        )
+        if response.status_code < 400:
+            return response
+
+        last_response = response
+        if getattr(response, "timeshift_decisive", False):
+            decisive_accounts.add(m3u_account.id)
+        logger.warning(
+            "Timeshift attempt failed (HTTP %d%s) on account %s for channel %s — "
+            "trying next catch-up stream",
+            response.status_code,
+            ", decisive: skipping this account's other streams"
+            if m3u_account.id in decisive_accounts else "",
+            m3u_account.id, channel.name,
+        )
+
+    if last_response is not None:
+        return last_response
+    # Streams existed but none was usable (non-XC accounts / missing stream_id).
+    return HttpResponseBadRequest("Cannot build timeshift URL")
 
 
 # ---------------------------------------------------------------------------
@@ -320,7 +344,15 @@ def _unregister_stats_client(redis_client, virtual_channel_id, client_id):
 
 
 def _open_upstream(url, user_agent, range_header):
-    """Open the upstream HTTP request (status + headers known synchronously)."""
+    """Open the upstream HTTP request (status + headers known synchronously).
+
+    Redirects are followed on purpose: XC providers routinely 302 from the
+    main host to a load-balanced streaming node carrying a session token, so
+    disabling redirects would break normal catch-up. The cascade therefore
+    observes the FINAL status; a ban-onset 302 that redirects somewhere
+    non-streamable surfaces as a failed TS-sync peek (soft reject) or an
+    error status.
+    """
     # identity: the TS-sync peek reads raw bytes (response.raw), which are NOT
     # transparently decompressed — a gzip-encoded body would fail the sync check.
     headers = {"Accept-Encoding": "identity"}
@@ -402,6 +434,7 @@ def _stream_from_provider(
     last_status = None
     last_url = ordered_urls[0]
     winning_index = None
+    decisive_failure = False
     for url, orig_idx in zip(ordered_urls, original_indices):
         try:
             response = _open_upstream(url, user_agent, range_header)
@@ -451,8 +484,12 @@ def _stream_from_provider(
                 continue
         response.close()
         # Decisive statuses where trying other URL shapes can't help and may
-        # escalate an IP ban: auth failures (401/403), IP-level block (406), and
-        # any redirect (3xx) — for XC providers a 302 is the first sign of a ban.
+        # escalate an IP ban: auth failures (401/403) and IP-level block (406).
+        # The 3xx case is defense-in-depth only: requests follows redirects
+        # transparently (XC providers legitimately 302 to load-balanced
+        # streaming nodes, so redirects MUST be followed), meaning a 3xx can
+        # only surface here if that ever changes — but if one does, it is the
+        # documented first sign of an IP ban and must stop the cascade.
         # A 5xx is different: it is usually format-specific — some XC servers run
         # PHP with display_errors off, so the "Undefined array key" warning that
         # another server emits as 200+text becomes a hard 500. The very next
@@ -460,6 +497,7 @@ def _stream_from_provider(
         # giving up (this is why catch-up appeared broken on providers that 500).
         code = response.status_code
         if code in (401, 403, 406) or 300 <= code < 400:
+            decisive_failure = True
             break
 
     if winning_index is not None:
@@ -472,10 +510,16 @@ def _stream_from_provider(
         # correctly: 404 stops retry loops (catch-up not yet indexed), 403
         # surfaces auth problems. Everything else stays a generic 400.
         if last_status == 404:
-            return HttpResponseNotFound("Catch-up not available yet")
-        if last_status == 403:
-            return HttpResponseForbidden("Provider denied access")
-        return HttpResponseBadRequest("Provider error")
+            failure = HttpResponseNotFound("Catch-up not available yet")
+        elif last_status == 403:
+            failure = HttpResponseForbidden("Provider denied access")
+        else:
+            failure = HttpResponseBadRequest("Provider error")
+        # Tell the failover loop whether this account failed DECISIVELY
+        # (auth/ban-class status): its other catch-up streams must be skipped,
+        # while a different provider remains safe to try.
+        failure.timeshift_decisive = decisive_failure
+        return failure
 
     content_type = upstream.headers.get("Content-Type", "video/mp2t")
     content_range = upstream.headers.get("Content-Range", "")

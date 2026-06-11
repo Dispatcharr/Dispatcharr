@@ -62,6 +62,7 @@ describe('ProxySettingsFormUtils', () => {
         channel_shutdown_delay: 0,
         channel_init_grace_period: 5,
         new_client_behind_seconds: 5,
+        xmltv_prev_days_override: 0,
       });
     });
 
@@ -82,6 +83,7 @@ describe('ProxySettingsFormUtils', () => {
       expect(typeof result.channel_shutdown_delay).toBe('number');
       expect(typeof result.channel_init_grace_period).toBe('number');
       expect(typeof result.new_client_behind_seconds).toBe('number');
+      expect(typeof result.xmltv_prev_days_override).toBe('number');
     });
   });
 });

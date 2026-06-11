@@ -10,9 +10,7 @@ from django.db import migrations, models
 
 def backfill_stream_catchup(apps, schema_editor):
     """Derive is_catchup/catchup_days from Stream.custom_properties JSON."""
-    from django.db import connection
-
-    with connection.cursor() as cursor:
+    with schema_editor.connection.cursor() as cursor:
         cursor.execute("""
             UPDATE dispatcharr_channels_stream
             SET is_catchup = TRUE,
@@ -37,9 +35,7 @@ def backfill_stream_catchup(apps, schema_editor):
 
 def backfill_channel_catchup(apps, schema_editor):
     """Roll up catch-up fields from streams to channels."""
-    from django.db import connection
-
-    with connection.cursor() as cursor:
+    with schema_editor.connection.cursor() as cursor:
         cursor.execute("""
             UPDATE dispatcharr_channels_channel c SET
                 is_catchup = EXISTS (
