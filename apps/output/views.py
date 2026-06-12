@@ -365,7 +365,7 @@ def xc_get_user(request):
 
 def _xc_allowed_output_formats(user):
     """Return the list of allowed output formats for the XC API user_info response."""
-    return ['ts', 'mp4']
+    return ['ts', 'mp4', 'm3u8']
 
 
 def _build_xc_server_info(request, hostname, port):
