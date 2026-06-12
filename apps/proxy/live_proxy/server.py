@@ -23,6 +23,7 @@ from .input.manager import StreamManager
 from .input.buffer import StreamBuffer
 from .client_manager import ClientManager
 from .output.fmp4.manager import FMP4RemuxManager
+from .output.hls.manager import HLSOutputManager
 from .output.profile.manager import OutputProfileManager, PROFILE_STATE_ACTIVE
 from .redis_keys import RedisKeys
 from .constants import ChannelState, EventType, StreamType, ChannelMetadataField, REDIS_TTL_DEFAULT
@@ -1313,6 +1314,7 @@ class ProxyServer:
 
         _OUTPUT_FORMAT_MANAGERS = {
             'fmp4': FMP4RemuxManager,
+            'hls': HLSOutputManager,
         }
         base_fmt, _ = self._parse_output_key(fmt)
         manager_cls = _OUTPUT_FORMAT_MANAGERS.get(base_fmt)
