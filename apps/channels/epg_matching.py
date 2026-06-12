@@ -306,7 +306,7 @@ def build_epg_tvg_id_index(epg_data):
 
 def _dispatch_program_parse_for_epg_assignments(changed_associations):
     """
-    Queue parse_programs once per unique EPG id newly assigned to a channel.
+    Queue guide/program refresh for newly assigned EPG ids.
 
     bulk_update bypasses post_save, so callers must invoke this when epg_data
     actually changes (mirrors the M3U sync path).
@@ -314,24 +314,14 @@ def _dispatch_program_parse_for_epg_assignments(changed_associations):
     if not changed_associations:
         return 0
 
-    from apps.epg.tasks import parse_programs_for_tvg_id
+    from apps.epg.tasks import dispatch_program_refresh_for_epg_ids
 
     epg_ids = {
         assoc["epg_data_id"]
         for assoc in changed_associations
         if assoc.get("epg_data_id")
     }
-    if not epg_ids:
-        return 0
-
-    dispatched = 0
-    for epg in EPGData.objects.filter(id__in=epg_ids).select_related("epg_source"):
-        source_type = epg.epg_source.source_type if epg.epg_source else None
-        if source_type in ("dummy", "schedules_direct"):
-            continue
-        parse_programs_for_tvg_id.delay(epg.id)
-        dispatched += 1
-    return dispatched
+    return dispatch_program_refresh_for_epg_ids(epg_ids)
 
 
 def _log_unchanged_epg_assignment(chan, epg_id, epg_name, epg_tvg_id, match_method):

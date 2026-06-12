@@ -37,13 +37,24 @@ const AutoSyncBasic = ({
         ? 1
         : clampChannelNumber(value);
     if (mode === 'provider') {
-      onApplyGroupChange({
+      // Provider's Start # seeds the fallback for numberless streams. Mirror
+      // Fixed mode: if it exceeds End, drop End so the fallback range is never
+      // inverted (an inverted range fails every numberless stream).
+      const next = {
         ...group,
         custom_properties: {
           ...(group.custom_properties || {}),
           channel_numbering_fallback: normalized,
         },
-      });
+      };
+      if (
+        endValue !== null &&
+        endValue !== undefined &&
+        normalized > endValue
+      ) {
+        next.auto_sync_channel_end = null;
+      }
+      onApplyGroupChange(next);
     } else {
       // If End is set and the new Start exceeds it, drop End so the user
       // is not left holding an invalid range silently.
