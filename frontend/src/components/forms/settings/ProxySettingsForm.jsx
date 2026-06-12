@@ -25,6 +25,7 @@ const ProxySettingsOptions = React.memo(({ proxySettingsForm }) => {
       'channel_shutdown_delay',
       'channel_init_grace_period',
       'new_client_behind_seconds',
+      'xmltv_prev_days_override',
     ].includes(key);
   };
   const isFloatField = (key) => {
@@ -39,7 +40,9 @@ const ProxySettingsOptions = React.memo(({ proxySettingsForm }) => {
           ? 300
           : key === 'new_client_behind_seconds'
             ? 120
-            : 60;
+            : key === 'xmltv_prev_days_override'
+              ? 30
+              : 60;
   };
   return (
     <>

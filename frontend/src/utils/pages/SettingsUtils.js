@@ -367,6 +367,7 @@ export const parseSettings = (settings) => {
   }
 
   // Proxy and network access are already grouped objects
+  // (xmltv_prev_days_override lives inside proxy_settings)
   if (settings['proxy_settings']?.value) {
     parsed.proxy_settings = settings['proxy_settings'].value;
   }

@@ -159,3 +159,31 @@ class HTTPStreamReader:
         # Wait for thread
         if self.thread and self.thread.is_alive():
             self.thread.join(timeout=2.0)
+
+
+# ---------------------------------------------------------------------------
+# MPEG-TS sync detection (used by the timeshift catch-up proxy)
+# ---------------------------------------------------------------------------
+
+_TS_PACKET_SIZE = 188
+_TS_SYNC_BYTE = 0x47
+
+
+def find_ts_sync(buf):
+    """Offset of the first MPEG-TS sync chain in *buf*, or -1.
+
+    A valid chain needs 0x47 at offsets i, i+188 and i+376 — three sync
+    bytes one packet apart (the standard demuxer probe).  The timeshift
+    proxy peeks at the first upstream bytes with this to reject HTTP-200
+    PHP error pages and to strip any pre-sync preamble before the bytes
+    reach a strict demuxer (ExoPlayer).
+    """
+    end = len(buf) - 2 * _TS_PACKET_SIZE
+    for i in range(0, end):
+        if (
+            buf[i] == _TS_SYNC_BYTE
+            and buf[i + _TS_PACKET_SIZE] == _TS_SYNC_BYTE
+            and buf[i + 2 * _TS_PACKET_SIZE] == _TS_SYNC_BYTE
+        ):
+            return i
+    return -1

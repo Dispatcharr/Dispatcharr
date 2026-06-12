@@ -407,6 +407,20 @@ class ChannelStatus:
             if channel_name:
                 info['channel_name'] = channel_name
 
+            info['is_timeshift'] = bool(metadata.get(ChannelMetadataField.IS_TIMESHIFT))
+
+            for key, field in (
+                ('logo_id', ChannelMetadataField.LOGO_ID),
+                ('m3u_profile_id', ChannelMetadataField.M3U_PROFILE),
+            ):
+                raw = metadata.get(field)
+                if not raw:
+                    continue
+                try:
+                    info[key] = int(raw)
+                except (TypeError, ValueError):
+                    pass
+
             stream_id_bytes = metadata.get(ChannelMetadataField.STREAM_ID)
             if stream_id_bytes:
                 try:

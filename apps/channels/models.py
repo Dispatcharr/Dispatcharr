@@ -135,6 +135,19 @@ class Stream(models.Model):
         db_index=True
     )
 
+    # Denormalized catch-up fields — populated at M3U/XC import time from
+    # custom_properties["tv_archive"] and ["tv_archive_duration"].  Avoids
+    # per-channel JSON introspection on every xc_get_live_streams call.
+    is_catchup = models.BooleanField(
+        default=False,
+        db_index=True,
+        help_text="Whether this stream supports catch-up/timeshift (tv_archive=1)",
+    )
+    catchup_days = models.PositiveIntegerField(
+        default=0,
+        help_text="Number of days of catch-up archive available (tv_archive_duration)",
+    )
+
     class Meta:
         # If you use m3u_account, you might do unique_together = ('name','url','m3u_account')
         verbose_name = "Stream"
@@ -362,6 +375,19 @@ class Channel(models.Model):
         blank=True,
         related_name="auto_created_channels",
         help_text="The M3U account that auto-created this channel"
+    )
+
+    # Denormalized catch-up fields — rolled up from the channel's streams at
+    # import time and via post_save/post_delete signals on ChannelStream.
+    # Eliminates per-channel DB queries in _xc_channel_entry().
+    is_catchup = models.BooleanField(
+        default=False,
+        db_index=True,
+        help_text="Whether any stream on this channel supports catch-up (tv_archive=1)",
+    )
+    catchup_days = models.PositiveIntegerField(
+        default=0,
+        help_text="Max catch-up archive days across all streams on this channel",
     )
 
     # Hidden channels are excluded from HDHR, M3U, EPG, and XC output queries.

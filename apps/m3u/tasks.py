@@ -951,6 +951,16 @@ def process_xc_category_direct(account_id, batch, groups, hash_keys):
                             name, url, tvg_id, hash_keys, m3u_id=account_id, group=group_title,
                             account_type='XC', stream_id=provider_stream_id
                         )
+                        # Derive denormalized catch-up fields from the XC
+                        # API response at import time so output views can
+                        # read them as zero-cost column reads.
+                        _tv_archive = str(stream.get("tv_archive", "0"))
+                        _is_catchup = _tv_archive in ("1", "True")
+                        try:
+                            _catchup_days = int(stream.get("tv_archive_duration", 0) or 0)
+                        except (TypeError, ValueError):
+                            _catchup_days = 0
+
                         stream_props = {
                             "name": name,
                             "url": url,
@@ -964,6 +974,8 @@ def process_xc_category_direct(account_id, batch, groups, hash_keys):
                             "is_stale": False,
                             "stream_id": provider_stream_id,
                             "stream_chno": stream_chno,
+                            "is_catchup": _is_catchup,
+                            "catchup_days": _catchup_days,
                         }
 
                         if stream_hash not in stream_hashes:
@@ -1031,7 +1043,7 @@ def process_xc_category_direct(account_id, batch, groups, hash_keys):
                     # Simplified bulk update for better performance
                     Stream.objects.bulk_update(
                         streams_to_update,
-                        ['name', 'url', 'logo_url', 'tvg_id', 'custom_properties', 'is_adult', 'last_seen', 'updated_at', 'is_stale', 'stream_id', 'stream_chno', 'channel_group_id'],
+                        ['name', 'url', 'logo_url', 'tvg_id', 'custom_properties', 'is_adult', 'last_seen', 'updated_at', 'is_stale', 'stream_id', 'stream_chno', 'channel_group_id', 'is_catchup', 'catchup_days'],
                         batch_size=150  # Smaller batch size for XC processing
                     )
 
@@ -1177,6 +1189,16 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys):
                 account_type=account_type_for_hash, stream_id=provider_stream_id
             )
 
+            # Derive catch-up fields from stream attributes (M3U files
+            # may carry tv_archive via custom attributes).
+            _attrs = stream_info["attributes"]
+            _tv_archive_m3u = str(_attrs.get("tv_archive", "0"))
+            _is_catchup_m3u = _tv_archive_m3u in ("1", "True")
+            try:
+                _catchup_days_m3u = int(_attrs.get("tv_archive_duration", 0) or 0)
+            except (TypeError, ValueError):
+                _catchup_days_m3u = 0
+
             stream_props = {
                 "name": name,
                 "url": url,
@@ -1185,11 +1207,13 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys):
                 "m3u_account": account,
                 "channel_group_id": int(groups.get(group_title)),
                 "stream_hash": stream_hash,
-                "custom_properties": {**stream_info["attributes"], "vlc_opts": stream_info["vlc_opts"]} if "vlc_opts" in stream_info else stream_info["attributes"],
-                "is_adult": parse_is_adult(stream_info["attributes"].get("is_adult", 0)),
+                "custom_properties": {**_attrs, "vlc_opts": stream_info["vlc_opts"]} if "vlc_opts" in stream_info else _attrs,
+                "is_adult": parse_is_adult(_attrs.get("is_adult", 0)),
                 "is_stale": False,
                 "stream_id": provider_stream_id,
                 "stream_chno": channel_num,
+                "is_catchup": _is_catchup_m3u,
+                "catchup_days": _catchup_days_m3u,
             }
 
             if stream_hash not in stream_hashes:
@@ -1257,7 +1281,7 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys):
                 # Update all streams in a single bulk operation
                 Stream.objects.bulk_update(
                     streams_to_update,
-                    ['name', 'url', 'logo_url', 'tvg_id', 'custom_properties', 'is_adult', 'last_seen', 'updated_at', 'is_stale', 'stream_id', 'stream_chno', 'channel_group_id'],
+                    ['name', 'url', 'logo_url', 'tvg_id', 'custom_properties', 'is_adult', 'last_seen', 'updated_at', 'is_stale', 'stream_id', 'stream_chno', 'channel_group_id', 'is_catchup', 'catchup_days'],
                     batch_size=200
                 )
     except Exception as e:
@@ -1787,6 +1811,76 @@ def _classify_sync_failure(exc):
     if isinstance(exc, IntegrityError):
         return "INTEGRITY_ERROR"
     return "OTHER"
+
+
+def rollup_channel_catchup_fields(account_id):
+    """Roll up denormalized catch-up fields from streams to channels.
+
+    Updates ``is_catchup`` and ``catchup_days`` on every Channel that has
+    at least one Stream belonging to *account_id* (auto-created or manually
+    assigned), then self-heals any channel left flagged with no catch-up
+    stream at all.
+
+    Called from the account-refresh pipeline after streams have been
+    written so that both new and existing channels reflect the current
+    ``tv_archive`` flags.  Intentionally separate from
+    ``sync_auto_channels`` because it applies to manual channels too and
+    has no dependency on auto-channel logic.
+
+    Uses a single-pass CTE (``bool_or`` + ``MAX``) instead of correlated
+    subqueries so the work stays O(channelstream rows for this account)
+    rather than O(channels * subqueries).
+    """
+    from django.db import connection
+
+    with connection.cursor() as cur:
+        cur.execute("""
+            WITH agg AS (
+                SELECT
+                    cs.channel_id,
+                    bool_or(s.is_catchup)  AS any_catchup,
+                    -- Only catch-up streams contribute their archive depth:
+                    -- a non-catchup stream may carry a stale catchup_days value.
+                    MAX(s.catchup_days) FILTER (WHERE s.is_catchup) AS max_days
+                FROM dispatcharr_channels_channelstream cs
+                JOIN dispatcharr_channels_stream s ON s.id = cs.stream_id
+                WHERE cs.channel_id IN (
+                    SELECT DISTINCT cs2.channel_id
+                    FROM dispatcharr_channels_channelstream cs2
+                    JOIN dispatcharr_channels_stream s2 ON s2.id = cs2.stream_id
+                    WHERE s2.m3u_account_id = %s
+                )
+                GROUP BY cs.channel_id
+            )
+            UPDATE dispatcharr_channels_channel c
+            SET
+                is_catchup   = COALESCE(agg.any_catchup, FALSE),
+                catchup_days = COALESCE(agg.max_days, 0)
+            FROM agg
+            WHERE c.id = agg.channel_id
+        """, [account_id])
+
+        # Self-heal: reset channels still flagged as catch-up that no longer
+        # have ANY catch-up stream. The CTE above only reaches channels that
+        # still hold at least one stream from this account, so a channel whose
+        # last stream was just removed (stale cleanup, manual unassignment)
+        # falls outside its scope. The ChannelStream post_delete signal
+        # normally resets those rows already — this pass guarantees the
+        # invariant regardless of how the link rows disappeared (raw SQL,
+        # signal-less bulk operations, historic staleness). Idempotent and
+        # cheap: ``is_catchup`` is indexed and TRUE on a small minority of
+        # channels.
+        cur.execute("""
+            UPDATE dispatcharr_channels_channel c
+            SET is_catchup = FALSE, catchup_days = 0
+            WHERE c.is_catchup = TRUE
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM dispatcharr_channels_channelstream cs
+                  JOIN dispatcharr_channels_stream s ON s.id = cs.stream_id
+                  WHERE cs.channel_id = c.id AND s.is_catchup = TRUE
+              )
+        """)
 
 
 @shared_task
@@ -3515,6 +3609,17 @@ def _refresh_single_m3u_account_impl(account_id):
             logger.error(
                 f"Error running auto channel sync for account {account_id}: {str(e)}"
             )
+
+        # Roll up catch-up fields from streams to channels.  Runs after
+        # sync_auto_channels so new and existing channels both reflect the
+        # current tv_archive flags from the just-completed stream refresh.
+        # Covers manual channels too, so it lives here rather than inside
+        # sync_auto_channels which only manages auto-created channels.
+        try:
+            rollup_channel_catchup_fields(account_id)
+            logger.debug(f"Catch-up field rollup complete for account {account_id}")
+        except Exception as e:
+            logger.error(f"Error rolling up catch-up fields for account {account_id}: {str(e)}")
 
         # Calculate elapsed time
         elapsed_time = time.time() - start_time

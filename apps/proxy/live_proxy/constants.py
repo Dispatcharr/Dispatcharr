@@ -54,6 +54,8 @@ class ChannelMetadataField:
     STREAM_ID = "stream_id"
     CHANNEL_NAME = "channel_name"
     STREAM_NAME = "stream_name"
+    IS_TIMESHIFT = "is_timeshift"
+    LOGO_ID = "logo_id"
 
     # Profile fields
     STREAM_PROFILE = "stream_profile"

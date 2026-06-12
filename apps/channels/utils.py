@@ -23,6 +23,25 @@ def format_channel_number(value, empty=""):
         return int(value)
     return value
 
+
+def get_channel_catchup_streams(channel):
+    """Ordered catch-up streams for a Channel (empty list if unavailable).
+
+    Returned in ``channelstream__order`` so the timeshift proxy can fail over:
+    it tries each stream's provider in turn until one serves the archive —
+    mirroring how live playback walks a channel's stream list. Streams from
+    disabled M3U accounts are excluded, same as live dispatch.
+    """
+    if not getattr(channel, "is_catchup", False):
+        return []
+
+    return list(
+        channel.streams.filter(is_catchup=True, m3u_account__is_active=True)
+        .order_by("channelstream__order")
+        .select_related("m3u_account")
+    )
+
+
 def increment_stream_count(account):
     with lock:
         current_usage = active_streams_map.get(account.id, 0)

@@ -1,6 +1,7 @@
 import logging
 from core.utils import RedisClient
 from apps.proxy.vod_proxy.multi_worker_connection_manager import MultiWorkerVODConnectionManager, get_vod_client_stop_key
+from apps.proxy.live_proxy.redis_keys import RedisKeys
 from core.models import CoreSettings
 from apps.proxy.live_proxy.services.channel_service import ChannelService
 
@@ -61,6 +62,22 @@ def attempt_stream_termination(user_id, requesting_client_id, active_connections
                 result = ChannelService.stop_client(t['media_id'], t['client_id'])
                 if result.get("status") == "error":
                     logger.warning(f"[stream limits][{requesting_client_id}] Failed to stop client {t['client_id']} on channel {t['media_id']}")
+            elif t['type'] == 'timeshift':
+                # Timeshift uses the same Redis key pattern as live
+                # (RedisKeys.client_stop).  The stream_generator in
+                # apps/timeshift/views.py polls this key on its 5-second
+                # heartbeat cadence.
+                redis_client = RedisClient.get_client()
+                if not redis_client:
+                    # Without Redis the stop key cannot be set, so the old
+                    # stream cannot be terminated.  Failing the whole attempt
+                    # is the safe outcome: the caller then denies the NEW
+                    # stream instead of letting the user exceed the provider's
+                    # connection limit (which escalates to an IP ban).
+                    return False
+                stop_key = RedisKeys.client_stop(t['media_id'], t['client_id'])
+                redis_client.setex(stop_key, 60, "true")
+                logger.info(f"[stream limits][{requesting_client_id}] Set stop key for timeshift client {t['client_id']}")
             else:
                 connection_manager = MultiWorkerVODConnectionManager.get_instance()
                 redis_client = connection_manager.redis_client
@@ -106,13 +123,15 @@ def get_user_active_connections(user_id):
 
                 if user_id is None or (client_user_id and int(client_user_id) == user_id):
                     try:
-                        logger.debug(f"[stream limits] Found LIVE connection for user {user_id} on channel {channel_id} with client ID {client_id}")
+                        # Timeshift virtual_channel_ids start with "timeshift_"
+                        conn_type = 'timeshift' if channel_id.startswith('timeshift_') else 'live'
+                        logger.debug(f"[stream limits] Found {conn_type.upper()} connection for user {user_id} on channel {channel_id} with client ID {client_id}")
                         connected_at = float(connected_at) if connected_at else 0
                         connections.append({
                             'media_id': channel_id,
                             'client_id': client_id,
                             'connected_at': connected_at,
-                            'type': 'live',
+                            'type': conn_type,
                         })
                     except (ValueError, TypeError):
                         pass
