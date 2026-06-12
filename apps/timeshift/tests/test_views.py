@@ -255,19 +255,89 @@ class RedactUrlTests(TestCase):
 
 
 def _make_catchup_stream(provider_tz="Europe/Brussels", *, account_id=9,
-                         stream_id="22372", account_type="XC", profile_id=31):
-    """Build a mocked catch-up Stream with its own provider context."""
+                         stream_id="22372", account_type="XC", profile_id=31,
+                         extra_profiles=()):
+    """Build a mocked catch-up Stream with its own provider context.
+
+    The default (tz-bearing) profile leads the active-profile list the view
+    walks; ``extra_profiles`` appends alternate (non-default) profiles for
+    capacity-walk tests.
+    """
     profile = MagicMock()
     profile.id = profile_id
+    profile.is_default = True
     profile.custom_properties = {"server_info": {"timezone": provider_tz}}
     m3u_account = MagicMock()
     m3u_account.account_type = account_type
     m3u_account.id = account_id
-    m3u_account.profiles.filter.return_value.first.return_value = profile
+    m3u_account.profiles.filter.return_value = [profile, *extra_profiles]
     stream = MagicMock()
     stream.m3u_account = m3u_account
     stream.custom_properties = {"stream_id": stream_id} if stream_id else {}
     return stream
+
+
+def _make_alt_profile(profile_id):
+    """A non-default active profile for the capacity walk."""
+    profile = MagicMock()
+    profile.id = profile_id
+    profile.is_default = False
+    profile.custom_properties = {}
+    return profile
+
+
+class _FakeRedis:
+    """Just enough of the redis-py surface for the slot-token protocol:
+    setex/get/delete plus a transactional pipeline doing GET+DEL."""
+
+    def __init__(self):
+        self.store = {}
+
+    def setex(self, key, ttl, value):
+        self.store[key] = str(value)
+
+    def set(self, key, value):
+        self.store[key] = str(value)
+
+    def get(self, key):
+        return self.store.get(key)
+
+    def delete(self, *keys):
+        return sum(1 for k in keys if self.store.pop(k, None) is not None)
+
+    def exists(self, key):
+        return 1 if key in self.store else 0
+
+    def pipeline(self, transaction=False):
+        return _FakeRedisPipeline(self)
+
+
+class _FakeRedisPipeline:
+    def __init__(self, redis):
+        self._redis = redis
+        self._ops = []
+
+    def get(self, key):
+        self._ops.append(("get", key))
+
+    def delete(self, key):
+        self._ops.append(("delete", key))
+
+    def execute(self):
+        results = []
+        for op, key in self._ops:
+            if op == "get":
+                results.append(self._redis.get(key))
+            else:
+                results.append(self._redis.delete(key))
+        self._ops = []
+        return results
+
+
+def _fake_creds(acc, prof):
+    """Distinguishable per-account credentials, mirroring what
+    get_transformed_credentials returns for the reserved profile."""
+    return (f"http://a{acc.id}.test", f"u{acc.id}", "p")
 
 
 class TimeshiftProxyTimestampWiringTests(TestCase):
@@ -292,7 +362,13 @@ class TimeshiftProxyTimestampWiringTests(TestCase):
              patch.object(views, "build_timeshift_candidate_urls",
                           return_value=["http://example.test/x.ts"]) as build_mock, \
              patch.object(views, "check_user_stream_limits", return_value=True), \
+             patch.object(views, "RedisClient") as redis_cls, \
+             patch.object(views, "reserve_profile_slot", return_value=(True, 1, None)), \
+             patch.object(views, "release_profile_slot"), \
+             patch.object(views, "get_transformed_credentials", side_effect=_fake_creds), \
+             patch.object(views, "get_user_active_connections", return_value=[]), \
              patch.object(views, "_stream_from_provider", return_value=sentinel) as stream_mock:
+            redis_cls.get_client.return_value = _FakeRedis()
             channel_cls.objects.get.return_value = MagicMock(id=8, name="Test", logo_id=None)
             response = views.timeshift_proxy(request, "u", "p", "8", timestamp, "8.ts")
         return response, sentinel, build_mock, duration_mock, stream_mock
@@ -363,12 +439,20 @@ class TimeshiftProxyFailoverTests(TestCase):
              patch.object(views, "build_timeshift_candidate_urls",
                           return_value=["http://example.test/x.ts"]) as build_mock, \
              patch.object(views, "check_user_stream_limits", return_value=True) as limits_mock, \
+             patch.object(views, "RedisClient") as redis_cls, \
+             patch.object(views, "reserve_profile_slot", return_value=(True, 1, None)), \
+             patch.object(views, "release_profile_slot"), \
+             patch.object(views, "get_transformed_credentials",
+                          side_effect=_fake_creds) as creds_mock, \
+             patch.object(views, "get_user_active_connections", return_value=[]), \
              patch.object(views, "_stream_from_provider",
                           side_effect=provider_responses) as stream_mock:
+            redis_cls.get_client.return_value = _FakeRedis()
             channel_cls.objects.get.return_value = MagicMock(id=8, name="Test", logo_id=None)
             response = views.timeshift_proxy(
                 request, "u", "p", "8", "2026-06-08:17-00", "8.ts"
             )
+        self.creds_mock = creds_mock
         return response, stream_mock, build_mock, limits_mock
 
     def test_second_stream_serves_after_first_fails(self):
@@ -382,9 +466,14 @@ class TimeshiftProxyFailoverTests(TestCase):
         )
         self.assertIs(response, ok)
         self.assertEqual(stream_mock.call_count, 2)
-        # Each attempt used its own provider context.
+        # Each attempt used its own provider context: credentials resolved per
+        # account/profile (via get_transformed_credentials) and its stream id.
         self.assertEqual(
             [c.args[0] for c in build_mock.call_args_list],
+            [("http://a1.test", "u1", "p"), ("http://a2.test", "u2", "p")],
+        )
+        self.assertEqual(
+            [c.args[0] for c in self.creds_mock.call_args_list],
             [streams[0].m3u_account, streams[1].m3u_account],
         )
         self.assertEqual(
@@ -430,14 +519,27 @@ class TimeshiftProxyFailoverTests(TestCase):
         self.assertEqual(limits_mock.call_count, 1)
 
 
-class TimeshiftProxyFailoverHardeningTests(TestCase):
-    """Ban-safety and per-provider context guarantees of the failover loop."""
+class _ProxyLoopTestMixin:
+    """Shared driver for tests exercising the failover loop end to end —
+    pool reservation, credential resolution and Redis are all controlled."""
 
     def setUp(self):
         self.factory = RequestFactory()
 
-    def _call(self, streams, provider_responses, limits=True):
+    def _call(self, streams, provider_responses, limits=True, reserve_results=None,
+              build_side_effect=None):
         request = self.factory.get("/timeshift/u/p/8/2026-06-08:17-00/8.ts")
+        self.fake_redis = _FakeRedis()
+        reserve_kwargs = (
+            {"side_effect": reserve_results}
+            if reserve_results is not None
+            else {"return_value": (True, 1, None)}
+        )
+        build_kwargs = (
+            {"side_effect": build_side_effect}
+            if build_side_effect is not None
+            else {"return_value": ["http://example.test/x.ts"]}
+        )
         with patch.object(views, "_authenticate_user", return_value=MagicMock()), \
              patch.object(views, "network_access_allowed", return_value=True), \
              patch.object(views, "Channel") as channel_cls, \
@@ -445,15 +547,31 @@ class TimeshiftProxyFailoverHardeningTests(TestCase):
              patch.object(views, "get_channel_catchup_streams", return_value=streams), \
              patch.object(views, "get_programme_duration", return_value=40), \
              patch.object(views, "build_timeshift_candidate_urls",
-                          return_value=["http://example.test/x.ts"]) as build_mock, \
+                          **build_kwargs) as build_mock, \
              patch.object(views, "check_user_stream_limits", return_value=limits), \
+             patch.object(views, "RedisClient") as redis_cls, \
+             patch.object(views, "reserve_profile_slot", **reserve_kwargs) as reserve_mock, \
+             patch.object(views, "release_profile_slot") as release_mock, \
+             patch.object(views, "get_transformed_credentials",
+                          side_effect=_fake_creds) as creds_mock, \
+             patch.object(views, "get_user_active_connections", return_value=[]), \
              patch.object(views, "_stream_from_provider",
                           side_effect=provider_responses) as stream_mock:
+            redis_cls.get_client.return_value = self.fake_redis
             channel_cls.objects.get.return_value = MagicMock(id=8, name="Test", logo_id=None)
+            # Exposed before the call so raising tests can still assert on them.
+            self.reserve_mock = reserve_mock
+            self.release_mock = release_mock
+            self.creds_mock = creds_mock
+            self.stream_mock = stream_mock
             response = views.timeshift_proxy(
                 request, "u", "p", "8", "2026-06-08:17-00", "8.ts"
             )
         return response, stream_mock, build_mock
+
+
+class TimeshiftProxyFailoverHardeningTests(_ProxyLoopTestMixin, TestCase):
+    """Ban-safety and per-provider context guarantees of the failover loop."""
 
     def test_decisive_failure_skips_same_accounts_other_streams(self):
         # Account 1 carries two variants (e.g. FHD + HD). A decisive
@@ -691,3 +809,402 @@ class AuthHelpersDbTests(TestCase):
         # Level-0 viewer with no profiles: allowed on level-0, denied on level-10.
         self.assertTrue(views._user_can_access_channel(self.viewer, self.basic_channel))
         self.assertFalse(views._user_can_access_channel(self.viewer, self.admin_channel))
+
+
+class TimeshiftSlotPoolTests(_ProxyLoopTestMixin, TestCase):
+    """Provider pool participation: a profile slot is reserved before any
+    upstream attempt and released exactly once afterwards — the same
+    accounting contract live (Channel.get_stream) and VOD follow."""
+
+    def _slot_token_keys(self):
+        return [k for k in self.fake_redis.store if k.startswith("timeshift_slot:")]
+
+    def test_reserve_called_with_default_profile_before_upstream(self):
+        streams = [_make_catchup_stream(account_id=1, stream_id="111", profile_id=31)]
+        response, stream_mock, _ = self._call(streams, [MagicMock(status_code=200)])
+        self.assertEqual(response.status_code, 200)
+        self.reserve_mock.assert_called_once()
+        reserved_profile = self.reserve_mock.call_args.args[0]
+        self.assertEqual(reserved_profile.id, 31)
+        # The reserved profile's id is what reaches the stats metadata.
+        self.assertEqual(stream_mock.call_args.kwargs["m3u_profile_id"], 31)
+
+    def test_slot_released_after_failed_attempt(self):
+        streams = [_make_catchup_stream(account_id=1, stream_id="111", profile_id=31)]
+        response, _, _ = self._call(
+            streams, [MagicMock(status_code=404, timeshift_decisive=False)]
+        )
+        self.assertEqual(response.status_code, 404)
+        # The one-shot token was consumed and the pool counter decremented.
+        self.release_mock.assert_called_once_with(31, self.fake_redis)
+        self.assertEqual(self._slot_token_keys(), [])
+
+    def test_slot_kept_on_success_for_the_streaming_session(self):
+        streams = [_make_catchup_stream(account_id=1, stream_id="111", profile_id=31)]
+        response, _, _ = self._call(streams, [MagicMock(status_code=200)])
+        self.assertEqual(response.status_code, 200)
+        # Slot still owned by the (mocked) streaming session: token present,
+        # nothing released yet.
+        self.release_mock.assert_not_called()
+        self.assertEqual(len(self._slot_token_keys()), 1)
+
+    def test_decisive_failure_releases_slot_and_skips_account(self):
+        streams = [
+            _make_catchup_stream(account_id=1, stream_id="111", profile_id=31),
+            _make_catchup_stream(account_id=1, stream_id="112", profile_id=31),
+        ]
+        response, stream_mock, _ = self._call(
+            streams, [MagicMock(status_code=403, timeshift_decisive=True)]
+        )
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(stream_mock.call_count, 1)
+        self.release_mock.assert_called_once_with(31, self.fake_redis)
+        # Decisive skip means the second stream never reserved a slot.
+        self.assertEqual(self.reserve_mock.call_count, 1)
+
+    def test_profile_full_walks_to_next_profile_same_account(self):
+        alt = _make_alt_profile(32)
+        streams = [_make_catchup_stream(
+            account_id=1, stream_id="111", profile_id=31, extra_profiles=(alt,)
+        )]
+        response, stream_mock, _ = self._call(
+            streams, [MagicMock(status_code=200)],
+            reserve_results=[(False, 1, "profile_full"), (True, 1, None)],
+        )
+        self.assertEqual(response.status_code, 200)
+        # Default profile full -> alternate profile reserved and used.
+        self.assertEqual(
+            [c.args[0].id for c in self.reserve_mock.call_args_list], [31, 32]
+        )
+        self.assertEqual(stream_mock.call_args.kwargs["m3u_profile_id"], 32)
+        # Credentials were resolved for the RESERVED (alternate) profile.
+        self.assertIs(self.creds_mock.call_args.args[1], alt)
+
+    def test_all_profiles_full_returns_503_without_upstream_attempt(self):
+        streams = [
+            _make_catchup_stream(account_id=1, stream_id="111", profile_id=31),
+            _make_catchup_stream(account_id=2, stream_id="222", profile_id=41),
+        ]
+        response, stream_mock, _ = self._call(
+            streams, [],
+            reserve_results=[
+                (False, 1, "profile_full"),
+                (False, 1, "credential_full"),
+            ],
+        )
+        # Pool capacity exhausted everywhere: 503 (VOD's pool-exhausted
+        # status), and crucially the provider was never contacted.
+        self.assertEqual(response.status_code, 503)
+        stream_mock.assert_not_called()
+        self.release_mock.assert_not_called()
+
+    def test_capacity_failure_is_not_decisive_for_the_account(self):
+        # profile_full on account 1's first stream must NOT mark account 1
+        # decisive — capacity is transient, unlike a ban-class status.
+        streams = [
+            _make_catchup_stream(account_id=1, stream_id="111", profile_id=31),
+            _make_catchup_stream(account_id=1, stream_id="112", profile_id=31),
+        ]
+        response, stream_mock, _ = self._call(
+            streams, [MagicMock(status_code=200)],
+            reserve_results=[(False, 1, "profile_full"), (True, 1, None)],
+        )
+        self.assertEqual(response.status_code, 200)
+        # Second stream of the SAME account still got its reservation attempt.
+        self.assertEqual(self.reserve_mock.call_count, 2)
+        self.assertEqual(stream_mock.call_count, 1)
+
+    def test_account_without_active_default_profile_is_skipped(self):
+        # Mirrors live dispatch: no active default profile -> skip the account
+        # without reserving anything.
+        stream = _make_catchup_stream(account_id=1, stream_id="111")
+        stream.m3u_account.profiles.filter.return_value = [_make_alt_profile(32)]
+        response, stream_mock, _ = self._call([stream], [])
+        self.assertEqual(response.status_code, 400)
+        self.reserve_mock.assert_not_called()
+        stream_mock.assert_not_called()
+
+    def test_exception_from_provider_releases_slot(self):
+        # An unexpected exception between reserve and response construction
+        # must release the slot before propagating — otherwise the counter
+        # (no TTL) leaks until the next Redis flush.
+        streams = [_make_catchup_stream(account_id=1, stream_id="111", profile_id=31)]
+        with self.assertRaises(RuntimeError):
+            self._call(streams, RuntimeError("boom"))
+        self.release_mock.assert_called_once_with(31, self.fake_redis)
+        self.assertEqual(self._slot_token_keys(), [])
+
+    def test_exception_before_upstream_releases_slot(self):
+        # Same guarantee for failures BEFORE the upstream call (URL building,
+        # credential resolution, user-agent lookup) — the guarded window
+        # starts right after the reservation.
+        streams = [_make_catchup_stream(account_id=1, stream_id="111", profile_id=31)]
+        with self.assertRaises(RuntimeError):
+            self._call(streams, [], build_side_effect=RuntimeError("boom"))
+        self.stream_mock.assert_not_called()
+        self.release_mock.assert_called_once_with(31, self.fake_redis)
+        self.assertEqual(self._slot_token_keys(), [])
+
+    def test_token_store_failure_releases_directly(self):
+        # If the ownership token cannot be written, no release path could
+        # ever free the slot — the view must release it directly and report
+        # transient unavailability instead of streaming unaccounted.
+        streams = [_make_catchup_stream(account_id=1, stream_id="111", profile_id=31)]
+        with patch.object(views, "_store_slot_token", return_value=False):
+            response, stream_mock, _ = self._call(streams, [])
+        self.assertEqual(response.status_code, 503)
+        stream_mock.assert_not_called()
+        self.release_mock.assert_called_once_with(31, self.fake_redis)
+
+    def test_mixed_capacity_then_upstream_failure_returns_failure(self):
+        # Mixed outcome: one stream capacity-blocked, another actually tried
+        # upstream and failed -> the REAL upstream failure wins over 503
+        # (capacity was not the sole blocker).
+        streams = [
+            _make_catchup_stream(account_id=1, stream_id="111", profile_id=31),
+            _make_catchup_stream(account_id=2, stream_id="222", profile_id=41),
+        ]
+        response, _, _ = self._call(
+            streams,
+            [MagicMock(status_code=404, timeshift_decisive=False)],
+            reserve_results=[(False, 1, "profile_full"), (True, 1, None)],
+        )
+        self.assertEqual(response.status_code, 404)
+
+    def test_mixed_upstream_failure_then_capacity_returns_failure(self):
+        # Same in the opposite order.
+        streams = [
+            _make_catchup_stream(account_id=1, stream_id="111", profile_id=31),
+            _make_catchup_stream(account_id=2, stream_id="222", profile_id=41),
+        ]
+        response, _, _ = self._call(
+            streams,
+            [MagicMock(status_code=404, timeshift_decisive=False)],
+            reserve_results=[(True, 1, None), (False, 1, "profile_full")],
+        )
+        self.assertEqual(response.status_code, 404)
+
+
+class TimeshiftSlotTokenTests(TestCase):
+    """The one-shot release token: exactly-once semantics across all release
+    paths (generator finally, response close, takeover, failed attempt)."""
+
+    def setUp(self):
+        self.redis = _FakeRedis()
+
+    def test_release_happens_exactly_once(self):
+        views._store_slot_token(self.redis, "timeshift_abc", 31)
+        with patch.object(views, "release_profile_slot") as release_mock:
+            self.assertTrue(views._release_slot_token(self.redis, "timeshift_abc"))
+            self.assertFalse(views._release_slot_token(self.redis, "timeshift_abc"))
+        release_mock.assert_called_once_with(31, self.redis)
+
+    def test_release_without_token_is_noop(self):
+        with patch.object(views, "release_profile_slot") as release_mock:
+            self.assertFalse(views._release_slot_token(self.redis, "timeshift_ghost"))
+        release_mock.assert_not_called()
+
+    def test_release_without_redis_is_noop(self):
+        with patch.object(views, "release_profile_slot") as release_mock:
+            self.assertFalse(views._release_slot_token(None, "timeshift_abc"))
+        release_mock.assert_not_called()
+
+    def test_wrapper_close_releases_even_when_generator_never_started(self):
+        # The WSGI layer can close the response before the first chunk is
+        # pulled; closing a never-started generator runs NO body code, so the
+        # generator's own finally cannot be the only release point.
+        finally_ran = []
+
+        def gen():
+            try:
+                yield b"x"
+            finally:
+                finally_ran.append(True)
+
+        on_close = MagicMock()
+        wrapper = views._SlotReleasingStream(gen(), on_close)
+        wrapper.close()
+        on_close.assert_called_once()
+        self.assertEqual(finally_ran, [])  # proves the leak this wrapper fixes
+
+    def test_streaming_response_close_invokes_wrapper_close(self):
+        # Locks the Django contract the wrapper relies on: an iterator with a
+        # close() method is registered as a resource closer of the response.
+        from django.http import StreamingHttpResponse
+
+        on_close = MagicMock()
+        wrapper = views._SlotReleasingStream(iter([b"x"]), on_close)
+        response = StreamingHttpResponse(wrapper, content_type="video/mp2t")
+        response.close()
+        on_close.assert_called_once()
+
+
+class TimeshiftTakeoverTests(TestCase):
+    """One catch-up session per user+channel: a new request displaces the
+    user's previous session on the same channel — synchronous slot release +
+    stats unregister + stop key — and never touches other users, other
+    channels, or live sessions."""
+
+    def setUp(self):
+        self.redis = _FakeRedis()
+        self.user = MagicMock(id=5)
+
+    def _conn(self, media_id, client_id, conn_type="timeshift"):
+        return {
+            "media_id": media_id,
+            "client_id": client_id,
+            "connected_at": 0.0,
+            "type": conn_type,
+        }
+
+    def test_displaces_only_same_channel_timeshift_sessions(self):
+        views._store_slot_token(self.redis, "timeshift_old1", 31)
+        views._store_slot_token(self.redis, "timeshift_other", 41)
+        connections = [
+            self._conn("timeshift_8_2026-06-08-17-00_111", "timeshift_old1"),
+            self._conn("timeshift_9_2026-06-08-17-00_222", "timeshift_other"),
+            self._conn("42", "live_client", conn_type="live"),
+        ]
+        with patch.object(views, "get_user_active_connections",
+                          return_value=connections) as conns_mock, \
+             patch.object(views, "release_profile_slot") as release_mock, \
+             patch.object(views, "_unregister_stats_client") as unregister_mock:
+            views._terminate_previous_timeshift_sessions(self.redis, self.user, 8)
+        conns_mock.assert_called_once_with(5)
+        # Channel 8's old session: slot released, stats dropped, stop key set.
+        release_mock.assert_called_once_with(31, self.redis)
+        unregister_mock.assert_called_once_with(
+            self.redis, "timeshift_8_2026-06-08-17-00_111", "timeshift_old1"
+        )
+        from apps.proxy.live_proxy.redis_keys import RedisKeys
+        stop_key = RedisKeys.client_stop(
+            "timeshift_8_2026-06-08-17-00_111", "timeshift_old1"
+        )
+        self.assertIn(stop_key, self.redis.store)
+        # Channel 9's session untouched: token still present, no stop key.
+        self.assertIn("timeshift_slot:timeshift_other", self.redis.store)
+
+    def test_channel_id_prefix_cannot_match_other_channels(self):
+        # Channel 8 must not displace channel 80/81 sessions (prefix ends
+        # with an underscore).
+        connections = [
+            self._conn("timeshift_80_2026-06-08-17-00_111", "timeshift_c80"),
+        ]
+        with patch.object(views, "get_user_active_connections",
+                          return_value=connections), \
+             patch.object(views, "release_profile_slot") as release_mock, \
+             patch.object(views, "_unregister_stats_client") as unregister_mock:
+            views._terminate_previous_timeshift_sessions(self.redis, self.user, 8)
+        release_mock.assert_not_called()
+        unregister_mock.assert_not_called()
+
+    def test_noop_without_redis_or_user(self):
+        with patch.object(views, "get_user_active_connections") as conns_mock:
+            views._terminate_previous_timeshift_sessions(None, self.user, 8)
+            views._terminate_previous_timeshift_sessions(self.redis, None, 8)
+        conns_mock.assert_not_called()
+
+    def test_proxy_runs_takeover_before_stream_limit_check(self):
+        # Order matters: with terminate_on_limit_exceeded=False a seek must
+        # displace its own predecessor BEFORE the limit check counts it, or
+        # the user's own seek gets denied.
+        call_order = []
+        request = RequestFactory().get("/timeshift/u/p/8/2026-06-08:17-00/8.ts")
+        with patch.object(views, "_authenticate_user", return_value=MagicMock()), \
+             patch.object(views, "network_access_allowed", return_value=True), \
+             patch.object(views, "Channel") as channel_cls, \
+             patch.object(views, "_user_can_access_channel", return_value=True), \
+             patch.object(views, "get_channel_catchup_streams",
+                          return_value=[_make_catchup_stream()]), \
+             patch.object(views, "get_programme_duration", return_value=40), \
+             patch.object(views, "RedisClient") as redis_cls, \
+             patch.object(views, "_terminate_previous_timeshift_sessions",
+                          side_effect=lambda *a: call_order.append("takeover")) as takeover_mock, \
+             patch.object(views, "check_user_stream_limits",
+                          side_effect=lambda *a, **k: call_order.append("limits") or False):
+            redis_cls.get_client.return_value = self.redis
+            channel_cls.objects.get.return_value = MagicMock(id=8, name="Test", logo_id=None)
+            response = views.timeshift_proxy(
+                request, "u", "p", "8", "2026-06-08:17-00", "8.ts"
+            )
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(call_order, ["takeover", "limits"])
+        self.assertEqual(takeover_mock.call_args.args[2], 8)
+
+
+class RollupSelfHealDbTests(TestCase):
+    """Catch-up flag consistency after stream removal — the review-#4 point 1
+    guarantees: the ChannelStream signal handles bulk deletes (locked by a
+    regression test) and the rollup self-heals any channel left flagged with
+    no catch-up stream, regardless of how the link rows disappeared."""
+
+    @classmethod
+    def setUpTestData(cls):
+        from apps.m3u.models import M3UAccount
+
+        cls.account = M3UAccount.objects.create(
+            name="ts-rollup-account", server_url="http://example.test",
+            account_type="XC", is_active=True,
+        )
+
+    def _make_channel_with_catchup_stream(self, name, days=5):
+        from apps.channels.models import Channel, ChannelStream, Stream
+
+        channel = Channel.objects.create(name=name)
+        stream = Stream.objects.create(
+            name=f"{name}-stream", url=f"http://example.test/{name}",
+            m3u_account=self.account, is_catchup=True, catchup_days=days,
+        )
+        ChannelStream.objects.create(channel=channel, stream=stream, order=0)
+        return channel, stream
+
+    def test_bulk_stream_delete_resets_channel_flags_via_signal(self):
+        # cleanup_streams() removes stale streams with a queryset bulk delete;
+        # the cascaded ChannelStream rows still fire post_delete (signal
+        # listeners disable Django's fast-delete path), which must reset the
+        # channel's denormalized catch-up fields.
+        from apps.channels.models import Stream
+
+        channel, stream = self._make_channel_with_catchup_stream("ts-rollup-bulk")
+        channel.refresh_from_db()
+        self.assertTrue(channel.is_catchup)
+        self.assertEqual(channel.catchup_days, 5)
+
+        Stream.objects.filter(id=stream.id).delete()
+
+        channel.refresh_from_db()
+        self.assertFalse(channel.is_catchup)
+        self.assertEqual(channel.catchup_days, 0)
+
+    def test_rollup_self_heals_stale_channel_without_streams(self):
+        # Simulate staleness no signal caught (raw SQL delete, historic data):
+        # a flagged channel with zero catch-up streams must be reset by the
+        # rollup even though no remaining stream ties it to the account.
+        from apps.channels.models import Channel
+        from apps.m3u.tasks import rollup_channel_catchup_fields
+
+        channel = Channel.objects.create(name="ts-rollup-stale")
+        Channel.objects.filter(pk=channel.pk).update(is_catchup=True, catchup_days=9)
+
+        rollup_channel_catchup_fields(self.account.id)
+
+        channel.refresh_from_db()
+        self.assertFalse(channel.is_catchup)
+        self.assertEqual(channel.catchup_days, 0)
+
+    def test_rollup_keeps_and_corrects_channels_with_catchup_streams(self):
+        # The self-heal pass must not touch channels that legitimately have
+        # catch-up streams — and the account-scoped pass still corrects their
+        # values.
+        from apps.channels.models import Channel
+        from apps.m3u.tasks import rollup_channel_catchup_fields
+
+        channel, _ = self._make_channel_with_catchup_stream("ts-rollup-valid", days=7)
+        # Knock the denormalized values out of sync (bypasses signals).
+        Channel.objects.filter(pk=channel.pk).update(is_catchup=False, catchup_days=0)
+
+        rollup_channel_catchup_fields(self.account.id)
+
+        channel.refresh_from_db()
+        self.assertTrue(channel.is_catchup)
+        self.assertEqual(channel.catchup_days, 7)

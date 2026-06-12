@@ -3,6 +3,13 @@ archive (PATH `/timeshift/.../{id}.ts` form first, `/streaming/timeshift.php`
 query form as fallback) to clients like iPlayTV and TiviMate, with
 multi-provider failover across the channel's catch-up streams.
 
+Provider capacity accounting follows the same contract as live and VOD: a
+profile slot is reserved through ``apps.m3u.connection_pool`` before any
+upstream connect and released exactly once when the session ends (one-shot
+Redis token), so Dispatcharr's pool counters always match real upstream usage.
+A user gets ONE active catch-up session per channel — a seek displaces the
+previous one.
+
 URL parameter quirk matching what iPlayTV / TiviMate emit:
     Position "stream_id"  -> EPG channel number, IGNORED here.
     Position "duration"   -> Dispatcharr's Channel.id (the XC API emits
@@ -19,6 +26,7 @@ import requests
 from django.core.cache import cache
 from django.http import (
     Http404,
+    HttpResponse,
     HttpResponseBadRequest,
     HttpResponseForbidden,
     HttpResponseNotFound,
@@ -28,16 +36,19 @@ from django.http import (
 from apps.accounts.models import User
 from apps.channels.models import Channel
 from apps.channels.utils import get_channel_catchup_streams
+from apps.m3u.connection_pool import release_profile_slot, reserve_profile_slot
+from apps.m3u.tasks import get_transformed_credentials
 from apps.proxy.live_proxy.config_helper import ConfigHelper
 from apps.proxy.live_proxy.constants import ChannelMetadataField, ChannelState
 from apps.proxy.live_proxy.redis_keys import RedisKeys
 from apps.proxy.live_proxy.utils import get_client_ip
 from apps.proxy.live_proxy.input.http_streamer import find_ts_sync
-from apps.proxy.utils import check_user_stream_limits
+from apps.proxy.utils import check_user_stream_limits, get_user_active_connections
 from core.utils import RedisClient
 from dispatcharr.utils import network_access_allowed
 
 from .helpers import (
+    TimeshiftCredentials,
     build_timeshift_candidate_urls,
     convert_timestamp_to_provider_tz,
     get_programme_duration,
@@ -99,6 +110,18 @@ def timeshift_proxy(request, username, password, stream_id, timestamp, duration)
     range_header = request.META.get("HTTP_RANGE")
     channel_logo_id = getattr(channel, "logo_id", None)
 
+    redis_client = RedisClient.get_client()
+
+    # One active catch-up session per user+channel: a new request (programme
+    # jump, or a seek re-request on the same programme) DISPLACES the user's
+    # previous session on this channel. Its provider slot is released
+    # synchronously — so the reservation below cannot collide with the dying
+    # session on max_connections=1 providers — and its generator is stopped
+    # via the same Redis stop-key the stream-limit path uses. Runs BEFORE the
+    # stream-limit check so a seek displaces its own predecessor instead of
+    # being denied when terminate_on_limit_exceeded is off.
+    _terminate_previous_timeshift_sessions(redis_client, user, channel.id)
+
     # Enforce user stream limits once, before connecting upstream — this
     # terminates the oldest active stream (live, timeshift, or VOD) via the
     # Redis stop-key mechanism, same as the live and VOD proxy entry points.
@@ -120,6 +143,7 @@ def timeshift_proxy(request, username, password, stream_id, timestamp, duration)
     # account is a different host and remains safe to try.
     last_response = None
     decisive_accounts = set()
+    capacity_blocked = False
     for catchup_stream in catchup_streams:
         m3u_account = catchup_stream.m3u_account
         if m3u_account is None or m3u_account.account_type != "XC":
@@ -131,63 +155,158 @@ def timeshift_proxy(request, username, password, stream_id, timestamp, duration)
         if stream_id_value is None:
             continue
 
+        # Provider profile walk — same ordering as live's Channel.get_stream():
+        # active profiles only, default first; an account without an active
+        # default profile is skipped entirely, mirroring live dispatch.
+        m3u_profiles = list(m3u_account.profiles.filter(is_active=True))
+        default_profile = next((p for p in m3u_profiles if p.is_default), None)
+        if default_profile is None:
+            logger.debug(
+                "Timeshift: account %s has no active default profile, skipping",
+                m3u_account.id,
+            )
+            continue
+        profile_walk = [default_profile] + [
+            p for p in m3u_profiles if not p.is_default
+        ]
+
         # Real XC providers index their archive in their OWN local zone (the
         # server_info.timezone they report on auth — stored on the default
         # profile). Convert the UTC instant to that zone for the upstream URL —
         # empirically a provider reads `17-00` as 17:00 LOCAL, not UTC, so
         # skipping this would seek 1-2h off. This is the ONLY timezone
-        # conversion in the chain, and it is per-provider.
-        default_profile = m3u_account.profiles.filter(is_default=True).first()
+        # conversion in the chain, and it is per-provider (account-level: all
+        # profiles log into the same server, so the default profile's zone
+        # applies to every profile of the walk).
         provider_tz_name = None
-        if default_profile is not None:
-            _server_info = (default_profile.custom_properties or {}).get("server_info") or {}
-            if isinstance(_server_info, dict):
-                provider_tz_name = _server_info.get("timezone")
+        _server_info = (default_profile.custom_properties or {}).get("server_info") or {}
+        if isinstance(_server_info, dict):
+            provider_tz_name = _server_info.get("timezone")
         provider_timestamp = convert_timestamp_to_provider_tz(timestamp, provider_tz_name)
 
-        # Ordered upstream candidates, PATH form first — see
-        # build_timeshift_candidate_urls() for the full rationale (the QUERY
-        # form is a last-resort fallback because some providers return LIVE on
-        # it, ignoring the requested timestamp).
-        candidate_urls = build_timeshift_candidate_urls(
-            m3u_account, stream_id_value, provider_timestamp, duration_minutes
-        )
+        # Reserve a provider profile slot BEFORE connecting upstream — the
+        # same accounting contract live (Channel.get_stream) and VOD follow,
+        # so the Redis pool counters always match real upstream usage. Walk
+        # to the next profile only on RESERVATION failure (profile_full /
+        # credential_full — transient capacity, never ban-class); an upstream
+        # failure instead moves to the next catch-up STREAM, because probing
+        # the same server again through an alternate profile is wasteful and
+        # ban-adjacent.
+        reserved_profile = None
+        for profile in profile_walk:
+            if redis_client is None:
+                # Without Redis no accounting is possible — proceed unpooled
+                # rather than blocking playback (stats writes are equally
+                # fail-open). Deployments always run Redis; this is a dev-only
+                # path.
+                reserved_profile = profile
+                break
+            reserved, _count, reason = reserve_profile_slot(profile, redis_client)
+            if reserved:
+                reserved_profile = profile
+                break
+            logger.info(
+                "Timeshift: profile %s %s on account %s — trying next profile",
+                profile.id, reason or "unavailable", m3u_account.id,
+            )
+        if reserved_profile is None:
+            capacity_blocked = True
+            logger.warning(
+                "Timeshift: all profiles at capacity on account %s for channel %s",
+                m3u_account.id, channel.name,
+            )
+            continue
 
+        token_stored = False
+        if redis_client is not None:
+            token_stored = _store_slot_token(
+                redis_client, client_id, reserved_profile.id
+            )
+            if not token_stored:
+                # Redis hiccup right after the INCR: without a token no
+                # release path could ever free this slot, so release it
+                # directly NOW (race-free: the session is not yet visible to
+                # the takeover scan) and report transient unavailability
+                # instead of streaming unaccounted.
+                try:
+                    release_profile_slot(reserved_profile.id, redis_client)
+                except Exception as exc:
+                    logger.error(
+                        "Timeshift: could not release slot for profile %s "
+                        "after token-store failure: %s", reserved_profile.id, exc,
+                    )
+                capacity_blocked = True
+                continue
+
+        # From here until the streaming response owns the slot, ANY failure
+        # must release the reservation before propagating — otherwise the
+        # pool counter (which has no TTL) leaks until the next Redis flush.
         try:
-            user_agent = m3u_account.get_user_agent().user_agent
-        except AttributeError:
-            user_agent = ""
+            # Build the upstream URLs with the RESERVED profile's credentials,
+            # resolved the same way live playback does (credential extraction
+            # via the profile's URL transform). Using the raw account fields
+            # for a non-default profile would consume that profile's slot
+            # while authenticating with the default login — double-occupying
+            # the provider connection the pool thinks is free.
+            server_url, xc_username, xc_password = get_transformed_credentials(
+                m3u_account, reserved_profile
+            )
+            creds = TimeshiftCredentials(server_url, xc_username, xc_password)
 
-        virtual_channel_id = f"timeshift_{channel.id}_{safe_ts}_{stream_id_value}"
-        m3u_profile_id = default_profile.id if default_profile is not None else None
-
-        if debug:
-            logger.debug(
-                "Timeshift attempt: channel=%s ts=%s (provider tz=%s -> %s) "
-                "account=%s provider_sid=%s vid=%s client=%s range=%s",
-                channel.name, timestamp, provider_tz_name, provider_timestamp,
-                m3u_account.id, stream_id_value, virtual_channel_id, client_id,
-                range_header or "(none)",
+            # Ordered upstream candidates, PATH form first — see
+            # build_timeshift_candidate_urls() for the full rationale (the
+            # QUERY form is a last-resort fallback because some providers
+            # return LIVE on it, ignoring the requested timestamp).
+            candidate_urls = build_timeshift_candidate_urls(
+                creds, stream_id_value, provider_timestamp, duration_minutes
             )
 
-        response = _stream_from_provider(
-            candidate_urls=candidate_urls,
-            user_agent=user_agent,
-            range_header=range_header,
-            virtual_channel_id=virtual_channel_id,
-            client_id=client_id,
-            client_ip=client_ip,
-            user=user,
-            channel_display_name=channel.name,
-            timestamp_utc=timestamp,
-            channel_logo_id=channel_logo_id,
-            m3u_profile_id=m3u_profile_id,
-            debug=debug,
-            account_id=m3u_account.id,
-        )
+            try:
+                user_agent = m3u_account.get_user_agent().user_agent
+            except AttributeError:
+                user_agent = ""
+
+            virtual_channel_id = f"timeshift_{channel.id}_{safe_ts}_{stream_id_value}"
+
+            if debug:
+                logger.debug(
+                    "Timeshift attempt: channel=%s ts=%s (provider tz=%s -> %s) "
+                    "account=%s profile=%s provider_sid=%s vid=%s client=%s range=%s",
+                    channel.name, timestamp, provider_tz_name, provider_timestamp,
+                    m3u_account.id, reserved_profile.id, stream_id_value,
+                    virtual_channel_id, client_id, range_header or "(none)",
+                )
+
+            response = _stream_from_provider(
+                candidate_urls=candidate_urls,
+                user_agent=user_agent,
+                range_header=range_header,
+                virtual_channel_id=virtual_channel_id,
+                client_id=client_id,
+                client_ip=client_ip,
+                user=user,
+                channel_display_name=channel.name,
+                timestamp_utc=timestamp,
+                channel_logo_id=channel_logo_id,
+                m3u_profile_id=reserved_profile.id,
+                debug=debug,
+                account_id=m3u_account.id,
+                redis_client=redis_client,
+            )
+        except Exception:
+            if token_stored:
+                # A False return here means someone else (a takeover) already
+                # consumed the token and released the slot — nothing to do.
+                _release_slot_token(redis_client, client_id)
+            raise
         if response.status_code < 400:
+            # The reserved slot is now owned by the streaming response: it is
+            # released (exactly once, via the one-shot token) when the
+            # generator finishes or the WSGI layer closes the response.
             return response
 
+        # Failed attempt: free the slot before trying the next stream.
+        _release_slot_token(redis_client, client_id)
         last_response = response
         if getattr(response, "timeshift_decisive", False):
             decisive_accounts.add(m3u_account.id)
@@ -202,6 +321,11 @@ def timeshift_proxy(request, username, password, stream_id, timestamp, duration)
 
     if last_response is not None:
         return last_response
+    if capacity_blocked:
+        # Every eligible stream failed on pool capacity alone (no upstream
+        # attempt was made) — mirror the VOD proxy's pool-exhausted status so
+        # clients back off instead of treating it as a permanent failure.
+        return HttpResponse("No available stream slot", status=503)
     # Streams existed but none was usable (non-XC accounts / missing stream_id).
     return HttpResponseBadRequest("Cannot build timeshift URL")
 
@@ -240,6 +364,127 @@ def _user_can_access_channel(user, channel):
         )
         .exists()
     )
+
+
+# ---------------------------------------------------------------------------
+# Provider pool slot ownership (one-shot release token) + session takeover
+# ---------------------------------------------------------------------------
+
+# Maps a timeshift client to the profile slot it reserved. Consumed (GET+DEL,
+# atomically) by whichever release path runs first — the generator's finally,
+# the response-close wrapper, a failed failover attempt, or a takeover by the
+# user's next request on the same channel — so the slot is released exactly
+# once even across uWSGI workers. Note the TTL does NOT recover the slot: if a
+# worker dies mid-session the token eventually expires while the counter (no
+# TTL) stays consumed — like the rest of the pool, the recovery for
+# crash-leaked counters is the Redis flush at container start
+# (scripts/wait_for_redis.py).
+_SLOT_TOKEN_KEY = "timeshift_slot:{client_id}"
+_SLOT_TOKEN_TTL = 24 * 3600
+
+
+def _store_slot_token(redis_client, client_id, profile_id):
+    """Record slot ownership; returns False when the token could not be
+    written (the caller must then release the reservation itself — without a
+    token no other path ever could)."""
+    if redis_client is None:
+        return False
+    try:
+        redis_client.setex(
+            _SLOT_TOKEN_KEY.format(client_id=client_id),
+            _SLOT_TOKEN_TTL,
+            str(profile_id),
+        )
+        return True
+    except Exception as exc:
+        logger.warning("Timeshift slot token store failed for %s: %s", client_id, exc)
+        return False
+
+
+def _release_slot_token(redis_client, client_id):
+    """Release the profile slot owned by *client_id*, exactly once.
+
+    GET+DEL inside a MULTI/EXEC transaction: concurrent release attempts are
+    serialized by Redis, so only the one that actually deletes a live token
+    decrements the pool counters. Returns True when this call performed the
+    release.
+    """
+    if redis_client is None:
+        return False
+    key = _SLOT_TOKEN_KEY.format(client_id=client_id)
+    try:
+        pipe = redis_client.pipeline(transaction=True)
+        pipe.get(key)
+        pipe.delete(key)
+        token_value, deleted = pipe.execute()
+        if not token_value or not deleted:
+            return False
+        release_profile_slot(int(token_value), redis_client)
+        return True
+    except Exception as exc:
+        logger.warning("Timeshift slot release failed for %s: %s", client_id, exc)
+        return False
+
+
+def _terminate_previous_timeshift_sessions(redis_client, user, channel_id):
+    """Displace the user's previous catch-up session(s) on this channel.
+
+    For each of the user's active timeshift sessions whose virtual channel id
+    belongs to *channel_id*: release its provider slot NOW (synchronously —
+    the dying generator's own release becomes a no-op thanks to the one-shot
+    token), drop its stats keys so the stream-limit count no longer includes
+    it, and set the stop key its generator polls on the 5-second heartbeat.
+    The accounting is therefore correct immediately; only the old TCP socket
+    closes lazily (≤ ~5 s).
+    """
+    if redis_client is None or user is None:
+        return
+    prefix = f"timeshift_{channel_id}_"
+    try:
+        for conn in get_user_active_connections(user.id):
+            if conn.get("type") != "timeshift":
+                continue
+            media_id = str(conn.get("media_id") or "")
+            if not media_id.startswith(prefix):
+                continue
+            old_client_id = conn.get("client_id")
+            logger.info(
+                "Timeshift takeover: displacing session %s on %s",
+                old_client_id, media_id,
+            )
+            _release_slot_token(redis_client, old_client_id)
+            _unregister_stats_client(redis_client, media_id, old_client_id)
+            stop_key = RedisKeys.client_stop(media_id, old_client_id)
+            redis_client.setex(stop_key, 60, "true")
+    except Exception as exc:
+        logger.warning("Timeshift takeover check failed: %s", exc)
+
+
+class _SlotReleasingStream:
+    """Iterator wrapper whose close() always releases the reserved slot.
+
+    Django registers ``streaming_content.close`` in the response's resource
+    closers, and the WSGI layer guarantees close() runs — including when the
+    client disconnects before the first chunk, in which case the generator
+    never starts and its ``finally`` would never execute. The one-shot token
+    makes the duplicate call from an already-finished generator a no-op.
+    """
+
+    def __init__(self, generator, on_close):
+        self._generator = generator
+        self._on_close = on_close
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        return next(self._generator)
+
+    def close(self):
+        try:
+            self._generator.close()
+        finally:
+            self._on_close()
 
 
 # ---------------------------------------------------------------------------
@@ -406,6 +651,7 @@ def _stream_from_provider(
     m3u_profile_id,
     debug,
     account_id=None,
+    redis_client=None,
 ):
     # Use 256 KB chunks: amortises per-yield uWSGI/gevent overhead.
     chunk_size = max(ConfigHelper.chunk_size(), 262144)
@@ -525,7 +771,6 @@ def _stream_from_provider(
     content_range = upstream.headers.get("Content-Range", "")
     status = upstream.status_code
 
-    redis_client = RedisClient.get_client()
     _register_stats_client(
         redis_client,
         virtual_channel_id,
@@ -604,9 +849,23 @@ def _stream_from_provider(
             except Exception:
                 pass
             _unregister_stats_client(redis_client, virtual_channel_id, client_id)
+            # Free the provider pool slot this session reserved. One-shot
+            # token: a no-op if a takeover (the user's next request on this
+            # channel) already released it.
+            _release_slot_token(redis_client, client_id)
 
+    # The wrapper guarantees session teardown even when the generator never
+    # starts (client gone before the first chunk — its finally would then
+    # never run): Django registers the iterator's close() as a resource
+    # closer, which WSGI always invokes. Both calls are idempotent, so the
+    # duplicate from a normally-finished generator is harmless.
+    def _close_session():
+        _unregister_stats_client(redis_client, virtual_channel_id, client_id)
+        _release_slot_token(redis_client, client_id)
+
+    stream_iter = _SlotReleasingStream(stream_generator(), _close_session)
     response = StreamingHttpResponse(
-        stream_generator(),
+        stream_iter,
         content_type=content_type,
         status=status,
     )

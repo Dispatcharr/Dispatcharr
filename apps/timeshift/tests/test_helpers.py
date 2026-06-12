@@ -3,6 +3,7 @@
 from django.test import TestCase
 
 from apps.timeshift.helpers import (
+    TimeshiftCredentials,
     build_timeshift_candidate_urls,
     build_timeshift_url_format_a,
     build_timeshift_url_format_b,
@@ -12,11 +13,10 @@ from apps.timeshift.helpers import (
 )
 
 
-class _FakeAccount:
-    def __init__(self):
-        self.server_url = "http://example.test"
-        self.username = "user"
-        self.password = "pass"
+def _make_creds():
+    # The builders consume resolved per-profile credentials, never an account
+    # object — get_transformed_credentials() produces these in the view.
+    return TimeshiftCredentials("http://example.test", "user", "pass")
 
 
 class TimestampFormatTests(TestCase):
@@ -56,11 +56,11 @@ class TimestampFormatTests(TestCase):
 
 class BuildTimeshiftUrlTests(TestCase):
     def setUp(self):
-        self.account = _FakeAccount()
+        self.creds = _make_creds()
 
     def test_format_a_passes_dash_shape_unchanged(self):
         url = build_timeshift_url_format_a(
-            self.account, "22372", "2026-05-12:19-00", 40
+            self.creds, "22372", "2026-05-12:19-00", 40
         )
         self.assertIn("start=2026-05-12:19-00", url)
         self.assertIn("stream=22372", url)
@@ -68,13 +68,13 @@ class BuildTimeshiftUrlTests(TestCase):
 
     def test_format_a_passes_sql_shape_unchanged(self):
         url = build_timeshift_url_format_a(
-            self.account, "22372", "2026-05-12 19:00:00", 40
+            self.creds, "22372", "2026-05-12 19:00:00", 40
         )
         self.assertIn("start=2026-05-12 19:00:00", url)
 
     def test_format_b_path_with_dash_shape(self):
         url = build_timeshift_url_format_b(
-            self.account, "22372", "2026-05-12:19-00", 40
+            self.creds, "22372", "2026-05-12:19-00", 40
         )
         self.assertIn("/40/2026-05-12:19-00/22372.ts", url)
 
@@ -86,7 +86,7 @@ class CandidateOrderingTests(TestCase):
     "catch-up plays the live stream instead of the requested programme" bug."""
 
     def setUp(self):
-        self.account = _FakeAccount()
+        self.creds = _make_creds()
 
     def _is_path_form(self, url):
         return "/timeshift/" in url and url.endswith(".ts") and "timeshift.php" not in url
@@ -95,7 +95,7 @@ class CandidateOrderingTests(TestCase):
         return "timeshift.php?" in url
 
     def test_every_path_candidate_precedes_every_query_candidate(self):
-        urls = build_timeshift_candidate_urls(self.account, "22372", "2026-05-12:19-00", 40)
+        urls = build_timeshift_candidate_urls(self.creds, "22372", "2026-05-12:19-00", 40)
         path_indices = [i for i, u in enumerate(urls) if self._is_path_form(u)]
         query_indices = [i for i, u in enumerate(urls) if self._is_query_form(u)]
         # Each URL is classified as exactly one form.
@@ -105,14 +105,14 @@ class CandidateOrderingTests(TestCase):
         self.assertLess(max(path_indices), min(query_indices))
 
     def test_first_candidate_is_path_form_with_canonical_dash_timestamp(self):
-        urls = build_timeshift_candidate_urls(self.account, "22372", "2026-05-12:19-00", 40)
+        urls = build_timeshift_candidate_urls(self.creds, "22372", "2026-05-12:19-00", 40)
         self.assertTrue(self._is_path_form(urls[0]))
         # Canonical colon-dash timestamp, passed through unchanged.
         self.assertIn("/40/2026-05-12:19-00/22372.ts", urls[0])
 
     def test_accepts_underscore_input_timestamp(self):
         # Client may send the underscore shape; PATH form still leads.
-        urls = build_timeshift_candidate_urls(self.account, "22372", "2026-05-12_19-00", 40)
+        urls = build_timeshift_candidate_urls(self.creds, "22372", "2026-05-12_19-00", 40)
         self.assertTrue(self._is_path_form(urls[0]))
 
 

@@ -1,6 +1,7 @@
 """URL builders + timestamp conversion + archive-days probe for XC catch-up."""
 
 import logging
+from collections import namedtuple
 from datetime import datetime, timezone
 from urllib.parse import quote
 from zoneinfo import ZoneInfo
@@ -8,6 +9,16 @@ from zoneinfo import ZoneInfo
 from django.core.cache import cache
 
 logger = logging.getLogger(__name__)
+
+#: Resolved upstream credentials for one catch-up attempt. Produced from
+#: ``get_transformed_credentials(account, reserved_profile)`` so the URL is
+#: built with the credentials of the profile whose pool slot was actually
+#: reserved — alternate profiles express different logins as URL regex
+#: transforms, and using the raw account fields for them would desynchronize
+#: pool accounting from real upstream usage.
+TimeshiftCredentials = namedtuple(
+    "TimeshiftCredentials", ("server_url", "username", "password")
+)
 
 DEFAULT_DURATION_MINUTES = 120
 DURATION_BUFFER_MINUTES = 5
@@ -129,33 +140,33 @@ def get_programme_duration(channel, timestamp_str):
         return DEFAULT_DURATION_MINUTES
 
 
-def build_timeshift_url_format_a(m3u_account, stream_id, timestamp, duration_minutes):
+def build_timeshift_url_format_a(creds, stream_id, timestamp, duration_minutes):
     """Format A: `/streaming/timeshift.php?username=&password=&stream=&start=&duration=`."""
     # Credentials are URL-encoded: a `&`, `/` or `#` in the password would
     # otherwise corrupt the URL structure.
     return (
-        f"{m3u_account.server_url.rstrip('/')}/streaming/timeshift.php"
-        f"?username={quote(str(m3u_account.username), safe='')}"
-        f"&password={quote(str(m3u_account.password), safe='')}"
+        f"{creds.server_url.rstrip('/')}/streaming/timeshift.php"
+        f"?username={quote(str(creds.username), safe='')}"
+        f"&password={quote(str(creds.password), safe='')}"
         f"&stream={stream_id}"
         f"&start={timestamp}"
         f"&duration={duration_minutes}"
     )
 
 
-def build_timeshift_url_format_b(m3u_account, stream_id, timestamp, duration_minutes):
+def build_timeshift_url_format_b(creds, stream_id, timestamp, duration_minutes):
     """Format B: `/timeshift/{user}/{pass}/{duration}/{timestamp}/{stream_id}.ts`."""
     return (
-        f"{m3u_account.server_url.rstrip('/')}/timeshift"
-        f"/{quote(str(m3u_account.username), safe='')}"
-        f"/{quote(str(m3u_account.password), safe='')}"
+        f"{creds.server_url.rstrip('/')}/timeshift"
+        f"/{quote(str(creds.username), safe='')}"
+        f"/{quote(str(creds.password), safe='')}"
         f"/{duration_minutes}"
         f"/{timestamp}"
         f"/{stream_id}.ts"
     )
 
 
-def build_timeshift_candidate_urls(m3u_account, stream_id, timestamp, duration_minutes):
+def build_timeshift_candidate_urls(creds, stream_id, timestamp, duration_minutes):
     """Ordered upstream catch-up candidates — PATH form first.
 
     Two URL layouts exist on XC servers and they do NOT behave the same:
@@ -180,12 +191,12 @@ def build_timeshift_candidate_urls(m3u_account, stream_id, timestamp, duration_m
     sql_ts = format_timestamp_as_sql_datetime(timestamp)
     return [
         # PATH form first — it seeks the archive correctly.
-        build_timeshift_url_format_b(m3u_account, stream_id, timestamp, duration_minutes),
-        build_timeshift_url_format_b(m3u_account, stream_id, underscore_ts, duration_minutes),
+        build_timeshift_url_format_b(creds, stream_id, timestamp, duration_minutes),
+        build_timeshift_url_format_b(creds, stream_id, underscore_ts, duration_minutes),
         # QUERY form fallback — may return LIVE on some providers (see above).
-        build_timeshift_url_format_a(m3u_account, stream_id, underscore_ts, duration_minutes),
-        build_timeshift_url_format_a(m3u_account, stream_id, sql_ts, duration_minutes),
-        build_timeshift_url_format_a(m3u_account, stream_id, timestamp, duration_minutes),
+        build_timeshift_url_format_a(creds, stream_id, underscore_ts, duration_minutes),
+        build_timeshift_url_format_a(creds, stream_id, sql_ts, duration_minutes),
+        build_timeshift_url_format_a(creds, stream_id, timestamp, duration_minutes),
     ]
 
 

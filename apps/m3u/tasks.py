@@ -1818,7 +1818,8 @@ def rollup_channel_catchup_fields(account_id):
 
     Updates ``is_catchup`` and ``catchup_days`` on every Channel that has
     at least one Stream belonging to *account_id* (auto-created or manually
-    assigned).
+    assigned), then self-heals any channel left flagged with no catch-up
+    stream at all.
 
     Called from the account-refresh pipeline after streams have been
     written so that both new and existing channels reflect the current
@@ -1858,6 +1859,28 @@ def rollup_channel_catchup_fields(account_id):
             FROM agg
             WHERE c.id = agg.channel_id
         """, [account_id])
+
+        # Self-heal: reset channels still flagged as catch-up that no longer
+        # have ANY catch-up stream. The CTE above only reaches channels that
+        # still hold at least one stream from this account, so a channel whose
+        # last stream was just removed (stale cleanup, manual unassignment)
+        # falls outside its scope. The ChannelStream post_delete signal
+        # normally resets those rows already — this pass guarantees the
+        # invariant regardless of how the link rows disappeared (raw SQL,
+        # signal-less bulk operations, historic staleness). Idempotent and
+        # cheap: ``is_catchup`` is indexed and TRUE on a small minority of
+        # channels.
+        cur.execute("""
+            UPDATE dispatcharr_channels_channel c
+            SET is_catchup = FALSE, catchup_days = 0
+            WHERE c.is_catchup = TRUE
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM dispatcharr_channels_channelstream cs
+                  JOIN dispatcharr_channels_stream s ON s.id = cs.stream_id
+                  WHERE cs.channel_id = c.id AND s.is_catchup = TRUE
+              )
+        """)
 
 
 @shared_task
