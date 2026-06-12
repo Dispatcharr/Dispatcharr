@@ -113,7 +113,12 @@ XC_PROFILE_REFRESH_DELAY = float(os.environ.get('XC_PROFILE_REFRESH_DELAY', '2.5
 
 # Database optimization settings
 DATABASE_STATEMENT_TIMEOUT = 300  # Seconds before timing out long-running queries
-DATABASE_CONN_MAX_AGE = 0  # geventpool intercepts close(); pool handles reuse
+DATABASE_CONN_MAX_AGE = 0  # required with OPTIONS.pool; Django returns connections to the pool on close()
+# Django native psycopg_pool (per process). Roughly replaces geventpool MAX_CONNS / REUSE_CONNS / lifetime.
+# Override via env; set DATABASE_POOL_MAX_LIFETIME=0 to use psycopg_pool default (3600s).
+DATABASE_POOL_MAX_SIZE = int(os.environ.get("DATABASE_POOL_MAX_SIZE", "8"))
+DATABASE_POOL_MAX_LIFETIME = int(os.environ.get("DATABASE_POOL_MAX_LIFETIME", "600"))
+DATABASE_POOL_MAX_IDLE = int(os.environ.get("DATABASE_POOL_MAX_IDLE", "600"))
 
 # Disable atomic requests for performance-sensitive views
 ATOMIC_REQUESTS = False
@@ -221,22 +226,36 @@ if os.getenv("DB_ENGINE", None) == "sqlite":
         }
     }
 else:
+    _pool_options = {
+        "min_size": 0,
+        "max_size": DATABASE_POOL_MAX_SIZE,
+        "max_idle": DATABASE_POOL_MAX_IDLE,
+    }
+    if DATABASE_POOL_MAX_LIFETIME:
+        _pool_options["max_lifetime"] = DATABASE_POOL_MAX_LIFETIME
+
     DATABASES = {
         "default": {
-            "ENGINE": "django_db_geventpool.backends.postgresql_psycopg3",
+            "ENGINE": "django.db.backends.postgresql",
             "NAME": os.environ.get("POSTGRES_DB", "dispatcharr"),
             "USER": os.environ.get("POSTGRES_USER", "dispatch"),
             "PASSWORD": os.environ.get("POSTGRES_PASSWORD", "secret"),
             "HOST": os.environ.get("POSTGRES_HOST", "localhost"),
             "PORT": int(os.environ.get("POSTGRES_PORT", 5432)),
             "CONN_MAX_AGE": DATABASE_CONN_MAX_AGE,
+            "CONN_HEALTH_CHECKS": True,
             "OPTIONS": {
-                "MAX_CONNS": 8,   # Per-worker pool size; 4 workers × 8 = 32 total < pg max_connections=100
-                "REUSE_CONNS": 3, # Connections to keep warm between requests
-                "pool": False,    # Disable Django's native psycopg3 pool; geventpool manages connections
+                "pool": _pool_options,
             },
         }
     }
+
+    print(
+        "PostgreSQL pool: Django native psycopg_pool "
+        f"(max_size={DATABASE_POOL_MAX_SIZE}, "
+        f"max_lifetime={_pool_options.get('max_lifetime', 'default')}, "
+        f"max_idle={DATABASE_POOL_MAX_IDLE})"
+    )
 
     if POSTGRES_SSL:
         _validate_tls_cert_paths([
