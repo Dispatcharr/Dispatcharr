@@ -11,6 +11,7 @@ Dieser Patch enthält **ALLE Fixes und Features** für Dispatcharr v0.26.0:
 5. ✅ **Stream Cooldown System** (verhindert Endlosschleifen) **[NEU!]**
 6. ✅ **CRITICAL: StreamProfile.build_command() Proxy-Fix** (Transcode-Streams kaputt) **[KRITISCH!]**
 7. ✅ **Stream-Preview UUID-Fix** (log_system_event Fehler)
+8. ✅ **current_profile_id Fix beim manuellen Stream-Wechsel** (Failover-Tracking falsch)
 
 ---
 

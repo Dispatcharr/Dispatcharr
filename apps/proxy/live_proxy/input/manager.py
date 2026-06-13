@@ -1269,6 +1269,10 @@ class StreamManager:
                 self.tried_stream_ids.add(stream_id)
                 logger.info(f"Updated stream ID from {old_stream_id} to {stream_id} for channel {self.channel_id}")
 
+            # Update profile ID if provided (important for failover tracking)
+            if m3u_profile_id:
+                self.current_profile_id = m3u_profile_id
+
             # Reset retry counter to allow immediate reconnect
             self.retry_count = 0
 
