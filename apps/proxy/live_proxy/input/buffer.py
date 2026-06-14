@@ -64,7 +64,7 @@ class StreamBuffer:
 
     def add_chunk(self, chunk):
         """Add data with optimized Redis storage and TS packet alignment"""
-        if not chunk:
+        if not chunk or self.stopping:
             return False
 
         try:

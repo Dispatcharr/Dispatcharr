@@ -71,6 +71,7 @@ class ProxyServer:
         self.profile_buffers = {}   # {channel_id: {profile_id: StreamBuffer}}
         self._channel_names = {}
         self._stopping_channels = set()  # channels with an active stop_channel call in progress
+        self._stopping_since = {}  # channel_id -> time.time() when stop_channel began
 
         # Generate a unique worker ID
         pid = os.getpid()
@@ -1266,12 +1267,119 @@ class ProxyServer:
         for pid in list(self.profile_managers.get(channel_id, {}).keys()):
             self.stop_output_profile(channel_id, pid)
 
+    def _collect_channel_stop_event_data(self, channel_id):
+        """Snapshot metadata for channel_stop logging before Redis keys are deleted."""
+        channel_name = self._channel_names.pop(channel_id, None) or str(channel_id)
+        runtime = None
+        total_bytes = None
+        if self.redis_client:
+            metadata_key = RedisKeys.channel_metadata(channel_id)
+            metadata = self.redis_client.hgetall(metadata_key)
+            if metadata:
+                if 'init_time' in metadata:
+                    try:
+                        init_time = float(metadata['init_time'])
+                        runtime = round(time.time() - init_time, 2)
+                    except Exception:
+                        pass
+                if 'total_bytes' in metadata:
+                    try:
+                        total_bytes = int(metadata['total_bytes'])
+                    except Exception:
+                        pass
+        return {
+            'channel_id': channel_id,
+            'channel_name': channel_name,
+            'runtime': runtime,
+            'total_bytes': total_bytes,
+        }
+
+    def _spawn_channel_stop_event(self, stop_event_data):
+        """Log channel_stop without blocking teardown (DB/connect dispatch can hang)."""
+        if not stop_event_data:
+            return
+
+        def _log_stop():
+            try:
+                close_old_connections()
+                log_system_event('channel_stop', **stop_event_data)
+            except Exception as e:
+                logger.error(f"Could not log channel stop event: {e}")
+
+        gevent.spawn(_log_stop)
+
+    def _cleanup_stopped_channel_local(self, channel_id):
+        """Remove local managers/buffers for a channel that is shutting down."""
+        if channel_id in self.stream_managers:
+            del self.stream_managers[channel_id]
+            logger.info(f"Removed stream manager for channel {channel_id}")
+
+        if channel_id in self.stream_buffers:
+            buffer = self.stream_buffers[channel_id]
+            if hasattr(buffer, 'stop'):
+                try:
+                    buffer.stop()
+                    logger.debug(f"Buffer for channel {channel_id} properly stopped")
+                except Exception as e:
+                    logger.error(f"Error stopping buffer: {e}")
+
+            try:
+                if channel_id in self.stream_buffers:
+                    del self.stream_buffers[channel_id]
+                    logger.info(f"Removed stream buffer for channel {channel_id}")
+            except KeyError:
+                logger.debug(f"Buffer for channel {channel_id} already removed")
+
+        if channel_id in self.client_managers:
+            try:
+                client_manager = self.client_managers[channel_id]
+                if hasattr(client_manager, 'stop'):
+                    client_manager.stop()
+                del self.client_managers[channel_id]
+                logger.info(f"Removed client manager for channel {channel_id}")
+            except KeyError:
+                logger.debug(f"Client manager for channel {channel_id} already removed")
+
+        self.profile_managers.pop(channel_id, None)
+        self.profile_buffers.pop(channel_id, None)
+
+    def _recover_stuck_channel_stops(self):
+        """Force cleanup when stop_channel never finishes (e.g. blocked on logging)."""
+        if not self._stopping_channels:
+            return
+
+        now = time.time()
+        stuck_threshold = max(30, ConfigHelper.channel_shutdown_delay() * 2)
+
+        for channel_id in list(self._stopping_channels):
+            started = self._stopping_since.get(channel_id, now)
+            if now - started < stuck_threshold:
+                continue
+
+            logger.error(
+                f"Channel {channel_id} stop_channel stuck for {now - started:.0f}s "
+                f"- forcing local and Redis cleanup"
+            )
+            self._stopping_channels.discard(channel_id)
+            self._stopping_since.pop(channel_id, None)
+
+            if (channel_id in self.stream_buffers
+                    or channel_id in self.client_managers
+                    or channel_id in self.stream_managers):
+                try:
+                    self._cleanup_stopped_channel_local(channel_id)
+                    self._clean_redis_keys(channel_id)
+                except Exception as e:
+                    logger.error(f"Error during forced cleanup for channel {channel_id}: {e}")
+
     def stop_channel(self, channel_id):
         """Stop a channel with proper ownership handling"""
         if channel_id in self._stopping_channels:
             logger.debug(f"stop_channel already in progress for {channel_id}, ignoring duplicate call")
             return
         self._stopping_channels.add(channel_id)
+        self._stopping_since[channel_id] = time.time()
+        stop_event_data = None
         try:
             logger.info(f"Stopping channel {channel_id}")
 
@@ -1319,90 +1427,16 @@ class ProxyServer:
                 # Stop all output profile transcodes before releasing ownership
                 self.stop_all_output_profiles(channel_id)
 
+                stop_event_data = self._collect_channel_stop_event_data(channel_id)
+
                 # Release ownership
                 self.release_ownership(channel_id)
 
-                # Log channel stop event (after cleanup, before releasing ownership section ends)
-                try:
-                    channel_name = self._channel_names.pop(channel_id, None) or str(channel_id)
-
-                    # Calculate runtime and get total bytes from metadata
-                    runtime = None
-                    total_bytes = None
-                    if self.redis_client:
-                        metadata_key = RedisKeys.channel_metadata(channel_id)
-                        metadata = self.redis_client.hgetall(metadata_key)
-                        if metadata:
-                            # Calculate runtime from init_time
-                            if 'init_time' in metadata:
-                                try:
-                                    init_time = float(metadata['init_time'])
-                                    runtime = round(time.time() - init_time, 2)
-                                except Exception:
-                                    pass
-                            # Get total bytes transferred
-                            if 'total_bytes' in metadata:
-                                try:
-                                    total_bytes = int(metadata['total_bytes'])
-                                except Exception:
-                                    pass
-
-                    log_system_event(
-                        'channel_stop',
-                        channel_id=channel_id,
-                        channel_name=channel_name,
-                        runtime=runtime,
-                        total_bytes=total_bytes
-                    )
-                except Exception as e:
-                    logger.error(f"Could not log channel stop event: {e}")
-
-            # Always clean up local resources - WITH SAFE CHECKS
-            if channel_id in self.stream_managers:
-                del self.stream_managers[channel_id]
-                logger.info(f"Removed stream manager for channel {channel_id}")
-
-            # Stop buffer and ensure all its timers are cancelled - SAFE CHECK HERE
-            if channel_id in self.stream_buffers:
-                buffer = self.stream_buffers[channel_id]
-                # Call stop on buffer to properly shut it down
-                if hasattr(buffer, 'stop'):
-                    try:
-                        buffer.stop()
-                        logger.debug(f"Buffer for channel {channel_id} properly stopped")
-                    except Exception as e:
-                        logger.error(f"Error stopping buffer: {e}")
-
-                # Save reference and check again before deleting
-                try:
-                    if channel_id in self.stream_buffers:  # Check again to prevent race conditions
-                        del self.stream_buffers[channel_id]
-                        logger.info(f"Removed stream buffer for channel {channel_id}")
-                except KeyError:
-                    logger.debug(f"Buffer for channel {channel_id} already removed")
-
-            # Clean up client manager - SAFE CHECK HERE TOO
-            if channel_id in self.client_managers:
-                try:
-                    client_manager = self.client_managers[channel_id]
-                    # Stop the heartbeat thread before deleting
-                    if hasattr(client_manager, 'stop'):
-                        client_manager.stop()
-                    del self.client_managers[channel_id]
-                    logger.info(f"Removed client manager for channel {channel_id}")
-                except KeyError:
-                    logger.debug(f"Client manager for channel {channel_id} already removed")
-
-            # Clean up profile managers and buffers. Owner workers clean profile_managers
-            # (and their profile_buffers) via stop_all_output_profiles above. Non-owner
-            # workers only populate profile_buffers (not profile_managers), and that block
-            # is skipped for them, so we always clean both here to avoid stale entries on
-            # the next connect.
-            self.profile_managers.pop(channel_id, None)
-            self.profile_buffers.pop(channel_id, None)
-
-            # Clean up Redis keys
+            # Always clean up local resources before Redis/logging so teardown
+            # cannot be blocked by connect integrations or DB event writes.
+            self._cleanup_stopped_channel_local(channel_id)
             self._clean_redis_keys(channel_id)
+            self._spawn_channel_stop_event(stop_event_data)
 
             return True
         except Exception as e:
@@ -1410,6 +1444,7 @@ class ProxyServer:
             return False
         finally:
             self._stopping_channels.discard(channel_id)
+            self._stopping_since.pop(channel_id, None)
 
     def check_inactive_channels(self):
         """Check for inactive channels (no clients) and stop them"""
@@ -1449,6 +1484,9 @@ class ProxyServer:
 
                     # Refresh channel registry
                     self.refresh_channel_registry()
+
+                    # Recover channels whose stop_channel call never returned
+                    self._recover_stuck_channel_stops()
 
                     # Create a unified list of all channels we have locally
                     all_local_channels = set(self.stream_managers.keys()) | set(self.client_managers.keys())
@@ -1927,9 +1965,15 @@ class ProxyServer:
         if not self.redis_client:
             return
 
-        # Refresh registry entries for channels we own
+        # Refresh registry entries for channels we own and are actively serving.
+        # Skip channels mid-shutdown. Refreshing their TTL keeps zombie metadata alive.
         for channel_id in list(self.stream_buffers.keys()):
-            # Use standard key pattern
+            if channel_id in self._stopping_channels:
+                continue
+
+            if not self.am_i_owner(channel_id):
+                continue
+
             metadata_key = RedisKeys.channel_metadata(channel_id)
 
             # Update activity timestamp in metadata only

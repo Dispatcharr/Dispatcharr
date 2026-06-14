@@ -1094,6 +1094,8 @@ class StreamManager:
 
         # Add at the beginning of your stop method
         self.stopping = True
+        if self.buffer is not None:
+            self.buffer.stopping = True
 
         # Release stream resources if we're the owner
         if self.current_stream_id and hasattr(self, 'worker_id') and self.worker_id:
