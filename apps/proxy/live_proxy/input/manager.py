@@ -182,6 +182,47 @@ class StreamManager:
         logger.warning(f"Timeout waiting for existing processes to close for channel {self.channel_id} after {timeout}s")
         return False
 
+    def _still_owner(self):
+        """Return True while this worker should keep the upstream connection open."""
+        if self.stopping or self.stop_requested:
+            return False
+
+        if not self.worker_id:
+            return True
+
+        redis_client = getattr(self.buffer, 'redis_client', None)
+        if not redis_client:
+            return True
+
+        try:
+            stop_key = RedisKeys.channel_stopping(self.channel_id)
+            if redis_client.exists(stop_key):
+                return False
+
+            owner_key = RedisKeys.channel_owner(self.channel_id)
+            current_owner = redis_client.get(owner_key)
+            if not current_owner:
+                # Owner lock TTL may lapse briefly between cleanup-thread renewals.
+                # Keep running unless coordinated teardown has started (checked above).
+                return True
+            if isinstance(current_owner, bytes):
+                current_owner = current_owner.decode()
+            return current_owner == self.worker_id
+        except Exception as e:
+            logger.debug(f"Ownership check failed for channel {self.channel_id}: {e}")
+            return False
+
+    def _ensure_owner_or_stop(self):
+        if self._still_owner():
+            return True
+
+        logger.warning(
+            f"Stream manager for channel {self.channel_id} lost ownership "
+            f"(worker {self.worker_id}) - stopping upstream"
+        )
+        self.stop()
+        return False
+
     def run(self):
         """Main execution loop using HTTP streaming with improved connection handling and stream switching"""
         # Add a stop flag to the class properties
@@ -203,6 +244,8 @@ class StreamManager:
             # Main stream switching loop - we'll try different streams if needed
             while self.running and stream_switch_attempts <= max_stream_switches:
                 close_old_connections()
+                if not self._ensure_owner_or_stop():
+                    break
                 # Check for stuck switching state
                 if self.url_switching and time.time() - self.url_switch_start_time > self.url_switch_timeout:
                     logger.warning(f"URL switching state appears stuck for channel {self.channel_id} "
@@ -255,6 +298,8 @@ class StreamManager:
                     continue
                 # Connection retry loop for current URL
                 while self.running and self.retry_count < self.max_retries and not url_failed and not self.needs_stream_switch:
+                    if not self._ensure_owner_or_stop():
+                        break
 
                     logger.info(f"Connection attempt {self.retry_count + 1}/{self.max_retries} for URL: {self.url} for channel {self.channel_id}")
 
@@ -382,6 +427,12 @@ class StreamManager:
         except Exception as e:
             logger.error(f"Stream error: {e}", exc_info=True)
         finally:
+            try:
+                from ..server import ProxyServer
+                ProxyServer.get_instance()._live_stream_managers.pop(self.channel_id, None)
+            except Exception:
+                pass
+
             # Enhanced cleanup in the finally block
             self.connected = False
 
@@ -1020,6 +1071,9 @@ class StreamManager:
 
     def _update_bytes_processed(self, chunk_size):
         """Update the total bytes processed in Redis metadata"""
+        if not self._still_owner():
+            return
+
         try:
             # Update local counter
             self.bytes_processed += chunk_size
@@ -1584,6 +1638,10 @@ class StreamManager:
                 self.connected = False
                 return False
 
+            if not self._still_owner():
+                self.stop()
+                return False
+
             # Track chunk size before adding to buffer
             chunk_size = len(chunk)
             self._update_bytes_processed(chunk_size)
@@ -1592,7 +1650,7 @@ class StreamManager:
             success = self.buffer.add_chunk(chunk)
 
             # Update last data timestamp in Redis if successful
-            if success and hasattr(self.buffer, 'redis_client') and self.buffer.redis_client:
+            if success and self._still_owner() and hasattr(self.buffer, 'redis_client') and self.buffer.redis_client:
                 last_data_key = RedisKeys.last_data(self.buffer.channel_id)
                 self.buffer.redis_client.set(last_data_key, str(time.time()), ex=60)
 

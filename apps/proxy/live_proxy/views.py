@@ -43,6 +43,15 @@ from apps.proxy.utils import check_user_stream_limits
 logger = get_logger()
 
 
+def _channel_stopping_response():
+    response = JsonResponse(
+        {"error": "Channel is stopping, retry shortly"},
+        status=503,
+    )
+    response["Retry-After"] = "1"
+    return response
+
+
 def _resolve_output_format(user, force=None, request=None):
     """Return the output format string to use for this client."""
     _FORMAT_ALIASES = {
@@ -123,6 +132,12 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
                     status=429
                 )
 
+        if ChannelService.is_channel_unavailable_for_new_clients(channel_id):
+            logger.info(
+                f"[{client_id}] Channel {channel_id} unavailable. Teardown or pending shutdown"
+            )
+            return _channel_stopping_response()
+
         # Check if we need to reinitialize the channel
         needs_initialization = True
         channel_state = None
@@ -144,7 +159,6 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
                         ChannelState.BUFFERING,
                         ChannelState.INITIALIZING,
                         ChannelState.CONNECTING,
-                        ChannelState.STOPPING,
                     ]:
                         needs_initialization = False
                         logger.debug(
@@ -160,6 +174,11 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
                             logger.debug(
                                 f"[{client_id}] Channel {channel_id} is still initializing, client will wait"
                             )
+                    elif channel_state == ChannelState.STOPPING:
+                        logger.info(
+                            f"[{client_id}] Channel {channel_id} is stopping, rejecting request"
+                        )
+                        return _channel_stopping_response()
                     # Terminal states - channel needs cleanup before reinitialization
                     elif channel_state in [
                         ChannelState.ERROR,

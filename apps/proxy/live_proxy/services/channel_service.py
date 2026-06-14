@@ -10,6 +10,7 @@ from apps.channels.models import Channel, Stream
 from ..server import ProxyServer
 from ..redis_keys import RedisKeys
 from ..constants import EventType, ChannelState, ChannelMetadataField
+from ..config_helper import ConfigHelper
 from ..url_utils import get_stream_info_for_switch
 from core.utils import log_system_event
 from .log_parsers import LogParserFactory
@@ -18,6 +19,82 @@ logger = logging.getLogger("live_proxy")
 
 class ChannelService:
     """Service class for channel operations"""
+
+    @staticmethod
+    def mark_channel_stopping(channel_id, broadcast=False):
+        """Mark a channel as stopping in Redis so all uWSGI workers converge on teardown."""
+        proxy_server = ProxyServer.get_instance()
+        if not proxy_server.redis_client:
+            return False
+
+        try:
+            metadata_key = RedisKeys.channel_metadata(channel_id)
+            if proxy_server.redis_client.exists(metadata_key):
+                proxy_server.redis_client.hset(metadata_key, mapping={
+                    ChannelMetadataField.STATE: ChannelState.STOPPING,
+                    ChannelMetadataField.STATE_CHANGED_AT: str(time.time()),
+                })
+
+            stop_key = RedisKeys.channel_stopping(channel_id)
+            proxy_server.redis_client.setex(stop_key, 60, "true")
+
+            if broadcast:
+                ChannelService._publish_channel_stop_event(channel_id)
+            return True
+        except Exception as e:
+            logger.error(f"Error marking channel {channel_id} as stopping: {e}")
+            return False
+
+    @staticmethod
+    def is_shutdown_pending(channel_id):
+        """True while the post-disconnect shutdown delay has started but stop has not run."""
+        proxy_server = ProxyServer.get_instance()
+        if not proxy_server.redis_client:
+            return False
+
+        delay = ConfigHelper.channel_shutdown_delay()
+        if delay <= 0:
+            return False
+
+        disconnect_value = proxy_server.redis_client.get(
+            RedisKeys.last_client_disconnect(channel_id)
+        )
+        if not disconnect_value:
+            return False
+
+        try:
+            disconnect_time = float(disconnect_value)
+        except (ValueError, TypeError):
+            return False
+
+        return (time.time() - disconnect_time) < delay
+
+    @staticmethod
+    def is_channel_teardown_active(channel_id):
+        """True when a coordinated channel stop is in progress (visible to all workers)."""
+        proxy_server = ProxyServer.get_instance()
+        if not proxy_server.redis_client:
+            return False
+
+        if proxy_server.redis_client.exists(RedisKeys.channel_stopping(channel_id)):
+            return True
+
+        metadata_key = RedisKeys.channel_metadata(channel_id)
+        state = proxy_server.redis_client.hget(metadata_key, ChannelMetadataField.STATE)
+        if state:
+            state_str = state.decode() if isinstance(state, bytes) else state
+            if state_str == ChannelState.STOPPING:
+                return True
+
+        return False
+
+    @staticmethod
+    def is_channel_unavailable_for_new_clients(channel_id):
+        """Reject new stream requests while teardown is active or shutdown is pending."""
+        return (
+            ChannelService.is_channel_teardown_active(channel_id)
+            or ChannelService.is_shutdown_pending(channel_id)
+        )
 
     @staticmethod
     def initialize_channel(channel_id, stream_url, user_agent, transcode=False, stream_profile_value=None, stream_id=None, m3u_profile_id=None, channel_name=None, stream_name=None):
@@ -39,6 +116,7 @@ class ChannelService:
             bool: Success status
         """
         proxy_server = ProxyServer.get_instance()
+
         if stream_id and proxy_server.redis_client:
             metadata_key = RedisKeys.channel_metadata(channel_id)
             # Check if metadata already exists
@@ -263,29 +341,16 @@ class ChannelService:
             try:
                 metadata = proxy_server.redis_client.hgetall(metadata_key)
                 if metadata and 'state' in metadata:
-                    state = metadata['state']
-                    channel_info = {"state": state}
-
-                    # Immediately mark as stopping in metadata so clients detect it faster
-                    proxy_server.redis_client.hset(metadata_key, ChannelMetadataField.STATE, ChannelState.STOPPING)
-                    proxy_server.redis_client.hset(metadata_key, ChannelMetadataField.STATE_CHANGED_AT, str(time.time()))
+                    channel_info = {"state": metadata['state']}
             except Exception as e:
                 logger.error(f"Error fetching channel state: {e}")
 
-        # Set stopping flag with higher TTL to ensure it persists
+        # Mark stopping in Redis and notify all workers before local teardown
         if proxy_server.redis_client:
-            stop_key = RedisKeys.channel_stopping(channel_id)
-            proxy_server.redis_client.setex(stop_key, 60, "true")  # Higher TTL of 60 seconds
-            logger.info(f"Set channel stopping flag with 60s TTL for channel {channel_id}")
-
-        # Broadcast stop event to all workers via PubSub
-        if proxy_server.redis_client:
-            ChannelService._publish_channel_stop_event(channel_id)
-
-            # Also stop locally to ensure this worker cleans up right away
+            ChannelService.mark_channel_stopping(channel_id, broadcast=True)
+            logger.info(f"Marked channel {channel_id} stopping and broadcast stop to all workers")
             local_result = proxy_server.stop_channel(channel_id)
         else:
-            # No Redis, just stop locally
             local_result = proxy_server.stop_channel(channel_id)
 
         # Release the channel in the channel model if applicable

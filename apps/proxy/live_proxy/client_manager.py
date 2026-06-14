@@ -442,3 +442,19 @@ class ClientManager:
             )
 
         return stale_ids
+
+    @staticmethod
+    def clear_all_clients(redis_client, channel_id):
+        """Remove every client entry from Redis for a channel."""
+        client_set_key = RedisKeys.clients(channel_id)
+        client_ids = redis_client.smembers(client_set_key)
+        if not client_ids:
+            return 0
+
+        pipe = redis_client.pipeline(transaction=False)
+        for cid in client_ids:
+            cid_str = cid.decode() if isinstance(cid, bytes) else cid
+            pipe.delete(RedisKeys.client_metadata(channel_id, cid_str))
+        pipe.delete(client_set_key)
+        pipe.execute()
+        return len(client_ids)
