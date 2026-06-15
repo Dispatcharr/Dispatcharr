@@ -307,6 +307,18 @@ Plugins are server-side Python code running within the Django application. You c
 
 Prefer Celery tasks (`.delay()`) to keep `run` fast and non-blocking.
 
+### Database connections
+
+Dispatcharr uses `django-db-geventpool` with a bounded per-uWSGI-worker pool (`MAX_CONNS=8`). Each greenlet or OS thread that runs ORM code checks out a connection until Django closes it.
+
+`PluginManager.run_action()` and `stop_plugin()` always call `close_old_connections()` in a `finally` block after your plugin returns (success or error). That returns the current greenlet's checkout to the pool. **You do not need to call `close_old_connections()` yourself for normal inline ORM inside `run()` or `stop()`.**
+
+Still follow these rules:
+
+- **Heavy or long work:** dispatch a Celery task (`.delay()`) and return quickly from `run()`. Celery workers close connections after each task; blocking the uWSGI gevent hub with `time.sleep`, sync HTTP, or large CPU work can freeze the whole worker regardless of DB cleanup.
+- **Background threads or greenlets you spawn:** each thread/greenlet that uses the ORM must call `close_old_connections()` (or `connection.close()`) in its own `finally` block when done. The wrapper only covers the thread/greenlet that called `run_action()`.
+- **Connect event hooks:** actions with an `"events"` list run synchronously inside whatever caller triggered the event (for example a live-proxy system event). Keep event handlers short or defer to Celery.
+
 ### Important: Don’t Ask Users for URL/User/Password
 Dispatcharr plugins run **inside** the Dispatcharr backend process. That means they already have direct access to the app’s models, tasks, and internal utilities.  
 Plugins **should not** ask users for “Dispatcharr URL”, “Admin Username”, or “Admin Password” just to call the API. That is unnecessary and unsafe because:
