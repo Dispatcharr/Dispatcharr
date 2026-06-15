@@ -760,6 +760,8 @@ class ProxyServer:
                 )
             except Exception as e:
                 logger.error(f"Could not log channel start event: {e}")
+            finally:
+                close_old_connections()
 
             # Create client manager with channel_id, redis_client AND worker_id (only if not already exists)
             if channel_id not in self.client_managers:
@@ -2072,42 +2074,45 @@ class ProxyServer:
         """Clean up all Redis keys for a channel more efficiently"""
         total_deleted = 0
 
-        # Release the M3U profile slot while channel_stream / metadata still exist.
-        # Scanning live:channel keys first deletes metadata and breaks release_stream()
-        # fallback, leaving profile_connections counters stuck (e.g. profile_connections:70 = 1).
         try:
-            channel = Channel.objects.get(uuid=channel_id)
-            if not channel.release_stream():
-                logger.debug(f"Channel {channel_id}: release_stream found no keys to clean")
-        except (Channel.DoesNotExist, Exception):
+            # Release the M3U profile slot while channel_stream / metadata still exist.
+            # Scanning live:channel keys first deletes metadata and breaks release_stream()
+            # fallback, leaving profile_connections counters stuck (e.g. profile_connections:70 = 1).
             try:
-                stream = Stream.objects.get(stream_hash=channel_id)
-                if not stream.release_stream():
-                    logger.debug(f"Stream {channel_id}: release_stream found no keys to clean")
-            except (Stream.DoesNotExist, Exception):
-                logger.debug(f"No Channel or Stream found for {channel_id}")
+                channel = Channel.objects.get(uuid=channel_id)
+                if not channel.release_stream():
+                    logger.debug(f"Channel {channel_id}: release_stream found no keys to clean")
+            except (Channel.DoesNotExist, Exception):
+                try:
+                    stream = Stream.objects.get(stream_hash=channel_id)
+                    if not stream.release_stream():
+                        logger.debug(f"Stream {channel_id}: release_stream found no keys to clean")
+                except (Stream.DoesNotExist, Exception):
+                    logger.debug(f"No Channel or Stream found for {channel_id}")
 
-        if self.redis_client:
-            try:
-                patterns = [
-                    f"live:channel:{channel_id}:*",
-                    RedisKeys.events_channel(channel_id),
-                ]
+            if self.redis_client:
+                try:
+                    patterns = [
+                        f"live:channel:{channel_id}:*",
+                        RedisKeys.events_channel(channel_id),
+                    ]
 
-                for pattern in patterns:
-                    cursor = 0
-                    while True:
-                        cursor, keys = self.redis_client.scan(cursor, match=pattern, count=100)
-                        if keys:
-                            self.redis_client.delete(*keys)
-                            total_deleted += len(keys)
+                    for pattern in patterns:
+                        cursor = 0
+                        while True:
+                            cursor, keys = self.redis_client.scan(cursor, match=pattern, count=100)
+                            if keys:
+                                self.redis_client.delete(*keys)
+                                total_deleted += len(keys)
 
-                        if cursor == 0:
-                            break
+                            if cursor == 0:
+                                break
 
-                logger.info(f"Cleaned up {total_deleted} Redis keys for channel {channel_id}")
-            except Exception as e:
-                logger.error(f"Error cleaning Redis keys for channel {channel_id}: {e}")
+                    logger.info(f"Cleaned up {total_deleted} Redis keys for channel {channel_id}")
+                except Exception as e:
+                    logger.error(f"Error cleaning Redis keys for channel {channel_id}: {e}")
+        finally:
+            close_old_connections()
 
         return total_deleted
 

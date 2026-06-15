@@ -690,6 +690,9 @@ class StreamManager:
                 self.transcode_cmd = [arg for arg in self.transcode_cmd if self.user_agent not in arg and 'user-agent' not in arg.lower() and 'user_agent' not in arg.lower()]
                 logger.debug(f"Removed user_agent parameters from UDP stream command for channel: {self.channel_id}")
 
+            # Profile lookup is done; release the pool slot before a long-lived ffmpeg process.
+            close_old_connections()
+
             logger.debug(f"Starting transcode process: {self.transcode_cmd} for channel: {self.channel_id}")
 
             import os as _os

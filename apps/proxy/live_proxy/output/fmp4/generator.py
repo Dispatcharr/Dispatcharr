@@ -11,6 +11,7 @@ import time
 import gevent
 from apps.channels.models import Channel, Stream
 from core.utils import log_system_event
+from django.db import close_old_connections
 from ...server import ProxyServer
 from ...redis_keys import RedisKeys
 from ...constants import ChannelMetadataField
@@ -331,46 +332,49 @@ class FMP4StreamGenerator:
     # ------------------------------------------------------------------
 
     def _cleanup(self):
-        elapsed = time.time() - self.stream_start_time
-        proxy_server = ProxyServer.get_instance()
+        try:
+            elapsed = time.time() - self.stream_start_time
+            proxy_server = ProxyServer.get_instance()
 
-        # Release stream allocation if last client (mirrors StreamGenerator)
-        if proxy_server.redis_client:
-            try:
-                meta_key = RedisKeys.channel_metadata(self.channel_id)
-                stream_id_bytes = proxy_server.redis_client.hget(
-                    meta_key, ChannelMetadataField.STREAM_ID
-                )
-                if stream_id_bytes:
-                    if self.channel_id in proxy_server.client_managers:
-                        client_count = proxy_server.client_managers[
-                            self.channel_id
-                        ].get_total_client_count()
-                        if client_count <= 1 and proxy_server.am_i_owner(self.channel_id):
-                            try:
+            # Release stream allocation if last client (mirrors StreamGenerator)
+            if proxy_server.redis_client:
+                try:
+                    meta_key = RedisKeys.channel_metadata(self.channel_id)
+                    stream_id_bytes = proxy_server.redis_client.hget(
+                        meta_key, ChannelMetadataField.STREAM_ID
+                    )
+                    if stream_id_bytes:
+                        if self.channel_id in proxy_server.client_managers:
+                            client_count = proxy_server.client_managers[
+                                self.channel_id
+                            ].get_total_client_count()
+                            if client_count <= 1 and proxy_server.am_i_owner(self.channel_id):
                                 try:
-                                    obj = Channel.objects.get(uuid=self.channel_id)
-                                except (Channel.DoesNotExist, Exception):
-                                    obj = Stream.objects.get(stream_hash=self.channel_id)
-                                obj.release_stream()
-                            except Exception as e:
-                                logger.error(
-                                    f"[{self.client_id}] Error releasing stream: {e}"
-                                )
-            except Exception as e:
-                logger.error(f"[{self.client_id}] Error in stream release check: {e}")
+                                    try:
+                                        obj = Channel.objects.get(uuid=self.channel_id)
+                                    except (Channel.DoesNotExist, Exception):
+                                        obj = Stream.objects.get(stream_hash=self.channel_id)
+                                    obj.release_stream()
+                                except Exception as e:
+                                    logger.error(
+                                        f"[{self.client_id}] Error releasing stream: {e}"
+                                    )
+                except Exception as e:
+                    logger.error(f"[{self.client_id}] Error in stream release check: {e}")
 
-        # Remove from MAIN ClientManager - this is what triggers handle_client_disconnect
-        # and the zero-clients → stop_channel path, same as TS clients.
-        local_clients = 0
-        total_clients = 0
-        if self.channel_id in proxy_server.client_managers:
-            client_manager = proxy_server.client_managers[self.channel_id]
-            local_clients = client_manager.remove_client(self.client_id)
-            total_clients = client_manager.get_total_client_count()
+            # Remove from MAIN ClientManager - this is what triggers handle_client_disconnect
+            # and the zero-clients → stop_channel path, same as TS clients.
+            local_clients = 0
+            total_clients = 0
+            if self.channel_id in proxy_server.client_managers:
+                client_manager = proxy_server.client_managers[self.channel_id]
+                local_clients = client_manager.remove_client(self.client_id)
+                total_clients = client_manager.get_total_client_count()
 
-        logger.info(
-            f"[{self.client_id}] fMP4 client disconnected after {elapsed:.2f}s "
-            f"({self.bytes_sent / 1024:.1f} KB sent, "
-            f"local: {local_clients}, total: {total_clients})"
-        )
+            logger.info(
+                f"[{self.client_id}] fMP4 client disconnected after {elapsed:.2f}s "
+                f"({self.bytes_sent / 1024:.1f} KB sent, "
+                f"local: {local_clients}, total: {total_clients})"
+            )
+        finally:
+            close_old_connections()

@@ -8,6 +8,7 @@ import gevent
 from apps.proxy.config import TSConfig as Config
 from apps.channels.models import Channel, Stream
 from core.utils import log_system_event
+from django.db import close_old_connections
 from ...server import ProxyServer
 from ...utils import create_ts_packet, get_logger
 from ...redis_keys import RedisKeys
@@ -590,59 +591,62 @@ class StreamGenerator:
 
     def _cleanup(self):
         """Clean up resources and report final statistics."""
-        # Client cleanup
-        elapsed = time.time() - self.stream_start_time
-        local_clients = 0
-        total_clients = 0
-        proxy_server = ProxyServer.get_instance()
+        try:
+            # Client cleanup
+            elapsed = time.time() - self.stream_start_time
+            local_clients = 0
+            total_clients = 0
+            proxy_server = ProxyServer.get_instance()
 
-        # Release M3U profile stream allocation if this is the last client
-        stream_released = False
-        if proxy_server.redis_client:
-            try:
-                if self.channel_id in proxy_server.client_managers:
-                    client_count = proxy_server.client_managers[self.channel_id].get_total_client_count()
-                    # Pool slots are global; the last client on any worker must release.
-                    if client_count <= 1:
-                        try:
+            # Release M3U profile stream allocation if this is the last client
+            stream_released = False
+            if proxy_server.redis_client:
+                try:
+                    if self.channel_id in proxy_server.client_managers:
+                        client_count = proxy_server.client_managers[self.channel_id].get_total_client_count()
+                        # Pool slots are global; the last client on any worker must release.
+                        if client_count <= 1:
                             try:
-                                obj = Channel.objects.get(uuid=self.channel_id)
-                            except (Channel.DoesNotExist, Exception):
-                                obj = Stream.objects.get(stream_hash=self.channel_id)
-                            stream_released = obj.release_stream()
-                            if stream_released:
-                                logger.debug(f"[{self.client_id}] Released stream for channel {self.channel_id}")
-                            else:
-                                logger.warning(f"[{self.client_id}] release_stream found no keys for channel {self.channel_id}")
-                        except Exception as e:
-                            logger.error(f"[{self.client_id}] Error releasing stream for channel {self.channel_id}: {e}")
-            except Exception as e:
-                logger.error(f"[{self.client_id}] Error checking stream data for release: {e}")
+                                try:
+                                    obj = Channel.objects.get(uuid=self.channel_id)
+                                except (Channel.DoesNotExist, Exception):
+                                    obj = Stream.objects.get(stream_hash=self.channel_id)
+                                stream_released = obj.release_stream()
+                                if stream_released:
+                                    logger.debug(f"[{self.client_id}] Released stream for channel {self.channel_id}")
+                                else:
+                                    logger.warning(f"[{self.client_id}] release_stream found no keys for channel {self.channel_id}")
+                            except Exception as e:
+                                logger.error(f"[{self.client_id}] Error releasing stream for channel {self.channel_id}: {e}")
+                except Exception as e:
+                    logger.error(f"[{self.client_id}] Error checking stream data for release: {e}")
 
-        if self.channel_id in proxy_server.client_managers:
-            client_manager = proxy_server.client_managers[self.channel_id]
-            if self.client_id in client_manager.clients:
-                local_clients = client_manager.remove_client(self.client_id)
-            else:
-                local_clients = client_manager.get_client_count()
-            total_clients = client_manager.get_total_client_count()
-            logger.info(f"[{self.client_id}] Disconnected after {elapsed:.2f}s (local: {local_clients}, total: {total_clients})")
+            if self.channel_id in proxy_server.client_managers:
+                client_manager = proxy_server.client_managers[self.channel_id]
+                if self.client_id in client_manager.clients:
+                    local_clients = client_manager.remove_client(self.client_id)
+                else:
+                    local_clients = client_manager.get_client_count()
+                total_clients = client_manager.get_total_client_count()
+                logger.info(f"[{self.client_id}] Disconnected after {elapsed:.2f}s (local: {local_clients}, total: {total_clients})")
 
-            # Log client disconnect event
-            try:
-                log_system_event(
-                    'client_disconnect',
-                    channel_id=self.channel_id,
-                    channel_name=self.channel_name,
-                    client_ip=self.client_ip,
-                    client_id=self.client_id,
-                    user_agent=self.client_user_agent[:100] if self.client_user_agent else None,
-                    duration=round(elapsed, 2),
-                    bytes_sent=self.bytes_sent,
-                    username=self.user.username if self.user else None
-                )
-            except Exception as e:
-                logger.error(f"Could not log client disconnect event: {e}")
+                # Log client disconnect event
+                try:
+                    log_system_event(
+                        'client_disconnect',
+                        channel_id=self.channel_id,
+                        channel_name=self.channel_name,
+                        client_ip=self.client_ip,
+                        client_id=self.client_id,
+                        user_agent=self.client_user_agent[:100] if self.client_user_agent else None,
+                        duration=round(elapsed, 2),
+                        bytes_sent=self.bytes_sent,
+                        username=self.user.username if self.user else None
+                    )
+                except Exception as e:
+                    logger.error(f"Could not log client disconnect event: {e}")
+        finally:
+            close_old_connections()
 
 
 def create_stream_generator(channel_id, client_id, client_ip, client_user_agent, channel_initializing=False, user=None, buffer=None):

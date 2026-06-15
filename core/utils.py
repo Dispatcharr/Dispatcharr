@@ -715,6 +715,7 @@ def log_system_event(event_type, channel_id=None, channel_name=None, **details):
                         stream_url='http://...', user='admin')
     """
     from core.models import SystemEvent, CoreSettings
+    from django.db import close_old_connections
 
     try:
         # Create the event
@@ -750,6 +751,10 @@ def log_system_event(event_type, channel_id=None, channel_name=None, **details):
     except Exception as e:
         # Don't let event logging break the main application
         logger.error(f"Failed to log system event {event_type}: {e}")
+    finally:
+        # geventpool keeps checked-out connections until close(); release promptly
+        # when logging from proxy greenlets/threads outside a normal request cycle.
+        close_old_connections()
 
 
 def _send_async(channel_layer, group, message):
