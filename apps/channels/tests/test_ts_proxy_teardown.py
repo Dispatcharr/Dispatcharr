@@ -390,17 +390,21 @@ class CleanRedisKeysOrderTests(TestCase):
         mock_channel_get.side_effect = channel_get
         mock_stream_get.side_effect = Stream.DoesNotExist
 
-        def scan(*args, **kwargs):
+        channel_key = f"live:channel:{CHANNEL_ID}:input:buffer:index".encode()
+
+        def scan(cursor, match=None, count=100):
             call_order.append("redis")
-            return (0, [b"live:channel:foo:buffer:index"])
+            if match == f"live:channel:{CHANNEL_ID}:*":
+                return (0, [channel_key])
+            return (0, [])
 
         server.redis_client.scan.side_effect = scan
 
         server._clean_redis_keys(CHANNEL_ID)
 
-        self.assertEqual(call_order, ["release", "redis"])
+        self.assertEqual(call_order, ["release", "redis", "redis"])
         channel.release_stream.assert_called_once()
-        server.redis_client.delete.assert_called_once()
+        server.redis_client.delete.assert_called_once_with(channel_key)
 
 
 class LocalUpstreamActivityTests(TestCase):

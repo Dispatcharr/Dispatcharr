@@ -1402,6 +1402,15 @@ class ProxyServer:
                 f"Error broadcasting upstream stop for channel {channel_id}: {e}"
             )
 
+    @staticmethod
+    def _channel_id_from_metadata_key(key):
+        if isinstance(key, bytes):
+            key = key.decode('utf-8', errors='replace')
+        parts = key.split(':')
+        if len(parts) >= 3:
+            return parts[2]
+        return None
+
     def _stop_upstream_before_redis_cleanup(self, channel_id):
         """Stop local ffmpeg before deleting Redis keys (prevents delete/recreate loops)."""
         if self._has_local_upstream_activity(channel_id):
@@ -1955,7 +1964,9 @@ class ProxyServer:
 
             for key in channel_keys:
                 try:
-                    channel_id = key.split(':')[2]
+                    channel_id = self._channel_id_from_metadata_key(key)
+                    if not channel_id:
+                        continue
 
                     # Check if this channel has an owner
                     owner = self.get_channel_owner(channel_id)
@@ -1995,7 +2006,9 @@ class ProxyServer:
 
             for key in channel_keys:
                 try:
-                    channel_id = key.split(':')[2]
+                    channel_id = self._channel_id_from_metadata_key(key)
+                    if not channel_id:
+                        continue
 
                     # Get metadata first
                     metadata = self.redis_client.hgetall(key)

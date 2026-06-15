@@ -67,6 +67,7 @@ class StreamManager:
         # Add to your __init__ method
         self._buffer_check_timers = []
         self.stopping = False
+        self.stop_requested = False
 
         # Add tracking for tried streams and current stream
         self.current_stream_id = stream_id
@@ -572,7 +573,9 @@ class StreamManager:
                 try:
                     metadata_key = RedisKeys.channel_metadata(self.channel_id)
                     owner_key = RedisKeys.channel_owner(self.channel_id)
-                    current_owner = self.buffer.redis_client.get(owner_key)
+                    current_owner = self._decode_redis_value(
+                        self.buffer.redis_client.get(owner_key)
+                    )
 
                     is_owner = (
                         current_owner
@@ -583,12 +586,10 @@ class StreamManager:
 
                     should_update = is_owner
                     if not should_update and no_owner:
-                        current_state_bytes = self.buffer.redis_client.hget(
-                            metadata_key, ChannelMetadataField.STATE
-                        )
-                        current_state = (
-                            current_state_bytes
-                            if current_state_bytes else None
+                        current_state = self._decode_redis_value(
+                            self.buffer.redis_client.hget(
+                                metadata_key, ChannelMetadataField.STATE
+                            )
                         )
                         should_update = current_state in ChannelState.PRE_ACTIVE
                         if not should_update and current_state:
