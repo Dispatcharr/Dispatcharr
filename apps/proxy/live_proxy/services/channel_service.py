@@ -73,6 +73,9 @@ class ChannelService:
     def is_channel_teardown_active(channel_id):
         """True when a coordinated channel stop is in progress (visible to all workers)."""
         proxy_server = ProxyServer.get_instance()
+        if channel_id in proxy_server._stopping_channels:
+            return True
+
         if not proxy_server.redis_client:
             return False
 
@@ -345,41 +348,19 @@ class ChannelService:
             except Exception as e:
                 logger.error(f"Error fetching channel state: {e}")
 
-        # Mark stopping in Redis and notify all workers before local teardown
+        # Mark stopping in Redis and notify all workers before local teardown.
+        # stop_channel() releases profile slots via _clean_redis_keys() before Redis deletion.
         if proxy_server.redis_client:
             ChannelService.mark_channel_stopping(channel_id, broadcast=True)
             logger.info(f"Marked channel {channel_id} stopping and broadcast stop to all workers")
-            local_result = proxy_server.stop_channel(channel_id)
-        else:
-            local_result = proxy_server.stop_channel(channel_id)
-
-        # Release the channel in the channel model if applicable
-        try:
-            channel = Channel.objects.get(uuid=channel_id)
-            model_released = channel.release_stream()
-            if model_released:
-                logger.info(f"Released channel {channel_id} stream allocation")
-            else:
-                logger.warning(f"Channel {channel_id}: release_stream found no keys to clean")
-        except (Channel.DoesNotExist, Exception):
-            logger.warning(f"Could not find Channel model for UUID {channel_id}, attempting stream hash")
-            try:
-                stream = Stream.objects.get(stream_hash=channel_id)
-                model_released = stream.release_stream()
-                if model_released:
-                    logger.info(f"Released stream {channel_id} stream allocation")
-                else:
-                    logger.warning(f"Stream {channel_id}: release_stream found no keys to clean")
-            except (Stream.DoesNotExist, Exception) as e:
-                logger.error(f"No Channel or Stream found for {channel_id}: {e}")
-                model_released = False
+        local_result = proxy_server.stop_channel(channel_id)
 
         return {
             'status': 'success',
             'message': 'Channel stop request sent',
             'channel_id': channel_id,
             'previous_state': channel_info,
-            'model_released': model_released,
+            'model_released': bool(local_result),
             'local_stop_result': local_result
         }
 

@@ -211,6 +211,12 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
 
         # Start initialization if needed
         if needs_initialization or not proxy_server.check_if_channel_exists(channel_id):
+            if ChannelService.is_channel_unavailable_for_new_clients(channel_id):
+                logger.info(
+                    f"[{client_id}] Channel {channel_id} became unavailable before init, rejecting"
+                )
+                return _channel_stopping_response()
+
             logger.info(f"[{client_id}] Starting channel {channel_id} initialization")
             # Force cleanup of any previous instance if in terminal state
             if channel_state in [
@@ -433,6 +439,16 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
                     )  # 502 Bad Gateway
 
             # Initialize channel with the stream's user agent (not the client's)
+            if ChannelService.is_channel_unavailable_for_new_clients(channel_id):
+                if connection_allocated:
+                    if not channel.release_stream():
+                        logger.warning(f"[{client_id}] Failed to release stream before teardown reject")
+                    connection_allocated = False
+                logger.info(
+                    f"[{client_id}] Channel {channel_id} unavailable before init call, rejecting"
+                )
+                return _channel_stopping_response()
+
             success = ChannelService.initialize_channel(
                 channel_id,
                 stream_url,
@@ -540,6 +556,16 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
             logger.info(
                 f"[{client_id}] Successfully initialized channel {channel_id} locally"
             )
+
+        if ChannelService.is_channel_unavailable_for_new_clients(channel_id):
+            if _client_pre_registered:
+                mgr = proxy_server.client_managers.get(channel_id)
+                if mgr:
+                    mgr.remove_client(client_id)
+            logger.info(
+                f"[{client_id}] Channel {channel_id} became unavailable during setup, rejecting"
+            )
+            return _channel_stopping_response()
 
         # Register client
         output_profile = _resolve_output_profile(request, user)

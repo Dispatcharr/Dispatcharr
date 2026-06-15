@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 from django.test import TestCase
 
 from apps.proxy.live_proxy.constants import ChannelMetadataField, ChannelState
+from apps.proxy.live_proxy.input.buffer import StreamBuffer
 from apps.proxy.live_proxy.input.manager import StreamManager
 from apps.proxy.live_proxy.redis_keys import RedisKeys
 from apps.proxy.live_proxy.server import ProxyServer
@@ -12,6 +13,29 @@ from apps.proxy.live_proxy.services.channel_service import ChannelService
 
 
 CHANNEL_ID = "00000000-0000-0000-0000-000000000099"
+
+
+def _configure_ownership_pipeline(
+    redis,
+    *,
+    stop_exists=0,
+    metadata_exists=1,
+    client_count=0,
+    owner=None,
+    disconnect=None,
+    state=None,
+):
+    pipe = MagicMock()
+    redis.pipeline.return_value = pipe
+    pipe.execute.return_value = (
+        stop_exists,
+        metadata_exists,
+        client_count,
+        owner,
+        disconnect,
+        state,
+    )
+    return pipe
 
 
 def _mock_proxy_server(redis_client=None):
@@ -79,11 +103,6 @@ class LocalStreamActivityTests(TestCase):
         server.stop_all_output_profiles = MagicMock()
         return server
 
-    def test_has_local_stream_activity_from_live_registry(self):
-        server = self._make_server()
-        server._live_stream_managers[CHANNEL_ID] = MagicMock()
-        self.assertTrue(server._has_local_stream_activity(CHANNEL_ID))
-
     @patch.object(ProxyServer, "_join_stream_thread")
     def test_stop_local_stream_activity_stops_live_manager(self, mock_join):
         server = self._make_server()
@@ -114,9 +133,9 @@ class OrphanMetadataCleanupTests(TestCase):
 
     @patch.object(ProxyServer, "_clean_redis_keys")
     @patch.object(ProxyServer, "_stop_local_stream_activity")
-    @patch.object(ProxyServer, "_has_local_stream_activity", return_value=True)
+    @patch.object(ProxyServer, "_has_local_upstream_activity", return_value=True)
     def test_orphan_metadata_stops_local_processes_before_redis(
-        self, mock_has_local, mock_stop_local, mock_clean_redis
+        self, mock_has_upstream, mock_stop_local, mock_clean_redis
     ):
         server = self._make_server()
         metadata_key = RedisKeys.channel_metadata(CHANNEL_ID)
@@ -130,15 +149,16 @@ class OrphanMetadataCleanupTests(TestCase):
 
         server._check_orphaned_metadata()
 
-        mock_has_local.assert_called_with(CHANNEL_ID)
+        mock_has_upstream.assert_called_with(CHANNEL_ID)
         mock_stop_local.assert_called_once_with(CHANNEL_ID)
         mock_clean_redis.assert_called_once_with(CHANNEL_ID)
 
     @patch.object(ProxyServer, "_clean_redis_keys")
+    @patch.object(ProxyServer, "_broadcast_upstream_stop")
     @patch.object(ProxyServer, "_stop_local_stream_activity")
-    @patch.object(ProxyServer, "_has_local_stream_activity", return_value=False)
-    def test_orphan_metadata_remote_channel_only_cleans_redis(
-        self, mock_has_local, mock_stop_local, mock_clean_redis
+    @patch.object(ProxyServer, "_has_local_upstream_activity", return_value=False)
+    def test_orphan_metadata_remote_channel_broadcasts_stop(
+        self, mock_has_upstream, mock_stop_local, mock_broadcast, mock_clean_redis
     ):
         server = self._make_server()
         metadata_key = RedisKeys.channel_metadata(CHANNEL_ID)
@@ -149,6 +169,7 @@ class OrphanMetadataCleanupTests(TestCase):
 
         server._check_orphaned_metadata()
 
+        mock_broadcast.assert_called_once_with(CHANNEL_ID)
         mock_stop_local.assert_not_called()
         mock_clean_redis.assert_called_once_with(CHANNEL_ID)
 
@@ -171,9 +192,9 @@ class OrphanChannelCleanupTests(TestCase):
 
     @patch.object(ProxyServer, "_clean_redis_keys")
     @patch.object(ProxyServer, "_stop_local_stream_activity")
-    @patch.object(ProxyServer, "_has_local_stream_activity", return_value=True)
+    @patch.object(ProxyServer, "_has_local_upstream_activity", return_value=True)
     def test_orphan_channel_stops_local_before_redis(
-        self, mock_has_local, mock_stop_local, mock_clean_redis
+        self, mock_has_upstream, mock_stop_local, mock_clean_redis
     ):
         server = self._make_server()
         metadata_key = RedisKeys.channel_metadata(CHANNEL_ID)
@@ -189,10 +210,10 @@ class OrphanChannelCleanupTests(TestCase):
 class StreamManagerOwnershipTests(TestCase):
     def test_still_owner_false_when_different_worker(self):
         buffer = MagicMock()
-        buffer.redis_client.get.side_effect = lambda key: (
-            None if "stopping" in key else b"worker-b"
+        _configure_ownership_pipeline(
+            buffer.redis_client,
+            owner=b"worker-b",
         )
-        buffer.redis_client.exists.return_value = False
         manager = StreamManager(
             CHANNEL_ID, "http://example/stream", buffer, worker_id="worker-a"
         )
@@ -201,8 +222,12 @@ class StreamManagerOwnershipTests(TestCase):
 
     def test_still_owner_true_when_owner_lock_expired_but_not_stopping(self):
         buffer = MagicMock()
-        buffer.redis_client.get.return_value = None
-        buffer.redis_client.exists.return_value = False
+        _configure_ownership_pipeline(
+            buffer.redis_client,
+            client_count=0,
+            owner=None,
+            state=ChannelState.CONNECTING.encode(),
+        )
         manager = StreamManager(
             CHANNEL_ID, "http://example/stream", buffer, worker_id="worker-a"
         )
@@ -211,7 +236,10 @@ class StreamManagerOwnershipTests(TestCase):
 
     def test_still_owner_false_when_channel_stopping_key_set(self):
         buffer = MagicMock()
-        buffer.redis_client.exists.return_value = True
+        _configure_ownership_pipeline(
+            buffer.redis_client,
+            stop_exists=1,
+        )
         manager = StreamManager(
             CHANNEL_ID, "http://example/stream", buffer, worker_id="worker-a"
         )
@@ -220,8 +248,10 @@ class StreamManagerOwnershipTests(TestCase):
 
     def test_update_bytes_skipped_after_ownership_lost(self):
         buffer = MagicMock()
-        buffer.redis_client.get.return_value = b"other-worker"
-        buffer.redis_client.exists.return_value = False
+        _configure_ownership_pipeline(
+            buffer.redis_client,
+            owner=b"other-worker",
+        )
         manager = StreamManager(
             CHANNEL_ID, "http://example/stream", buffer, worker_id="worker-a"
         )
@@ -230,3 +260,383 @@ class StreamManagerOwnershipTests(TestCase):
         manager._update_bytes_processed(500)
 
         buffer.redis_client.hincrby.assert_not_called()
+
+
+class StreamBufferStopTests(TestCase):
+    def test_stop_discards_local_data_without_redis_writes(self):
+        redis = MagicMock()
+        buffer = StreamBuffer(channel_id=CHANNEL_ID, redis_client=redis)
+        buffer._write_buffer = bytearray(b"x" * 376)
+
+        buffer.stop()
+
+        self.assertTrue(buffer.stopping)
+        self.assertEqual(len(buffer._write_buffer), 0)
+        redis.incr.assert_not_called()
+        redis.setex.assert_not_called()
+        redis.delete.assert_not_called()
+
+
+class StopChannelTeardownTests(TestCase):
+    def _make_server(self):
+        with patch("apps.proxy.live_proxy.server.RedisClient.get_client", return_value=MagicMock()):
+            server = ProxyServer()
+        server.worker_id = "testhost:1"
+        server.stream_managers = {}
+        server.stream_buffers = {}
+        server.client_managers = {}
+        server.profile_managers = {}
+        server.profile_buffers = {}
+        server._live_stream_managers = {}
+        server._stopping_channels = set()
+        server._stopping_since = {}
+        server.redis_client = MagicMock()
+        server.redis_client.exists.return_value = False
+        server.am_i_owner = MagicMock(return_value=False)
+        server._collect_channel_stop_event_data = MagicMock(return_value=None)
+        server.release_ownership = MagicMock()
+        return server
+
+    @patch.object(ProxyServer, "_spawn_channel_stop_event")
+    @patch.object(ProxyServer, "_clean_redis_keys")
+    @patch.object(ProxyServer, "_stop_local_stream_activity")
+    def test_stop_channel_cleans_redis_before_blocking_local_stop(
+        self, mock_stop_local, mock_clean_redis, mock_spawn_event
+    ):
+        server = self._make_server()
+        call_order = []
+
+        def stop_local(channel_id):
+            call_order.append("local")
+
+        def clean_redis(channel_id):
+            call_order.append("redis")
+
+        mock_stop_local.side_effect = stop_local
+        mock_clean_redis.side_effect = clean_redis
+
+        server.stop_channel(CHANNEL_ID)
+
+        self.assertEqual(call_order, ["redis", "local"])
+        mock_spawn_event.assert_called_once_with(None)
+
+    @patch.object(ProxyServer, "_spawn_channel_stop_event")
+    @patch.object(ProxyServer, "_clean_redis_keys")
+    @patch.object(ProxyServer, "_stop_local_stream_activity", side_effect=RuntimeError("boom"))
+    def test_stop_channel_cleans_redis_in_finally_when_local_stop_fails(
+        self, mock_stop_local, mock_clean_redis, mock_spawn_event
+    ):
+        server = self._make_server()
+
+        result = server.stop_channel(CHANNEL_ID)
+
+        self.assertFalse(result)
+        mock_clean_redis.assert_called_once_with(CHANNEL_ID)
+        mock_spawn_event.assert_not_called()
+        self.assertNotIn(CHANNEL_ID, server._stopping_channels)
+
+    @patch.object(ProxyServer, "_spawn_channel_stop_event")
+    @patch.object(ProxyServer, "_clean_redis_keys")
+    @patch.object(ProxyServer, "_stop_local_stream_activity")
+    def test_stop_channel_owner_releases_after_redis_cleanup(
+        self, mock_stop_local, mock_clean_redis, mock_spawn_event
+    ):
+        server = self._make_server()
+        server.am_i_owner.return_value = True
+        stop_data = {"channel_id": CHANNEL_ID}
+        server._collect_channel_stop_event_data.return_value = stop_data
+        call_order = []
+
+        def stop_local(channel_id):
+            call_order.append("local")
+
+        def release(channel_id):
+            call_order.append("release")
+
+        def clean_redis(channel_id):
+            call_order.append("redis")
+
+        mock_stop_local.side_effect = stop_local
+        server.release_ownership.side_effect = release
+        mock_clean_redis.side_effect = clean_redis
+
+        server.stop_channel(CHANNEL_ID)
+
+        self.assertEqual(call_order, ["redis", "release", "local"])
+        server._collect_channel_stop_event_data.assert_called_once_with(CHANNEL_ID)
+        mock_spawn_event.assert_called_once_with(stop_data)
+
+
+class CleanRedisKeysOrderTests(TestCase):
+    @patch("apps.proxy.live_proxy.server.Stream.objects.get")
+    @patch("apps.proxy.live_proxy.server.Channel.objects.get")
+    def test_clean_redis_keys_releases_profile_slot_before_live_keys_deleted(
+        self, mock_channel_get, mock_stream_get
+    ):
+        from apps.channels.models import Channel, Stream
+
+        with patch("apps.proxy.live_proxy.server.RedisClient.get_client", return_value=MagicMock()):
+            server = ProxyServer()
+        server.redis_client = MagicMock()
+        call_order = []
+
+        channel = MagicMock()
+        channel.release_stream.return_value = True
+
+        def channel_get(uuid):
+            call_order.append("release")
+            return channel
+
+        mock_channel_get.side_effect = channel_get
+        mock_stream_get.side_effect = Stream.DoesNotExist
+
+        def scan(*args, **kwargs):
+            call_order.append("redis")
+            return (0, [b"live:channel:foo:buffer:index"])
+
+        server.redis_client.scan.side_effect = scan
+
+        server._clean_redis_keys(CHANNEL_ID)
+
+        self.assertEqual(call_order, ["release", "redis"])
+        channel.release_stream.assert_called_once()
+        server.redis_client.delete.assert_called_once()
+
+
+class LocalUpstreamActivityTests(TestCase):
+    def _make_server(self):
+        with patch("apps.proxy.live_proxy.server.RedisClient.get_client", return_value=MagicMock()):
+            server = ProxyServer()
+        server.worker_id = "testhost:1"
+        server.stream_managers = {}
+        server.stream_buffers = {}
+        server.client_managers = {}
+        server._live_stream_managers = {}
+        return server
+
+    def test_upstream_activity_excludes_reader_only_client_manager(self):
+        server = self._make_server()
+        server.client_managers[CHANNEL_ID] = MagicMock()
+        server.stream_buffers[CHANNEL_ID] = MagicMock()
+        self.assertFalse(server._has_local_upstream_activity(CHANNEL_ID))
+
+    def test_upstream_activity_from_live_registry(self):
+        server = self._make_server()
+        server._live_stream_managers[CHANNEL_ID] = MagicMock()
+        self.assertTrue(server._has_local_upstream_activity(CHANNEL_ID))
+
+
+class ClientDisconnectOwnershipTests(TestCase):
+    def test_last_client_triggers_stop_when_upstream_active_without_owner_lock(self):
+        from apps.proxy.live_proxy.client_manager import ClientManager
+
+        proxy_server = MagicMock()
+        proxy_server.worker_id = "testhost:1"
+        proxy_server.am_i_owner.return_value = False
+        proxy_server._has_local_upstream_activity.return_value = True
+        proxy_server.extend_ownership.return_value = False
+
+        redis = MagicMock()
+        redis.hget.return_value = b"viewer"
+        redis.scard.return_value = 0
+
+        manager = ClientManager(
+            channel_id=CHANNEL_ID,
+            redis_client=redis,
+            worker_id="testhost:1",
+        )
+        manager.proxy_server = proxy_server
+        manager.clients = {"client-1"}
+        manager.client_set_key = RedisKeys.clients(CHANNEL_ID)
+        manager._notify_owner_of_activity = MagicMock()
+        manager._trigger_stats_update = MagicMock()
+        manager.get_total_client_count = MagicMock(return_value=0)
+        proxy_server._spawn_on_hub = MagicMock()
+
+        manager.remove_client("client-1")
+
+        proxy_server._spawn_on_hub.assert_called_once_with(
+            proxy_server.handle_client_disconnect, CHANNEL_ID
+        )
+
+
+class TeardownActiveLocalStopTests(TestCase):
+    @patch("apps.proxy.live_proxy.services.channel_service.ProxyServer.get_instance")
+    def test_teardown_active_when_local_stop_in_progress(self, mock_get_instance):
+        server = MagicMock()
+        server._stopping_channels = {CHANNEL_ID}
+        server.redis_client = MagicMock()
+        server.redis_client.exists.return_value = False
+        mock_get_instance.return_value = server
+
+        self.assertTrue(ChannelService.is_channel_teardown_active(CHANNEL_ID))
+
+
+class HandleClientDisconnectUpstreamFirstTests(TestCase):
+    def _make_server(self):
+        with patch("apps.proxy.live_proxy.server.RedisClient.get_client", return_value=MagicMock()):
+            server = ProxyServer()
+        server.worker_id = "testhost:1"
+        server.client_managers = {CHANNEL_ID: MagicMock()}
+        server.stream_managers = {CHANNEL_ID: MagicMock()}
+        server._live_stream_managers = {}
+        server.profile_managers = {}
+        server.output_managers = {}
+        server.redis_client = MagicMock()
+        server.redis_client.scard.return_value = 0
+        server._stopping_channels = set()
+        return server
+
+    @patch.object(ProxyServer, "_coordinated_stop_channel")
+    @patch.object(ProxyServer, "_stop_upstream_before_redis_cleanup")
+    @patch.object(ProxyServer, "_has_local_upstream_activity", return_value=True)
+    def test_last_client_uses_coordinated_stop_only(
+        self, _mock_upstream, mock_stop_upstream, mock_coordinated
+    ):
+        server = self._make_server()
+
+        with patch(
+            "apps.proxy.live_proxy.server.ConfigHelper.channel_shutdown_delay",
+            return_value=0,
+        ):
+            server.handle_client_disconnect(CHANNEL_ID)
+
+        mock_stop_upstream.assert_not_called()
+        mock_coordinated.assert_called_once_with(CHANNEL_ID)
+
+
+class InitWaitAbortTests(TestCase):
+    def _make_generator(self):
+        from apps.proxy.live_proxy.output.ts.generator import StreamGenerator
+
+        return StreamGenerator(
+            CHANNEL_ID,
+            "client-1",
+            "127.0.0.1",
+            "test-agent",
+            channel_initializing=True,
+        )
+
+    def test_abort_when_client_removed_locally(self):
+        generator = self._make_generator()
+        server = MagicMock()
+        client_manager = MagicMock()
+        client_manager.clients = set()
+        server.client_managers = {CHANNEL_ID: client_manager}
+        server.redis_client = MagicMock()
+
+        self.assertEqual(generator._init_wait_abort_reason(server, time.time()), "client_gone")
+
+    def test_abort_when_connect_stalled_without_buffer(self):
+        from apps.proxy.config import TSConfig as Config
+
+        generator = self._make_generator()
+        server = MagicMock()
+        client_manager = MagicMock()
+        client_manager.clients = {"client-1"}
+        server.client_managers = {CHANNEL_ID: client_manager}
+        buffer = MagicMock()
+        buffer.index = 0
+        server.stream_buffers = {CHANNEL_ID: buffer}
+        server.redis_client = MagicMock()
+        server.redis_client.hget.return_value = b"connecting"
+        server.redis_client.get.return_value = None
+
+        started = time.time() - (getattr(Config, "CONNECTION_TIMEOUT", 10) + 1)
+        self.assertEqual(generator._init_wait_abort_reason(server, started), "stalled")
+
+
+class UpstreamStopBroadcastTests(TestCase):
+    def _make_server(self):
+        with patch("apps.proxy.live_proxy.server.RedisClient.get_client", return_value=MagicMock()):
+            server = ProxyServer()
+        server.worker_id = "testhost:1"
+        server.stream_managers = {}
+        server._live_stream_managers = {}
+        server.redis_client = MagicMock()
+        return server
+
+    @patch.object(ProxyServer, "_stop_local_stream_activity")
+    @patch.object(ProxyServer, "_broadcast_upstream_stop")
+    @patch.object(ProxyServer, "_has_local_upstream_activity", return_value=True)
+    def test_local_upstream_stops_locally_without_broadcast(
+        self, _mock_has, mock_broadcast, mock_stop_local
+    ):
+        server = self._make_server()
+        server._stop_upstream_before_redis_cleanup(CHANNEL_ID)
+        mock_stop_local.assert_called_once_with(CHANNEL_ID)
+        mock_broadcast.assert_not_called()
+
+    @patch.object(ProxyServer, "_stop_local_stream_activity")
+    @patch.object(ProxyServer, "_broadcast_upstream_stop")
+    @patch.object(ProxyServer, "_has_local_upstream_activity", return_value=False)
+    def test_orphan_cleanup_broadcasts_when_no_local_upstream(
+        self, _mock_has, mock_broadcast, mock_stop_local
+    ):
+        server = self._make_server()
+        server._stop_upstream_before_redis_cleanup(CHANNEL_ID)
+        mock_broadcast.assert_called_once_with(CHANNEL_ID)
+        mock_stop_local.assert_not_called()
+
+
+class StreamManagerStillOwnerTests(TestCase):
+    def _make_manager(self, redis_client):
+        buffer = MagicMock()
+        buffer.redis_client = redis_client
+        buffer.channel_id = CHANNEL_ID
+        manager = StreamManager(
+            CHANNEL_ID,
+            "http://example/stream.ts",
+            buffer,
+            worker_id="testhost:1",
+        )
+        return manager
+
+    def test_stops_when_metadata_removed(self):
+        redis = MagicMock()
+        _configure_ownership_pipeline(redis, metadata_exists=0)
+        manager = self._make_manager(redis)
+        self.assertFalse(manager._still_owner())
+
+    def test_keeps_running_during_connecting_before_client_registered(self):
+        redis = MagicMock()
+        _configure_ownership_pipeline(
+            redis,
+            client_count=0,
+            owner=b"testhost:1",
+            state=ChannelState.CONNECTING.encode(),
+        )
+        manager = self._make_manager(redis)
+        self.assertTrue(manager._still_owner())
+
+    def test_stops_after_disconnect_when_shutdown_delay_is_zero(self):
+        redis = MagicMock()
+        _configure_ownership_pipeline(
+            redis,
+            client_count=0,
+            owner=b"testhost:1",
+            disconnect=b"1700000000.0",
+            state=ChannelState.ACTIVE.encode(),
+        )
+        manager = self._make_manager(redis)
+        with patch(
+            "apps.proxy.live_proxy.input.manager.ConfigHelper.channel_shutdown_delay",
+            return_value=0,
+        ):
+            self.assertFalse(manager._still_owner())
+
+    def test_keeps_running_during_shutdown_delay(self):
+        redis = MagicMock()
+        _configure_ownership_pipeline(
+            redis,
+            client_count=0,
+            owner=b"testhost:1",
+            disconnect=str(time.time()).encode(),
+            state=ChannelState.ACTIVE.encode(),
+        )
+        manager = self._make_manager(redis)
+        with patch(
+            "apps.proxy.live_proxy.input.manager.ConfigHelper.channel_shutdown_delay",
+            return_value=5,
+        ):
+            self.assertTrue(manager._still_owner())

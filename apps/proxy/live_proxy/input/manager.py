@@ -112,6 +112,11 @@ class StreamManager:
         # Add tracking for data throughput
         self.bytes_processed = 0
         self.last_bytes_update = time.time()
+
+        # Cached result of the pipelined Redis ownership audit (hot read path).
+        self._ownership_cache_valid_until = 0.0
+        self._ownership_cached = True
+        self._OWNERSHIP_CHECK_INTERVAL = 1.0
         self.bytes_update_interval = 5  # Update Redis every 5 seconds
 
         # Add stderr reader thread property
@@ -182,7 +187,90 @@ class StreamManager:
         logger.warning(f"Timeout waiting for existing processes to close for channel {self.channel_id} after {timeout}s")
         return False
 
-    def _still_owner(self):
+    def _invalidate_ownership_cache(self):
+        self._ownership_cache_valid_until = 0.0
+
+    @staticmethod
+    def _decode_redis_value(value):
+        if value is None:
+            return None
+        if isinstance(value, bytes):
+            return value.decode()
+        return value
+
+    def _disconnect_shutdown_ready(self, disconnect_value):
+        """True when last-client disconnect has passed the configured shutdown delay."""
+        if not disconnect_value:
+            return False
+
+        shutdown_delay = ConfigHelper.channel_shutdown_delay()
+        if shutdown_delay <= 0:
+            return True
+
+        disconnect_value = self._decode_redis_value(disconnect_value)
+        try:
+            disconnect_time = float(disconnect_value)
+        except (ValueError, TypeError):
+            return False
+        return (time.time() - disconnect_time) >= shutdown_delay
+
+    def _evaluate_ownership_from_redis(self, redis_client):
+        """Single pipelined Redis round-trip for the full ownership audit."""
+        stop_key = RedisKeys.channel_stopping(self.channel_id)
+        metadata_key = RedisKeys.channel_metadata(self.channel_id)
+        clients_key = RedisKeys.clients(self.channel_id)
+        owner_key = RedisKeys.channel_owner(self.channel_id)
+        disconnect_key = RedisKeys.last_client_disconnect(self.channel_id)
+
+        pipe = redis_client.pipeline(transaction=False)
+        pipe.exists(stop_key)
+        pipe.exists(metadata_key)
+        pipe.scard(clients_key)
+        pipe.get(owner_key)
+        pipe.get(disconnect_key)
+        pipe.hget(metadata_key, ChannelMetadataField.STATE)
+        (
+            stop_exists,
+            metadata_exists,
+            client_count,
+            current_owner,
+            disconnect_value,
+            state_raw,
+        ) = pipe.execute()
+
+        if stop_exists:
+            return False
+
+        if not metadata_exists:
+            logger.warning(
+                f"Channel {self.channel_id} metadata removed from Redis - stopping upstream"
+            )
+            return False
+
+        client_count = client_count or 0
+        state = self._decode_redis_value(state_raw)
+        current_owner = self._decode_redis_value(current_owner)
+
+        if current_owner and current_owner != self.worker_id:
+            return False
+
+        if not current_owner:
+            if client_count == 0 and state not in ChannelState.PRE_ACTIVE:
+                logger.warning(
+                    f"Channel {self.channel_id} has no owner and no clients - stopping upstream"
+                )
+                return False
+            return True
+
+        if client_count == 0 and self._disconnect_shutdown_ready(disconnect_value):
+            logger.info(
+                f"Channel {self.channel_id} disconnect shutdown ready - stopping upstream"
+            )
+            return False
+
+        return True
+
+    def _still_owner(self, *, force=False):
         """Return True while this worker should keep the upstream connection open."""
         if self.stopping or self.stop_requested:
             return False
@@ -194,26 +282,49 @@ class StreamManager:
         if not redis_client:
             return True
 
-        try:
-            stop_key = RedisKeys.channel_stopping(self.channel_id)
-            if redis_client.exists(stop_key):
-                return False
+        now = time.time()
+        if not force and now < self._ownership_cache_valid_until:
+            return self._ownership_cached
 
-            owner_key = RedisKeys.channel_owner(self.channel_id)
-            current_owner = redis_client.get(owner_key)
-            if not current_owner:
-                # Owner lock TTL may lapse briefly between cleanup-thread renewals.
-                # Keep running unless coordinated teardown has started (checked above).
-                return True
-            if isinstance(current_owner, bytes):
-                current_owner = current_owner.decode()
-            return current_owner == self.worker_id
+        try:
+            result = self._evaluate_ownership_from_redis(redis_client)
+            self._ownership_cached = result
+            self._ownership_cache_valid_until = now + self._OWNERSHIP_CHECK_INTERVAL
+            return result
         except Exception as e:
             logger.debug(f"Ownership check failed for channel {self.channel_id}: {e}")
+            return True
+
+    def _upstream_may_continue(self):
+        """
+        Per-chunk gate for the hot read path.
+
+        Local stop flags are checked every chunk. The coordinated-teardown Redis
+        flag is checked every chunk (one EXISTS). The full ownership audit is
+        pipelined and cached for ~1s — enough for loop boundaries while avoiding
+        6+ Redis round-trips per chunk during steady streaming.
+        """
+        if self.stopping or self.stop_requested or not self.running:
+            return False
+        if self.buffer is not None and self.buffer.stopping:
             return False
 
+        redis_client = getattr(self.buffer, 'redis_client', None)
+        if redis_client and self.worker_id:
+            try:
+                if redis_client.exists(RedisKeys.channel_stopping(self.channel_id)):
+                    self._ownership_cached = False
+                    self._ownership_cache_valid_until = 0.0
+                    return False
+            except Exception as e:
+                logger.debug(
+                    f"Channel stopping check failed for {self.channel_id}: {e}"
+                )
+
+        return self._still_owner()
+
     def _ensure_owner_or_stop(self):
-        if self._still_owner():
+        if self._still_owner(force=True):
             return True
 
         logger.warning(
@@ -539,6 +650,7 @@ class StreamManager:
                 logger.debug(f"Closing existing HTTP connections before establishing transcode connection for channel {self.channel_id}")
                 self._close_connection()
 
+            close_old_connections()
             channel = get_stream_object(self.channel_id)
 
             # Use FFmpeg specifically for HLS streams
@@ -1071,7 +1183,7 @@ class StreamManager:
 
     def _update_bytes_processed(self, chunk_size):
         """Update the total bytes processed in Redis metadata"""
-        if not self._still_owner():
+        if not self._upstream_may_continue():
             return
 
         try:
@@ -1146,16 +1258,10 @@ class StreamManager:
         """Stop the stream manager and cancel all timers"""
         logger.info(f"Stopping stream manager for channel {self.channel_id}")
 
-        # Add at the beginning of your stop method
         self.stopping = True
+        self._invalidate_ownership_cache()
         if self.buffer is not None:
             self.buffer.stopping = True
-
-        # Release stream resources if we're the owner
-        if self.current_stream_id and hasattr(self, 'worker_id') and self.worker_id:
-            if hasattr(self.buffer, 'redis_client') and self.buffer.redis_client:
-                owner_key = RedisKeys.channel_owner(self.channel_id)
-                current_owner = self.buffer.redis_client.get(owner_key)
 
         # Cancel all buffer check timers
         for timer in list(self._buffer_check_timers):
@@ -1545,7 +1651,8 @@ class StreamManager:
             if hasattr(self, 'stderr_reader_thread') and self.stderr_reader_thread and self.stderr_reader_thread.is_alive():
                 try:
                     logger.debug(f"Waiting for stderr reader thread to terminate for channel {self.channel_id}")
-                    self.stderr_reader_thread.join(timeout=2.0)
+                    stderr_join_timeout = 0.25 if self.stopping else 2.0
+                    self.stderr_reader_thread.join(timeout=stderr_join_timeout)
                     if self.stderr_reader_thread.is_alive():
                         logger.warning(f"Stderr reader thread did not terminate within timeout for channel {self.channel_id}")
                 except Exception as e:
@@ -1638,7 +1745,7 @@ class StreamManager:
                 self.connected = False
                 return False
 
-            if not self._still_owner():
+            if not self._upstream_may_continue():
                 self.stop()
                 return False
 
@@ -1649,8 +1756,7 @@ class StreamManager:
             # Add directly to buffer without TS-specific processing
             success = self.buffer.add_chunk(chunk)
 
-            # Update last data timestamp in Redis if successful
-            if success and self._still_owner() and hasattr(self.buffer, 'redis_client') and self.buffer.redis_client:
+            if success and hasattr(self.buffer, 'redis_client') and self.buffer.redis_client:
                 last_data_key = RedisKeys.last_data(self.buffer.channel_id)
                 self.buffer.redis_client.set(last_data_key, str(time.time()), ex=60)
 
