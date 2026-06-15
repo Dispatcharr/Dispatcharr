@@ -603,7 +603,8 @@ class StreamGenerator:
                 if self.channel_id in proxy_server.client_managers:
                     client_count = proxy_server.client_managers[self.channel_id].get_total_client_count()
                     # Pool slots are global; the last client on any worker must release.
-                    if client_count <= 1:
+                    # During shutdown_delay, keep the slot until coordinated stop runs.
+                    if client_count <= 1 and ConfigHelper.channel_shutdown_delay() <= 0:
                         try:
                             try:
                                 obj = Channel.objects.get(uuid=self.channel_id)

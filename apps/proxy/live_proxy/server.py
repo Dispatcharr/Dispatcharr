@@ -905,6 +905,81 @@ class ProxyServer:
             logger.error(f"Error cleaning zombie channel {channel_id}: {e}", exc_info=True)
             return False
 
+    @staticmethod
+    def _shutdown_disconnect_ttl():
+        delay = ConfigHelper.channel_shutdown_delay()
+        return max(int(delay * 2), 60)
+
+    def _wait_for_shutdown_delay(self, channel_id):
+        """
+        Wait until shutdown_delay has elapsed since the Redis disconnect
+        timestamp. Returns False if clients reconnect or the timer is cancelled.
+        Uses Redis state so concurrent disconnect handlers and multi-worker
+        reconnects always honour the latest last-client disconnect time.
+        """
+        if not self.redis_client:
+            return True
+
+        shutdown_delay = ConfigHelper.channel_shutdown_delay()
+        if shutdown_delay <= 0:
+            return True
+
+        disconnect_key = RedisKeys.last_client_disconnect(channel_id)
+        client_set_key = RedisKeys.clients(channel_id)
+        poll_interval = 1.0
+
+        logger.info(
+            f"Waiting up to {shutdown_delay}s before stopping channel {channel_id}..."
+        )
+
+        while True:
+            total = self.redis_client.scard(client_set_key) or 0
+            if total > 0:
+                logger.info(
+                    f"New clients connected during shutdown delay for "
+                    f"{channel_id} - aborting shutdown"
+                )
+                self.redis_client.delete(disconnect_key)
+                return False
+
+            disconnect_value = self.redis_client.get(disconnect_key)
+            if not disconnect_value:
+                logger.info(
+                    f"Shutdown delay cancelled for {channel_id} - aborting shutdown"
+                )
+                return False
+
+            try:
+                if isinstance(disconnect_value, bytes):
+                    disconnect_value = disconnect_value.decode()
+                disconnect_time = float(disconnect_value)
+            except (ValueError, TypeError):
+                logger.warning(
+                    f"Invalid disconnect timestamp for {channel_id}, aborting wait"
+                )
+                return False
+
+            elapsed = time.time() - disconnect_time
+            if elapsed >= shutdown_delay:
+                total = self.redis_client.scard(client_set_key) or 0
+                if total > 0:
+                    logger.info(
+                        f"Clients connected at end of shutdown delay for "
+                        f"{channel_id} - aborting shutdown"
+                    )
+                    self.redis_client.delete(disconnect_key)
+                    return False
+                return True
+
+            elapsed_display = max(0.0, elapsed)
+            remaining = max(0.0, shutdown_delay - elapsed)
+            logger.debug(
+                f"Channel {channel_id[:8]} shutdown timer: "
+                f"{elapsed_display:.1f}s of {shutdown_delay}s elapsed "
+                f"({remaining:.1f}s remaining)"
+            )
+            gevent.sleep(min(poll_interval, remaining))
+
     def handle_client_disconnect(self, channel_id):
         """
         Handle client disconnect event - check if channel should shut down and
@@ -995,18 +1070,20 @@ class ProxyServer:
                 disconnect_key = RedisKeys.last_client_disconnect(channel_id)
 
                 if shutdown_delay > 0:
-                    self.redis_client.setex(disconnect_key, 60, str(time.time()))
-                    logger.info(f"Waiting {shutdown_delay}s before stopping channel...")
-                    gevent.sleep(shutdown_delay)
-
-                    total = self.redis_client.scard(client_set_key) or 0
-                    if total > 0:
-                        logger.info(f"New clients connected during shutdown delay - aborting shutdown")
-                        self.redis_client.delete(disconnect_key)
+                    if not self.redis_client.get(disconnect_key):
+                        self.redis_client.setex(
+                            disconnect_key,
+                            self._shutdown_disconnect_ttl(),
+                            str(time.time()),
+                        )
+                    if not self._wait_for_shutdown_delay(channel_id):
                         return
-
-                if shutdown_delay <= 0:
-                    self.redis_client.setex(disconnect_key, 60, str(time.time()))
+                else:
+                    self.redis_client.setex(
+                        disconnect_key,
+                        self._shutdown_disconnect_ttl(),
+                        str(time.time()),
+                    )
 
                 # Coordinated stop runs local teardown + Redis cleanup once.
                 # Do not call _stop_upstream_before_redis_cleanup here — it races
@@ -1794,7 +1871,11 @@ class ProxyServer:
                                 if not disconnect_time:
                                     # First time seeing zero clients, set timestamp
                                     if self.redis_client:
-                                        self.redis_client.setex(disconnect_key, 60, str(current_time))
+                                        self.redis_client.setex(
+                                            disconnect_key,
+                                            self._shutdown_disconnect_ttl(),
+                                            str(current_time),
+                                        )
                                     logger.warning(f"No clients detected for channel {channel_id}, starting shutdown timer")
                                 elif current_time - disconnect_time > ConfigHelper.channel_shutdown_delay():
                                     # We've had no clients for the shutdown delay period
@@ -1808,7 +1889,9 @@ class ProxyServer:
                             else:
                                 # There are clients or we're still connecting - clear any disconnect timestamp
                                 if self.redis_client:
-                                    self.redis_client.delete(f"live:channel:{channel_id}:last_client_disconnect_time")
+                                    self.redis_client.delete(
+                                        RedisKeys.last_client_disconnect(channel_id)
+                                    )
 
                         else:
                             # === NON-OWNER CHANNEL HANDLING ===

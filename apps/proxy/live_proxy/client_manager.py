@@ -256,6 +256,14 @@ class ClientManager:
 
                 # Store in Redis
                 if self.redis_client:
+                    from .services.channel_service import ChannelService
+
+                    if ChannelService.cancel_pending_shutdown(self.channel_id):
+                        logger.info(
+                            f"Cancelled pending shutdown for channel {self.channel_id} "
+                            f"(client {client_id} reconnected)"
+                        )
+
                     self.redis_client.hset(client_key, mapping=client_data)
                     self.redis_client.expire(client_key, self.client_ttl)
 
@@ -302,7 +310,10 @@ class ClientManager:
                 return len(self.clients)
 
         except Exception as e:
-            logger.error(f"Error adding client {client_id}: {e}")
+            logger.error(f"Error adding client {client_id}: {e}", exc_info=True)
+            with self.lock:
+                self.clients.discard(client_id)
+            self._registered_clients.discard(client_id)
             return False
 
     def remove_client(self, client_id):
@@ -337,7 +348,8 @@ class ClientManager:
         if remaining == 0:
             logger.warning(f"Last client removed: {client_id} - channel may shut down soon")
             disconnect_key = RedisKeys.last_client_disconnect(self.channel_id)
-            self.redis_client.setex(disconnect_key, 60, str(time.time()))
+            ttl = max(int(ConfigHelper.channel_shutdown_delay() * 2), 60)
+            self.redis_client.setex(disconnect_key, ttl, str(time.time()))
 
         self._notify_owner_of_activity()
 

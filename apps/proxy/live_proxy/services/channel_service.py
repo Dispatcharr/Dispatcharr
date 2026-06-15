@@ -93,10 +93,103 @@ class ChannelService:
 
     @staticmethod
     def is_channel_unavailable_for_new_clients(channel_id):
-        """Reject new stream requests while teardown is active or shutdown is pending."""
-        return (
-            ChannelService.is_channel_teardown_active(channel_id)
-            or ChannelService.is_shutdown_pending(channel_id)
+        """Reject new stream requests only while coordinated teardown is active."""
+        return ChannelService.is_channel_teardown_active(channel_id)
+
+    @staticmethod
+    def cancel_pending_shutdown(channel_id):
+        """
+        Abort the post-disconnect grace timer when a client reconnects.
+
+        Clears the disconnect timestamp and any leaked stopping markers. When
+        upstream is still active but the last client released its profile slot
+        during the grace window, re-reserve the slot from Redis metadata.
+
+        Does not run during coordinated stop_channel() — clearing teardown
+        markers mid-stop would leave clients attached to upstream that is
+        about to be torn down.
+        """
+        from django.db import close_old_connections
+
+        proxy_server = ProxyServer.get_instance()
+        if not proxy_server.redis_client:
+            return False
+
+        if channel_id in proxy_server._stopping_channels:
+            return False
+
+        disconnect_key = RedisKeys.last_client_disconnect(channel_id)
+        had_pending = bool(proxy_server.redis_client.exists(disconnect_key))
+        in_grace = had_pending or ChannelService.is_shutdown_pending(channel_id)
+
+        if not in_grace:
+            return False
+
+        try:
+            proxy_server.redis_client.delete(disconnect_key)
+
+            metadata_key = RedisKeys.channel_metadata(channel_id)
+            state = proxy_server.redis_client.hget(
+                metadata_key, ChannelMetadataField.STATE
+            )
+            if state:
+                state_str = state.decode() if isinstance(state, bytes) else state
+                if state_str == ChannelState.STOPPING:
+                    proxy_server.redis_client.hset(metadata_key, mapping={
+                        ChannelMetadataField.STATE: ChannelState.ACTIVE,
+                        ChannelMetadataField.STATE_CHANGED_AT: str(time.time()),
+                    })
+
+            stop_key = RedisKeys.channel_stopping(channel_id)
+            if proxy_server.redis_client.exists(stop_key):
+                proxy_server.redis_client.delete(stop_key)
+
+            if ChannelService._channel_proxy_is_active(
+                proxy_server.redis_client, channel_id
+            ):
+                from apps.channels.models import Channel
+
+                channel = Channel.objects.filter(uuid=channel_id).first()
+                if channel and not proxy_server.redis_client.get(
+                    f"channel_stream:{channel.id}"
+                ):
+                    sid, pid, error, slot_reserved = channel.get_stream()
+                    if error:
+                        logger.warning(
+                            f"Could not re-reserve stream for {channel_id} "
+                            f"after shutdown cancel: {error}"
+                        )
+                    elif slot_reserved and sid and pid:
+                        proxy_server.redis_client.hset(metadata_key, mapping={
+                            ChannelMetadataField.STREAM_ID: str(sid),
+                            ChannelMetadataField.M3U_PROFILE: str(pid),
+                        })
+                        logger.info(
+                            f"Re-reserved profile slot for {channel_id} "
+                            f"(stream={sid}, profile={pid})"
+                        )
+        finally:
+            close_old_connections()
+
+        return True
+
+    @staticmethod
+    def _channel_proxy_is_active(redis_client, channel_id):
+        """True when live proxy metadata shows this channel is still running."""
+        metadata_key = RedisKeys.channel_metadata(channel_id)
+        if not redis_client.exists(metadata_key):
+            return False
+        state = redis_client.hget(metadata_key, ChannelMetadataField.STATE)
+        if state is None:
+            return False
+        if isinstance(state, bytes):
+            state = state.decode()
+        return state in (
+            ChannelState.ACTIVE,
+            ChannelState.WAITING_FOR_CLIENTS,
+            ChannelState.BUFFERING,
+            ChannelState.INITIALIZING,
+            ChannelState.CONNECTING,
         )
 
     @staticmethod

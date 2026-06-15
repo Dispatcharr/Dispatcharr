@@ -41,6 +41,7 @@ def _configure_ownership_pipeline(
 def _mock_proxy_server(redis_client=None):
     server = MagicMock()
     server.redis_client = redis_client or MagicMock()
+    server._stopping_channels = set()
     return server
 
 
@@ -72,7 +73,47 @@ class ChannelTeardownAvailabilityTests(TestCase):
         mock_get_instance.return_value = _mock_proxy_server(redis)
 
         self.assertTrue(ChannelService.is_shutdown_pending(CHANNEL_ID))
-        self.assertTrue(ChannelService.is_channel_unavailable_for_new_clients(CHANNEL_ID))
+        self.assertFalse(ChannelService.is_channel_unavailable_for_new_clients(CHANNEL_ID))
+
+    @patch("apps.proxy.live_proxy.services.channel_service.ConfigHelper.channel_shutdown_delay")
+    @patch("apps.proxy.live_proxy.services.channel_service.ProxyServer.get_instance")
+    def test_cancel_pending_shutdown_clears_disconnect_key(self, mock_get_instance, mock_delay):
+        mock_delay.return_value = 30
+        redis = MagicMock()
+        redis.exists.side_effect = lambda key: "last_client_disconnect" in key
+        redis.get.return_value = None
+        redis.hget.return_value = ChannelState.ACTIVE.encode()
+        mock_get_instance.return_value = _mock_proxy_server(redis)
+
+        self.assertTrue(ChannelService.cancel_pending_shutdown(CHANNEL_ID))
+        redis.delete.assert_any_call(RedisKeys.last_client_disconnect(CHANNEL_ID))
+
+    @patch("apps.proxy.live_proxy.services.channel_service.ConfigHelper.channel_shutdown_delay")
+    @patch("apps.proxy.live_proxy.services.channel_service.ProxyServer.get_instance")
+    def test_cancel_pending_shutdown_skips_during_active_stop(self, mock_get_instance, mock_delay):
+        mock_delay.return_value = 30
+        redis = MagicMock()
+        redis.exists.return_value = True
+        server = _mock_proxy_server(redis)
+        server._stopping_channels = {CHANNEL_ID}
+        mock_get_instance.return_value = server
+
+        self.assertFalse(ChannelService.cancel_pending_shutdown(CHANNEL_ID))
+        redis.delete.assert_not_called()
+
+    @patch("apps.proxy.live_proxy.services.channel_service.ConfigHelper.channel_shutdown_delay")
+    @patch("apps.proxy.live_proxy.services.channel_service.ProxyServer.get_instance")
+    def test_cancel_pending_shutdown_skips_real_teardown_without_grace(self, mock_get_instance, mock_delay):
+        mock_delay.return_value = 30
+        redis = MagicMock()
+        redis.exists.side_effect = lambda key: "stopping" in key
+        redis.get.return_value = None
+        redis.hget.return_value = ChannelState.STOPPING.encode()
+        mock_get_instance.return_value = _mock_proxy_server(redis)
+
+        self.assertFalse(ChannelService.cancel_pending_shutdown(CHANNEL_ID))
+        redis.hset.assert_not_called()
+        redis.delete.assert_not_called()
 
     @patch("apps.proxy.live_proxy.services.channel_service.ConfigHelper.channel_shutdown_delay")
     @patch("apps.proxy.live_proxy.services.channel_service.ProxyServer.get_instance")
@@ -84,6 +125,28 @@ class ChannelTeardownAvailabilityTests(TestCase):
         mock_get_instance.return_value = _mock_proxy_server(redis)
 
         self.assertFalse(ChannelService.is_shutdown_pending(CHANNEL_ID))
+
+
+class ClientManagerAddClientTests(TestCase):
+    @patch("apps.proxy.live_proxy.services.channel_service.ChannelService.cancel_pending_shutdown", return_value=False)
+    @patch("apps.proxy.live_proxy.client_manager.send_websocket_update")
+    def test_add_client_stores_ip_and_user_agent_in_redis(self, _mock_ws, _mock_cancel):
+        from apps.proxy.live_proxy.client_manager import ClientManager
+
+        redis = MagicMock()
+        cm = ClientManager(CHANNEL_ID, redis_client=redis, worker_id="worker-1")
+        cm.proxy_server = MagicMock()
+
+        result = cm.add_client(
+            "client-1",
+            "10.0.2.163",
+            user_agent="VLC/3.0.21",
+        )
+
+        self.assertEqual(result, 1)
+        mapping = redis.hset.call_args[1]["mapping"]
+        self.assertEqual(mapping["ip_address"], "10.0.2.163")
+        self.assertEqual(mapping["user_agent"], "VLC/3.0.21")
 
 
 class LocalStreamActivityTests(TestCase):
@@ -507,6 +570,104 @@ class HandleClientDisconnectUpstreamFirstTests(TestCase):
 
         mock_stop_upstream.assert_not_called()
         mock_coordinated.assert_called_once_with(CHANNEL_ID)
+
+
+class ShutdownDelayWaitTests(TestCase):
+    def _make_server(self):
+        with patch("apps.proxy.live_proxy.server.RedisClient.get_client", return_value=MagicMock()):
+            with patch.object(ProxyServer, "_start_cleanup_thread"):
+                server = ProxyServer()
+        server.redis_client = MagicMock()
+        server.redis_client.scard.return_value = 0
+        return server
+
+    @patch("apps.proxy.live_proxy.server.gevent.sleep")
+    @patch("apps.proxy.live_proxy.server.time.time", return_value=1000.0)
+    @patch("apps.proxy.live_proxy.server.ConfigHelper.channel_shutdown_delay", return_value=30)
+    def test_aborts_when_disconnect_key_deleted(self, _mock_delay, _mock_time, mock_sleep):
+        server = self._make_server()
+        server.redis_client.get.side_effect = [b"1000.0", None]
+
+        result = server._wait_for_shutdown_delay(CHANNEL_ID)
+
+        self.assertFalse(result)
+        self.assertGreaterEqual(mock_sleep.call_count, 1)
+
+    @patch("apps.proxy.live_proxy.server.gevent.sleep")
+    @patch("apps.proxy.live_proxy.server.time.time", return_value=1000.0)
+    @patch("apps.proxy.live_proxy.server.ConfigHelper.channel_shutdown_delay", return_value=30)
+    def test_aborts_when_clients_reconnect(self, _mock_delay, _mock_time, _mock_sleep):
+        server = self._make_server()
+        server.redis_client.get.return_value = b"1000.0"
+        server.redis_client.scard.side_effect = [0, 1]
+
+        result = server._wait_for_shutdown_delay(CHANNEL_ID)
+
+        self.assertFalse(result)
+        server.redis_client.delete.assert_called_with(
+            RedisKeys.last_client_disconnect(CHANNEL_ID)
+        )
+
+    @patch("apps.proxy.live_proxy.server.gevent.sleep")
+    @patch("apps.proxy.live_proxy.server.time.time")
+    @patch("apps.proxy.live_proxy.server.ConfigHelper.channel_shutdown_delay", return_value=30)
+    def test_timer_resets_when_disconnect_timestamp_updated(
+        self, _mock_delay, mock_time, mock_sleep
+    ):
+        server = self._make_server()
+        disconnect_key = RedisKeys.last_client_disconnect(CHANNEL_ID)
+        current_time = [1000.0]
+        disconnect_timestamp = [1000.0]
+        poll_count = [0]
+
+        mock_time.side_effect = lambda: current_time[0]
+
+        def get_side_effect(key):
+            poll_count[0] += 1
+            if poll_count[0] >= 3:
+                disconnect_timestamp[0] = 1020.0
+            if key == disconnect_key:
+                return str(disconnect_timestamp[0]).encode()
+            return None
+
+        server.redis_client.get.side_effect = get_side_effect
+
+        def advance_sleep(duration):
+            current_time[0] += duration
+
+        mock_sleep.side_effect = advance_sleep
+
+        result = server._wait_for_shutdown_delay(CHANNEL_ID)
+
+        self.assertTrue(result)
+        self.assertGreaterEqual(current_time[0], 1050.0)
+
+    @patch.object(ProxyServer, "_coordinated_stop_channel")
+    @patch.object(ProxyServer, "_wait_for_shutdown_delay", return_value=True)
+    @patch("apps.proxy.live_proxy.server.ConfigHelper.channel_shutdown_delay", return_value=30)
+    def test_handle_client_disconnect_uses_polling_wait(
+        self, _mock_delay, mock_wait, mock_coordinated
+    ):
+        server = HandleClientDisconnectUpstreamFirstTests()._make_server()
+        server.redis_client.get.return_value = b"1700000000.0"
+
+        server.handle_client_disconnect(CHANNEL_ID)
+
+        mock_wait.assert_called_once_with(CHANNEL_ID)
+        mock_coordinated.assert_called_once_with(CHANNEL_ID)
+
+    @patch.object(ProxyServer, "_coordinated_stop_channel")
+    @patch.object(ProxyServer, "_wait_for_shutdown_delay", return_value=False)
+    @patch("apps.proxy.live_proxy.server.ConfigHelper.channel_shutdown_delay", return_value=30)
+    def test_handle_client_disconnect_skips_stop_when_wait_aborted(
+        self, _mock_delay, _mock_wait, mock_coordinated
+    ):
+        server = HandleClientDisconnectUpstreamFirstTests()._make_server()
+        server.redis_client.get.return_value = b"1700000000.0"
+
+        server.handle_client_disconnect(CHANNEL_ID)
+
+        mock_coordinated.assert_not_called()
 
 
 class InitWaitAbortTests(TestCase):
