@@ -650,48 +650,48 @@ class StreamManager:
                 logger.debug(f"Closing existing HTTP connections before establishing transcode connection for channel {self.channel_id}")
                 self._close_connection()
 
-            close_old_connections()
-            channel = get_stream_object(self.channel_id)
+            try:
+                channel = get_stream_object(self.channel_id)
 
-            # Use FFmpeg specifically for HLS streams
-            if hasattr(self, 'force_ffmpeg') and self.force_ffmpeg:
-                from core.models import StreamProfile
-                try:
-                    stream_profile = StreamProfile.objects.get(name='ffmpeg', locked=True)
-                    logger.info("Using FFmpeg stream profile for unsupported proxy content (HLS/RTSP/UDP)")
-                except StreamProfile.DoesNotExist:
-                    # Fall back to channel's profile if FFmpeg not found
+                # Use FFmpeg specifically for HLS streams
+                if hasattr(self, 'force_ffmpeg') and self.force_ffmpeg:
+                    from core.models import StreamProfile
+                    try:
+                        stream_profile = StreamProfile.objects.get(name='ffmpeg', locked=True)
+                        logger.info("Using FFmpeg stream profile for unsupported proxy content (HLS/RTSP/UDP)")
+                    except StreamProfile.DoesNotExist:
+                        # Fall back to channel's profile if FFmpeg not found
+                        stream_profile = channel.get_stream_profile()
+                        logger.warning(f"FFmpeg profile not found, using channel default profile for channel: {self.channel_id}")
+                else:
                     stream_profile = channel.get_stream_profile()
-                    logger.warning(f"FFmpeg profile not found, using channel default profile for channel: {self.channel_id}")
-            else:
-                stream_profile = channel.get_stream_profile()
 
-            # Build and start transcode command
-            self.transcode_cmd = stream_profile.build_command(self.url, self.user_agent)
+                # Build and start transcode command
+                self.transcode_cmd = stream_profile.build_command(self.url, self.user_agent)
 
-            # Store stream command for efficient log parser routing
-            self.stream_command = stream_profile.command
-            # Map actual commands to parser types for direct routing
-            command_to_parser = {
-                'ffmpeg': 'ffmpeg',
-                'cvlc': 'vlc',
-                'vlc': 'vlc',
-                'streamlink': 'streamlink'
-            }
-            self.parser_type = command_to_parser.get(self.stream_command.lower())
-            if self.parser_type:
-                logger.debug(f"Using {self.parser_type} parser for log parsing (command: {self.stream_command})")
-            else:
-                logger.debug(f"Unknown stream command '{self.stream_command}', will use auto-detection for log parsing")
+                # Store stream command for efficient log parser routing
+                self.stream_command = stream_profile.command
+                # Map actual commands to parser types for direct routing
+                command_to_parser = {
+                    'ffmpeg': 'ffmpeg',
+                    'cvlc': 'vlc',
+                    'vlc': 'vlc',
+                    'streamlink': 'streamlink'
+                }
+                self.parser_type = command_to_parser.get(self.stream_command.lower())
+                if self.parser_type:
+                    logger.debug(f"Using {self.parser_type} parser for log parsing (command: {self.stream_command})")
+                else:
+                    logger.debug(f"Unknown stream command '{self.stream_command}', will use auto-detection for log parsing")
 
-            # For UDP streams, remove any user_agent parameters from the command
-            if hasattr(self, 'stream_type') and self.stream_type == StreamType.UDP:
-                # Filter out any arguments that contain the user_agent value or related headers
-                self.transcode_cmd = [arg for arg in self.transcode_cmd if self.user_agent not in arg and 'user-agent' not in arg.lower() and 'user_agent' not in arg.lower()]
-                logger.debug(f"Removed user_agent parameters from UDP stream command for channel: {self.channel_id}")
-
-            # Profile lookup is done; release the pool slot before a long-lived ffmpeg process.
-            close_old_connections()
+                # For UDP streams, remove any user_agent parameters from the command
+                if hasattr(self, 'stream_type') and self.stream_type == StreamType.UDP:
+                    # Filter out any arguments that contain the user_agent value or related headers
+                    self.transcode_cmd = [arg for arg in self.transcode_cmd if self.user_agent not in arg and 'user-agent' not in arg.lower() and 'user_agent' not in arg.lower()]
+                    logger.debug(f"Removed user_agent parameters from UDP stream command for channel: {self.channel_id}")
+            finally:
+                # Release the pool slot before posix_spawn or before returning on profile errors.
+                close_old_connections()
 
             logger.debug(f"Starting transcode process: {self.transcode_cmd} for channel: {self.channel_id}")
 

@@ -760,7 +760,6 @@ class ProxyServer:
                 )
             except Exception as e:
                 logger.error(f"Could not log channel start event: {e}")
-            finally:
                 close_old_connections()
 
             # Create client manager with channel_id, redis_client AND worker_id (only if not already exists)
@@ -1367,11 +1366,7 @@ class ProxyServer:
             return
 
         def _log_stop():
-            try:
-                close_old_connections()
-                log_system_event('channel_stop', **stop_event_data)
-            except Exception as e:
-                logger.error(f"Could not log channel stop event: {e}")
+            log_system_event('channel_stop', **stop_event_data)
 
         gevent.spawn(_log_stop)
 

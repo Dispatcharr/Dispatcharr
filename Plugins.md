@@ -317,7 +317,7 @@ Still follow these rules:
 
 - **Heavy or long work:** dispatch a Celery task (`.delay()`) and return quickly from `run()`. Celery workers close connections after each task; blocking the uWSGI gevent hub with `time.sleep`, sync HTTP, or large CPU work can freeze the whole worker regardless of DB cleanup.
 - **Background threads or greenlets you spawn:** each thread/greenlet that uses the ORM must call `close_old_connections()` (or `connection.close()`) in its own `finally` block when done. The wrapper only covers the thread/greenlet that called `run_action()`.
-- **Connect event hooks:** actions with an `"events"` list run synchronously inside whatever caller triggered the event (for example a live-proxy system event). Keep event handlers short or defer to Celery.
+- **Connect event hooks:** actions with an `"events"` list are dispatched from `log_system_event()` on a separate gevent when uWSGI has an active hub (otherwise synchronously, e.g. Celery). Keep handlers short or defer heavy work to Celery.
 
 ### Important: Don’t Ask Users for URL/User/Password
 Dispatcharr plugins run **inside** the Dispatcharr backend process. That means they already have direct access to the app’s models, tasks, and internal utilities.  
