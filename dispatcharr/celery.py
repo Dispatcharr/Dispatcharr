@@ -94,6 +94,7 @@ def cleanup_task_memory(**kwargs):
         'apps.epg.tasks.refresh_all_epg_data',
         'apps.epg.tasks.parse_programs_for_source',
         'apps.epg.tasks.parse_programs_for_tvg_id',
+        'apps.epg.tasks.build_programme_index_task',
         'apps.channels.tasks.match_epg_channels',
         'apps.channels.tasks.match_selected_channels_epg',
         'apps.channels.tasks.match_single_channel_epg',
