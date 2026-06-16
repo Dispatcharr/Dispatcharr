@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.27.0] - 2026-06-16
+
 ### Added
 
 - **Manual Server Groups for shared M3U connection limits.** The existing `ServerGroup` model and account FK are now wired into live and VOD playback. Accounts assigned to the same group share a credential-scoped Redis counter when their provider logins match (hashed fingerprint); unrelated logins in the same group keep separate counters. Enforcement uses each profile's `max_streams` - not a group-wide cap - and profiles with `max_streams=0` skip credential pooling for that profile while still rotating on their own per-profile counter. New `apps/m3u/connection_pool.py` centralizes reserve/release, profile rotation, and credential moves on profile switch. (Closes #1137) — Thanks [@Goldenfreddy0703](https://github.com/Goldenfreddy0703)
