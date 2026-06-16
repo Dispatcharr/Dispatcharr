@@ -33,6 +33,24 @@ class ProcessM3UBatchCleanupTests(SimpleTestCase):
             process_m3u_batch_direct(1, [], {}, ["name", "url"])
             mock_connections.close_all.assert_called()
 
+    @patch("apps.m3u.tasks.Stream")
+    @patch("apps.m3u.tasks.M3UAccount")
+    def test_batch_calls_gc_collect(self, mock_account_cls, mock_stream_cls):
+        """gc.collect() must run after each batch so XC refresh threads release promptly."""
+        from apps.m3u.tasks import process_m3u_batch_direct
+
+        mock_account = MagicMock()
+        mock_account.filters.order_by.return_value = []
+        mock_account_cls.objects.get.return_value = mock_account
+        mock_stream_cls.objects.filter.return_value.select_related.return_value.only.return_value = (
+            []
+        )
+        mock_stream_cls.generate_hash_key = MagicMock(return_value="hash123")
+
+        with patch("gc.collect") as mock_gc, patch("django.db.connections"):
+            process_m3u_batch_direct(1, [], {}, ["name", "url"])
+            mock_gc.assert_called()
+
 
 class LockReleaseTests(SimpleTestCase):
     """Verify task lock is released on all exit paths."""

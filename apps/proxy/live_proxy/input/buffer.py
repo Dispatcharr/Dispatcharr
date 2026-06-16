@@ -64,7 +64,7 @@ class StreamBuffer:
 
     def add_chunk(self, chunk):
         """Add data with optimized Redis storage and TS packet alignment"""
-        if not chunk:
+        if not chunk or self.stopping:
             return False
 
         try:
@@ -309,38 +309,16 @@ class StreamBuffer:
         self.fill_timers.clear()
 
         try:
-            # Flush any remaining data in the write buffer
-            if hasattr(self, '_write_buffer') and len(self._write_buffer) > 0:
-                # Ensure remaining data is aligned to TS packets
-                complete_size = (len(self._write_buffer) // 188) * 188
-
-                if complete_size > 0:
-                    final_chunk = self._write_buffer[:complete_size]
-
-                    # Write final chunk to Redis
-                    with self.lock:
-                        if self.redis_client:
-                            try:
-                                chunk_index = self.redis_client.incr(self.buffer_index_key)
-                                chunk_key = f"{self.buffer_prefix}{chunk_index}"
-                                self.redis_client.setex(chunk_key, self.chunk_ttl, bytes(final_chunk))
-                                self.index = chunk_index
-                                logger.info(f"Flushed final chunk of {len(final_chunk)} bytes to Redis")
-                            except Exception as e:
-                                logger.error(f"Error flushing final chunk: {e}")
-
-                # Clear buffers
-                self._write_buffer = bytearray()
-                if hasattr(self, '_partial_packet'):
-                    self._partial_packet = bytearray()
-
-            # Clean up the chunk timestamps sorted set
-            if self.redis_client and self.chunk_timestamps_key:
-                try:
-                    self.redis_client.delete(self.chunk_timestamps_key)
-                except Exception as e:
-                    logger.error(f"Error deleting chunk timestamps key: {e}")
-
+            with self.lock:
+                if hasattr(self, '_write_buffer') and len(self._write_buffer) > 0:
+                    discarded = len(self._write_buffer)
+                    self._write_buffer = bytearray()
+                    if hasattr(self, '_partial_packet'):
+                        self._partial_packet = bytearray()
+                    logger.debug(
+                        f"Discarded {discarded} bytes from local write buffer "
+                        f"for channel {self.channel_id}"
+                    )
         except Exception as e:
             logger.error(f"Error during buffer stop: {e}")
 

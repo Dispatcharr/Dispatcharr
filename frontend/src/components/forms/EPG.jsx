@@ -29,7 +29,7 @@ import { showNotification } from '../../utils/notificationUtils.js';
 import API from '../../api.js';
 import useEPGsStore from '../../store/epgs';
 
-// Countries are fetched dynamically from the SD API on component mount.
+// Countries are fetched with lineups from the backend on component mount.
 // Fallback list used if the API call fails.
 const SD_COUNTRIES_FALLBACK = [
   { value: 'USA', label: 'United States' },
@@ -47,6 +47,16 @@ const SD_COUNTRIES_FALLBACK = [
   { value: 'NLD', label: 'Netherlands' },
   { value: 'NZL', label: 'New Zealand' },
 ];
+
+const mapSDCountries = (data) => {
+  if (!data) return null;
+  const all = Object.values(data).flat();
+  const mapped = all
+    .filter((c) => c.shortName && c.fullName)
+    .map((c) => ({ value: c.shortName, label: c.fullName }))
+    .sort((a, b) => a.label.localeCompare(b.label));
+  return mapped.length > 0 ? mapped : null;
+};
 
 // ESPN HD logo previews — packaged as static URLs so no API call is needed.
 // These are publicly accessible S3 URLs that don't require authentication.
@@ -309,6 +319,8 @@ const SDLineupManager = ({ sourceId }) => {
       if (data) {
         setActiveLineups(data.lineups || []);
         setLineupNotice(data.notice || null);
+        const mappedCountries = mapSDCountries(data.countries);
+        if (mappedCountries) setCountries(mappedCountries);
         // Always update changesRemaining from server — includes null (unknown) and 0 (locked)
         if (data.changes_remaining !== undefined) {
           setChangesRemaining(data.changes_remaining);
@@ -325,18 +337,6 @@ const SDLineupManager = ({ sourceId }) => {
   useEffect(() => {
     if (sourceId) {
       fetchActiveLineups();
-      // Fetch country list from SD API per their recommendation to not hardcode
-      fetch('https://json.schedulesdirect.org/20141201/available/countries')
-        .then((r) => r.json())
-        .then((data) => {
-          const all = Object.values(data).flat();
-          const mapped = all
-            .filter((c) => c.shortName && c.fullName)
-            .map((c) => ({ value: c.shortName, label: c.fullName }))
-            .sort((a, b) => a.label.localeCompare(b.label));
-          if (mapped.length > 0) setCountries(mapped);
-        })
-        .catch(() => {}); // fallback list remains if fetch fails
     }
   }, [sourceId, fetchActiveLineups]);
 

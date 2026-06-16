@@ -102,6 +102,7 @@ class ClientManager:
                         break
 
                     # Send heartbeat for all local clients
+                    clients_to_remove = set()
                     with self.lock:
                         # Skip this cycle if we have no local clients
                         if not self.clients:
@@ -109,7 +110,6 @@ class ClientManager:
 
                         # IMPROVED GHOST DETECTION: Check for stale clients before sending heartbeats
                         current_time = time.time()
-                        clients_to_remove = set()
 
                         # First identify clients that should be removed
                         for client_id in self.clients:
@@ -132,12 +132,11 @@ class ClientManager:
                                     logger.debug(f"Client {client_id} inactive for {current_time - last_active_time:.1f}s, removing as ghost")
                                     clients_to_remove.add(client_id)
 
-                        # Remove ghost clients in a separate step
-                        for client_id in clients_to_remove:
-                            self.remove_client(client_id)
-
                         if clients_to_remove:
-                            logger.info(f"Removed {len(clients_to_remove)} ghost clients from channel {self.channel_id}")
+                            logger.info(
+                                f"Identified {len(clients_to_remove)} ghost clients "
+                                f"for channel {self.channel_id}"
+                            )
 
                         # Now send heartbeats only for remaining clients
                         pipe = self.redis_client.pipeline()
@@ -171,6 +170,9 @@ class ClientManager:
                         # Only notify if we have real clients
                         if self.clients and not all(c in clients_to_remove for c in self.clients):
                             self._notify_owner_of_activity()
+
+                    for client_id in clients_to_remove:
+                        self.remove_client(client_id)
 
                 except Exception as e:
                     logger.error(f"Error in client heartbeat thread: {e}")
@@ -254,6 +256,14 @@ class ClientManager:
 
                 # Store in Redis
                 if self.redis_client:
+                    from .services.channel_service import ChannelService
+
+                    if ChannelService.cancel_pending_shutdown(self.channel_id):
+                        logger.info(
+                            f"Cancelled pending shutdown for channel {self.channel_id} "
+                            f"(client {client_id} reconnected)"
+                        )
+
                     self.redis_client.hset(client_key, mapping=client_data)
                     self.redis_client.expire(client_key, self.client_ttl)
 
@@ -300,11 +310,17 @@ class ClientManager:
                 return len(self.clients)
 
         except Exception as e:
-            logger.error(f"Error adding client {client_id}: {e}")
+            logger.error(f"Error adding client {client_id}: {e}", exc_info=True)
+            with self.lock:
+                self.clients.discard(client_id)
+            self._registered_clients.discard(client_id)
             return False
 
     def remove_client(self, client_id):
         """Remove a client from this channel and Redis"""
+        client_username = "unknown"
+        remaining = None
+
         with self.lock:
             if client_id in self.clients:
                 self.clients.remove(client_id)
@@ -315,61 +331,81 @@ class ClientManager:
             self.last_active_time = time.time()
 
             if self.redis_client:
-                # Get client data before removing the data
                 client_key = f"live:channel:{self.channel_id}:clients:{client_id}"
                 client_username = self.redis_client.hget(client_key, "username") or "unknown"
                 if isinstance(client_username, bytes):
                     client_username = client_username.decode("utf-8")
 
-                # Remove from channel's client set
                 self.redis_client.srem(self.client_set_key, client_id)
-
-                client_key = f"live:channel:{self.channel_id}:clients:{client_id}"
                 self.redis_client.delete(client_key)
-
-                # Check if this was the last client
                 remaining = self.redis_client.scard(self.client_set_key) or 0
-                if remaining == 0:
-                    logger.warning(f"Last client removed: {client_id} - channel may shut down soon")
 
-                    # Trigger disconnect time tracking even if we're not the owner
-                    disconnect_key = RedisKeys.last_client_disconnect(self.channel_id)
-                    self.redis_client.setex(disconnect_key, 60, str(time.time()))
+            local_count = len(self.clients)
 
-                self._notify_owner_of_activity()
+        if not self.redis_client:
+            return local_count
 
-                # Check if we're the owner - if so, handle locally; if not, publish event
-                am_i_owner = self.proxy_server and self.proxy_server.am_i_owner(self.channel_id)
+        if remaining == 0:
+            logger.warning(f"Last client removed: {client_id} - channel may shut down soon")
+            disconnect_key = RedisKeys.last_client_disconnect(self.channel_id)
+            ttl = max(int(ConfigHelper.channel_shutdown_delay() * 2), 60)
+            self.redis_client.setex(disconnect_key, ttl, str(time.time()))
 
-                if am_i_owner:
-                    # We're the owner - handle the disconnect directly
-                    logger.debug(f"Owner handling CLIENT_DISCONNECTED for client {client_id} locally (not publishing)")
-                    if (remaining == 0
-                            or self.proxy_server.output_managers.get(self.channel_id)
-                            or self.proxy_server.profile_managers.get(self.channel_id)):
-                        import gevent
-                        gevent.spawn(self.proxy_server.handle_client_disconnect, self.channel_id)
-                else:
-                    # We're not the owner - publish event so owner can handle it
-                    logger.debug(f"Non-owner publishing CLIENT_DISCONNECTED event for client {client_id} on channel {self.channel_id} from worker {self.worker_id}")
-                    event_data = json.dumps({
-                        "event": EventType.CLIENT_DISCONNECTED,
-                        "channel_id": self.channel_id,
-                        "client_id": client_id,
-                        "worker_id": self.worker_id or "unknown",
-                        "timestamp": time.time(),
-                        "remaining_clients": remaining,
-                        "username": client_username
-                    })
-                    self.redis_client.publish(RedisKeys.events_channel(self.channel_id), event_data)
+        self._notify_owner_of_activity()
 
-                # Trigger channel stats update via WebSocket
-                self._trigger_stats_update()
+        am_i_owner = self.proxy_server and self.proxy_server.am_i_owner(self.channel_id)
 
-            total_clients = self.get_total_client_count()
-            logger.info(f"Client disconnected: {client_id} (local: {len(self.clients)}, total: {total_clients})")
+        # Owner lock TTL can expire while local ffmpeg is still running on this worker.
+        if (not am_i_owner and self.proxy_server
+                and self.proxy_server._has_local_upstream_activity(self.channel_id)):
+            if self.proxy_server.extend_ownership(self.channel_id):
+                am_i_owner = True
 
-        return len(self.clients)
+        schedule_disconnect = False
+        if am_i_owner:
+            logger.debug(
+                f"Owner handling CLIENT_DISCONNECTED for client {client_id} locally (not publishing)"
+            )
+            if (remaining == 0
+                    or self.proxy_server.output_managers.get(self.channel_id)
+                    or self.proxy_server.profile_managers.get(self.channel_id)):
+                schedule_disconnect = True
+        elif (remaining == 0 and self.proxy_server
+              and self.proxy_server._has_local_upstream_activity(self.channel_id)):
+            logger.warning(
+                f"Last client removed while local upstream still active for "
+                f"{self.channel_id} without owner lock - stopping channel"
+            )
+            schedule_disconnect = True
+        else:
+            logger.debug(
+                f"Non-owner publishing CLIENT_DISCONNECTED event for client {client_id} "
+                f"on channel {self.channel_id} from worker {self.worker_id}"
+            )
+            event_data = json.dumps({
+                "event": EventType.CLIENT_DISCONNECTED,
+                "channel_id": self.channel_id,
+                "client_id": client_id,
+                "worker_id": self.worker_id or "unknown",
+                "timestamp": time.time(),
+                "remaining_clients": remaining,
+                "username": client_username
+            })
+            self.redis_client.publish(RedisKeys.events_channel(self.channel_id), event_data)
+
+        if schedule_disconnect and self.proxy_server:
+            self.proxy_server._spawn_on_hub(
+                self.proxy_server.handle_client_disconnect, self.channel_id
+            )
+
+        self._trigger_stats_update()
+
+        total_clients = self.get_total_client_count()
+        logger.info(
+            f"Client disconnected: {client_id} (local: {local_count}, total: {total_clients})"
+        )
+
+        return local_count
 
     def get_client_count(self):
         """Get local client count"""
@@ -442,3 +478,19 @@ class ClientManager:
             )
 
         return stale_ids
+
+    @staticmethod
+    def clear_all_clients(redis_client, channel_id):
+        """Remove every client entry from Redis for a channel."""
+        client_set_key = RedisKeys.clients(channel_id)
+        client_ids = redis_client.smembers(client_set_key)
+        if not client_ids:
+            return 0
+
+        pipe = redis_client.pipeline(transaction=False)
+        for cid in client_ids:
+            cid_str = cid.decode() if isinstance(cid, bytes) else cid
+            pipe.delete(RedisKeys.client_metadata(channel_id, cid_str))
+        pipe.delete(client_set_key)
+        pipe.execute()
+        return len(client_ids)

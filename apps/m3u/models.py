@@ -194,7 +194,13 @@ class M3UFilter(models.Model):
 
 
 class ServerGroup(models.Model):
-    """Represents a logical grouping of servers or channels."""
+    """
+    Groups M3U accounts that share provider credentials.
+
+    Accounts assigned to the same server group share credential-scoped connection
+    counters when their logins match. Limits come from each account profile's
+    max_streams, not from the group itself.
+    """
 
     name = models.CharField(
         max_length=100, unique=True, help_text="Unique name for this server group."

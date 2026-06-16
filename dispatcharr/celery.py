@@ -94,8 +94,13 @@ def cleanup_task_memory(**kwargs):
         'apps.epg.tasks.refresh_all_epg_data',
         'apps.epg.tasks.parse_programs_for_source',
         'apps.epg.tasks.parse_programs_for_tvg_id',
+        'apps.epg.tasks.build_programme_index_task',
         'apps.channels.tasks.match_epg_channels',
-        'core.tasks.rehash_streams'
+        'apps.channels.tasks.match_selected_channels_epg',
+        'apps.channels.tasks.match_single_channel_epg',
+        'core.tasks.rehash_streams',
+        'apps.vod.tasks.refresh_vod_content',
+        'apps.vod.tasks.batch_refresh_series_episodes',
     ]
 
     # Check if this is a memory-intensive task
