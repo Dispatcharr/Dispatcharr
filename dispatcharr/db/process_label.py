@@ -6,6 +6,15 @@ import os
 import sys
 
 
+def _is_uwsgi_worker() -> bool:
+    """True when running inside a uWSGI worker (not master or a non-uWSGI process)."""
+    try:
+        import uwsgi
+    except ImportError:
+        return False
+    return uwsgi.worker_id() > 0
+
+
 def get_process_role(argv: list[str] | None = None) -> str:
     argv = argv if argv is not None else sys.argv
     argv0 = os.path.basename(argv[0]) if argv else ""
@@ -25,7 +34,7 @@ def get_process_role(argv: list[str] | None = None) -> str:
         return "daphne"
     if argv0 == "manage.py" and len(argv) > 1:
         return f"manage-{argv[1]}"
-    if os.environ.get("GEVENT_SUPPORT"):
+    if _is_uwsgi_worker() or argv0 == "uwsgi":
         return "uwsgi"
     return "django"
 

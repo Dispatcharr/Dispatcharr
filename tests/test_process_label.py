@@ -12,7 +12,18 @@ class ProcessLabelTests(SimpleTestCase):
         )
         self.assertEqual(role, "celery-worker")
 
-    def test_uwsgi_labeled_when_gevent_support(self):
-        with patch.dict("os.environ", {"GEVENT_SUPPORT": "True"}):
-            role = get_process_role(["uwsgi"])
+    def test_uwsgi_labeled_from_argv(self):
+        role = get_process_role(["/dispatcharrpy/bin/uwsgi", "--ini", "/app/docker/uwsgi.ini"])
         self.assertEqual(role, "uwsgi")
+
+    def test_uwsgi_labeled_when_worker_module_present(self):
+        fake_uwsgi = type("uwsgi", (), {"worker_id": lambda: 2})()
+        with patch.dict("sys.modules", {"uwsgi": fake_uwsgi}):
+            role = get_process_role(["/dispatcharrpy/bin/python", "-c", "pass"])
+        self.assertEqual(role, "uwsgi")
+
+    def test_uwsgi_master_not_labeled_as_uwsgi(self):
+        fake_uwsgi = type("uwsgi", (), {"worker_id": lambda: 0})()
+        with patch.dict("sys.modules", {"uwsgi": fake_uwsgi}):
+            role = get_process_role(["/dispatcharrpy/bin/python", "-c", "pass"])
+        self.assertEqual(role, "django")
