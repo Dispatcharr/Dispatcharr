@@ -120,12 +120,14 @@ If the name contains any of these, the repo will be rejected on add and skipped 
 
 ### Top-Level Metadata
 
-| Field           | Required | Description                                                                                                                                                                   |
-| --------------- | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `registry_name` | **Yes**  | Display name for the repo. Must not contain words like "official" or "dispatcharr" that could be mistaken for an official repo (see [Name Restrictions](#name-restrictions)). |
-| `registry_url`  | No       | URL to the repo's home page (e.g. GitHub). Used as a fallback for generating icon URLs.                                                                                       |
-| `root_url`      | No       | Base URL for resolving relative URLs in plugin entries. Trailing slashes are stripped.                                                                                        |
-| `plugins`       | **Yes**  | Array of plugin entry objects.                                                                                                                                                |
+| Field                | Required | Description                                                                                                                                                                                                          |
+| -------------------- | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `registry_name`      | **Yes**  | Display name for the repo. Must not contain words like "official" or "dispatcharr" that could be mistaken for an official repo (see [Name Restrictions](#name-restrictions)).                                        |
+| `registry_url`       | No       | URL to the repo's home page (e.g. GitHub). Used as a fallback for generating icon URLs.                                                                                                                              |
+| `root_url`           | No       | Generic base URL for resolving all relative URLs in plugin entries. Trailing slashes are stripped. Used as the fallback when neither `download_base_url` nor `metadata_base_url` is set.                             |
+| `download_base_url`  | No       | Base URL for resolving relative download URLs (`latest_url` in plugin entries; `url` and `latest_url` inside per-plugin manifest `versions`/`latest`). Overrides `root_url` for download assets when set.           |
+| `metadata_base_url`  | No       | Base URL for resolving relative metadata URLs (`manifest_url` and `icon_url` in plugin entries). Overrides `root_url` for metadata assets when set.                                                                 |
+| `plugins`            | **Yes**  | Array of plugin entry objects.                                                                                                                                                                                       |
 
 ### Plugin Entry Fields
 
@@ -155,13 +157,18 @@ Extra fields in a plugin entry are passed through to the frontend as-is, so you 
 
 ### URL Resolution
 
-If `root_url` is set and a URL field (`manifest_url`, `latest_url`, `icon_url`) does not start with `http://` or `https://`, it is treated as relative and resolved as:
+Relative URL fields are resolved against a base URL. Dispatcharr uses two separate base URLs (one for metadata assets and one for download assets) so you can serve them from different origins (e.g., manifests and icons on GitHub Pages, release zips on a CDN).
 
-```
-{root_url}/{field_value}
-```
+**Resolution priority:**
 
-This lets you keep plugin entries compact:
+| Field(s) | Priority |
+| --------- | -------- |
+| `manifest_url`, `icon_url` | `metadata_base_url` → `root_url` |
+| `latest_url` (plugin entries); `url`, `latest_url` (per-plugin manifest versions/latest) | `download_base_url` → `root_url` |
+
+A field value is treated as relative if it does not start with `http://` or `https://`. Relative values are resolved as `{base_url}/{field_value}`. All base URL fields are optional; if none are set, URL fields must be absolute.
+
+**Single base URL (simplest):** use `root_url` for everything:
 
 ```json
 {
@@ -177,11 +184,44 @@ This lets you keep plugin entries compact:
 }
 ```
 
-**Icon fallback:** If `icon_url` is missing and `registry_url` is set, Dispatcharr generates a fallback URL by converting the GitHub URL to a raw content URL:
+**Split base URLs:** use `metadata_base_url` and `download_base_url` when assets are served from different origins:
 
+```json
+{
+  "metadata_base_url": "https://raw.githubusercontent.com/myorg/my-plugins/main",
+  "download_base_url": "https://cdn.example.com/releases",
+  "plugins": [
+    {
+      "slug": "my_plugin",
+      "manifest_url": "plugins/my_plugin/manifest.json",
+      "icon_url": "plugins/my_plugin/logo.png",
+      "latest_url": "my_plugin/my_plugin-1.0.0.zip"
+    }
+  ]
+}
 ```
-{registry_url => raw.githubusercontent.com}/refs/heads/main/plugins/{slug}/logo.png
+
+You can also combine `root_url` with one specific field. The specific field overrides for its consumers, and `root_url` covers the rest:
+
+```json
+{
+  "root_url": "https://raw.githubusercontent.com/myorg/my-plugins/main",
+  "download_base_url": "https://cdn.example.com/releases"
+}
 ```
+
+**Icon fallback:** If `icon_url` is missing, Dispatcharr tries two fallbacks in order:
+
+1. **Manifest-directory fallback**: if a base URL is set (`root_url`, `metadata_base_url`, etc.) and `manifest_url` is present, the logo is assumed to live in the same directory as the per-plugin manifest:
+   ```
+   {directory of resolved manifest_url}/logo.png
+   ```
+   For example, if `manifest_url` resolves to `https://example.com/plugins/my_plugin/manifest.json`, the fallback icon URL is `https://example.com/plugins/my_plugin/logo.png`.
+
+2. **GitHub fallback**: if `registry_url` is a GitHub URL, Dispatcharr converts it to a raw content URL:
+   ```
+   {registry_url => raw.githubusercontent.com}/refs/heads/main/plugins/{slug}/logo.png
+   ```
 
 ---
 
@@ -563,7 +603,9 @@ You can host release zips as GitHub Release assets and reference them with absol
   "manifest": {
     "registry_name": "string (required)",
     "registry_url": "string (optional)",
-    "root_url": "string (optional)",
+    "root_url": "string (optional, generic base URL fallback)",
+    "download_base_url": "string (optional, overrides root_url for zip download URLs)",
+    "metadata_base_url": "string (optional, overrides root_url for manifest_url and icon_url)",
     "plugins": [
       {
         "slug": "string (required)",

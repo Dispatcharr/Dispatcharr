@@ -335,16 +335,28 @@ def _save_fetched_manifest_to_repo(repo, data, verified):
     return None
 
 
+def _resolve_manifest_base_urls(manifest: dict) -> tuple[str, str]:
+    """Return (download_base_url, metadata_base_url) from a manifest dict.
+
+    Both fields fall back to root_url when not set. All base URL fields are
+    optional; callers must guard against empty strings before building URLs.
+    """
+    root_url = manifest.get("root_url", "").rstrip("/")
+    download_base_url = manifest.get("download_base_url", "").rstrip("/") or root_url
+    metadata_base_url = manifest.get("metadata_base_url", "").rstrip("/") or root_url
+    return download_base_url, metadata_base_url
+
+
 def _invalidate_plugin_detail_cache(repo_id, manifest_data):
     manifest = manifest_data.get("manifest", manifest_data)
-    root_url = manifest.get("root_url", "").rstrip("/")
+    _, metadata_base_url = _resolve_manifest_base_urls(manifest)
     keys = []
     for p in manifest.get("plugins", []):
         url = p.get("manifest_url", "")
         if not url:
             continue
-        if root_url and not url.startswith(("http://", "https://")):
-            url = f"{root_url}/{url}"
+        if metadata_base_url and not url.startswith(("http://", "https://")):
+            url = f"{metadata_base_url}/{url}"
         keys.append(f"plugin_detail:{repo_id}:{hashlib.md5(url.encode()).hexdigest()}")
     if keys:
         cache.delete_many(keys)
@@ -1045,18 +1057,28 @@ class AvailablePluginsAPIView(PluginAuthMixin, APIView):
         for repo in repos:
             manifest_data = repo.cached_manifest or {}
             manifest = manifest_data.get("manifest", manifest_data)
-            root_url = manifest.get("root_url", "").rstrip("/")
+            download_base_url, metadata_base_url = _resolve_manifest_base_urls(manifest)
             registry_url = manifest.get("registry_url", "").rstrip("/")
             repo_plugins = manifest.get("plugins", [])
             for p in repo_plugins:
                 slug = p.get("slug", "")
                 plugin_data = {**p}
-                # Resolve relative URLs against root_url; absolute URLs pass through
-                if root_url:
-                    for url_field in ("manifest_url", "latest_url", "icon_url"):
+                # Resolve relative URLs; metadata and download assets use separate bases
+                if metadata_base_url:
+                    for url_field in ("manifest_url", "icon_url"):
                         val = plugin_data.get(url_field, "")
                         if val and not val.startswith(("http://", "https://")):
-                            plugin_data[url_field] = f"{root_url}/{val}"
+                            plugin_data[url_field] = f"{metadata_base_url}/{val}"
+                if download_base_url:
+                    val = plugin_data.get("latest_url", "")
+                    if val and not val.startswith(("http://", "https://")):
+                        plugin_data["latest_url"] = f"{download_base_url}/{val}"
+                # Fallback icon_url: if metadata_base_url is explicitly set and manifest_url
+                # is known, assume logo.png lives in the same directory as the per-plugin
+                # manifest. Guard against root_url-only manifests to preserve the GitHub fallback.
+                if not plugin_data.get("icon_url") and manifest.get("metadata_base_url") and plugin_data.get("manifest_url"):
+                    manifest_dir = plugin_data["manifest_url"].rsplit("/", 1)[0]
+                    plugin_data["icon_url"] = f"{manifest_dir}/logo.png"
                 # Fallback icon_url from main branch when not provided
                 if not plugin_data.get("icon_url") and registry_url:
                     # registry_url is e.g. https://github.com/Dispatcharr/Plugins
@@ -1161,18 +1183,18 @@ class PluginDetailManifestAPIView(PluginAuthMixin, APIView):
             # Resolve relative URLs in versions
             repo_manifest = repo.cached_manifest or {}
             inner = repo_manifest.get("manifest", repo_manifest)
-            root_url = inner.get("root_url", "").rstrip("/")
+            download_base_url, _ = _resolve_manifest_base_urls(inner)
 
-            if root_url and isinstance(manifest_obj.get("versions"), list):
+            if download_base_url and isinstance(manifest_obj.get("versions"), list):
                 for v in manifest_obj["versions"]:
                     url_val = v.get("url", "")
                     if url_val and not url_val.startswith(("http://", "https://")):
-                        v["url"] = f"{root_url}/{url_val}"
-            if root_url and isinstance(manifest_obj.get("latest"), dict):
+                        v["url"] = f"{download_base_url}/{url_val}"
+            if download_base_url and isinstance(manifest_obj.get("latest"), dict):
                 for url_field in ("url", "latest_url"):
                     url_val = manifest_obj["latest"].get(url_field, "")
                     if url_val and not url_val.startswith(("http://", "https://")):
-                        manifest_obj["latest"][url_field] = f"{root_url}/{url_val}"
+                        manifest_obj["latest"][url_field] = f"{download_base_url}/{url_val}"
 
             result = {
                 "manifest": manifest_obj,
