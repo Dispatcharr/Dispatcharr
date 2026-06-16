@@ -37,7 +37,10 @@ class DatabaseWrapper(DatabaseWrapperMixin, OriginalDatabaseWrapper):
     INTRANS = psycopg.pq.TransactionStatus.INTRANS
 
     def get_connection_params(self) -> dict:
+        from dispatcharr.db.process_label import db_application_name
+
         conn_params = super().get_connection_params()
+        conn_params["application_name"] = db_application_name()
         for attr in ("MAX_CONNS", "REUSE_CONNS", "CONN_MAX_LIFETIME"):
             if attr in self.settings_dict["OPTIONS"]:
                 conn_params[attr] = self.settings_dict["OPTIONS"][attr]
