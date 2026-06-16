@@ -623,6 +623,8 @@ def validate_flexible_url(value):
         raise ValidationError("Enter a valid URL.")
 
 def dispatch_event_system(event_type, channel_id=None, channel_name=None, **details):
+    from django.db import close_old_connections
+
     try:
         from apps.connect.utils import trigger_event
         from apps.channels.models import Channel, Stream
@@ -696,9 +698,48 @@ def dispatch_event_system(event_type, channel_id=None, channel_name=None, **deta
 
         trigger_event(event_type, payload)
 
-    except Exception as e:
+    except Exception:
         # Don't fail main path if connect dispatch fails
         pass
+    finally:
+        close_old_connections()
+
+
+def _dispatch_system_event_integrations(
+    event_type, channel_id=None, channel_name=None, **details
+):
+    """
+    Run Connect subscriptions and plugin event hooks without blocking the caller.
+
+    On gevent uWSGI workers, dispatch runs in a spawned greenlet so slow webhooks,
+    scripts, or plugin handlers cannot stall live-proxy teardown or streaming paths.
+    Celery prefork workers (gevent patched but no hub) run synchronously instead.
+    """
+
+    def _run():
+        try:
+            dispatch_event_system(
+                event_type,
+                channel_id=channel_id,
+                channel_name=channel_name,
+                **details,
+            )
+        except Exception as e:
+            logger.error(
+                "Failed to dispatch Connect/plugin handlers for event %s: %s",
+                event_type,
+                e,
+            )
+
+    if _should_use_sync_websocket_send():
+        _run()
+    elif _is_gevent_monkey_patched():
+        import gevent
+
+        gevent.spawn(_run)
+    else:
+        _run()
+
 
 def log_system_event(event_type, channel_id=None, channel_name=None, **details):
     """
@@ -715,6 +756,7 @@ def log_system_event(event_type, channel_id=None, channel_name=None, **details):
                         stream_url='http://...', user='admin')
     """
     from core.models import SystemEvent, CoreSettings
+    from django.db import close_old_connections
 
     try:
         # Create the event
@@ -725,8 +767,13 @@ def log_system_event(event_type, channel_id=None, channel_name=None, **details):
             details=details
         )
 
-        # Trigger connect integrations for specific events
-        dispatch_event_system(event_type, channel_id=channel_id, channel_name=channel_name, **details)
+        # Connect integrations and plugin event hooks (non-blocking on gevent uWSGI)
+        _dispatch_system_event_integrations(
+            event_type,
+            channel_id=channel_id,
+            channel_name=channel_name,
+            **details,
+        )
 
         # Get max events from settings (default 100)
         try:
@@ -750,6 +797,10 @@ def log_system_event(event_type, channel_id=None, channel_name=None, **details):
     except Exception as e:
         # Don't let event logging break the main application
         logger.error(f"Failed to log system event {event_type}: {e}")
+    finally:
+        # geventpool keeps checked-out connections until close(); release promptly
+        # when logging from proxy greenlets/threads outside a normal request cycle.
+        close_old_connections()
 
 
 def _send_async(channel_layer, group, message):

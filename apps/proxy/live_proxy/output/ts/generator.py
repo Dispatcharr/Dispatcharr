@@ -139,12 +139,75 @@ class StreamGenerator:
         finally:
             self._cleanup()
 
+    def _init_wait_abort_reason(self, proxy_server, initialization_start):
+        """Return a reason string when init wait should end early, else None."""
+        from ...services.channel_service import ChannelService
+
+        if ChannelService.is_channel_teardown_active(self.channel_id):
+            return "stopping"
+
+        client_mgr = proxy_server.client_managers.get(self.channel_id)
+        if client_mgr is not None:
+            if self.client_id not in client_mgr.clients:
+                return "client_gone"
+        elif proxy_server.redis_client:
+            client_key = RedisKeys.client_metadata(self.channel_id, self.client_id)
+            if not proxy_server.redis_client.exists(client_key):
+                total = proxy_server.redis_client.scard(RedisKeys.clients(self.channel_id)) or 0
+                if total == 0:
+                    return "client_gone"
+
+        elapsed = time.time() - initialization_start
+        connection_timeout = getattr(Config, 'CONNECTION_TIMEOUT', 10)
+        if elapsed < connection_timeout or not proxy_server.redis_client:
+            return None
+
+        metadata_key = RedisKeys.channel_metadata(self.channel_id)
+        state_raw = proxy_server.redis_client.hget(metadata_key, 'state')
+        if not state_raw:
+            return None
+
+        state = state_raw.decode() if isinstance(state_raw, bytes) else state_raw
+        if state not in ('connecting', 'initializing', 'buffering'):
+            return None
+
+        buffer = proxy_server.stream_buffers.get(self.channel_id)
+        if buffer is not None and buffer.index > 0:
+            return None
+
+        if proxy_server.redis_client.get(RedisKeys.last_data(self.channel_id)):
+            return None
+
+        return "stalled"
+
     def _wait_for_initialization(self):
         initialization_start = time.time()
         max_init_wait = ConfigHelper.client_wait_timeout()
         proxy_server = ProxyServer.get_instance()
 
         while time.time() - initialization_start < max_init_wait:
+            abort_reason = self._init_wait_abort_reason(proxy_server, initialization_start)
+            if abort_reason == "stopping":
+                logger.error(
+                    f"[{self.client_id}] Channel {self.channel_id} teardown active during initialization"
+                )
+                yield create_ts_packet('error', "Error: Channel is stopping")
+                return False
+            if abort_reason == "client_gone":
+                logger.info(
+                    f"[{self.client_id}] Client disconnected during initialization wait, aborting"
+                )
+                yield create_ts_packet('error', "Error: Client disconnected")
+                return False
+            if abort_reason == "stalled":
+                logger.warning(
+                    f"[{self.client_id}] Channel {self.channel_id} stalled in connecting state "
+                    f"with no buffer data after "
+                    f"{getattr(Config, 'CONNECTION_TIMEOUT', 10)}s, aborting init wait"
+                )
+                yield create_ts_packet('error', "Error: Connection stalled")
+                return False
+
             if proxy_server.redis_client:
                 metadata_key = RedisKeys.channel_metadata(self.channel_id)
                 metadata = proxy_server.redis_client.hgetall(metadata_key)
@@ -537,35 +600,32 @@ class StreamGenerator:
         stream_released = False
         if proxy_server.redis_client:
             try:
-                metadata_key = RedisKeys.channel_metadata(self.channel_id)
-                metadata = proxy_server.redis_client.hgetall(metadata_key)
-                if metadata:
-                    stream_id_bytes = proxy_server.redis_client.hget(metadata_key, ChannelMetadataField.STREAM_ID)
-                    if stream_id_bytes:
-                        # Check if we're the last client
-                        if self.channel_id in proxy_server.client_managers:
-                            client_count = proxy_server.client_managers[self.channel_id].get_total_client_count()
-                            # Only the last client or owner should release the stream
-                            if client_count <= 1 and proxy_server.am_i_owner(self.channel_id):
-                                try:
-                                    # Try Channel first (normal flow), fall back to Stream (preview flow)
-                                    try:
-                                        obj = Channel.objects.get(uuid=self.channel_id)
-                                    except (Channel.DoesNotExist, Exception):
-                                        obj = Stream.objects.get(stream_hash=self.channel_id)
-                                    stream_released = obj.release_stream()
-                                    if stream_released:
-                                        logger.debug(f"[{self.client_id}] Released stream for channel {self.channel_id}")
-                                    else:
-                                        logger.warning(f"[{self.client_id}] release_stream found no keys for channel {self.channel_id}")
-                                except Exception as e:
-                                    logger.error(f"[{self.client_id}] Error releasing stream for channel {self.channel_id}: {e}")
+                if self.channel_id in proxy_server.client_managers:
+                    client_count = proxy_server.client_managers[self.channel_id].get_total_client_count()
+                    # Pool slots are global; the last client on any worker must release.
+                    # During shutdown_delay, keep the slot until coordinated stop runs.
+                    if client_count <= 1 and ConfigHelper.channel_shutdown_delay() <= 0:
+                        try:
+                            try:
+                                obj = Channel.objects.get(uuid=self.channel_id)
+                            except (Channel.DoesNotExist, Exception):
+                                obj = Stream.objects.get(stream_hash=self.channel_id)
+                            stream_released = obj.release_stream()
+                            if stream_released:
+                                logger.debug(f"[{self.client_id}] Released stream for channel {self.channel_id}")
+                            else:
+                                logger.warning(f"[{self.client_id}] release_stream found no keys for channel {self.channel_id}")
+                        except Exception as e:
+                            logger.error(f"[{self.client_id}] Error releasing stream for channel {self.channel_id}: {e}")
             except Exception as e:
                 logger.error(f"[{self.client_id}] Error checking stream data for release: {e}")
 
         if self.channel_id in proxy_server.client_managers:
             client_manager = proxy_server.client_managers[self.channel_id]
-            local_clients = client_manager.remove_client(self.client_id)
+            if self.client_id in client_manager.clients:
+                local_clients = client_manager.remove_client(self.client_id)
+            else:
+                local_clients = client_manager.get_client_count()
             total_clients = client_manager.get_total_client_count()
             logger.info(f"[{self.client_id}] Disconnected after {elapsed:.2f}s (local: {local_clients}, total: {total_clients})")
 

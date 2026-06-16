@@ -247,6 +247,14 @@ class BasicStatsGhostClientTests(TestCase):
         redis.scard.return_value = len(client_ids)
         redis.smembers.return_value = client_ids
         redis.hget.return_value = None  # individual field lookups
+        redis.hmget.return_value = [
+            b'VLC/3.0',
+            b'127.0.0.1',
+            b'1773500000.0',
+            None,
+            b'mpegts',
+            None,
+        ]
 
         # Pipeline for remove_ghost_clients
         pipe = MagicMock()
