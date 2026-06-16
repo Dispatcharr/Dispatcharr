@@ -790,6 +790,7 @@ def collect_xc_streams(account_id, enabled_groups):
     """Collect all XC streams in a single API call and filter by enabled groups."""
     account = M3UAccount.objects.get(id=account_id)
     all_streams = []
+    filtered_count = 0
 
     # Create a mapping from category_id to group info for filtering
     enabled_category_ids = {}
@@ -819,7 +820,6 @@ def collect_xc_streams(account_id, enabled_groups):
             logger.info(f"Retrieved {len(all_xc_streams)} total live streams from provider")
 
             # Filter streams based on enabled categories
-            filtered_count = 0
             for stream in all_xc_streams:
                 # Fall back to a generated name if the provider returns null/empty
                 stream_name = stream.get("name") or f"{account.name} - {stream.get('stream_id', 'Unknown')}"
@@ -862,11 +862,17 @@ def collect_xc_streams(account_id, enabled_groups):
                     all_streams.append(stream_data)
                     filtered_count += 1
 
+            # Drop the full provider catalog before returning; only filtered rows are needed.
+            del all_xc_streams
+            gc.collect()
+
     except Exception as e:
         logger.error(f"Failed to fetch XC streams: {str(e)}")
         return []
 
-    logger.info(f"Filtered {filtered_count} streams from {len(enabled_category_ids)} enabled categories")
+    logger.info(
+        f"Filtered {filtered_count} streams from {len(enabled_category_ids)} enabled categories"
+    )
     return all_streams
 
 def process_xc_category_direct(account_id, batch, groups, hash_keys):
@@ -1270,6 +1276,7 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys):
 
     # Free batch data structures (reference-counted deallocation)
     del streams_to_create, streams_to_update, stream_hashes, existing_streams
+    gc.collect()
 
     return retval
 
@@ -3338,6 +3345,8 @@ def _refresh_single_m3u_account_impl(account_id):
                     except Exception as e:
                         logger.error(f"Error in thread batch {batch_idx}: {str(e)}")
                         completed_batches += 1  # Still count it to avoid hanging
+                    finally:
+                        batches[batch_idx] = None
 
             logger.info(f"Thread-based processing completed for account {account_id}")
         else:
@@ -3449,6 +3458,8 @@ def _refresh_single_m3u_account_impl(account_id):
                         except Exception as e:
                             logger.error(f"Error in XC thread batch {batch_idx}: {str(e)}")
                             completed_batches += 1  # Still count it to avoid hanging
+                        finally:
+                            batches[batch_idx] = None
 
                 logger.info(f"XC thread-based processing completed for account {account_id}")
 
