@@ -62,3 +62,20 @@ class PluginRunActionDbCleanupTests(SimpleTestCase):
             self.assertTrue(pm.stop_plugin("test_plugin", reason="shutdown"))
 
         mock_close.assert_called_once()
+
+
+class PluginDiscoverDbCleanupTests(SimpleTestCase):
+    @patch("apps.plugins.loader.close_old_connections")
+    @patch.object(PluginManager, "_discover_plugins_impl", return_value={})
+    def test_discover_plugins_closes_connections(self, _mock_impl, mock_close):
+        pm = PluginManager()
+        pm.discover_plugins(sync_db=False)
+        mock_close.assert_called_once()
+
+    @patch("apps.plugins.loader.close_old_connections")
+    def test_discover_plugins_cache_hit_skips_close(self, mock_close):
+        pm = PluginManager()
+        pm._discovery_completed = True
+        pm._last_reload_token = pm._get_reload_token()
+        pm.discover_plugins(sync_db=False, use_cache=True)
+        mock_close.assert_not_called()

@@ -8,7 +8,7 @@ import sys
 import threading
 import types
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 from django.db import close_old_connections, transaction
 
@@ -92,6 +92,29 @@ class PluginManager:
                 key: lp.path for key, lp in self._registry.items() if lp and lp.path
             }
 
+        try:
+            return self._discover_plugins_impl(
+                sync_db=sync_db,
+                force_reload=force_reload,
+                previous_packages=previous_packages,
+                previous_aliases=previous_aliases,
+                previous_paths=previous_paths,
+                token=token,
+            )
+        finally:
+            # Discovery runs outside Django's request/task cycle (boot, worker_ready).
+            close_old_connections()
+
+    def _discover_plugins_impl(
+        self,
+        *,
+        sync_db: bool,
+        force_reload: bool,
+        previous_packages: Dict[str, str],
+        previous_aliases: Dict[str, str],
+        previous_paths: Dict[str, str],
+        token: int,
+    ) -> Dict[str, LoadedPlugin]:
         try:
             configs: Optional[Dict[str, PluginConfig]] = None
             try:
@@ -246,6 +269,23 @@ class PluginManager:
                 # Defer sync if database is not ready (e.g., first startup before migrate)
                 logger.exception("Deferring plugin DB sync; database not ready yet")
         return self._registry
+
+    def iter_actions_for_event(self, event_name: str) -> Iterator[Tuple[str, str]]:
+        """Yield (plugin_key, action_id) pairs from the in-memory registry."""
+        with self._lock:
+            registry = list(self._registry.items())
+        for key, lp in registry:
+            for action in lp.actions or []:
+                if not isinstance(action, dict):
+                    continue
+                action_id = action.get("id")
+                events = action.get("events")
+                if (
+                    action_id
+                    and isinstance(events, (list, tuple))
+                    and event_name in events
+                ):
+                    yield key, action_id
 
     def _load_plugin(
         self,
