@@ -16,6 +16,27 @@ import re
 logger = logging.getLogger(__name__)
 
 
+def lookup_by_name_year(model, name_year_pairs):
+    """Return {(name, year): row} for rows without TMDB/IMDB IDs.
+
+    Scoped to the names in this batch instead of scanning the full table.
+    """
+    if not name_year_pairs:
+        return {}
+    wanted = set(name_year_pairs)
+    names = {name for name, _ in wanted}
+    found = {}
+    for row in model.objects.filter(
+        tmdb_id__isnull=True,
+        imdb_id__isnull=True,
+        name__in=names,
+    ):
+        key = (row.name, row.year)
+        if key in wanted:
+            found[key] = row
+    return found
+
+
 @shared_task
 def refresh_vod_content(account_id):
     """Refresh VOD content for an M3U account with batch processing for improved performance"""
@@ -176,6 +197,7 @@ def refresh_movies(client, account, categories_by_provider, relations, scan_star
         logger.info(f"Processing movie chunk {chunk_num}/{total_chunks} ({len(chunk)} movies)")
         process_movie_batch(account, chunk, categories_by_provider, relations, scan_start_time)
 
+    del all_movies_data
     logger.info(f"Completed processing all {total_movies} movies in {total_chunks} chunks")
 
 
@@ -230,6 +252,7 @@ def refresh_series(client, account, categories_by_provider, relations, scan_star
         logger.info(f"Processing series chunk {chunk_num}/{total_chunks} ({len(chunk)} series)")
         process_series_batch(account, chunk, categories_by_provider, relations, scan_start_time)
 
+    del all_series_data
     logger.info(f"Completed processing all {total_series} series in {total_chunks} chunks")
 
 
@@ -539,10 +562,12 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
     # Query by name+year for movies without external IDs
     name_year_keys = [k for k in movie_keys.keys() if k.startswith('name_')]
     if name_year_keys:
-        for movie in Movie.objects.filter(tmdb_id__isnull=True, imdb_id__isnull=True):
-            key = f"name_{movie.name}_{movie.year or 'None'}"
-            if key in name_year_keys:
-                existing_movies[key] = movie
+        name_year_pairs = [
+            (movie_keys[k]['props']['name'], movie_keys[k]['props'].get('year'))
+            for k in name_year_keys
+        ]
+        for key_tuple, movie in lookup_by_name_year(Movie, name_year_pairs).items():
+            existing_movies[f"name_{key_tuple[0]}_{key_tuple[1] or 'None'}"] = movie
 
     # Get existing relations
     stream_ids = [data['stream_id'] for data in movie_keys.values()]
@@ -659,12 +684,7 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
                 existing_by_tmdb = {m.tmdb_id: m for m in Movie.objects.filter(tmdb_id__in=tmdb_ids)} if tmdb_ids else {}
                 existing_by_imdb = {m.imdb_id: m for m in Movie.objects.filter(imdb_id__in=imdb_ids)} if imdb_ids else {}
 
-                existing_by_name_year = {}
-                if name_year_pairs:
-                    for movie in Movie.objects.filter(tmdb_id__isnull=True, imdb_id__isnull=True):
-                        key = (movie.name, movie.year)
-                        if key in name_year_pairs:
-                            existing_by_name_year[key] = movie
+                existing_by_name_year = lookup_by_name_year(Movie, name_year_pairs)
 
                 # Check each movie against the bulk query results
                 movies_actually_created = []
@@ -911,10 +931,12 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
     # Query by name+year for series without external IDs
     name_year_keys = [k for k in series_keys.keys() if k.startswith('name_')]
     if name_year_keys:
-        for series in Series.objects.filter(tmdb_id__isnull=True, imdb_id__isnull=True):
-            key = f"name_{series.name}_{series.year or 'None'}"
-            if key in name_year_keys:
-                existing_series[key] = series
+        name_year_pairs = [
+            (series_keys[k]['props']['name'], series_keys[k]['props'].get('year'))
+            for k in name_year_keys
+        ]
+        for key_tuple, series in lookup_by_name_year(Series, name_year_pairs).items():
+            existing_series[f"name_{key_tuple[0]}_{key_tuple[1] or 'None'}"] = series
 
     # Get existing relations
     series_ids = [data['series_id'] for data in series_keys.values()]
@@ -1023,12 +1045,7 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
                 existing_by_tmdb = {s.tmdb_id: s for s in Series.objects.filter(tmdb_id__in=tmdb_ids)} if tmdb_ids else {}
                 existing_by_imdb = {s.imdb_id: s for s in Series.objects.filter(imdb_id__in=imdb_ids)} if imdb_ids else {}
 
-                existing_by_name_year = {}
-                if name_year_pairs:
-                    for series in Series.objects.filter(tmdb_id__isnull=True, imdb_id__isnull=True):
-                        key = (series.name, series.year)
-                        if key in name_year_pairs:
-                            existing_by_name_year[key] = series
+                existing_by_name_year = lookup_by_name_year(Series, name_year_pairs)
 
                 # Check each series against the bulk query results
                 series_actually_created = []
