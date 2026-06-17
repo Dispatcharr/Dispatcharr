@@ -1,7 +1,6 @@
 from datetime import datetime, timezone
 from django.db import models
 from django.core.exceptions import ValidationError
-from core.models import UserAgent
 import re
 from django.dispatch import receiver
 from apps.channels.models import StreamProfile
