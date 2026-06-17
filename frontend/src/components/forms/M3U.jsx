@@ -78,6 +78,8 @@ const M3U = ({
       stale_stream_days: 7,
       priority: 0,
       enable_vod: false,
+      proxy: '',
+      proxy_for_api: false,
     },
 
     validate: {
@@ -113,6 +115,8 @@ const M3U = ({
             ? m3uAccount.priority
             : 0,
         enable_vod: m3uAccount.enable_vod || false,
+        proxy: m3uAccount.proxy || '',
+        proxy_for_api: m3uAccount.proxy_for_api || false,
       });
       setExpDate(m3uAccount.exp_date ? new Date(m3uAccount.exp_date) : null);
 
@@ -406,15 +410,33 @@ const M3U = ({
               />
 
               {form.getValues().account_type == 'XC' && (
+                <NumberInput
+                  min={0}
+                  max={999}
+                  label="VOD Priority"
+                  description="Priority for VOD provider selection (higher numbers = higher priority). Used when multiple providers offer the same content."
+                  {...form.getInputProps('priority')}
+                  key={form.key('priority')}
+                />
+              )}
+
+              <TextInput
+                label="HTTP Proxy"
+                placeholder="http://proxy.example.com:8080"
+                description="HTTP proxy URL for streaming (always used when configured)"
+                {...form.getInputProps('proxy')}
+                key={form.key('proxy')}
+              />
+
+              <Switch
+                label="Use Proxy for API Calls"
+                description="When enabled, the HTTP proxy will also be used for API calls (M3U download, XC API). When disabled, proxy is only used for streaming."
+                {...form.getInputProps('proxy_for_api', { type: 'checkbox' })}
+                key={form.key('proxy_for_api')}
+              />
+
+              {form.getValues().account_type == 'XC' && (
                 <Box>
-                  <NumberInput
-                    min={0}
-                    max={999}
-                    label="VOD Priority"
-                    description="Priority for VOD provider selection (higher numbers = higher priority). Used when multiple providers offer the same content."
-                    {...form.getInputProps('priority')}
-                    key={form.key('priority')}
-                  />
 
                   <Group justify="space-between">
                     <Box>Enable VOD Scanning</Box>

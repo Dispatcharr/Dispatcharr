@@ -10,13 +10,14 @@ import re
 from django.db import connection, close_old_connections
 from apps.proxy.config import TSConfig as Config
 from apps.channels.models import Channel, Stream
+from apps.m3u.models import M3UAccountProfile
 from core.utils import log_system_event
 from .buffer import StreamBuffer
 from ..utils import detect_stream_type, get_logger
 from ..redis_keys import RedisKeys
 from ..constants import ChannelState, EventType, StreamType, ChannelMetadataField, TS_PACKET_SIZE
 from ..config_helper import ConfigHelper
-from ..url_utils import get_alternate_streams, get_stream_info_for_switch, get_stream_object
+from ..url_utils import get_alternate_streams, get_stream_info_for_switch, get_stream_object, _resolve_live_stream_url
 
 logger = get_logger()
 
@@ -2070,18 +2071,44 @@ class StreamManager:
                 # Add to tried combinations
                 self.tried_combinations.add((stream_id, profile_id))
 
-                # Get stream info using the SPECIFIC profile from get_alternate_streams
+                # Get stream info - we need URL, user_agent, transcode for the SPECIFIC profile from get_alternate_streams
                 logger.info(f"Trying next stream ID {stream_id} with profile ID {profile_id} for channel {self.channel_id}")
-                stream_info = get_stream_info_for_switch(self.channel_id, stream_id)
-
-                if 'error' in stream_info or not stream_info.get('url'):
-                    logger.error(f"Error getting info for stream {stream_id} for channel {self.channel_id}: {stream_info.get('error', 'No URL')}")
-                    continue  # Try next stream instead of giving up
+                
+                # Get stream and profile objects directly to build URL with the SPECIFIC profile
+                try:
+                    stream_obj = Stream.objects.get(id=stream_id)
+                    profile_obj = M3UAccountProfile.objects.get(id=profile_id)
+                    
+                    if not stream_obj.m3u_account:
+                        logger.error(f"Stream {stream_id} has no M3U account")
+                        continue
+                    
+                    m3u_account = stream_obj.m3u_account
+                    
+                    # Get user agent
+                    new_user_agent = m3u_account.get_user_agent().user_agent
+                    
+                    # Generate URL using _resolve_live_stream_url (handles XC and STD accounts)
+                    new_url = _resolve_live_stream_url(stream_obj, m3u_account, profile_obj)
+                    
+                    # Get transcode setting - use get_stream_object to handle both Channel UUID and stream_hash
+                    try:
+                        channel_or_stream = get_stream_object(self.channel_id)
+                        if isinstance(channel_or_stream, Stream):
+                            # Stream preview - get transcode from stream's profile
+                            stream_profile = channel_or_stream.get_stream_profile()
+                        else:
+                            # Regular channel - get transcode from channel's profile
+                            stream_profile = channel_or_stream.get_stream_profile()
+                        new_transcode = not (stream_profile.is_proxy() or stream_profile is None)
+                    except:
+                        new_transcode = self.transcode  # Keep current setting on error
+                    
+                except Exception as e:
+                    logger.error(f"Error getting stream info for stream {stream_id} with profile {profile_id}: {e}")
+                    continue  # Try next combination
 
                 # Update URL and user agent
-                new_url = stream_info['url']
-                new_user_agent = stream_info['user_agent']
-                new_transcode = stream_info['transcode']
 
                 # Check if the new URL is the same as current URL
                 # This can happen when current_stream_id is None and we accidentally select the same stream
@@ -2090,42 +2117,49 @@ class StreamManager:
                                  f"Skipping this stream and trying next alternative.")
                     continue  # Try next stream instead of giving up
 
-                logger.info(f"Switching from URL {self.url} to {new_url} for channel {self.channel_id}")
+                logger.info(f"Switching from URL {self.url} to {new_url} for channel {self.channel_id} (stream={stream_id}, profile={profile_id})")
 
-                # Just update the URL, don't stop the channel or release resources
-                switch_result = self.update_url(new_url, stream_id, profile_id)
-                if not switch_result:
-                    logger.error(f"Failed to update URL for stream ID {stream_id} for channel {self.channel_id}")
-                    continue  # Try next stream
-
-                # Update stream ID and profile ID tracking
+                # Update the URL directly - the main run() loop will handle reconnection
+                self.url = new_url
+                
+                # Update tracking variables IMMEDIATELY
                 self.current_stream_id = stream_id
                 self.current_profile_id = profile_id
-
-                # Also update tried_stream_ids for backward compatibility with error messages
-                self.tried_stream_ids.add(stream_id)
+                self.last_stream_switch_time = time.time()
 
                 # Store the new user agent and transcode settings
                 self.user_agent = new_user_agent
                 self.transcode = new_transcode
+                
+                # Also update tried_stream_ids for backward compatibility with error messages
+                self.tried_stream_ids.add(stream_id)
 
-                # Update stream metadata in Redis - use the profile_id we got from get_alternate_streams
+                # Update stream metadata in Redis with the specific profile ID
                 if hasattr(self.buffer, 'redis_client') and self.buffer.redis_client:
                     metadata_key = RedisKeys.channel_metadata(self.channel_id)
+                    
+                    # Get channel's stream profile ID
+                    from apps.channels.models import Channel
+                    try:
+                        channel = Channel.objects.get(uuid=self.channel_id)
+                        stream_profile_id = channel.get_stream_profile().id
+                    except:
+                        stream_profile_id = 1  # Fallback to default
+                    
                     self.buffer.redis_client.hset(metadata_key, mapping={
                         ChannelMetadataField.URL: new_url,
                         ChannelMetadataField.USER_AGENT: new_user_agent,
-                        ChannelMetadataField.STREAM_PROFILE: stream_info['stream_profile'],
+                        ChannelMetadataField.STREAM_PROFILE: str(stream_profile_id),
                         ChannelMetadataField.M3U_PROFILE: str(profile_id),  # Use the profile_id from get_alternate_streams
                         ChannelMetadataField.STREAM_ID: str(stream_id),
                         ChannelMetadataField.STREAM_SWITCH_TIME: str(time.time()),
-                        ChannelMetadataField.STREAM_SWITCH_REASON: "max_retries_exceeded"
+                        ChannelMetadataField.STREAM_SWITCH_REASON: "profile_failover"
                     })
 
                     # Log the switch
                     logger.info(f"Stream metadata updated for channel {self.channel_id} to stream ID {stream_id} with M3U profile {profile_id}")
 
-                logger.info(f"Successfully switched to stream ID {stream_id} with URL {new_url} for channel {self.channel_id}")
+                logger.info(f"Successfully switched to stream ID {stream_id} with profile {profile_id} and URL {new_url} for channel {self.channel_id}")
                 return True
 
             # If we get here, we tried all combinations but none worked
@@ -2136,9 +2170,42 @@ class StreamManager:
             logger.error(f"Error trying next stream for channel {self.channel_id}: {e}", exc_info=True)
             return False
 
-    # Add a new helper method to safely reset the URL switching state
     def _reset_url_switching_state(self):
         """Safely reset the URL switching state if it gets stuck"""
         self.url_switching = False
         self.url_switch_start_time = 0
         logger.info(f"Reset URL switching state for channel {self.channel_id}")
+
+    def _attempt_reconnect(self):
+        """
+        Attempt to reconnect to the current stream without changing streams.
+        
+        Returns:
+            bool: True if reconnect was successful, False otherwise
+        """
+        logger.info(f"Attempting reconnect for channel {self.channel_id} without changing stream")
+        
+        # Close existing HTTP session and response
+        if self.current_response:
+            try:
+                self.current_response.close()
+            except Exception as e:
+                logger.debug(f"Error closing response: {e}")
+            self.current_response = None
+        
+        if self.current_session:
+            try:
+                self.current_session.close()
+            except Exception as e:
+                logger.debug(f"Error closing session: {e}")
+            self.current_session = None
+        
+        # Reset connection state
+        self.connected = False
+        self.retry_count = 0
+        
+        # Small delay before reconnecting
+        gevent.sleep(1)
+        
+        return True
+
