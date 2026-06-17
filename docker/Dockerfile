@@ -50,7 +50,7 @@ RUN /dispatcharrpy/bin/python -c "import django_redis" 2>/dev/null || \
 
 RUN /dispatcharrpy/bin/python -c "import channels_redis" 2>/dev/null || \
     (echo "Installing missing channels-redis..." && \
-    uv pip install --python /dispatcharrpy/bin/python channels-redis)
+    uv pip install --python /dispatcharrpy/bin/python channels-redis==4.3.0)
 
 # Final verification - fail build if packages are still missing
 RUN echo "=== Final verification ===" && \

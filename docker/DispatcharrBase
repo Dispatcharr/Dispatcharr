@@ -42,7 +42,7 @@ RUN echo "=== Ensuring critical packages with correct versions ===" && \
     django-db-geventpool>=4.0.8 \
     drf-spectacular>=0.29.0 \
     django-redis \
-    channels-redis
+    channels-redis==4.3.0
 
 # Verify critical packages are installed
 RUN echo "=== Verifying critical packages ===" && \
