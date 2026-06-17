@@ -10,6 +10,7 @@ from apps.channels.models import Channel, Stream
 from ..server import ProxyServer
 from ..redis_keys import RedisKeys
 from ..constants import EventType, ChannelState, ChannelMetadataField
+from ..config_helper import ConfigHelper
 from ..url_utils import get_stream_info_for_switch
 from core.utils import log_system_event
 from .log_parsers import LogParserFactory
@@ -18,6 +19,178 @@ logger = logging.getLogger("live_proxy")
 
 class ChannelService:
     """Service class for channel operations"""
+
+    @staticmethod
+    def mark_channel_stopping(channel_id, broadcast=False):
+        """Mark a channel as stopping in Redis so all uWSGI workers converge on teardown."""
+        proxy_server = ProxyServer.get_instance()
+        if not proxy_server.redis_client:
+            return False
+
+        try:
+            metadata_key = RedisKeys.channel_metadata(channel_id)
+            if proxy_server.redis_client.exists(metadata_key):
+                proxy_server.redis_client.hset(metadata_key, mapping={
+                    ChannelMetadataField.STATE: ChannelState.STOPPING,
+                    ChannelMetadataField.STATE_CHANGED_AT: str(time.time()),
+                })
+
+            stop_key = RedisKeys.channel_stopping(channel_id)
+            proxy_server.redis_client.setex(stop_key, 60, "true")
+
+            if broadcast:
+                ChannelService._publish_channel_stop_event(channel_id)
+            return True
+        except Exception as e:
+            logger.error(f"Error marking channel {channel_id} as stopping: {e}")
+            return False
+
+    @staticmethod
+    def is_shutdown_pending(channel_id):
+        """True while the post-disconnect shutdown delay has started but stop has not run."""
+        proxy_server = ProxyServer.get_instance()
+        if not proxy_server.redis_client:
+            return False
+
+        delay = ConfigHelper.channel_shutdown_delay()
+        if delay <= 0:
+            return False
+
+        disconnect_value = proxy_server.redis_client.get(
+            RedisKeys.last_client_disconnect(channel_id)
+        )
+        if not disconnect_value:
+            return False
+
+        try:
+            disconnect_time = float(disconnect_value)
+        except (ValueError, TypeError):
+            return False
+
+        return (time.time() - disconnect_time) < delay
+
+    @staticmethod
+    def is_channel_teardown_active(channel_id):
+        """True when a coordinated channel stop is in progress (visible to all workers)."""
+        proxy_server = ProxyServer.get_instance()
+        if channel_id in proxy_server._stopping_channels:
+            return True
+
+        if not proxy_server.redis_client:
+            return False
+
+        if proxy_server.redis_client.exists(RedisKeys.channel_stopping(channel_id)):
+            return True
+
+        metadata_key = RedisKeys.channel_metadata(channel_id)
+        state = proxy_server.redis_client.hget(metadata_key, ChannelMetadataField.STATE)
+        if state:
+            state_str = state.decode() if isinstance(state, bytes) else state
+            if state_str == ChannelState.STOPPING:
+                return True
+
+        return False
+
+    @staticmethod
+    def is_channel_unavailable_for_new_clients(channel_id):
+        """Reject new stream requests only while coordinated teardown is active."""
+        return ChannelService.is_channel_teardown_active(channel_id)
+
+    @staticmethod
+    def cancel_pending_shutdown(channel_id):
+        """
+        Abort the post-disconnect grace timer when a client reconnects.
+
+        Clears the disconnect timestamp and any leaked stopping markers. When
+        upstream is still active but the last client released its profile slot
+        during the grace window, re-reserve the slot from Redis metadata.
+
+        Does not run during coordinated stop_channel() — clearing teardown
+        markers mid-stop would leave clients attached to upstream that is
+        about to be torn down.
+        """
+        from django.db import close_old_connections
+
+        proxy_server = ProxyServer.get_instance()
+        if not proxy_server.redis_client:
+            return False
+
+        if channel_id in proxy_server._stopping_channels:
+            return False
+
+        disconnect_key = RedisKeys.last_client_disconnect(channel_id)
+        had_pending = bool(proxy_server.redis_client.exists(disconnect_key))
+        in_grace = had_pending or ChannelService.is_shutdown_pending(channel_id)
+
+        if not in_grace:
+            return False
+
+        try:
+            proxy_server.redis_client.delete(disconnect_key)
+
+            metadata_key = RedisKeys.channel_metadata(channel_id)
+            state = proxy_server.redis_client.hget(
+                metadata_key, ChannelMetadataField.STATE
+            )
+            if state:
+                state_str = state.decode() if isinstance(state, bytes) else state
+                if state_str == ChannelState.STOPPING:
+                    proxy_server.redis_client.hset(metadata_key, mapping={
+                        ChannelMetadataField.STATE: ChannelState.ACTIVE,
+                        ChannelMetadataField.STATE_CHANGED_AT: str(time.time()),
+                    })
+
+            stop_key = RedisKeys.channel_stopping(channel_id)
+            if proxy_server.redis_client.exists(stop_key):
+                proxy_server.redis_client.delete(stop_key)
+
+            if ChannelService._channel_proxy_is_active(
+                proxy_server.redis_client, channel_id
+            ):
+                from apps.channels.models import Channel
+
+                channel = Channel.objects.filter(uuid=channel_id).first()
+                if channel and not proxy_server.redis_client.get(
+                    f"channel_stream:{channel.id}"
+                ):
+                    sid, pid, error, slot_reserved = channel.get_stream()
+                    if error:
+                        logger.warning(
+                            f"Could not re-reserve stream for {channel_id} "
+                            f"after shutdown cancel: {error}"
+                        )
+                    elif slot_reserved and sid and pid:
+                        proxy_server.redis_client.hset(metadata_key, mapping={
+                            ChannelMetadataField.STREAM_ID: str(sid),
+                            ChannelMetadataField.M3U_PROFILE: str(pid),
+                        })
+                        logger.info(
+                            f"Re-reserved profile slot for {channel_id} "
+                            f"(stream={sid}, profile={pid})"
+                        )
+        finally:
+            close_old_connections()
+
+        return True
+
+    @staticmethod
+    def _channel_proxy_is_active(redis_client, channel_id):
+        """True when live proxy metadata shows this channel is still running."""
+        metadata_key = RedisKeys.channel_metadata(channel_id)
+        if not redis_client.exists(metadata_key):
+            return False
+        state = redis_client.hget(metadata_key, ChannelMetadataField.STATE)
+        if state is None:
+            return False
+        if isinstance(state, bytes):
+            state = state.decode()
+        return state in (
+            ChannelState.ACTIVE,
+            ChannelState.WAITING_FOR_CLIENTS,
+            ChannelState.BUFFERING,
+            ChannelState.INITIALIZING,
+            ChannelState.CONNECTING,
+        )
 
     @staticmethod
     def initialize_channel(channel_id, stream_url, user_agent, transcode=False, stream_profile_value=None, stream_id=None, m3u_profile_id=None, channel_name=None, stream_name=None):
@@ -39,30 +212,20 @@ class ChannelService:
             bool: Success status
         """
         proxy_server = ProxyServer.get_instance()
-        
-        # BUGFIX: Write profile_id to Redis BEFORE initialize_channel()
-        # This is critical for profile failover to work - the StreamManager __init__
-        # loads profile_id from Redis, and if it's not set yet, profile failover is broken
+
         if stream_id and proxy_server.redis_client:
             metadata_key = RedisKeys.channel_metadata(channel_id)
             # Check if metadata already exists
             if proxy_server.redis_client.exists(metadata_key):
-                # Update the existing metadata with stream_id and profile_id
-                update = {ChannelMetadataField.STREAM_ID: str(stream_id)}
-                if m3u_profile_id:
-                    update[ChannelMetadataField.M3U_PROFILE] = str(m3u_profile_id)
-                    logger.info(f"Pre-set profile ID {m3u_profile_id} in Redis for channel {channel_id} BEFORE initialize_channel()")
-                proxy_server.redis_client.hset(metadata_key, mapping=update)
+                # Just update the existing metadata with stream_id
+                proxy_server.redis_client.hset(metadata_key, ChannelMetadataField.STREAM_ID, str(stream_id))
                 logger.info(f"Pre-set stream ID {stream_id} in Redis for channel {channel_id}")
             else:
-                # Create initial metadata with essential values INCLUDING profile_id
+                # Create initial metadata with essential values
                 initial_metadata = {
                     ChannelMetadataField.STREAM_ID: str(stream_id),
                     "temp_init": str(time.time())
                 }
-                if m3u_profile_id:
-                    initial_metadata[ChannelMetadataField.M3U_PROFILE] = str(m3u_profile_id)
-                    logger.info(f"Created initial metadata with profile_id {m3u_profile_id} for channel {channel_id} BEFORE initialize_channel()")
                 proxy_server.redis_client.hset(metadata_key, mapping=initial_metadata)
                 logger.info(f"Created initial metadata with stream_id {stream_id} for channel {channel_id}")
 
@@ -274,58 +437,23 @@ class ChannelService:
             try:
                 metadata = proxy_server.redis_client.hgetall(metadata_key)
                 if metadata and 'state' in metadata:
-                    state = metadata['state']
-                    channel_info = {"state": state}
-
-                    # Immediately mark as stopping in metadata so clients detect it faster
-                    proxy_server.redis_client.hset(metadata_key, ChannelMetadataField.STATE, ChannelState.STOPPING)
-                    proxy_server.redis_client.hset(metadata_key, ChannelMetadataField.STATE_CHANGED_AT, str(time.time()))
+                    channel_info = {"state": metadata['state']}
             except Exception as e:
                 logger.error(f"Error fetching channel state: {e}")
 
-        # Set stopping flag with higher TTL to ensure it persists
+        # Mark stopping in Redis and notify all workers before local teardown.
+        # stop_channel() releases profile slots via _clean_redis_keys() before Redis deletion.
         if proxy_server.redis_client:
-            stop_key = RedisKeys.channel_stopping(channel_id)
-            proxy_server.redis_client.setex(stop_key, 60, "true")  # Higher TTL of 60 seconds
-            logger.info(f"Set channel stopping flag with 60s TTL for channel {channel_id}")
-
-        # Broadcast stop event to all workers via PubSub
-        if proxy_server.redis_client:
-            ChannelService._publish_channel_stop_event(channel_id)
-
-            # Also stop locally to ensure this worker cleans up right away
-            local_result = proxy_server.stop_channel(channel_id)
-        else:
-            # No Redis, just stop locally
-            local_result = proxy_server.stop_channel(channel_id)
-
-        # Release the channel in the channel model if applicable
-        try:
-            channel = Channel.objects.get(uuid=channel_id)
-            model_released = channel.release_stream()
-            if model_released:
-                logger.info(f"Released channel {channel_id} stream allocation")
-            else:
-                logger.warning(f"Channel {channel_id}: release_stream found no keys to clean")
-        except (Channel.DoesNotExist, Exception):
-            logger.warning(f"Could not find Channel model for UUID {channel_id}, attempting stream hash")
-            try:
-                stream = Stream.objects.get(stream_hash=channel_id)
-                model_released = stream.release_stream()
-                if model_released:
-                    logger.info(f"Released stream {channel_id} stream allocation")
-                else:
-                    logger.warning(f"Stream {channel_id}: release_stream found no keys to clean")
-            except (Stream.DoesNotExist, Exception) as e:
-                logger.error(f"No Channel or Stream found for {channel_id}: {e}")
-                model_released = False
+            ChannelService.mark_channel_stopping(channel_id, broadcast=True)
+            logger.info(f"Marked channel {channel_id} stopping and broadcast stop to all workers")
+        local_result = proxy_server.stop_channel(channel_id)
 
         return {
             'status': 'success',
             'message': 'Channel stop request sent',
             'channel_id': channel_id,
             'previous_state': channel_info,
-            'model_released': model_released,
+            'model_released': bool(local_result),
             'local_stop_result': local_result
         }
 

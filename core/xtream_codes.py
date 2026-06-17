@@ -13,6 +13,7 @@ class Client:
         self.username = username
         self.password = password
         self.user_agent = user_agent
+        self.proxy = proxy
 
         # Fix: Properly handle all possible user_agent input types
         if user_agent:
@@ -29,12 +30,11 @@ class Client:
         # Create persistent session
         self.session = requests.Session()
         self.session.headers.update({'User-Agent': user_agent_string})
-
+        
         # Configure proxy if provided
         if proxy:
             self.session.proxies = {'http': proxy, 'https': proxy}
             logger.info(f"XC Client using HTTP proxy: {proxy}")
-            logger.info(f"Session proxies configured: {self.session.proxies}")
 
         # Configure connection pooling
         adapter = requests.adapters.HTTPAdapter(
@@ -71,7 +71,6 @@ class Client:
         try:
             url = f"{self.server_url}/{endpoint}"
             logger.debug(f"XC API Request: {url} with params: {params}")
-            logger.debug(f"Session proxies: {self.session.proxies}")
 
             response = self.session.get(url, params=params, timeout=60)
             response.raise_for_status()

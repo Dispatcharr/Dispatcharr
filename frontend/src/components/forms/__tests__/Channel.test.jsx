@@ -703,6 +703,25 @@ describe('ChannelForm', () => {
       expect(autoMatch).not.toBeDisabled();
     });
 
+    it('shows in-progress notification when matchChannelEpg returns accepted', async () => {
+      const channel = makeChannel();
+      vi.mocked(ChannelUtils.matchChannelEpg).mockResolvedValue({
+        accepted: true,
+        message: 'EPG matching started',
+      });
+      setupMocks({ channel });
+      render(<ChannelForm {...defaultProps({ channel })} />);
+      fireEvent.click(screen.getByText('Auto Match'));
+      await waitFor(() => {
+        expect(showNotification).toHaveBeenCalledWith(
+          expect.objectContaining({
+            title: 'Matching in Progress',
+            color: 'blue',
+          })
+        );
+      });
+    });
+
     it('calls matchChannelEpg with the channel on click', async () => {
       const channel = makeChannel();
       vi.mocked(ChannelUtils.matchChannelEpg).mockResolvedValue({
@@ -1204,6 +1223,155 @@ describe('ChannelForm', () => {
       rerender(<ChannelForm {...defaultProps()} channel={channel} />);
 
       expect(screen.queryByText(/Clear All Overrides/)).not.toBeInTheDocument();
+    });
+  });
+
+  // ── EPG filter search ──────────────────────────────────────────────────────
+  describe('EPG filter search', () => {
+    const skyText = 'Sky Sports Ultra HD (SkySportUltraHD.1.uk)';
+    const btText = 'BT Sport 1 (BTSport1.uk)';
+
+    const epgTvgs = [
+      {
+        id: 'tvg-sky',
+        name: 'Sky Sports Ultra HD',
+        tvg_id: 'SkySportUltraHD.1.uk',
+        epg_source: 10,
+        icon_url: '',
+      },
+      {
+        id: 'tvg-bt',
+        name: 'BT Sport 1',
+        tvg_id: 'BTSport1.uk',
+        epg_source: 10,
+        icon_url: '',
+      },
+      // Accent in the name, but the id does NOT mirror it ("decale"): an ascii
+      // query only matches if the haystack is accent-folded.
+      {
+        id: 'tvg-canal',
+        name: 'Canal Décalé',
+        tvg_id: 'CPLUS42.fr',
+        epg_source: 10,
+        icon_url: '',
+      },
+      // Plain ascii everywhere: an accented query only matches if the query
+      // itself is accent-folded.
+      {
+        id: 'tvg-decaleplus',
+        name: 'Decale Plus',
+        tvg_id: 'DECP.fr',
+        epg_source: 10,
+        icon_url: '',
+      },
+    ];
+    const canalText = 'Canal Décalé (CPLUS42.fr)';
+    const decaleText = 'Decale Plus (DECP.fr)';
+
+    // Render the form, point the store at our two same-source tvgs, and pick the
+    // EPG source so the dropdown list is populated.
+    const renderAndSelectSource = () => {
+      setupMocks();
+      // Stable references — recreating these per selector call would retrigger
+      // the epgs-dependent effect and loop forever.
+      const epgs = makeEpgs();
+      const tvgsById = {};
+      vi.mocked(useEPGsStore).mockImplementation((sel) =>
+        sel({ epgs, tvgs: epgTvgs, tvgsById })
+      );
+      render(<ChannelForm {...defaultProps()} />);
+      fireEvent.change(screen.getByTestId('select-Source'), {
+        target: { value: '10' },
+      });
+    };
+
+    const typeFilter = (value) =>
+      fireEvent.change(screen.getByTestId('text-input-tvg-filter'), {
+        target: { value },
+      });
+
+    it('matches when space-separated terms each appear across name and id', () => {
+      renderAndSelectSource();
+      typeFilter('Sky uk');
+      expect(screen.getByText(skyText)).toBeInTheDocument();
+      expect(screen.queryByText(btText)).not.toBeInTheDocument();
+    });
+
+    it('matches regardless of term order', () => {
+      renderAndSelectSource();
+      typeFilter('uk sky');
+      expect(screen.getByText(skyText)).toBeInTheDocument();
+      expect(screen.queryByText(btText)).not.toBeInTheDocument();
+    });
+
+    it('still matches a single substring term', () => {
+      renderAndSelectSource();
+      typeFilter('sky');
+      expect(screen.getByText(skyText)).toBeInTheDocument();
+      expect(screen.queryByText(btText)).not.toBeInTheDocument();
+    });
+
+    it('shows every row for the source when the filter is empty', () => {
+      renderAndSelectSource();
+      expect(screen.getByText(skyText)).toBeInTheDocument();
+      expect(screen.getByText(btText)).toBeInTheDocument();
+    });
+
+    it('shows no rows when a term matches nothing', () => {
+      renderAndSelectSource();
+      typeFilter('sky zzz');
+      expect(screen.queryByText(skyText)).not.toBeInTheDocument();
+      expect(screen.queryByText(btText)).not.toBeInTheDocument();
+    });
+
+    it('ignores case, including all-caps', () => {
+      renderAndSelectSource();
+      typeFilter('SKY UK');
+      expect(screen.getByText(skyText)).toBeInTheDocument();
+      expect(screen.queryByText(btText)).not.toBeInTheDocument();
+    });
+
+    it('matches when one term hits the name and another hits the id', () => {
+      renderAndSelectSource();
+      typeFilter('Sports uk');
+      expect(screen.getByText(skyText)).toBeInTheDocument();
+      expect(screen.queryByText(btText)).not.toBeInTheDocument();
+    });
+
+    it('tolerates leading, trailing and repeated whitespace', () => {
+      renderAndSelectSource();
+      typeFilter('  sky   uk  ');
+      expect(screen.getByText(skyText)).toBeInTheDocument();
+      expect(screen.queryByText(btText)).not.toBeInTheDocument();
+    });
+
+    it('matches an id fragment that is not in the display name', () => {
+      renderAndSelectSource();
+      typeFilter('skysport');
+      expect(screen.getByText(skyText)).toBeInTheDocument();
+      expect(screen.queryByText(btText)).not.toBeInTheDocument();
+    });
+
+    it('matches a name word combined with a channel number', () => {
+      renderAndSelectSource();
+      typeFilter('bt 1');
+      expect(screen.getByText(btText)).toBeInTheDocument();
+      expect(screen.queryByText(skyText)).not.toBeInTheDocument();
+    });
+
+    it('folds accents in the data so a plain ascii query matches', () => {
+      renderAndSelectSource();
+      typeFilter('canal decale');
+      expect(screen.getByText(canalText)).toBeInTheDocument();
+      expect(screen.queryByText(decaleText)).not.toBeInTheDocument();
+      expect(screen.queryByText(skyText)).not.toBeInTheDocument();
+    });
+
+    it('folds accents in the query so it matches plain ascii data', () => {
+      renderAndSelectSource();
+      typeFilter('décalé');
+      expect(screen.getByText(decaleText)).toBeInTheDocument();
+      expect(screen.queryByText(skyText)).not.toBeInTheDocument();
     });
   });
 });

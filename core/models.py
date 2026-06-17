@@ -140,17 +140,17 @@ class StreamProfile(models.Model):
             self._replace_in_part(part, replacements)
             for part in shlex_split(self.parameters) # use shlex to handle quoted strings
         ]
-
-        # Inject proxy into ffmpeg command if proxy is configured and no {proxy} placeholder used
-        # ffmpeg uses -http_proxy for HTTP streams
-        if proxy and self.command.lower() in ('ffmpeg',) and '{proxy}' not in self.parameters:
-            # Insert -http_proxy before the -i argument
+        
+        # Automatische ffmpeg -http_proxy Injection wenn proxy vorhanden und kein {proxy} Platzhalter
+        if proxy and self.command.lower() == 'ffmpeg' and '{proxy}' not in self.parameters:
+            # Füge -http_proxy vor -i ein
             try:
                 i_index = cmd.index('-i')
                 cmd.insert(i_index, proxy)
                 cmd.insert(i_index, '-http_proxy')
             except ValueError:
-                pass  # No -i flag found, skip proxy injection
+                # Kein -i gefunden, füge am Ende hinzu
+                pass
 
         return cmd
 
@@ -408,6 +408,17 @@ class CoreSettings(models.Model):
             "channel_shutdown_delay": 0,
             "channel_init_grace_period": 5,
             "new_client_behind_seconds": 5,
+            "max_retries": 2,
+            "url_switch_timeout": 20,
+            "max_stream_switches": 200,
+            "connection_timeout": 10,
+            "failover_grace_period": 20,
+            "chunk_timeout": 5,
+            "initial_behind_chunks": 4,
+            "chunk_batch_size": 5,
+            "health_check_interval": 5,
+            "stream_cooldown_enabled": False,
+            "stream_cooldown_minutes": 10,
         })
 
     # System Settings

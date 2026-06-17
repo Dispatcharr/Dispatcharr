@@ -113,7 +113,7 @@ class M3UAccount(models.Model):
     
     def __str__(self):
         return self.name
-
+    
     def get_proxy_for_api(self):
         """Get proxy URL for API calls only if proxy_for_api is enabled."""
         if self.proxy and self.proxy.strip() and self.proxy_for_api:
@@ -121,7 +121,7 @@ class M3UAccount(models.Model):
         return None
     
     def get_proxy_for_streaming(self):
-        """Get proxy URL for streaming (always returns if configured)."""
+        """Get proxy URL for streaming."""
         if self.proxy and self.proxy.strip():
             return self.proxy
         return None
@@ -217,7 +217,13 @@ class M3UFilter(models.Model):
 
 
 class ServerGroup(models.Model):
-    """Represents a logical grouping of servers or channels."""
+    """
+    Groups M3U accounts that share provider credentials.
+
+    Accounts assigned to the same server group share credential-scoped connection
+    counters when their logins match. Limits come from each account profile's
+    max_streams, not from the group itself.
+    """
 
     name = models.CharField(
         max_length=100, unique=True, help_text="Unique name for this server group."

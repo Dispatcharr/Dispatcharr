@@ -87,7 +87,7 @@ class ConfigHelper:
     @staticmethod
     def retry_wait_interval():
         """Get wait interval between connection retries in seconds"""
-        return ConfigHelper.get('RETRY_WAIT_INTERVAL', 0.5)
+        return ConfigHelper.get('RETRY_WAIT_INTERVAL', 0.5)  # Default to 0.5 second
 
     @staticmethod
     def url_switch_timeout():

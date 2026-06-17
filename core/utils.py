@@ -21,6 +21,33 @@ logger = logging.getLogger(__name__)
 # Import the command detector
 from .command_utils import is_management_command
 
+
+def dispatcharr_user_agent():
+    """Return the standard Dispatcharr User-Agent string (Dispatcharr/{version})."""
+    from version import __version__
+    return f'Dispatcharr/{__version__}'
+
+
+def dispatcharr_dvr_user_agent(recording_id):
+    """Return the User-Agent string used by DVR FFmpeg clients for a recording."""
+    return f'Dispatcharr-DVR/recording-{recording_id}'
+
+
+def dispatcharr_http_headers(*, token=None, content_type='application/json'):
+    """
+    Build HTTP headers for outbound Dispatcharr requests.
+
+    content_type=None omits Content-Type (e.g. simple GET proxies).
+    token is included when authenticating with Schedules Direct.
+    """
+    headers = {'User-Agent': dispatcharr_user_agent()}
+    if content_type:
+        headers['Content-Type'] = content_type
+    if token:
+        headers['token'] = token
+    return headers
+
+
 def natural_sort_key(text):
     """
     Convert a string into a list of string and number chunks for natural sorting.
@@ -242,6 +269,15 @@ def release_task_lock(task_name, id):
 
     # Remove the lock
     redis_client.delete(lock_id)
+
+
+def is_task_lock_held(task_name, id):
+    """Return True when another worker holds the task lock (read-only check)."""
+    redis_client = RedisClient.get_client()
+    if redis_client is None:
+        return False
+    lock_id = f"task_lock_{task_name}_{id}"
+    return bool(redis_client.exists(lock_id))
 
 
 class TaskLockRenewer:
@@ -587,6 +623,8 @@ def validate_flexible_url(value):
         raise ValidationError("Enter a valid URL.")
 
 def dispatch_event_system(event_type, channel_id=None, channel_name=None, **details):
+    from django.db import close_old_connections
+
     try:
         from apps.connect.utils import trigger_event
         from apps.channels.models import Channel, Stream
@@ -660,9 +698,48 @@ def dispatch_event_system(event_type, channel_id=None, channel_name=None, **deta
 
         trigger_event(event_type, payload)
 
-    except Exception as e:
+    except Exception:
         # Don't fail main path if connect dispatch fails
         pass
+    finally:
+        close_old_connections()
+
+
+def _dispatch_system_event_integrations(
+    event_type, channel_id=None, channel_name=None, **details
+):
+    """
+    Run Connect subscriptions and plugin event hooks without blocking the caller.
+
+    On gevent uWSGI workers, dispatch runs in a spawned greenlet so slow webhooks,
+    scripts, or plugin handlers cannot stall live-proxy teardown or streaming paths.
+    Celery prefork workers (gevent patched but no hub) run synchronously instead.
+    """
+
+    def _run():
+        try:
+            dispatch_event_system(
+                event_type,
+                channel_id=channel_id,
+                channel_name=channel_name,
+                **details,
+            )
+        except Exception as e:
+            logger.error(
+                "Failed to dispatch Connect/plugin handlers for event %s: %s",
+                event_type,
+                e,
+            )
+
+    if _should_use_sync_websocket_send():
+        _run()
+    elif _is_gevent_monkey_patched():
+        import gevent
+
+        gevent.spawn(_run)
+    else:
+        _run()
+
 
 def log_system_event(event_type, channel_id=None, channel_name=None, **details):
     """
@@ -670,7 +747,7 @@ def log_system_event(event_type, channel_id=None, channel_name=None, **details):
 
     Args:
         event_type: Type of event (e.g., 'channel_start', 'client_connect')
-        channel_id: Optional UUID of the channel (or stream hash for stream preview)
+        channel_id: Optional UUID of the channel (or stream_hash for stream preview)
         channel_name: Optional name of the channel
         **details: Additional details to store in the event (stored as JSON)
 
@@ -679,19 +756,23 @@ def log_system_event(event_type, channel_id=None, channel_name=None, **details):
                         stream_url='http://...', user='admin')
     """
     from core.models import SystemEvent, CoreSettings
+    from django.db import close_old_connections
     import uuid as uuid_module
 
     try:
-        # Validate channel_id is a valid UUID - stream previews use stream_hash (not UUID)
+        # Validate channel_id is a valid UUID
+        # Stream preview uses stream_hash (not UUID format) - store as detail instead
         safe_channel_id = None
         if channel_id is not None:
             try:
                 uuid_module.UUID(str(channel_id))
                 safe_channel_id = channel_id
             except (ValueError, AttributeError):
-                # Not a valid UUID (e.g. stream hash) - store as detail instead
+                # Not a valid UUID (e.g., stream_hash for stream preview)
+                # Store as detail instead of channel_id
                 details['stream_hash'] = str(channel_id)
-
+                logger.debug(f"channel_id '{channel_id}' is not a valid UUID, storing as stream_hash in details")
+        
         # Create the event
         SystemEvent.objects.create(
             event_type=event_type,
@@ -700,8 +781,13 @@ def log_system_event(event_type, channel_id=None, channel_name=None, **details):
             details=details
         )
 
-        # Trigger connect integrations for specific events
-        dispatch_event_system(event_type, channel_id=channel_id, channel_name=channel_name, **details)
+        # Connect integrations and plugin event hooks (non-blocking on gevent uWSGI)
+        _dispatch_system_event_integrations(
+            event_type,
+            channel_id=safe_channel_id,
+            channel_name=channel_name,
+            **details,
+        )
 
         # Get max events from settings (default 100)
         try:
@@ -725,6 +811,10 @@ def log_system_event(event_type, channel_id=None, channel_name=None, **details):
     except Exception as e:
         # Don't let event logging break the main application
         logger.error(f"Failed to log system event {event_type}: {e}")
+    finally:
+        # geventpool keeps checked-out connections until close(); release promptly
+        # when logging from proxy greenlets/threads outside a normal request cycle.
+        close_old_connections()
 
 
 def _send_async(channel_layer, group, message):

@@ -43,6 +43,15 @@ from apps.proxy.utils import check_user_stream_limits
 logger = get_logger()
 
 
+def _channel_stopping_response():
+    response = JsonResponse(
+        {"error": "Channel is stopping, retry shortly"},
+        status=503,
+    )
+    response["Retry-After"] = "1"
+    return response
+
+
 def _resolve_output_format(user, force=None, request=None):
     """Return the output format string to use for this client."""
     _FORMAT_ALIASES = {
@@ -123,6 +132,12 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
                     status=429
                 )
 
+        if ChannelService.is_channel_unavailable_for_new_clients(channel_id):
+            logger.info(
+                f"[{client_id}] Channel {channel_id} unavailable. Teardown or pending shutdown"
+            )
+            return _channel_stopping_response()
+
         # Check if we need to reinitialize the channel
         needs_initialization = True
         channel_state = None
@@ -144,7 +159,6 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
                         ChannelState.BUFFERING,
                         ChannelState.INITIALIZING,
                         ChannelState.CONNECTING,
-                        ChannelState.STOPPING,
                     ]:
                         needs_initialization = False
                         logger.debug(
@@ -160,6 +174,11 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
                             logger.debug(
                                 f"[{client_id}] Channel {channel_id} is still initializing, client will wait"
                             )
+                    elif channel_state == ChannelState.STOPPING:
+                        logger.info(
+                            f"[{client_id}] Channel {channel_id} is stopping, rejecting request"
+                        )
+                        return _channel_stopping_response()
                     # Terminal states - channel needs cleanup before reinitialization
                     elif channel_state in [
                         ChannelState.ERROR,
@@ -192,6 +211,12 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
 
         # Start initialization if needed
         if needs_initialization or not proxy_server.check_if_channel_exists(channel_id):
+            if ChannelService.is_channel_unavailable_for_new_clients(channel_id):
+                logger.info(
+                    f"[{client_id}] Channel {channel_id} became unavailable before init, rejecting"
+                )
+                return _channel_stopping_response()
+
             logger.info(f"[{client_id}] Starting channel {channel_id} initialization")
             # Force cleanup of any previous instance if in terminal state
             if channel_state in [
@@ -213,6 +238,7 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
             stream_user_agent = None
             transcode = False
             profile_value = None
+            slot_reserved = False
             error_reason = None
             attempt = 0
             should_retry = True
@@ -220,9 +246,14 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
             # Try to get a stream with fixed interval retries
             while should_retry and time.time() - wait_start_time < retry_timeout:
                 attempt += 1
-                stream_url, stream_user_agent, transcode, profile_value = (
-                    generate_stream_url(channel_id)
-                )
+                (
+                    stream_url,
+                    stream_user_agent,
+                    transcode,
+                    profile_value,
+                    slot_reserved,
+                    error_reason,
+                ) = generate_stream_url(channel_id)
 
                 if stream_url is not None:
                     logger.info(
@@ -232,7 +263,6 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
 
                 # On first failure, check if the error is retryable
                 if attempt == 1:
-                    _, _, error_reason = channel.get_stream()
                     if error_reason and "maximum connection limits" not in error_reason:
                         logger.warning(
                             f"[{client_id}] Can't retry - error not related to connection limits: {error_reason}"
@@ -265,18 +295,21 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
                 logger.info(
                     f"[{client_id}] Making final attempt {attempt} at timeout boundary"
                 )
-                stream_url, stream_user_agent, transcode, profile_value = (
-                    generate_stream_url(channel_id)
-                )
+                (
+                    stream_url,
+                    stream_user_agent,
+                    transcode,
+                    profile_value,
+                    slot_reserved,
+                    error_reason,
+                ) = generate_stream_url(channel_id)
                 if stream_url is not None:
                     logger.info(
                         f"[{client_id}] Successfully obtained stream on final attempt for channel {channel_id}"
                     )
 
             if stream_url is None:
-                # Release any connection slot that may have been allocated
-                # by the error-checking get_stream() call during retries
-                if not channel.release_stream():
+                if slot_reserved and not channel.release_stream():
                     logger.debug(f"[{client_id}] release_stream found no keys during failed init cleanup")
 
                 # Get the specific error message if available
@@ -295,7 +328,7 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
 
             # generate_stream_url() called get_stream() which allocated a connection
             # slot (INCR'd profile_connections) - track this for cleanup on error
-            if needs_initialization:
+            if needs_initialization and slot_reserved:
                 connection_allocated = True
 
             # Read stream assignment from Redis (already set by generate_stream_url → get_stream).
@@ -339,8 +372,8 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
                     # Track tried streams to avoid loops
                     tried_streams = {stream_id}
 
-                    # Get alternate streams (pass profile_id for proper failover)
-                    alternates = get_alternate_streams(channel_id, stream_id, m3u_profile_id)
+                    # Get alternate streams
+                    alternates = get_alternate_streams(channel_id, stream_id)
 
                     # Try each alternate until one works
                     for alt in alternates:
@@ -378,8 +411,8 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
                             logger.warning(
                                 f"[{client_id}] Alternate stream #{alt['stream_id']} failed validation: {message}"
                             )
-                # Release stream lock before redirecting
-                if not channel.release_stream():
+                # Release stream lock before redirecting only if we reserved a slot
+                if connection_allocated and not channel.release_stream():
                     logger.warning(f"[{client_id}] Failed to release stream before redirect")
                 connection_allocated = False
                 # Final decision based on validation results
@@ -406,6 +439,16 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
                     )  # 502 Bad Gateway
 
             # Initialize channel with the stream's user agent (not the client's)
+            if ChannelService.is_channel_unavailable_for_new_clients(channel_id):
+                if connection_allocated:
+                    if not channel.release_stream():
+                        logger.warning(f"[{client_id}] Failed to release stream before teardown reject")
+                    connection_allocated = False
+                logger.info(
+                    f"[{client_id}] Channel {channel_id} unavailable before init call, rejecting"
+                )
+                return _channel_stopping_response()
+
             success = ChannelService.initialize_channel(
                 channel_id,
                 stream_url,
@@ -513,6 +556,16 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
             logger.info(
                 f"[{client_id}] Successfully initialized channel {channel_id} locally"
             )
+
+        if ChannelService.is_channel_unavailable_for_new_clients(channel_id):
+            if _client_pre_registered:
+                mgr = proxy_server.client_managers.get(channel_id)
+                if mgr:
+                    mgr.remove_client(client_id)
+            logger.info(
+                f"[{client_id}] Channel {channel_id} became unavailable during setup, rejecting"
+            )
+            return _channel_stopping_response()
 
         # Register client
         output_profile = _resolve_output_profile(request, user)

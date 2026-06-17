@@ -16,7 +16,7 @@ from ..utils import detect_stream_type, get_logger
 from ..redis_keys import RedisKeys
 from ..constants import ChannelState, EventType, StreamType, ChannelMetadataField, TS_PACKET_SIZE
 from ..config_helper import ConfigHelper
-from ..url_utils import get_alternate_streams, get_stream_info_for_switch, get_stream_object, get_stream_info_for_profile
+from ..url_utils import get_alternate_streams, get_stream_info_for_switch, get_stream_object
 
 logger = get_logger()
 
@@ -67,6 +67,7 @@ class StreamManager:
         # Add to your __init__ method
         self._buffer_check_timers = []
         self.stopping = False
+        self.stop_requested = False
 
         # Add tracking for tried streams and current stream
         self.current_stream_id = stream_id
@@ -134,6 +135,11 @@ class StreamManager:
         # Add tracking for data throughput
         self.bytes_processed = 0
         self.last_bytes_update = time.time()
+
+        # Cached result of the pipelined Redis ownership audit (hot read path).
+        self._ownership_cache_valid_until = 0.0
+        self._ownership_cached = True
+        self._OWNERSHIP_CHECK_INTERVAL = 1.0
         self.bytes_update_interval = 5  # Update Redis every 5 seconds
 
         # Add stderr reader thread property
@@ -204,6 +210,153 @@ class StreamManager:
         logger.warning(f"Timeout waiting for existing processes to close for channel {self.channel_id} after {timeout}s")
         return False
 
+    def _invalidate_ownership_cache(self):
+        self._ownership_cache_valid_until = 0.0
+
+    @staticmethod
+    def _decode_redis_value(value):
+        if value is None:
+            return None
+        if isinstance(value, bytes):
+            return value.decode()
+        return value
+
+    def _disconnect_shutdown_ready(self, disconnect_value):
+        """True when last-client disconnect has passed the configured shutdown delay."""
+        if not disconnect_value:
+            return False
+
+        shutdown_delay = ConfigHelper.channel_shutdown_delay()
+        if shutdown_delay <= 0:
+            return True
+
+        disconnect_value = self._decode_redis_value(disconnect_value)
+        try:
+            disconnect_time = float(disconnect_value)
+        except (ValueError, TypeError):
+            return False
+        return (time.time() - disconnect_time) >= shutdown_delay
+
+    def _evaluate_ownership_from_redis(self, redis_client):
+        """Single pipelined Redis round-trip for the full ownership audit."""
+        stop_key = RedisKeys.channel_stopping(self.channel_id)
+        metadata_key = RedisKeys.channel_metadata(self.channel_id)
+        clients_key = RedisKeys.clients(self.channel_id)
+        owner_key = RedisKeys.channel_owner(self.channel_id)
+        disconnect_key = RedisKeys.last_client_disconnect(self.channel_id)
+
+        pipe = redis_client.pipeline(transaction=False)
+        pipe.exists(stop_key)
+        pipe.exists(metadata_key)
+        pipe.scard(clients_key)
+        pipe.get(owner_key)
+        pipe.get(disconnect_key)
+        pipe.hget(metadata_key, ChannelMetadataField.STATE)
+        (
+            stop_exists,
+            metadata_exists,
+            client_count,
+            current_owner,
+            disconnect_value,
+            state_raw,
+        ) = pipe.execute()
+
+        if stop_exists:
+            return False
+
+        if not metadata_exists:
+            logger.warning(
+                f"Channel {self.channel_id} metadata removed from Redis - stopping upstream"
+            )
+            return False
+
+        client_count = client_count or 0
+        state = self._decode_redis_value(state_raw)
+        current_owner = self._decode_redis_value(current_owner)
+
+        if current_owner and current_owner != self.worker_id:
+            return False
+
+        if not current_owner:
+            if client_count == 0 and state not in ChannelState.PRE_ACTIVE:
+                logger.warning(
+                    f"Channel {self.channel_id} has no owner and no clients - stopping upstream"
+                )
+                return False
+            return True
+
+        if client_count == 0 and self._disconnect_shutdown_ready(disconnect_value):
+            logger.info(
+                f"Channel {self.channel_id} disconnect shutdown ready - stopping upstream"
+            )
+            return False
+
+        return True
+
+    def _still_owner(self, *, force=False):
+        """Return True while this worker should keep the upstream connection open."""
+        if self.stopping or self.stop_requested:
+            return False
+
+        if not self.worker_id:
+            return True
+
+        redis_client = getattr(self.buffer, 'redis_client', None)
+        if not redis_client:
+            return True
+
+        now = time.time()
+        if not force and now < self._ownership_cache_valid_until:
+            return self._ownership_cached
+
+        try:
+            result = self._evaluate_ownership_from_redis(redis_client)
+            self._ownership_cached = result
+            self._ownership_cache_valid_until = now + self._OWNERSHIP_CHECK_INTERVAL
+            return result
+        except Exception as e:
+            logger.debug(f"Ownership check failed for channel {self.channel_id}: {e}")
+            return True
+
+    def _upstream_may_continue(self):
+        """
+        Per-chunk gate for the hot read path.
+
+        Local stop flags are checked every chunk. The coordinated-teardown Redis
+        flag is checked every chunk (one EXISTS). The full ownership audit is
+        pipelined and cached for ~1s — enough for loop boundaries while avoiding
+        6+ Redis round-trips per chunk during steady streaming.
+        """
+        if self.stopping or self.stop_requested or not self.running:
+            return False
+        if self.buffer is not None and self.buffer.stopping:
+            return False
+
+        redis_client = getattr(self.buffer, 'redis_client', None)
+        if redis_client and self.worker_id:
+            try:
+                if redis_client.exists(RedisKeys.channel_stopping(self.channel_id)):
+                    self._ownership_cached = False
+                    self._ownership_cache_valid_until = 0.0
+                    return False
+            except Exception as e:
+                logger.debug(
+                    f"Channel stopping check failed for {self.channel_id}: {e}"
+                )
+
+        return self._still_owner()
+
+    def _ensure_owner_or_stop(self):
+        if self._still_owner(force=True):
+            return True
+
+        logger.warning(
+            f"Stream manager for channel {self.channel_id} lost ownership "
+            f"(worker {self.worker_id}) - stopping upstream"
+        )
+        self.stop()
+        return False
+
     def run(self):
         """Main execution loop using HTTP streaming with improved connection handling and stream switching"""
         # Add a stop flag to the class properties
@@ -225,6 +378,8 @@ class StreamManager:
             # Main stream switching loop - we'll try different streams if needed
             while self.running and stream_switch_attempts <= max_stream_switches:
                 close_old_connections()
+                if not self._ensure_owner_or_stop():
+                    break
                 # Check for stuck switching state
                 if self.url_switching and time.time() - self.url_switch_start_time > self.url_switch_timeout:
                     logger.warning(f"URL switching state appears stuck for channel {self.channel_id} "
@@ -253,7 +408,6 @@ class StreamManager:
                         logger.info(f"Health-requested stream switch successful for channel {self.channel_id}")
                         stream_switch_attempts += 1
                         self.retry_count = 0  # Reset retries for new stream
-                        self.last_stream_switch_time = time.time()  # Track switch time
                         continue  # Go back to main loop with new stream
                     else:
                         logger.error(f"Health-requested stream switch failed for channel {self.channel_id}")
@@ -278,6 +432,8 @@ class StreamManager:
                     continue
                 # Connection retry loop for current URL
                 while self.running and self.retry_count < self.max_retries and not url_failed and not self.needs_stream_switch:
+                    if not self._ensure_owner_or_stop():
+                        break
 
                     logger.info(f"Connection attempt {self.retry_count + 1}/{self.max_retries} for URL: {self.url} for channel {self.channel_id}")
 
@@ -390,7 +546,6 @@ class StreamManager:
                     if switch_result:
                         # Successfully switched to a new stream, continue with the new URL
                         stream_switch_attempts += 1
-                        self.last_stream_switch_time = time.time()  # Track switch time
                         logger.info(f"Successfully switched to new URL: {self.url} (switch attempt {stream_switch_attempts}/{max_stream_switches}) for channel: {self.channel_id}")
                         # Reset retry count for the new stream - important for the loop to work correctly
                         self.retry_count = 0
@@ -406,6 +561,12 @@ class StreamManager:
         except Exception as e:
             logger.error(f"Stream error: {e}", exc_info=True)
         finally:
+            try:
+                from ..server import ProxyServer
+                ProxyServer.get_instance()._live_stream_managers.pop(self.channel_id, None)
+            except Exception:
+                pass
+
             # Enhanced cleanup in the finally block
             self.connected = False
 
@@ -434,7 +595,9 @@ class StreamManager:
                 try:
                     metadata_key = RedisKeys.channel_metadata(self.channel_id)
                     owner_key = RedisKeys.channel_owner(self.channel_id)
-                    current_owner = self.buffer.redis_client.get(owner_key)
+                    current_owner = self._decode_redis_value(
+                        self.buffer.redis_client.get(owner_key)
+                    )
 
                     is_owner = (
                         current_owner
@@ -445,12 +608,10 @@ class StreamManager:
 
                     should_update = is_owner
                     if not should_update and no_owner:
-                        current_state_bytes = self.buffer.redis_client.hget(
-                            metadata_key, ChannelMetadataField.STATE
-                        )
-                        current_state = (
-                            current_state_bytes
-                            if current_state_bytes else None
+                        current_state = self._decode_redis_value(
+                            self.buffer.redis_client.hget(
+                                metadata_key, ChannelMetadataField.STATE
+                            )
                         )
                         should_update = current_state in ChannelState.PRE_ACTIVE
                         if not should_update and current_state:
@@ -512,57 +673,48 @@ class StreamManager:
                 logger.debug(f"Closing existing HTTP connections before establishing transcode connection for channel {self.channel_id}")
                 self._close_connection()
 
-            channel = get_stream_object(self.channel_id)
-
-            # Use FFmpeg specifically for HLS streams
-            if hasattr(self, 'force_ffmpeg') and self.force_ffmpeg:
-                from core.models import StreamProfile
-                try:
-                    stream_profile = StreamProfile.objects.get(name='ffmpeg', locked=True)
-                    logger.info("Using FFmpeg stream profile for unsupported proxy content (HLS/RTSP/UDP)")
-                except StreamProfile.DoesNotExist:
-                    # Fall back to channel's profile if FFmpeg not found
-                    stream_profile = channel.get_stream_profile()
-                    logger.warning(f"FFmpeg profile not found, using channel default profile for channel: {self.channel_id}")
-            else:
-                stream_profile = channel.get_stream_profile()
-
-            # Get proxy from M3U account if available
-            proxy = None
             try:
-                if hasattr(self, 'current_stream_id') and self.current_stream_id:
-                    from apps.channels.models import Stream
-                    stream = Stream.objects.get(id=self.current_stream_id)
-                    if hasattr(stream, 'm3u_account') and stream.m3u_account:
-                        proxy = stream.m3u_account.get_proxy_for_streaming()
-                        if proxy:
-                            logger.info(f"Using proxy {proxy} for transcoding channel {self.channel_id}")
-            except Exception as e:
-                logger.debug(f"Could not get proxy: {e}")
+                channel = get_stream_object(self.channel_id)
 
-            # Build and start transcode command
-            self.transcode_cmd = stream_profile.build_command(self.url, self.user_agent, proxy)
+                # Use FFmpeg specifically for HLS streams
+                if hasattr(self, 'force_ffmpeg') and self.force_ffmpeg:
+                    from core.models import StreamProfile
+                    try:
+                        stream_profile = StreamProfile.objects.get(name='ffmpeg', locked=True)
+                        logger.info("Using FFmpeg stream profile for unsupported proxy content (HLS/RTSP/UDP)")
+                    except StreamProfile.DoesNotExist:
+                        # Fall back to channel's profile if FFmpeg not found
+                        stream_profile = channel.get_stream_profile()
+                        logger.warning(f"FFmpeg profile not found, using channel default profile for channel: {self.channel_id}")
+                else:
+                    stream_profile = channel.get_stream_profile()
 
-            # Store stream command for efficient log parser routing
-            self.stream_command = stream_profile.command
-            # Map actual commands to parser types for direct routing
-            command_to_parser = {
-                'ffmpeg': 'ffmpeg',
-                'cvlc': 'vlc',
-                'vlc': 'vlc',
-                'streamlink': 'streamlink'
-            }
-            self.parser_type = command_to_parser.get(self.stream_command.lower())
-            if self.parser_type:
-                logger.debug(f"Using {self.parser_type} parser for log parsing (command: {self.stream_command})")
-            else:
-                logger.debug(f"Unknown stream command '{self.stream_command}', will use auto-detection for log parsing")
+                # Build and start transcode command
+                self.transcode_cmd = stream_profile.build_command(self.url, self.user_agent)
 
-            # For UDP streams, remove any user_agent parameters from the command
-            if hasattr(self, 'stream_type') and self.stream_type == StreamType.UDP:
-                # Filter out any arguments that contain the user_agent value or related headers
-                self.transcode_cmd = [arg for arg in self.transcode_cmd if self.user_agent not in arg and 'user-agent' not in arg.lower() and 'user_agent' not in arg.lower()]
-                logger.debug(f"Removed user_agent parameters from UDP stream command for channel: {self.channel_id}")
+                # Store stream command for efficient log parser routing
+                self.stream_command = stream_profile.command
+                # Map actual commands to parser types for direct routing
+                command_to_parser = {
+                    'ffmpeg': 'ffmpeg',
+                    'cvlc': 'vlc',
+                    'vlc': 'vlc',
+                    'streamlink': 'streamlink'
+                }
+                self.parser_type = command_to_parser.get(self.stream_command.lower())
+                if self.parser_type:
+                    logger.debug(f"Using {self.parser_type} parser for log parsing (command: {self.stream_command})")
+                else:
+                    logger.debug(f"Unknown stream command '{self.stream_command}', will use auto-detection for log parsing")
+
+                # For UDP streams, remove any user_agent parameters from the command
+                if hasattr(self, 'stream_type') and self.stream_type == StreamType.UDP:
+                    # Filter out any arguments that contain the user_agent value or related headers
+                    self.transcode_cmd = [arg for arg in self.transcode_cmd if self.user_agent not in arg and 'user-agent' not in arg.lower() and 'user_agent' not in arg.lower()]
+                    logger.debug(f"Removed user_agent parameters from UDP stream command for channel: {self.channel_id}")
+            finally:
+                # Release the pool slot before posix_spawn or before returning on profile errors.
+                close_old_connections()
 
             logger.debug(f"Starting transcode process: {self.transcode_cmd} for channel: {self.channel_id}")
 
@@ -1071,6 +1223,9 @@ class StreamManager:
 
     def _update_bytes_processed(self, chunk_size):
         """Update the total bytes processed in Redis metadata"""
+        if not self._upstream_may_continue():
+            return
+
         try:
             # Update local counter
             self.bytes_processed += chunk_size
@@ -1143,14 +1298,10 @@ class StreamManager:
         """Stop the stream manager and cancel all timers"""
         logger.info(f"Stopping stream manager for channel {self.channel_id}")
 
-        # Add at the beginning of your stop method
         self.stopping = True
-
-        # Release stream resources if we're the owner
-        if self.current_stream_id and hasattr(self, 'worker_id') and self.worker_id:
-            if hasattr(self.buffer, 'redis_client') and self.buffer.redis_client:
-                owner_key = RedisKeys.channel_owner(self.channel_id)
-                current_owner = self.buffer.redis_client.get(owner_key)
+        self._invalidate_ownership_cache()
+        if self.buffer is not None:
+            self.buffer.stopping = True
 
         # Cancel all buffer check timers
         for timer in list(self._buffer_check_timers):
@@ -1269,10 +1420,6 @@ class StreamManager:
                 self.tried_stream_ids.add(stream_id)
                 logger.info(f"Updated stream ID from {old_stream_id} to {stream_id} for channel {self.channel_id}")
 
-            # Update profile ID if provided (important for failover tracking)
-            if m3u_profile_id:
-                self.current_profile_id = m3u_profile_id
-
             # Reset retry counter to allow immediate reconnect
             self.retry_count = 0
 
@@ -1325,14 +1472,6 @@ class StreamManager:
                 now = time.time()
                 inactivity_duration = now - self.last_data_time
                 timeout_threshold = getattr(Config, 'CONNECTION_TIMEOUT', 10)
-
-                # Check for HTTP reader errors (immediate failover)
-                if hasattr(self, 'http_reader') and self.http_reader and hasattr(self.http_reader, 'error_occurred'):
-                    if self.http_reader.error_occurred and not self.needs_stream_switch:
-                        logger.warning(f"HTTP reader error detected for channel {self.channel_id}, triggering immediate stream switch")
-                        self.needs_stream_switch = True
-                        self.last_health_action_time = now
-                        consecutive_unhealthy_checks = 0
 
                 if inactivity_duration > timeout_threshold and self.connected:
                     if self.healthy:
@@ -1552,7 +1691,8 @@ class StreamManager:
             if hasattr(self, 'stderr_reader_thread') and self.stderr_reader_thread and self.stderr_reader_thread.is_alive():
                 try:
                     logger.debug(f"Waiting for stderr reader thread to terminate for channel {self.channel_id}")
-                    self.stderr_reader_thread.join(timeout=2.0)
+                    stderr_join_timeout = 0.25 if self.stopping else 2.0
+                    self.stderr_reader_thread.join(timeout=stderr_join_timeout)
                     if self.stderr_reader_thread.is_alive():
                         logger.warning(f"Stderr reader thread did not terminate within timeout for channel {self.channel_id}")
                 except Exception as e:
@@ -1645,6 +1785,10 @@ class StreamManager:
                 self.connected = False
                 return False
 
+            if not self._upstream_may_continue():
+                self.stop()
+                return False
+
             # Track chunk size before adding to buffer
             chunk_size = len(chunk)
             self._update_bytes_processed(chunk_size)
@@ -1652,7 +1796,6 @@ class StreamManager:
             # Add directly to buffer without TS-specific processing
             success = self.buffer.add_chunk(chunk)
 
-            # Update last data timestamp in Redis if successful
             if success and hasattr(self.buffer, 'redis_client') and self.buffer.redis_client:
                 last_data_key = RedisKeys.last_data(self.buffer.channel_id)
                 self.buffer.redis_client.set(last_data_key, str(time.time()), ex=60)
@@ -1791,8 +1934,7 @@ class StreamManager:
     def _try_next_stream(self):
         """
         Try to switch to the next available stream for this channel.
-        Implements profile failover - tries different profiles for the same stream before moving to next stream.
-        Includes cooldown system to prevent rapid retries of failed combinations.
+        Will iterate through multiple alternate streams if needed to find one with a different URL.
 
         Returns:
             bool: True if successfully switched to a new stream, False otherwise
@@ -1801,25 +1943,35 @@ class StreamManager:
             logger.info(f"Trying to find alternative stream for channel {self.channel_id}, current stream ID: {self.current_stream_id}, current profile ID: {self.current_profile_id}")
 
             # Mark current combination as tried and set cooldown
+            # Use Redis as single source of truth to avoid race condition
             if self.current_stream_id and self.current_profile_id:
+                # Always add to local set for fast lookup
                 self.tried_combinations.add((self.current_stream_id, self.current_profile_id))
-                # Set cooldown in Redis (survives channel restarts, auto-expires via TTL)
+                
+                # Set cooldown in Redis FIRST (atomic operation, single source of truth)
                 if ConfigHelper.stream_cooldown_enabled() and hasattr(self.buffer, 'redis_client') and self.buffer.redis_client:
-                    cooldown_secs = ConfigHelper.stream_cooldown_seconds()
-                    cooldown_key = RedisKeys.stream_cooldown(self.channel_id, self.current_stream_id, self.current_profile_id)
-                    failed_at = time.time()
-                    retry_at = failed_at + cooldown_secs
-                    self.buffer.redis_client.setex(
-                        cooldown_key, 
-                        cooldown_secs, 
-                        f"{failed_at}:{retry_at}"
-                    )
-                    mins = int(cooldown_secs // 60)
-                    secs = int(cooldown_secs % 60)
-                    logger.info(
-                        f"\033[31m[COOLDOWN]\033[0m Set cooldown for stream {self.current_stream_id}/profile "
-                        f"{self.current_profile_id} on channel {self.channel_id} for {mins}m {secs}s"
-                    )
+                    try:
+                        cooldown_secs = ConfigHelper.stream_cooldown_seconds()
+                        cooldown_key = RedisKeys.stream_cooldown(self.channel_id, self.current_stream_id, self.current_profile_id)
+                        failed_at = time.time()
+                        retry_at = failed_at + cooldown_secs
+                        
+                        # Atomic Redis operation - this is our source of truth
+                        self.buffer.redis_client.setex(
+                            cooldown_key, 
+                            cooldown_secs, 
+                            f"{failed_at}:{retry_at}"
+                        )
+                        
+                        mins = int(cooldown_secs // 60)
+                        secs = int(cooldown_secs % 60)
+                        logger.info(
+                            f"\033[31m[COOLDOWN]\033[0m Set cooldown for stream {self.current_stream_id}/profile "
+                            f"{self.current_profile_id} on channel {self.channel_id} for {mins}m {secs}s"
+                        )
+                    except Exception as e:
+                        logger.error(f"Failed to set cooldown in Redis: {e}")
+                        # Continue anyway - tried_combinations set will still work
 
             # Get alternate streams with ALL profiles (not just default)
             # Pass current_profile_id so we can skip only the failing stream+profile combination
@@ -1836,17 +1988,23 @@ class StreamManager:
             if ConfigHelper.stream_cooldown_enabled() and hasattr(self.buffer, 'redis_client') and self.buffer.redis_client:
                 cooled_down = []
                 for s in untried_combinations:
-                    cooldown_key = RedisKeys.stream_cooldown(self.channel_id, s['stream_id'], s['profile_id'])
-                    if self.buffer.redis_client.exists(cooldown_key):
-                        ttl = self.buffer.redis_client.ttl(cooldown_key)
-                        mins = int(ttl // 60)
-                        secs = int(ttl % 60)
-                        logger.debug(
-                            f"\033[31m[COOLDOWN]\033[0m Skipping stream {s['stream_id']}/profile {s['profile_id']} "
-                            f"- blocked for {mins}m {secs}s more"
-                        )
-                    else:
+                    try:
+                        cooldown_key = RedisKeys.stream_cooldown(self.channel_id, s['stream_id'], s['profile_id'])
+                        if self.buffer.redis_client.exists(cooldown_key):
+                            ttl = self.buffer.redis_client.ttl(cooldown_key)
+                            mins = int(ttl // 60)
+                            secs = int(ttl % 60)
+                            logger.debug(
+                                f"\033[31m[COOLDOWN]\033[0m Skipping stream {s['stream_id']}/profile {s['profile_id']} "
+                                f"- blocked for {mins}m {secs}s more"
+                            )
+                        else:
+                            cooled_down.append(s)
+                    except Exception as e:
+                        # Redis error - assume not on cooldown (fail-open for resilience)
+                        logger.warning(f"Redis error checking cooldown for stream {s['stream_id']}/profile {s['profile_id']}: {e}")
                         cooled_down.append(s)
+                
                 skipped = len(untried_combinations) - len(cooled_down)
                 if skipped > 0:
                     logger.info(f"\033[31m[COOLDOWN]\033[0m Skipped {skipped} combinations on cooldown for channel {self.channel_id}")
@@ -1869,25 +2027,38 @@ class StreamManager:
                         and hasattr(self.buffer, 'redis_client')
                         and self.buffer.redis_client
                         and alternate_streams):
-                    cooldown_pattern = f"live:channel:{self.channel_id}:cooldown:*"
-                    cursor = 0
-                    deleted = 0
-                    while True:
-                        cursor, keys = self.buffer.redis_client.scan(cursor, match=cooldown_pattern, count=100)
-                        if keys:
-                            self.buffer.redis_client.delete(*keys)
-                            deleted += len(keys)
-                        if cursor == 0:
-                            break
-                    if deleted > 0:
-                        logger.info(
-                            f"\033[31m[COOLDOWN]\033[0m Last resort: cleared {deleted} cooldown(s) for channel "
-                            f"{self.channel_id} - retrying all combinations"
-                        )
-                        # Also reset tried_combinations so everything is fresh
-                        self.tried_combinations.clear()
-                        # Retry immediately with the full list
-                        untried_combinations = alternate_streams
+                    try:
+                        cooldown_pattern = f"live:channel:{self.channel_id}:cooldown:*"
+                        cursor = 0
+                        deleted = 0
+                        max_iterations = 1000  # Safety limit to prevent infinite loop
+                        iterations = 0
+                        
+                        while iterations < max_iterations:
+                            cursor, keys = self.buffer.redis_client.scan(cursor, match=cooldown_pattern, count=100)
+                            if keys:
+                                self.buffer.redis_client.delete(*keys)
+                                deleted += len(keys)
+                            if cursor == 0:
+                                break
+                            iterations += 1
+                        
+                        if iterations >= max_iterations:
+                            logger.warning(f"Last resort scan reached max iterations ({max_iterations}) for channel {self.channel_id}")
+                        
+                        if deleted > 0:
+                            logger.warning(
+                                f"\033[31m[COOLDOWN]\033[0m All combinations tried and on cooldown. "
+                                f"LAST RESORT: Cleared {deleted} cooldowns for channel "
+                                f"{self.channel_id} - retrying all combinations"
+                            )
+                            # Also reset tried_combinations so everything is fresh
+                            self.tried_combinations.clear()
+                            # Retry immediately with the full list
+                            untried_combinations = alternate_streams
+                    except Exception as e:
+                        logger.error(f"Last resort cooldown clear failed: {e}")
+                        # Don't retry if we can't clear cooldowns
 
                 if not untried_combinations:
                     return False
@@ -1900,68 +2071,61 @@ class StreamManager:
                 self.tried_combinations.add((stream_id, profile_id))
 
                 # Get stream info using the SPECIFIC profile from get_alternate_streams
-                # This is the key to profile failover - we use the exact profile suggested
                 logger.info(f"Trying next stream ID {stream_id} with profile ID {profile_id} for channel {self.channel_id}")
-                stream_info = get_stream_info_for_profile(self.channel_id, stream_id, profile_id)
+                stream_info = get_stream_info_for_switch(self.channel_id, stream_id)
 
-                if not stream_info or 'stream_url' not in stream_info:
-                    logger.error(f"Error getting info for stream {stream_id} with profile {profile_id} for channel {self.channel_id}")
-                    continue  # Try next combination
+                if 'error' in stream_info or not stream_info.get('url'):
+                    logger.error(f"Error getting info for stream {stream_id} for channel {self.channel_id}: {stream_info.get('error', 'No URL')}")
+                    continue  # Try next stream instead of giving up
 
                 # Update URL and user agent
-                new_url = stream_info['stream_url']
+                new_url = stream_info['url']
                 new_user_agent = stream_info['user_agent']
                 new_transcode = stream_info['transcode']
 
                 # Check if the new URL is the same as current URL
+                # This can happen when current_stream_id is None and we accidentally select the same stream
                 if new_url == self.url:
-                    logger.warning(f"Stream ID {stream_id} with profile {profile_id} generates the same URL as current stream ({new_url}). "
-                                 f"Skipping this combination and trying next alternative.")
-                    continue  # Try next combination
+                    logger.warning(f"Stream ID {stream_id} generates the same URL as current stream ({new_url}). "
+                                 f"Skipping this stream and trying next alternative.")
+                    continue  # Try next stream instead of giving up
 
-                logger.info(f"Switching from URL {self.url} to {new_url} for channel {self.channel_id} (stream={stream_id}, profile={profile_id})")
+                logger.info(f"Switching from URL {self.url} to {new_url} for channel {self.channel_id}")
 
                 # Just update the URL, don't stop the channel or release resources
                 switch_result = self.update_url(new_url, stream_id, profile_id)
                 if not switch_result:
-                    logger.error(f"Failed to update URL for stream ID {stream_id} with profile {profile_id} for channel {self.channel_id}")
-                    continue  # Try next combination
+                    logger.error(f"Failed to update URL for stream ID {stream_id} for channel {self.channel_id}")
+                    continue  # Try next stream
 
-                # Update tracking variables
+                # Update stream ID and profile ID tracking
                 self.current_stream_id = stream_id
                 self.current_profile_id = profile_id
-                self.last_stream_switch_time = time.time()
+
+                # Also update tried_stream_ids for backward compatibility with error messages
+                self.tried_stream_ids.add(stream_id)
 
                 # Store the new user agent and transcode settings
                 self.user_agent = new_user_agent
                 self.transcode = new_transcode
 
-                # Update stream metadata in Redis with the specific profile ID
+                # Update stream metadata in Redis - use the profile_id we got from get_alternate_streams
                 if hasattr(self.buffer, 'redis_client') and self.buffer.redis_client:
                     metadata_key = RedisKeys.channel_metadata(self.channel_id)
-                    
-                    # Get channel's stream profile ID
-                    from apps.channels.models import Channel
-                    try:
-                        channel = Channel.objects.get(uuid=self.channel_id)
-                        stream_profile_id = channel.get_stream_profile().id
-                    except:
-                        stream_profile_id = 1  # Fallback to default
-                    
                     self.buffer.redis_client.hset(metadata_key, mapping={
                         ChannelMetadataField.URL: new_url,
                         ChannelMetadataField.USER_AGENT: new_user_agent,
-                        ChannelMetadataField.STREAM_PROFILE: str(stream_profile_id),
+                        ChannelMetadataField.STREAM_PROFILE: stream_info['stream_profile'],
                         ChannelMetadataField.M3U_PROFILE: str(profile_id),  # Use the profile_id from get_alternate_streams
                         ChannelMetadataField.STREAM_ID: str(stream_id),
                         ChannelMetadataField.STREAM_SWITCH_TIME: str(time.time()),
-                        ChannelMetadataField.STREAM_SWITCH_REASON: "profile_failover"
+                        ChannelMetadataField.STREAM_SWITCH_REASON: "max_retries_exceeded"
                     })
 
                     # Log the switch
                     logger.info(f"Stream metadata updated for channel {self.channel_id} to stream ID {stream_id} with M3U profile {profile_id}")
 
-                logger.info(f"Successfully switched to stream ID {stream_id} with profile {profile_id} and URL {new_url} for channel {self.channel_id}")
+                logger.info(f"Successfully switched to stream ID {stream_id} with URL {new_url} for channel {self.channel_id}")
                 return True
 
             # If we get here, we tried all combinations but none worked

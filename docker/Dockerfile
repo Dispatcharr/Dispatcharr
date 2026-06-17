@@ -21,9 +21,7 @@ ARG REPO_NAME
 ARG BASE_TAG
 
 # --- Final image based on the dynamic base ---
-# For local builds, Docker will automatically find local images first before checking registries
-# When building locally with --build-arg REPO_OWNER=sbeimel, it will use the local sbeimel/dispatcharr:base
-FROM ${REPO_OWNER}/${REPO_NAME}:${BASE_TAG} AS final
+FROM ghcr.io/${REPO_OWNER}/${REPO_NAME}:${BASE_TAG} AS final
 ENV VIRTUAL_ENV=/dispatcharrpy
 ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 WORKDIR /app

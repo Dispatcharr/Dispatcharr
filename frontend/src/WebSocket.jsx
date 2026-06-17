@@ -366,22 +366,26 @@ export const WebsocketProvider = ({ children }) => {
               fetchEPGData();
               break;
 
+            case 'single_channel_epg_match': {
+              const matchResult = parsedEvent.data;
+              if (matchResult.channel) {
+                useChannelsStore.getState().updateChannel(matchResult.channel);
+              }
+              window.dispatchEvent(
+                new CustomEvent('single-channel-epg-match', {
+                  detail: matchResult,
+                })
+              );
+              break;
+            }
+
             case 'epg_match':
               notifications.show({
                 message: parsedEvent.data.message || 'EPG match is complete!',
                 color: 'green.5',
               });
 
-              // Check if we have associations data and use the more efficient batch API
-              if (
-                parsedEvent.data.associations &&
-                parsedEvent.data.associations.length > 0
-              ) {
-                API.batchSetEPG(parsedEvent.data.associations);
-              }
-
-              // Refresh EPG store first, then requery channels so the table
-              // cross-references updated epg_data_id assignments immediately
+              // Celery already applied assignments server-side; refresh local state.
               fetchEPGData();
               API.requeryChannels();
               break;
@@ -647,8 +651,13 @@ export const WebsocketProvider = ({ children }) => {
               // Read from the store directly. connectWebSocket closes over a stale
               // epgs snapshot, so a newly created source is missed and the old early-
               // return path never reached fetchEPGData on parsing_channels completion.
-              let { epgs: epgsState, updateEPG, updateEPGProgress, fetchEPGs, fetchEPGData } =
-                useEPGsStore.getState();
+              let {
+                epgs: epgsState,
+                updateEPG,
+                updateEPGProgress,
+                fetchEPGs,
+                fetchEPGData,
+              } = useEPGsStore.getState();
 
               if (!epgsState[sourceId]) {
                 try {
@@ -694,8 +703,7 @@ export const WebsocketProvider = ({ children }) => {
                 updateEPG({
                   ...epg,
                   status: parsedEvent.data.status || 'success',
-                  last_message:
-                    parsedEvent.data.message || epg.last_message,
+                  last_message: parsedEvent.data.message || epg.last_message,
                   ...(parsedEvent.data.updated_at && {
                     updated_at: parsedEvent.data.updated_at,
                   }),

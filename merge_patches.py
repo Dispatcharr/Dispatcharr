@@ -4,6 +4,7 @@
 patches = [
     'dispatcharr_v0.26.0_COMPLETE_FIX.patch',
     'dispatcharr_v0.25.1_enhancements.patch',
+    'dispatcharr_v0.26.0_uuid_logging_fix.patch',
 ]
 
 output = 'dispatcharr_v0.26.0_ULTIMATE.patch'

@@ -52,24 +52,13 @@ export const PROXY_SETTINGS_OPTIONS = {
       'Delay in seconds before shutting down a channel after last client disconnects',
   },
   channel_init_grace_period: {
-    label: 'Buffer Timeout / Initialization Grace Period',
-    description:
-      'Time in seconds to wait for buffer to fill before triggering failover to alternate profiles/streams. Also used as grace period during channel initialization. Lower = faster failover, Higher = more patience with slow streams.',
+    label: 'Channel Initialization Grace Period',
+    description: 'Grace period in seconds during channel initialization',
   },
   new_client_behind_seconds: {
     label: 'New Client Buffer (seconds)',
     description:
       'Seconds of received buffer to start behind live when a new client connects (0 = start at live). Note: this is chunk receive time, not video duration.',
-  },
-  stream_cooldown_enabled: {
-    label: 'Stream Cooldown Enabled',
-    description:
-      'Enable cooldown system to prevent rapid retries of failed stream/profile combinations',
-  },
-  stream_cooldown_minutes: {
-    label: 'Stream Cooldown Duration (minutes)',
-    description:
-      'How long to wait before retrying a failed stream/profile combination (prevents endless loops)',
   },
 };
 

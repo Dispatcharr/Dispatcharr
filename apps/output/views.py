@@ -28,43 +28,6 @@ import hashlib
 
 logger = logging.getLogger(__name__)
 
-
-def get_basic_auth_user(request):
-    """
-    Extract and authenticate user from HTTP Basic Auth header.
-    Returns User object if valid, None otherwise.
-    """
-    auth_header = request.META.get('HTTP_AUTHORIZATION', '')
-    
-    if not auth_header.startswith('Basic '):
-        return None
-    
-    try:
-        # Decode base64 credentials
-        auth_decoded = base64.b64decode(auth_header[6:]).decode('utf-8')
-        username, password = auth_decoded.split(':', 1)
-        
-        # Authenticate
-        from django.contrib.auth import authenticate
-        user = authenticate(username=username, password=password)
-        
-        if user and user.is_active:
-            return user
-    except Exception as e:
-        logger.error(f"Basic auth failed: {e}")
-    
-    return None
-
-
-def require_basic_auth(request):
-    """
-    Return a 401 response requesting Basic Authentication.
-    """
-    response = HttpResponse('Unauthorized', status=401)
-    response['WWW-Authenticate'] = 'Basic realm="Dispatcharr"'
-    return response
-
-
 def get_client_identifier(request):
     """Get client information including IP, user agent, and a unique hash identifier
 
@@ -87,6 +50,46 @@ def get_client_identifier(request):
 
     return client_id_hash, client_ip, user_agent
 
+def get_basic_auth_user(request):
+    """
+    Extract and validate user from HTTP Basic Authentication header.
+    Returns the authenticated user or None if auth fails.
+    """
+    auth_header = request.META.get('HTTP_AUTHORIZATION', '')
+    if not auth_header.startswith('Basic '):
+        return None
+    
+    try:
+        # Decode base64 credentials
+        auth_decoded = base64.b64decode(auth_header[6:]).decode('utf-8')
+        username, password = auth_decoded.split(':', 1)
+        
+        # Authenticate using Django's auth system
+        from django.contrib.auth import authenticate
+        user = authenticate(username=username, password=password)
+        
+        if user and user.is_active:
+            return user
+    except Exception as e:
+        logger.error(f"Basic authentication failed: {e}")
+    
+    return None
+
+def require_basic_auth(request):
+    """
+    Helper to require HTTP Basic Authentication.
+    Returns 401 with WWW-Authenticate header if auth fails.
+    Returns authenticated user if successful.
+    """
+    user = get_basic_auth_user(request)
+    
+    if not user:
+        response = HttpResponse('Unauthorized', status=401)
+        response['WWW-Authenticate'] = 'Basic realm="Dispatcharr"'
+        return response
+    
+    return user
+
 def m3u_endpoint(request, profile_name=None, user=None):
     logger.debug("m3u_endpoint called: method=%s, profile=%s", request.method, profile_name)
     if not network_access_allowed(request, "M3U_EPG"):
@@ -103,11 +106,12 @@ def m3u_endpoint(request, profile_name=None, user=None):
         )
         return JsonResponse({"error": "Forbidden"}, status=403)
 
-    # Require Basic Auth if no user provided
-    if user is None:
-        user = get_basic_auth_user(request)
-        if user is None:
-            return require_basic_auth(request)
+    # If no user provided, try Basic Authentication as fallback
+    if not user:
+        auth_result = require_basic_auth(request)
+        if isinstance(auth_result, HttpResponse):
+            return auth_result
+        user = auth_result
 
     # Handle HEAD requests efficiently without generating content
     if request.method == "HEAD":
@@ -134,11 +138,12 @@ def epg_endpoint(request, profile_name=None, user=None):
         )
         return JsonResponse({"error": "Forbidden"}, status=403)
 
-    # Require Basic Auth if no user provided
-    if user is None:
-        user = get_basic_auth_user(request)
-        if user is None:
-            return require_basic_auth(request)
+    # If no user provided, try Basic Authentication as fallback
+    if not user:
+        auth_result = require_basic_auth(request)
+        if isinstance(auth_result, HttpResponse):
+            return auth_result
+        user = auth_result
 
     # Handle HEAD requests efficiently without generating content
     if request.method == "HEAD":

@@ -1,0 +1,38 @@
+========================================
+DISPATCHARR v0.26.0 UUID LOGGING FIX
+========================================
+Fixes: "Could not log channel start event" when channel_id is a stream_hash (SHA256)
+       instead of a valid UUID (e.g. stream preview mode).
+
+Affects: apps/proxy/live_proxy/server.py - initialize_channel() method
+
+Apply with: patch -p0 < dispatcharr_v0.26.0_uuid_logging_fix.patch
+Or manually apply changes to the file listed below.
+
+========================================
+FIX: UUID Validation Before DB Query
+========================================
+
+--- a/apps/proxy/live_proxy/server.py
++++ b/apps/proxy/live_proxy/server.py
+@@ -738,9 +738,16 @@
+ 
+             # Log channel start event
+             try:
+-                _name = Channel.objects.filter(uuid=channel_id).values_list('name', flat=True).first()
+-                channel_name = _name if _name else str(channel_id)
++                channel_name = str(channel_id)
++                # Safely try to get the channel name - channel_id may not be a valid UUID (e.g. stream preview uses stream_hash)
++                try:
++                    import uuid as uuid_module
++                    uuid_module.UUID(str(channel_id))
++                    _name = Channel.objects.filter(uuid=channel_id).values_list('name', flat=True).first()
++                    if _name:
++                        channel_name = _name
++                except (ValueError, AttributeError):
++                    # channel_id is not a UUID (e.g. stream hash) - use string representation
++                    pass
++
+                 self._channel_names[channel_id] = channel_name
+ 
+                 # Get stream name if stream_id is available
