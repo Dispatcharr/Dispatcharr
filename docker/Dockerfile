@@ -44,12 +44,22 @@ RUN /dispatcharrpy/bin/python -c "import drf_spectacular" 2>/dev/null || \
     (echo "Installing missing drf-spectacular..." && \
     uv pip install --python /dispatcharrpy/bin/python drf-spectacular>=0.29.0)
 
+RUN /dispatcharrpy/bin/python -c "import django_redis" 2>/dev/null || \
+    (echo "Installing missing django-redis..." && \
+    uv pip install --python /dispatcharrpy/bin/python django-redis)
+
+RUN /dispatcharrpy/bin/python -c "import channels_redis" 2>/dev/null || \
+    (echo "Installing missing channels-redis..." && \
+    uv pip install --python /dispatcharrpy/bin/python channels-redis)
+
 # Final verification - fail build if packages are still missing
 RUN echo "=== Final verification ===" && \
     /dispatcharrpy/bin/python -c "import psycopg; print('✓ psycopg version:', psycopg.__version__)" && \
     /dispatcharrpy/bin/python -c "import psycopg.pq; print('✓ psycopg binary driver')" && \
     /dispatcharrpy/bin/python -c "import django_db_geventpool; print('✓ django-db-geventpool available')" && \
-    /dispatcharrpy/bin/python -c "import drf_spectacular; print('✓ drf-spectacular available')"
+    /dispatcharrpy/bin/python -c "import drf_spectacular; print('✓ drf-spectacular available')" && \
+    /dispatcharrpy/bin/python -c "import django_redis; print('✓ django-redis available')" && \
+    /dispatcharrpy/bin/python -c "import channels_redis; print('✓ channels-redis available')"
 
 # Copy application code
 COPY . /app

@@ -40,7 +40,9 @@ RUN echo "=== Ensuring critical packages with correct versions ===" && \
     uv pip install --python $UV_PROJECT_ENVIRONMENT/bin/python \
     'psycopg[binary]>=3.1.18' \
     django-db-geventpool>=4.0.8 \
-    drf-spectacular>=0.29.0
+    drf-spectacular>=0.29.0 \
+    django-redis \
+    channels-redis
 
 # Verify critical packages are installed
 RUN echo "=== Verifying critical packages ===" && \
@@ -49,6 +51,8 @@ RUN echo "=== Verifying critical packages ===" && \
     $UV_PROJECT_ENVIRONMENT/bin/python -c "import gevent; print('✓ gevent')" && \
     $UV_PROJECT_ENVIRONMENT/bin/python -c "import psycopg; print('✓ psycopg version:', psycopg.__version__)" && \
     $UV_PROJECT_ENVIRONMENT/bin/python -c "import psycopg.pq; print('✓ psycopg.pq binary driver')" && \
+    $UV_PROJECT_ENVIRONMENT/bin/python -c "import django_redis; print('✓ django-redis')" && \
+    $UV_PROJECT_ENVIRONMENT/bin/python -c "import channels_redis; print('✓ channels-redis')" && \
     echo "=== All critical packages verified ==="
 
 WORKDIR /
