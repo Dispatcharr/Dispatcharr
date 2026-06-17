@@ -42,6 +42,8 @@ const ProxySettingsOptions = React.memo(({ proxySettingsForm }) => {
         ? 3600
         : key === 'channel_shutdown_delay'
           ? 300
+          : key === 'channel_init_grace_period'
+            ? 120
           : key === 'new_client_behind_seconds'
             ? 120
             : key === 'stream_cooldown_minutes'

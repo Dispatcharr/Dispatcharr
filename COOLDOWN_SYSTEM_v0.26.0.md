@@ -347,7 +347,7 @@ A: Cooldown funktioniert auch für Stream Preview! Gleiche Logik, nur dass Profi
 
 ## ⚠️ WICHTIGE BUG-FIXES (nachträglich entdeckt)
 
-### KRITISCH: StreamProfile.build_command() - Transcode-Streams komplett kaputt
+### KRITISCH 1: StreamProfile.build_command() - Transcode-Streams komplett kaputt
 
 **Datei:** `core/models.py`
 
@@ -362,6 +362,29 @@ ERROR live_proxy.manager Error establishing transcode connection:
 **Folge:** Das Failover-System raste in Sekundenschnelle durch alle 66+ Stream+Profil-Kombinationen ohne je zu streamen.
 
 **Fix:** `proxy=None` als optionalen Parameter + `{proxy}` Platzhalter + automatische ffmpeg `-http_proxy` Injection.
+
+---
+
+### KRITISCH 2: Buffer Timeout Failover - Kein Bild → Kein Failover
+
+**Datei:** `apps/proxy/live_proxy/server.py`
+
+**Problem:** Stream verbindet erfolgreich, aber Buffer füllt sich **nicht** (keine Daten). Nach 5 Sekunden wird Channel **gestoppt** statt Failover zu probieren.
+
+**Symptom in Logs:**
+```
+HTTP reader connecting to http://... ✅
+Started HTTP stream reader thread ✅
+Channel connected but waiting for buffer to fill: 0/4 chunks ❌
+→ 5 Sekunden warten...
+→ Channel GESTOPPT (kein Failover!) ❌
+```
+
+**Folge:** Streams mit technischen Problemen (keine Daten, korrupte Daten, zu langsam) werden **sofort gestoppt** ohne Failover zu versuchen.
+
+**Betrifft:** ALLE Streams (normal + Preview), ALLE Stream-Typen (HTTP, HLS, RTSP, UDP)
+
+**Fix:** Cleanup-Thread triggert `stream_manager.needs_stream_switch = True` statt `stop_channel()` → Probiert alle Profile + Backup-Streams.
 
 ---
 

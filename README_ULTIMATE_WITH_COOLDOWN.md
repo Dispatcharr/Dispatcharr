@@ -12,6 +12,7 @@ Dieser Patch enthält **ALLE Fixes und Features** für Dispatcharr v0.26.0:
 6. ✅ **CRITICAL: StreamProfile.build_command() Proxy-Fix** (Transcode-Streams kaputt) **[KRITISCH!]**
 7. ✅ **Stream-Preview UUID-Fix** (log_system_event Fehler)
 8. ✅ **current_profile_id Fix beim manuellen Stream-Wechsel** (Failover-Tracking falsch)
+9. ✅ **CRITICAL: Buffer Timeout Failover** (kein Bild → kein Failover) **[KRITISCH!]**
 
 ---
 
@@ -103,7 +104,7 @@ Stream 2 + Profile 3 → wird probiert
 
 ## Geänderte Dateien
 
-### Backend (18 Dateien)
+### Backend (19 Dateien)
 
 **Docker:**
 1. `docker/DispatcharrBase` - Single-stage build
@@ -135,8 +136,24 @@ Stream 2 + Profile 3 → wird probiert
 **⚠️ KRITISCHE BUG-FIXES:**
 19. `core/models.py` - StreamProfile.build_command() Proxy-Fix (Transcode-Streams)
 20. `core/utils.py` - log_system_event() UUID-Validierung (Stream-Preview)
+21. `apps/proxy/live_proxy/server.py` - Buffer Timeout Failover (kein Bild → Failover)
 
-### Frontend (8 Dateien)
+### Frontend (10 Dateien)
+
+**HTTP Proxy UI:**
+1-4. `frontend/src/components/forms/m3u/` - 4 files
+5. `frontend/src/constants.js` - Proxy constants
+
+**Timeout Settings UI:**
+6. `frontend/src/components/forms/settings/ProxyTimeoutSettingsForm.jsx`
+7. `frontend/src/utils/forms/settings/ProxyTimeoutSettingsFormUtils.js`
+
+**Cooldown UI:**
+8. `frontend/src/components/forms/settings/ProxySettingsForm.jsx` - Checkbox support + Buffer timeout config
+9. `frontend/src/utils/forms/settings/ProxySettingsFormUtils.js` - Cooldown defaults
+10. `frontend/src/constants.js` - Cooldown + Buffer timeout constants
+
+**Total:** 29 Dateien (19 Backend + 10 Frontend)
 
 **HTTP Proxy UI:**
 1-4. `frontend/src/components/forms/m3u/` - 4 files
@@ -151,7 +168,7 @@ Stream 2 + Profile 3 → wird probiert
 9. `frontend/src/utils/forms/settings/ProxySettingsFormUtils.js` - Cooldown defaults
 10. `frontend/src/constants.js` - Cooldown constants
 
-**Total:** 26 Dateien (18 Backend + 8 Frontend)
+**Total:** 29 Dateien (19 Backend + 10 Frontend)
 
 ---
 
@@ -246,6 +263,74 @@ if channel_id is not None:
 **Betroffene Dateien:**
 - `core/utils.py` - log_system_event() UUID-Validierung
 
+### 8. ⚠️ KRITISCHER BUG-FIX: Buffer Timeout Failover
+
+**Problem:** Stream verbindet erfolgreich, aber Buffer füllt sich **nicht** (keine Daten vom Provider). Nach 5 Sekunden wird der Channel **gestoppt** statt Failover zu probieren.
+
+**Symptome:**
+```
+HTTP reader connecting to http://... ✅
+Started HTTP stream reader thread ✅
+Channel connected but waiting for buffer to fill: 0/4 chunks ❌
+→ 5 Sekunden warten...
+→ Channel GESTOPPT (kein Failover!) ❌
+→ Kein Bild beim Client
+```
+
+**Auswirkung:** **KRITISCH** - Betrifft ALLE Streams (normal + Preview)!
+
+**Szenarien ohne Failover:**
+1. Provider liefert keine Daten (Connection OK, aber Stream tot)
+2. Korrupte Daten (Connection OK, aber Daten unparseable)
+3. Zu langsame Streams (Buffer füllt sich zu langsam)
+4. Fehlerhafte Transcode-Profiles (FFmpeg verbindet, aber Output leer)
+
+**Fix in `apps/proxy/live_proxy/server.py`:**
+```python
+# VORHER (KAPUTT):
+if time_since_start > connecting_timeout:
+    self.stop_channel(channel_id)  # Gibt sofort auf!
+
+# NACHHER (FIXED):
+if time_since_start > connecting_timeout:
+    stream_manager = self.stream_managers.get(channel_id)
+    if stream_manager and not getattr(stream_manager, 'url_switching', False):
+        # Trigger Failover statt Stop!
+        stream_manager.needs_stream_switch = True
+        logger.info(f"Failover signal sent to StreamManager")
+    else:
+        self.stop_channel(channel_id)
+```
+
+**Ergebnis:** 
+- Probiert **alle Profile** des aktuellen Streams
+- Probiert **Backup-Streams** (Stream 2, 3, etc.)
+- Probiert **alle Profile der Backup-Streams**
+- Automatisches Failover ohne manuellen Eingriff
+
+**UI-Konfiguration:**
+
+**Settings → Proxy Settings → Buffer Timeout / Initialization Grace Period**
+
+```
+🔢 Buffer Timeout / Initialization Grace Period: 5  [NumberInput 0-120 seconds]
+
+Beschreibung: Time in seconds to wait for buffer to fill before triggering 
+failover to alternate profiles/streams. Lower = faster failover, 
+Higher = more patience with slow streams.
+```
+
+**Empfohlene Werte:**
+- **Schnelle Provider:** 3-5 Sekunden (schnelles Failover)
+- **Standard:** 5 Sekunden (default)
+- **Langsame/Instabile Provider:** 10-15 Sekunden (mehr Geduld)
+- **Sehr langsame Streams:** 15-30 Sekunden (maximale Geduld)
+
+**Betroffene Dateien:**
+- `apps/proxy/live_proxy/server.py` - Cleanup-Thread Failover-Trigger
+- `frontend/src/constants.js` - UI Label + Description
+- `frontend/src/components/forms/settings/ProxySettingsForm.jsx` - Max value 120s
+
 ---
 
 ## Testing
@@ -290,7 +375,35 @@ Sollte ohne Fehler durchlaufen und alle Packages verifizieren.
 [COOLDOWN] Last resort: cleared 6 cooldown(s) - retrying all combinations
 ```
 
-### 4. HTTP Proxy testen
+### 4. Buffer Timeout Failover testen
+
+**Default (5 Sekunden):**
+```bash
+# Stream verbindet, aber Buffer füllt sich nicht
+# Nach 5s: Failover zu nächstem Profile/Stream
+
+# Logs sollten zeigen:
+Channel ... connected but waiting for buffer to fill: 0/4 chunks
+... 5 Sekunden warten ...
+Channel ... stuck in connecting state for 5.x s - triggering failover to alternate stream/profile
+Failover signal sent to StreamManager for channel ...
+Health monitor requested stream switch for channel ...
+Found X alternate streams
+Trying stream ID xxx with profile ID yyy
+```
+
+**UI-Test:**
+```bash
+# Settings → Proxy Settings
+# 🔢 Buffer Timeout / Initialization Grace Period: 10 seconds
+
+# Ändere Timeout auf 10 Sekunden
+# Speichere
+# Starte kaputten Stream
+# Erwartung: Failover nach 10s statt 5s
+```
+
+### 5. HTTP Proxy testen
 ```bash
 # M3U Account bearbeiten:
 # ☑ Use HTTP Proxy
@@ -465,6 +578,7 @@ redis-cli --scan --pattern "live:channel:*:cooldown:*" | xargs redis-cli del
 ✅ **Cooldown System** - Verhindert Endlosschleifen  
 🔴 **KRITISCH: build_command() Fix** - Transcode-Streams (ffmpeg/vlc) funktionierten gar nicht!  
 ✅ **UUID-Fix** - Stream-Preview log_system_event Fehler behoben  
+🔴 **KRITISCH: Buffer Timeout Failover** - Stream verbindet aber kein Bild → Failover statt Stop!  
 
 **Failover-Reihenfolge:**
 1. Erst alle Profile von Stream 1
