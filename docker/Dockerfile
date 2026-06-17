@@ -32,6 +32,10 @@ RUN echo "=== Verifying packages in final stage ===" && \
     echo "⚠️ WARNING: django-db-geventpool NOT found in final stage!"
 
 # Fallback: Install critical packages if they're missing
+RUN /dispatcharrpy/bin/python -c "import psycopg; import psycopg.pq" 2>/dev/null || \
+    (echo "⚠️  psycopg missing! Installing..." && \
+    uv pip install --python /dispatcharrpy/bin/python 'psycopg[binary]>=3.1.18')
+
 RUN /dispatcharrpy/bin/python -c "import django_db_geventpool" 2>/dev/null || \
     (echo "Installing missing django-db-geventpool..." && \
     uv pip install --python /dispatcharrpy/bin/python django-db-geventpool>=4.0.8)
@@ -42,6 +46,8 @@ RUN /dispatcharrpy/bin/python -c "import drf_spectacular" 2>/dev/null || \
 
 # Final verification - fail build if packages are still missing
 RUN echo "=== Final verification ===" && \
+    /dispatcharrpy/bin/python -c "import psycopg; print('✓ psycopg version:', psycopg.__version__)" && \
+    /dispatcharrpy/bin/python -c "import psycopg.pq; print('✓ psycopg binary driver')" && \
     /dispatcharrpy/bin/python -c "import django_db_geventpool; print('✓ django-db-geventpool available')" && \
     /dispatcharrpy/bin/python -c "import drf_spectacular; print('✓ drf-spectacular available')"
 

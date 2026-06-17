@@ -38,6 +38,7 @@ RUN uv sync --python 3.13 --no-cache --no-install-project --no-dev
 # EXPLICIT installation of critical packages that might be version-mismatched
 RUN echo "=== Ensuring critical packages with correct versions ===" && \
     uv pip install --python $UV_PROJECT_ENVIRONMENT/bin/python \
+    'psycopg[binary]>=3.1.18' \
     django-db-geventpool>=4.0.8 \
     drf-spectacular>=0.29.0
 
@@ -46,7 +47,9 @@ RUN echo "=== Verifying critical packages ===" && \
     $UV_PROJECT_ENVIRONMENT/bin/python -c "import django_db_geventpool; print('✓ django-db-geventpool')" && \
     $UV_PROJECT_ENVIRONMENT/bin/python -c "import drf_spectacular; print('✓ drf-spectacular')" && \
     $UV_PROJECT_ENVIRONMENT/bin/python -c "import gevent; print('✓ gevent')" && \
-    $UV_PROJECT_ENVIRONMENT/bin/python -c "import psycopg; print('✓ psycopg')"
+    $UV_PROJECT_ENVIRONMENT/bin/python -c "import psycopg; print('✓ psycopg version:', psycopg.__version__)" && \
+    $UV_PROJECT_ENVIRONMENT/bin/python -c "import psycopg.pq; print('✓ psycopg.pq binary driver')" && \
+    echo "=== All critical packages verified ==="
 
 WORKDIR /
 
