@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Live proxy now releases geventpool DB connections on more paths.** `stream_ts()` calls `close_old_connections()` before `StreamingHttpResponse` so clients waiting on channel init do not keep a pool slot while the generator polls Redis. `generate_stream_url()`, `get_stream_info_for_switch()`, `get_alternate_streams()`, and `get_connections_left()` release in `finally` blocks after ORM work on stream-manager failover paths that run outside Django's request cycle. TS client disconnect cleanup matches fMP4, and `ChannelService` metadata helpers release after their ORM lookups.
+
 ## [0.27.0] - 2026-06-16
 
 ### Added

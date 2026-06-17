@@ -3,6 +3,7 @@ import time
 import random
 import re
 import pathlib
+from django.db import close_old_connections
 from django.http import StreamingHttpResponse, JsonResponse, HttpResponseRedirect, HttpResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.shortcuts import get_object_or_404
@@ -617,7 +618,9 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
             )
             content_type = "video/mp2t"
 
-        # Return the StreamingHttpResponse from the main function
+        # Release ORM checkout before returning a long-lived StreamingHttpResponse.
+        close_old_connections()
+
         response = StreamingHttpResponse(
             streaming_content=generate(), content_type=content_type
         )
