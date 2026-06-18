@@ -76,6 +76,7 @@ class StreamManager:
         self.tried_combinations = set()  # Track (stream_id, profile_id) combinations
         self.tried_stream_ids = set()  # Keep for backward compatibility
         self.last_stream_switch_time = 0  # For adaptive health monitor
+        self.tried_combinations_reset_time = time.time() + 3600  # Reset tried combinations every hour
 
         if stream_id:
             self.tried_stream_ids.add(stream_id)
@@ -388,10 +389,16 @@ class StreamManager:
                                  f"Resetting switching state.")
                     self._reset_url_switching_state()
 
+                # Periodic reset of tried_combinations (every hour) to allow retry of temporarily failing streams
+                if time.time() > self.tried_combinations_reset_time and len(self.tried_combinations) > 0:
+                    logger.info(f"Hourly tried_combinations reset for channel {self.channel_id} - clearing {len(self.tried_combinations)} entries")
+                    self.tried_combinations.clear()
+                    self.tried_combinations_reset_time = time.time() + 3600  # Next reset in 1 hour
+
                 # NEW: Check for health monitor recovery requests
-                if hasattr(self, 'needs_reconnect') and self.needs_reconnect and not self.url_switching:
+                if hasattr(self, 'needs_reconnect') and self.needs_reconnect.is_set() and not self.url_switching:
                     logger.info(f"Health monitor requested reconnect for channel {self.channel_id}")
-                    self.needs_reconnect = False
+                    self.needs_reconnect.clear()
 
                     # Attempt reconnect without changing streams
                     if self._attempt_reconnect():
@@ -399,11 +406,11 @@ class StreamManager:
                         continue  # Go back to main loop
                     else:
                         logger.warning(f"Health-requested reconnect failed, will try stream switch for channel {self.channel_id}")
-                        self.needs_stream_switch = True
+                        self.needs_stream_switch.set()
 
-                if hasattr(self, 'needs_stream_switch') and self.needs_stream_switch and not self.url_switching:
+                if hasattr(self, 'needs_stream_switch') and self.needs_stream_switch.is_set() and not self.url_switching:
                     logger.info(f"Health monitor requested stream switch for channel {self.channel_id}")
-                    self.needs_stream_switch = False
+                    self.needs_stream_switch.clear()
 
                     if self._try_next_stream():
                         logger.info(f"Health-requested stream switch successful for channel {self.channel_id}")
@@ -432,7 +439,7 @@ class StreamManager:
                     gevent.sleep(0.1)
                     continue
                 # Connection retry loop for current URL
-                while self.running and self.retry_count < self.max_retries and not url_failed and not self.needs_stream_switch:
+                while self.running and self.retry_count < self.max_retries and not url_failed and not self.needs_stream_switch.is_set():
                     if not self._ensure_owner_or_stop():
                         break
 
@@ -472,7 +479,7 @@ class StreamManager:
                             connection_duration = time.time() - connection_start_time
                             stable_connection_threshold = 30  # 30 seconds threshold
 
-                            if self.needs_stream_switch:
+                            if self.needs_stream_switch.is_set():
                                 logger.info(f"Stream needs to switch after {connection_duration:.1f} seconds for channel: {self.channel_id}")
                                 break  # Exit to switch streams
                             if connection_duration > stable_connection_threshold:
@@ -1254,9 +1261,19 @@ class StreamManager:
         try:
             # Both transcode and HTTP now use the same subprocess/socket approach
             # This gives us perfect control: check flags between chunks, timeout just returns False
-            while self.running and self.connected and not self.stop_requested and not self.needs_stream_switch:
+            stable_streaming_reset_done = False  # Track if we've done the success-based reset
+            
+            while self.running and self.connected and not self.stop_requested and not self.needs_stream_switch.is_set():
                 if self.fetch_chunk():
                     self.last_data_time = time.time()
+                    
+                    # Success-based reset: clear tried_combinations after 5 minutes of stable streaming
+                    if not stable_streaming_reset_done and len(self.tried_combinations) > 0:
+                        connection_duration = self.last_data_time - getattr(self, 'connection_start_time', self.last_data_time)
+                        if connection_duration > 300:  # 5 minutes
+                            logger.info(f"Stream stable for {connection_duration:.0f}s - clearing {len(self.tried_combinations)} tried combinations for channel {self.channel_id}")
+                            self.tried_combinations.clear()
+                            stable_streaming_reset_done = True
                 else:
                     # fetch_chunk() returned False - could be timeout, no data, or error
                     if not self.running:
@@ -1303,6 +1320,11 @@ class StreamManager:
         self._invalidate_ownership_cache()
         if self.buffer is not None:
             self.buffer.stopping = True
+
+        # Clear tried_combinations when channel stops - allow fresh start on restart
+        if hasattr(self, 'tried_combinations') and len(self.tried_combinations) > 0:
+            logger.info(f"Clearing {len(self.tried_combinations)} tried combinations on channel stop for {self.channel_id}")
+            self.tried_combinations.clear()
 
         # Cancel all buffer check timers
         for timer in list(self._buffer_check_timers):
@@ -1462,9 +1484,10 @@ class StreamManager:
         consecutive_unhealthy_checks = 0
         max_unhealthy_checks = 3
 
-        # Add flags for the main loop to check
-        self.needs_reconnect = False
-        self.needs_stream_switch = False
+        # Add flags for the main loop to check (using gevent-safe Event objects)
+        import gevent.event
+        self.needs_reconnect = gevent.event.Event()
+        self.needs_stream_switch = gevent.event.Event()
         self.last_health_action_time = 0
         action_cooldown = 30  # Prevent rapid recovery attempts
 
@@ -1490,15 +1513,15 @@ class StreamManager:
                         stable_time = self.last_data_time - connection_start_time if connection_start_time > 0 else 0
 
                         if stable_time >= 30:  # Stream was stable, try reconnect first
-                            if not self.needs_reconnect:
+                            if not self.needs_reconnect.is_set():
                                 logger.info(f"Setting reconnect flag for stable stream (stable for {stable_time:.1f}s) for channel {self.channel_id}")
-                                self.needs_reconnect = True
+                                self.needs_reconnect.set()
                                 self.last_health_action_time = now
                         else:
                             # Stream wasn't stable, suggest stream switch
-                            if not self.needs_stream_switch:
+                            if not self.needs_stream_switch.is_set():
                                 logger.info(f"Setting stream switch flag for unstable stream (stable for {stable_time:.1f}s) for channel {self.channel_id}")
-                                self.needs_stream_switch = True
+                                self.needs_stream_switch.set()
                                 self.last_health_action_time = now
 
                         consecutive_unhealthy_checks = 0 # Reset after setting flag
@@ -1509,8 +1532,8 @@ class StreamManager:
                     self.healthy = True
                     consecutive_unhealthy_checks = 0
                     # Clear recovery flags when healthy again
-                    self.needs_reconnect = False
-                    self.needs_stream_switch = False
+                    self.needs_reconnect.clear()
+                    self.needs_stream_switch.clear()
 
                 if self.healthy:
                     consecutive_unhealthy_checks = 0
@@ -2030,22 +2053,17 @@ class StreamManager:
                         and alternate_streams):
                     try:
                         cooldown_pattern = f"live:channel:{self.channel_id}:cooldown:*"
-                        cursor = 0
                         deleted = 0
-                        max_iterations = 1000  # Safety limit to prevent infinite loop
-                        iterations = 0
                         
-                        while iterations < max_iterations:
-                            cursor, keys = self.buffer.redis_client.scan(cursor, match=cooldown_pattern, count=100)
-                            if keys:
-                                self.buffer.redis_client.delete(*keys)
-                                deleted += len(keys)
-                            if cursor == 0:
+                        # Use scan_iter for safer iteration (handles cursor automatically)
+                        for key in self.buffer.redis_client.scan_iter(match=cooldown_pattern, count=100):
+                            self.buffer.redis_client.delete(key)
+                            deleted += 1
+                            
+                            # Safety limit - if we're deleting more than 1000 keys, something is wrong
+                            if deleted > 1000:
+                                logger.error(f"Last resort deleted {deleted} cooldowns - possible key explosion! Stopping cleanup.")
                                 break
-                            iterations += 1
-                        
-                        if iterations >= max_iterations:
-                            logger.warning(f"Last resort scan reached max iterations ({max_iterations}) for channel {self.channel_id}")
                         
                         if deleted > 0:
                             logger.warning(

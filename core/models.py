@@ -141,16 +141,17 @@ class StreamProfile(models.Model):
             for part in shlex_split(self.parameters) # use shlex to handle quoted strings
         ]
         
-        # Automatische ffmpeg -http_proxy Injection wenn proxy vorhanden und kein {proxy} Platzhalter
+        # Automatic ffmpeg -http_proxy injection when proxy is configured and no {proxy} placeholder
         if proxy and self.command.lower() == 'ffmpeg' and '{proxy}' not in self.parameters:
-            # Füge -http_proxy vor -i ein
+            # Try to insert -http_proxy before -i flag
             try:
                 i_index = cmd.index('-i')
                 cmd.insert(i_index, proxy)
                 cmd.insert(i_index, '-http_proxy')
             except ValueError:
-                # Kein -i gefunden, füge am Ende hinzu
-                pass
+                # No -i flag found - append -http_proxy at end
+                logger.warning(f"FFmpeg command has no -i flag, appending -http_proxy at end")
+                cmd.extend(['-http_proxy', proxy])
 
         return cmd
 

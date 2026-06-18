@@ -359,7 +359,7 @@ def get_alternate_streams(channel_id: str, current_stream_id: Optional[int] = No
                     logger.debug(f"Skipping current failing profile {profile.id} for stream {stream.id}")
                     continue
                 
-                # Check connection availability with error handling
+                # Check connection availability with improved error handling
                 if redis_client:
                     try:
                         profile_connections_key = f"profile_connections:{profile.id}"
@@ -374,9 +374,13 @@ def get_alternate_streams(channel_id: str, current_stream_id: Optional[int] = No
                             })
                         else:
                             logger.debug(f"Profile {profile.id} at max connections: {current_connections}/{profile.max_streams}")
+                    except (TypeError, ValueError, KeyError) as e:
+                        # Programming error - should not happen, fail loudly
+                        logger.error(f"Programming error checking profile {profile.id}: {e}", exc_info=True)
+                        # Don't add profile - this is a real bug that needs attention
                     except Exception as e:
-                        # Redis error - assume profile is available (fail-open for resilience)
-                        logger.warning(f"Redis error checking profile {profile.id} connections: {e}, assuming available")
+                        # Redis connection error or other infrastructure issue - fail-open for resilience
+                        logger.error(f"Redis error checking profile {profile.id} connections: {e}, assuming available for resilience")
                         alternate_profiles.append({
                             'stream_id': stream.id,
                             'profile_id': profile.id,
@@ -461,21 +465,33 @@ def get_alternate_streams(channel_id: str, current_stream_id: Optional[int] = No
                             redis_client,
                             channel_already_on_profile=channel_using_profile,
                         ):
-                            current_connections = get_profile_connection_count(
-                                profile, redis_client
-                            )
-                            # BUGFIX: Don't break here - add ALL available profiles!
-                            logger.debug(
-                                f"Found available profile {profile.id} for stream {stream.id}: "
-                                f"{current_connections}/{profile.max_streams} "
-                                f"(already using: {channel_using_profile})"
-                            )
-                            alternate_streams.append({
-                                'stream_id': stream.id,
-                                'profile_id': profile.id,
-                                'name': stream.name
-                            })
-                            # DON'T break - continue to check other profiles!
+                            try:
+                                current_connections = get_profile_connection_count(
+                                    profile, redis_client
+                                )
+                                # BUGFIX: Don't break here - add ALL available profiles!
+                                logger.debug(
+                                    f"Found available profile {profile.id} for stream {stream.id}: "
+                                    f"{current_connections}/{profile.max_streams} "
+                                    f"(already using: {channel_using_profile})"
+                                )
+                                alternate_streams.append({
+                                    'stream_id': stream.id,
+                                    'profile_id': profile.id,
+                                    'name': stream.name
+                                })
+                                # DON'T break - continue to check other profiles!
+                            except (TypeError, ValueError, KeyError) as e:
+                                # Programming error - should not happen
+                                logger.error(f"Programming error checking profile {profile.id} for stream {stream.id}: {e}", exc_info=True)
+                            except Exception as e:
+                                # Redis or infrastructure error - fail-open for resilience
+                                logger.error(f"Redis error checking profile {profile.id} for stream {stream.id}: {e}, assuming available for resilience")
+                                alternate_streams.append({
+                                    'stream_id': stream.id,
+                                    'profile_id': profile.id,
+                                    'name': stream.name
+                                })
                         else:
                             logger.debug(
                                 f"Profile {profile.id} unavailable for alternate stream {stream.id}"
