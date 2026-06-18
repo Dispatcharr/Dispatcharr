@@ -67,6 +67,11 @@ def generate_stream_url(
         Tuple: (stream_url, user_agent, transcode_flag, profile_id, slot_reserved, error_reason)
     """
     try:
+        # Import ConfigHelper and Redis utilities at function level for both paths
+        from .config_helper import ConfigHelper
+        from .redis_keys import RedisKeys
+        from core.utils import RedisClient
+        
         channel_or_stream = get_stream_object(channel_id)
 
         # Handle direct stream preview (custom streams)
@@ -81,9 +86,6 @@ def generate_stream_url(
             # Check Redis cooldowns before selecting a profile.
             # This prevents re-using a recently-failed profile when the same
             # stream-hash is reconnected within the cooldown window.
-            from .config_helper import ConfigHelper
-            from .redis_keys import RedisKeys
-            from core.utils import RedisClient
             
             cooldown_skip_profiles = set()
             if ConfigHelper.stream_cooldown_enabled():
