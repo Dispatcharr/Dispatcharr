@@ -221,17 +221,6 @@ class ChannelGroupM3UAccountSerializer(serializers.ModelSerializer):
 
         return data
 
-    def to_internal_value(self, data):
-        # Accept both dict and JSON string for custom_properties (for backward compatibility)
-        val = data.get("custom_properties")
-        if isinstance(val, str):
-            try:
-                data["custom_properties"] = json.loads(val)
-            except Exception:
-                pass
-
-        return super().to_internal_value(data)
-
     def validate(self, attrs):
         # Partial PATCHes only carry submitted fields; fill missing
         # start/end from the instance so the validator catches a PATCH

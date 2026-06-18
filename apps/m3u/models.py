@@ -7,6 +7,7 @@ from django.dispatch import receiver
 from apps.channels.models import StreamProfile
 from django_celery_beat.models import PeriodicTask
 from core.models import CoreSettings, UserAgent
+from core.utils import custom_properties_as_dict
 
 CUSTOM_M3U_ACCOUNT_NAME = "custom"
 
@@ -124,6 +125,11 @@ class M3UAccount(models.Model):
         return user_agent
 
     def save(self, *args, **kwargs):
+        if self.custom_properties is not None and not isinstance(
+            self.custom_properties, dict
+        ):
+            self.custom_properties = custom_properties_as_dict(self.custom_properties)
+
         # Prevent auto_now behavior by handling updated_at manually
         if "update_fields" in kwargs and "updated_at" not in kwargs["update_fields"]:
             # Don't modify updated_at for regular updates
@@ -263,6 +269,11 @@ class M3UAccountProfile(models.Model):
     def save(self, *args, **kwargs):
         """Auto-sync exp_date from custom_properties for XC accounts on every save.
         For non-XC accounts, exp_date is set directly and left untouched here."""
+        if self.custom_properties is not None and not isinstance(
+            self.custom_properties, dict
+        ):
+            self.custom_properties = custom_properties_as_dict(self.custom_properties)
+
         parsed = self._parse_exp_date_from_custom_properties()
         if parsed is not None:
             # XC account with exp_date in custom_properties — always sync

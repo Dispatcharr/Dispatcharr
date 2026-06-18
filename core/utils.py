@@ -1,3 +1,4 @@
+import json
 import redis
 import logging
 import time
@@ -7,7 +8,6 @@ from pathlib import Path
 import re
 from django.conf import settings
 from redis.exceptions import ConnectionError, TimeoutError
-from django.core.cache import cache
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 from django.core.validators import URLValidator
@@ -70,6 +70,46 @@ def natural_sort_key(text):
         return int(chunk) if chunk.isdigit() else chunk.lower()
 
     return [convert(c) for c in re.split('([0-9]+)', text)]
+
+
+def custom_properties_as_dict(value):
+    """
+    Normalize a JSONField-backed custom_properties value into a dict.
+
+    Historical rows (TextField era and early JSONField migration) may store a
+    JSON-encoded string instead of an object. API clients can also submit a
+    string value because JSONField accepts any JSON type. Call this before
+    reading or merging custom_properties.
+    """
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except (ValueError, TypeError):
+            logger.warning(
+                "custom_properties stored as non-JSON string; ignoring: %r",
+                value[:100],
+            )
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    if value is None:
+        return {}
+    return {}
+
+
+def ensure_custom_properties_dict(value):
+    """
+    Return a dict for read/merge/bulk-write paths. Dict values pass through
+    without re-parsing. Use model ``save()`` (not this) as the canonical
+    normalizer for ORM writes that go through ``save()``.
+    """
+    if isinstance(value, dict):
+        return value
+    if value is None:
+        return {}
+    return custom_properties_as_dict(value)
+
 
 class RedisClient:
     _client = None
