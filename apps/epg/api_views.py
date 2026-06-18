@@ -1119,18 +1119,24 @@ class EPGImportAPIView(APIView):
         epg_id = request.data.get("id", None)
         force = bool(request.data.get("force", False))
 
-        # Check if this is a dummy EPG source
-        try:
+        # Reject dummy sources without loading programme_index (multi-MB JSON).
+        if epg_id is not None:
             from .models import EPGSource
-            epg_source = EPGSource.objects.get(id=epg_id)
-            if epg_source.source_type == 'dummy':
-                logger.info(f"EPGImportAPIView: Skipping refresh for dummy EPG source {epg_id}")
+
+            if EPGSource.objects.filter(
+                id=epg_id, source_type="dummy"
+            ).exists():
+                logger.info(
+                    "EPGImportAPIView: Skipping refresh for dummy EPG source %s",
+                    epg_id,
+                )
                 return Response(
-                    {"success": False, "message": "Dummy EPG sources do not require refreshing."},
+                    {
+                        "success": False,
+                        "message": "Dummy EPG sources do not require refreshing.",
+                    },
                     status=status.HTTP_400_BAD_REQUEST,
                 )
-        except EPGSource.DoesNotExist:
-            pass  # Let the task handle the missing source
 
         refresh_epg_data.delay(epg_id, force=force)  # Trigger Celery task
         logger.info("EPGImportAPIView: Task dispatched to refresh EPG data.")
