@@ -551,10 +551,13 @@ class ChannelSerializer(serializers.ModelSerializer):
         return LogoSerializer(obj.logo).data
 
     def get_streams(self, obj):
-        """Retrieve ordered stream IDs for GET requests."""
-        return StreamSerializer(
-            obj.streams.all().order_by("channelstream__order"), many=True
-        ).data
+        """Retrieve ordered streams for GET requests using prefetched channelstream_set."""
+        ordered_streams = [
+            cs.stream
+            for cs in obj.channelstream_set.all()
+            if cs.stream_id is not None
+        ]
+        return StreamSerializer(ordered_streams, many=True).data
 
     def create(self, validated_data):
         streams = validated_data.pop("streams", [])
