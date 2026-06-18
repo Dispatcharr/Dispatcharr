@@ -90,12 +90,12 @@ def generate_stream_url(
                 try:
                     redis_client = RedisClient.get_client()
                     if redis_client:
-                        # Scan for all cooldown keys for this stream hash (channel_id)
-                        cooldown_pattern = f"live:channel:{channel_id}:cooldown:{stream.id}:*"
+                        # Scan for all cooldown keys for this stream (global, no channel_id)
+                        cooldown_pattern = f"live:cooldown:stream:{stream.id}:profile:*"
                         for key in redis_client.scan_iter(match=cooldown_pattern, count=50):
-                            # Key format: live:channel:{channel_id}:cooldown:{stream_id}:{profile_id}
-                            parts = key.split(':') if isinstance(key, str) else key.decode().split(':')
-                            if len(parts) >= 6:
+                            # Key format: live:cooldown:stream:{stream_id}:profile:{profile_id}
+                            parts = key.split(':') if isinstance(key, str) else key.decode('utf-8').split(':')
+                            if len(parts) == 6:
                                 try:
                                     profile_id_from_key = int(parts[-1])
                                     ttl = redis_client.ttl(key)
@@ -139,6 +139,11 @@ def generate_stream_url(
                 rc = RC.get_client()
 
                 for prof in profiles:
+                    # Skip current failing profile
+                    if prof and prof.id == profile_id:
+                        logger.debug(f"Skipping current failing profile {prof.id} for stream {stream.id}")
+                        continue
+                    
                     if prof and prof.id not in cooldown_skip_profiles:
                         reserved, _count, _reason = reserve_profile_slot(prof, rc)
                         if reserved:
@@ -187,6 +192,37 @@ def generate_stream_url(
 
         # Handle channel preview (existing logic)
         channel = channel_or_stream
+        
+        # Check Redis cooldowns before selecting a profile (same as Stream Preview)
+        cooldown_skip_profiles = set()
+        if ConfigHelper.stream_cooldown_enabled():
+            try:
+                redis_client = RedisClient.get_client()
+                if redis_client:
+                    # Get all streams for this channel to check their cooldowns
+                    channel_streams = channel.streams.all()
+                    for ch_stream in channel_streams:
+                        # Scan for cooldown keys (global, no channel_id)
+                        cooldown_pattern = f"live:cooldown:stream:{ch_stream.id}:profile:*"
+                        for key in redis_client.scan_iter(match=cooldown_pattern, count=50):
+                            # Key format: live:cooldown:stream:{stream_id}:profile:{profile_id}
+                            parts = key.split(':') if isinstance(key, str) else key.decode('utf-8').split(':')
+                            if len(parts) == 6:
+                                try:
+                                    profile_id_from_key = int(parts[-1])
+                                    ttl = redis_client.ttl(key)
+                                    if ttl > 0:
+                                        mins = int(ttl // 60)
+                                        secs = int(ttl % 60)
+                                        logger.info(
+                                            f"[COOLDOWN] Skipping profile {profile_id_from_key} for stream {ch_stream.id} "
+                                            f"on channel playback - blocked for {mins}m {secs}s more"
+                                        )
+                                        cooldown_skip_profiles.add(profile_id_from_key)
+                                except (ValueError, IndexError):
+                                    pass
+            except Exception as e:
+                logger.debug(f"Could not check cooldowns for channel playback: {e}")
 
         # Get stream and profile for this channel
         stream_id, profile_id, error_reason, slot_reserved = channel.get_stream()

@@ -1976,7 +1976,7 @@ class StreamManager:
                 if ConfigHelper.stream_cooldown_enabled() and hasattr(self.buffer, 'redis_client') and self.buffer.redis_client:
                     try:
                         cooldown_secs = ConfigHelper.stream_cooldown_seconds()
-                        cooldown_key = RedisKeys.stream_cooldown(self.channel_id, self.current_stream_id, self.current_profile_id)
+                        cooldown_key = RedisKeys.stream_cooldown(self.current_stream_id, self.current_profile_id)
                         failed_at = time.time()
                         retry_at = failed_at + cooldown_secs
                         
@@ -2013,7 +2013,7 @@ class StreamManager:
                 cooled_down = []
                 for s in untried_combinations:
                     try:
-                        cooldown_key = RedisKeys.stream_cooldown(self.channel_id, s['stream_id'], s['profile_id'])
+                        cooldown_key = RedisKeys.stream_cooldown(s['stream_id'], s['profile_id'])
                         if self.buffer.redis_client.exists(cooldown_key):
                             ttl = self.buffer.redis_client.ttl(cooldown_key)
                             mins = int(ttl // 60)
@@ -2045,39 +2045,75 @@ class StreamManager:
                 if alternate_streams and len(self.tried_combinations) > 0:
                     logger.warning(f"All {len(alternate_streams)} alternate stream+profile combinations have been tried for channel {self.channel_id}")
 
-                # LAST RESORT: If cooldown is enabled and all combinations are blocked,
-                # clear all cooldowns for this channel and retry everything from scratch
+                # LAST RESORT: Safe pipelined deletion (fixes race condition)
                 if (ConfigHelper.stream_cooldown_enabled()
                         and hasattr(self.buffer, 'redis_client')
                         and self.buffer.redis_client
                         and alternate_streams):
                     try:
-                        cooldown_pattern = f"live:channel:{self.channel_id}:cooldown:*"
-                        deleted = 0
+                        # Collect all cooldown keys for streams in alternate_streams
+                        keys_to_delete = []
+                        stream_ids_in_alternates = set(s['stream_id'] for s in alternate_streams)
                         
-                        # Use scan_iter for safer iteration (handles cursor automatically)
-                        for key in self.buffer.redis_client.scan_iter(match=cooldown_pattern, count=100):
-                            self.buffer.redis_client.delete(key)
-                            deleted += 1
-                            
-                            # Safety limit - if we're deleting more than 1000 keys, something is wrong
-                            if deleted > 1000:
-                                logger.error(f"Last resort deleted {deleted} cooldowns - possible key explosion! Stopping cleanup.")
-                                break
+                        # Collect keys for each stream using cursor-based scan
+                        for stream_id in stream_ids_in_alternates:
+                            cooldown_pattern = f"live:cooldown:stream:{stream_id}:profile:*"
+                            try:
+                                cursor = 0
+                                scan_iterations = 0
+                                while True:
+                                    cursor, keys = self.buffer.redis_client.scan(
+                                        cursor=cursor,
+                                        match=cooldown_pattern,
+                                        count=100
+                                    )
+                                    keys_to_delete.extend(keys)
+                                    
+                                    if cursor == 0:
+                                        break
+                                    
+                                    # Safety: max 100 scan iterations
+                                    scan_iterations += 1
+                                    if scan_iterations > 100:
+                                        logger.error(
+                                            f"LAST RESORT: Scan exceeded 100 iterations for stream {stream_id}"
+                                        )
+                                        break
+                            except Exception as scan_error:
+                                logger.error(f"LAST RESORT: Error scanning stream {stream_id}: {scan_error}")
+                                continue
                         
-                        if deleted > 0:
-                            logger.warning(
-                                f"\033[31m[COOLDOWN]\033[0m All combinations tried and on cooldown. "
-                                f"LAST RESORT: Cleared {deleted} cooldowns for channel "
-                                f"{self.channel_id} - retrying all combinations"
+                        # Safety check before deletion
+                        if len(keys_to_delete) > 10000:
+                            logger.error(
+                                f"LAST RESORT: Found {len(keys_to_delete)} cooldown keys - "
+                                f"possible leak! Aborting cleanup."
                             )
-                            # Also reset tried_combinations so everything is fresh
+                            return False
+                        
+                        # Delete atomically using pipeline
+                        if keys_to_delete:
+                            pipe = self.buffer.redis_client.pipeline(transaction=False)
+                            for key in keys_to_delete:
+                                pipe.delete(key)
+                            pipe.execute()
+                            
+                            logger.warning(
+                                f"[COOLDOWN] LAST RESORT: Cleared {len(keys_to_delete)} cooldowns - "
+                                f"retrying all combinations"
+                            )
+                            
+                            # Reset tried_combinations
                             self.tried_combinations.clear()
-                            # Retry immediately with the full list
+                            
+                            # Retry with full list
                             untried_combinations = alternate_streams
+                        else:
+                            logger.debug("[COOLDOWN] LAST RESORT: No cooldown keys found")
+                            
                     except Exception as e:
                         logger.error(f"Last resort cooldown clear failed: {e}")
-                        # Don't retry if we can't clear cooldowns
+                        return False
 
                 if not untried_combinations:
                     return False
