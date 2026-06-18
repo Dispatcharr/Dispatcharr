@@ -77,6 +77,12 @@ class StreamManager:
         self.tried_stream_ids = set()  # Keep for backward compatibility
         self.last_stream_switch_time = 0  # For adaptive health monitor
         self.tried_combinations_reset_time = time.time() + 3600  # Reset tried combinations every hour
+        
+        # Add flags for health monitor to request reconnect or stream switch (gevent-safe Event objects)
+        import gevent.event
+        self.needs_reconnect = gevent.event.Event()
+        self.needs_stream_switch = gevent.event.Event()
+        self.last_health_action_time = 0
 
         if stream_id:
             self.tried_stream_ids.add(stream_id)
