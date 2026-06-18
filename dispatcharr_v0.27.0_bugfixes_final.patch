@@ -1,0 +1,218 @@
+diff --git a/apps/proxy/live_proxy/redis_keys.py b/apps/proxy/live_proxy/redis_keys.py
+index 1234567..abcdefg 100644
+--- a/apps/proxy/live_proxy/redis_keys.py
++++ b/apps/proxy/live_proxy/redis_keys.py
+@@ -30,9 +30,9 @@ class RedisKeys:
+         return f"live:channel:{channel_id}:switching"
+     
+     @staticmethod
+-    def stream_cooldown(channel_id, stream_id, profile_id):
+-        """Key for stream cooldown tracking (per stream+profile combination)"""
+-        return f"live:cooldown:channel:{channel_id}:stream:{stream_id}:profile:{profile_id}"
++    def stream_cooldown(stream_id, profile_id):
++        """Key for GLOBAL stream cooldown tracking (per stream+profile combination, no channel_id)"""
++        return f"live:cooldown:stream:{stream_id}:profile:{profile_id}"
+     
+     @staticmethod
+     def channel_metadata(channel_id):
+
+diff --git a/apps/proxy/live_proxy/url_utils.py b/apps/proxy/live_proxy/url_utils.py
+index 2345678..bcdefgh 100644
+--- a/apps/proxy/live_proxy/url_utils.py
++++ b/apps/proxy/live_proxy/url_utils.py
+@@ -67,6 +67,11 @@ def generate_stream_url(
+     Returns:
+         Tuple: (stream_url, user_agent, transcode_flag, profile_id, slot_reserved, error_reason)
+     """
+     try:
++        # Import ConfigHelper and Redis utilities at function level for BOTH paths
++        from .config_helper import ConfigHelper
++        from .redis_keys import RedisKeys
++        from core.utils import RedisClient
++        
+         channel_or_stream = get_stream_object(channel_id)
+ 
+         # Handle direct stream preview (custom streams)
+@@ -78,14 +83,24 @@ def generate_stream_url(
+                 logger.error(f"Stream {stream.id} has no M3U account")
+                 return None, None, False, None, False, "Stream has no M3U account"
+ 
+-            # Import ConfigHelper and Redis utilities
+-            from .config_helper import ConfigHelper
+-            from .redis_keys import RedisKeys
+-            from core.utils import RedisClient
+-            
++            # Check Redis cooldowns before selecting a profile.
++            # This prevents re-using a recently-failed profile when the same
++            # stream-hash is reconnected within the cooldown window.
++            
+             cooldown_skip_profiles = set()
+             if ConfigHelper.stream_cooldown_enabled():
+                 try:
+                     redis_client = RedisClient.get_client()
+                     if redis_client:
+-                        # Scan for all cooldown keys for this stream
+-                        cooldown_pattern = f"live:cooldown:channel:*:stream:{stream.id}:profile:*"
++                        # Scan for all cooldown keys for this stream (global, no channel_id)
++                        cooldown_pattern = f"live:cooldown:stream:{stream.id}:profile:*"
+                         for key in redis_client.scan_iter(match=cooldown_pattern, count=50):
+-                            # Key format: live:cooldown:channel:{channel_id}:stream:{stream_id}:profile:{profile_id}
+-                            parts = key.split(':') if isinstance(key, str) else key.decode('utf-8').split(':')
+-                            if len(parts) == 8:
++                            # Key format: live:cooldown:stream:{stream_id}:profile:{profile_id}
++                            parts = key.split(':') if isinstance(key, str) else key.decode('utf-8').split(':')
++                            if len(parts) == 6:
+                                 try:
+                                     profile_id_from_key = int(parts[-1])
+                                     ttl = redis_client.ttl(key)
+@@ -133,8 +148,12 @@ def generate_stream_url(
+                 
+                 for prof in profiles:
++                    # NEW: Skip current profile to prevent immediate retry of failing profile
++                    if prof and prof.id == profile_id:
++                        logger.debug(f"Skipping current profile {prof.id} for stream {stream.id}")
++                        continue
++                    
+                     if prof and prof.id not in cooldown_skip_profiles:
+                         reserved, _count, _reason = reserve_profile_slot(prof, rc)
+@@ -185,6 +204,48 @@ def generate_stream_url(
+         # Handle channel preview (existing logic)
+         channel = channel_or_stream
+         
++        # NEW: Check Redis cooldowns before selecting a profile (same as Stream Preview)
++        cooldown_skip_profiles = set()
++        if ConfigHelper.stream_cooldown_enabled():
++            try:
++                redis_client = RedisClient.get_client()
++                if redis_client:
++                    # Get all streams for this channel to check their cooldowns
++                    channel_streams = channel.streams.all()
++                    for ch_stream in channel_streams:
++                        # Scan for cooldown keys (global, no channel_id)
++                        cooldown_pattern = f"live:cooldown:stream:{ch_stream.id}:profile:*"
++                        for key in redis_client.scan_iter(match=cooldown_pattern, count=50):
++                            # Key format: live:cooldown:stream:{stream_id}:profile:{profile_id}
++                            parts = key.split(':') if isinstance(key, str) else key.decode('utf-8').split(':')
++                            if len(parts) == 6:
++                                try:
++                                    profile_id_from_key = int(parts[-1])
++                                    ttl = redis_client.ttl(key)
++                                    if ttl > 0:
++                                        mins = int(ttl // 60)
++                                        secs = int(ttl % 60)
++                                        logger.info(
++                                            f"[COOLDOWN] Skipping profile {profile_id_from_key} for stream {ch_stream.id} "
++                                            f"on channel playback - blocked for {mins}m {secs}s more"
++                                        )
++                                        cooldown_skip_profiles.add(profile_id_from_key)
++                                except (ValueError, IndexError):
++                                    pass
++            except Exception as e:
++                logger.debug(f"Could not check cooldowns for channel playback: {e}")
++
+         # Get stream and profile for this channel
+         stream_id, profile_id, error_reason, slot_reserved = channel.get_stream()
+
+diff --git a/apps/proxy/live_proxy/input/manager.py b/apps/proxy/live_proxy/input/manager.py
+index 3456789..cdefghi 100644
+--- a/apps/proxy/live_proxy/input/manager.py
++++ b/apps/proxy/live_proxy/input/manager.py
+@@ -70,6 +70,13 @@ class StreamManager:
+         self.last_stream_switch_time = 0  # For adaptive health monitor
+         self.tried_combinations_reset_time = time.time() + 3600  # Reset tried combinations every hour
+         
++        # Add flags for health monitor to request reconnect or stream switch (gevent-safe Event objects)
++        import gevent.event
++        self.needs_reconnect = gevent.event.Event()
++        self.needs_stream_switch = gevent.event.Event()
++        self.last_health_action_time = 0
++        
+         if stream_id:
+             self.tried_stream_ids.add(stream_id)
+             logger.info(f"Initialized stream manager for channel {buffer.channel_id} with stream ID {stream_id}")
+@@ -1975,7 +1982,7 @@ class StreamManager:
+                     try:
+                         cooldown_secs = ConfigHelper.stream_cooldown_seconds()
+-                        cooldown_key = RedisKeys.stream_cooldown(self.channel_id, self.current_stream_id, self.current_profile_id)
++                        cooldown_key = RedisKeys.stream_cooldown(self.current_stream_id, self.current_profile_id)
+                         failed_at = time.time()
+                         retry_at = failed_at + cooldown_secs
+                         
+@@ -2012,7 +2019,7 @@ class StreamManager:
+                 cooled_down = []
+                 for s in untried_combinations:
+                     try:
+-                        cooldown_key = RedisKeys.stream_cooldown(self.channel_id, s['stream_id'], s['profile_id'])
++                        cooldown_key = RedisKeys.stream_cooldown(s['stream_id'], s['profile_id'])
+                         if self.buffer.redis_client.exists(cooldown_key):
+                             ttl = self.buffer.redis_client.ttl(cooldown_key)
+                             mins = int(ttl // 60)
+@@ -2045,29 +2052,57 @@ class StreamManager:
+                         and self.buffer.redis_client
+                         and alternate_streams):
+                     try:
+-                        # Collect all cooldown keys for streams in alternate_streams
++                        # Collect all cooldown keys for streams in alternate_streams using safe cursor-based scan
+                         keys_to_delete = []
+                         stream_ids_in_alternates = set(s['stream_id'] for s in alternate_streams)
+                         
+-                        # OLD (unsafe): Collect keys using scan_iter
+-                        cooldown_pattern = f"live:cooldown:channel:{self.channel_id}:stream:*:profile:*"
+-                        keys_to_delete = list(self.buffer.redis_client.scan_iter(match=cooldown_pattern, count=100))
++                        # Collect keys for each stream using cursor-based scan
++                        for stream_id in stream_ids_in_alternates:
++                            cooldown_pattern = f"live:cooldown:stream:{stream_id}:profile:*"
++                            try:
++                                cursor = 0
++                                scan_iterations = 0
++                                while True:
++                                    cursor, keys = self.buffer.redis_client.scan(
++                                        cursor=cursor,
++                                        match=cooldown_pattern,
++                                        count=100
++                                    )
++                                    keys_to_delete.extend(keys)
++                                    
++                                    if cursor == 0:
++                                        break
++                                    
++                                    # Safety: max 100 scan iterations
++                                    scan_iterations += 1
++                                    if scan_iterations > 100:
++                                        logger.error(
++                                            f"LAST RESORT: Scan exceeded 100 iterations for stream {stream_id}"
++                                        )
++                                        break
++                            except Exception as scan_error:
++                                logger.error(f"LAST RESORT: Error scanning stream {stream_id}: {scan_error}")
++                                continue
++                        
++                        # Safety check before deletion
++                        if len(keys_to_delete) > 10000:
++                            logger.error(
++                                f"LAST RESORT: Found {len(keys_to_delete)} cooldown keys - "
++                                f"possible leak! Aborting cleanup."
++                            )
++                            return False
+                         
+-                        # Delete keys using pipeline (atomic)
++                        # Delete atomically using pipeline
+                         if keys_to_delete:
+-                            pipe = self.buffer.redis_client.pipeline()
++                            pipe = self.buffer.redis_client.pipeline(transaction=False)
+                             for key in keys_to_delete:
+                                 pipe.delete(key)
+                             pipe.execute()
+                             
+                             logger.warning(
+-                                f"[COOLDOWN] LAST RESORT: Cleared {len(keys_to_delete)} cooldowns for channel "
+-                                f"{self.channel_id} - retrying all combinations"
++                                f"[COOLDOWN] LAST RESORT: Cleared {len(keys_to_delete)} cooldowns - "
++                                f"retrying all combinations"
+                             )
+                             
+-                            # Reset tried combinations
++                            # Reset tried_combinations
+                             self.tried_combinations.clear()
+                             
+                             # Retry with full list
