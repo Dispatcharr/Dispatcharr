@@ -116,7 +116,10 @@ class M3UAccount(models.Model):
     def get_proxy_for_api(self):
         """Get proxy URL for API calls only if proxy_for_api is enabled."""
         if self.proxy and self.proxy.strip() and self.proxy_for_api:
+            logger.info(f"M3UAccount {self.id} ({self.name}): Using proxy for API calls: {self.proxy}")
             return self.proxy
+        elif self.proxy and self.proxy.strip() and not self.proxy_for_api:
+            logger.debug(f"M3UAccount {self.id} ({self.name}): Proxy configured ({self.proxy}) but proxy_for_api is disabled")
         return None
     
     def get_proxy_for_streaming(self):

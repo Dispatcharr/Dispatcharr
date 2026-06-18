@@ -337,12 +337,30 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
             stream_id = None
             m3u_profile_id = None
             if proxy_server.redis_client:
-                stream_id_bytes = proxy_server.redis_client.get(f"channel_stream:{channel.id}")
+                # For channels, use channel.id; for stream previews, use channel_id (the stream hash)
+                if isinstance(channel, Channel):
+                    lookup_key = f"channel_stream:{channel.id}"
+                else:  # Stream preview
+                    lookup_key = f"channel_stream:{channel.id}"
+                
+                stream_id_bytes = proxy_server.redis_client.get(lookup_key)
                 if stream_id_bytes:
                     stream_id = int(stream_id_bytes)
                     profile_id_bytes = proxy_server.redis_client.get(f"stream_profile:{stream_id}")
                     if profile_id_bytes:
                         m3u_profile_id = int(profile_id_bytes)
+                else:
+                    # Fallback for stream preview: we know the stream_id from the Stream object
+                    if isinstance(channel, Stream):
+                        stream_id = channel.id
+                        # Try to get profile_id directly
+                        profile_id_bytes = proxy_server.redis_client.get(f"stream_profile:{stream_id}")
+                        if profile_id_bytes:
+                            m3u_profile_id = int(profile_id_bytes)
+                        else:
+                            logger.warning(f"Stream preview: stream_id {stream_id} found but no profile_id in Redis")
+                    else:
+                        logger.warning(f"No stream assignment found in Redis for channel {channel_id}")
             logger.info(
                 f"Channel {channel_id} using stream ID {stream_id}, m3u account profile ID {m3u_profile_id}"
             )
