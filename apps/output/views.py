@@ -338,6 +338,29 @@ def generate_m3u(request, profile_name=None, user=None):
     return response
 
 
+def _ordered_channel_streams(channel):
+    """Return a channel's streams ordered by channelstream join order."""
+    prefetched = getattr(channel, '_prefetched_objects_cache', {}).get('streams')
+    if prefetched is not None:
+        return list(prefetched)
+    return list(channel.streams.all().order_by('channelstream__order'))
+
+
+def _pattern_match_name_from_custom_props(channel, effective_name, custom_props):
+    """Name used for custom dummy EPG regex matching (channel or stream title).
+
+    Returns (name, stream_lookup_failed). stream_lookup_failed is True only when
+    name_source is 'stream' but the configured index is missing or out of range.
+    """
+    if custom_props.get('name_source') != 'stream':
+        return effective_name, False
+    stream_index = custom_props.get('stream_index', 1) - 1
+    streams = _ordered_channel_streams(channel)
+    if 0 <= stream_index < len(streams):
+        return streams[stream_index].name, False
+    return effective_name, True
+
+
 def generate_fallback_programs(channel_id, channel_name, now, num_days, program_length_hours, fallback_title, fallback_description):
     """
     Generate dummy programs using custom fallback templates when patterns don't match.
@@ -1397,8 +1420,10 @@ def generate_epg(request, profile_name=None, user=None):
             with_effective_values(base_qs, select_related_fks=True)
             .exclude(hidden_from_output=True)
             .order_by("effective_channel_number")
+            .prefetch_related(
+                Prefetch('streams', queryset=Stream.objects.order_by('channelstream__order'))
+            )
         )
-
 
         # For dummy EPG, use either the specified value or default to 3 days
         dummy_days = num_days if num_days > 0 else 3
@@ -1440,6 +1465,8 @@ def generate_epg(request, profile_name=None, user=None):
         _logo_url_prefix = _base_url + _logo_prefix_raw + "/"
         _logo_url_suffix = "/" + _logo_suffix_raw
 
+        dummy_epg_ids_for_program_check = set()
+
         # Process channels for the <channel> section
         for channel in channels:
             effective_name = channel.effective_name
@@ -1465,23 +1492,17 @@ def generate_epg(request, profile_name=None, user=None):
 
             # Check if this is a custom dummy EPG with channel logo URL template
             if effective_epg_data and effective_epg_data.epg_source and effective_epg_data.epg_source.source_type == 'dummy':
+                if channel.effective_epg_data_id:
+                    dummy_epg_ids_for_program_check.add(channel.effective_epg_data_id)
                 epg_source = effective_epg_data.epg_source
                 if epg_source.custom_properties:
                     custom_props = epg_source.custom_properties
                     channel_logo_url_template = custom_props.get('channel_logo_url', '')
 
                     if channel_logo_url_template:
-                        # Determine which name to use for pattern matching (same logic as program generation)
-                        pattern_match_name = effective_name
-                        name_source = custom_props.get('name_source')
-
-                        if name_source == 'stream':
-                            stream_index = custom_props.get('stream_index', 1) - 1
-                            channel_streams = channel.streams.all().order_by('channelstream__order')
-
-                            if channel_streams.exists() and 0 <= stream_index < channel_streams.count():
-                                stream = list(channel_streams)[stream_index]
-                                pattern_match_name = stream.name
+                        pattern_match_name, _ = _pattern_match_name_from_custom_props(
+                            channel, effective_name, custom_props
+                        )
 
                         # Try to extract groups from the channel/stream name and build the logo URL
                         title_pattern = custom_props.get('title_pattern', '')
@@ -1538,10 +1559,17 @@ def generate_epg(request, profile_name=None, user=None):
         yield channel_xml
         xml_lines = []  # Clear to save memory
 
+        dummy_epg_with_programs = set()
+        if dummy_epg_ids_for_program_check:
+            dummy_epg_with_programs = set(
+                ProgramData.objects.filter(epg_id__in=dummy_epg_ids_for_program_check)
+                .values_list('epg_id', flat=True)
+                .distinct()
+            )
+
         # Pre-pass: categorize channels into dummy and real EPG groups
         dummy_program_list = []  # (channel_id, pattern_match_name, epg_source_or_None)
         real_epg_map = {}  # epg_data_id -> [channel_id, ...]
-        dummy_epg_checked = {}  # epg_data_id -> bool (has stored programs)
 
         for channel in channels:
             effective_name = channel.effective_name
@@ -1569,26 +1597,31 @@ def generate_epg(request, profile_name=None, user=None):
                 epg_source = effective_epg_data.epg_source
                 if epg_source.custom_properties:
                     custom_props = epg_source.custom_properties
-                    name_source = custom_props.get('name_source')
-
-                    if name_source == 'stream':
+                    pattern_match_name, stream_lookup_failed = _pattern_match_name_from_custom_props(
+                        channel, effective_name, custom_props
+                    )
+                    if (
+                        custom_props.get('name_source') == 'stream'
+                        and not stream_lookup_failed
+                        and pattern_match_name != effective_name
+                    ):
                         stream_index = custom_props.get('stream_index', 1) - 1
-                        channel_streams = channel.streams.all().order_by('channelstream__order')
-
-                        if channel_streams.exists() and 0 <= stream_index < channel_streams.count():
-                            stream = list(channel_streams)[stream_index]
-                            pattern_match_name = stream.name
-                            logger.debug(f"Using stream name for parsing: {pattern_match_name} (stream index: {stream_index})")
-                        else:
-                            logger.warning(f"Stream index {stream_index} not found for channel {effective_name}, falling back to channel name")
+                        logger.debug(
+                            f"Using stream name for parsing: {pattern_match_name} "
+                            f"(stream index: {stream_index})"
+                        )
+                    elif stream_lookup_failed:
+                        stream_index = custom_props.get('stream_index', 1) - 1
+                        logger.warning(
+                            f"Stream index {stream_index} not found for channel "
+                            f"{effective_name}, falling back to channel name"
+                        )
 
             if not effective_epg_data:
                 dummy_program_list.append((channel_id, pattern_match_name, None))
             else:
                 if effective_epg_data.epg_source and effective_epg_data.epg_source.source_type == 'dummy':
-                    if effective_epg_data_id not in dummy_epg_checked:
-                        dummy_epg_checked[effective_epg_data_id] = effective_epg_data.programs.exists()
-                    if dummy_epg_checked[effective_epg_data_id]:
+                    if effective_epg_data_id in dummy_epg_with_programs:
                         real_epg_map.setdefault(effective_epg_data_id, []).append(channel_id)
                     else:
                         dummy_program_list.append((channel_id, pattern_match_name, effective_epg_data.epg_source))

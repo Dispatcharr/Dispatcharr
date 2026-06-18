@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Channel list with nested streams loads faster.** `GET /api/channels/channels/?include_streams=true` (Channels UI and single-channel fetch) now builds nested stream payloads from the prefetched `channelstream_set` instead of issuing one extra streams M2M query per channel.
 
+### Performance
+
+- **XMLTV EPG output no longer N+1 queries streams or dummy-program checks.** `generate_epg()` prefetches ordered channel streams once (for custom dummy EPG logo/program parsing when `name_source` is `stream`) and bulk-checks which dummy `EPGData` rows have stored programmes in a single query instead of one `.exists()` per row. Large guides with hundreds of custom-dummy channels issue far fewer SQL round-trips per client refresh.
+
 ### Fixed
 
 - **M3U refresh recovers DB connections and account status after failures.** Celery workers now call `close_old_connections()` before and after every task; `refresh_single_m3u_account` also resets its DB connection at task start and retries account loads once after a connection reset (avoids opaque `list index out of range` errors from poisoned worker connections). Accounts leave `fetching`/`parsing` for a terminal `error` or `success` state when refresh aborts. Error-path status updates use `QuerySet.update()` on a clean connection instead of `save()` on a connection that may already be INTRANS after `refresh_m3u_groups` or batch ORM failures. Failed group downloads now set `error` instead of returning silently. Refresh start replaces stale `last_message` text. `refresh_account_profiles` releases DB connections after each profile failure. (Fixes #1338)
