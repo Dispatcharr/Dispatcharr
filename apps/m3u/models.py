@@ -6,6 +6,9 @@ from django.dispatch import receiver
 from apps.channels.models import StreamProfile
 from django_celery_beat.models import PeriodicTask
 from core.models import CoreSettings, UserAgent
+import logging
+
+logger = logging.getLogger(__name__)
 
 CUSTOM_M3U_ACCOUNT_NAME = "custom"
 

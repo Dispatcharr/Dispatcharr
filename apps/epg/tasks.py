@@ -4401,6 +4401,13 @@ def build_programme_index(source_id):
     except EPGSource.DoesNotExist:
         logger.error(f'[build_programme_index] EPGSource {source_id} not found')
         return
+    except (IndexError, ValueError, TypeError) as e:
+        logger.error(
+            f'[build_programme_index] Database schema error loading EPGSource {source_id}: {e}. '
+            f'This usually indicates missing migrations or database corruption. '
+            f'Run: python manage.py migrate epg'
+        )
+        return
 
     file_path = _resolve_source_file(source)
     if not file_path or not os.path.exists(file_path):
