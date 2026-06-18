@@ -5,6 +5,26 @@ import json
 
 logger = logging.getLogger(__name__)
 
+
+def normalize_server_url(url):
+    """Normalize server URL: strip XC API endpoints and query params, preserve base path."""
+    if not url:
+        return url
+
+    from urllib.parse import urlparse, urlunparse
+
+    parsed = urlparse(url.strip())
+    path = parsed.path.rstrip('/')
+
+    # XC API endpoints are always .php files; legitimate base paths never are.
+    # Stripping the trailing segment when it ends in .php handles any pasted API URL.
+    last_segment = path.rsplit('/', 1)[-1]
+    if last_segment.endswith('.php'):
+        path = path[:-(len(last_segment) + 1)] if '/' in path else ''
+
+    return urlunparse((parsed.scheme, parsed.netloc, path, '', '', ''))
+
+
 class Client:
     """Xtream Codes API Client with robust error handling"""
 
@@ -43,22 +63,10 @@ class Client:
         self.server_info = None
 
     def _normalize_url(self, url):
-        """Normalize server URL: strip XC API endpoints and query params, preserve base path."""
-        if not url:
+        normalized = normalize_server_url(url)
+        if not normalized:
             raise ValueError("Server URL cannot be empty")
-
-        from urllib.parse import urlparse, urlunparse
-
-        parsed = urlparse(url.strip())
-        path = parsed.path.rstrip('/')
-
-        # XC API endpoints are always .php files; legitimate base paths never are.
-        # Stripping the trailing segment when it ends in .php handles any pasted API URL.
-        last_segment = path.rsplit('/', 1)[-1]
-        if last_segment.endswith('.php'):
-            path = path[:-(len(last_segment) + 1)] if '/' in path else ''
-
-        return urlunparse((parsed.scheme, parsed.netloc, path, '', '', ''))
+        return normalized
 
     def _make_request(self, endpoint, params=None):
         """Make request with detailed error handling"""

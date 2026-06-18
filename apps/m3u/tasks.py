@@ -2816,12 +2816,13 @@ def get_transformed_credentials(account, profile=None):
             logger.warning(f"Could not get primary profile for account {account.name}: {e}")
             profile = None
 
-    base_url = account.server_url
+    from core.xtream_codes import normalize_server_url
+
+    base_url = normalize_server_url(account.server_url)
     base_username = account.username
     base_password = account.password    # Build a complete URL with credentials (similar to how IPTV URLs are structured)
     # Format: http://server.com:port/live/username/password/1234.ts
     if base_url and base_username and base_password:
-        # Remove trailing slash from server URL if present
         clean_server_url = base_url.rstrip('/')
 
         # Build the complete URL with embedded credentials

@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **XC live playback URL building now normalizes account server URLs.** On-demand live URLs (introduced for Server Group profile rotation in 0.27.0) rebuild `/live/{user}/{pass}/{stream_id}.ts` from current credentials instead of reusing the synced `stream.url`. That path now runs `normalize_server_url()` so pasted API URLs (e.g. `/player_api.php` with query params) are stripped while sub-paths like `/server1` are preserved. `get_transformed_credentials()` normalizes the base URL at the source; VOD movie and episode relations use the same helper instead of constructing a throwaway `XCClient` (which also avoided per-request HTTP session setup). (Fixes #1363)
 - **Live proxy now releases geventpool DB connections on more paths.** `stream_ts()` calls `close_old_connections()` before `StreamingHttpResponse` so clients waiting on channel init do not keep a pool slot while the generator polls Redis. `generate_stream_url()`, `get_stream_info_for_switch()`, `get_alternate_streams()`, and `get_connections_left()` release in `finally` blocks after ORM work on stream-manager failover paths that run outside Django's request cycle. TS client disconnect cleanup matches fMP4, and `ChannelService` metadata helpers release after their ORM lookups.
 
 ## [0.27.0] - 2026-06-16
