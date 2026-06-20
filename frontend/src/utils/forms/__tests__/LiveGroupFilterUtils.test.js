@@ -4,6 +4,7 @@ import {
   getChannelsInRange,
   getStreamsRegexPreview,
   isExpectedOccupantForGroup,
+  effectiveSyncGroupId,
   rangeFor,
   abortTimers,
   getRegexOptions,
@@ -224,6 +225,116 @@ describe('LiveGroupFilterUtils', () => {
       expect(isExpectedOccupantForGroup(occupant, 1, makePlaylist())).toBe(
         true
       );
+    });
+  });
+
+  // ── effectiveSyncGroupId ───────────────────────────────────────────────────
+  describe('effectiveSyncGroupId', () => {
+    it('returns the source channel_group when there is no override', () => {
+      expect(effectiveSyncGroupId(makeGroup({ channel_group: 7 }))).toBe(7);
+    });
+
+    it('returns the group_override target when set', () => {
+      const group = makeGroup({
+        channel_group: 7,
+        custom_properties: { group_override: 9 },
+      });
+      expect(effectiveSyncGroupId(group)).toBe(9);
+    });
+
+    it('coerces a string-stored group_override to a number', () => {
+      const group = makeGroup({
+        channel_group: 7,
+        custom_properties: { group_override: '9' },
+      });
+      expect(effectiveSyncGroupId(group)).toBe(9);
+    });
+
+    it('falls back to the source group when group_override is blank', () => {
+      const group = makeGroup({
+        channel_group: 7,
+        custom_properties: { group_override: '' },
+      });
+      expect(effectiveSyncGroupId(group)).toBe(7);
+    });
+
+    // Regression guard for the group-override range-conflict false positive:
+    // the auto-sync's own channels land in the override target group, so
+    // comparing against the source group (pre-fix) flags them as a conflict,
+    // while comparing against the effective target recognizes them as this
+    // config's own output.
+    it("makes group-override occupants count as this group's own", () => {
+      const group = makeGroup({
+        channel_group: 7,
+        custom_properties: { group_override: 9 },
+      });
+      const occupant = makeOccupant({ channel_group_id: 9 });
+      // Pre-fix comparison (source group) treats own channels as a conflict.
+      expect(
+        isExpectedOccupantForGroup(
+          occupant,
+          group.channel_group,
+          makePlaylist()
+        )
+      ).toBe(false);
+      // Comparing against the effective target recognizes them as expected.
+      expect(
+        isExpectedOccupantForGroup(
+          occupant,
+          effectiveSyncGroupId(group),
+          makePlaylist()
+        )
+      ).toBe(true);
+    });
+
+    // Guards against over-suppression: resolving the effective target group
+    // must still surface genuine collisions in an override config's range.
+    // Only the config's own output (auto-created, this account, in the
+    // target group, unpinned) is excluded.
+    it('still flags genuine collisions in a group-override config', () => {
+      const group = makeGroup({
+        channel_group: 7,
+        custom_properties: { group_override: 9 },
+      });
+      const target = effectiveSyncGroupId(group);
+      // Manual channel sitting in the range.
+      expect(
+        isExpectedOccupantForGroup(
+          makeOccupant({ channel_group_id: 9, auto_created: false }),
+          target,
+          makePlaylist()
+        )
+      ).toBe(false);
+      // Auto-created by a different account.
+      expect(
+        isExpectedOccupantForGroup(
+          makeOccupant({
+            channel_group_id: 9,
+            auto_created_by_account_id: 999,
+          }),
+          target,
+          makePlaylist()
+        )
+      ).toBe(false);
+      // A channel in a different group than the override target.
+      expect(
+        isExpectedOccupantForGroup(
+          makeOccupant({ channel_group_id: 123 }),
+          target,
+          makePlaylist()
+        )
+      ).toBe(false);
+      // A user-pinned channel number.
+      expect(
+        isExpectedOccupantForGroup(
+          makeOccupant({
+            channel_group_id: 9,
+            has_channel_number_override: true,
+          }),
+          target,
+          makePlaylist()
+        )
+      ).toBe(false);
     });
   });
 

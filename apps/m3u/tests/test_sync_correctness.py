@@ -644,6 +644,34 @@ class NumbersInRangeLookupTests(TestCase):
         )
         self.assertFalse(occupant["has_channel_number_override"])
 
+    def test_group_override_channel_reports_target_group(self):
+        # When auto-sync routes channels into a different group via
+        # group_override, the occupant's channel_group_id is the override
+        # target, not the source group being configured. The frontend relies
+        # on this to recognize override-routed channels as the config's own
+        # output (effectiveSyncGroupId), so the warning does not flag them.
+        account = _make_account()
+        source = _make_group(name="SourceGrp")
+        target = _make_group(name="TargetGrp")
+        Channel.objects.create(
+            name="Routed",
+            channel_number=3210,
+            channel_group=target,
+            auto_created=True,
+            auto_created_by=account,
+        )
+        client = self._client()
+
+        response = client.get(
+            "/api/channels/channels/numbers-in-range/?start=3210&end=3210"
+        )
+
+        occupant = response.data["occupants"][0]
+        self.assertEqual(occupant["channel_group_id"], target.id)
+        self.assertNotEqual(occupant["channel_group_id"], source.id)
+        self.assertTrue(occupant["auto_created"])
+        self.assertEqual(occupant["auto_created_by_account_id"], account.id)
+
     def test_manual_channel_exposed_with_auto_created_false(self):
         # Manual channels are always a real collision worth surfacing.
         # The response must flag them with auto_created=False and a null
