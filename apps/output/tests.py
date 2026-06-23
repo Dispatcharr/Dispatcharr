@@ -34,16 +34,18 @@ class OutputEndpointTestMixin:
             "apps.output.views.network_access_allowed",
             return_value=True,
         )
-        self._epg_teardown_patch = patch("apps.output.views._epg_export_teardown")
+        self._epg_teardown_patch = patch("apps.output.epg._epg_export_teardown")
         self._log_event_patch = patch("apps.output.views.log_system_event")
+        self._epg_log_event_patch = patch("apps.output.epg.log_system_event")
         self._close_db_patch = patch("django.db.close_old_connections")
         self._epg_cache_patch = patch(
-            "apps.output.views.stream_epg_response",
+            "apps.output.epg.stream_cached_response",
             side_effect=_epg_response_without_redis,
         )
         self._network_patch.start()
         self._epg_teardown_patch.start()
         self._log_event_patch.start()
+        self._epg_log_event_patch.start()
         self._close_db_patch.start()
         self._epg_cache_patch.start()
 
@@ -53,6 +55,7 @@ class OutputEndpointTestMixin:
         cache.clear()
         self._epg_cache_patch.stop()
         self._close_db_patch.stop()
+        self._epg_log_event_patch.stop()
         self._log_event_patch.stop()
         self._epg_teardown_patch.stop()
         self._network_patch.stop()
@@ -339,14 +342,14 @@ class OutputEPGCustomDummyTest(TestCase):
 class OutputEPGHelperTest(SimpleTestCase):
     def test_ceil_to_half_hour_on_boundary(self):
         from django.utils import timezone
-        from apps.output.views import _ceil_to_half_hour
+        from apps.output.epg import _ceil_to_half_hour
 
         dt = timezone.now().replace(minute=30, second=0, microsecond=0)
         self.assertEqual(_ceil_to_half_hour(dt), dt)
 
     def test_ceil_to_half_hour_rounds_up(self):
         from django.utils import timezone
-        from apps.output.views import _ceil_to_half_hour
+        from apps.output.epg import _ceil_to_half_hour
 
         dt = timezone.now().replace(minute=17, second=42, microsecond=123456)
         aligned = _ceil_to_half_hour(dt)

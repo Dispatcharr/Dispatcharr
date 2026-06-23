@@ -15,6 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **EPG generation extracted into `apps/output/epg.py`.** All XMLTV output logic (`generate_epg`, `generate_dummy_programs`, `generate_custom_dummy_programs`, `generate_dummy_epg`, and supporting helpers) moved from `apps/output/views.py` into a dedicated module. `views.py` retains the thin HTTP endpoint wrappers and auth checks; `epg.py` handles all content generation. No behavior change.
+
 - **Channel list with nested streams loads faster.** `GET /api/channels/channels/?include_streams=true` (Channels UI and single-channel fetch) now builds nested stream payloads from the prefetched `channelstream_set` instead of issuing one extra streams M2M query per channel.
 
 ### Performance

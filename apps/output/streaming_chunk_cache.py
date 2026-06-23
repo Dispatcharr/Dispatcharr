@@ -1,4 +1,4 @@
-"""Single-flight Redis chunk cache for XMLTV EPG streaming responses."""
+"""Single-flight Redis chunk cache for large streaming HTTP responses."""
 
 import logging
 import time
@@ -111,7 +111,7 @@ def _stream_build(redis, base_key, source, cache_ttl, lock_ttl):
     try:
         from django.core.cache import cache as django_cache
 
-        django_cache.delete(base_key)  # legacy monolithic entry
+        django_cache.delete(base_key)  # clear any non-chunked entry under this key
         redis.delete(chunks_key, _ready_key(base_key))
         redis.set(status_key, STATUS_BUILDING, ex=lock_ttl)
         for chunk in source():
@@ -123,9 +123,9 @@ def _stream_build(redis, base_key, source, cache_ttl, lock_ttl):
         redis.expire(chunks_key, cache_ttl)
         redis.expire(status_key, cache_ttl)
         redis.expire(_ready_key(base_key), cache_ttl)
-        logger.debug("Cached EPG in %s chunks", redis.llen(chunks_key))
+        logger.debug("Cached response in %s chunks", redis.llen(chunks_key))
     except Exception:
-        logger.exception("EPG cache build failed for %s", base_key)
+        logger.exception("Chunk cache build failed for %s", base_key)
         redis.delete(chunks_key)
         redis.set(status_key, STATUS_ERROR, ex=60)
         raise
@@ -158,14 +158,14 @@ def _stream_follow(redis, base_key, source, cache_ttl, lock_ttl, poll_interval, 
             if offset == 0 and _try_acquire_lock(redis, base_key, lock_ttl):
                 yield from _stream_build(redis, base_key, source, cache_ttl, lock_ttl)
                 return
-            raise RuntimeError("EPG cache build failed")
+            raise RuntimeError("Chunk cache build failed")
 
         if time.monotonic() >= deadline:
             if offset == 0 and _try_acquire_lock(redis, base_key, lock_ttl):
-                logger.warning("EPG cache follower timed out; rebuilding %s", base_key)
+                logger.warning("Chunk cache follower timed out; rebuilding %s", base_key)
                 yield from _stream_build(redis, base_key, source, cache_ttl, lock_ttl)
                 return
-            logger.warning("EPG cache follower timed out after partial read for %s", base_key)
+            logger.warning("Chunk cache follower timed out after partial read for %s", base_key)
             break
 
         lock_active = bool(redis.exists(lock_key))
@@ -173,7 +173,7 @@ def _stream_follow(redis, base_key, source, cache_ttl, lock_ttl, poll_interval, 
             idle_polls += 1
             if offset == 0 and idle_polls >= max(1, int(1.0 / poll_interval)):
                 if _try_acquire_lock(redis, base_key, lock_ttl):
-                    logger.warning("EPG cache leader lost; rebuilding %s", base_key)
+                    logger.warning("Chunk cache leader lost; rebuilding %s", base_key)
                     yield from _stream_build(redis, base_key, source, cache_ttl, lock_ttl)
                     return
         else:
@@ -182,10 +182,12 @@ def _stream_follow(redis, base_key, source, cache_ttl, lock_ttl, poll_interval, 
         _poll_wait(poll_interval)
 
 
-def stream_epg_response(
+def stream_cached_response(
     cache_key,
     source,
     *,
+    content_type="application/xml",
+    filename=None,
     cache_ttl=DEFAULT_CACHE_TTL,
     lock_ttl=DEFAULT_LOCK_TTL,
     poll_interval=DEFAULT_POLL_INTERVAL,
@@ -193,16 +195,17 @@ def stream_epg_response(
     redis=None,
 ):
     """
-    Stream XMLTV EPG output with single-flight Redis chunk caching.
+    Stream a large response with single-flight Redis chunk caching.
 
     ``source`` must be a callable returning a chunk iterator. Only the leader
-    invokes it; followers read chunks already written to Redis.
+    invokes it; concurrent followers replay chunks already written to Redis, so
+    the expensive ``source`` runs at most once per ``cache_key``.
     """
     if redis is None:
         redis = _get_redis()
 
     if redis.get(_ready_key(cache_key)):
-        logger.debug("Serving EPG from chunk cache")
+        logger.debug("Serving response from chunk cache")
         stream = _stream_ready(redis, cache_key)
     else:
         status = _get_status(redis, cache_key)
@@ -210,10 +213,10 @@ def stream_epg_response(
             _clear_build_keys(redis, cache_key)
 
         if _try_acquire_lock(redis, cache_key, lock_ttl):
-            logger.debug("Building EPG (cache leader)")
+            logger.debug("Building response (cache leader)")
             stream = _stream_build(redis, cache_key, source, cache_ttl, lock_ttl)
         else:
-            logger.debug("Following in-flight EPG build")
+            logger.debug("Following in-flight cache build")
             stream = _stream_follow(
                 redis,
                 cache_key,
@@ -224,7 +227,8 @@ def stream_epg_response(
                 max_follower_wait,
             )
 
-    response = StreamingHttpResponse(stream, content_type="application/xml")
-    response["Content-Disposition"] = 'attachment; filename="Dispatcharr.xml"'
+    response = StreamingHttpResponse(stream, content_type=content_type)
+    if filename:
+        response["Content-Disposition"] = f'attachment; filename="{filename}"'
     response["Cache-Control"] = "no-cache"
     return response

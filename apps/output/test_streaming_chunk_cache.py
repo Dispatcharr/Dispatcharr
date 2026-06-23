@@ -2,14 +2,14 @@ import threading
 import time
 from unittest import TestCase
 
-from apps.output.epg_chunk_cache import (
+from apps.output.streaming_chunk_cache import (
     STATUS_BUILDING,
     STATUS_READY,
     _chunks_key,
     _lock_key,
     _ready_key,
     _status_key,
-    stream_epg_response,
+    stream_cached_response,
 )
 
 
@@ -74,7 +74,7 @@ def _consume(response):
     return b"".join(response.streaming_content).decode("utf-8")
 
 
-class EPGChunkCacheTests(TestCase):
+class StreamingChunkCacheTests(TestCase):
     def test_leader_caches_chunks_and_sets_ready(self):
         redis = FakeRedis()
         calls = []
@@ -84,14 +84,14 @@ class EPGChunkCacheTests(TestCase):
             yield "<tv>"
             yield "</tv>"
 
-        body = _consume(stream_epg_response("epg:test", source, redis=redis))
+        body = _consume(stream_cached_response("cache:test", source, redis=redis))
 
         self.assertEqual(body, "<tv></tv>")
         self.assertEqual(calls, [1])
-        self.assertEqual(redis.get(_ready_key("epg:test")), "1")
-        self.assertEqual(redis.get(_status_key("epg:test")), STATUS_READY)
-        self.assertEqual(redis.llen(_chunks_key("epg:test")), 2)
-        self.assertFalse(redis.exists(_lock_key("epg:test")))
+        self.assertEqual(redis.get(_ready_key("cache:test")), "1")
+        self.assertEqual(redis.get(_status_key("cache:test")), STATUS_READY)
+        self.assertEqual(redis.llen(_chunks_key("cache:test")), 2)
+        self.assertFalse(redis.exists(_lock_key("cache:test")))
 
     def test_cache_hit_skips_source(self):
         redis = FakeRedis()
@@ -102,16 +102,16 @@ class EPGChunkCacheTests(TestCase):
             yield "<tv>"
             yield "</tv>"
 
-        _consume(stream_epg_response("epg:test", source, redis=redis))
+        _consume(stream_cached_response("cache:test", source, redis=redis))
         calls.clear()
-        body = _consume(stream_epg_response("epg:test", source, redis=redis))
+        body = _consume(stream_cached_response("cache:test", source, redis=redis))
 
         self.assertEqual(body, "<tv></tv>")
         self.assertEqual(calls, [])
 
     def test_follower_reads_leader_chunks_without_rebuilding(self):
         redis = FakeRedis()
-        base = "epg:follow"
+        base = "cache:follow"
         leader_started = threading.Event()
         rebuild_calls = []
 
@@ -128,7 +128,7 @@ class EPGChunkCacheTests(TestCase):
 
         def leader():
             _consume(
-                stream_epg_response(
+                stream_cached_response(
                     base,
                     slow_source,
                     redis=redis,
@@ -140,7 +140,7 @@ class EPGChunkCacheTests(TestCase):
         leader_thread.start()
         leader_started.wait(timeout=5)
         follower_body = _consume(
-            stream_epg_response(
+            stream_cached_response(
                 base,
                 forbidden_source,
                 redis=redis,
@@ -165,8 +165,8 @@ class EPGChunkCacheTests(TestCase):
         def worker():
             barrier.wait()
             results[threading.current_thread().name] = _consume(
-                stream_epg_response(
-                    "epg:race",
+                stream_cached_response(
+                    "cache:race",
                     source,
                     redis=redis,
                     poll_interval=0.01,
