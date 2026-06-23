@@ -519,7 +519,6 @@ class FindCurrentProgramTests(TestCase):
             name="No Index",
             source_type="xmltv",
             file_path=FIXTURE_XML,
-            programme_index=None,
         )
         epg = EPGData.objects.create(
             tvg_id="channel.current",

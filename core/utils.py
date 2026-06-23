@@ -546,6 +546,25 @@ def monitor_memory_usage(func):
         return result
     return wrapper
 
+def trim_c_allocator_heap():
+    """Return unused C heap pages to the OS where supported (glibc malloc_trim)."""
+    try:
+        import ctypes
+        import ctypes.util
+
+        libc_name = ctypes.util.find_library("c")
+        if not libc_name:
+            return False
+        libc = ctypes.CDLL(libc_name)
+        if not hasattr(libc, "malloc_trim"):
+            return False
+        libc.malloc_trim(0)
+        return True
+    except Exception:
+        logger.debug("malloc_trim unavailable or failed", exc_info=True)
+        return False
+
+
 def cleanup_memory(log_usage=False, force_collection=True):
     """
     Comprehensive memory cleanup function to reduce memory footprint
@@ -588,6 +607,30 @@ def cleanup_memory(log_usage=False, force_collection=True):
         except (ImportError, Exception):
             pass
     logger.trace("Memory cleanup complete for django")
+
+
+def spawn_memory_trim(close_connections=False):
+    """Reclaim a request's heap pages: GC, then return freed C pages to the OS.
+
+    On gevent uWSGI workers the trim runs in a spawned greenlet so it never
+    blocks the caller; Celery prefork workers (no gevent hub) run it inline.
+    Set close_connections=True when called from a streaming generator's teardown
+    so the pooled DB connection is released first.
+    """
+    def _run():
+        cleanup_memory(force_collection=True)
+        trim_c_allocator_heap()
+
+    if close_connections:
+        from django.db import close_old_connections
+        close_old_connections()
+
+    if _is_gevent_monkey_patched():
+        import gevent
+        gevent.spawn(_run)
+    else:
+        _run()
+
 
 def safe_upload_path(filename: str, base_dir) -> str:
     """Return a safe absolute path for an uploaded file within base_dir.
