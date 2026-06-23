@@ -1188,7 +1188,7 @@ def generate_epg(request, profile_name=None, user=None):
             # once per channel (was ~13s of the request on large guides).
             .defer("epg_data__epg_source__programme_index")
             .prefetch_related(
-                Prefetch('streams', queryset=Stream.objects.order_by('channelstream__order'))
+                Prefetch('streams', queryset=Stream.objects.only('id', 'name').order_by('channelstream__order'))
             )
         )
         channel_count = len(channels)
@@ -1386,6 +1386,7 @@ def generate_epg(request, profile_name=None, user=None):
 
             current_epg_id = None
             channel_ids_for_epg = None
+            escaped_primary_cid = None
             pending = []
             program_batch = []
             chunk_size = _EPG_PROGRAM_DB_CHUNK_SIZE
@@ -1399,8 +1400,7 @@ def generate_epg(request, profile_name=None, user=None):
                     return
                 pending.sort(key=lambda row: (row[0], row[1]))
                 escaped_primary = (
-                    html.escape(channel_ids_for_epg[0])
-                    if len(channel_ids_for_epg) > 1 else None
+                    escaped_primary_cid if len(channel_ids_for_epg) > 1 else None
                 )
                 for _, _, xml_text in pending:
                     program_batch.append(xml_text)
@@ -1435,8 +1435,8 @@ def generate_epg(request, profile_name=None, user=None):
                         yield from flush_pending()
                         current_epg_id = epg_id
                         channel_ids_for_epg = real_epg_map[epg_id]
+                        escaped_primary_cid = html.escape(channel_ids_for_epg[0])
 
-                    primary_cid = channel_ids_for_epg[0]
                     # DB datetimes are UTC (USE_TZ=True, TIME_ZONE=UTC); format
                     # directly instead of strftime("%Y%m%d%H%M%S %z"), which is
                     # ~10x slower and dominates XML build over 750k rows.
@@ -1445,7 +1445,7 @@ def generate_epg(request, profile_name=None, user=None):
                     start_str = f"{st.year:04d}{st.month:02d}{st.day:02d}{st.hour:02d}{st.minute:02d}{st.second:02d} +0000"
                     stop_str = f"{et.year:04d}{et.month:02d}{et.day:02d}{et.hour:02d}{et.minute:02d}{et.second:02d} +0000"
 
-                    program_xml = [f'  <programme start="{start_str}" stop="{stop_str}" channel="{html.escape(primary_cid)}">']
+                    program_xml = [f'  <programme start="{start_str}" stop="{stop_str}" channel="{escaped_primary_cid}">']
                     program_xml.append(f'    <title>{html.escape(prog["title"])}</title>')
 
                     if prog['sub_title']:

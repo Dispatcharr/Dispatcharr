@@ -114,9 +114,14 @@ def _stream_build(redis, base_key, source, cache_ttl, lock_ttl):
         django_cache.delete(base_key)  # clear any non-chunked entry under this key
         redis.delete(chunks_key, _ready_key(base_key))
         redis.set(status_key, STATUS_BUILDING, ex=lock_ttl)
+        refresh_interval = max(1, lock_ttl // 4)
+        last_refresh = 0.0
         for chunk in source():
             redis.rpush(chunks_key, _encode_chunk(chunk))
-            _refresh_build_ttl(redis, base_key, lock_ttl)
+            now = time.monotonic()
+            if now - last_refresh >= refresh_interval:
+                _refresh_build_ttl(redis, base_key, lock_ttl)
+                last_refresh = now
             yield chunk
         redis.set(status_key, STATUS_READY)
         redis.set(_ready_key(base_key), "1")
