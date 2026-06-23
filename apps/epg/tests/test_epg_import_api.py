@@ -7,7 +7,7 @@ from django.test import TestCase
 from rest_framework import status
 from rest_framework.test import APIClient
 
-from apps.epg.models import EPGSource
+from apps.epg.models import EPGSource, EPGSourceIndex
 
 User = get_user_model()
 
@@ -47,7 +47,10 @@ class EPGImportAPITests(TestCase):
             name="Large Index XMLTV",
             source_type="xmltv",
             url="http://example.com/epg.xml",
-            programme_index={
+        )
+        EPGSourceIndex.objects.create(
+            source=source,
+            data={
                 "channels": {f"ch.{i}": {"offsets": [0, 100]} for i in range(200)},
                 "interleaved_channels": [],
             },

@@ -2,7 +2,7 @@ from unittest.mock import patch, MagicMock
 
 from django.test import TestCase, SimpleTestCase
 
-from apps.epg.models import EPGSource
+from apps.epg.models import EPGSource, EPGSourceIndex
 from core.models import CoreSettings, DVR_SETTINGS_KEY, EPG_SETTINGS_KEY
 
 
@@ -37,14 +37,10 @@ class DispatcharrUserAgentTests(TestCase):
 
 class ProgrammeIndexRebuildTests(TestCase):
     def test_startup_rebuild_does_not_lock_out_queued_build_task(self):
-        EPGSource.objects.update(
-            programme_index={"channels": {}, "interleaved_channels": []}
-        )
         source = EPGSource.objects.create(
             name="Missing Index",
             source_type="xmltv",
             is_active=True,
-            programme_index=None,
         )
 
         class FakeRedis:

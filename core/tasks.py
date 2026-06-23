@@ -398,12 +398,16 @@ def scan_and_process_files():
 def _rebuild_programme_indices():
     """Queue index builds for active EPG sources that are missing their DB index."""
     try:
+        from django.db.models import Q
         from apps.epg.tasks import build_programme_index_task
 
         sources = EPGSource.objects.filter(
             is_active=True,
-            programme_index__isnull=True,
-        ).exclude(source_type__in=('dummy', 'schedules_direct'))
+        ).exclude(
+            source_type__in=('dummy', 'schedules_direct')
+        ).filter(
+            Q(index_record__isnull=True) | Q(index_record__data__isnull=True)
+        )
 
         count = 0
         for source in sources:

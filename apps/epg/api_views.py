@@ -64,8 +64,6 @@ class EPGSourceViewSet(viewsets.ModelViewSet):
         from apps.channels.models import Channel
         return EPGSource.objects.select_related(
             "refresh_task__crontab", "refresh_task__interval"
-        ).defer(
-            'programme_index'
         ).annotate(
             has_channels=Exists(
                 Channel.objects.filter(epg_data__epg_source_id=OuterRef('pk'))
@@ -1082,13 +1080,19 @@ class EPGGridAPIView(APIView):
                     f"Error creating standard dummy programs for channel {channel.name} (ID: {channel.id}): {str(e)}"
                 )
 
-        # Combine regular and dummy programs
-        all_programs = list(serialized_programs) + dummy_programs
+        # Combine regular and dummy programs in place to avoid copying the large list
+        serialized_programs.extend(dummy_programs)
         logger.debug(
-            f"EPGGridAPIView: Returning {len(all_programs)} total programs (including {len(dummy_programs)} dummy programs)."
+            f"EPGGridAPIView: Returning {len(serialized_programs)} total programs (including {len(dummy_programs)} dummy programs)."
         )
 
-        return Response({"data": all_programs}, status=status.HTTP_200_OK)
+        # The grid materializes tens of thousands of program dicts plus the
+        # rendered JSON; trim once the response is sent so worker RSS does not
+        # ratchet up per request.
+        from core.utils import spawn_memory_trim
+        response = Response({"data": serialized_programs}, status=status.HTTP_200_OK)
+        response._resource_closers.append(spawn_memory_trim)
+        return response
 
 
 # ─────────────────────────────
@@ -1119,7 +1123,7 @@ class EPGImportAPIView(APIView):
         epg_id = request.data.get("id", None)
         force = bool(request.data.get("force", False))
 
-        # Reject dummy sources without loading programme_index (multi-MB JSON).
+        # Reject dummy sources with a narrow existence query, no full row load.
         if epg_id is not None:
             from .models import EPGSource
 
@@ -1236,10 +1240,9 @@ class CurrentProgramsAPIView(APIView):
             # Limit to 50 IDs per request
             epg_data_ids = epg_data_ids[:50]
 
-            # Defer the multi-MB programme_index the JOIN would pull once per row. The lookup reads it via a targeted refresh_from_db
-            epg_data_entries = EPGData.objects.select_related('epg_source').defer(
-                'epg_source__programme_index'
-            ).filter(id__in=epg_data_ids)
+            epg_data_entries = EPGData.objects.select_related('epg_source').filter(
+                id__in=epg_data_ids
+            )
 
             # Batch-fetch current programs for all requested EPG entries in one query
             db_programs = ProgramData.objects.filter(

@@ -40,34 +40,20 @@ def _programme_overlaps_export_window(start_time, end_time, lookback_cutoff, cut
 
 def _ceil_to_half_hour(dt):
     """Round a datetime up to the next :00 or :30 boundary."""
-    dt = dt.replace(second=0, microsecond=0)
-    remainder = dt.minute % 30
-    if remainder == 0:
-        return dt
-    return dt + timedelta(minutes=30 - remainder)
+    original = dt.replace(microsecond=0)
+    aligned = dt.replace(second=0, microsecond=0)
+    remainder = aligned.minute % 30
+    if remainder != 0:
+        aligned += timedelta(minutes=30 - remainder)
+    if aligned < original:
+        aligned += timedelta(minutes=30)
+    return aligned
 
 
 def _epg_export_teardown():
-    from django.db import close_old_connections
+    from core.utils import spawn_memory_trim
 
-    from core.utils import (
-        _is_gevent_monkey_patched,
-        cleanup_memory,
-        trim_c_allocator_heap,
-    )
-
-    close_old_connections()
-
-    def _run():
-        cleanup_memory(force_collection=True)
-        trim_c_allocator_heap()
-
-    if _is_gevent_monkey_patched():
-        import gevent
-
-        gevent.spawn(_run)
-    else:
-        _run()
+    spawn_memory_trim(close_connections=True)
 
 
 def _ordered_channel_streams(channel):
@@ -1183,10 +1169,6 @@ def generate_epg(request, profile_name=None, user=None):
             with_effective_values(base_qs, select_related_fks=True)
             .exclude(hidden_from_output=True)
             .order_by("effective_channel_number")
-            # programme_index is a multi-MB JSON byte-offset index that EPG
-            # generation never reads; defer it so it isn't fetched and JSON-parsed
-            # once per channel (was ~13s of the request on large guides).
-            .defer("epg_data__epg_source__programme_index")
             .prefetch_related(
                 Prefetch('streams', queryset=Stream.objects.only('id', 'name').order_by('channelstream__order'))
             )

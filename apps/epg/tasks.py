@@ -26,7 +26,7 @@ from core.models import UserAgent, CoreSettings
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 
-from .models import EPGSource, EPGData, ProgramData, SDScheduleMD5, SDProgramMD5
+from .models import EPGSource, EPGSourceIndex, EPGData, ProgramData, SDScheduleMD5, SDProgramMD5
 from core.utils import (
     acquire_task_lock,
     is_task_lock_held,
@@ -653,7 +653,9 @@ def _refresh_epg_data_impl(source_id, force=False):
     if source.source_type == 'xmltv':
         # Invalidate the byte-offset index before downloading the new file
         # so stale offsets are never used during the refresh window.
-        EPGSource.objects.filter(id=source.id).update(programme_index=None)
+        EPGSourceIndex.objects.update_or_create(
+            source_id=source.id, defaults={'data': None}
+        )
         if not fetch_xmltv(source):
             logger.error(f"Failed to fetch XMLTV for source {source.name}")
             return
@@ -4484,7 +4486,7 @@ def _programme_to_dict(elem, start_time, end_time):
 def build_programme_index(source_id):
     """
     Scan the XML file with raw binary I/O to build a {tvg_id: [byte_offset, ...]} map.
-    Persists the result to EPGSource.programme_index. Most XMLTV files group programmes
+    Persists the result to the EPGSourceIndex table. Most XMLTV files group programmes
     by channel, but some split a channel across multiple non-contiguous blocks, so we
     record block starts up to _OFFSET_CAP and mark only channels that exceed the cap
     as interleaved.
@@ -4573,7 +4575,9 @@ def build_programme_index(source_id):
         'channels': index,
         'interleaved_channels': sorted(interleaved_channels),
     }
-    EPGSource.objects.filter(id=source_id).update(programme_index=result)
+    EPGSourceIndex.objects.update_or_create(
+        source_id=source_id, defaults={'data': result}
+    )
 
 
 @shared_task
@@ -4620,9 +4624,8 @@ def find_current_program_for_tvg_id(epg_or_id):
         return None
 
     now = timezone.now()
-    # Force a fresh read of the DB-backed index to avoid using stale related-object
-    # state when an EPG refresh invalidates/rebuilds the index concurrently.
-    source.refresh_from_db(fields=['programme_index'])
+    # The property reads the EPGSourceIndex table fresh on each access, so a
+    # concurrent refresh invalidating/rebuilding the index can't serve stale state.
     index = source.programme_index
 
     if index is not None:

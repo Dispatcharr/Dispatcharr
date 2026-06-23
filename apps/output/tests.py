@@ -355,4 +355,14 @@ class OutputEPGHelperTest(SimpleTestCase):
         aligned = _ceil_to_half_hour(dt)
         self.assertEqual(aligned.minute, 30)
         self.assertEqual(aligned.second, 0)
-        self.assertGreater(aligned, dt.replace(second=0, microsecond=0))
+        self.assertGreaterEqual(aligned, dt.replace(microsecond=0))
+
+    def test_ceil_to_half_hour_past_boundary_second(self):
+        from django.utils import timezone
+        from apps.output.epg import _ceil_to_half_hour
+
+        dt = timezone.now().replace(minute=0, second=52, microsecond=123456)
+        aligned = _ceil_to_half_hour(dt)
+        self.assertEqual(aligned.minute, 30)
+        self.assertEqual(aligned.second, 0)
+        self.assertGreaterEqual(aligned, dt.replace(microsecond=0))
