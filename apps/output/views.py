@@ -25,8 +25,54 @@ from apps.proxy.utils import get_user_active_connections
 import regex
 from core.utils import log_system_event, build_absolute_uri_with_port
 import hashlib
+from apps.output.epg_chunk_cache import stream_epg_response
 
 logger = logging.getLogger(__name__)
+
+_EPG_CHANNEL_XML_BATCH_SIZE = 200
+_EPG_PROGRAM_YIELD_BATCH_SIZE = 1000
+_EPG_PROGRAM_DB_CHUNK_SIZE = 20000
+
+
+def _programme_overlaps_export_window(start_time, end_time, lookback_cutoff, cutoff_date):
+    if end_time < lookback_cutoff:
+        return False
+    if cutoff_date is not None and start_time >= cutoff_date:
+        return False
+    return True
+
+
+def _ceil_to_half_hour(dt):
+    """Round a datetime up to the next :00 or :30 boundary."""
+    dt = dt.replace(second=0, microsecond=0)
+    remainder = dt.minute % 30
+    if remainder == 0:
+        return dt
+    return dt + timedelta(minutes=30 - remainder)
+
+
+def _epg_export_teardown():
+    from django.db import close_old_connections
+
+    from core.utils import (
+        _is_gevent_monkey_patched,
+        cleanup_memory,
+        trim_c_allocator_heap,
+    )
+
+    close_old_connections()
+
+    def _run():
+        cleanup_memory(force_collection=True)
+        trim_c_allocator_heap()
+
+    if _is_gevent_monkey_patched():
+        import gevent
+
+        gevent.spawn(_run)
+    else:
+        _run()
+
 
 def get_client_identifier(request):
     """Get client information including IP, user agent, and a unique hash identifier
@@ -112,6 +158,10 @@ def generate_m3u(request, profile_name=None, user=None):
     # Check if this is a POST request and the body is not empty (which we don't want to allow)
     logger.debug("Generating M3U for profile: %s, user: %s, method: %s", profile_name, user.username if user else "Anonymous", request.method)
 
+    if request.method == "POST" and request.body:
+        if request.body.decode() != '{}':
+            return HttpResponseForbidden("POST requests with body are not allowed.")
+
     # Check cache for recent identical request (helps with double-GET from browsers)
     from django.core.cache import cache
     cache_params = f"{profile_name or 'all'}:{user.username if user else 'anonymous'}:{request.GET.urlencode()}"
@@ -123,10 +173,6 @@ def generate_m3u(request, profile_name=None, user=None):
         response = HttpResponse(cached_content, content_type="audio/x-mpegurl")
         response["Content-Disposition"] = 'attachment; filename="channels.m3u"'
         return response
-    # Check if this is a POST request with data (which we don't want to allow)
-    if request.method == "POST" and request.body:
-        if request.body.decode() != '{}':
-            return HttpResponseForbidden("POST requests with body are not allowed.")
 
     if user is not None:
         if user.user_level < 10:
@@ -409,7 +455,15 @@ def generate_fallback_programs(channel_id, channel_name, now, num_days, program_
     return programs
 
 
-def generate_dummy_programs(channel_id, channel_name, num_days=1, program_length_hours=4, epg_source=None):
+def generate_dummy_programs(
+    channel_id,
+    channel_name,
+    num_days=1,
+    program_length_hours=4,
+    epg_source=None,
+    export_lookback=None,
+    export_cutoff=None,
+):
     """
     Generate dummy EPG programs for channels.
 
@@ -435,29 +489,26 @@ def generate_dummy_programs(channel_id, channel_name, num_days=1, program_length
     if epg_source and epg_source.source_type == 'dummy' and epg_source.custom_properties:
         custom_programs = generate_custom_dummy_programs(
             channel_id, channel_name, now, num_days,
-            epg_source.custom_properties
+            epg_source.custom_properties,
+            export_lookback=export_lookback,
+            export_cutoff=export_cutoff,
         )
-        # If custom generation succeeded, return those programs
-        # If it returned empty (pattern didn't match), check for custom fallback templates
-        if custom_programs:
+        if custom_programs is not None:
             return custom_programs
-        else:
-            logger.info(f"Custom pattern didn't match for '{channel_name}', checking for custom fallback templates")
 
-            # Check if custom fallback templates are provided
-            custom_props = epg_source.custom_properties
-            fallback_title = custom_props.get('fallback_title_template', '').strip()
-            fallback_description = custom_props.get('fallback_description_template', '').strip()
+        logger.info(f"Custom pattern didn't match for '{channel_name}', checking for custom fallback templates")
 
-            # If custom fallback templates exist, use them instead of default
-            if fallback_title or fallback_description:
-                logger.info(f"Using custom fallback templates for '{channel_name}'")
-                return generate_fallback_programs(
-                    channel_id, channel_name, now, num_days,
-                    program_length_hours, fallback_title, fallback_description
-                )
-            else:
-                logger.info(f"No custom fallback templates found, using default dummy EPG")
+        custom_props = epg_source.custom_properties
+        fallback_title = custom_props.get('fallback_title_template', '').strip()
+        fallback_description = custom_props.get('fallback_description_template', '').strip()
+
+        if fallback_title or fallback_description:
+            logger.info(f"Using custom fallback templates for '{channel_name}'")
+            return generate_fallback_programs(
+                channel_id, channel_name, now, num_days,
+                program_length_hours, fallback_title, fallback_description
+            )
+        logger.info(f"No custom fallback templates found, using default dummy EPG")
 
     # Default humorous program descriptions based on time of day
     time_descriptions = {
@@ -531,7 +582,15 @@ def generate_dummy_programs(channel_id, channel_name, num_days=1, program_length
     return programs
 
 
-def generate_custom_dummy_programs(channel_id, channel_name, now, num_days, custom_properties):
+def generate_custom_dummy_programs(
+    channel_id,
+    channel_name,
+    now,
+    num_days,
+    custom_properties,
+    export_lookback=None,
+    export_cutoff=None,
+):
     """
     Generate programs using custom dummy EPG regex patterns.
 
@@ -616,7 +675,7 @@ def generate_custom_dummy_programs(channel_id, channel_name, now, num_days, cust
 
     if not title_pattern:
         logger.warning(f"No title_pattern in custom_properties, falling back to default")
-        return []  # Return empty, will use default
+        return None
 
     logger.debug(f"Title pattern from DB: {repr(title_pattern)}")
 
@@ -633,7 +692,7 @@ def generate_custom_dummy_programs(channel_id, channel_name, now, num_days, cust
     except Exception as e:
         logger.error(f"Invalid title regex pattern after conversion: {e}")
         logger.error(f"Pattern was: {repr(title_pattern)}")
-        return []
+        return None
 
     time_regex = None
     if time_pattern:
@@ -665,7 +724,7 @@ def generate_custom_dummy_programs(channel_id, channel_name, now, num_days, cust
     title_match = title_regex.search(channel_name)
     if not title_match:
         logger.debug(f"Channel name '{channel_name}' doesn't match title pattern")
-        return []  # Return empty, will use default
+        return None
 
     groups = title_match.groupdict()
     logger.debug(f"Title pattern matched. Groups: {groups}")
@@ -917,56 +976,92 @@ def generate_custom_dummy_programs(channel_id, channel_name, now, num_days, cust
         iterations = num_days
 
     for day in range(iterations):
-        # Start from current time (like standard dummy) instead of midnight
-        # This ensures programs appear in the guide's current viewing window
-        day_start = now + timedelta(days=day)
-        day_end = day_start + timedelta(days=1)
-
-        if time_info:
-            # We have an extracted event time - this is when the MAIN event starts
-            # The extracted time is in the SOURCE timezone (e.g., 8PM ET)
-            # We need to convert it to UTC for storage
-
-            # Determine which date to use
-            if date_info:
-                # Use the extracted date from the channel title
-                current_date = datetime(
-                    date_info['year'],
-                    date_info['month'],
-                    date_info['day']
-                ).date()
-                logger.debug(f"Using extracted date: {current_date}")
-            else:
-                # No date extracted, use day offset from current time in SOURCE timezone
-                # This ensures we calculate "today" in the event's timezone, not UTC
-                # For example: 8:30 PM Central (1:30 AM UTC next day) for a 10 PM ET event
-                # should use today's date in ET, not tomorrow's date in UTC
-                now_in_source_tz = now.astimezone(source_tz)
-                current_date = (now_in_source_tz + timedelta(days=day)).date()
-                logger.debug(f"No date extracted, using day offset in {source_tz}: {current_date}")
-
-            # Create a naive datetime (no timezone info) representing the event in source timezone
+        event_overlaps_window = True
+        if date_info and time_info:
+            current_date = datetime(
+                date_info['year'],
+                date_info['month'],
+                date_info['day'],
+            ).date()
             event_start_naive = datetime.combine(
                 current_date,
                 datetime.min.time().replace(
                     hour=time_info['hour'],
-                    minute=time_info['minute']
-                )
+                    minute=time_info['minute'],
+                ),
             )
-
-            # Use pytz to localize the naive datetime to the source timezone
-            # This automatically handles DST!
             try:
-                event_start_local = source_tz.localize(event_start_naive)
-                # Convert to UTC
-                event_start_utc = event_start_local.astimezone(pytz.utc)
-                logger.debug(f"Converted {event_start_local} to UTC: {event_start_utc}")
+                event_start_utc = source_tz.localize(event_start_naive).astimezone(pytz.utc)
             except Exception as e:
                 logger.error(f"Error localizing time to {source_tz}: {e}")
-                # Fallback: treat as UTC
                 event_start_utc = django_timezone.make_aware(event_start_naive, pytz.utc)
-
             event_end_utc = event_start_utc + timedelta(minutes=program_duration)
+
+            lookback = export_lookback if export_lookback is not None else now
+            event_overlaps_window = _programme_overlaps_export_window(
+                event_start_utc, event_end_utc, lookback, export_cutoff
+            )
+            if not event_overlaps_window:
+                logger.debug(
+                    "Custom dummy event outside export window; filling window only: %s",
+                    channel_name,
+                )
+                event_happened = event_end_utc < lookback
+                day_start = _ceil_to_half_hour(lookback)
+                if export_cutoff is not None:
+                    day_end = export_cutoff
+                else:
+                    day_end = now + timedelta(days=num_days if num_days > 0 else 3)
+            else:
+                day_start = source_tz.localize(
+                    datetime.combine(current_date, datetime.min.time())
+                ).astimezone(pytz.utc)
+                day_end = day_start + timedelta(days=1)
+                if export_lookback is not None:
+                    day_start = max(day_start, export_lookback)
+                if export_cutoff is not None:
+                    day_end = min(day_end, export_cutoff)
+        else:
+            day_start = now + timedelta(days=day)
+            day_end = day_start + timedelta(days=1)
+            if export_lookback is not None:
+                day_start = max(day_start, export_lookback)
+            if export_cutoff is not None:
+                day_end = min(day_end, export_cutoff)
+
+        if day_start >= day_end:
+            continue
+
+        if time_info:
+            if not date_info:
+                now_in_source_tz = now.astimezone(source_tz)
+                current_date = (now_in_source_tz + timedelta(days=day)).date()
+                logger.debug(f"No date extracted, using day offset in {source_tz}: {current_date}")
+
+                event_start_naive = datetime.combine(
+                    current_date,
+                    datetime.min.time().replace(
+                        hour=time_info['hour'],
+                        minute=time_info['minute'],
+                    ),
+                )
+                try:
+                    event_start_local = source_tz.localize(event_start_naive)
+                    event_start_utc = event_start_local.astimezone(pytz.utc)
+                    logger.debug(f"Converted {event_start_local} to UTC: {event_start_utc}")
+                except Exception as e:
+                    logger.error(f"Error localizing time to {source_tz}: {e}")
+                    event_start_utc = django_timezone.make_aware(event_start_naive, pytz.utc)
+
+                event_end_utc = event_start_utc + timedelta(minutes=program_duration)
+
+                lookback = export_lookback if export_lookback is not None else now
+                if not _programme_overlaps_export_window(
+                    event_start_utc, event_end_utc, lookback, export_cutoff
+                ):
+                    continue
+            else:
+                logger.debug(f"Using extracted date: {current_date}")
 
             # Pre-generate the main event title and description for reuse
             if title_template:
@@ -994,15 +1089,13 @@ def generate_custom_dummy_programs(channel_id, channel_name, now, num_days, cust
 
 
             # Determine if this day is before, during, or after the event
-            # Event only happens on day 0 (first day)
-            is_event_day = (day == 0)
+            # Event only happens on day 0 (first day) when it falls inside the window
+            is_event_day = (day == 0) and event_overlaps_window
 
             if is_event_day and not event_happened:
-                # This is THE day the event happens
-                # Fill programs BEFORE the event
                 current_time = day_start
 
-                while current_time < event_start_utc:
+                while current_time < event_start_utc and current_time < day_end:
                     program_start_utc = current_time
                     program_end_utc = min(current_time + timedelta(minutes=program_duration), event_start_utc)
 
@@ -1084,8 +1177,8 @@ def generate_custom_dummy_programs(channel_id, channel_name, now, num_days, cust
 
                 event_happened = True
 
-                # Fill programs AFTER the event until end of day
-                current_time = event_end_utc
+                # Fill programs AFTER the event until end of export day window
+                current_time = max(event_end_utc, day_start)
 
                 while current_time < day_end:
                     program_start_utc = current_time
@@ -1325,18 +1418,10 @@ def generate_dummy_epg(
 
 def generate_epg(request, profile_name=None, user=None):
     """
-    Dynamically generate an XMLTV (EPG) file using streaming response to handle keep-alives.
+    Dynamically generate an XMLTV (EPG) file using a streaming response.
     Since the EPG data is stored independently of Channels, we group programmes
     by their associated EPGData record.
-    This version filters data based on the 'days' parameter and sends keep-alives during processing.
     """
-    # Check cache for recent identical request (helps with double-GET from browsers)
-    from django.core.cache import cache
-    # Resolve all effective parameter values once here so they are reused for both
-    # the cache key and inside epg_generator() via closure.
-    # The cache key is built from resolved values only — not from the raw query string —
-    # so equivalent requests (e.g. days=7 via URL param vs. user default of 7) share
-    # the same cache entry regardless of how the value was supplied.
     user_custom = (user.custom_properties or {}) if user else {}
     try:
         num_days = int(request.GET.get('days', user_custom.get('epg_days', 0)))
@@ -1356,21 +1441,13 @@ def generate_epg(request, profile_name=None, user=None):
     )
     content_cache_key = f"epg_content:{cache_params}"
 
-    cached_content = cache.get(content_cache_key)
-    if cached_content:
-        logger.debug("Serving EPG from cache")
-        response = HttpResponse(cached_content, content_type="application/xml")
-        response["Content-Disposition"] = 'attachment; filename="Dispatcharr.xml"'
-        response["Cache-Control"] = "no-cache"
-        return response
-
     def epg_generator():
         """Generator function that yields EPG data with keep-alives during processing."""
 
-        xml_lines = []
-        xml_lines.append('<?xml version="1.0" encoding="UTF-8"?>')
-        xml_lines.append(
-            '<tv generator-info-name="Dispatcharr" generator-info-url="https://github.com/Dispatcharr/Dispatcharr">'
+        yield '<?xml version="1.0" encoding="UTF-8"?>\n'
+        yield (
+            '<tv generator-info-name="Dispatcharr" '
+            'generator-info-url="https://github.com/Dispatcharr/Dispatcharr">\n'
         )
 
         # Get channels based on user/profile
@@ -1416,14 +1493,19 @@ def generate_epg(request, profile_name=None, user=None):
         # Resolve effective values at SQL level and exclude hidden channels
         # so output ordering/display honors user overrides.
         from apps.channels.managers import with_effective_values
-        channels = (
+        channels = list(
             with_effective_values(base_qs, select_related_fks=True)
             .exclude(hidden_from_output=True)
             .order_by("effective_channel_number")
+            # programme_index is a multi-MB JSON byte-offset index that EPG
+            # generation never reads; defer it so it isn't fetched and JSON-parsed
+            # once per channel (was ~13s of the request on large guides).
+            .defer("epg_data__epg_source__programme_index")
             .prefetch_related(
                 Prefetch('streams', queryset=Stream.objects.order_by('channelstream__order'))
             )
         )
+        channel_count = len(channels)
 
         # For dummy EPG, use either the specified value or default to 3 days
         dummy_days = num_days if num_days > 0 else 3
@@ -1465,12 +1547,14 @@ def generate_epg(request, profile_name=None, user=None):
         _logo_url_prefix = _base_url + _logo_prefix_raw + "/"
         _logo_url_suffix = "/" + _logo_suffix_raw
 
-        dummy_epg_ids_for_program_check = set()
+        dummy_program_list = []
+        real_epg_map = {}
+        channel_xml_batch = []
 
-        # Process channels for the <channel> section
         for channel in channels:
             effective_name = channel.effective_name
             effective_epg_data = channel.effective_epg_data_obj
+            effective_epg_data_id = channel.effective_epg_data_id
             effective_logo = channel.effective_logo_obj
             effective_number = channel.effective_channel_number
 
@@ -1492,8 +1576,6 @@ def generate_epg(request, profile_name=None, user=None):
 
             # Check if this is a custom dummy EPG with channel logo URL template
             if effective_epg_data and effective_epg_data.epg_source and effective_epg_data.epg_source.source_type == 'dummy':
-                if channel.effective_epg_data_id:
-                    dummy_epg_ids_for_program_check.add(channel.effective_epg_data_id)
                 epg_source = effective_epg_data.epg_source
                 if epg_source.custom_properties:
                     custom_props = epg_source.custom_properties
@@ -1548,51 +1630,16 @@ def generate_epg(request, profile_name=None, user=None):
                         tvg_logo = direct_logo
                     else:
                         tvg_logo = f"{_logo_url_prefix}{effective_logo.id}{_logo_url_suffix}"
-            display_name = effective_name
-            xml_lines.append(f'  <channel id="{html.escape(channel_id)}">')
-            xml_lines.append(f'    <display-name>{html.escape(display_name)}</display-name>')
-            xml_lines.append(f'    <icon src="{html.escape(tvg_logo)}" />')
-            xml_lines.append("  </channel>")
+            channel_xml_batch.append(f'  <channel id="{html.escape(channel_id)}">')
+            channel_xml_batch.append(f'    <display-name>{html.escape(effective_name)}</display-name>')
+            channel_xml_batch.append(f'    <icon src="{html.escape(tvg_logo)}" />')
+            channel_xml_batch.append("  </channel>")
 
-        # Send all channel definitions
-        channel_xml = '\n'.join(xml_lines) + '\n'
-        yield channel_xml
-        xml_lines = []  # Clear to save memory
+            if len(channel_xml_batch) >= _EPG_CHANNEL_XML_BATCH_SIZE * 4:
+                yield '\n'.join(channel_xml_batch) + '\n'
+                channel_xml_batch = []
 
-        dummy_epg_with_programs = set()
-        if dummy_epg_ids_for_program_check:
-            dummy_epg_with_programs = set(
-                ProgramData.objects.filter(epg_id__in=dummy_epg_ids_for_program_check)
-                .values_list('epg_id', flat=True)
-                .distinct()
-            )
-
-        # Pre-pass: categorize channels into dummy and real EPG groups
-        dummy_program_list = []  # (channel_id, pattern_match_name, epg_source_or_None)
-        real_epg_map = {}  # epg_data_id -> [channel_id, ...]
-
-        for channel in channels:
-            effective_name = channel.effective_name
-            effective_epg_data = channel.effective_epg_data_obj
-            effective_epg_data_id = channel.effective_epg_data_id
-            effective_number = channel.effective_channel_number
-
-            # Determine channel_id (same logic as channel section)
-            if tvg_id_source == 'tvg_id' and channel.effective_tvg_id:
-                channel_id = channel.effective_tvg_id
-            elif tvg_id_source == 'gracenote' and channel.effective_tvc_guide_stationid:
-                channel_id = channel.effective_tvc_guide_stationid
-            else:
-                if user is not None:
-                    formatted_channel_number = channel_num_map[channel.id]
-                else:
-                    formatted_channel_number = format_channel_number(effective_number)
-                channel_id = str(formatted_channel_number) if formatted_channel_number != "" else str(channel.id)
-
-            display_name = effective_epg_data.name if effective_epg_data else effective_name
             pattern_match_name = effective_name
-
-            # Check if we should use stream name instead of channel name
             if effective_epg_data and effective_epg_data.epg_source:
                 epg_source = effective_epg_data.epg_source
                 if epg_source.custom_properties:
@@ -1619,48 +1666,19 @@ def generate_epg(request, profile_name=None, user=None):
 
             if not effective_epg_data:
                 dummy_program_list.append((channel_id, pattern_match_name, None))
+            elif effective_epg_data.epg_source and effective_epg_data.epg_source.source_type == 'dummy':
+                dummy_program_list.append((channel_id, pattern_match_name, effective_epg_data.epg_source))
             else:
-                if effective_epg_data.epg_source and effective_epg_data.epg_source.source_type == 'dummy':
-                    if effective_epg_data_id in dummy_epg_with_programs:
-                        real_epg_map.setdefault(effective_epg_data_id, []).append(channel_id)
-                    else:
-                        dummy_program_list.append((channel_id, pattern_match_name, effective_epg_data.epg_source))
-                    continue
-
                 real_epg_map.setdefault(effective_epg_data_id, []).append(channel_id)
 
-        # Emit dummy programmes
-        for channel_id, pattern_match_name, epg_source in dummy_program_list:
-            program_length_hours = 4
-            dummy_programs = generate_dummy_programs(
-                channel_id, pattern_match_name,
-                num_days=dummy_days,
-                program_length_hours=program_length_hours,
-                epg_source=epg_source
-            )
-            for program in dummy_programs:
-                start_str = program['start_time'].strftime("%Y%m%d%H%M%S %z")
-                stop_str = program['end_time'].strftime("%Y%m%d%H%M%S %z")
-                yield f'  <programme start="{start_str}" stop="{stop_str}" channel="{html.escape(channel_id)}">\n'
-                yield f"    <title>{html.escape(program['title'])}</title>\n"
-                if program.get('sub_title'):
-                    yield f"    <sub-title>{html.escape(program['sub_title'])}</sub-title>\n"
-                yield f"    <desc>{html.escape(program['description'])}</desc>\n"
-                custom_data = program.get('custom_properties', {})
-                if 'categories' in custom_data:
-                    for cat in custom_data['categories']:
-                        yield f"    <category>{html.escape(cat)}</category>\n"
-                if 'date' in custom_data:
-                    yield f"    <date>{html.escape(custom_data['date'])}</date>\n"
-                if custom_data.get('live', False):
-                    yield f"    <live />\n"
-                if custom_data.get('new', False):
-                    yield f"    <new />\n"
-                if 'icon' in custom_data:
-                    yield f'    <icon src="{html.escape(custom_data["icon"])}" />\n'
-                yield f"  </programme>\n"
+        if channel_xml_batch:
+            yield '\n'.join(channel_xml_batch) + '\n'
 
-        # Emit real programmes: single bulk query, chunked to avoid server-side cursor issues.
+        del channels
+        del channel_num_map
+
+        batch_size = _EPG_PROGRAM_YIELD_BATCH_SIZE
+
         all_epg_ids = list(real_epg_map.keys())
         if all_epg_ids:
             if num_days > 0:
@@ -1682,27 +1700,44 @@ def generate_epg(request, profile_name=None, user=None):
 
             current_epg_id = None
             channel_ids_for_epg = None
-            is_multi = False
-            multi_buffer = []
+            pending = []
             program_batch = []
-            batch_size = 1000
-            chunk_size = 5000
-            # Keyset pagination: track last (epg_id, id) instead of OFFSET
-            # to avoid skipping/duplicating rows if the table changes mid-stream.
+            chunk_size = _EPG_PROGRAM_DB_CHUNK_SIZE
             last_epg_id = 0
             last_id = 0
             _poster_url_base = build_absolute_uri_with_port(request, "/api/epg/programs/")
+
+            def flush_pending():
+                nonlocal program_batch, pending
+                if not pending:
+                    return
+                pending.sort(key=lambda row: (row[0], row[1]))
+                escaped_primary = (
+                    html.escape(channel_ids_for_epg[0])
+                    if len(channel_ids_for_epg) > 1 else None
+                )
+                for _, _, xml_text in pending:
+                    program_batch.append(xml_text)
+                    if escaped_primary:
+                        for cid in channel_ids_for_epg[1:]:
+                            program_batch.append(xml_text.replace(
+                                f'channel="{escaped_primary}"',
+                                f'channel="{html.escape(cid)}"',
+                                1,
+                            ))
+                    if len(program_batch) >= batch_size:
+                        yield '\n'.join(program_batch) + '\n'
+                        program_batch = []
+                pending.clear()
 
             while True:
                 program_chunk = list(
                     programs_base_qs.filter(epg_id__gte=last_epg_id)
                     .exclude(epg_id=last_epg_id, id__lte=last_id)[:chunk_size]
                 )
-
                 if not program_chunk:
                     break
 
-                # Advance keyset cursor to last row in this chunk
                 last_row = program_chunk[-1]
                 last_epg_id = last_row['epg_id']
                 last_id = last_row['id']
@@ -1710,31 +1745,19 @@ def generate_epg(request, profile_name=None, user=None):
                 for prog in program_chunk:
                     epg_id = prog['epg_id']
 
-                    # When epg_id changes, flush multi-channel buffer for previous group
                     if epg_id != current_epg_id:
-                        if is_multi and multi_buffer:
-                            escaped_primary = html.escape(channel_ids_for_epg[0])
-                            for extra_cid in channel_ids_for_epg[1:]:
-                                escaped_extra = html.escape(extra_cid)
-                                for xml_text in multi_buffer:
-                                    program_batch.append(xml_text.replace(
-                                        f'channel="{escaped_primary}"',
-                                        f'channel="{escaped_extra}"',
-                                        1,
-                                    ))
-                                    if len(program_batch) >= batch_size:
-                                        yield '\n'.join(program_batch) + '\n'
-                                        program_batch = []
-                            multi_buffer = []
-
+                        yield from flush_pending()
                         current_epg_id = epg_id
                         channel_ids_for_epg = real_epg_map[epg_id]
-                        is_multi = len(channel_ids_for_epg) > 1
 
-                    # Build programme XML for primary channel_id
                     primary_cid = channel_ids_for_epg[0]
-                    start_str = prog['start_time'].strftime("%Y%m%d%H%M%S %z")
-                    stop_str = prog['end_time'].strftime("%Y%m%d%H%M%S %z")
+                    # DB datetimes are UTC (USE_TZ=True, TIME_ZONE=UTC); format
+                    # directly instead of strftime("%Y%m%d%H%M%S %z"), which is
+                    # ~10x slower and dominates XML build over 750k rows.
+                    st = prog['start_time']
+                    et = prog['end_time']
+                    start_str = f"{st.year:04d}{st.month:02d}{st.day:02d}{st.hour:02d}{st.minute:02d}{st.second:02d} +0000"
+                    stop_str = f"{et.year:04d}{et.month:02d}{et.day:02d}{et.hour:02d}{et.minute:02d}{et.second:02d} +0000"
 
                     program_xml = [f'  <programme start="{start_str}" stop="{stop_str}" channel="{html.escape(primary_cid)}">']
                     program_xml.append(f'    <title>{html.escape(prog["title"])}</title>')
@@ -1932,67 +1955,101 @@ def generate_epg(request, profile_name=None, user=None):
                     program_xml.append("  </programme>")
 
                     xml_text = '\n'.join(program_xml)
-                    program_batch.append(xml_text)
+                    pending.append((prog['start_time'], prog['id'], xml_text))
 
-                    if is_multi:
-                        multi_buffer.append(xml_text)
+                del program_chunk
 
-                    if len(program_batch) >= batch_size:
-                        yield '\n'.join(program_batch) + '\n'
-                        program_batch = []
-
-            # Final flush of multi-channel buffer
-            if is_multi and multi_buffer:
-                escaped_primary = html.escape(channel_ids_for_epg[0])
-                for extra_cid in channel_ids_for_epg[1:]:
-                    escaped_extra = html.escape(extra_cid)
-                    for xml_text in multi_buffer:
-                        program_batch.append(xml_text.replace(
-                            f'channel="{escaped_primary}"',
-                            f'channel="{escaped_extra}"',
-                            1,
-                        ))
+            yield from flush_pending()
 
             if program_batch:
                 yield '\n'.join(program_batch) + '\n'
 
-        # Send final closing tag and completion message
+        del real_epg_map
+
+        for channel_id, pattern_match_name, epg_source in dummy_program_list:
+            program_length_hours = 4
+            dummy_programs = generate_dummy_programs(
+                channel_id, pattern_match_name,
+                num_days=dummy_days,
+                program_length_hours=program_length_hours,
+                epg_source=epg_source,
+                export_lookback=lookback_cutoff,
+                export_cutoff=cutoff_date,
+            )
+            if not dummy_programs:
+                continue
+            dummy_batch = []
+            for program in dummy_programs:
+                start_str = program['start_time'].strftime("%Y%m%d%H%M%S %z")
+                stop_str = program['end_time'].strftime("%Y%m%d%H%M%S %z")
+                lines = [
+                    f'  <programme start="{start_str}" stop="{stop_str}" channel="{html.escape(channel_id)}">',
+                    f"    <title>{html.escape(program['title'])}</title>",
+                ]
+                if program.get('sub_title'):
+                    lines.append(f"    <sub-title>{html.escape(program['sub_title'])}</sub-title>")
+                lines.append(f"    <desc>{html.escape(program['description'])}</desc>")
+                custom_data = program.get('custom_properties', {})
+                if 'categories' in custom_data:
+                    for cat in custom_data['categories']:
+                        lines.append(f"    <category>{html.escape(cat)}</category>")
+                if 'date' in custom_data:
+                    lines.append(f"    <date>{html.escape(custom_data['date'])}</date>")
+                if custom_data.get('live', False):
+                    lines.append("    <live />")
+                if custom_data.get('new', False):
+                    lines.append("    <new />")
+                if 'icon' in custom_data:
+                    lines.append(f'    <icon src="{html.escape(custom_data["icon"])}" />')
+                lines.append("  </programme>")
+                dummy_batch.append('\n'.join(lines))
+                if len(dummy_batch) >= batch_size:
+                    yield '\n'.join(dummy_batch) + '\n'
+                    dummy_batch = []
+            del dummy_programs
+            if dummy_batch:
+                yield '\n'.join(dummy_batch) + '\n'
+
+        del dummy_program_list
+
         yield "</tv>\n"
 
-        # Log system event for EPG download after streaming completes (with deduplication based on client)
         client_id, client_ip, user_agent = get_client_identifier(request)
         event_cache_key = f"epg_download:{user.username if user else 'anonymous'}:{profile_name or 'all'}:{client_id}"
-        if not cache.get(event_cache_key):
-            # `len()` reuses the queryset's iteration cache populated above;
-            # `count()` would issue a separate SELECT COUNT(*).
-            log_system_event(
-                event_type='epg_download',
-                profile=profile_name or 'all',
-                user=user.username if user else 'anonymous',
-                channels=len(channels),
-                client_ip=client_ip,
-                user_agent=user_agent,
-            )
-            cache.set(event_cache_key, True, 2)  # Prevent duplicate events for 2 seconds
 
-    # Wrapper generator that collects content for caching
-    def caching_generator():
-        collected_content = []
-        for chunk in epg_generator():
-            collected_content.append(chunk)
-            yield chunk
-        # After streaming completes, cache the full content
-        full_content = ''.join(collected_content)
-        cache.set(content_cache_key, full_content, 300)
-        logger.debug("Cached EPG content (%d bytes)", len(full_content))
+        def _log_epg_download():
+            from django.core.cache import cache as event_cache
 
-    response = StreamingHttpResponse(
-        streaming_content=caching_generator(),
-        content_type="application/xml"
-    )
-    response["Content-Disposition"] = 'attachment; filename="Dispatcharr.xml"'
-    response["Cache-Control"] = "no-cache"
-    return response
+            if not event_cache.get(event_cache_key):
+                log_system_event(
+                    event_type='epg_download',
+                    profile=profile_name or 'all',
+                    user=user.username if user else 'anonymous',
+                    channels=channel_count,
+                    client_ip=client_ip,
+                    user_agent=user_agent,
+                )
+                event_cache.set(event_cache_key, True, 2)
+
+        try:
+            from core.utils import _is_gevent_monkey_patched
+
+            if _is_gevent_monkey_patched():
+                import gevent
+
+                gevent.spawn(_log_epg_download)
+            else:
+                _log_epg_download()
+        except Exception:
+            _log_epg_download()
+
+    def build_epg_stream():
+        try:
+            yield from epg_generator()
+        finally:
+            _epg_export_teardown()
+
+    return stream_epg_response(content_cache_key, build_epg_stream)
 
 
 def xc_get_user(request):

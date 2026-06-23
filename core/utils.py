@@ -546,6 +546,25 @@ def monitor_memory_usage(func):
         return result
     return wrapper
 
+def trim_c_allocator_heap():
+    """Return unused C heap pages to the OS where supported (glibc malloc_trim)."""
+    try:
+        import ctypes
+        import ctypes.util
+
+        libc_name = ctypes.util.find_library("c")
+        if not libc_name:
+            return False
+        libc = ctypes.CDLL(libc_name)
+        if not hasattr(libc, "malloc_trim"):
+            return False
+        libc.malloc_trim(0)
+        return True
+    except Exception:
+        logger.debug("malloc_trim unavailable or failed", exc_info=True)
+        return False
+
+
 def cleanup_memory(log_usage=False, force_collection=True):
     """
     Comprehensive memory cleanup function to reduce memory footprint

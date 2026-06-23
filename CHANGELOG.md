@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Performance
+
+- **XMLTV EPG export streams without holding the full guide in the worker.** `generate_epg()` streams incrementally; on a cache miss each chunk is pushed to a Redis list as it is yielded (no `''.join()` in the worker). Repeat requests within 300s stream chunks back one at a time from Redis. Post-export `malloc_trim` runs after cold builds. Real programmes use fast `(epg_id, id)` keyset pagination with a per-source `start_time` sort before emit.
+- **EPG export no longer fetches the multi-MB `programme_index` per channel.** The channel query `select_related`s `epg_data__epg_source`, which pulled and JSON-parsed each source's byte-offset `programme_index` blob once per channel (~13s of the request on a ~2000-channel guide). It is now `defer()`red since EPG generation never reads it.
+- **`ProgramData` composite index `(epg_id, id)`.** The EPG export scans hundreds of thousands of programmes with keyset pagination on `(epg_id, id)`; without a matching index PostgreSQL re-sorted every chunk. A composite index (created `CONCURRENTLY` on PostgreSQL so it does not lock the table) lets each chunk use an ordered index range scan.
+
 ### Changed
 
 - **Channel list with nested streams loads faster.** `GET /api/channels/channels/?include_streams=true` (Channels UI and single-channel fetch) now builds nested stream payloads from the prefetched `channelstream_set` instead of issuing one extra streams M2M query per channel.

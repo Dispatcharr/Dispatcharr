@@ -153,6 +153,11 @@ class ProgramData(models.Model):
     program_id = models.CharField(max_length=64, null=True, blank=True, help_text='Schedules Direct programID (e.g. EP123456789). Null for XMLTV sources.')
     custom_properties = models.JSONField(default=dict, blank=True, null=True)
 
+    class Meta:
+        indexes = [
+            models.Index(fields=['epg', 'id'], name='epg_prog_epg_id_idx'),
+        ]
+
     def __str__(self):
         return f"{self.title} ({self.start_time} - {self.end_time})"
 
