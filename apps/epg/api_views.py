@@ -984,7 +984,9 @@ class EPGGridAPIView(APIView):
                     channel_name=name_to_parse,
                     num_days=1,
                     program_length_hours=4,
-                    epg_source=epg_source
+                    epg_source=epg_source,
+                    export_lookback=one_hour_ago,
+                    export_cutoff=twenty_four_hours_later,
                 )
 
                 # Custom dummy should always return data (either from patterns or fallback)

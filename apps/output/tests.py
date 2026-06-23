@@ -338,6 +338,55 @@ class OutputEPGCustomDummyTest(TestCase):
             )
         self.assertGreaterEqual(programs[0]['start_time'], lookback)
 
+    def test_custom_dummy_future_event_fills_grid_window_with_upcoming(self):
+        """Grid-style window: future event should show upcoming filler, not empty."""
+        from django.utils import timezone
+        from apps.output.epg import _programme_overlaps_export_window, generate_dummy_programs
+
+        epg_source = EPGSource.objects.create(
+            name="NHL Dummy Future",
+            source_type="dummy",
+            custom_properties={
+                "title_pattern": r"(?<league>.*)\s\d+:\s(?<team1>.*?)(?:\s+vs\s+)(?<team2>.*?)\s*@.*",
+                "time_pattern": r"(?<hour>\d{1,2}):(?<minute>\d{2})\s*(?<ampm>AM|PM)",
+                "date_pattern": r"@ (?<month>[A-Za-z]+)\s+(?<day>\d{1,2})",
+                "timezone": "US/Eastern",
+                "program_duration": 180,
+            },
+        )
+        now = timezone.now()
+        grid_start = now - timedelta(hours=1)
+        grid_end = now + timedelta(hours=24)
+        future = now + timedelta(days=3)
+        channel_name = (
+            f"NHL 01: Washington Capitals vs Philadelphia Flyers @ "
+            f"{future.strftime('%B')} {future.day} 07:30 PM ET"
+        )
+
+        programs = generate_dummy_programs(
+            channel_id="nhl01",
+            channel_name=channel_name,
+            num_days=1,
+            epg_source=epg_source,
+            export_lookback=grid_start,
+            export_cutoff=grid_end,
+        )
+
+        self.assertGreater(len(programs), 0)
+        self.assertTrue(
+            all(
+                _programme_overlaps_export_window(
+                    p["start_time"], p["end_time"], grid_start, grid_end
+                )
+                for p in programs
+            ),
+            "All programmes should overlap the grid query window",
+        )
+        self.assertTrue(
+            any("Upcoming" in p.get("description", "") for p in programs),
+            "Future events outside the window should show upcoming filler",
+        )
+
 
 class OutputEPGHelperTest(SimpleTestCase):
     def test_ceil_to_half_hour_on_boundary(self):
