@@ -15,6 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **CVE-2026-8404**: Potential private data exposure via case-sensitive `Cache-Control` directives in `UpdateCacheMiddleware`.
   - **CVE-2026-35193**: Potential private data exposure via missing `Vary: Authorization` in `UpdateCacheMiddleware`.
   - **CVE-2026-48587**: Potential private data exposure via whitespace padding in the `Vary` header.
+- Updated frontend npm dependencies to resolve 4 audit vulnerabilities (1 low, 2 moderate, 1 high):
+  - Updated `vite` 7.3.2 → 7.3.5, resolving **moderate** NTLMv2 hash disclosure via UNC path handling on Windows ([GHSA-v6wh-96g9-6wx3](https://github.com/advisories/GHSA-v6wh-96g9-6wx3)) and **high** `server.fs.deny` bypass on Windows alternate paths ([GHSA-fx2h-pf6j-xcff](https://github.com/advisories/GHSA-fx2h-pf6j-xcff))
+  - Updated `js-yaml` 4.1.1 → 5.1.0, resolving **moderate** quadratic-complexity DoS in merge key handling via repeated aliases ([GHSA-h67p-54hq-rp68](https://github.com/advisories/GHSA-h67p-54hq-rp68))
+  - Updated `esbuild` 0.27.3 → 0.28.1, resolving **low** arbitrary file read when running the development server on Windows ([GHSA-g7r4-m6w7-qqqr](https://github.com/advisories/GHSA-g7r4-m6w7-qqqr))
 
 ### Added
 
