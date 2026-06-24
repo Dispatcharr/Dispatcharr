@@ -918,6 +918,73 @@ def xc_get_epg(request, user, short=False):
     return output
 
 
+XC_MOVIE_VALUE_FIELDS = (
+    'id', 'movie_id', 'category_id', 'container_extension',
+    'movie__id', 'movie__name', 'movie__rating', 'movie__created_at',
+    'movie__tmdb_id', 'movie__imdb_id', 'movie__description', 'movie__genre',
+    'movie__year', 'movie__custom_properties', 'movie__logo_id',
+)
+
+XC_SERIES_VALUE_FIELDS = (
+    'id', 'series_id', 'category_id', 'updated_at',
+    'series__id', 'series__name', 'series__description', 'series__genre',
+    'series__year', 'series__rating', 'series__custom_properties', 'series__logo_id',
+    'series__tmdb_id', 'series__imdb_id',
+)
+
+
+def _xc_fetch_priority_distinct_relations(
+    *,
+    manager,
+    rel_filters,
+    distinct_field,
+    value_fields,
+    order_by_name_field,
+):
+    """
+    Return one row dict per distinct content ID (highest account priority wins).
+
+    On PostgreSQL, dedupe on narrow relation rows first, then fetch display
+    columns via values() (no ORM model instantiation). That avoids sorting
+    wide joined rows during DISTINCT ON and reduces parallel worker /dev/shm
+    pressure in Docker.
+    """
+    from django.db import connection, transaction
+
+    narrow_qs = manager.filter(**rel_filters)
+
+    def _fetch_by_ids(ids):
+        return list(
+            manager.filter(pk__in=ids)
+            .values(*value_fields)
+            .order_by(Lower(order_by_name_field))
+        )
+
+    if connection.vendor == 'postgresql':
+        winning_ids_qs = (
+            narrow_qs
+            .order_by(distinct_field, '-m3u_account__priority', 'id')
+            .distinct(distinct_field)
+            .values('pk')
+        )
+        with transaction.atomic():
+            #with connection.cursor() as cursor:
+                #cursor.execute("SET LOCAL max_parallel_workers_per_gather = 0")
+            winning_ids = list(winning_ids_qs.values_list('pk', flat=True))
+            if not winning_ids:
+                return []
+            return _fetch_by_ids(winning_ids)
+
+    seen = {}
+    for row in narrow_qs.values(*value_fields).order_by('-m3u_account__priority', 'id'):
+        key = row[distinct_field]
+        if key not in seen:
+            seen[key] = row
+    rows = list(seen.values())
+    rows.sort(key=lambda r: (r[order_by_name_field] or '').lower())
+    return rows
+
+
 def xc_get_vod_categories(user):
     """Get VOD categories for XtreamCodes API"""
     from apps.vod.models import VODCategory, M3UMovieRelation
@@ -943,32 +1010,18 @@ def xc_get_vod_categories(user):
 def xc_get_vod_streams(request, user, category_id=None):
     """Get VOD streams (movies) for XtreamCodes API"""
     from apps.vod.models import M3UMovieRelation
-    from django.db import connection
 
     rel_filters = {"m3u_account__is_active": True}
     if category_id:
         rel_filters["category_id"] = category_id
 
-    base_qs = (
-        M3UMovieRelation.objects
-        .filter(**rel_filters)
-        .select_related('movie', 'movie__logo', 'category')
+    relations = _xc_fetch_priority_distinct_relations(
+        manager=M3UMovieRelation.objects,
+        rel_filters=rel_filters,
+        distinct_field='movie_id',
+        value_fields=XC_MOVIE_VALUE_FIELDS,
+        order_by_name_field='movie__name',
     )
-
-    if connection.vendor == 'postgresql':
-        # DISTINCT ON returns one row per movie (highest-priority active relation)
-        # in a single query. ORDER BY must lead with the DISTINCT field.
-        relations = list(
-            base_qs.order_by('movie_id', '-m3u_account__priority', 'id')
-            .distinct('movie_id')
-        )
-    else:
-        # SQLite fallback: fetch all matching relations, deduplicate in Python.
-        seen: dict = {}
-        for rel in base_qs.order_by('-m3u_account__priority', 'id'):
-            if rel.movie_id not in seen:
-                seen[rel.movie_id] = rel
-        relations = list(seen.values())
 
     # Precompute logo URL prefix/suffix once (mirrors _xc_live_streams_setup)
     # so each row only needs a string concat instead of reverse() + URI build.
@@ -978,44 +1031,40 @@ def xc_get_vod_streams(request, user, category_id=None):
     _logo_url_prefix = _base_url + _logo_prefix_raw + "/"
     _logo_url_suffix = "/" + _logo_suffix_raw
 
-    # Sort by name (DISTINCT ON forces ORDER BY movie_id; SQLite path is unsorted).
-    relations.sort(key=lambda r: (r.movie.name or "").lower())
-
     streams = []
     append = streams.append
-    for num, relation in enumerate(relations, 1):
-        movie = relation.movie
-        custom_props = movie.custom_properties or {}
-        category = relation.category
-        category_id_str = str(category.id) if category else "0"
-        category_id_list = [category.id] if category else []
-        rating = movie.rating
-        logo = movie.logo
+    for num, row in enumerate(relations, 1):
+        custom_props = row['movie__custom_properties'] or {}
+        category_id = row['category_id']
+        category_id_str = str(category_id) if category_id else "0"
+        category_id_list = [category_id] if category_id else []
+        rating = row['movie__rating']
+        logo_id = row['movie__logo_id']
 
         append({
             "num": num,
-            "name": movie.name,
+            "name": row['movie__name'],
             "stream_type": "movie",
-            "stream_id": movie.id,
+            "stream_id": row['movie__id'],
             "stream_icon": (
-                f"{_logo_url_prefix}{logo.id}{_logo_url_suffix}" if logo else None
+                f"{_logo_url_prefix}{logo_id}{_logo_url_suffix}" if logo_id else None
             ),
             "rating": rating or "0",
             "rating_5based": round(float(rating or 0) / 2, 2) if rating else 0,
-            "added": str(int(movie.created_at.timestamp())),
+            "added": str(int(row['movie__created_at'].timestamp())),
             "is_adult": 0,
-            "tmdb_id": movie.tmdb_id or "",
-            "imdb_id": movie.imdb_id or "",
+            "tmdb_id": row['movie__tmdb_id'] or "",
+            "imdb_id": row['movie__imdb_id'] or "",
             "trailer": custom_props.get('youtube_trailer') or "",
-            "plot": movie.description or "",
-            "genre": movie.genre or "",
-            "year": movie.year or "",
+            "plot": row['movie__description'] or "",
+            "genre": row['movie__genre'] or "",
+            "year": row['movie__year'] or "",
             "director": custom_props.get('director', ''),
             "cast": custom_props.get('actors', ''),
             "release_date": custom_props.get('release_date', ''),
             "category_id": category_id_str,
             "category_ids": category_id_list,
-            "container_extension": relation.container_extension or "mp4",
+            "container_extension": row['container_extension'] or "mp4",
             "custom_sid": None,
             "direct_source": "",
         })
@@ -1048,29 +1097,18 @@ def xc_get_series_categories(user):
 def xc_get_series(request, user, category_id=None):
     """Get series list for XtreamCodes API"""
     from apps.vod.models import M3USeriesRelation
-    from django.db import connection
 
     rel_filters = {"m3u_account__is_active": True}
     if category_id:
         rel_filters["category_id"] = category_id
 
-    base_qs = (
-        M3USeriesRelation.objects
-        .filter(**rel_filters)
-        .select_related('series', 'series__logo', 'category')
+    relations = _xc_fetch_priority_distinct_relations(
+        manager=M3USeriesRelation.objects,
+        rel_filters=rel_filters,
+        distinct_field='series_id',
+        value_fields=XC_SERIES_VALUE_FIELDS,
+        order_by_name_field='series__name',
     )
-
-    if connection.vendor == 'postgresql':
-        relations = list(
-            base_qs.order_by('series_id', '-m3u_account__priority', 'id')
-            .distinct('series_id')
-        )
-    else:
-        seen: dict = {}
-        for rel in base_qs.order_by('-m3u_account__priority', 'id'):
-            if rel.series_id not in seen:
-                seen[rel.series_id] = rel
-        relations = list(seen.values())
 
     _base_url = build_absolute_uri_with_port(request, "")
     _sample_logo_path = reverse("api:vod:vodlogo-cache", args=[0])
@@ -1078,42 +1116,39 @@ def xc_get_series(request, user, category_id=None):
     _logo_url_prefix = _base_url + _logo_prefix_raw + "/"
     _logo_url_suffix = "/" + _logo_suffix_raw
 
-    relations.sort(key=lambda r: (r.series.name or "").lower())
-
     series_list = []
     append = series_list.append
-    for num, relation in enumerate(relations, 1):
-        series = relation.series
-        custom_props = series.custom_properties or {}
-        category = relation.category
-        rating = series.rating
-        logo = series.logo
-        year_str = str(series.year) if series.year else ""
+    for num, row in enumerate(relations, 1):
+        custom_props = row['series__custom_properties'] or {}
+        category_id = row['category_id']
+        rating = row['series__rating']
+        logo_id = row['series__logo_id']
+        year_str = str(row['series__year']) if row['series__year'] else ""
         release_date = custom_props.get('release_date', year_str)
 
         append({
             "num": num,
-            "name": series.name,
-            "series_id": relation.id,
+            "name": row['series__name'],
+            "series_id": row['id'],
             "cover": (
-                f"{_logo_url_prefix}{logo.id}{_logo_url_suffix}" if logo else None
+                f"{_logo_url_prefix}{logo_id}{_logo_url_suffix}" if logo_id else None
             ),
-            "plot": series.description or "",
+            "plot": row['series__description'] or "",
             "cast": custom_props.get('cast', ''),
             "director": custom_props.get('director', ''),
-            "genre": series.genre or "",
+            "genre": row['series__genre'] or "",
             "release_date": release_date,
             "releaseDate": release_date,
-            "last_modified": str(int(relation.updated_at.timestamp())),
+            "last_modified": str(int(row['updated_at'].timestamp())),
             "rating": str(rating or "0"),
             "rating_5based": str(round(float(rating or 0) / 2, 2)) if rating else "0",
             "backdrop_path": custom_props.get('backdrop_path', []),
             "youtube_trailer": custom_props.get('youtube_trailer', ''),
             "episode_run_time": custom_props.get('episode_run_time', ''),
-            "category_id": str(category.id) if category else "0",
-            "category_ids": [category.id] if category else [],
-            "tmdb_id": series.tmdb_id or "",
-            "imdb_id": series.imdb_id or "",
+            "category_id": str(category_id) if category_id else "0",
+            "category_ids": [category_id] if category_id else [],
+            "tmdb_id": row['series__tmdb_id'] or "",
+            "imdb_id": row['series__imdb_id'] or "",
         })
 
     return series_list
