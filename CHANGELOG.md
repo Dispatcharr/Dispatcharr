@@ -13,7 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Performance
 
-- **`get_vod_streams` and `get_series` XC API endpoints are faster and no longer exhaust Docker `/dev/shm`.** Large libraries (e.g. 125k movies) previously ran one wide `DISTINCT ON` query with parallel workers, which could fail with `could not resize shared memory segment … No space left on device` on the default 64MB container shm. Both endpoints now dedupe on narrow relation rows first (`SET LOCAL max_parallel_workers_per_gather = 0`), then fetch display columns via `.values()` (no ORM model instantiation per row). Redundant `category` and `logo` joins were dropped in favor of FK ids; alphabetical sort runs in SQL. Typical full-library response time drops from ~23–28s to ~8–10s with stable shm usage.
+- **`get_vod_streams` and `get_series` XC API endpoints are faster and no longer exhaust Docker `/dev/shm`.** Large libraries (e.g. 125k movies) previously ran one wide `DISTINCT ON` query with parallel workers, which could fail with `could not resize shared memory segment … No space left on device` on the default 64MB container shm. Both endpoints now fetch display columns via `.values()` (no ORM model instantiation per row). Redundant `category` and `logo` joins were dropped in favor of FK ids; alphabetical sort runs in SQL. Typical full-library response time drops from ~23–28s to ~8–10s with stable shm usage.
+- **XMLTV EPG output no longer N+1 queries streams or dummy-program checks.** `generate_epg()` prefetches ordered channel streams once (for custom dummy EPG logo/program parsing when `name_source` is `stream`) and bulk-checks which dummy `EPGData` rows have stored programmes in a single query instead of one `.exists()` per row. Large guides with hundreds of custom-dummy channels issue far fewer SQL round-trips per client refresh.
 - **Lighter EPG export: fewer escape calls and a slimmer channel prefetch.** The primary channel id is escaped once per `epg_id` group instead of once per programme (saves ~750k `html.escape` calls on a large guide). The per-channel `streams` prefetch now loads only `id`/`name` (the only fields the export reads) instead of full `Stream` rows, reducing worker RSS during the channel phase.
 - **XMLTV EPG export streams without holding the full guide in the worker.** `generate_epg()` streams incrementally; on a cache miss each chunk is pushed to a Redis list as it is yielded (no `''.join()` in the worker). Repeat requests within 300s stream chunks back one at a time from Redis. Post-export `malloc_trim` runs after cold builds. Real programmes use fast `(epg_id, id)` keyset pagination with a per-source `start_time` sort before emit.
 - **EPG export no longer fetches the multi-MB `programme_index` per channel.** The channel query `select_related`s `epg_data__epg_source`, which pulled and JSON-parsed each source's byte-offset `programme_index` blob once per channel (~13s of the request on a ~2000-channel guide). The index now lives in its own `EPGSourceIndex` table, so the JOIN never pulls it.
@@ -28,9 +29,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Channel list with nested streams loads faster.** `GET /api/channels/channels/?include_streams=true` (Channels UI and single-channel fetch) now builds nested stream payloads from the prefetched `channelstream_set` instead of issuing one extra streams M2M query per channel.
 
-### Performance
-
-- **XMLTV EPG output no longer N+1 queries streams or dummy-program checks.** `generate_epg()` prefetches ordered channel streams once (for custom dummy EPG logo/program parsing when `name_source` is `stream`) and bulk-checks which dummy `EPGData` rows have stored programmes in a single query instead of one `.exists()` per row. Large guides with hundreds of custom-dummy channels issue far fewer SQL round-trips per client refresh.
 
 ### Fixed
 
