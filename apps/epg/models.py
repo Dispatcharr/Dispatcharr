@@ -153,6 +153,7 @@ class EPGData(models.Model):
     tvg_id = models.CharField(max_length=255, null=True, blank=True, db_index=True)
     name = models.CharField(max_length=512)
     icon_url = models.URLField(max_length=500, null=True, blank=True)
+    lineup = models.CharField(max_length=255, null=True, blank=True)
     epg_source = models.ForeignKey(
         EPGSource,
         on_delete=models.CASCADE,
