@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- Updated `Django` 6.0.5 → 6.0.6, resolving the following CVEs:
+  - **CVE-2026-6873**: Signed cookie salt namespace collision in `HttpRequest.get_signed_cookie()`.
+  - **CVE-2026-7666**: Potential unencrypted email transmission via STARTTLS in the SMTP backend.
+  - **CVE-2026-8404**: Potential private data exposure via case-sensitive `Cache-Control` directives in `UpdateCacheMiddleware`.
+  - **CVE-2026-35193**: Potential private data exposure via missing `Vary: Authorization` in `UpdateCacheMiddleware`.
+  - **CVE-2026-48587**: Potential private data exposure via whitespace padding in the `Vary` header.
+
 ### Added
 
 - **Isolated backend test settings (`dispatcharr.settings_test`).** `python manage.py test` now switches to this module automatically (via `manage.py`). It creates an empty PostgreSQL `test_<dbname>` database (same engine as production), uses the standard Postgres backend instead of geventpool so `TestCase` transactions isolate correctly, and leaves Celery tasks queued (no eager `post_save` signal runs during tests). Set `TEST_USE_SQLITE=1` for an in-memory SQLite fallback when Postgres is unavailable.
@@ -28,6 +37,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **EPG generation extracted into `apps/output/epg.py`.** All XMLTV output logic (`generate_epg`, `generate_dummy_programs`, `generate_custom_dummy_programs`, `generate_dummy_epg`, and supporting helpers) moved from `apps/output/views.py` into a dedicated module. `views.py` retains the thin HTTP endpoint wrappers and auth checks; `epg.py` handles all content generation. No behavior change.
 
 - **Channel list with nested streams loads faster.** `GET /api/channels/channels/?include_streams=true` (Channels UI and single-channel fetch) now builds nested stream payloads from the prefetched `channelstream_set` instead of issuing one extra streams M2M query per channel.
+
+- Dependency updates:
+  - `Django` 6.0.5 → 6.0.6 (security patch; see Security section)
+  - `requests` 2.33.1 → 2.34.2
+  - `gevent` 26.4.0 → 26.5.0
+  - `torch` 2.11.0+cpu → 2.12.1+cpu
+  - `sentence-transformers` 5.4.1 → 5.6.0
+  - `lxml` 6.1.0 → 6.1.1
 
 
 ### Fixed
