@@ -2,7 +2,7 @@
 import os
 from celery import Celery
 import logging
-from celery.signals import task_postrun, worker_ready
+from celery.signals import task_postrun, task_prerun, worker_ready
 
 logger = logging.getLogger(__name__)
 
@@ -68,18 +68,30 @@ app.conf.task_routes = {
     'apps.channels.tasks.run_recording': {'queue': 'dvr'},
 }
 
+
+@task_prerun.connect
+def reset_db_connection_before_task(**kwargs):
+    """Discard stale DB connections before each task (Celery workers are long-lived)."""
+    from django.db import close_old_connections
+
+    try:
+        close_old_connections()
+    except Exception:
+        pass
+
+
 # Add memory cleanup after task completion
 @task_postrun.connect  # Use the imported signal
 def cleanup_task_memory(**kwargs):
     """Clean up memory and database connections after each task completes"""
-    from django.db import connection
+    from django.db import close_old_connections
 
     # Get task name from kwargs
     task_name = kwargs.get('task').name if kwargs.get('task') else ''
 
-    # Close database connection for this Celery worker process
+    # Return all DB connections to the pool in a clean state
     try:
-        connection.close()
+        close_old_connections()
     except Exception:
         pass
 
@@ -94,10 +106,13 @@ def cleanup_task_memory(**kwargs):
         'apps.epg.tasks.refresh_all_epg_data',
         'apps.epg.tasks.parse_programs_for_source',
         'apps.epg.tasks.parse_programs_for_tvg_id',
+        'apps.epg.tasks.build_programme_index_task',
         'apps.channels.tasks.match_epg_channels',
         'apps.channels.tasks.match_selected_channels_epg',
         'apps.channels.tasks.match_single_channel_epg',
-        'core.tasks.rehash_streams'
+        'core.tasks.rehash_streams',
+        'apps.vod.tasks.refresh_vod_content',
+        'apps.vod.tasks.batch_refresh_series_episodes',
     ]
 
     # Check if this is a memory-intensive task

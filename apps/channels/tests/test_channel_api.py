@@ -504,3 +504,72 @@ class SeriesRuleAPITests(TestCase):
     def test_bulk_remove_requires_tvg_id_or_title(self):
         resp = self.client.post(self.bulk_remove_url, {}, format="json")
         self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+
+
+class ChannelListIncludeStreamsQueryTests(TestCase):
+    """include_streams=true must not issue one stream query per channel."""
+
+    def setUp(self):
+        from apps.channels.models import ChannelStream, Stream
+        from apps.m3u.models import M3UAccount
+
+        self.user = User.objects.create_user(username="list_admin", password="x")
+        self.user.user_level = 10
+        self.user.save()
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+        self.account = M3UAccount.objects.create(
+            name="list-test-account",
+            account_type="XC",
+            username="user",
+            password="pass",
+        )
+        self.group = ChannelGroup.objects.create(name=f"List Group {self.id}")
+
+    def _add_channel_with_stream(self, number):
+        from apps.channels.models import ChannelStream, Stream
+
+        channel = Channel.objects.create(
+            channel_number=float(number),
+            name=f"Channel {number}",
+            channel_group=self.group,
+        )
+        stream = Stream.objects.create(
+            name=f"Stream {number}",
+            url=f"http://example.com/{number}.ts",
+            m3u_account=self.account,
+        )
+        ChannelStream.objects.create(channel=channel, stream=stream, order=0)
+        return channel
+
+    def _query_count_for_list(self):
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        with CaptureQueriesContext(connection) as ctx:
+            response = self.client.get(
+                "/api/channels/channels/",
+                {"page": 1, "page_size": 50, "include_streams": "true"},
+            )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        return len(ctx.captured_queries)
+
+    def test_include_streams_query_count_stable_as_channels_grow(self):
+        self._add_channel_with_stream(1)
+        self._add_channel_with_stream(2)
+        self._add_channel_with_stream(3)
+        q_small = self._query_count_for_list()
+
+        self._add_channel_with_stream(4)
+        self._add_channel_with_stream(5)
+        self._add_channel_with_stream(6)
+        self._add_channel_with_stream(7)
+        q_large = self._query_count_for_list()
+
+        self.assertEqual(
+            q_small,
+            q_large,
+            "include_streams list should use prefetched channelstream_set, "
+            "not one streams M2M query per channel",
+        )

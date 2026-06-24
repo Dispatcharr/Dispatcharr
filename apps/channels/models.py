@@ -2,7 +2,7 @@ from django.db import models
 from django.core.exceptions import ValidationError
 from django.conf import settings
 from core.models import StreamProfile, CoreSettings
-from core.utils import RedisClient
+from core.utils import RedisClient, custom_properties_as_dict
 from apps.proxy.live_proxy.redis_keys import RedisKeys
 from apps.proxy.live_proxy.constants import ChannelMetadataField, ChannelState
 import logging
@@ -652,17 +652,43 @@ class Channel(models.Model):
 
     def _release_stale_stream_assignment(self, redis_client, stream_id: int) -> None:
         """Release pool counters and remove stale channel/stream assignment keys."""
+        profile_id = None
         profile_id_bytes = redis_client.get(f"stream_profile:{stream_id}")
         if profile_id_bytes:
             try:
                 profile_id = int(profile_id_bytes)
-                release_profile_slot(profile_id, redis_client)
             except (ValueError, TypeError):
                 logger.debug(
                     "Invalid profile ID for stale assignment on stream %s: %s",
                     stream_id,
                     profile_id_bytes,
                 )
+
+        if profile_id is None:
+            metadata_key = RedisKeys.channel_metadata(str(self.uuid))
+            meta_profile_id = redis_client.hget(
+                metadata_key, ChannelMetadataField.M3U_PROFILE
+            )
+            if meta_profile_id:
+                try:
+                    profile_id = int(meta_profile_id)
+                except (ValueError, TypeError):
+                    logger.debug(
+                        "Invalid profile ID in metadata for stale assignment on "
+                        "channel %s: %s",
+                        self.uuid,
+                        meta_profile_id,
+                    )
+
+        if profile_id is not None:
+            release_profile_slot(profile_id, redis_client)
+        else:
+            logger.warning(
+                "Channel %s: releasing stale stream %s assignment without profile "
+                "info - profile_connections may leak",
+                self.uuid,
+                stream_id,
+            )
 
         redis_client.delete(f"channel_stream:{self.id}")
         redis_client.delete(f"stream_profile:{stream_id}")
@@ -1118,6 +1144,13 @@ class ChannelGroupM3UAccount(models.Model):
 
     def __str__(self):
         return f"{self.channel_group.name} - {self.m3u_account.name} (Enabled: {self.enabled})"
+
+    def save(self, *args, **kwargs):
+        if self.custom_properties is not None and not isinstance(
+            self.custom_properties, dict
+        ):
+            self.custom_properties = custom_properties_as_dict(self.custom_properties)
+        super().save(*args, **kwargs)
 
 
 class Logo(models.Model):

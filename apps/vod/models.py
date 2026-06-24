@@ -243,12 +243,12 @@ class M3UMovieRelation(models.Model):
 
     def get_stream_url(self):
         """Get the full stream URL for this movie from this provider"""
-        # Build URL dynamically for XtreamCodes accounts
         if self.m3u_account.account_type == 'XC':
-            from core.xtream_codes import Client as XCClient
-            # Use XC client's URL normalization to handle malformed URLs
-            # (e.g., URLs with /player_api.php or query parameters)
-            normalized_url = XCClient(self.m3u_account.server_url, '', '')._normalize_url(self.m3u_account.server_url)
+            from core.xtream_codes import normalize_server_url
+
+            normalized_url = normalize_server_url(self.m3u_account.server_url)
+            if not normalized_url:
+                return None
             username = self.m3u_account.username
             password = self.m3u_account.password
             return f"{normalized_url}/movie/{username}/{password}/{self.stream_id}.{self.container_extension or 'mp4'}"
@@ -292,13 +292,12 @@ class M3UEpisodeRelation(models.Model):
 
     def get_stream_url(self):
         """Get the full stream URL for this episode from this provider"""
-        from core.xtream_codes import Client as XtreamCodesClient
-
         if self.m3u_account.account_type == 'XC':
-            # For XtreamCodes accounts, build the URL dynamically
-            # Use XC client's URL normalization to handle malformed URLs
-            # (e.g., URLs with /player_api.php or query parameters)
-            normalized_url = XtreamCodesClient(self.m3u_account.server_url, '', '')._normalize_url(self.m3u_account.server_url)
+            from core.xtream_codes import normalize_server_url
+
+            normalized_url = normalize_server_url(self.m3u_account.server_url)
+            if not normalized_url:
+                return None
             username = self.m3u_account.username
             password = self.m3u_account.password
             return f"{normalized_url}/series/{username}/{password}/{self.stream_id}.{self.container_extension or 'mp4'}"

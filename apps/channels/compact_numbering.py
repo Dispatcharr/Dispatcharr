@@ -25,7 +25,8 @@ import logging
 from django.db import transaction
 
 from .models import Channel, ChannelOverride, ChannelGroupM3UAccount
-from apps.m3u.tasks import _custom_properties_as_dict, _next_available_number
+from apps.m3u.tasks import _next_available_number
+from core.utils import ensure_custom_properties_dict
 from core.utils import (
     acquire_task_lock,
     natural_sort_key,
@@ -37,7 +38,7 @@ logger = logging.getLogger(__name__)
 
 def is_compact_group(group_relation):
     """Return True if the given ChannelGroupM3UAccount is in compact mode."""
-    cp = _custom_properties_as_dict(group_relation.custom_properties)
+    cp = ensure_custom_properties_dict(group_relation.custom_properties)
     return bool(cp.get("compact_numbering"))
 
 
@@ -72,7 +73,7 @@ def get_group_relation_for_channel(channel):
     for rel in ChannelGroupM3UAccount.objects.filter(
         m3u_account_id=channel.auto_created_by_id
     ):
-        cp = _custom_properties_as_dict(rel.custom_properties)
+        cp = ensure_custom_properties_dict(rel.custom_properties)
         if str(cp.get("group_override", "")) == target:
             return rel
     return None
@@ -179,7 +180,7 @@ def assign_compact_numbers_for_channels(channel_ids):
         for rel in ChannelGroupM3UAccount.objects.filter(
             m3u_account_id__in={k[0] for k in unresolved}
         ):
-            cp = _custom_properties_as_dict(rel.custom_properties)
+            cp = ensure_custom_properties_dict(rel.custom_properties)
             target = cp.get("group_override")
             if not target:
                 continue
@@ -295,7 +296,7 @@ def _repack_inner(group_relation):
     account_id = group_relation.m3u_account_id
     group_id = group_relation.channel_group_id
 
-    cp = _custom_properties_as_dict(group_relation.custom_properties)
+    cp = ensure_custom_properties_dict(group_relation.custom_properties)
     sort_order = cp.get("channel_sort_order") or ""
     sort_reverse = bool(cp.get("channel_sort_reverse"))
 

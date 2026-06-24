@@ -3,6 +3,7 @@ import time
 import random
 import re
 import pathlib
+from django.db import close_old_connections
 from django.http import StreamingHttpResponse, JsonResponse, HttpResponseRedirect, HttpResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.shortcuts import get_object_or_404
@@ -41,6 +42,15 @@ from dispatcharr.utils import network_access_allowed
 from apps.proxy.utils import check_user_stream_limits
 
 logger = get_logger()
+
+
+def _channel_stopping_response():
+    response = JsonResponse(
+        {"error": "Channel is stopping, retry shortly"},
+        status=503,
+    )
+    response["Retry-After"] = "1"
+    return response
 
 
 def _resolve_output_format(user, force=None, request=None):
@@ -123,6 +133,12 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
                     status=429
                 )
 
+        if ChannelService.is_channel_unavailable_for_new_clients(channel_id):
+            logger.info(
+                f"[{client_id}] Channel {channel_id} unavailable. Teardown or pending shutdown"
+            )
+            return _channel_stopping_response()
+
         # Check if we need to reinitialize the channel
         needs_initialization = True
         channel_state = None
@@ -144,7 +160,6 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
                         ChannelState.BUFFERING,
                         ChannelState.INITIALIZING,
                         ChannelState.CONNECTING,
-                        ChannelState.STOPPING,
                     ]:
                         needs_initialization = False
                         logger.debug(
@@ -160,6 +175,11 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
                             logger.debug(
                                 f"[{client_id}] Channel {channel_id} is still initializing, client will wait"
                             )
+                    elif channel_state == ChannelState.STOPPING:
+                        logger.info(
+                            f"[{client_id}] Channel {channel_id} is stopping, rejecting request"
+                        )
+                        return _channel_stopping_response()
                     # Terminal states - channel needs cleanup before reinitialization
                     elif channel_state in [
                         ChannelState.ERROR,
@@ -192,6 +212,12 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
 
         # Start initialization if needed
         if needs_initialization or not proxy_server.check_if_channel_exists(channel_id):
+            if ChannelService.is_channel_unavailable_for_new_clients(channel_id):
+                logger.info(
+                    f"[{client_id}] Channel {channel_id} became unavailable before init, rejecting"
+                )
+                return _channel_stopping_response()
+
             logger.info(f"[{client_id}] Starting channel {channel_id} initialization")
             # Force cleanup of any previous instance if in terminal state
             if channel_state in [
@@ -414,6 +440,16 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
                     )  # 502 Bad Gateway
 
             # Initialize channel with the stream's user agent (not the client's)
+            if ChannelService.is_channel_unavailable_for_new_clients(channel_id):
+                if connection_allocated:
+                    if not channel.release_stream():
+                        logger.warning(f"[{client_id}] Failed to release stream before teardown reject")
+                    connection_allocated = False
+                logger.info(
+                    f"[{client_id}] Channel {channel_id} unavailable before init call, rejecting"
+                )
+                return _channel_stopping_response()
+
             success = ChannelService.initialize_channel(
                 channel_id,
                 stream_url,
@@ -522,6 +558,16 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
                 f"[{client_id}] Successfully initialized channel {channel_id} locally"
             )
 
+        if ChannelService.is_channel_unavailable_for_new_clients(channel_id):
+            if _client_pre_registered:
+                mgr = proxy_server.client_managers.get(channel_id)
+                if mgr:
+                    mgr.remove_client(client_id)
+            logger.info(
+                f"[{client_id}] Channel {channel_id} became unavailable during setup, rejecting"
+            )
+            return _channel_stopping_response()
+
         # Register client
         output_profile = _resolve_output_profile(request, user)
         if output_profile:
@@ -572,7 +618,9 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
             )
             content_type = "video/mp2t"
 
-        # Return the StreamingHttpResponse from the main function
+        # Release ORM checkout before returning a long-lived StreamingHttpResponse.
+        close_old_connections()
+
         response = StreamingHttpResponse(
             streaming_content=generate(), content_type=content_type
         )

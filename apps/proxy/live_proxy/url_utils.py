@@ -5,6 +5,7 @@ Utilities for handling stream URLs and transformations.
 import logging
 import regex
 from typing import Optional, Tuple, List
+from django.db import close_old_connections
 from django.shortcuts import get_object_or_404
 from apps.channels.models import Channel, Stream
 from apps.m3u.models import M3UAccount, M3UAccountProfile
@@ -156,6 +157,8 @@ def generate_stream_url(
     except Exception as e:
         logger.error(f"Error generating stream URL: {e}")
         return None, None, False, None, False, str(e)
+    finally:
+        close_old_connections()
 
 def transform_url(input_url: str, search_pattern: str, replace_pattern: str) -> str:
     """
@@ -300,6 +303,8 @@ def get_stream_info_for_switch(channel_id: str, target_stream_id: Optional[int] 
             channel.release_stream()
         logger.error(f"Error getting stream info for switch: {e}", exc_info=True)
         return {'error': f'Error: {str(e)}'}
+    finally:
+        close_old_connections()
 
 def get_alternate_streams(channel_id: str, current_stream_id: Optional[int] = None) -> List[dict]:
     """
@@ -422,6 +427,8 @@ def get_alternate_streams(channel_id: str, current_stream_id: Optional[int] = No
     except Exception as e:
         logger.error(f"Error getting alternate streams for channel {channel_id}: {e}", exc_info=True)
         return []
+    finally:
+        close_old_connections()
 
 def validate_stream_url(url, user_agent=None, timeout=(5, 5)):
     """
@@ -592,3 +599,5 @@ def get_connections_left(m3u_profile_id: int) -> int:
     except Exception as e:
         logger.error(f"Error getting connections left for M3U profile {m3u_profile_id}: {e}")
         return 0
+    finally:
+        close_old_connections()

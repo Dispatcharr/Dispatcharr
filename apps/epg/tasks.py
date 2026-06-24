@@ -26,7 +26,7 @@ from core.models import UserAgent, CoreSettings
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 
-from .models import EPGSource, EPGData, ProgramData, SDScheduleMD5, SDProgramMD5
+from .models import EPGSource, EPGSourceIndex, EPGData, ProgramData, SDScheduleMD5, SDProgramMD5
 from core.utils import (
     acquire_task_lock,
     is_task_lock_held,
@@ -38,6 +38,105 @@ from core.utils import (
 )
 
 logger = logging.getLogger(__name__)
+
+_NON_TERMINAL_REFRESH_STATUSES = frozenset({
+    EPGSource.STATUS_FETCHING,
+    EPGSource.STATUS_PARSING,
+})
+
+
+def _release_task_db_connection():
+    """Return the Celery worker's DB connection to a clean state after ORM errors."""
+    from django.db import close_old_connections
+    close_old_connections()
+
+
+def _db_query_with_retry(fn, *, label="DB query", max_retries=2):
+    """
+    Run an ORM read with one connection reset + retry on transient failures.
+
+    Poisoned Celery worker connections often surface as OperationalError or as
+    ``IndexError: list index out of range`` inside Django's row converters.
+    """
+    from django.db import InterfaceError, OperationalError
+
+    transient_errors = (OperationalError, InterfaceError, IndexError)
+    for attempt in range(max_retries):
+        try:
+            return fn()
+        except transient_errors as exc:
+            if attempt + 1 >= max_retries:
+                raise
+            logger.warning(
+                "%s failed (%s), resetting DB connection (%s/%s)",
+                label,
+                exc,
+                attempt + 1,
+                max_retries,
+            )
+            _release_task_db_connection()
+
+
+def _get_epg_source(source_id):
+    return _db_query_with_retry(
+        lambda: EPGSource.objects.get(id=source_id),
+        label=f"load EPG source {source_id}",
+    )
+
+
+def _set_epg_source_status(
+    source_id,
+    status,
+    last_message=None,
+    *,
+    notify_error=False,
+    ws_action="refresh",
+    ws_error=None,
+):
+    """Update source status using a fresh connection (safe after DB failures)."""
+    _release_task_db_connection()
+    update = {"status": status}
+    if last_message is not None:
+        update["last_message"] = last_message
+    try:
+        EPGSource.objects.filter(id=source_id).update(**update)
+        if notify_error:
+            send_epg_update(
+                source_id,
+                ws_action,
+                100,
+                status="error",
+                error=ws_error or last_message,
+            )
+    except Exception as e:
+        logger.error(
+            f"Failed to set EPG source {source_id} status to {status}: {e}"
+        )
+
+
+def _ensure_epg_refresh_terminal_status(source_id):
+    """Mark refresh as failed when the task exits while still in progress."""
+    _release_task_db_connection()
+    try:
+        current_status = (
+            EPGSource.objects.filter(id=source_id)
+            .values_list("status", flat=True)
+            .first()
+        )
+        if current_status in _NON_TERMINAL_REFRESH_STATUSES:
+            message = "Refresh did not complete successfully"
+            EPGSource.objects.filter(id=source_id).update(
+                status=EPGSource.STATUS_ERROR,
+                last_message=message,
+            )
+            send_epg_update(
+                source_id, "refresh", 100, status="error", error=message
+            )
+    except Exception as e:
+        logger.debug(
+            f"Could not verify terminal refresh status for EPG source {source_id}: {e}"
+        )
+
 
 SD_BASE_URL = 'https://json.schedulesdirect.org/20141201'
 SD_DAYS_TO_FETCH = 20
@@ -498,100 +597,90 @@ def refresh_epg_data(source_id, force=False):
     lock_renewer = TaskLockRenewer('refresh_epg_data', source_id)
     lock_renewer.start()
 
-    source = None
+    _release_task_db_connection()
+
     try:
-        # Try to get the EPG source
-        try:
-            source = EPGSource.objects.get(id=source_id)
-        except EPGSource.DoesNotExist:
-            # The EPG source doesn't exist, so delete the periodic task if it exists
-            logger.warning(f"EPG source with ID {source_id} not found, but task was triggered. Cleaning up orphaned task.")
-
-            # Call the shared function to delete the task
-            if delete_epg_refresh_task_by_id(source_id):
-                logger.info(f"Successfully cleaned up orphaned task for EPG source {source_id}")
-            else:
-                logger.info(f"No orphaned task found for EPG source {source_id}")
-
-            # Release the lock and exit
-            lock_renewer.stop()
-            release_task_lock('refresh_epg_data', source_id)
-            # Force garbage collection before exit
-            gc.collect()
-            return f"EPG source {source_id} does not exist, task cleaned up"
-
-        # The source exists but is not active, just skip processing
-        if not source.is_active:
-            logger.info(f"EPG source {source_id} is not active. Skipping.")
-            lock_renewer.stop()
-            release_task_lock('refresh_epg_data', source_id)
-            # Force garbage collection before exit
-            gc.collect()
-            return
-
-        # Skip refresh for dummy EPG sources - they don't need refreshing
-        if source.source_type == 'dummy':
-            logger.info(f"Skipping refresh for dummy EPG source {source.name} (ID: {source_id})")
-            lock_renewer.stop()
-            release_task_lock('refresh_epg_data', source_id)
-            gc.collect()
-            return
-
-        # Continue with the normal processing...
-        logger.info(f"Processing EPGSource: {source.name} (type: {source.source_type})")
-        if source.source_type == 'xmltv':
-            # Invalidate the byte-offset index before downloading the new file
-            # so stale offsets are never used during the refresh window.
-            EPGSource.objects.filter(id=source.id).update(programme_index=None)
-            fetch_success = fetch_xmltv(source)
-            if not fetch_success:
-                logger.error(f"Failed to fetch XMLTV for source {source.name}")
-                lock_renewer.stop()
-                release_task_lock('refresh_epg_data', source_id)
-                # Force garbage collection before exit
-                gc.collect()
-                return
-
-            parse_channels_success = parse_channels_only(source)
-            if not parse_channels_success:
-                logger.error(f"Failed to parse channels for source {source.name}")
-                lock_renewer.stop()
-                release_task_lock('refresh_epg_data', source_id)
-                # Force garbage collection before exit
-                gc.collect()
-                return
-
-            # Build byte-offset index for preview lookups in the background so refresh isn't blocked by it
-            build_programme_index_task.delay(source.id)
-            parse_programs_for_source(source)
-
-        elif source.source_type == 'schedules_direct':
-            fetch_schedules_direct(source, force=force)
-
-        source.save(update_fields=['updated_at'])
-        # After successful EPG refresh, evaluate DVR series rules to schedule new episodes
-        try:
-            from apps.channels.tasks import evaluate_series_rules
-            evaluate_series_rules.delay()
-        except Exception:
-            pass
+        return _refresh_epg_data_impl(source_id, force=force)
     except Exception as e:
-        logger.error(f"Error in refresh_epg_data for source {source_id}: {e}", exc_info=True)
-        try:
-            if source:
-                source.status = 'error'
-                source.last_message = f"Error refreshing EPG data: {str(e)}"
-                source.save(update_fields=['status', 'last_message'])
-                send_epg_update(source_id, "refresh", 100, status="error", error=str(e))
-        except Exception as inner_e:
-            logger.error(f"Error updating source status: {inner_e}")
+        logger.error(
+            f"Error in refresh_epg_data for source {source_id}: {e}",
+            exc_info=True,
+        )
+        _set_epg_source_status(
+            source_id,
+            EPGSource.STATUS_ERROR,
+            f"Error refreshing EPG data: {str(e)[:500]}",
+            notify_error=True,
+            ws_error=str(e)[:500],
+        )
     finally:
-        # Clear references to ensure proper garbage collection
-        source = None
-        # Force garbage collection before releasing the lock
+        _ensure_epg_refresh_terminal_status(source_id)
+        _release_task_db_connection()
         gc.collect()
         lock_renewer.stop()
         release_task_lock('refresh_epg_data', source_id)
+
+
+def _refresh_epg_data_impl(source_id, force=False):
+    try:
+        source = _get_epg_source(source_id)
+    except EPGSource.DoesNotExist:
+        logger.warning(
+            f"EPG source with ID {source_id} not found, but task was triggered. "
+            "Cleaning up orphaned task."
+        )
+
+        if delete_epg_refresh_task_by_id(source_id):
+            logger.info(
+                f"Successfully cleaned up orphaned task for EPG source {source_id}"
+            )
+        else:
+            logger.info(f"No orphaned task found for EPG source {source_id}")
+
+        return f"EPG source {source_id} does not exist, task cleaned up"
+
+    if not source.is_active:
+        logger.info(f"EPG source {source_id} is not active. Skipping.")
+        return
+
+    if source.source_type == 'dummy':
+        logger.info(
+            f"Skipping refresh for dummy EPG source {source.name} (ID: {source_id})"
+        )
+        return
+
+    logger.info(f"Processing EPGSource: {source.name} (type: {source.source_type})")
+    if source.source_type == 'xmltv':
+        # Invalidate the byte-offset index before downloading the new file
+        # so stale offsets are never used during the refresh window.
+        EPGSourceIndex.objects.update_or_create(
+            source_id=source.id, defaults={'data': None}
+        )
+        if not fetch_xmltv(source):
+            logger.error(f"Failed to fetch XMLTV for source {source.name}")
+            return
+
+        if not parse_channels_only(source):
+            logger.error(f"Failed to parse channels for source {source.name}")
+            return
+
+        # Build byte-offset index after programme data is committed so refresh
+        # does not compete for memory/IO during the programme swap.
+        if not parse_programs_for_source(source):
+            logger.error(f"Failed to parse programs for source {source.name}")
+            return
+
+        build_programme_index_task.delay(source.id)
+
+    elif source.source_type == 'schedules_direct':
+        fetch_schedules_direct(source, force=force)
+
+    EPGSource.objects.filter(id=source.id).update(updated_at=timezone.now())
+    try:
+        from apps.channels.tasks import evaluate_series_rules
+        evaluate_series_rules.delay()
+    except Exception:
+        pass
 
 
 def fetch_xmltv(source):
@@ -1165,7 +1254,15 @@ def parse_channels_only(source):
                 # Update status to error
                 source.status = 'error'
                 source.last_message = f"No URL provided, cannot fetch EPG data"
-                source.save(update_fields=['updated_at'])
+                source.save(update_fields=['status', 'last_message'])
+                send_epg_update(
+                    source.id,
+                    "parsing_channels",
+                    100,
+                    status="error",
+                    error="No URL provided",
+                )
+                return False
 
         # Initialize process variable for memory tracking only in debug mode
         try:
@@ -1804,6 +1901,163 @@ def parse_programs_for_tvg_id(epg_id, force=False):
         release_task_lock('parse_epg_programs', epg_id)
 
 
+_EPG_PROGRAM_STAGING_TABLE = 'epg_program_staging'
+# Parse batches bound Python memory during XML iterparse; swap batches bound each
+# DELETE/INSERT statement inside the single atomic swap transaction.
+_EPG_PARSE_BATCH_SIZE = 2500
+_EPG_SWAP_BATCH_SIZE = 5000
+
+
+def _epg_program_staging_supported():
+    return connection.vendor == 'postgresql'
+
+
+def _prepare_epg_program_staging_table():
+    """Create/truncate a session-scoped temp table for streaming EPG programme inserts."""
+    if not _epg_program_staging_supported():
+        return False
+
+    with connection.cursor() as cursor:
+        cursor.execute(
+            f"""
+            CREATE TEMP TABLE IF NOT EXISTS {_EPG_PROGRAM_STAGING_TABLE} (
+                epg_id bigint NOT NULL,
+                start_time timestamptz NOT NULL,
+                end_time timestamptz NOT NULL,
+                title varchar(255) NOT NULL,
+                sub_title text,
+                description text,
+                tvg_id varchar(255),
+                custom_properties jsonb
+            ) ON COMMIT PRESERVE ROWS
+            """
+        )
+        cursor.execute(f"TRUNCATE {_EPG_PROGRAM_STAGING_TABLE}")
+    return True
+
+
+def _clear_epg_program_staging_table():
+    if not _epg_program_staging_supported():
+        return
+    with connection.cursor() as cursor:
+        cursor.execute(f"TRUNCATE {_EPG_PROGRAM_STAGING_TABLE}")
+
+
+def _flush_epg_program_staging_batch(programs_batch):
+    """Insert a batch of unsaved ProgramData rows into the session staging table."""
+    if not programs_batch or not _epg_program_staging_supported():
+        return
+
+    values_sql = []
+    params = []
+    for program in programs_batch:
+        values_sql.append("(%s, %s, %s, %s, %s, %s, %s, %s)")
+        custom_properties = program.custom_properties
+        if custom_properties is not None and not isinstance(custom_properties, str):
+            custom_properties = json.dumps(custom_properties)
+        params.extend([
+            program.epg_id,
+            program.start_time,
+            program.end_time,
+            program.title,
+            program.sub_title,
+            program.description,
+            program.tvg_id,
+            custom_properties,
+        ])
+
+    with connection.cursor() as cursor:
+        cursor.execute(
+            f"""
+            INSERT INTO {_EPG_PROGRAM_STAGING_TABLE} (
+                epg_id, start_time, end_time, title, sub_title, description, tvg_id, custom_properties
+            ) VALUES {', '.join(values_sql)}
+            """,
+            params,
+        )
+
+
+def _swap_staged_epg_programs(mapped_epg_ids, epg_source, batch_size=_EPG_SWAP_BATCH_SIZE):
+    """
+    Atomically replace mapped programme rows with staged data.
+    Must be called inside transaction.atomic().
+
+    Staged rows are moved in batches (DELETE ... RETURNING + INSERT) so Postgres
+    does not need to materialize the entire catalogue in one statement.
+    """
+    with connection.cursor() as cursor:
+        cursor.execute("SET LOCAL statement_timeout = '10min'")
+
+    deleted_count = ProgramData.objects.filter(epg_id__in=mapped_epg_ids).delete()[0]
+    logger.debug(f"Deleted {deleted_count} existing programs")
+
+    unmapped_epg_ids = list(
+        EPGData.objects.filter(epg_source=epg_source)
+        .exclude(id__in=mapped_epg_ids)
+        .values_list('id', flat=True)
+    )
+    if unmapped_epg_ids:
+        orphaned_count = ProgramData.objects.filter(epg_id__in=unmapped_epg_ids).delete()[0]
+        if orphaned_count > 0:
+            logger.info(
+                f"Cleaned up {orphaned_count} orphaned programs for "
+                f"{len(unmapped_epg_ids)} unmapped EPG entries"
+            )
+
+    if not _epg_program_staging_supported():
+        raise RuntimeError('_swap_staged_epg_programs requires PostgreSQL staging support')
+
+    program_table = ProgramData._meta.db_table
+    total_inserted = 0
+    while True:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                f"""
+                WITH moved AS (
+                    DELETE FROM {_EPG_PROGRAM_STAGING_TABLE}
+                    WHERE ctid IN (
+                        SELECT ctid FROM {_EPG_PROGRAM_STAGING_TABLE} LIMIT %s
+                    )
+                    RETURNING
+                        epg_id, start_time, end_time, title, sub_title,
+                        description, tvg_id, custom_properties
+                )
+                INSERT INTO {program_table} (
+                    epg_id, start_time, end_time, title, sub_title,
+                    description, tvg_id, custom_properties
+                )
+                SELECT
+                    epg_id, start_time, end_time, title, sub_title,
+                    description, tvg_id, custom_properties
+                FROM moved
+                """,
+                [batch_size],
+            )
+            moved_count = cursor.rowcount
+        if moved_count == 0:
+            break
+        total_inserted += moved_count
+
+    logger.debug(f"Inserted {total_inserted} staged programs in batches of {batch_size}")
+
+    return deleted_count
+
+
+def _swap_parsed_epg_programs(mapped_epg_ids, epg_source, programs_to_create, batch_size=_EPG_SWAP_BATCH_SIZE):
+    """SQLite/dev fallback: atomic delete + bulk insert from an in-memory batch list."""
+    with transaction.atomic():
+        deleted_count = ProgramData.objects.filter(epg_id__in=mapped_epg_ids).delete()[0]
+        unmapped_epg_ids = list(
+            EPGData.objects.filter(epg_source=epg_source)
+            .exclude(id__in=mapped_epg_ids)
+            .values_list('id', flat=True)
+        )
+        if unmapped_epg_ids:
+            ProgramData.objects.filter(epg_id__in=unmapped_epg_ids).delete()
+        for i in range(0, len(programs_to_create), batch_size):
+            ProgramData.objects.bulk_create(programs_to_create[i:i + batch_size])
+    return deleted_count
+
 
 def parse_programs_for_source(epg_source, tvg_id=None):
     """
@@ -1910,106 +2164,164 @@ def parse_programs_for_source(epg_source, tvg_id=None):
                 send_epg_update(epg_source.id, "parsing_programs", 100, status="error", error="No URL provided")
                 return False
 
-        # SINGLE PASS PARSING: Parse the XML file once and collect all programs in memory
-        # We parse FIRST, then do an atomic delete+insert to avoid race conditions
-        # where clients might see empty/partial EPG data during the transition
-        all_programs_to_create = []
-        programs_by_channel = {tvg_id: 0 for tvg_id in mapped_tvg_ids}  # Track count per channel
+        # Stream parsed rows into a session temp table, then swap in a short transaction.
+        # This bounds Python memory (batched staging inserts) and Postgres memory (no
+        # long-lived transaction spanning the entire XML parse).
+        programs_by_channel = {tvg_id: 0 for tvg_id in mapped_tvg_ids}
         total_programs = 0
         skipped_programs = 0
         last_progress_update = 0
+        parse_batch_size = _EPG_PARSE_BATCH_SIZE
+        swap_batch_size = _EPG_SWAP_BATCH_SIZE
+        programs_batch = []
+        deleted_count = 0
+        staging_prepared = False
+        use_staging = False
+        programs_accumulator = []
+
+        send_epg_update(epg_source.id, "parsing_programs", 10, message="Parsing programs...")
 
         try:
-            logger.debug(f"Opening file for single-pass parsing: {file_path}")
+            staging_prepared = _prepare_epg_program_staging_table()
+            use_staging = staging_prepared
+
+            logger.debug(f"Opening file for streaming parse: {file_path}")
             source_file = _open_xmltv_file(file_path)
+            try:
+                program_parser = etree.iterparse(
+                    source_file,
+                    events=('end',),
+                    tag='programme',
+                    remove_blank_text=True,
+                    recover=True,
+                )
 
-            # Stream parse the file using lxml's iterparse
-            program_parser = etree.iterparse(source_file, events=('end',), tag='programme', remove_blank_text=True, recover=True)
+                for _, elem in program_parser:
+                    channel_id = elem.get('channel')
 
-            for _, elem in program_parser:
-                channel_id = elem.get('channel')
+                    if channel_id not in mapped_tvg_ids:
+                        skipped_programs += 1
+                        clear_element(elem)
+                        continue
 
-                # Skip programmes for unmapped channels immediately
-                if channel_id not in mapped_tvg_ids:
-                    skipped_programs += 1
-                    # Clear element to free memory
-                    clear_element(elem)
-                    continue
+                    try:
+                        start_time = parse_xmltv_time(elem.get('start'))
+                        end_time = parse_xmltv_time(elem.get('stop'))
+                        title = None
+                        desc = None
+                        sub_title = None
 
-                # This programme is for a mapped channel - process it
-                try:
-                    start_time = parse_xmltv_time(elem.get('start'))
-                    end_time = parse_xmltv_time(elem.get('stop'))
-                    title = None
-                    desc = None
-                    sub_title = None
+                        for child in elem:
+                            if child.tag == 'title':
+                                title = child.text or 'No Title'
+                            elif child.tag == 'desc':
+                                desc = child.text or ''
+                            elif child.tag == 'sub-title':
+                                sub_title = child.text or ''
 
-                    # Efficiently process child elements
-                    for child in elem:
-                        if child.tag == 'title':
-                            title = child.text or 'No Title'
-                        elif child.tag == 'desc':
-                            desc = child.text or ''
-                        elif child.tag == 'sub-title':
-                            sub_title = child.text or ''
+                        if not title:
+                            title = 'No Title'
 
-                    if not title:
-                        title = 'No Title'
+                        custom_props = extract_custom_properties(elem)
+                        custom_properties_json = custom_props if custom_props else None
 
-                    # Extract custom properties
-                    custom_props = extract_custom_properties(elem)
-                    custom_properties_json = custom_props if custom_props else None
+                        if desc:
+                            has_season = (custom_properties_json or {}).get('season') is not None
+                            has_episode = (custom_properties_json or {}).get('episode') is not None
+                            if not has_season or not has_episode:
+                                d_season, d_episode, cleaned_desc = extract_season_episode_from_description(desc)
+                                if d_season is not None and d_episode is not None:
+                                    if custom_properties_json is None:
+                                        custom_properties_json = {}
+                                    if not has_season:
+                                        custom_properties_json['season'] = d_season
+                                    if not has_episode:
+                                        custom_properties_json['episode'] = d_episode
+                                    custom_properties_json['season_episode_source'] = 'description'
+                                    desc = cleaned_desc
 
-                    # Fallback: extract S/E from description when episode-num
-                    # elements didn't provide them
-                    if desc:
-                        has_season = (custom_properties_json or {}).get('season') is not None
-                        has_episode = (custom_properties_json or {}).get('episode') is not None
-                        if not has_season or not has_episode:
-                            d_season, d_episode, cleaned_desc = extract_season_episode_from_description(desc)
-                            if d_season is not None and d_episode is not None:
-                                if custom_properties_json is None:
-                                    custom_properties_json = {}
-                                if not has_season:
-                                    custom_properties_json['season'] = d_season
-                                if not has_episode:
-                                    custom_properties_json['episode'] = d_episode
-                                custom_properties_json['season_episode_source'] = 'description'
-                                desc = cleaned_desc
+                        epg_id = tvg_id_to_epg_id[channel_id]
+                        programs_batch.append(ProgramData(
+                            epg_id=epg_id,
+                            start_time=start_time,
+                            end_time=end_time,
+                            title=title[:255],
+                            description=desc,
+                            sub_title=sub_title,
+                            tvg_id=channel_id,
+                            custom_properties=custom_properties_json,
+                        ))
+                        total_programs += 1
+                        programs_by_channel[channel_id] += 1
+                        clear_element(elem)
 
-                    epg_id = tvg_id_to_epg_id[channel_id]
-                    all_programs_to_create.append(ProgramData(
-                        epg_id=epg_id,
-                        start_time=start_time,
-                        end_time=end_time,
-                        title=title[:255],
-                        description=desc,
-                        sub_title=sub_title,
-                        tvg_id=channel_id,
-                        custom_properties=custom_properties_json
-                    ))
-                    total_programs += 1
-                    programs_by_channel[channel_id] += 1
+                        if len(programs_batch) >= parse_batch_size:
+                            if use_staging:
+                                _flush_epg_program_staging_batch(programs_batch)
+                                programs_batch = []
+                            else:
+                                programs_accumulator.extend(programs_batch)
+                                programs_batch = []
 
-                    # Clear the element to free memory
-                    clear_element(elem)
+                        if total_programs - last_progress_update >= 5000:
+                            last_progress_update = total_programs
+                            progress = min(
+                                85,
+                                10 + int((total_programs / max(total_programs + 10000, 1)) * 75),
+                            )
+                            send_epg_update(
+                                epg_source.id,
+                                "parsing_programs",
+                                progress,
+                                processed=total_programs,
+                                channels=mapped_count,
+                                message=f"Staging programs... {total_programs:,}",
+                            )
 
-                    # Send progress update (estimate based on programs processed)
-                    if total_programs - last_progress_update >= 5000:
-                        last_progress_update = total_programs
-                        # Cap at 70% during parsing phase (save 30% for DB operations)
-                        progress = min(70, 10 + int((total_programs / max(total_programs + 10000, 1)) * 60))
-                        send_epg_update(epg_source.id, "parsing_programs", progress,
-                                      processed=total_programs, channels=mapped_count)
+                        if total_programs % 5000 == 0:
+                            gc.collect()
 
-                    # Periodic garbage collection during parsing
-                    if total_programs % 5000 == 0:
-                        gc.collect()
+                    except Exception as e:
+                        logger.error(f"Error processing program for {channel_id}: {e}", exc_info=True)
+                        clear_element(elem)
+                        continue
 
-                except Exception as e:
-                    logger.error(f"Error processing program for {channel_id}: {e}", exc_info=True)
-                    clear_element(elem)
-                    continue
+                if programs_batch:
+                    if use_staging:
+                        _flush_epg_program_staging_batch(programs_batch)
+                    else:
+                        programs_accumulator.extend(programs_batch)
+                    programs_batch = []
+            finally:
+                if source_file:
+                    source_file.close()
+                    source_file = None
+
+            try:
+                send_epg_update(epg_source.id, "parsing_programs", 90, message="Updating database...")
+                if use_staging:
+                    with transaction.atomic():
+                        deleted_count = _swap_staged_epg_programs(
+                            mapped_epg_ids, epg_source, batch_size=swap_batch_size
+                        )
+                else:
+                    deleted_count = _swap_parsed_epg_programs(
+                        mapped_epg_ids, epg_source, programs_accumulator, batch_size=swap_batch_size
+                    )
+                    programs_accumulator = []
+
+                logger.info(
+                    f"Atomic update complete: deleted {deleted_count}, inserted {total_programs} programs"
+                )
+            except Exception as db_error:
+                logger.error(f"Database error during atomic update: {db_error}", exc_info=True)
+                epg_source.status = EPGSource.STATUS_ERROR
+                epg_source.last_message = f"Database error: {str(db_error)}"
+                epg_source.save(update_fields=['status', 'last_message'])
+                send_epg_update(
+                    epg_source.id, "parsing_programs", 100, status="error", message=str(db_error)
+                )
+                return False
 
         except etree.XMLSyntaxError as xml_error:
             logger.error(f"XML syntax error parsing program data: {xml_error}")
@@ -2018,63 +2330,23 @@ def parse_programs_for_source(epg_source, tvg_id=None):
             epg_source.save(update_fields=['status', 'last_message'])
             send_epg_update(epg_source.id, "parsing_programs", 100, status="error", message=str(xml_error))
             return False
-        except Exception as e:
-            logger.error(f"Error parsing XML for programs: {e}", exc_info=True)
-            raise
-        finally:
-            if source_file:
-                source_file.close()
-                source_file = None
-
-        # Now perform atomic delete + bulk insert
-        # This ensures clients never see empty/partial EPG data
-        logger.info(f"Parsed {total_programs} programs, performing atomic database update...")
-        send_epg_update(epg_source.id, "parsing_programs", 75, message="Updating database...")
-
-        batch_size = 1000
-        try:
-            with transaction.atomic():
-                # Kill any individual statement that hangs longer than 10 minutes.
-                # SET LOCAL automatically resets when this transaction ends (commit or rollback).
-                with connection.cursor() as cursor:
-                    cursor.execute("SET LOCAL statement_timeout = '10min'")
-                # Delete existing programs for mapped EPGs
-                deleted_count = ProgramData.objects.filter(epg_id__in=mapped_epg_ids).delete()[0]
-                logger.debug(f"Deleted {deleted_count} existing programs")
-
-                # Clean up orphaned programs for unmapped EPG entries
-                unmapped_epg_ids = list(EPGData.objects.filter(
-                    epg_source=epg_source
-                ).exclude(id__in=mapped_epg_ids).values_list('id', flat=True))
-
-                if unmapped_epg_ids:
-                    orphaned_count = ProgramData.objects.filter(epg_id__in=unmapped_epg_ids).delete()[0]
-                    if orphaned_count > 0:
-                        logger.info(f"Cleaned up {orphaned_count} orphaned programs for {len(unmapped_epg_ids)} unmapped EPG entries")
-
-                # Bulk insert all new programs in batches within the same transaction
-                for i in range(0, len(all_programs_to_create), batch_size):
-                    batch = all_programs_to_create[i:i + batch_size]
-                    ProgramData.objects.bulk_create(batch)
-
-                    # Update progress during insertion
-                    progress = 75 + int((i / len(all_programs_to_create)) * 20) if all_programs_to_create else 95
-                    if i % (batch_size * 5) == 0:
-                        send_epg_update(epg_source.id, "parsing_programs", min(95, progress),
-                                      message=f"Inserting programs... {i}/{len(all_programs_to_create)}")
-
-            logger.info(f"Atomic update complete: deleted {deleted_count}, inserted {total_programs} programs")
-
-        except Exception as db_error:
-            logger.error(f"Database error during atomic update: {db_error}", exc_info=True)
+        except Exception as parse_error:
+            logger.error(f"Error parsing programs from XML: {parse_error}", exc_info=True)
             epg_source.status = EPGSource.STATUS_ERROR
-            epg_source.last_message = f"Database error: {str(db_error)}"
+            epg_source.last_message = f"Error parsing programs: {str(parse_error)}"
             epg_source.save(update_fields=['status', 'last_message'])
-            send_epg_update(epg_source.id, "parsing_programs", 100, status="error", message=str(db_error))
+            send_epg_update(
+                epg_source.id, "parsing_programs", 100, status="error", message=str(parse_error)
+            )
             return False
         finally:
-            # Clear the large list to free memory
-            all_programs_to_create = None
+            programs_batch = None
+            programs_accumulator = None
+            if staging_prepared:
+                try:
+                    _clear_epg_program_staging_table()
+                except Exception:
+                    pass
             gc.collect()
 
         # Count channels that actually got programs
@@ -2130,7 +2402,7 @@ def parse_programs_for_source(epg_source, tvg_id=None):
             source_file = None
 
         # Explicitly release any remaining large data structures
-        programs_to_create = None
+        programs_batch = None
         programs_by_channel = None
         mapped_epg_ids = None
         mapped_tvg_ids = None
@@ -4214,7 +4486,7 @@ def _programme_to_dict(elem, start_time, end_time):
 def build_programme_index(source_id):
     """
     Scan the XML file with raw binary I/O to build a {tvg_id: [byte_offset, ...]} map.
-    Persists the result to EPGSource.programme_index. Most XMLTV files group programmes
+    Persists the result to the EPGSourceIndex table. Most XMLTV files group programmes
     by channel, but some split a channel across multiple non-contiguous blocks, so we
     record block starts up to _OFFSET_CAP and mark only channels that exceed the cap
     as interleaved.
@@ -4303,7 +4575,9 @@ def build_programme_index(source_id):
         'channels': index,
         'interleaved_channels': sorted(interleaved_channels),
     }
-    EPGSource.objects.filter(id=source_id).update(programme_index=result)
+    EPGSourceIndex.objects.update_or_create(
+        source_id=source_id, defaults={'data': result}
+    )
 
 
 @shared_task
@@ -4350,9 +4624,8 @@ def find_current_program_for_tvg_id(epg_or_id):
         return None
 
     now = timezone.now()
-    # Force a fresh read of the DB-backed index to avoid using stale related-object
-    # state when an EPG refresh invalidates/rebuilds the index concurrently.
-    source.refresh_from_db(fields=['programme_index'])
+    # The property reads the EPGSourceIndex table fresh on each access, so a
+    # concurrent refresh invalidating/rebuilding the index can't serve stale state.
     index = source.programme_index
 
     if index is not None:

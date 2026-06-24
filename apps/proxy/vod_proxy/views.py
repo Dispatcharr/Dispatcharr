@@ -8,6 +8,7 @@ import random
 import logging
 import requests
 from urllib.parse import urlencode
+from django.db import close_old_connections
 from django.http import  JsonResponse, Http404, HttpResponse
 from django.shortcuts import get_object_or_404
 from django.views.decorators.csrf import csrf_exempt
@@ -601,6 +602,9 @@ def stream_vod(request, content_type, content_id, session_id=None, profile_id=No
         # Get connection manager (Redis-backed for multi-worker support)
         connection_manager = MultiWorkerVODConnectionManager.get_instance()
 
+        # Release ORM checkout before returning a long-lived StreamingHttpResponse.
+        close_old_connections()
+
         # Stream the content with session-based connection reuse
         logger.info("[VOD-STREAM] Calling connection manager to stream content")
         response = connection_manager.stream_content_with_session(
@@ -1063,6 +1067,8 @@ def build_vod_stats_data(redis_client):
     except Exception as e:
         logger.error(f"Error building VOD stats: {e}")
         return {'vod_connections': [], 'total_connections': 0, 'timestamp': time.time()}
+    finally:
+        close_old_connections()
 
 
 @api_view(["GET"])
