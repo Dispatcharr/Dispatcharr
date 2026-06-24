@@ -16,6 +16,20 @@ import {
   savePlayerPrefs,
 } from '../utils/components/FloatingVideoUtils.js';
 
+// Native <video src> cannot send Authorization headers. Append ?token= at playback
+// time (not when building the URL in cards/modals) so the JWT is fresh. hls.js
+// paths authenticate via xhrSetup instead and do not need this helper.
+const withRecordingAuthToken = (url) => {
+  if (!url || typeof url !== 'string') return url;
+  if (!url.includes('/api/channels/recordings/')) return url;
+  const token = useAuthStore.getState().accessToken;
+  if (!token) return url;
+  const [base, query = ''] = url.split('?');
+  const params = new URLSearchParams(query);
+  params.set('token', token);
+  return `${base}?${params.toString()}`;
+};
+
 const ResizeHandles = ({ startResize }) => {
   const HANDLE_SIZE = 18;
   const HANDLE_OFFSET = 0;
@@ -397,11 +411,11 @@ export default function FloatingVideo() {
       }
     } else if (isHls && video.canPlayType('application/vnd.apple.mpegurl')) {
       // Safari path: native HLS support, including seekable DVR windows.
-      video.src = streamUrl;
+      video.src = withRecordingAuthToken(streamUrl);
       video.load();
     } else {
       // Plain progressive file (MKV/MP4): native HTML5.
-      video.src = streamUrl;
+      video.src = withRecordingAuthToken(streamUrl);
       video.load();
     }
 

@@ -3,6 +3,8 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework.permissions import AllowAny
 from rest_framework.decorators import action
+from rest_framework_simplejwt.authentication import JWTAuthentication
+from apps.accounts.authentication import ApiKeyAuthentication, QueryParamJWTAuthentication
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from drf_spectacular.utils import extend_schema, OpenApiParameter, inline_serializer
 from drf_spectacular.types import OpenApiTypes
@@ -3236,12 +3238,23 @@ def _stop_dvr_clients(channel_uuid, recording_id=None):
     return stopped
 
 
+# QueryParamJWTAuthentication supports native <video src> clients that cannot
+# send Authorization headers. Authorization still requires an authenticated
+# user via _user_can_play_recording; these classes only populate request.user.
+RECORDING_PLAYBACK_AUTHENTICATORS = [
+    JWTAuthentication,
+    ApiKeyAuthentication,
+    QueryParamJWTAuthentication,
+]
+
+
 class RecordingViewSet(viewsets.ModelViewSet):
     queryset = Recording.objects.all()
     serializer_class = RecordingSerializer
 
     def get_permissions(self):
-        # Allow unauthenticated playback of recording files (like other streaming endpoints)
+        # file/hls use AllowAny so DRF does not reject requests before auth
+        # classes run; _user_can_play_recording enforces authenticated access.
         if self.action in ('file', 'hls'):
             return [AllowAny()]
         try:
@@ -3305,7 +3318,12 @@ class RecordingViewSet(viewsets.ModelViewSet):
         except Exception as e:
             return Response({"success": False, "error": str(e)}, status=400)
 
-    @action(detail=True, methods=["get"], url_path="file")
+    @action(
+        detail=True,
+        methods=["get"],
+        url_path="file",
+        authentication_classes=RECORDING_PLAYBACK_AUTHENTICATORS,
+    )
     def file(self, request, pk=None):
         """Stream a completed recording file with HTTP Range support for seeking.
 
@@ -3393,7 +3411,12 @@ class RecordingViewSet(viewsets.ModelViewSet):
         response["Content-Disposition"] = f"inline; filename=\"{file_name}\""
         return response
 
-    @action(detail=True, methods=["get"], url_path="hls/(?P<seg_path>.+)")
+    @action(
+        detail=True,
+        methods=["get"],
+        url_path="hls/(?P<seg_path>.+)",
+        authentication_classes=RECORDING_PLAYBACK_AUTHENTICATORS,
+    )
     def hls(self, request, pk=None, seg_path=None):
         """Serve HLS playlist and segment files for an in-progress (or completed) recording.
 
