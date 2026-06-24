@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Isolated backend test settings (`dispatcharr.settings_test`).** `python manage.py test` now switches to this module automatically (via `manage.py`). It creates an empty PostgreSQL `test_<dbname>` database (same engine as production), uses the standard Postgres backend instead of geventpool so `TestCase` transactions isolate correctly, and leaves Celery tasks queued (no eager `post_save` signal runs during tests). Set `TEST_USE_SQLITE=1` for an in-memory SQLite fallback when Postgres is unavailable.
+
 ### Performance
 
 - **`get_vod_streams` and `get_series` XC API endpoints are faster and no longer exhaust Docker `/dev/shm`.** Large libraries (e.g. 125k movies) previously ran one wide `DISTINCT ON` query with parallel workers, which could fail with `could not resize shared memory segment … No space left on device` on the default 64MB container shm. Both endpoints now dedupe on narrow relation rows first (`SET LOCAL max_parallel_workers_per_gather = 0`), then fetch display columns via `.values()` (no ORM model instantiation per row). Redundant `category` and `logo` joins were dropped in favor of FK ids; alphabetical sort runs in SQL. Typical full-library response time drops from ~23–28s to ~8–10s with stable shm usage.

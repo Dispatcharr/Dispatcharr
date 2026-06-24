@@ -144,7 +144,19 @@ Untested code is significantly less likely to be merged.
 
 - Use Django's `TestCase` for unit/integration tests.
 - Test files live at `apps/<app>/tests/`.
-- Run the test suite with: `uv run python manage.py test`
+- Run the backend test suite with:
+
+  ```bash
+  python manage.py test
+  ```
+
+  `manage.py` automatically uses `dispatcharr.settings_test`, which creates an empty PostgreSQL database `test_<dbname>` (same engine as production), runs migrations, and rolls back each test in a transaction. Your live VOD/channels data is not used.
+
+  Optional: `TEST_USE_SQLITE=1` for machines without Postgres (some PostgreSQL-only tests skip automatically).
+
+  Tests that exercise Celery task bodies should use `@override_settings(CELERY_TASK_ALWAYS_EAGER=True)` locally. Global eager mode is off because `post_save` signals on M3U/EPG models call `.delay()` and would break `TestCase` transaction isolation.
+
+- Do **not** override with `--settings=dispatcharr.settings` on a live instance.
 
 ### Frontend
 
