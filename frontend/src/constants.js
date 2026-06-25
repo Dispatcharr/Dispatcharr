@@ -52,8 +52,9 @@ export const PROXY_SETTINGS_OPTIONS = {
       'Delay in seconds before shutting down a channel after last client disconnects',
   },
   channel_init_grace_period: {
-    label: 'Channel Initialization Grace Period',
-    description: 'Grace period in seconds during channel initialization',
+    label: 'Channel Initialization Timeout',
+    description:
+      'Maximum seconds to wait for the initial buffer to fill while a channel is connecting. Channels that never receive enough buffered data are stopped after this limit.',
   },
   new_client_behind_seconds: {
     label: 'New Client Buffer (seconds)',

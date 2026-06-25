@@ -1420,6 +1420,12 @@ class StreamManager:
         """Check if connection retry is allowed"""
         return self.retry_count < self.max_retries
 
+    def _health_inactivity_threshold(self):
+        """How long without data before marking the stream unhealthy."""
+        if self.connected and getattr(self.buffer, 'index', 0) == 0:
+            return ConfigHelper.channel_init_grace_period()
+        return getattr(Config, 'CONNECTION_TIMEOUT', 10)
+
     def _monitor_health(self):
         """Monitor stream health and set flags for the main loop to handle recovery"""
         consecutive_unhealthy_checks = 0
@@ -1435,7 +1441,7 @@ class StreamManager:
             try:
                 now = time.time()
                 inactivity_duration = now - self.last_data_time
-                timeout_threshold = getattr(Config, 'CONNECTION_TIMEOUT', 10)
+                timeout_threshold = self._health_inactivity_threshold()
 
                 if inactivity_duration > timeout_threshold and self.connected:
                     if self.healthy:
@@ -1830,19 +1836,9 @@ class StreamManager:
                             timer.start()
                             return False
 
-                        # We have enough buffer, proceed with state change
-                        update_data = {
-                            ChannelMetadataField.STATE: ChannelState.WAITING_FOR_CLIENTS,
-                            ChannelMetadataField.CONNECTION_READY_TIME: current_time,
-                            ChannelMetadataField.STATE_CHANGED_AT: current_time,
-                            ChannelMetadataField.BUFFER_CHUNKS: str(current_buffer_index)
-                        }
-                        redis_client.hset(metadata_key, mapping=update_data)
+                        from ..services.channel_service import ChannelService
 
-                        # Get configured grace period or default
-                        grace_period = ConfigHelper.channel_init_grace_period()
-                        logger.info(f"STREAM MANAGER: Updated channel {channel_id} state: {current_state or 'None'} -> {ChannelState.WAITING_FOR_CLIENTS} with {current_buffer_index} buffer chunks")
-                        logger.info(f"Started initial connection grace period ({grace_period}s) for channel {channel_id}")
+                        ChannelService.promote_channel_when_buffer_ready(channel_id)
                     else:
                         logger.debug(f"Not changing state: channel {channel_id} already in {current_state} state")
         except Exception as e:
