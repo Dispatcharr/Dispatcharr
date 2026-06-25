@@ -968,8 +968,10 @@ def _xc_fetch_priority_distinct_relations(
             .values('pk')
         )
         with transaction.atomic():
+            # Optional: disable parallel gather for this DISTINCT ON query if Docker
+            # /dev/shm pressure causes worker OOM on very large VOD libraries.
             #with connection.cursor() as cursor:
-                #cursor.execute("SET LOCAL max_parallel_workers_per_gather = 0")
+            #    cursor.execute("SET LOCAL max_parallel_workers_per_gather = 0")
             winning_ids = list(winning_ids_qs.values_list('pk', flat=True))
             if not winning_ids:
                 return []
