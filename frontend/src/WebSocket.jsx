@@ -203,7 +203,7 @@ export const WebsocketProvider = ({ children }) => {
                 notifications.update({
                   id,
                   title: 'Commercials removed',
-                  message: `${title} — kept ${parsedEvent.data.segments_kept} segments`,
+                  message: `${title}: kept ${parsedEvent.data.segments_kept} segments`,
                   color: 'green.5',
                   loading: false,
                   autoClose: 4000,

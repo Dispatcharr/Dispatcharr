@@ -14,6 +14,7 @@ from django.db import connection, transaction
 from django.db.models import Count, F, Prefetch
 from django.db.models import Q
 import os, json, requests, logging, mimetypes, threading, time
+from urllib.parse import urlencode
 from datetime import timedelta
 from django.utils.http import http_date
 from apps.accounts.permissions import (
@@ -3248,6 +3249,24 @@ RECORDING_PLAYBACK_AUTHENTICATORS = [
 ]
 
 
+def _recording_auth_query_suffix(request):
+    """Suffix for rewritten recording URLs when auth used ?token= (native <video>).
+
+    hls.js clients authenticate via Authorization on each XHR and do not need
+    tokens embedded in playlist segment lines.
+    """
+    from rest_framework.request import Request as DRFRequest
+
+    if isinstance(request, DRFRequest):
+        params = request.query_params
+    else:
+        params = request.GET
+    token = params.get("token")
+    if not token:
+        return ""
+    return "?" + urlencode({"token": token})
+
+
 class RecordingViewSet(viewsets.ModelViewSet):
     queryset = Recording.objects.all()
     serializer_class = RecordingSerializer
@@ -3347,7 +3366,7 @@ class RecordingViewSet(viewsets.ModelViewSet):
             if hls_dir and os.path.isdir(hls_dir):
                 hls_url = request.build_absolute_uri(
                     f"/api/channels/recordings/{pk}/hls/index.m3u8"
-                )
+                ) + _recording_auth_query_suffix(request)
                 return HttpResponseRedirect(hls_url)
             if not file_path or not os.path.exists(file_path):
                 raise Http404("Recording file not found")
@@ -3440,9 +3459,10 @@ class RecordingViewSet(viewsets.ModelViewSet):
             cp = recording.custom_properties or {}
             file_path = cp.get("file_path")
             if seg_path.endswith(".m3u8") and file_path and os.path.exists(file_path) and os.path.getsize(file_path) > 0:
-                return HttpResponseRedirect(
-                    request.build_absolute_uri(f"/api/channels/recordings/{pk}/file/")
-                )
+                file_url = request.build_absolute_uri(
+                    f"/api/channels/recordings/{pk}/file/"
+                ) + _recording_auth_query_suffix(request)
+                return HttpResponseRedirect(file_url)
             raise Http404("HLS content not available for this recording")
 
         # Security: prevent path traversal outside the HLS directory
@@ -3455,16 +3475,18 @@ class RecordingViewSet(viewsets.ModelViewSet):
             raise Http404(f"HLS file not found: {seg_path}")
 
         if seg_path.endswith(".m3u8"):
-            # Rewrite relative segment lines to absolute URLs through this API
+            # Rewrite relative segment lines to absolute URLs through this API.
+            # Propagate ?token= only for native <video> clients (see helper).
             base_url = request.build_absolute_uri(
                 f"/api/channels/recordings/{pk}/hls/"
             )
+            auth_suffix = _recording_auth_query_suffix(request)
             lines = []
             with open(requested) as _f:
                 for line in _f:
                     stripped = line.strip()
                     if stripped and not stripped.startswith("#"):
-                        lines.append(f"{base_url}{stripped}\n")
+                        lines.append(f"{base_url}{stripped}{auth_suffix}\n")
                     else:
                         lines.append(line)
             return HttpResponse("".join(lines), content_type="application/x-mpegURL")
