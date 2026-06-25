@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.27.1] - 2026-06-25
+
 ### Security
 
 - Updated `Django` 6.0.5 → 6.0.6, resolving the following CVEs:
