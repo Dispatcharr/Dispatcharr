@@ -3194,7 +3194,6 @@ def refresh_single_m3u_account(account_id):
             notify_error=True,
             ws_error=str(e)[:500],
         )
-        raise
     finally:
         _ensure_m3u_refresh_terminal_status(account_id)
         _release_task_db_connection()
