@@ -128,13 +128,13 @@ class UserPreferencesAPITests(TestCase):
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
 
     def test_patch_me_cannot_escalate_privileges(self):
-        """Test PATCH /me/ rejects attempts to change user_level or is_staff"""
+        """PATCH /me/ ignores privilege fields; they are stripped before save."""
         original_level = self.user.user_level
 
         data = {"user_level": 99, "is_staff": True, "is_superuser": True}
         response = self.client.patch(self.me_url, data, format="json")
 
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
 
         self.user.refresh_from_db()
         self.assertEqual(self.user.user_level, original_level)

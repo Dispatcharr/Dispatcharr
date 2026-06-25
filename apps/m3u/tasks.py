@@ -7,29 +7,23 @@ import os
 import gc
 import gzip, zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from celery.app.control import Inspect
-from celery.result import AsyncResult
-from celery import shared_task, current_app, group
+from celery import shared_task
 from django.conf import settings
-from django.core.cache import cache
 from django.db import models, transaction
 from .models import M3UAccount
 from apps.channels.models import Stream, ChannelGroup, ChannelGroupM3UAccount
-from asgiref.sync import async_to_sync
-from channels.layers import get_channel_layer
 from django.utils import timezone
 import time
 import json
 from core.utils import (
-    RedisClient,
     acquire_task_lock,
     release_task_lock,
     TaskLockRenewer,
     natural_sort_key,
     log_system_event,
+    ensure_custom_properties_dict,
 )
 from core.models import CoreSettings, UserAgent
-from asgiref.sync import async_to_sync
 from core.xtream_codes import Client as XCClient
 from core.utils import send_websocket_update
 from .utils import normalize_stream_url
@@ -38,6 +32,104 @@ logger = logging.getLogger(__name__)
 
 BATCH_SIZE = 1500  # Optimized batch size for threading
 m3u_dir = os.path.join(settings.MEDIA_ROOT, "cached_m3u")
+
+_NON_TERMINAL_REFRESH_STATUSES = frozenset({
+    M3UAccount.Status.FETCHING,
+    M3UAccount.Status.PARSING,
+})
+
+
+def _release_task_db_connection():
+    """Return the Celery worker's DB connection to a clean state after ORM errors."""
+    from django.db import close_old_connections
+    close_old_connections()
+
+
+def _db_query_with_retry(fn, *, label="DB query", max_retries=2):
+    """
+    Run an ORM read with one connection reset + retry on transient failures.
+
+    Poisoned Celery worker connections often surface as OperationalError or as
+    ``IndexError: list index out of range`` inside Django's row converters.
+    """
+    from django.db import InterfaceError, OperationalError
+
+    transient_errors = (OperationalError, InterfaceError, IndexError)
+    for attempt in range(max_retries):
+        try:
+            return fn()
+        except transient_errors as exc:
+            if attempt + 1 >= max_retries:
+                raise
+            logger.warning(
+                "%s failed (%s), resetting DB connection (%s/%s)",
+                label,
+                exc,
+                attempt + 1,
+                max_retries,
+            )
+            _release_task_db_connection()
+
+
+def _get_active_m3u_account(account_id):
+    return _db_query_with_retry(
+        lambda: M3UAccount.objects.get(id=account_id, is_active=True),
+        label=f"load active M3U account {account_id}",
+    )
+
+
+def _set_m3u_account_status(
+    account_id,
+    status,
+    last_message=None,
+    *,
+    notify_error=False,
+    ws_action="parsing",
+    ws_error=None,
+):
+    """Update account status using a fresh connection (safe after DB failures)."""
+    _release_task_db_connection()
+    update = {"status": status}
+    if last_message is not None:
+        update["last_message"] = last_message
+    try:
+        M3UAccount.objects.filter(id=account_id).update(**update)
+        if notify_error:
+            send_m3u_update(
+                account_id,
+                ws_action,
+                100,
+                status="error",
+                error=ws_error or last_message,
+            )
+    except Exception as e:
+        logger.error(
+            f"Failed to set account {account_id} status to {status}: {e}"
+        )
+
+
+def _ensure_m3u_refresh_terminal_status(account_id):
+    """Mark refresh as failed when the task exits while still in progress."""
+    _release_task_db_connection()
+    try:
+        current_status = (
+            M3UAccount.objects.filter(id=account_id)
+            .values_list("status", flat=True)
+            .first()
+        )
+        if current_status in _NON_TERMINAL_REFRESH_STATUSES:
+            message = "Refresh did not complete successfully"
+            M3UAccount.objects.filter(id=account_id).update(
+                status=M3UAccount.Status.ERROR,
+                last_message=message,
+            )
+            send_m3u_update(
+                account_id, "parsing", 100, status="error", error=message
+            )
+    except Exception as e:
+        logger.debug(
+            f"Could not verify terminal refresh status for account {account_id}: {e}"
+        )
 
 _EXTINF_ATTR_RE = re.compile(r'([^\s=]+)\s*=\s*(["\'])(.*?)\2')
 
@@ -630,7 +722,7 @@ def process_groups(account, groups, scan_start_time=None):
     logger.info(f"Currently {len(existing_groups)} existing groups")
 
     # Check if we should auto-enable new groups based on account settings
-    account_custom_props = account.custom_properties or {}
+    account_custom_props = ensure_custom_properties_dict(account.custom_properties)
     auto_enable_new_groups_live = account_custom_props.get("auto_enable_new_groups_live", True)
 
     # Separate existing groups from groups that need to be created
@@ -673,7 +765,9 @@ def process_groups(account, groups, scan_start_time=None):
             existing_rel = existing_relationships[group.name]
 
             # Get existing custom properties (now JSONB, no need to parse)
-            existing_custom_props = existing_rel.custom_properties or {}
+            existing_custom_props = ensure_custom_properties_dict(
+                existing_rel.custom_properties
+            )
 
             # Get the new xc_id from groups data
             new_xc_id = custom_props.get("xc_id")
@@ -696,6 +790,8 @@ def process_groups(account, groups, scan_start_time=None):
                 logger.debug(f"Updated xc_id for group '{group.name}' from '{existing_xc_id}' to '{new_xc_id}' - account {account.id}")
             else:
                 # Update last_seen even if xc_id hasn't changed
+                if isinstance(existing_rel.custom_properties, str):
+                    existing_rel.custom_properties = existing_custom_props
                 existing_rel.last_seen = scan_start_time
                 existing_rel.is_stale = False
                 relations_to_update.append(existing_rel)
@@ -1755,33 +1851,6 @@ def _range_exhausted_error(mode, start_number, end_number, fallback_start):
     return f"Channel number range {range_start}-{int(end_number)} is full"
 
 
-def _custom_properties_as_dict(value):
-    """
-    Normalize a JSONField-backed custom_properties value into a dict.
-
-    Historical data has rows where the field holds a JSON-encoded string
-    instead of a dict. Django's JSONField serializes whatever it gets, so
-    `.get()` on one of those rows raises AttributeError and aborts the
-    entire sync. Treat string values as JSON to parse, and fall back to an
-    empty dict for anything that isn't a dict after parsing.
-    """
-    import json
-
-    if isinstance(value, dict):
-        return value
-    if isinstance(value, str):
-        try:
-            parsed = json.loads(value)
-        except (ValueError, TypeError):
-            logger.warning(
-                "custom_properties stored as non-JSON string; ignoring: %r",
-                value[:100],
-            )
-            return {}
-        return parsed if isinstance(parsed, dict) else {}
-    return {}
-
-
 def _classify_sync_failure(exc):
     """
     Map an exception raised during per-stream sync to a coarse typed
@@ -1890,7 +1959,7 @@ def sync_auto_channels(account_id, scan_start_time=None):
             custom_epg_id = None  # New option: select specific EPG source (takes priority over force_dummy_epg)
             channel_numbering_mode = "fixed"  # Default mode
             channel_numbering_fallback = 1  # Default fallback for provider mode
-            group_custom_props = _custom_properties_as_dict(
+            group_custom_props = ensure_custom_properties_dict(
                 group_relation.custom_properties
             )
             if group_custom_props:
@@ -2734,7 +2803,7 @@ def sync_auto_channels(account_id, scan_start_time=None):
         # "preserve_customized" keeps those with a ChannelOverride row;
         # "never" disables cleanup. Hidden channels are preserved across all
         # modes so event/PPV channels that come and go are not silently lost.
-        cleanup_mode = (account.custom_properties or {}).get(
+        cleanup_mode = ensure_custom_properties_dict(account.custom_properties).get(
             "orphan_channel_cleanup", "always"
         )
         if cleanup_mode != "never":
@@ -2816,12 +2885,13 @@ def get_transformed_credentials(account, profile=None):
             logger.warning(f"Could not get primary profile for account {account.name}: {e}")
             profile = None
 
-    base_url = account.server_url
+    from core.xtream_codes import normalize_server_url
+
+    base_url = normalize_server_url(account.server_url)
     base_username = account.username
     base_password = account.password    # Build a complete URL with credentials (similar to how IPTV URLs are structured)
     # Format: http://server.com:port/live/username/password/1234.ts
     if base_url and base_username and base_password:
-        # Remove trailing slash from server URL if present
         clean_server_url = base_url.rstrip('/')
 
         # Build the complete URL with embedded credentials
@@ -2947,12 +3017,19 @@ def refresh_account_profiles(account_id):
                     if profile_client.authenticate():
                         # Get account information specific to this profile's credentials
                         profile_account_info = profile_client.get_account_info()
+                        if not isinstance(profile_account_info, dict):
+                            raise TypeError(
+                                f"Unexpected account info type: {type(profile_account_info).__name__}"
+                            )
 
                         # Merge with existing custom_properties if they exist
-                        existing_props = profile.custom_properties or {}
-                        existing_props.update(profile_account_info)
-                        profile.custom_properties = existing_props
-                        profile.save(update_fields=['custom_properties'])
+                        profile.custom_properties = {
+                            **ensure_custom_properties_dict(
+                                profile.custom_properties
+                            ),
+                            **profile_account_info,
+                        }
+                        profile.save(update_fields=['custom_properties', 'exp_date'])
 
                         profiles_updated += 1
                         logger.info(f"Updated account information for profile '{profile.name}' ({profiles_updated}/{profiles.count()})")
@@ -2963,6 +3040,7 @@ def refresh_account_profiles(account_id):
             except Exception as profile_error:
                 profiles_failed += 1
                 logger.error(f"Failed to update account information for profile '{profile.name}': {str(profile_error)}")
+                _release_task_db_connection()
                 # Continue with other profiles even if one fails
 
         result_msg = f"Profile refresh complete for account {account.name}: {profiles_updated} updated, {profiles_failed} failed"
@@ -2977,6 +3055,8 @@ def refresh_account_profiles(account_id):
         error_msg = f"Error refreshing profiles for account {account_id}: {str(e)}"
         logger.error(error_msg)
         return error_msg
+    finally:
+        _release_task_db_connection()
 
 
 @shared_task
@@ -3031,10 +3111,11 @@ def refresh_account_info(profile_id):
         account_info = client.get_account_info()
 
         # Update only this specific profile with the new account info
-        if not profile.custom_properties:
-            profile.custom_properties = {}
-        profile.custom_properties.update(account_info)
-        profile.save()
+        profile.custom_properties = {
+            **ensure_custom_properties_dict(profile.custom_properties),
+            **account_info,
+        }
+        profile.save(update_fields=['custom_properties', 'exp_date'])
 
         # Send success notification to frontend via websocket
         send_websocket_update(
@@ -3097,10 +3178,25 @@ def refresh_single_m3u_account(account_id):
     lock_renewer = TaskLockRenewer("refresh_single_m3u_account", account_id)
     lock_renewer.start()
 
+    _release_task_db_connection()
+
     try:
         return _refresh_single_m3u_account_impl(account_id)
+    except Exception as e:
+        logger.error(
+            f"refresh_single_m3u_account failed for account {account_id}: {e}",
+            exc_info=True,
+        )
+        _set_m3u_account_status(
+            account_id,
+            M3UAccount.Status.ERROR,
+            f"Error processing M3U: {str(e)[:500]}",
+            notify_error=True,
+            ws_error=str(e)[:500],
+        )
     finally:
-        # Guaranteed cleanup on all exit paths (success, exception, early return)
+        _ensure_m3u_refresh_terminal_status(account_id)
+        _release_task_db_connection()
         lock_renewer.stop()
         release_task_lock("refresh_single_m3u_account", account_id)
 
@@ -3115,22 +3211,25 @@ def _refresh_single_m3u_account_impl(account_id):
     streams_deleted = 0
 
     try:
-        account = M3UAccount.objects.get(id=account_id, is_active=True)
+        account = _get_active_m3u_account(account_id)
         if not account.is_active:
             logger.debug(f"Account {account_id} is not active, skipping.")
             return
 
-        # Set status to fetching
-        account.status = M3UAccount.Status.FETCHING
-        account.save(update_fields=['status'])
+        # Set status to fetching and replace stale completion messages.
+        _set_m3u_account_status(
+            account_id,
+            M3UAccount.Status.FETCHING,
+            "Refresh in progress...",
+        )
+        account = _get_active_m3u_account(account_id)
 
         filters = list(account.filters.all())
 
         # Check if VOD is enabled for this account
-        vod_enabled = False
-        if account.custom_properties:
-            custom_props = account.custom_properties or {}
-            vod_enabled = custom_props.get('enable_vod', False)
+        vod_enabled = ensure_custom_properties_dict(account.custom_properties).get(
+            'enable_vod', False
+        )
 
     except M3UAccount.DoesNotExist:
         # The M3U account doesn't exist, so delete the periodic task if it exists
@@ -3196,6 +3295,16 @@ def _refresh_single_m3u_account_impl(account_id):
                 logger.error(
                     f"Failed to refresh M3U groups for account {account_id}: {result}"
                 )
+                error_msg = (
+                    "Failed to refresh M3U groups - download failed or other error"
+                )
+                _set_m3u_account_status(
+                    account_id,
+                    M3UAccount.Status.ERROR,
+                    error_msg,
+                    notify_error=True,
+                    ws_error=error_msg,
+                )
                 return "Failed to update m3u account - download failed or other error"
 
             extinf_data, groups = result
@@ -3210,23 +3319,23 @@ def _refresh_single_m3u_account_impl(account_id):
             # For XC accounts, empty extinf_data is normal at this stage
             if not extinf_data and not is_xc_account:
                 logger.error(f"No streams found for non-XC account {account_id}")
-                account.status = M3UAccount.Status.ERROR
-                account.last_message = "No streams found in M3U source"
-                account.save(update_fields=["status", "last_message"])
-                send_m3u_update(
-                    account_id, "parsing", 100, status="error", error="No streams found"
+                error_msg = "No streams found in M3U source"
+                _set_m3u_account_status(
+                    account_id,
+                    M3UAccount.Status.ERROR,
+                    error_msg,
+                    notify_error=True,
+                    ws_error=error_msg,
                 )
         except Exception as e:
             logger.error(f"Exception in refresh_m3u_groups: {str(e)}", exc_info=True)
-            account.status = M3UAccount.Status.ERROR
-            account.last_message = f"Error refreshing M3U groups: {str(e)}"
-            account.save(update_fields=["status", "last_message"])
-            send_m3u_update(
+            error_msg = f"Error refreshing M3U groups: {str(e)[:500]}"
+            _set_m3u_account_status(
                 account_id,
-                "parsing",
-                100,
-                status="error",
-                error=f"Error refreshing M3U groups: {str(e)}",
+                M3UAccount.Status.ERROR,
+                error_msg,
+                notify_error=True,
+                ws_error=error_msg,
             )
             return "Failed to update m3u account"
 
@@ -3240,15 +3349,13 @@ def _refresh_single_m3u_account_impl(account_id):
     # Modified validation logic for different account types
     if (not groups) or (not is_xc_account and not extinf_data):
         logger.error(f"No data to process for account {account_id}")
-        account.status = M3UAccount.Status.ERROR
-        account.last_message = "No data available for processing"
-        account.save(update_fields=["status", "last_message"])
-        send_m3u_update(
+        error_msg = "No data available for processing"
+        _set_m3u_account_status(
             account_id,
-            "parsing",
-            100,
-            status="error",
-            error="No data available for processing",
+            M3UAccount.Status.ERROR,
+            error_msg,
+            notify_error=True,
+            ws_error=error_msg,
         )
         return "Failed to update m3u account, no data available"
 
@@ -3364,7 +3471,7 @@ def _refresh_single_m3u_account_impl(account_id):
                 group_id = rel.channel_group.id
 
                 # Load the custom properties with the xc_id
-                custom_props = rel.custom_properties or {}
+                custom_props = ensure_custom_properties_dict(rel.custom_properties)
                 if "xc_id" in custom_props:
                     filtered_groups[group_name] = {
                         "xc_id": custom_props["xc_id"],
@@ -3589,13 +3696,7 @@ def _refresh_single_m3u_account_impl(account_id):
 
     except Exception as e:
         logger.error(f"Error processing M3U for account {account_id}: {str(e)}")
-        try:
-            account.status = M3UAccount.Status.ERROR
-            account.last_message = f"Error processing M3U: {str(e)}"
-            account.save(update_fields=["status", "last_message"])
-        except Exception:
-            logger.debug(f"Failed to update account {account_id} status during error handling")
-        raise  # Re-raise the exception for Celery to handle
+        raise
     finally:
         # Free large data structures regardless of success or failure
         if 'existing_groups' in locals():
@@ -3621,6 +3722,8 @@ def _refresh_single_m3u_account_impl(account_id):
             os.remove(cache_path)
         except OSError:
             pass
+
+        _release_task_db_connection()
 
     return f"Dispatched jobs complete."
 

@@ -2,7 +2,7 @@ from django.db import models
 from django.core.exceptions import ValidationError
 from django.conf import settings
 from core.models import StreamProfile, CoreSettings
-from core.utils import RedisClient
+from core.utils import RedisClient, custom_properties_as_dict
 from apps.proxy.live_proxy.redis_keys import RedisKeys
 from apps.proxy.live_proxy.constants import ChannelMetadataField, ChannelState
 import logging
@@ -1118,6 +1118,13 @@ class ChannelGroupM3UAccount(models.Model):
 
     def __str__(self):
         return f"{self.channel_group.name} - {self.m3u_account.name} (Enabled: {self.enabled})"
+
+    def save(self, *args, **kwargs):
+        if self.custom_properties is not None and not isinstance(
+            self.custom_properties, dict
+        ):
+            self.custom_properties = custom_properties_as_dict(self.custom_properties)
+        super().save(*args, **kwargs)
 
 
 class Logo(models.Model):

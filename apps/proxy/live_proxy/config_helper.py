@@ -107,7 +107,7 @@ class ConfigHelper:
 
     @staticmethod
     def channel_init_grace_period():
-        """Get channel initialization grace period in seconds"""
+        """Max seconds to wait for initial buffer fill during channel startup."""
         return Config.get_channel_init_grace_period()
 
     @staticmethod

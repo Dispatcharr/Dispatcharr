@@ -7,6 +7,67 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- Updated `Django` 6.0.5 → 6.0.6, resolving the following CVEs:
+  - **CVE-2026-6873**: Signed cookie salt namespace collision in `HttpRequest.get_signed_cookie()`.
+  - **CVE-2026-7666**: Potential unencrypted email transmission via STARTTLS in the SMTP backend.
+  - **CVE-2026-8404**: Potential private data exposure via case-sensitive `Cache-Control` directives in `UpdateCacheMiddleware`.
+  - **CVE-2026-35193**: Potential private data exposure via missing `Vary: Authorization` in `UpdateCacheMiddleware`.
+  - **CVE-2026-48587**: Potential private data exposure via whitespace padding in the `Vary` header.
+- Updated frontend npm dependencies to resolve 4 audit vulnerabilities (1 low, 2 moderate, 1 high):
+  - Updated `vite` 7.3.2 → 7.3.5, resolving **moderate** NTLMv2 hash disclosure via UNC path handling on Windows ([GHSA-v6wh-96g9-6wx3](https://github.com/advisories/GHSA-v6wh-96g9-6wx3)) and **high** `server.fs.deny` bypass on Windows alternate paths ([GHSA-fx2h-pf6j-xcff](https://github.com/advisories/GHSA-fx2h-pf6j-xcff))
+  - Updated `js-yaml` 4.1.1 → 5.1.0, resolving **moderate** quadratic-complexity DoS in merge key handling via repeated aliases ([GHSA-h67p-54hq-rp68](https://github.com/advisories/GHSA-h67p-54hq-rp68))
+  - Updated `esbuild` 0.27.3 → 0.28.1, resolving **low** arbitrary file read when running the development server on Windows ([GHSA-g7r4-m6w7-qqqr](https://github.com/advisories/GHSA-g7r4-m6w7-qqqr))
+
+### Added
+
+- **Isolated backend test settings (`dispatcharr.settings_test`).** `python manage.py test` now switches to this module automatically (via `manage.py`). It creates an empty PostgreSQL `test_<dbname>` database (same engine as production), uses the standard Postgres backend instead of geventpool so `TestCase` transactions isolate correctly, and leaves Celery tasks queued (no eager `post_save` signal runs during tests). Set `TEST_USE_SQLITE=1` for an in-memory SQLite fallback when Postgres is unavailable.
+
+### Performance
+
+- **`get_vod_streams` and `get_series` XC API endpoints are faster and no longer exhaust Docker `/dev/shm`.** Large libraries (e.g. 125k movies) previously ran one wide `DISTINCT ON` query with parallel workers, which could fail with `could not resize shared memory segment … No space left on device` on the default 64MB container shm. Both endpoints now fetch display columns via `.values()` (no ORM model instantiation per row). Redundant `category` and `logo` joins were dropped in favor of FK ids; alphabetical sort runs in SQL. Typical full-library response time drops from ~23–28s to ~8–10s with stable shm usage.
+- **XMLTV EPG export is faster and no longer balloons worker memory.** `generate_epg()` was reworked end-to-end for large guides. (Fixes #1366)
+  - Streams incrementally: on a cache miss each chunk is pushed to a Redis list as it is yielded (no `''.join()` in the worker); repeat requests within 300s stream chunks back from Redis. `malloc_trim` runs after cold builds.
+  - Channel streams are prefetched once (only `id`/`name`) instead of one query per custom-dummy channel; dummy `EPGData` programme existence is bulk-checked in a single query.
+  - The primary channel id is escaped once per `epg_id` group instead of once per programme (~750k fewer `html.escape` calls on a large guide).
+  - The channel query no longer JOINs multi-MB `programme_index` blobs per channel (~13s saved on a ~2000-channel guide; indices live in `EPGSourceIndex`).
+  - Programme export uses `(epg_id, id)` keyset pagination with a per-source `start_time` sort; a matching composite index on `ProgramData` (created `CONCURRENTLY` on PostgreSQL) lets each chunk use an ordered index range scan instead of re-sorting every chunk.
+- **EPG grid endpoint releases its payload memory back to the OS.** `/api/epg/grid/` drops the redundant full-list copy when appending dummy programmes and runs `malloc_trim` once the response is sent, so worker RSS no longer ratchets up ~20MB per request.
+
+### Changed
+
+- **`programme_index` moved off `EPGSource` into a dedicated `EPGSourceIndex` table.** The multi-MB byte-offset index was repeatedly pulled into web and Celery workers by ordinary `EPGSource` queries and `select_related` JOINs (which ignore manager-level `defer()`). It now lives in a one-to-one `EPGSourceIndex` row, read only when explicitly accessed through the `EPGSource.programme_index` property, so no list, detail, or JOIN query can load it by accident. Migration `0026` copies existing indices across. No API or index-build behavior change.
+
+- **EPG generation extracted into `apps/output/epg.py`.** All XMLTV output logic (`generate_epg`, `generate_dummy_programs`, `generate_custom_dummy_programs`, `generate_dummy_epg`, and supporting helpers) moved from `apps/output/views.py` into a dedicated module. `views.py` retains the thin HTTP endpoint wrappers and auth checks; `epg.py` handles all content generation. No behavior change.
+
+- **Channel list with nested streams loads faster.** `GET /api/channels/channels/?include_streams=true` (Channels UI and single-channel fetch) now builds nested stream payloads from the prefetched `channelstream_set` instead of issuing one extra streams M2M query per channel.
+
+- Dependency updates:
+  - `Django` 6.0.5 → 6.0.6 (security patch; see Security section)
+  - `requests` 2.33.1 → 2.34.2
+  - `gevent` 26.4.0 → 26.5.0
+  - `torch` 2.11.0+cpu → 2.12.1+cpu
+  - `sentence-transformers` 5.4.1 → 5.6.0
+  - `lxml` 6.1.0 → 6.1.1
+
+
+### Fixed
+
+- **Channel Initialization Grace Period is honoured during live stream startup.** Preview and playback no longer abort after a hardcoded 10s while the channel is still connecting with an empty buffer; the TS generator init-wait stall check and upstream health monitor now use the configured `channel_init_grace_period` (same as the server cleanup watchdog) instead of `CONNECTION_TIMEOUT`. (Fixes #1380)
+- **Channels are marked `active` as soon as the buffer threshold is met and a client is streaming.** Once the initial buffer fills, state is set to `active` immediately when viewers are attached, or `waiting_for_clients` when the buffer is ready but no client is connected yet (e.g. proxy API warmup). The cleanup watchdog no longer waits an extra grace period before promoting to `active`. Proxy settings copy now describes `channel_init_grace_period` as an initialization buffer timeout.
+- **DVR recording playback auth is complete for native video, HLS segments, and redirects.** Completed recordings use `/file/` with native `<video src>`, which cannot send `Authorization` headers. Playback accepts `?token=` query-param JWT (matching VOD streams), and the floating video player appends the token when assigning native URLs. The explicit HLS URL route (`/api/channels/recordings/.../hls/...`) now registers the same authenticators as the ViewSet `@action` handlers—previously only header JWT applied on that path, so `?token=` failed for native HLS clients. When the request used `?token=`, rewritten playlist segment URLs and `/file/`↔`/hls/` redirects preserve the token; hls.js clients that authenticate via `Authorization` are unchanged. `QueryParamJWTAuthentication` reads `request.query_params` on DRF requests.
+- **In-progress DVR playback no longer jumps to the live edge.** The floating video player still opens in-progress recordings at the start of the seekable range, but hls.js was configured with `liveMaxLatencyDurationCount: 10`, which forced the playhead forward to "now" shortly after playback began. Live-edge sync is now disabled for recording HLS so users can watch, pause, and scrub from the beginning while the recording continues. (Fixes #1329)
+- **`refresh_single_m3u_account` no longer re-raises after setting account ERROR.** Matches `refresh_epg_data`: the account status and UI already reflect the failure; Celery no longer marks the task FAILED after the terminal error state is persisted.
+- **M3U refresh recovers DB connections and account status after failures.** Celery workers now call `close_old_connections()` before and after every task; `refresh_single_m3u_account` also resets its DB connection at task start and retries account loads once after a connection reset (avoids opaque `list index out of range` errors from poisoned worker connections). Accounts leave `fetching`/`parsing` for a terminal `error` or `success` state when refresh aborts. Error-path status updates use `QuerySet.update()` on a clean connection instead of `save()` on a connection that may already be INTRANS after `refresh_m3u_groups` or batch ORM failures. Failed group downloads now set `error` instead of returning silently. Refresh start replaces stale `last_message` text. `refresh_account_profiles` releases DB connections after each profile failure. (Fixes #1338)
+- **EPG refresh recovers DB connections and source status after failures.** `refresh_epg_data` now mirrors the M3U hardening: connection reset at task start/end, retried source load after a poisoned-worker connection reset, `QuerySet.update()` for error status on a clean connection, and a `finally` guard that moves sources stuck in `fetching`/`parsing` to `error`. Programme index builds are skipped when programme parsing fails. `parse_channels_only` now persists the error status when a missing file has no URL to refetch.
+- **M3U `custom_properties` JSON normalization.** Legacy rows and some API writes could store a JSON-encoded string instead of an object in `custom_properties`, causing refresh, profile sync, and auto-sync to fail with `'str' object has no attribute 'get'`. M3U account, profile, and group-relation models normalize on `save()`; group settings bulk writes and read/merge paths use shared helpers in `core.utils` without re-parsing dict values.
+- **`POST /api/epg/import/` no longer loads the full EPG source row.** The dummy-source guard uses a narrow existence query instead of `objects.get()`, keeping the import trigger lightweight. Request/response shape is unchanged for the UI, plugins, and external importers.
+- **XC live playback URL building now normalizes account server URLs.** On-demand live URLs (introduced for Server Group profile rotation in 0.27.0) rebuild `/live/{user}/{pass}/{stream_id}.ts` from current credentials instead of reusing the synced `stream.url`. That path now runs `normalize_server_url()` so pasted API URLs (e.g. `/player_api.php` with query params) are stripped while sub-paths like `/server1` are preserved. `get_transformed_credentials()` normalizes the base URL at the source; VOD movie and episode relations use the same helper instead of constructing a throwaway `XCClient` (which also avoided per-request HTTP session setup). (Fixes #1363)
+- **Live proxy now releases geventpool DB connections on more paths.** `stream_ts()` calls `close_old_connections()` before `StreamingHttpResponse` so clients waiting on channel init do not keep a pool slot while the generator polls Redis. `generate_stream_url()`, `get_stream_info_for_switch()`, `get_alternate_streams()`, and `get_connections_left()` release in `finally` blocks after ORM work on stream-manager failover paths that run outside Django's request cycle. TS client disconnect cleanup matches fMP4, and `ChannelService` metadata helpers release after their ORM lookups.
+- **OpenAPI schema paths for nested M3U profiles and filters no longer contain escaped slashes.** Router regex prefixes used unnecessary `\/`, which drf-spectacular serialized literally into the schema and broke client generators (e.g. oapi-codegen). Runtime URL matching is unchanged. (Fixes #1384)
+- **Auto-sync range conflict warning no longer flags a group's own channels when using a channel-group override.** The M3U group settings "Range conflict" check compared occupant channel groups against the source group being configured. Auto-sync with `group_override` creates channels in the override target group, so those channels were misclassified as conflicts. The frontend now resolves the effective target group (override target when set, otherwise the source group) for classification. Genuine conflicts—manual channels, other accounts, different groups, or user-pinned numbers—still surface. (Fixes #1331) — Thanks [@CodeBormen](https://github.com/CodeBormen)
+
 ## [0.27.0] - 2026-06-16
 
 ### Added

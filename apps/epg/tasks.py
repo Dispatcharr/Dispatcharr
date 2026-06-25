@@ -26,7 +26,7 @@ from core.models import UserAgent, CoreSettings
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 
-from .models import EPGSource, EPGData, ProgramData, SDScheduleMD5, SDProgramMD5
+from .models import EPGSource, EPGSourceIndex, EPGData, ProgramData, SDScheduleMD5, SDProgramMD5
 from core.utils import (
     acquire_task_lock,
     is_task_lock_held,
@@ -38,6 +38,105 @@ from core.utils import (
 )
 
 logger = logging.getLogger(__name__)
+
+_NON_TERMINAL_REFRESH_STATUSES = frozenset({
+    EPGSource.STATUS_FETCHING,
+    EPGSource.STATUS_PARSING,
+})
+
+
+def _release_task_db_connection():
+    """Return the Celery worker's DB connection to a clean state after ORM errors."""
+    from django.db import close_old_connections
+    close_old_connections()
+
+
+def _db_query_with_retry(fn, *, label="DB query", max_retries=2):
+    """
+    Run an ORM read with one connection reset + retry on transient failures.
+
+    Poisoned Celery worker connections often surface as OperationalError or as
+    ``IndexError: list index out of range`` inside Django's row converters.
+    """
+    from django.db import InterfaceError, OperationalError
+
+    transient_errors = (OperationalError, InterfaceError, IndexError)
+    for attempt in range(max_retries):
+        try:
+            return fn()
+        except transient_errors as exc:
+            if attempt + 1 >= max_retries:
+                raise
+            logger.warning(
+                "%s failed (%s), resetting DB connection (%s/%s)",
+                label,
+                exc,
+                attempt + 1,
+                max_retries,
+            )
+            _release_task_db_connection()
+
+
+def _get_epg_source(source_id):
+    return _db_query_with_retry(
+        lambda: EPGSource.objects.get(id=source_id),
+        label=f"load EPG source {source_id}",
+    )
+
+
+def _set_epg_source_status(
+    source_id,
+    status,
+    last_message=None,
+    *,
+    notify_error=False,
+    ws_action="refresh",
+    ws_error=None,
+):
+    """Update source status using a fresh connection (safe after DB failures)."""
+    _release_task_db_connection()
+    update = {"status": status}
+    if last_message is not None:
+        update["last_message"] = last_message
+    try:
+        EPGSource.objects.filter(id=source_id).update(**update)
+        if notify_error:
+            send_epg_update(
+                source_id,
+                ws_action,
+                100,
+                status="error",
+                error=ws_error or last_message,
+            )
+    except Exception as e:
+        logger.error(
+            f"Failed to set EPG source {source_id} status to {status}: {e}"
+        )
+
+
+def _ensure_epg_refresh_terminal_status(source_id):
+    """Mark refresh as failed when the task exits while still in progress."""
+    _release_task_db_connection()
+    try:
+        current_status = (
+            EPGSource.objects.filter(id=source_id)
+            .values_list("status", flat=True)
+            .first()
+        )
+        if current_status in _NON_TERMINAL_REFRESH_STATUSES:
+            message = "Refresh did not complete successfully"
+            EPGSource.objects.filter(id=source_id).update(
+                status=EPGSource.STATUS_ERROR,
+                last_message=message,
+            )
+            send_epg_update(
+                source_id, "refresh", 100, status="error", error=message
+            )
+    except Exception as e:
+        logger.debug(
+            f"Could not verify terminal refresh status for EPG source {source_id}: {e}"
+        )
+
 
 SD_BASE_URL = 'https://json.schedulesdirect.org/20141201'
 SD_DAYS_TO_FETCH = 20
@@ -498,102 +597,90 @@ def refresh_epg_data(source_id, force=False):
     lock_renewer = TaskLockRenewer('refresh_epg_data', source_id)
     lock_renewer.start()
 
-    source = None
+    _release_task_db_connection()
+
     try:
-        # Try to get the EPG source
-        try:
-            source = EPGSource.objects.get(id=source_id)
-        except EPGSource.DoesNotExist:
-            # The EPG source doesn't exist, so delete the periodic task if it exists
-            logger.warning(f"EPG source with ID {source_id} not found, but task was triggered. Cleaning up orphaned task.")
-
-            # Call the shared function to delete the task
-            if delete_epg_refresh_task_by_id(source_id):
-                logger.info(f"Successfully cleaned up orphaned task for EPG source {source_id}")
-            else:
-                logger.info(f"No orphaned task found for EPG source {source_id}")
-
-            # Release the lock and exit
-            lock_renewer.stop()
-            release_task_lock('refresh_epg_data', source_id)
-            # Force garbage collection before exit
-            gc.collect()
-            return f"EPG source {source_id} does not exist, task cleaned up"
-
-        # The source exists but is not active, just skip processing
-        if not source.is_active:
-            logger.info(f"EPG source {source_id} is not active. Skipping.")
-            lock_renewer.stop()
-            release_task_lock('refresh_epg_data', source_id)
-            # Force garbage collection before exit
-            gc.collect()
-            return
-
-        # Skip refresh for dummy EPG sources - they don't need refreshing
-        if source.source_type == 'dummy':
-            logger.info(f"Skipping refresh for dummy EPG source {source.name} (ID: {source_id})")
-            lock_renewer.stop()
-            release_task_lock('refresh_epg_data', source_id)
-            gc.collect()
-            return
-
-        # Continue with the normal processing...
-        logger.info(f"Processing EPGSource: {source.name} (type: {source.source_type})")
-        if source.source_type == 'xmltv':
-            # Invalidate the byte-offset index before downloading the new file
-            # so stale offsets are never used during the refresh window.
-            EPGSource.objects.filter(id=source.id).update(programme_index=None)
-            fetch_success = fetch_xmltv(source)
-            if not fetch_success:
-                logger.error(f"Failed to fetch XMLTV for source {source.name}")
-                lock_renewer.stop()
-                release_task_lock('refresh_epg_data', source_id)
-                # Force garbage collection before exit
-                gc.collect()
-                return
-
-            parse_channels_success = parse_channels_only(source)
-            if not parse_channels_success:
-                logger.error(f"Failed to parse channels for source {source.name}")
-                lock_renewer.stop()
-                release_task_lock('refresh_epg_data', source_id)
-                # Force garbage collection before exit
-                gc.collect()
-                return
-
-            # Build byte-offset index after programme data is committed so refresh
-            # does not compete for memory/IO during the programme swap.
-            parse_programs_for_source(source)
-            build_programme_index_task.delay(source.id)
-
-        elif source.source_type == 'schedules_direct':
-            fetch_schedules_direct(source, force=force)
-
-        source.save(update_fields=['updated_at'])
-        # After successful EPG refresh, evaluate DVR series rules to schedule new episodes
-        try:
-            from apps.channels.tasks import evaluate_series_rules
-            evaluate_series_rules.delay()
-        except Exception:
-            pass
+        return _refresh_epg_data_impl(source_id, force=force)
     except Exception as e:
-        logger.error(f"Error in refresh_epg_data for source {source_id}: {e}", exc_info=True)
-        try:
-            if source:
-                source.status = 'error'
-                source.last_message = f"Error refreshing EPG data: {str(e)}"
-                source.save(update_fields=['status', 'last_message'])
-                send_epg_update(source_id, "refresh", 100, status="error", error=str(e))
-        except Exception as inner_e:
-            logger.error(f"Error updating source status: {inner_e}")
+        logger.error(
+            f"Error in refresh_epg_data for source {source_id}: {e}",
+            exc_info=True,
+        )
+        _set_epg_source_status(
+            source_id,
+            EPGSource.STATUS_ERROR,
+            f"Error refreshing EPG data: {str(e)[:500]}",
+            notify_error=True,
+            ws_error=str(e)[:500],
+        )
     finally:
-        # Clear references to ensure proper garbage collection
-        source = None
-        # Force garbage collection before releasing the lock
+        _ensure_epg_refresh_terminal_status(source_id)
+        _release_task_db_connection()
         gc.collect()
-        connection.close()
         lock_renewer.stop()
         release_task_lock('refresh_epg_data', source_id)
+
+
+def _refresh_epg_data_impl(source_id, force=False):
+    try:
+        source = _get_epg_source(source_id)
+    except EPGSource.DoesNotExist:
+        logger.warning(
+            f"EPG source with ID {source_id} not found, but task was triggered. "
+            "Cleaning up orphaned task."
+        )
+
+        if delete_epg_refresh_task_by_id(source_id):
+            logger.info(
+                f"Successfully cleaned up orphaned task for EPG source {source_id}"
+            )
+        else:
+            logger.info(f"No orphaned task found for EPG source {source_id}")
+
+        return f"EPG source {source_id} does not exist, task cleaned up"
+
+    if not source.is_active:
+        logger.info(f"EPG source {source_id} is not active. Skipping.")
+        return
+
+    if source.source_type == 'dummy':
+        logger.info(
+            f"Skipping refresh for dummy EPG source {source.name} (ID: {source_id})"
+        )
+        return
+
+    logger.info(f"Processing EPGSource: {source.name} (type: {source.source_type})")
+    if source.source_type == 'xmltv':
+        # Invalidate the byte-offset index before downloading the new file
+        # so stale offsets are never used during the refresh window.
+        EPGSourceIndex.objects.update_or_create(
+            source_id=source.id, defaults={'data': None}
+        )
+        if not fetch_xmltv(source):
+            logger.error(f"Failed to fetch XMLTV for source {source.name}")
+            return
+
+        if not parse_channels_only(source):
+            logger.error(f"Failed to parse channels for source {source.name}")
+            return
+
+        # Build byte-offset index after programme data is committed so refresh
+        # does not compete for memory/IO during the programme swap.
+        if not parse_programs_for_source(source):
+            logger.error(f"Failed to parse programs for source {source.name}")
+            return
+
+        build_programme_index_task.delay(source.id)
+
+    elif source.source_type == 'schedules_direct':
+        fetch_schedules_direct(source, force=force)
+
+    EPGSource.objects.filter(id=source.id).update(updated_at=timezone.now())
+    try:
+        from apps.channels.tasks import evaluate_series_rules
+        evaluate_series_rules.delay()
+    except Exception:
+        pass
 
 
 def fetch_xmltv(source):
@@ -1167,7 +1254,15 @@ def parse_channels_only(source):
                 # Update status to error
                 source.status = 'error'
                 source.last_message = f"No URL provided, cannot fetch EPG data"
-                source.save(update_fields=['updated_at'])
+                source.save(update_fields=['status', 'last_message'])
+                send_epg_update(
+                    source.id,
+                    "parsing_channels",
+                    100,
+                    status="error",
+                    error="No URL provided",
+                )
+                return False
 
         # Initialize process variable for memory tracking only in debug mode
         try:
@@ -4391,7 +4486,7 @@ def _programme_to_dict(elem, start_time, end_time):
 def build_programme_index(source_id):
     """
     Scan the XML file with raw binary I/O to build a {tvg_id: [byte_offset, ...]} map.
-    Persists the result to EPGSource.programme_index. Most XMLTV files group programmes
+    Persists the result to the EPGSourceIndex table. Most XMLTV files group programmes
     by channel, but some split a channel across multiple non-contiguous blocks, so we
     record block starts up to _OFFSET_CAP and mark only channels that exceed the cap
     as interleaved.
@@ -4480,7 +4575,9 @@ def build_programme_index(source_id):
         'channels': index,
         'interleaved_channels': sorted(interleaved_channels),
     }
-    EPGSource.objects.filter(id=source_id).update(programme_index=result)
+    EPGSourceIndex.objects.update_or_create(
+        source_id=source_id, defaults={'data': result}
+    )
 
 
 @shared_task
@@ -4527,9 +4624,8 @@ def find_current_program_for_tvg_id(epg_or_id):
         return None
 
     now = timezone.now()
-    # Force a fresh read of the DB-backed index to avoid using stale related-object
-    # state when an EPG refresh invalidates/rebuilds the index concurrently.
-    source.refresh_from_db(fields=['programme_index'])
+    # The property reads the EPGSourceIndex table fresh on each access, so a
+    # concurrent refresh invalidating/rebuilding the index can't serve stale state.
     index = source.programme_index
 
     if index is not None:

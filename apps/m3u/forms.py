@@ -1,6 +1,7 @@
 # apps/m3u/forms.py
 from django import forms
 from .models import M3UAccount, M3UFilter
+from core.utils import ensure_custom_properties_dict
 import re
 
 class M3UAccountForm(forms.ModelForm):
@@ -28,7 +29,9 @@ class M3UAccountForm(forms.ModelForm):
 
         # Set initial value for enable_vod from custom_properties
         if self.instance and self.instance.custom_properties:
-            custom_props = self.instance.custom_properties or {}
+            custom_props = self.instance.custom_properties
+            if not isinstance(custom_props, dict):
+                custom_props = ensure_custom_properties_dict(custom_props)
             self.fields['enable_vod'].initial = custom_props.get('enable_vod', False)
 
     def save(self, commit=True):
@@ -37,8 +40,9 @@ class M3UAccountForm(forms.ModelForm):
         # Handle enable_vod field
         enable_vod = self.cleaned_data.get('enable_vod', False)
 
-        # Parse existing custom_properties
         custom_props = instance.custom_properties or {}
+        if not isinstance(custom_props, dict):
+            custom_props = ensure_custom_properties_dict(custom_props)
 
         # Update VOD preference
         custom_props['enable_vod'] = enable_vod

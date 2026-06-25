@@ -1,8 +1,8 @@
 from unittest.mock import patch, MagicMock
 
-from django.test import TestCase
+from django.test import TestCase, SimpleTestCase
 
-from apps.epg.models import EPGSource
+from apps.epg.models import EPGSource, EPGSourceIndex
 from core.models import CoreSettings, DVR_SETTINGS_KEY, EPG_SETTINGS_KEY
 
 
@@ -37,14 +37,10 @@ class DispatcharrUserAgentTests(TestCase):
 
 class ProgrammeIndexRebuildTests(TestCase):
     def test_startup_rebuild_does_not_lock_out_queued_build_task(self):
-        EPGSource.objects.update(
-            programme_index={"channels": {}, "interleaved_channels": []}
-        )
         source = EPGSource.objects.create(
             name="Missing Index",
             source_type="xmltv",
             is_active=True,
-            programme_index=None,
         )
 
         class FakeRedis:
@@ -301,3 +297,14 @@ class DropDBCommandTlsTest(TestCase):
             host='localhost', port=5432,
             autocommit=True,
         )
+
+
+class MallocTrimTests(SimpleTestCase):
+    def test_trim_is_noop_when_libc_has_no_malloc_trim(self):
+        from core.utils import trim_c_allocator_heap
+
+        fake_libc = MagicMock(spec=[])
+        with patch('ctypes.util.find_library', return_value='libc.so.6'), patch(
+            'ctypes.CDLL', return_value=fake_libc
+        ):
+            self.assertFalse(trim_c_allocator_heap())

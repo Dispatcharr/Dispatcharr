@@ -121,7 +121,9 @@ class ProxySettingsSerializer(serializers.Serializer):
 
     def validate_channel_init_grace_period(self, value):
         if value < 0 or value > 60:
-            raise serializers.ValidationError("Channel init grace period must be between 0 and 60 seconds")
+            raise serializers.ValidationError(
+                "Channel initialization timeout must be between 0 and 60 seconds"
+            )
         return value
 
     def validate_new_client_behind_seconds(self, value):

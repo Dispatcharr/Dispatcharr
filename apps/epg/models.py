@@ -62,12 +62,6 @@ class EPGSource(models.Model):
         blank=True,
         help_text="Last status message, including success results or error information"
     )
-    programme_index = models.JSONField(
-        null=True,
-        blank=True,
-        default=None,
-        help_text="Byte-offset index mapping tvg_id to file positions, built after each EPG refresh"
-    )
     created_at = models.DateTimeField(
         auto_now_add=True,
         help_text="Time when this source was created"
@@ -124,6 +118,37 @@ class EPGSource(models.Model):
                 kwargs['update_fields'].remove('updated_at')
         super().save(*args, **kwargs)
 
+    @property
+    def programme_index(self):
+        """Byte-offset index for this source, read on demand from the separate
+        EPGSourceIndex table so the multi-MB blob is never pulled into EPGSource
+        queries or select_related JOINs. Returns the stored dict or None."""
+        return (
+            EPGSourceIndex.objects.filter(source_id=self.pk)
+            .values_list('data', flat=True)
+            .first()
+        )
+
+
+class EPGSourceIndex(models.Model):
+    """Byte-offset programme index for an EPGSource, stored in its own table.
+
+    Kept out of EPGSource so the multi-MB JSON blob is only loaded when read
+    explicitly, never when querying or joining EPGSource rows.
+    """
+    source = models.OneToOneField(
+        EPGSource,
+        on_delete=models.CASCADE,
+        related_name='index_record',
+        primary_key=True,
+    )
+    data = models.JSONField(null=True, blank=True, default=None)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"Programme index for source {self.source_id}"
+
+
 class EPGData(models.Model):
     tvg_id = models.CharField(max_length=255, null=True, blank=True, db_index=True)
     name = models.CharField(max_length=512)
@@ -152,6 +177,11 @@ class ProgramData(models.Model):
     tvg_id = models.CharField(max_length=255, null=True, blank=True)
     program_id = models.CharField(max_length=64, null=True, blank=True, help_text='Schedules Direct programID (e.g. EP123456789). Null for XMLTV sources.')
     custom_properties = models.JSONField(default=dict, blank=True, null=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=['epg', 'id'], name='epg_prog_epg_id_idx'),
+        ]
 
     def __str__(self):
         return f"{self.title} ({self.start_time} - {self.end_time})"

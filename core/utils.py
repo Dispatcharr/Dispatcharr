@@ -1,3 +1,4 @@
+import json
 import redis
 import logging
 import time
@@ -7,7 +8,6 @@ from pathlib import Path
 import re
 from django.conf import settings
 from redis.exceptions import ConnectionError, TimeoutError
-from django.core.cache import cache
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 from django.core.validators import URLValidator
@@ -70,6 +70,46 @@ def natural_sort_key(text):
         return int(chunk) if chunk.isdigit() else chunk.lower()
 
     return [convert(c) for c in re.split('([0-9]+)', text)]
+
+
+def custom_properties_as_dict(value):
+    """
+    Normalize a JSONField-backed custom_properties value into a dict.
+
+    Historical rows (TextField era and early JSONField migration) may store a
+    JSON-encoded string instead of an object. API clients can also submit a
+    string value because JSONField accepts any JSON type. Call this before
+    reading or merging custom_properties.
+    """
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except (ValueError, TypeError):
+            logger.warning(
+                "custom_properties stored as non-JSON string; ignoring: %r",
+                value[:100],
+            )
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    if value is None:
+        return {}
+    return {}
+
+
+def ensure_custom_properties_dict(value):
+    """
+    Return a dict for read/merge/bulk-write paths. Dict values pass through
+    without re-parsing. Use model ``save()`` (not this) as the canonical
+    normalizer for ORM writes that go through ``save()``.
+    """
+    if isinstance(value, dict):
+        return value
+    if value is None:
+        return {}
+    return custom_properties_as_dict(value)
+
 
 class RedisClient:
     _client = None
@@ -506,6 +546,25 @@ def monitor_memory_usage(func):
         return result
     return wrapper
 
+def trim_c_allocator_heap():
+    """Return unused C heap pages to the OS where supported (glibc malloc_trim)."""
+    try:
+        import ctypes
+        import ctypes.util
+
+        libc_name = ctypes.util.find_library("c")
+        if not libc_name:
+            return False
+        libc = ctypes.CDLL(libc_name)
+        if not hasattr(libc, "malloc_trim"):
+            return False
+        libc.malloc_trim(0)
+        return True
+    except Exception:
+        logger.debug("malloc_trim unavailable or failed", exc_info=True)
+        return False
+
+
 def cleanup_memory(log_usage=False, force_collection=True):
     """
     Comprehensive memory cleanup function to reduce memory footprint
@@ -548,6 +607,30 @@ def cleanup_memory(log_usage=False, force_collection=True):
         except (ImportError, Exception):
             pass
     logger.trace("Memory cleanup complete for django")
+
+
+def spawn_memory_trim(close_connections=False):
+    """Reclaim a request's heap pages: GC, then return freed C pages to the OS.
+
+    On gevent uWSGI workers the trim runs in a spawned greenlet so it never
+    blocks the caller; Celery prefork workers (no gevent hub) run it inline.
+    Set close_connections=True when called from a streaming generator's teardown
+    so the pooled DB connection is released first.
+    """
+    def _run():
+        cleanup_memory(force_collection=True)
+        trim_c_allocator_heap()
+
+    if close_connections:
+        from django.db import close_old_connections
+        close_old_connections()
+
+    if _is_gevent_monkey_patched():
+        import gevent
+        gevent.spawn(_run)
+    else:
+        _run()
+
 
 def safe_upload_path(filename: str, base_dir) -> str:
     """Return a safe absolute path for an uploaded file within base_dir.
