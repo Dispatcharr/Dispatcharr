@@ -19,7 +19,7 @@ from django.utils import timezone as django_timezone
 
 from apps.channels.models import Channel, ChannelProfile, Stream
 from apps.channels.utils import format_channel_number
-from apps.epg.models import ProgramData
+from apps.epg.models import ProgramData, EPGSource
 from apps.output.streaming_chunk_cache import stream_cached_response
 from core.utils import build_absolute_uri_with_port, log_system_event
 
@@ -1170,7 +1170,9 @@ def generate_epg(request, profile_name=None, user=None):
             .exclude(hidden_from_output=True)
             .order_by("effective_channel_number")
             .prefetch_related(
-                Prefetch('streams', queryset=Stream.objects.only('id', 'name').order_by('channelstream__order'))
+                Prefetch('streams', queryset=Stream.objects.only('id', 'name').order_by('channelstream__order')),
+                Prefetch('epg_data__epg_source', queryset=EPGSource.objects.only('id', 'source_type', 'custom_properties')),
+                Prefetch('override__epg_data__epg_source', queryset=EPGSource.objects.only('id', 'source_type', 'custom_properties')),
             )
         )
         channel_count = len(channels)
