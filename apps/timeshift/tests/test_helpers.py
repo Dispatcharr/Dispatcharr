@@ -1,5 +1,7 @@
 """Tests for `apps.timeshift.helpers`: timestamp shape conversion and URL build."""
 
+from datetime import datetime, timezone
+
 from django.test import TestCase
 
 from apps.timeshift.helpers import (
@@ -8,8 +10,12 @@ from apps.timeshift.helpers import (
     build_timeshift_url_format_a,
     build_timeshift_url_format_b,
     convert_timestamp_to_provider_tz,
+    format_timestamp_as_colon_dash,
+    format_timestamp_as_colon_seconds,
     format_timestamp_as_sql_datetime,
     format_timestamp_as_underscore,
+    normalize_catchup_timestamp_input,
+    parse_catchup_timestamp,
 )
 
 
@@ -21,6 +27,87 @@ def _make_creds():
 
 class TimestampFormatTests(TestCase):
     """Timestamp reshape functions change format only; no timezone conversion."""
+
+    def test_normalize_colon_dash_shape(self):
+        self.assertEqual(
+            normalize_catchup_timestamp_input("2026-05-21:12-55"),
+            "2026-05-21T12:55:00",
+        )
+
+    def test_normalize_colon_seconds_xc_format(self):
+        self.assertEqual(
+            normalize_catchup_timestamp_input("2026-06-23:04:00:00"),
+            "2026-06-23T04:00:00",
+        )
+
+    def test_normalize_epg_sql_format(self):
+        self.assertEqual(
+            normalize_catchup_timestamp_input("2026-06-23 04:00:00"),
+            "2026-06-23T04:00:00",
+        )
+
+    def test_normalize_unix_epoch_seconds(self):
+        epoch = str(int(datetime(2026, 6, 23, 4, 0, 0, tzinfo=timezone.utc).timestamp()))
+        self.assertEqual(
+            normalize_catchup_timestamp_input(epoch),
+            "2026-06-23T04:00:00",
+        )
+
+    def test_normalize_unix_epoch_milliseconds(self):
+        epoch_ms = str(
+            int(datetime(2026, 6, 23, 4, 0, 0, tzinfo=timezone.utc).timestamp() * 1000)
+        )
+        self.assertEqual(
+            normalize_catchup_timestamp_input(epoch_ms),
+            "2026-06-23T04:00:00",
+        )
+
+    def test_normalize_rejects_garbage(self):
+        self.assertIsNone(normalize_catchup_timestamp_input("garbage"))
+        self.assertIsNone(normalize_catchup_timestamp_input(""))
+        self.assertIsNone(normalize_catchup_timestamp_input("12345"))
+
+    def test_parse_rejects_invalid_calendar_date(self):
+        self.assertIsNone(parse_catchup_timestamp("2026-13-45:04-00"))
+
+    def test_parse_colon_dash_format(self):
+        dt = parse_catchup_timestamp("2026-05-21:12-55")
+        self.assertEqual(dt, datetime(2026, 5, 21, 12, 55, 0))
+
+    def test_parse_underscore_format(self):
+        dt = parse_catchup_timestamp("2026-05-21_12-55")
+        self.assertEqual(dt, datetime(2026, 5, 21, 12, 55, 0))
+
+    def test_parse_colon_minutes_without_seconds(self):
+        dt = parse_catchup_timestamp("2026-06-23:04:00")
+        self.assertEqual(dt, datetime(2026, 6, 23, 4, 0, 0))
+
+    def test_parse_colon_seconds_xc_format(self):
+        dt = parse_catchup_timestamp("2026-06-23:04:00:00")
+        self.assertEqual(dt, datetime(2026, 6, 23, 4, 0, 0))
+
+    def test_parse_epg_sql_format(self):
+        dt = parse_catchup_timestamp("2026-06-23 04:00:00")
+        self.assertEqual(dt, datetime(2026, 6, 23, 4, 0, 0))
+
+    def test_format_colon_dash_from_colon_seconds(self):
+        self.assertEqual(
+            format_timestamp_as_colon_dash("2026-06-23:04:00:00"),
+            "2026-06-23:04-00",
+        )
+
+    def test_format_colon_seconds_from_colon_dash(self):
+        self.assertEqual(
+            format_timestamp_as_colon_seconds("2026-06-23:04-00"),
+            "2026-06-23:04:00:00",
+        )
+
+    def test_format_colon_seconds_from_unix_epoch(self):
+        epoch = str(int(datetime(2026, 6, 23, 4, 0, 0, tzinfo=timezone.utc).timestamp()))
+        self.assertEqual(
+            format_timestamp_as_colon_dash(epoch),
+            "2026-06-23:04-00",
+        )
 
     def test_format_sql_reshapes_without_tz_conversion(self):
         self.assertEqual(
@@ -110,6 +197,14 @@ class CandidateOrderingTests(TestCase):
         # Canonical colon-dash timestamp, passed through unchanged.
         self.assertIn("/40/2026-05-12:19-00/22372.ts", urls[0])
 
+    def test_accepts_colon_seconds_input_timestamp(self):
+        urls = build_timeshift_candidate_urls(
+            self.creds, "22372", "2026-06-23:04:00:00", 40
+        )
+        self.assertTrue(self._is_path_form(urls[0]))
+        self.assertIn("/40/2026-06-23:04-00/22372.ts", urls[0])
+        self.assertIn("/40/2026-06-23:04:00:00/22372.ts", urls[2])
+
     def test_accepts_underscore_input_timestamp(self):
         # Client may send the underscore shape; PATH form still leads.
         urls = build_timeshift_candidate_urls(self.creds, "22372", "2026-05-12_19-00", 40)
@@ -164,6 +259,13 @@ class ConvertTimestampToProviderTzTests(TestCase):
         self.assertEqual(
             convert_timestamp_to_provider_tz("2026-06-08:17-00", "Mars/Phobos"),
             "2026-06-08:17-00",
+        )
+
+    def test_utc_to_brussels_from_unix_epoch(self):
+        epoch = str(int(datetime(2026, 6, 8, 17, 0, 0, tzinfo=timezone.utc).timestamp()))
+        self.assertEqual(
+            convert_timestamp_to_provider_tz(epoch, "Europe/Brussels"),
+            "2026-06-08:19-00",
         )
 
     def test_garbage_timestamp_passthrough(self):

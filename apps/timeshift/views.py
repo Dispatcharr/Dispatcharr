@@ -53,7 +53,8 @@ def timeshift_proxy(request, username, password, stream_id, timestamp, duration)
     URL shape (iPlayTV / TiviMate):
         ``stream_id``: EPG channel number (ignored here).
         ``duration``: Dispatcharr ``Channel.id`` (XC API exposes channel.id as stream_id).
-        ``timestamp``: UTC programme start (``YYYY-MM-DD:HH-MM``).
+        ``timestamp``: UTC programme start (``YYYY-MM-DD:HH-MM`` or XC colon form
+            ``YYYY-MM-DD:HH:MM:SS``).
     """
     raw_id = duration[:-3] if duration.endswith(".ts") else duration
 

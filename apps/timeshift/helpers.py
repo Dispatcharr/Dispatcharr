@@ -1,6 +1,7 @@
 """URL builders and timestamp helpers for XC catch-up."""
 
 import logging
+import re
 from collections import namedtuple
 from datetime import datetime, timezone
 from urllib.parse import quote
@@ -17,23 +18,97 @@ DEFAULT_DURATION_MINUTES = 120
 DURATION_BUFFER_MINUTES = 5
 MAX_DURATION_MINUTES = 480
 
+# Wall-clock shapes seen from XC / iPlayTV / TiviMate clients. Compiled once.
+_CATCHUP_WALL_CLOCK_RE = re.compile(
+    r"^"
+    r"(?P<date>\d{4}-\d{2}-\d{2})"
+    r"(?P<dtsep>[:_]| )"
+    r"(?P<hour>\d{2})"
+    r"(?P<hmsep>[-:])"
+    r"(?P<minute>\d{2})"
+    r"(?:"
+    r":"
+    r"(?P<second>\d{2})"
+    r")?"
+    r"$"
+)
+
+
+def normalize_catchup_timestamp_input(timestamp_str):
+    """Map a client catch-up timestamp to an ISO-8601 string for ``fromisoformat``.
+
+    Supported inputs:
+        - ``YYYY-MM-DD:HH-MM`` (iPlayTV/TiviMate colon-dash)
+        - ``YYYY-MM-DD_HH-MM`` (XC underscore)
+        - ``YYYY-MM-DD:HH:MM[:SS]`` (XC colon time in catch-up URLs)
+        - ``YYYY-MM-DD HH:MM[:SS]`` (EPG / SQL datetime)
+        - Unix epoch seconds (10 digits) or milliseconds (13 digits)
+
+    Returns:
+        An ISO-8601 date-time string (``YYYY-MM-DDTHH:MM:SS``), or None if
+        the value does not match a known catch-up shape.
+    """
+    if timestamp_str is None:
+        return None
+    if not isinstance(timestamp_str, str):
+        timestamp_str = str(timestamp_str)
+    value = timestamp_str.strip()
+    if not value:
+        return None
+
+    if value.isdigit():
+        length = len(value)
+        if length == 10:
+            dt = datetime.fromtimestamp(int(value), tz=timezone.utc)
+            return dt.replace(tzinfo=None).isoformat(timespec="seconds")
+        if length == 13:
+            dt = datetime.fromtimestamp(int(value) / 1000, tz=timezone.utc)
+            return dt.replace(tzinfo=None).isoformat(timespec="seconds")
+        return None
+
+    match = _CATCHUP_WALL_CLOCK_RE.match(value)
+    if not match:
+        return None
+
+    parts = match.groupdict()
+    second = parts["second"] or "00"
+    return f"{parts['date']}T{parts['hour']}:{parts['minute']}:{second}"
+
 
 def parse_catchup_timestamp(timestamp_str):
-    """Parse a catch-up timestamp string.
+    """Parse a catch-up timestamp string into a naive UTC wall-clock datetime.
 
-    Args:
-        timestamp_str: ``YYYY-MM-DD:HH-MM`` (iPlayTV/TiviMate) or
-            ``YYYY-MM-DD_HH-MM`` (XC underscore form).
+    See ``normalize_catchup_timestamp_input`` for supported input shapes.
 
     Returns:
         A naive datetime on success, or None.
     """
-    for fmt in ("%Y-%m-%d:%H-%M", "%Y-%m-%d_%H-%M"):
-        try:
-            return datetime.strptime(timestamp_str, fmt)
-        except ValueError:
-            continue
-    return None
+    iso_value = normalize_catchup_timestamp_input(timestamp_str)
+    if iso_value is None:
+        if timestamp_str is not None and str(timestamp_str).strip():
+            logger.debug(
+                "Timeshift: unrecognised catch-up timestamp: %r", timestamp_str
+            )
+        return None
+    try:
+        return datetime.fromisoformat(iso_value)
+    except ValueError:
+        logger.debug(
+            "Timeshift: invalid catch-up timestamp after normalize: %r -> %r",
+            timestamp_str,
+            iso_value,
+        )
+        return None
+
+
+def _reshape_timestamp(timestamp, strftime_fmt, label):
+    dt = parse_catchup_timestamp(timestamp)
+    if dt is None:
+        logger.error(
+            "Timeshift %s reshape failed for %r: unrecognised format", label, timestamp
+        )
+        return timestamp
+    return dt.strftime(strftime_fmt)
 
 
 def convert_timestamp_to_provider_tz(timestamp_str, provider_tz_name):
@@ -135,30 +210,43 @@ def build_timeshift_candidate_urls(creds, stream_id, timestamp, duration_minutes
         List of URL strings to try in order. QUERY forms are last because some
         providers return live TV even when ``start`` is set.
     """
-    underscore_ts = format_timestamp_as_underscore(timestamp)
-    sql_ts = format_timestamp_as_sql_datetime(timestamp)
+    dt = parse_catchup_timestamp(timestamp)
+    if dt is None:
+        colon_dash_ts = timestamp
+        underscore_ts = timestamp
+        colon_seconds_ts = timestamp
+        sql_ts = timestamp
+    else:
+        colon_dash_ts = dt.strftime("%Y-%m-%d:%H-%M")
+        underscore_ts = dt.strftime("%Y-%m-%d_%H-%M")
+        colon_seconds_ts = dt.strftime("%Y-%m-%d:%H:%M:%S")
+        sql_ts = dt.strftime("%Y-%m-%d %H:%M:%S")
     return [
-        build_timeshift_url_format_b(creds, stream_id, timestamp, duration_minutes),
+        build_timeshift_url_format_b(creds, stream_id, colon_dash_ts, duration_minutes),
         build_timeshift_url_format_b(creds, stream_id, underscore_ts, duration_minutes),
+        build_timeshift_url_format_b(creds, stream_id, colon_seconds_ts, duration_minutes),
         build_timeshift_url_format_a(creds, stream_id, underscore_ts, duration_minutes),
         build_timeshift_url_format_a(creds, stream_id, sql_ts, duration_minutes),
-        build_timeshift_url_format_a(creds, stream_id, timestamp, duration_minutes),
+        build_timeshift_url_format_a(creds, stream_id, colon_dash_ts, duration_minutes),
+        build_timeshift_url_format_a(creds, stream_id, colon_seconds_ts, duration_minutes),
     ]
+
+
+def format_timestamp_as_colon_dash(timestamp):
+    """Reshape to ``YYYY-MM-DD:HH-MM`` without timezone conversion."""
+    return _reshape_timestamp(timestamp, "%Y-%m-%d:%H-%M", "colon-dash")
+
+
+def format_timestamp_as_colon_seconds(timestamp):
+    """Reshape to ``YYYY-MM-DD:HH:MM:SS`` without timezone conversion."""
+    return _reshape_timestamp(timestamp, "%Y-%m-%d:%H:%M:%S", "colon-seconds")
 
 
 def format_timestamp_as_underscore(timestamp):
     """Reshape to ``YYYY-MM-DD_HH-MM`` without timezone conversion."""
-    dt = parse_catchup_timestamp(timestamp)
-    if dt is None:
-        logger.error("Timeshift underscore reshape failed for %r: unrecognised format", timestamp)
-        return timestamp
-    return dt.strftime("%Y-%m-%d_%H-%M")
+    return _reshape_timestamp(timestamp, "%Y-%m-%d_%H-%M", "underscore")
 
 
 def format_timestamp_as_sql_datetime(timestamp):
     """Reshape to ``YYYY-MM-DD HH:MM:SS`` without timezone conversion."""
-    dt = parse_catchup_timestamp(timestamp)
-    if dt is None:
-        logger.error("Timeshift SQL timestamp reshape failed for %r: unrecognised format", timestamp)
-        return timestamp
-    return dt.strftime("%Y-%m-%d %H:%M:%S")
+    return _reshape_timestamp(timestamp, "%Y-%m-%d %H:%M:%S", "SQL")

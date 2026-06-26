@@ -389,6 +389,13 @@ class TimeshiftProxyTimestampWiringTests(TestCase):
         _, _, build_mock, _, _ = self._call("2026-06-08:17-00", provider_tz="UTC")
         self.assertEqual(build_mock.call_args[0][2], "2026-06-08:17-00")
 
+    def test_colon_seconds_timestamp_accepted(self):
+        response, sentinel, build_mock, duration_mock, _ = self._call(
+            "2026-06-23:04:00:00"
+        )
+        self.assertIs(response, sentinel)
+        self.assertEqual(duration_mock.call_args[0][1], "2026-06-23:04:00:00")
+
     def test_invalid_timestamp_rejected_before_upstream(self):
         request = self.factory.get("/timeshift/u/p/8/garbage/8.ts")
         with patch.object(views, "_authenticate_user", return_value=MagicMock()), \
