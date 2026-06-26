@@ -133,7 +133,7 @@ class TSConfig(BaseConfig):
 
     @classmethod
     def get_channel_init_grace_period(cls):
-        """Get channel init grace period from database or default"""
+        """Max seconds to wait for initial buffer fill during channel startup."""
         settings = cls.get_proxy_settings()
         return settings.get("channel_init_grace_period", 5)
 

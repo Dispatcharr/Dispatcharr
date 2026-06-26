@@ -16,6 +16,20 @@ import {
   savePlayerPrefs,
 } from '../utils/components/FloatingVideoUtils.js';
 
+// Native <video src> cannot send Authorization headers. Append ?token= at playback
+// time (not when building the URL in cards/modals) so the JWT is fresh. hls.js
+// paths authenticate via xhrSetup instead and do not need this helper.
+const withRecordingAuthToken = (url) => {
+  if (!url || typeof url !== 'string') return url;
+  if (!url.includes('/api/channels/recordings/')) return url;
+  const token = useAuthStore.getState().accessToken;
+  if (!token) return url;
+  const [base, query = ''] = url.split('?');
+  const params = new URLSearchParams(query);
+  params.set('token', token);
+  return `${base}?${params.toString()}`;
+};
+
 const ResizeHandles = ({ startResize }) => {
   const HANDLE_SIZE = 18;
   const HANDLE_OFFSET = 0;
@@ -333,72 +347,75 @@ export default function FloatingVideo() {
     let hls = null;
 
     if (isHls && Hls.isSupported()) {
-      hls = new Hls({
-        // Open at the very beginning of the recording rather than the live
-        // edge.  Without this, an in-progress recording would start at "now"
-        // and hide everything already recorded.  hls.js applies this AFTER
-        // MEDIA_ATTACHED, so the listener-driven `seekToStart()` above is
-        // also kept as a safety net for the Safari native-HLS path and for
-        // edge cases where this initial-position logic loses to the user's
-        // first interaction.
-        startPosition: 0,
-        // Allow seeking back to the start of the recording, regardless of
-        // current playhead position.  Recordings can be hours long and the
-        // user may want to scrub anywhere; we explicitly disable buffer
-        // eviction by setting a very large back-buffer length.
-        backBufferLength: 90 * 60, // 90 minutes
-        maxBufferLength: 60,
-        maxMaxBufferLength: 600,
-        // For an in-progress recording, hls.js refreshes the playlist on
-        // its target-duration cadence; let it follow the live edge but keep
-        // the full DVR window seekable.
-        liveSyncDurationCount: 3,
-        liveMaxLatencyDurationCount: 10,
-        enableWorker: true,
-        lowLatencyMode: false,
-        // Inject the JWT into every playlist + segment XHR.  Read the token
-        // from the auth store at request time rather than capturing the
-        // closure value at hls.js init, so a refreshed access token mid-
-        // playback is picked up on the next segment fetch.
-        xhrSetup: (xhr) => {
-          const token = useAuthStore.getState().accessToken;
-          if (token) {
-            xhr.setRequestHeader('Authorization', `Bearer ${token}`);
-          }
-        },
-      });
-      hls.on(Hls.Events.ERROR, (_evt, data) => {
-        if (data.fatal) {
-          // eslint-disable-next-line no-console
-          console.error('HLS fatal error:', data.type, data.details);
-          if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
-            try {
-              hls.startLoad();
-            } catch {
-              // ignore
+      try {
+        hls = new Hls({
+          // Open at the very beginning of the recording rather than the live
+          // edge.  Without this, an in-progress recording would start at "now"
+          // and hide everything already recorded.  hls.js applies this AFTER
+          // MEDIA_ATTACHED, so the listener-driven `seekToStart()` above is
+          // also kept as a safety net for the Safari native-HLS path and for
+          // edge cases where this initial-position logic loses to the user's
+          // first interaction.
+          startPosition: 0,
+          // Allow seeking back to the start of the recording, regardless of
+          // current playhead position.  Recordings can be hours long and the
+          // user may want to scrub anywhere; we explicitly disable buffer
+          // eviction by setting a very large back-buffer length.
+          backBufferLength: 90 * 60, // 90 minutes
+          maxBufferLength: 60,
+          maxMaxBufferLength: 600,
+          // Leave liveMaxLatencyDurationCount at the hls.js default (Infinity).
+          // A finite value forces the playhead to the live edge during playback.
+          enableWorker: true,
+          lowLatencyMode: false,
+          // Inject the JWT into every playlist + segment XHR.  Read the token
+          // from the auth store at request time rather than capturing the
+          // closure value at hls.js init, so a refreshed access token mid-
+          // playback is picked up on the next segment fetch.
+          xhrSetup: (xhr) => {
+            const token = useAuthStore.getState().accessToken;
+            if (token) {
+              xhr.setRequestHeader('Authorization', `Bearer ${token}`);
             }
-          } else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
-            try {
-              hls.recoverMediaError();
-            } catch {
-              // ignore
+          },
+        });
+        hls.on(Hls.Events.ERROR, (_evt, data) => {
+          if (data.fatal) {
+            // eslint-disable-next-line no-console
+            console.error('HLS fatal error:', data.type, data.details);
+            if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
+              try {
+                hls.startLoad();
+              } catch {
+                // ignore
+              }
+            } else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
+              try {
+                hls.recoverMediaError();
+              } catch {
+                // ignore
+              }
+            } else {
+              setLoadError(`HLS playback error: ${data.details || data.type}`);
             }
-          } else {
-            setLoadError(`HLS playback error: ${data.details || data.type}`);
           }
-        }
-      });
-      hls.attachMedia(video);
-      hls.on(Hls.Events.MEDIA_ATTACHED, () => {
-        hls.loadSource(streamUrl);
-      });
+        });
+        hls.attachMedia(video);
+        hls.on(Hls.Events.MEDIA_ATTACHED, () => {
+          hls.loadSource(streamUrl);
+        });
+      } catch (error) {
+        setIsLoading(false);
+        setLoadError(`HLS initialization error: ${error.message}`);
+        return;
+      }
     } else if (isHls && video.canPlayType('application/vnd.apple.mpegurl')) {
       // Safari path: native HLS support, including seekable DVR windows.
-      video.src = streamUrl;
+      video.src = withRecordingAuthToken(streamUrl);
       video.load();
     } else {
       // Plain progressive file (MKV/MP4): native HTML5.
-      video.src = streamUrl;
+      video.src = withRecordingAuthToken(streamUrl);
       video.load();
     }
 

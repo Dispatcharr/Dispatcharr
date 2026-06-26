@@ -159,8 +159,8 @@ class StreamGenerator:
                     return "client_gone"
 
         elapsed = time.time() - initialization_start
-        connection_timeout = getattr(Config, 'CONNECTION_TIMEOUT', 10)
-        if elapsed < connection_timeout or not proxy_server.redis_client:
+        init_grace_period = ConfigHelper.channel_init_grace_period()
+        if elapsed < init_grace_period or not proxy_server.redis_client:
             return None
 
         metadata_key = RedisKeys.channel_metadata(self.channel_id)
@@ -204,7 +204,7 @@ class StreamGenerator:
                 logger.warning(
                     f"[{self.client_id}] Channel {self.channel_id} stalled in connecting state "
                     f"with no buffer data after "
-                    f"{getattr(Config, 'CONNECTION_TIMEOUT', 10)}s, aborting init wait"
+                    f"{ConfigHelper.channel_init_grace_period()}s, aborting init wait"
                 )
                 yield create_ts_packet('error', "Error: Connection stalled")
                 return False
