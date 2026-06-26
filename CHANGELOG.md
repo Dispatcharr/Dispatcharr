@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **XC catch-up (timeshift) support**. Adds a native `/timeshift/{user}/{pass}/{stream_id}/{timestamp}/{duration}.ts` endpoint that proxies replay sessions from an Xtream Codes provider to clients such as iPlayTV (Apple TV) and TiviMate. Auth reuses the same `xc_password` custom-property the live `/live/.../{id}.ts` endpoint already uses. Catch-up sessions appear on `/stats` with a violet `TIMESHIFT` badge alongside live sessions and respect per-channel access rules.
+  - **Catch-up flags** (`tv_archive`, `tv_archive_duration`) denormalized at import time for zero-cost output queries; the per-account rollup also self-heals channels left flagged with no remaining catch-up stream (e.g. after stale-stream cleanup on manual/multi-provider channels).
+  - **Strictly-UTC API surface, automatic per-provider timezone.** `server_info.timezone` is always `UTC` and the XC EPG `start`/`end` strings are emitted in UTC; the proxy converts the requested instant to the serving provider's own reported timezone (`server_info.timezone` captured on account refresh) at request time. No timezone to configure.
+  - **Multi-provider failover.** Catch-up walks the channel's catch-up streams in order (like live playback): if one provider cannot serve the archive the next is tried, each attempt with its own account context (credentials, reported timezone, user-agent). Accounts that fail with an auth/ban-class status are not retried via their other streams.
+  - **Provider pool accounting.** Catch-up reserves a provider profile slot (`connection_pool`) before connecting upstream — same contract as live and VOD — and releases it exactly once when the session ends (one-shot Redis token, covering disconnects before the first chunk). When the default profile is at capacity it walks the account's alternate profiles with their own resolved credentials, and answers `503` when every profile is full.
+  - **One catch-up session per user and channel.** A seek or programme jump displaces the user's previous session on the same channel: its provider slot is released synchronously and the old stream is stopped through the standard stop-key mechanism, so rapid seeking can't stack upstream provider connections.
+  - **Single setting**, `xmltv_prev_days_override`, under `Settings → Proxy Settings` (default `0` = auto-detect). Verbose timeshift logging follows the standard logger DEBUG level.
+  - **EPG XMLTV `prev_days` auto-detection** from the provider's largest `tv_archive_duration` (capped at 30 days), overridable via setting or `?prev_days=` URL parameter.
+  - **Byte path streams directly via `iter_content` + generator yield** (same pattern as the VOD proxy), with an upfront MPEG-TS sync peek that strips any PHP-warning preamble before bytes reach strict demuxers. Throughput stays comfortably above the typical 5 Mbps FHD bitrate so clients don't buffer.
+
 ## [0.27.1] - 2026-06-25
 
 ### Security
@@ -241,15 +253,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **None** (default): software decode.
   - **NVIDIA NVDEC (`--cuvid`)**: requires the NVIDIA container toolkit and a supported GPU inside the container.
   - **Intel Quick Sync (`--qsv`)**: requires an Intel iGPU or ARC GPU with the i915 driver exposed to the container.
-- **XC catch-up (timeshift) support**. Adds a native `/timeshift/{user}/{pass}/{stream_id}/{timestamp}/{duration}.ts` endpoint that proxies replay sessions from an Xtream Codes provider to clients such as iPlayTV (Apple TV) and TiviMate. Auth reuses the same `xc_password` custom-property the live `/live/.../{id}.ts` endpoint already uses. Catch-up sessions appear on `/stats` with a violet `TIMESHIFT` badge alongside live sessions and respect per-channel access rules.
-  - **Catch-up flags** (`tv_archive`, `tv_archive_duration`) denormalized at import time for zero-cost output queries; the per-account rollup also self-heals channels left flagged with no remaining catch-up stream (e.g. after stale-stream cleanup on manual/multi-provider channels).
-  - **Strictly-UTC API surface, automatic per-provider timezone.** `server_info.timezone` is always `UTC` and the XC EPG `start`/`end` strings are emitted in UTC; the proxy converts the requested instant to the serving provider's own reported timezone (`server_info.timezone` captured on account refresh) at request time. No timezone to configure.
-  - **Multi-provider failover.** Catch-up walks the channel's catch-up streams in order (like live playback): if one provider cannot serve the archive the next is tried, each attempt with its own account context (credentials, reported timezone, user-agent). Accounts that fail with an auth/ban-class status are not retried via their other streams.
-  - **Provider pool accounting.** Catch-up reserves a provider profile slot (`connection_pool`) before connecting upstream — same contract as live and VOD — and releases it exactly once when the session ends (one-shot Redis token, covering disconnects before the first chunk). When the default profile is at capacity it walks the account's alternate profiles with their own resolved credentials, and answers `503` when every profile is full.
-  - **One catch-up session per user and channel.** A seek or programme jump displaces the user's previous session on the same channel: its provider slot is released synchronously and the old stream is stopped through the standard stop-key mechanism, so rapid seeking can't stack upstream provider connections.
-  - **Single setting**, `xmltv_prev_days_override`, under `Settings → Proxy Settings` (default `0` = auto-detect). Verbose timeshift logging follows the standard logger DEBUG level.
-  - **EPG XMLTV `prev_days` auto-detection** from the provider's largest `tv_archive_duration` (capped at 30 days), overridable via setting or `?prev_days=` URL parameter.
-  - **Byte path streams directly via `iter_content` + generator yield** (same pattern as the VOD proxy), with an upfront MPEG-TS sync peek that strips any PHP-warning preamble before bytes reach strict demuxers. Throughput stays comfortably above the typical 5 Mbps FHD bitrate so clients don't buffer.
 - **HDHR output profile URL support.** HDHomeRun lineup URLs now support an `output_profile` path segment so HDHR clients (Plex, Channels DVR, Emby, etc.) can request a specific transcode profile without any query-parameter support. URL formats accepted:
   - `/hdhr/output_profile/<id>/lineup.json` - output profile only
   - `/hdhr/<channel_profile>/output_profile/<id>/lineup.json` - channel profile + output profile
