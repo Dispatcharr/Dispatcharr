@@ -1053,9 +1053,6 @@ def process_xc_category_direct(account_id, batch, groups, hash_keys):
                             name, url, tvg_id, hash_keys, m3u_id=account_id, group=group_title,
                             account_type='XC', stream_id=provider_stream_id
                         )
-                        # Derive denormalized catch-up fields from the XC
-                        # API response at import time so output views can
-                        # read them as zero-cost column reads.
                         _tv_archive = str(stream.get("tv_archive", "0"))
                         _is_catchup = _tv_archive in ("1", "True")
                         try:
@@ -1291,8 +1288,6 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys):
                 account_type=account_type_for_hash, stream_id=provider_stream_id
             )
 
-            # Derive catch-up fields from stream attributes (M3U files
-            # may carry tv_archive via custom attributes).
             _attrs = stream_info["attributes"]
             _tv_archive_m3u = str(_attrs.get("tv_archive", "0"))
             _is_catchup_m3u = _tv_archive_m3u in ("1", "True")
@@ -1890,23 +1885,7 @@ def _classify_sync_failure(exc):
 
 
 def rollup_channel_catchup_fields(account_id):
-    """Roll up denormalized catch-up fields from streams to channels.
-
-    Updates ``is_catchup`` and ``catchup_days`` on every Channel that has
-    at least one Stream belonging to *account_id* (auto-created or manually
-    assigned), then self-heals any channel left flagged with no catch-up
-    stream at all.
-
-    Called from the account-refresh pipeline after streams have been
-    written so that both new and existing channels reflect the current
-    ``tv_archive`` flags.  Intentionally separate from
-    ``sync_auto_channels`` because it applies to manual channels too and
-    has no dependency on auto-channel logic.
-
-    Uses a single-pass CTE (``bool_or`` + ``MAX``) instead of correlated
-    subqueries so the work stays O(channelstream rows for this account)
-    rather than O(channels * subqueries).
-    """
+    """Roll up catch-up flags from streams to channels (active accounts only)."""
     from django.db import connection
 
     with connection.cursor() as cur:
@@ -1914,12 +1893,11 @@ def rollup_channel_catchup_fields(account_id):
             WITH agg AS (
                 SELECT
                     cs.channel_id,
-                    bool_or(s.is_catchup)  AS any_catchup,
-                    -- Only catch-up streams contribute their archive depth:
-                    -- a non-catchup stream may carry a stale catchup_days value.
-                    MAX(s.catchup_days) FILTER (WHERE s.is_catchup) AS max_days
+                    bool_or(s.is_catchup AND a.is_active)  AS any_catchup,
+                    MAX(s.catchup_days) FILTER (WHERE s.is_catchup AND a.is_active) AS max_days
                 FROM dispatcharr_channels_channelstream cs
                 JOIN dispatcharr_channels_stream s ON s.id = cs.stream_id
+                JOIN m3u_m3uaccount a ON a.id = s.m3u_account_id
                 WHERE cs.channel_id IN (
                     SELECT DISTINCT cs2.channel_id
                     FROM dispatcharr_channels_channelstream cs2
@@ -1936,16 +1914,7 @@ def rollup_channel_catchup_fields(account_id):
             WHERE c.id = agg.channel_id
         """, [account_id])
 
-        # Self-heal: reset channels still flagged as catch-up that no longer
-        # have ANY catch-up stream. The CTE above only reaches channels that
-        # still hold at least one stream from this account, so a channel whose
-        # last stream was just removed (stale cleanup, manual unassignment)
-        # falls outside its scope. The ChannelStream post_delete signal
-        # normally resets those rows already — this pass guarantees the
-        # invariant regardless of how the link rows disappeared (raw SQL,
-        # signal-less bulk operations, historic staleness). Idempotent and
-        # cheap: ``is_catchup`` is indexed and TRUE on a small minority of
-        # channels.
+        # Self-heal stale is_catchup flags.
         cur.execute("""
             UPDATE dispatcharr_channels_channel c
             SET is_catchup = FALSE, catchup_days = 0
@@ -1954,7 +1923,10 @@ def rollup_channel_catchup_fields(account_id):
                   SELECT 1
                   FROM dispatcharr_channels_channelstream cs
                   JOIN dispatcharr_channels_stream s ON s.id = cs.stream_id
-                  WHERE cs.channel_id = c.id AND s.is_catchup = TRUE
+                  JOIN m3u_m3uaccount a ON a.id = s.m3u_account_id
+                  WHERE cs.channel_id = c.id
+                    AND s.is_catchup = TRUE
+                    AND a.is_active = TRUE
               )
         """)
 
@@ -3728,11 +3700,6 @@ def _refresh_single_m3u_account_impl(account_id):
                 f"Error running auto channel sync for account {account_id}: {str(e)}"
             )
 
-        # Roll up catch-up fields from streams to channels.  Runs after
-        # sync_auto_channels so new and existing channels both reflect the
-        # current tv_archive flags from the just-completed stream refresh.
-        # Covers manual channels too, so it lives here rather than inside
-        # sync_auto_channels which only manages auto-created channels.
         try:
             rollup_channel_catchup_fields(account_id)
             logger.debug(f"Catch-up field rollup complete for account {account_id}")
