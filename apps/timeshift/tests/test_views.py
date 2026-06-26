@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 from django.test import RequestFactory, TestCase, override_settings
 
 from apps.timeshift import views
-from apps.proxy.live_proxy.input.http_streamer import find_ts_sync as _find_ts_sync
+from apps.proxy.utils import find_ts_sync as _find_ts_sync
 
 
 class FindTsSyncTests(TestCase):
@@ -404,8 +404,7 @@ class TimeshiftProxyTimestampWiringTests(TestCase):
         stream_mock.assert_not_called()
 
     def test_network_access_denied_returns_403(self):
-        # Same network-level gate as the live XC endpoint: when the request's
-        # network is not allowed for STREAMS, nothing else runs.
+        # Same network gate as other XC API endpoints (player_api, xmltv, etc.).
         request = self.factory.get("/timeshift/u/p/8/2026-06-08:17-00/8.ts")
         with patch.object(views, "_authenticate_user", return_value=MagicMock()), \
              patch.object(views, "network_access_allowed", return_value=False) as gate, \
@@ -415,7 +414,7 @@ class TimeshiftProxyTimestampWiringTests(TestCase):
                 request, "u", "p", "8", "2026-06-08:17-00", "8.ts"
             )
         self.assertEqual(response.status_code, 403)
-        self.assertEqual(gate.call_args[0][1], "STREAMS")
+        self.assertEqual(gate.call_args[0][1], "XC_API")
         channel_cls.objects.get.assert_not_called()
         stream_mock.assert_not_called()
 

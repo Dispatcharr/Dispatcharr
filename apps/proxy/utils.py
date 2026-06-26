@@ -63,17 +63,10 @@ def attempt_stream_termination(user_id, requesting_client_id, active_connections
                 if result.get("status") == "error":
                     logger.warning(f"[stream limits][{requesting_client_id}] Failed to stop client {t['client_id']} on channel {t['media_id']}")
             elif t['type'] == 'timeshift':
-                # Timeshift uses the same Redis key pattern as live
-                # (RedisKeys.client_stop).  The stream_generator in
-                # apps/timeshift/views.py polls this key on its 5-second
-                # heartbeat cadence.
+                # Same Redis stop key as live; timeshift generator polls it every 5s.
                 redis_client = RedisClient.get_client()
                 if not redis_client:
-                    # Without Redis the stop key cannot be set, so the old
-                    # stream cannot be terminated.  Failing the whole attempt
-                    # is the safe outcome: the caller then denies the NEW
-                    # stream instead of letting the user exceed the provider's
-                    # connection limit (which escalates to an IP ban).
+                    # Deny the new stream if we cannot stop the old one.
                     return False
                 stop_key = RedisKeys.client_stop(t['media_id'], t['client_id'])
                 redis_client.setex(stop_key, 60, "true")
@@ -123,7 +116,6 @@ def get_user_active_connections(user_id):
 
                 if user_id is None or (client_user_id and int(client_user_id) == user_id):
                     try:
-                        # Timeshift virtual_channel_ids start with "timeshift_"
                         conn_type = 'timeshift' if channel_id.startswith('timeshift_') else 'live'
                         logger.debug(f"[stream limits] Found {conn_type.upper()} connection for user {user_id} on channel {channel_id} with client ID {client_id}")
                         connected_at = float(connected_at) if connected_at else 0
@@ -205,3 +197,28 @@ def check_user_stream_limits(user, client_id, media_id=None):
                     return False
 
     return True
+
+
+_TS_PACKET_SIZE = 188
+_TS_SYNC_BYTE = 0x47
+
+
+def find_ts_sync(buf):
+    """Return byte offset of the first valid MPEG-TS sync chain in *buf*, or -1.
+
+    Args:
+        buf: Raw bytes from an upstream HTTP response (typically the first 1 KB).
+
+    Returns:
+        Offset of the first 0x47 byte that starts three consecutive 188-byte
+        packets, or -1. Used to strip PHP/HTML preamble before streaming.
+    """
+    end = len(buf) - 2 * _TS_PACKET_SIZE
+    for i in range(0, end):
+        if (
+            buf[i] == _TS_SYNC_BYTE
+            and buf[i + _TS_PACKET_SIZE] == _TS_SYNC_BYTE
+            and buf[i + 2 * _TS_PACKET_SIZE] == _TS_SYNC_BYTE
+        ):
+            return i
+    return -1
