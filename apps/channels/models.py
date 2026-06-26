@@ -135,9 +135,7 @@ class Stream(models.Model):
         db_index=True
     )
 
-    # Denormalized catch-up fields — populated at M3U/XC import time from
-    # custom_properties["tv_archive"] and ["tv_archive_duration"].  Avoids
-    # per-channel JSON introspection on every xc_get_live_streams call.
+    # Populated at import from tv_archive / tv_archive_duration.
     is_catchup = models.BooleanField(
         default=False,
         db_index=True,
@@ -377,9 +375,7 @@ class Channel(models.Model):
         help_text="The M3U account that auto-created this channel"
     )
 
-    # Denormalized catch-up fields — rolled up from the channel's streams at
-    # import time and via post_save/post_delete signals on ChannelStream.
-    # Eliminates per-channel DB queries in _xc_channel_entry().
+    # Populated at import; rolled up via ChannelStream signal / m3u refresh.
     is_catchup = models.BooleanField(
         default=False,
         db_index=True,

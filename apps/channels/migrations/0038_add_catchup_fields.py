@@ -1,9 +1,4 @@
-"""Add denormalized catch-up fields to Stream and Channel.
-
-Populated at M3U/XC import time so _xc_channel_entry() can read them as
-zero-cost column reads instead of introspecting custom_properties JSON
-per channel on every xc_get_live_streams call.
-"""
+"""Add denormalized catch-up fields to Stream and Channel."""
 
 from django.db import migrations, models
 

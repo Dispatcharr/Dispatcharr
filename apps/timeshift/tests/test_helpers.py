@@ -1,4 +1,4 @@
-"""Tests for `apps.timeshift.helpers` — timestamp shape conversion and URL build."""
+"""Tests for `apps.timeshift.helpers`: timestamp shape conversion and URL build."""
 
 from django.test import TestCase
 
@@ -20,7 +20,7 @@ def _make_creds():
 
 
 class TimestampFormatTests(TestCase):
-    """Timestamp reshape functions change format only — no timezone conversion."""
+    """Timestamp reshape functions change format only; no timezone conversion."""
 
     def test_format_sql_reshapes_without_tz_conversion(self):
         self.assertEqual(

@@ -42,9 +42,6 @@ urlpatterns = [
         stream_xc,
         name="xc_stream_endpoint",
     ),
-    # XC catch-up (timeshift). The "duration" slot carries Dispatcharr's internal
-    # Channel.id (the XC API emits channel.id as stream_id to clients), see
-    # apps/timeshift/views.
     path(
         "timeshift/<str:username>/<str:password>/<str:stream_id>/<str:timestamp>/<str:duration>",
         timeshift_proxy,
