@@ -373,23 +373,16 @@ def revoke_task_on_delete(sender, instance, **kwargs):
 
 @receiver([post_save, post_delete], sender=ChannelStream)
 def update_channel_catchup_fields(sender, instance, **kwargs):
-    """Roll up denormalized catch-up fields from streams to the channel.
-
-    Covers the UI/API path (admin adds/removes a stream from a channel).
-    The bulk-import path bypasses signals and uses explicit SQL instead —
-    see rollup_channel_catchup_fields() in apps/m3u/tasks.py. Same semantics
-    as that rollup: is_catchup = any catch-up stream, catchup_days = MAX of
-    the catch-up streams' archive depth.
-    """
+    """Roll up catch-up flags from active streams (UI path; import uses SQL rollup)."""
     from django.db.models import Max
 
     channel = instance.channel
-    max_days = (
-        channel.streams
-        .filter(is_catchup=True)
-        .aggregate(max_days=Max("catchup_days"))["max_days"]
+    catchup_qs = channel.streams.filter(
+        is_catchup=True,
+        m3u_account__is_active=True,
     )
+    max_days = catchup_qs.aggregate(max_days=Max("catchup_days"))["max_days"]
     Channel.objects.filter(pk=channel.pk).update(
-        is_catchup=max_days is not None,
+        is_catchup=catchup_qs.exists(),
         catchup_days=max_days or 0,
     )
