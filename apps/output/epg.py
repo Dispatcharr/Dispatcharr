@@ -1088,7 +1088,7 @@ def generate_dummy_epg(
     return xml_lines
 
 
-def generate_epg(request, profile_name=None, user=None):
+def generate_epg(request, profile_name=None, user=None, *, xc_catchup_prev_days=False):
     """
     Dynamically generate an XMLTV (EPG) file using a streaming response.
     Since the EPG data is stored independently of Channels, we group programmes
@@ -1100,32 +1100,16 @@ def generate_epg(request, profile_name=None, user=None):
         num_days = max(0, min(num_days, 365))
     except (ValueError, TypeError):
         num_days = 0
-    # prev_days resolution order:
-    #   1. URL ?prev_days= (explicit, even 0 means "no past")
-    #   2. user.custom_properties.epg_prev_days
-    #   3. CoreSettings.proxy_settings.xmltv_prev_days_override (>0)
-    #   4. Auto-detect: max provider tv_archive_duration capped at 30
-    url_prev = request.GET.get('prev_days')
-    user_prev = user_custom.get('epg_prev_days') if user_custom else None
-    if url_prev is not None:
-        try:
-            prev_days = max(0, min(int(url_prev), 30))
-        except (ValueError, TypeError):
-            prev_days = 0
-    elif user_prev not in (None, ""):
-        try:
-            prev_days = max(0, min(int(user_prev), 30))
-        except (ValueError, TypeError):
-            prev_days = 0
+    if xc_catchup_prev_days:
+        from apps.channels.utils import resolve_xc_epg_prev_days
+
+        prev_days = resolve_xc_epg_prev_days(request, user)
     else:
-        from apps.timeshift.helpers import compute_provider_archive_days_capped
-        from core.models import CoreSettings
-        proxy_settings = CoreSettings.get_proxy_settings()
         try:
-            override = int(proxy_settings.get("xmltv_prev_days_override", 0) or 0)
-        except (TypeError, ValueError):
-            override = 0
-        prev_days = max(0, min(override, 30)) if override > 0 else compute_provider_archive_days_capped()
+            prev_days = int(request.GET.get('prev_days', user_custom.get('epg_prev_days', 0)))
+            prev_days = max(0, min(prev_days, 30))
+        except (ValueError, TypeError):
+            prev_days = 0
     use_cached_logos = request.GET.get('cachedlogos', 'true').lower() != 'false'
     tvg_id_source = request.GET.get('tvg_id_source', 'channel_number').lower()
     cache_params = (

@@ -369,20 +369,12 @@ def _xc_allowed_output_formats(user):
 
 
 def _build_xc_server_info(request, hostname, port):
-    """Build the server_info dict for XC API responses.
+    """Build XC ``server_info``; keep timezone, ``time_now``, and EPG times in UTC.
 
-    The timezone, time_now, and xc_get_epg start/end fields form a "timezone
-    triple" that MUST all use the same zone — XC clients (iPlayTV, TiviMate)
-    use server_info.timezone to interpret start/end strings and calculate seek
-    offsets into catch-up archives. We keep the whole triple in **UTC**: the EPG
-    surface stays timezone-neutral and any provider-local conversion happens at
-    catch-up request time, against the serving provider's own zone (see
-    apps/timeshift/views.timeshift_proxy). This is what keeps multi-provider
-    setups consistent. Learned from plugin v1.1.4 → v1.2.6 (the earlier
-    per-instance timezone shifting caused 6 iterations of wrong-programme bugs).
+    XC clients use ``server_info.timezone`` to interpret EPG start/end strings.
+    Provider-local conversion happens in the timeshift proxy at request time.
     """
-    # datetime.timezone.utc, not ZoneInfo("UTC"): the latter can read a mis-set
-    # host /etc/timezone in some Docker setups.
+    # datetime.timezone.utc, not ZoneInfo("UTC"); avoids mis-set Docker /etc/timezone.
     return {
         "url": hostname,
         "server_protocol": request.scheme,
@@ -552,10 +544,7 @@ def xc_xmltv(request):
         )
         return JsonResponse({'error': 'Unauthorized'}, status=401)
 
-    # XMLTV is emitted in UTC — the XC API surface is strictly UTC. Catch-up
-    # clients build their seek from the UTC wall-clock; the timeshift proxy
-    # applies any provider-local offset at request time. No per-instance rewrite.
-    return generate_epg(request, None, user)
+    return generate_epg(request, None, user, xc_catchup_prev_days=True)
 
 
 def xc_get_live_categories(user):
@@ -705,11 +694,6 @@ def _xc_channel_entry(channel, channel_num_map, _get_default_group_id, _logo_url
     effective_group = channel.effective_channel_group_obj
     group_id = effective_group.id if effective_group else _get_default_group_id()
 
-    # Denormalized catch-up fields — populated at M3U/XC import time and
-    # rolled up via ChannelStream signal.  Zero DB queries here.
-    # Always emit channel.id as stream_id — clients must only see
-    # Dispatcharr's internal IDs.  The provider's stream_id is a backend
-    # detail looked up internally by the timeshift endpoint.
     if channel.is_catchup:
         tv_archive = 1
         tv_archive_duration = channel.catchup_days
@@ -767,17 +751,12 @@ def xc_get_epg(request, user, short=False):
     if not channel_id:
         raise Http404()
 
-    # Clients always receive channel.id from get_live_streams, so this is
-    # a straightforward int lookup — no provider stream_id fallback needed.
     try:
         resolved_channel_id = int(channel_id)
     except (TypeError, ValueError):
         raise Http404()
 
     channel = None
-    # Apply effective-value annotation + hidden-exclusion at every channel
-    # resolution path so a single channel lookup honors the same visibility
-    # rules as xc_get_live_streams.
     def _annotate(qs):
         return with_effective_values(qs, select_related_fks=True).exclude(hidden_from_output=True)
 
@@ -859,6 +838,8 @@ def xc_get_epg(request, user, short=False):
         int(channel.effective_channel_number) if channel.effective_channel_number is not None else 0,
     )
 
+    from apps.channels.utils import resolve_xc_epg_prev_days
+
     limit = int(request.GET.get('limit', 4))
     user_custom = user.custom_properties or {}
     try:
@@ -866,21 +847,10 @@ def xc_get_epg(request, user, short=False):
         num_days = max(0, min(num_days, 365))
     except (ValueError, TypeError):
         num_days = 0
-    try:
-        prev_days = int(request.GET.get('prev_days', user_custom.get('epg_prev_days', 0)))
-        prev_days = max(0, min(prev_days, 30))
-    except (ValueError, TypeError):
-        prev_days = 0
+    prev_days = resolve_xc_epg_prev_days(request, user, auto_detect_fallback=False)
     now = django_timezone.now()
 
-    # When a channel supports catch-up, automatically include past programmes
-    # within the archive window even if the client did not request prev_days.
-    # XC clients (iPlayTV, TiviMate) call get_simple_data_table without
-    # prev_days and expect the response to already contain archived entries
-    # marked with has_archive=1 — they use that list to populate the catch-up
-    # programme menu.
-    # Use denormalized catch-up fields (zero DB queries). Clamp to the same
-    # 30-day ceiling applied to explicit prev_days values.
+    # XC catch-up clients expect past programmes when prev_days was not set.
     _channel_is_catchup = getattr(channel, "is_catchup", False)
     _channel_catchup_days = min(getattr(channel, "catchup_days", 0) or 0, 30)
     if _channel_is_catchup and prev_days == 0:
@@ -931,21 +901,11 @@ def xc_get_epg(request, user, short=False):
 
     output = {"epg_listings": []}
 
-    # Reuse the denormalized catch-up fields for the has_archive flag.
     if _channel_is_catchup:
         archive_window = timedelta(days=_channel_catchup_days)
     else:
         archive_window = None
 
-    # start/end are emitted in UTC — the whole XC API surface is strictly UTC,
-    # so the "timezone triple" (server_info.timezone, these start/end strings,
-    # and time_now) is consistently UTC. XC clients display these strings and
-    # use server_info.timezone (also UTC) to build the catch-up URL; the proxy
-    # then converts that UTC instant to the SERVING provider's own local zone at
-    # request time (see apps/timeshift/views.timeshift_proxy). Keeping the EPG
-    # UTC is what makes multi-provider setups consistent — we cannot know at EPG
-    # time which provider will serve a given catch-up.
-    # start_timestamp/stop_timestamp (epoch) are inherently timezone-agnostic.
     _epg_utc = dt_timezone.utc
 
     for program in programs:
@@ -981,10 +941,6 @@ def xc_get_epg(request, user, short=False):
             "stream_id": f"{channel_id}",
         }
 
-        # has_archive tells XC clients which past programmes are available
-        # for catch-up playback.  Always emitted (not gated by short) because
-        # both get_simple_data_table and get_short_epg callers need it to
-        # populate the catch-up programme menu.
         if archive_window is not None and end < now and end > now - archive_window:
             program_output["has_archive"] = 1
         else:
