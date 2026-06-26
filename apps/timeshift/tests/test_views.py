@@ -1,16 +1,56 @@
 """Tests for the timeshift proxy view, focused on upstream status mapping."""
 
+import fnmatch
+import time
 from unittest.mock import MagicMock, patch
 
 from django.test import RequestFactory, TestCase, override_settings
 
 from apps.timeshift import views
+from apps.proxy.utils import check_user_stream_limits as _check_user_stream_limits
 from apps.proxy.utils import find_ts_sync as _find_ts_sync
+
+TEST_SESSION_ID = "timeshift_testsession1"
+TEST_MEDIA_ID = "timeshift_8_2026-06-08-17-00"
+
+
+def _proxy_url(session_id=TEST_SESSION_ID):
+    base = "/timeshift/u/p/8/2026-06-08:17-00/8.ts"
+    return f"{base}?session_id={session_id}" if session_id else base
+
+
+def _seed_pool_session(
+    redis,
+    session_id=TEST_SESSION_ID,
+    media_id=TEST_MEDIA_ID,
+    *,
+    busy="1",
+    serving_range=None,
+    user_id=5,
+    client_ip="1.2.3.4",
+    client_user_agent="test-agent",
+):
+    views._create_pool_session(
+        redis,
+        session_id=session_id,
+        media_id=media_id,
+        user_id=user_id,
+        client_ip=client_ip,
+        client_user_agent=client_user_agent,
+        account_id=1,
+        profile_id=31,
+        stream_id="111",
+        provider_timestamp="2026-06-08:19-00",
+    )
+    if serving_range is not None:
+        redis.hset(f"timeshift_pool:{session_id}", "serving_range", serving_range)
+    if busy is not None:
+        redis.hset(f"timeshift_pool:{session_id}", "busy", busy)
 
 
 class FindTsSyncTests(TestCase):
     """Locate the first MPEG-TS sync chain so a leading HTML/PHP preamble
-    can be skipped before the bytes reach a strict demuxer (ExoPlayer)."""
+    can be skipped before the bytes reach the strict demuxer (ExoPlayer)."""
 
     def test_returns_zero_when_buffer_already_aligned(self):
         buf = b"\x47" + b"\x00" * 187 + b"\x47" + b"\x00" * 187 + b"\x47" + b"\x00" * 187
@@ -231,6 +271,76 @@ class StreamFromProviderStatusMappingTests(TestCase):
         # PHP response was rejected, second candidate accepted
         self.assertEqual(mocked_open.call_count, 2)
 
+    @patch.object(views, "_open_upstream")
+    def test_416_range_not_satisfiable_passes_through(self, mocked_open):
+        # A tail/seek probe past EOF must go back to the client verbatim,
+        # never cascaded to other URL shapes (byte offsets are file-specific,
+        # so cascading only multiplies upstream connections).
+        resp = _fake_upstream(416)
+        resp.headers = {"Content-Type": "video/mp2t", "Content-Range": "bytes */1000"}
+        mocked_open.return_value = resp
+        kwargs = dict(self.kwargs, range_header="bytes=999999-")
+        response = views._stream_from_provider(**kwargs)
+        self.assertEqual(response.status_code, 416)
+        self.assertEqual(response["Content-Range"], "bytes */1000")
+        self.assertTrue(getattr(response, "timeshift_passthrough", False))
+        # No cascade: the first (and only) candidate decided the outcome.
+        self.assertEqual(mocked_open.call_count, 1)
+
+    @patch.object(views, "_open_upstream")
+    def test_partial_206_to_range_request_accepted_mid_packet(self, mocked_open):
+        # A 206 answering a Range request legitimately starts mid-TS-packet
+        # (no 0x47 sync at offset 0). It must be served, not rejected as a
+        # PHP error and cascaded across every URL shape and provider account.
+        mid_packet = b"\x00" * 300
+        self.assertEqual(_find_ts_sync(mid_packet), -1)
+        resp = _fake_upstream(206, body=mid_packet)
+        resp.raw = MagicMock()
+        resp.raw.read = MagicMock(return_value=mid_packet)
+        mocked_open.return_value = resp
+        kwargs = dict(self.kwargs, range_header="bytes=1000-")
+        with patch.object(views, "RedisClient"), \
+             patch.object(views, "_register_stats_client"), \
+             patch.object(views, "_unregister_stats_client"):
+            response = views._stream_from_provider(**kwargs)
+        self.assertEqual(response.status_code, 206)
+        self.assertEqual(mocked_open.call_count, 1)
+
+    @patch.object(views, "_open_upstream")
+    def test_partial_206_html_error_still_rejected(self, mocked_open):
+        # The mid-packet allowance is gated on content type: a 206 whose body
+        # is an HTML/PHP error page must still be rejected and cascaded.
+        html = b"<html><body>error</body></html>"
+        bad = _fake_upstream(206, content_type="text/html", body=html)
+        bad.raw = MagicMock()
+        bad.raw.read = MagicMock(return_value=html)
+        good = _fake_upstream(206, body=_make_ts_payload())
+        mocked_open.side_effect = [bad, good]
+        kwargs = dict(self.kwargs, range_header="bytes=0-")
+        with patch.object(views, "RedisClient"), \
+             patch.object(views, "_register_stats_client"), \
+             patch.object(views, "_unregister_stats_client"):
+            response = views._stream_from_provider(**kwargs)
+        self.assertEqual(response.status_code, 206)
+        self.assertEqual(mocked_open.call_count, 2)
+
+    @patch.object(views, "_open_upstream")
+    def test_206_without_range_header_still_requires_sync(self, mocked_open):
+        # Without a Range header a 206 is unexpected; it must still pass the
+        # TS-sync probe (the mid-packet allowance is range-only).
+        mid_packet = b"\x00" * 300
+        bad = _fake_upstream(206, body=mid_packet)
+        bad.raw = MagicMock()
+        bad.raw.read = MagicMock(return_value=mid_packet)
+        good = _fake_upstream(206, body=_make_ts_payload())
+        mocked_open.side_effect = [bad, good]
+        with patch.object(views, "RedisClient"), \
+             patch.object(views, "_register_stats_client"), \
+             patch.object(views, "_unregister_stats_client"):
+            response = views._stream_from_provider(**self.kwargs)
+        self.assertEqual(response.status_code, 206)
+        self.assertEqual(mocked_open.call_count, 2)
+
 
 class RedactUrlTests(TestCase):
     """`_redact_url` is the guard that keeps XC credentials out of logs —
@@ -287,8 +397,9 @@ def _make_alt_profile(profile_id):
 
 
 class _FakeRedis:
-    """Just enough of the redis-py surface for the slot-token protocol:
-    setex/get/delete plus a transactional pipeline doing GET+DEL."""
+    """Just enough of the redis-py surface for the idle-session pool: setex/get/
+    delete plus a transactional pipeline doing GET+DEL, and the hash, set and
+    lock primitives the pool entries rely on."""
 
     def __init__(self):
         self.store = {}
@@ -310,6 +421,93 @@ class _FakeRedis:
 
     def pipeline(self, transaction=False):
         return _FakeRedisPipeline(self)
+
+    # --- hash + lock surface for the session slot ---
+    def hgetall(self, key):
+        value = self.store.get(key)
+        return dict(value) if isinstance(value, dict) else {}
+
+    def hset(self, key, field=None, value=None, mapping=None, **kwargs):
+        hash_value = self.store.get(key)
+        if not isinstance(hash_value, dict):
+            hash_value = {}
+            self.store[key] = hash_value
+        if field is not None and value is not None:
+            hash_value[str(field)] = str(value)
+        for f, v in (mapping or {}).items():
+            hash_value[str(f)] = str(v)
+        for f, v in kwargs.items():
+            hash_value[str(f)] = str(v)
+        return len(hash_value)
+
+    def hincrby(self, key, field, amount=1):
+        hash_value = self.store.get(key)
+        if not isinstance(hash_value, dict):
+            hash_value = {}
+            self.store[key] = hash_value
+        new_value = int(hash_value.get(field, 0)) + amount
+        hash_value[field] = str(new_value)
+        return new_value
+
+    def hget(self, key, field):
+        hash_value = self.store.get(key)
+        return hash_value.get(field) if isinstance(hash_value, dict) else None
+
+    def expire(self, key, ttl):
+        return 1 if key in self.store else 0
+
+    # --- set surface for the idle-session pool ---
+    def sadd(self, key, *members):
+        existing = self.store.get(key)
+        if not isinstance(existing, set):
+            existing = set()
+            self.store[key] = existing
+        before = len(existing)
+        existing.update(str(m) for m in members)
+        return len(existing) - before
+
+    def srem(self, key, *members):
+        existing = self.store.get(key)
+        if not isinstance(existing, set):
+            return 0
+        removed = 0
+        for member in members:
+            if str(member) in existing:
+                existing.discard(str(member))
+                removed += 1
+        return removed
+
+    def smembers(self, key):
+        existing = self.store.get(key)
+        return set(existing) if isinstance(existing, set) else set()
+
+    def scard(self, key):
+        existing = self.store.get(key)
+        return len(existing) if isinstance(existing, set) else 0
+
+    def lock(self, name, timeout=None, blocking_timeout=None):
+        return _FakeRedisLock()
+
+    def scan(self, cursor=0, match=None, count=100):
+        keys = sorted(
+            k for k in self.store
+            if match is None or fnmatch.fnmatch(k, match)
+        )
+        if cursor >= len(keys):
+            return 0, []
+        batch = keys[cursor:cursor + count]
+        next_cursor = cursor + len(batch)
+        if next_cursor >= len(keys):
+            return 0, batch
+        return next_cursor, batch
+
+
+class _FakeRedisLock:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
 
 
 class _FakeRedisPipeline:
@@ -350,7 +548,7 @@ class TimeshiftProxyTimestampWiringTests(TestCase):
         self.factory = RequestFactory()
 
     def _call(self, timestamp, provider_tz="Europe/Brussels"):
-        request = self.factory.get(f"/timeshift/u/p/8/{timestamp}/8.ts")
+        request = self.factory.get(f"/timeshift/u/p/8/{timestamp}/8.ts?session_id={TEST_SESSION_ID}")
         sentinel = MagicMock(status_code=200)
         with patch.object(views, "_authenticate_user", return_value=MagicMock()), \
              patch.object(views, "network_access_allowed", return_value=True), \
@@ -412,7 +610,7 @@ class TimeshiftProxyTimestampWiringTests(TestCase):
 
     def test_network_access_denied_returns_403(self):
         # Same network gate as other XC API endpoints (player_api, xmltv, etc.).
-        request = self.factory.get("/timeshift/u/p/8/2026-06-08:17-00/8.ts")
+        request = self.factory.get(_proxy_url())
         with patch.object(views, "_authenticate_user", return_value=MagicMock()), \
              patch.object(views, "network_access_allowed", return_value=False) as gate, \
              patch.object(views, "Channel") as channel_cls, \
@@ -435,7 +633,7 @@ class TimeshiftProxyFailoverTests(TestCase):
         self.factory = RequestFactory()
 
     def _call(self, streams, provider_responses):
-        request = self.factory.get("/timeshift/u/p/8/2026-06-08:17-00/8.ts")
+        request = self.factory.get(_proxy_url())
         with patch.object(views, "_authenticate_user", return_value=MagicMock()), \
              patch.object(views, "network_access_allowed", return_value=True), \
              patch.object(views, "Channel") as channel_cls, \
@@ -524,6 +722,20 @@ class TimeshiftProxyFailoverTests(TestCase):
         )
         self.assertEqual(limits_mock.call_count, 1)
 
+    def test_passthrough_is_not_failed_over_to_other_accounts(self):
+        # A terminal range answer (e.g. 416 past EOF) must be returned as-is;
+        # the loop must NOT try the next account, whose byte offsets would not
+        # match this file and which would just burn another provider slot.
+        streams = [
+            _make_catchup_stream(account_id=1, stream_id="111"),
+            _make_catchup_stream(account_id=2, stream_id="222"),
+        ]
+        passthrough = MagicMock(status_code=416)
+        passthrough.timeshift_passthrough = True
+        response, stream_mock, _, _ = self._call(streams, [passthrough])
+        self.assertIs(response, passthrough)
+        self.assertEqual(stream_mock.call_count, 1)
+
 
 class _ProxyLoopTestMixin:
     """Shared driver for tests exercising the failover loop end to end —
@@ -534,7 +746,7 @@ class _ProxyLoopTestMixin:
 
     def _call(self, streams, provider_responses, limits=True, reserve_results=None,
               build_side_effect=None):
-        request = self.factory.get("/timeshift/u/p/8/2026-06-08:17-00/8.ts")
+        request = self.factory.get(_proxy_url())
         self.fake_redis = _FakeRedis()
         reserve_kwargs = (
             {"side_effect": reserve_results}
@@ -819,11 +1031,15 @@ class AuthHelpersDbTests(TestCase):
 
 class TimeshiftSlotPoolTests(_ProxyLoopTestMixin, TestCase):
     """Provider pool participation: a profile slot is reserved before any
-    upstream attempt and released exactly once afterwards — the same
-    accounting contract live (Channel.get_stream) and VOD follow."""
+    upstream attempt and released exactly once afterwards, the same accounting
+    contract live (Channel.get_stream) and VOD follow. Each active stream
+    reserves its own slot so concurrent provider connections stay capped by
+    max_streams."""
 
-    def _slot_token_keys(self):
-        return [k for k in self.fake_redis.store if k.startswith("timeshift_slot:")]
+    POOL_KEY = f"timeshift_pool:{TEST_SESSION_ID}"
+
+    def _pool_entry_ids(self):
+        return [k for k in self.fake_redis.store if k.startswith("timeshift_pool:")]
 
     def test_reserve_called_with_default_profile_before_upstream(self):
         streams = [_make_catchup_stream(account_id=1, stream_id="111", profile_id=31)]
@@ -841,18 +1057,18 @@ class TimeshiftSlotPoolTests(_ProxyLoopTestMixin, TestCase):
             streams, [MagicMock(status_code=404, timeshift_decisive=False)]
         )
         self.assertEqual(response.status_code, 404)
-        # The one-shot token was consumed and the pool counter decremented.
+        # The failed attempt's slot was released and its pool entry removed.
         self.release_mock.assert_called_once_with(31, self.fake_redis)
-        self.assertEqual(self._slot_token_keys(), [])
+        self.assertEqual(self._pool_entry_ids(), [])
 
     def test_slot_kept_on_success_for_the_streaming_session(self):
         streams = [_make_catchup_stream(account_id=1, stream_id="111", profile_id=31)]
         response, _, _ = self._call(streams, [MagicMock(status_code=200)])
         self.assertEqual(response.status_code, 200)
-        # Slot still owned by the (mocked) streaming session: token present,
-        # nothing released yet.
+        # Slot still owned by the (mocked) streaming session: a busy pool entry
+        # remains for the next request to reuse, nothing released yet.
         self.release_mock.assert_not_called()
-        self.assertEqual(len(self._slot_token_keys()), 1)
+        self.assertEqual(len(self._pool_entry_ids()), 1)
 
     def test_decisive_failure_releases_slot_and_skips_account(self):
         streams = [
@@ -938,7 +1154,7 @@ class TimeshiftSlotPoolTests(_ProxyLoopTestMixin, TestCase):
         with self.assertRaises(RuntimeError):
             self._call(streams, RuntimeError("boom"))
         self.release_mock.assert_called_once_with(31, self.fake_redis)
-        self.assertEqual(self._slot_token_keys(), [])
+        self.assertEqual(self._pool_entry_ids(), [])
 
     def test_exception_before_upstream_releases_slot(self):
         # Same guarantee for failures BEFORE the upstream call (URL building,
@@ -949,18 +1165,7 @@ class TimeshiftSlotPoolTests(_ProxyLoopTestMixin, TestCase):
             self._call(streams, [], build_side_effect=RuntimeError("boom"))
         self.stream_mock.assert_not_called()
         self.release_mock.assert_called_once_with(31, self.fake_redis)
-        self.assertEqual(self._slot_token_keys(), [])
-
-    def test_token_store_failure_releases_directly(self):
-        # If the ownership token cannot be written, no release path could
-        # ever free the slot — the view must release it directly and report
-        # transient unavailability instead of streaming unaccounted.
-        streams = [_make_catchup_stream(account_id=1, stream_id="111", profile_id=31)]
-        with patch.object(views, "_store_slot_token", return_value=False):
-            response, stream_mock, _ = self._call(streams, [])
-        self.assertEqual(response.status_code, 503)
-        stream_mock.assert_not_called()
-        self.release_mock.assert_called_once_with(31, self.fake_redis)
+        self.assertEqual(self._pool_entry_ids(), [])
 
     def test_mixed_capacity_then_upstream_failure_returns_failure(self):
         # Mixed outcome: one stream capacity-blocked, another actually tried
@@ -991,28 +1196,37 @@ class TimeshiftSlotPoolTests(_ProxyLoopTestMixin, TestCase):
         self.assertEqual(response.status_code, 404)
 
 
-class TimeshiftSlotTokenTests(TestCase):
-    """The one-shot release token: exactly-once semantics across all release
-    paths (generator finally, response close, takeover, failed attempt)."""
+class TimeshiftPoolReleaseTests(TestCase):
+    """Pool slot release and response close paths for a pooled session."""
 
     def setUp(self):
         self.redis = _FakeRedis()
+        self.session_id = TEST_SESSION_ID
 
-    def test_release_happens_exactly_once(self):
-        views._store_slot_token(self.redis, "timeshift_abc", 31)
+    def _pool_key(self):
+        return f"timeshift_pool:{self.session_id}"
+
+    def test_release_callback_frees_slot_exactly_once(self):
+        _seed_pool_session(self.redis, session_id=self.session_id)
+        release = views._make_release_once(self.redis, self.session_id, 31)
         with patch.object(views, "release_profile_slot") as release_mock:
-            self.assertTrue(views._release_slot_token(self.redis, "timeshift_abc"))
-            self.assertFalse(views._release_slot_token(self.redis, "timeshift_abc"))
+            release()
+            release()
         release_mock.assert_called_once_with(31, self.redis)
+        self.assertEqual(self.redis.hget(self._pool_key(), "busy"), "0")
+        self.assertTrue(self.redis.exists(self._pool_key()))
 
-    def test_release_without_token_is_noop(self):
+    def test_discard_frees_slot_and_removes_entry(self):
+        _seed_pool_session(self.redis, session_id=self.session_id)
         with patch.object(views, "release_profile_slot") as release_mock:
-            self.assertFalse(views._release_slot_token(self.redis, "timeshift_ghost"))
-        release_mock.assert_not_called()
+            views._discard_pool_session(self.redis, self.session_id, 31)
+        release_mock.assert_called_once_with(31, self.redis)
+        self.assertFalse(self.redis.exists(self._pool_key()))
 
     def test_release_without_redis_is_noop(self):
+        release = views._make_release_once(None, self.session_id, 31)
         with patch.object(views, "release_profile_slot") as release_mock:
-            self.assertFalse(views._release_slot_token(None, "timeshift_abc"))
+            release()
         release_mock.assert_not_called()
 
     def test_wrapper_close_releases_even_when_generator_never_started(self):
@@ -1046,10 +1260,11 @@ class TimeshiftSlotTokenTests(TestCase):
 
 
 class TimeshiftTakeoverTests(TestCase):
-    """One catch-up session per user+channel: a new request displaces the
-    user's previous session on the same channel — synchronous slot release +
-    stats unregister + stop key — and never touches other users, other
-    channels, or live sessions."""
+    """A new request displaces the user's previous catch-up session(s) on the
+    same channel at a DIFFERENT position (stats unregister + stop key, leaving
+    the displaced generator to free its own slot), while leaving sibling range
+    requests of the same playback alone, and never touching other users,
+    channels, or live."""
 
     def setUp(self):
         self.redis = _FakeRedis()
@@ -1063,9 +1278,7 @@ class TimeshiftTakeoverTests(TestCase):
             "type": conn_type,
         }
 
-    def test_displaces_only_same_channel_timeshift_sessions(self):
-        views._store_slot_token(self.redis, "timeshift_old1", 31)
-        views._store_slot_token(self.redis, "timeshift_other", 41)
+    def test_displaces_other_positions_on_same_channel(self):
         connections = [
             self._conn("timeshift_8_2026-06-08-17-00_111", "timeshift_old1"),
             self._conn("timeshift_9_2026-06-08-17-00_222", "timeshift_other"),
@@ -1075,10 +1288,13 @@ class TimeshiftTakeoverTests(TestCase):
                           return_value=connections) as conns_mock, \
              patch.object(views, "release_profile_slot") as release_mock, \
              patch.object(views, "_unregister_stats_client") as unregister_mock:
-            views._terminate_previous_timeshift_sessions(self.redis, self.user, 8)
+            views._terminate_previous_timeshift_sessions(
+                self.redis, self.user, 8, "timeshift_8_2026-06-09-20-00", "timeshift_current",
+            )
         conns_mock.assert_called_once_with(5)
-        # Channel 8's old session: slot released, stats dropped, stop key set.
-        release_mock.assert_called_once_with(31, self.redis)
+        # Takeover defers slot release to the displaced generator's stop path;
+        # it only drops stats and signals the stop key.
+        release_mock.assert_not_called()
         unregister_mock.assert_called_once_with(
             self.redis, "timeshift_8_2026-06-08-17-00_111", "timeshift_old1"
         )
@@ -1087,8 +1303,28 @@ class TimeshiftTakeoverTests(TestCase):
             "timeshift_8_2026-06-08-17-00_111", "timeshift_old1"
         )
         self.assertIn(stop_key, self.redis.store)
-        # Channel 9's session untouched: token still present, no stop key.
-        self.assertIn("timeshift_slot:timeshift_other", self.redis.store)
+        # Channel 9's session untouched: no stop key set for it.
+        other_stop = RedisKeys.client_stop(
+            "timeshift_9_2026-06-08-17-00_222", "timeshift_other"
+        )
+        self.assertNotIn(other_stop, self.redis.store)
+
+    def test_leaves_sibling_requests_of_current_playback(self):
+        # Concurrent range/probe requests of the SAME playback must not
+        # displace one another.
+        connections = [
+            self._conn("timeshift_8_2026-06-08-17-00_111", "timeshift_sibling"),
+        ]
+        with patch.object(views, "get_user_active_connections",
+                          return_value=connections), \
+             patch.object(views, "release_profile_slot") as release_mock, \
+             patch.object(views, "_unregister_stats_client") as unregister_mock:
+            views._terminate_previous_timeshift_sessions(
+                self.redis, self.user, 8, "timeshift_8_2026-06-08-17-00",
+                "timeshift_sibling",
+            )
+        release_mock.assert_not_called()
+        unregister_mock.assert_not_called()
 
     def test_channel_id_prefix_cannot_match_other_channels(self):
         # Channel 8 must not displace channel 80/81 sessions (prefix ends
@@ -1100,14 +1336,21 @@ class TimeshiftTakeoverTests(TestCase):
                           return_value=connections), \
              patch.object(views, "release_profile_slot") as release_mock, \
              patch.object(views, "_unregister_stats_client") as unregister_mock:
-            views._terminate_previous_timeshift_sessions(self.redis, self.user, 8)
+            views._terminate_previous_timeshift_sessions(
+                self.redis, self.user, 8, "timeshift_8_2026-06-08-17-00",
+                "timeshift_new",
+            )
         release_mock.assert_not_called()
         unregister_mock.assert_not_called()
 
     def test_noop_without_redis_or_user(self):
         with patch.object(views, "get_user_active_connections") as conns_mock:
-            views._terminate_previous_timeshift_sessions(None, self.user, 8)
-            views._terminate_previous_timeshift_sessions(self.redis, None, 8)
+            views._terminate_previous_timeshift_sessions(
+                None, self.user, 8, "timeshift_8_ts", "timeshift_s"
+            )
+            views._terminate_previous_timeshift_sessions(
+                self.redis, None, 8, "timeshift_8_ts", "timeshift_s"
+            )
         conns_mock.assert_not_called()
 
     def test_proxy_runs_takeover_before_stream_limit_check(self):
@@ -1115,7 +1358,7 @@ class TimeshiftTakeoverTests(TestCase):
         # displace its own predecessor BEFORE the limit check counts it, or
         # the user's own seek gets denied.
         call_order = []
-        request = RequestFactory().get("/timeshift/u/p/8/2026-06-08:17-00/8.ts")
+        request = RequestFactory().get(_proxy_url())
         with patch.object(views, "_authenticate_user", return_value=MagicMock()), \
              patch.object(views, "network_access_allowed", return_value=True), \
              patch.object(views, "Channel") as channel_cls, \
@@ -1136,6 +1379,525 @@ class TimeshiftTakeoverTests(TestCase):
         self.assertEqual(response.status_code, 403)
         self.assertEqual(call_order, ["takeover", "limits"])
         self.assertEqual(takeover_mock.call_args.args[2], 8)
+
+
+class TimeshiftSessionReuseTests(TestCase):
+    """Per-client session pool acquire/reuse paths."""
+
+    SESSION = TEST_SESSION_ID
+
+    def setUp(self):
+        self.redis = _FakeRedis()
+        self.factory = RequestFactory()
+        self.channel = MagicMock(id=8, name="Test")
+        self.user = MagicMock(id=5)
+
+    def _pool_key(self):
+        return f"timeshift_pool:{self.SESSION}"
+
+    def _make_idle_entry(self):
+        _seed_pool_session(self.redis, session_id=self.SESSION)
+        with patch.object(views, "release_profile_slot"):
+            views._release_pool_session(self.redis, self.SESSION, 31)
+
+    def test_wait_returns_none_without_blocking_when_pool_empty(self):
+        start = time.monotonic()
+        acquired = views._wait_for_idle_pool_session(self.redis, self.SESSION)
+        self.assertIsNone(acquired)
+        self.assertLess(time.monotonic() - start, 0.5)
+
+    def test_acquire_reuses_idle_entry_and_reserves_slot(self):
+        self._make_idle_entry()
+        profile = MagicMock(id=31)
+        with patch.object(views.M3UAccountProfile.objects, "get",
+                          return_value=profile), \
+             patch.object(views, "reserve_profile_slot",
+                          return_value=(True, 1, None)) as reserve_mock:
+            acquired = views._acquire_idle_pool_session(self.redis, self.SESSION)
+        self.assertIsNotNone(acquired)
+        descriptor, got_profile = acquired
+        self.assertEqual(descriptor["stream_id"], "111")
+        self.assertIs(got_profile, profile)
+        reserve_mock.assert_called_once_with(profile, self.redis)
+        self.assertEqual(self.redis.hget(self._pool_key(), "busy"), "1")
+
+    def test_acquire_skips_busy_entry(self):
+        _seed_pool_session(self.redis, session_id=self.SESSION, busy="1")
+        with patch.object(views.M3UAccountProfile.objects, "get") as prof_mock, \
+             patch.object(views, "reserve_profile_slot") as reserve_mock:
+            acquired = views._acquire_idle_pool_session(self.redis, self.SESSION)
+        self.assertIsNone(acquired)
+        prof_mock.assert_not_called()
+        reserve_mock.assert_not_called()
+
+    def test_find_matching_idle_session_requires_ip_and_user_agent(self):
+        _seed_pool_session(
+            self.redis, session_id="timeshift_other",
+            user_id=5, client_ip="1.2.3.4", client_user_agent="test-agent",
+        )
+        with patch.object(views, "release_profile_slot"):
+            views._release_pool_session(self.redis, "timeshift_other", 31)
+        matched = views._find_matching_idle_session(
+            self.redis,
+            media_id=TEST_MEDIA_ID,
+            user_id=5,
+            client_ip="1.2.3.4",
+            client_user_agent="test-agent",
+        )
+        self.assertEqual(matched, "timeshift_other")
+
+    def test_find_matching_idle_session_rejects_ip_only_partial_fingerprint(self):
+        _seed_pool_session(
+            self.redis, session_id="timeshift_other",
+            user_id=5, client_ip="1.2.3.4", client_user_agent="other-agent",
+        )
+        with patch.object(views, "release_profile_slot"):
+            views._release_pool_session(self.redis, "timeshift_other", 31)
+        matched = views._find_matching_idle_session(
+            self.redis,
+            media_id=TEST_MEDIA_ID,
+            user_id=5,
+            client_ip="1.2.3.4",
+            client_user_agent="test-agent",
+        )
+        self.assertIsNone(matched)
+
+    def test_find_matching_idle_session_rejects_different_user(self):
+        _seed_pool_session(
+            self.redis, session_id="timeshift_other",
+            user_id=99, client_ip="1.2.3.4", client_user_agent="test-agent",
+        )
+        with patch.object(views, "release_profile_slot"):
+            views._release_pool_session(self.redis, "timeshift_other", 31)
+        matched = views._find_matching_idle_session(
+            self.redis,
+            media_id=TEST_MEDIA_ID,
+            user_id=5,
+            client_ip="1.2.3.4",
+            client_user_agent="test-agent",
+        )
+        self.assertIsNone(matched)
+
+    def test_legacy_pool_entry_exists_helper_removed(self):
+        self.assertFalse(hasattr(views, "_pool_entry_exists"))
+
+    def test_new_session_uses_single_hgetall_before_pool_create(self):
+        redis = _FakeRedis()
+        request = self.factory.get(_proxy_url("timeshift_newsession1"))
+        with patch.object(views, "_authenticate_user", return_value=MagicMock(id=5)), \
+             patch.object(views, "network_access_allowed", return_value=True), \
+             patch.object(views, "Channel") as channel_cls, \
+             patch.object(views, "_user_can_access_channel", return_value=True), \
+             patch.object(views, "get_channel_catchup_streams",
+                          return_value=[_make_catchup_stream()]), \
+             patch.object(views, "get_programme_duration", return_value=40), \
+             patch.object(views, "check_user_stream_limits", return_value=True), \
+             patch.object(views, "_find_matching_idle_session", return_value=None), \
+             patch.object(views, "_attempt_timeshift_stream",
+                          return_value=MagicMock(status_code=200)), \
+             patch.object(views, "RedisClient") as redis_cls, \
+             patch.object(views, "reserve_profile_slot", return_value=(True, 1, None)), \
+             patch.object(views, "release_profile_slot"), \
+             patch.object(views, "get_transformed_credentials", side_effect=_fake_creds), \
+             patch.object(views, "get_user_active_connections", return_value=[]):
+            redis_cls.get_client.return_value = redis
+            channel_cls.objects.get.return_value = MagicMock(id=8, name="Test", logo_id=None)
+            with patch.object(redis, "hgetall", wraps=redis.hgetall) as hgetall_mock:
+                views.timeshift_proxy(
+                    request, "u", "p", "8", "2026-06-08:17-00", "8.ts",
+                )
+        pool_key = "timeshift_pool:timeshift_newsession1"
+        self.assertEqual(
+            sum(1 for c in hgetall_mock.call_args_list if c.args == (pool_key,)),
+            1,
+        )
+
+
+class TimeshiftSessionRedirectTests(TestCase):
+    """First request must establish a session via 301 redirect (VOD-style)."""
+
+    def setUp(self):
+        self.factory = RequestFactory()
+
+    def test_missing_session_id_redirects(self):
+        request = self.factory.get(_proxy_url(session_id=None))
+        with patch.object(views, "_authenticate_user", return_value=MagicMock(id=1)), \
+             patch.object(views, "network_access_allowed", return_value=True), \
+             patch.object(views, "Channel") as channel_cls, \
+             patch.object(views, "_user_can_access_channel", return_value=True), \
+             patch.object(views, "get_channel_catchup_streams",
+                          return_value=[_make_catchup_stream()]), \
+             patch.object(views, "get_programme_duration", return_value=40), \
+             patch.object(views, "parse_catchup_timestamp", return_value=True), \
+             patch.object(views, "RedisClient") as redis_cls:
+            redis_cls.get_client.return_value = _FakeRedis()
+            channel_cls.objects.get.return_value = MagicMock(id=8)
+            response = views.timeshift_proxy(
+                request, "u", "p", "8", "2026-06-08:17-00", "8.ts",
+            )
+        self.assertEqual(response.status_code, 301)
+        self.assertIn("session_id=timeshift_", response["Location"])
+
+    def test_redirect_preserves_existing_query_params(self):
+        request = self.factory.get(
+            "/timeshift/u/p/8/2026-06-08:17-00/8.ts?foo=bar&baz=1",
+        )
+        with patch.object(views, "_authenticate_user", return_value=MagicMock(id=1)), \
+             patch.object(views, "network_access_allowed", return_value=True), \
+             patch.object(views, "Channel") as channel_cls, \
+             patch.object(views, "_user_can_access_channel", return_value=True), \
+             patch.object(views, "get_channel_catchup_streams",
+                          return_value=[_make_catchup_stream()]), \
+             patch.object(views, "get_programme_duration", return_value=40), \
+             patch.object(views, "parse_catchup_timestamp", return_value=True), \
+             patch.object(views, "RedisClient") as redis_cls:
+            redis_cls.get_client.return_value = _FakeRedis()
+            channel_cls.objects.get.return_value = MagicMock(id=8)
+            response = views.timeshift_proxy(
+                request, "u", "p", "8", "2026-06-08:17-00", "8.ts",
+            )
+        self.assertEqual(response.status_code, 301)
+        location = response["Location"]
+        self.assertIn("session_id=timeshift_", location)
+        self.assertIn("foo=bar", location)
+        self.assertIn("baz=1", location)
+
+
+class TimeshiftStreamLimitExemptionTests(TestCase):
+    """Timeshift stream-limit bypass requires the same client session."""
+
+    MEDIA = TEST_MEDIA_ID
+
+    def setUp(self):
+        self.user = MagicMock(id=5, username="viewer", stream_limit=1)
+
+    def _limits_settings(self, ignore_same_channel=True):
+        return {
+            "ignore_same_channel_connections": ignore_same_channel,
+            "terminate_on_limit_exceeded": False,
+        }
+
+    def test_same_session_probe_allowed_at_limit(self):
+        connections = [{
+            "media_id": f"{self.MEDIA}_111",
+            "client_id": TEST_SESSION_ID,
+            "connected_at": 0.0,
+            "type": "timeshift",
+        }]
+        with patch("apps.proxy.utils.get_user_active_connections",
+                   return_value=connections), \
+             patch("apps.proxy.utils.CoreSettings.get_user_limits_settings",
+                   return_value=self._limits_settings()):
+            allowed = _check_user_stream_limits(
+                self.user, TEST_SESSION_ID, media_id=self.MEDIA,
+            )
+        self.assertTrue(allowed)
+
+    def test_different_session_same_programme_counts_against_limit(self):
+        connections = [{
+            "media_id": f"{self.MEDIA}_111",
+            "client_id": "timeshift_other_session",
+            "connected_at": 0.0,
+            "type": "timeshift",
+        }]
+        with patch("apps.proxy.utils.get_user_active_connections",
+                   return_value=connections), \
+             patch("apps.proxy.utils.CoreSettings.get_user_limits_settings",
+                   return_value=self._limits_settings()):
+            allowed = _check_user_stream_limits(
+                self.user, TEST_SESSION_ID, media_id=self.MEDIA,
+            )
+        self.assertFalse(allowed)
+
+
+class FakeRedisScanTests(TestCase):
+    """FakeRedis SCAN matches redis-py glob semantics used by the pool scanner."""
+
+    def setUp(self):
+        self.redis = _FakeRedis()
+        self.redis.store["timeshift_pool:timeshift_a"] = {"busy": "0"}
+        self.redis.store["timeshift_pool:timeshift_b"] = {"busy": "0"}
+        self.redis.store["timeshift_pool:other_c"] = {"busy": "0"}
+        self.redis.store["vod_persistent_connection:x"] = {}
+
+    def test_scan_glob_filters_pool_keys(self):
+        cursor = 0
+        seen = []
+        while True:
+            cursor, keys = self.redis.scan(
+                cursor, match="timeshift_pool:timeshift_*", count=1,
+            )
+            seen.extend(keys)
+            if cursor == 0:
+                break
+        self.assertEqual(
+            seen,
+            ["timeshift_pool:timeshift_a", "timeshift_pool:timeshift_b"],
+        )
+
+
+class TimeshiftRangeClassificationTests(TestCase):
+    """Startup probes must not be treated as scrubs."""
+
+    def test_full_file_request_is_not_displacing(self):
+        self.assertFalse(views._should_displace_busy_playback(None))
+
+    def test_bytes_zero_displaces_full_file_probe(self):
+        self.assertTrue(
+            views._should_displace_busy_playback("bytes=0-", busy_serving_range="none")
+        )
+
+    def test_bytes_zero_does_not_displace_active_start_stream(self):
+        self.assertFalse(
+            views._should_displace_busy_playback("bytes=0-", busy_serving_range="start")
+        )
+
+    def test_bytes_zero_without_busy_context_is_not_displacing(self):
+        self.assertFalse(views._should_displace_busy_playback("bytes=0-"))
+
+    def test_near_eof_probe_is_not_displacing(self):
+        self.assertTrue(views._is_near_eof_probe("bytes=2527702896-"))
+        self.assertFalse(views._should_displace_busy_playback("bytes=2527702896-"))
+
+    def test_near_eof_probe_uses_cached_content_length(self):
+        # 5 MB into a 10 MB file is a scrub, not a tail probe.
+        self.assertFalse(
+            views._is_near_eof_probe("bytes=5000000-", content_length="10000000")
+        )
+        self.assertTrue(
+            views._should_displace_busy_playback("bytes=5000000-", content_length="10000000")
+        )
+        # Within 512 KB of EOF is a tail probe once length is known.
+        self.assertTrue(
+            views._is_near_eof_probe("bytes=9990000-", content_length="10000000")
+        )
+
+    def test_midfile_seek_is_displacing(self):
+        self.assertTrue(views._should_displace_busy_playback("bytes=5000000-"))
+
+    def test_small_nonzero_range_is_displacing(self):
+        self.assertTrue(views._should_displace_busy_playback("bytes=1000-"))
+
+
+class TimeshiftScrubPreemptTests(TestCase):
+    """Scrub/range requests must stop the in-flight stream and reuse the pooled
+    provider slot instead of opening parallel upstream connections."""
+
+    def setUp(self):
+        self.redis = _FakeRedis()
+        self.user = MagicMock(id=5)
+        self.factory = RequestFactory()
+
+    def _conn(self, media_id, client_id):
+        return {
+            "media_id": media_id,
+            "client_id": client_id,
+            "connected_at": 0.0,
+            "type": "timeshift",
+        }
+
+    def test_preempt_stops_sibling_clients_of_same_playback(self):
+        connections = [
+            self._conn(f"{TEST_MEDIA_ID}_111", TEST_SESSION_ID),
+            self._conn("timeshift_9_2026-06-08-17-00_222", "timeshift_other"),
+        ]
+        with patch.object(views, "get_user_active_connections",
+                          return_value=connections), \
+             patch.object(views, "_unregister_stats_client") as unregister_mock:
+            views._preempt_playback_streams(self.redis, TEST_SESSION_ID, self.user)
+        unregister_mock.assert_called_once_with(
+            self.redis, f"{TEST_MEDIA_ID}_111", TEST_SESSION_ID,
+        )
+        from apps.proxy.live_proxy.redis_keys import RedisKeys
+        stop_key = RedisKeys.client_stop(f"{TEST_MEDIA_ID}_111", TEST_SESSION_ID)
+        self.assertIn(stop_key, self.redis.store)
+
+    def test_preempt_leaves_other_playbacks_alone(self):
+        connections = [
+            self._conn("timeshift_8_2026-06-09-20-00_111", "timeshift_other_pos"),
+        ]
+        with patch.object(views, "get_user_active_connections",
+                          return_value=connections), \
+             patch.object(views, "_unregister_stats_client") as unregister_mock:
+            views._preempt_playback_streams(self.redis, TEST_SESSION_ID, self.user)
+        unregister_mock.assert_not_called()
+
+    def test_busy_pool_returns_503_instead_of_second_provider_connection(self):
+        _seed_pool_session(self.redis, session_id=TEST_SESSION_ID)
+        request = self.factory.get(
+            _proxy_url(TEST_SESSION_ID),
+            HTTP_RANGE="bytes=1000-",
+        )
+        streams = [_make_catchup_stream(account_id=1, stream_id="111", profile_id=31)]
+        with patch.object(views, "_authenticate_user", return_value=MagicMock()), \
+             patch.object(views, "network_access_allowed", return_value=True), \
+             patch.object(views, "Channel") as channel_cls, \
+             patch.object(views, "_user_can_access_channel", return_value=True), \
+             patch.object(views, "get_channel_catchup_streams", return_value=streams), \
+             patch.object(views, "get_programme_duration", return_value=40), \
+             patch.object(views, "check_user_stream_limits", return_value=True), \
+             patch.object(views, "RedisClient") as redis_cls, \
+             patch.object(views, "reserve_profile_slot", return_value=(True, 1, None)), \
+             patch.object(views, "release_profile_slot"), \
+             patch.object(views, "get_transformed_credentials", side_effect=_fake_creds), \
+             patch.object(views, "get_user_active_connections", return_value=[]), \
+             patch.object(views, "_preempt_playback_streams") as preempt_mock, \
+             patch.object(views, "_wait_for_idle_pool_session", return_value=None), \
+             patch.object(views, "_attempt_timeshift_stream") as attempt_mock:
+            redis_cls.get_client.return_value = self.redis
+            channel_cls.objects.get.return_value = MagicMock(
+                id=8, name="Test", logo_id=None,
+            )
+            response = views.timeshift_proxy(
+                request, "u", "p", "8", "2026-06-08:17-00", "8.ts",
+            )
+        self.assertEqual(response.status_code, 503)
+        preempt_mock.assert_called_once()
+        attempt_mock.assert_not_called()
+        self.assertEqual(len(self._pool_entry_ids()), 1)
+
+    def _pool_entry_ids(self):
+        return [k for k in self.redis.store if k.startswith("timeshift_pool:")]
+
+    def test_startup_bytes_zero_deferred_without_preempt(self):
+        _seed_pool_session(
+            self.redis, session_id=TEST_SESSION_ID, serving_range="start",
+        )
+        request = self.factory.get(
+            _proxy_url(TEST_SESSION_ID),
+            HTTP_RANGE="bytes=0-",
+        )
+        streams = [_make_catchup_stream(account_id=1, stream_id="111", profile_id=31)]
+        with patch.object(views, "_authenticate_user", return_value=MagicMock()), \
+             patch.object(views, "network_access_allowed", return_value=True), \
+             patch.object(views, "Channel") as channel_cls, \
+             patch.object(views, "_user_can_access_channel", return_value=True), \
+             patch.object(views, "get_channel_catchup_streams", return_value=streams), \
+             patch.object(views, "get_programme_duration", return_value=40), \
+             patch.object(views, "check_user_stream_limits", return_value=True), \
+             patch.object(views, "RedisClient") as redis_cls, \
+             patch.object(views, "reserve_profile_slot", return_value=(True, 1, None)), \
+             patch.object(views, "release_profile_slot"), \
+             patch.object(views, "get_transformed_credentials", side_effect=_fake_creds), \
+             patch.object(views, "get_user_active_connections", return_value=[]), \
+             patch.object(views, "_preempt_playback_streams") as preempt_mock, \
+             patch.object(views, "_attempt_timeshift_stream") as attempt_mock:
+            redis_cls.get_client.return_value = self.redis
+            channel_cls.objects.get.return_value = MagicMock(
+                id=8, name="Test", logo_id=None,
+            )
+            response = views.timeshift_proxy(
+                request, "u", "p", "8", "2026-06-08:17-00", "8.ts",
+            )
+        self.assertEqual(response.status_code, 503)
+        preempt_mock.assert_not_called()
+        attempt_mock.assert_not_called()
+
+    def test_eof_probe_deferred_without_preempt(self):
+        _seed_pool_session(self.redis, session_id=TEST_SESSION_ID)
+        request = self.factory.get(
+            _proxy_url(TEST_SESSION_ID),
+            HTTP_RANGE="bytes=2527702896-",
+        )
+        streams = [_make_catchup_stream(account_id=1, stream_id="111", profile_id=31)]
+        with patch.object(views, "_authenticate_user", return_value=MagicMock()), \
+             patch.object(views, "network_access_allowed", return_value=True), \
+             patch.object(views, "Channel") as channel_cls, \
+             patch.object(views, "_user_can_access_channel", return_value=True), \
+             patch.object(views, "get_channel_catchup_streams", return_value=streams), \
+             patch.object(views, "get_programme_duration", return_value=40), \
+             patch.object(views, "check_user_stream_limits", return_value=True), \
+             patch.object(views, "RedisClient") as redis_cls, \
+             patch.object(views, "reserve_profile_slot", return_value=(True, 1, None)), \
+             patch.object(views, "release_profile_slot"), \
+             patch.object(views, "get_transformed_credentials", side_effect=_fake_creds), \
+             patch.object(views, "get_user_active_connections", return_value=[]), \
+             patch.object(views, "_preempt_playback_streams") as preempt_mock, \
+             patch.object(views, "_attempt_timeshift_stream") as attempt_mock:
+            redis_cls.get_client.return_value = self.redis
+            channel_cls.objects.get.return_value = MagicMock(
+                id=8, name="Test", logo_id=None,
+            )
+            response = views.timeshift_proxy(
+                request, "u", "p", "8", "2026-06-08:17-00", "8.ts",
+            )
+        self.assertEqual(response.status_code, 503)
+        preempt_mock.assert_not_called()
+        attempt_mock.assert_not_called()
+
+    def test_create_pool_session_rejects_duplicate_entry(self):
+        first = views._create_pool_session(
+            self.redis,
+            session_id=TEST_SESSION_ID,
+            media_id=TEST_MEDIA_ID,
+            user_id=5,
+            client_ip="1.2.3.4",
+            client_user_agent="test-agent",
+            account_id=1,
+            profile_id=31,
+            stream_id="111",
+            provider_timestamp="2026",
+        )
+        second = views._create_pool_session(
+            self.redis,
+            session_id=TEST_SESSION_ID,
+            media_id=TEST_MEDIA_ID,
+            user_id=5,
+            client_ip="1.2.3.4",
+            client_user_agent="test-agent",
+            account_id=2,
+            profile_id=41,
+            stream_id="222",
+            provider_timestamp="2026",
+        )
+        self.assertTrue(first)
+        self.assertFalse(second)
+        self.assertTrue(self.redis.exists(f"timeshift_pool:{TEST_SESSION_ID}"))
+
+    def test_scrub_reuses_idle_pool_without_opening_failover(self):
+        _seed_pool_session(self.redis, session_id=TEST_SESSION_ID)
+        with patch.object(views, "release_profile_slot"):
+            views._release_pool_session(self.redis, TEST_SESSION_ID, 31)
+
+        request = self.factory.get(
+            _proxy_url(TEST_SESSION_ID),
+            HTTP_RANGE="bytes=5000-",
+        )
+        streams = [_make_catchup_stream(account_id=1, stream_id="111", profile_id=31)]
+        profile = MagicMock(id=31)
+        ok = MagicMock(status_code=206)
+        with patch.object(views, "_authenticate_user", return_value=MagicMock()), \
+             patch.object(views, "network_access_allowed", return_value=True), \
+             patch.object(views, "Channel") as channel_cls, \
+             patch.object(views, "_user_can_access_channel", return_value=True), \
+             patch.object(views, "get_channel_catchup_streams", return_value=streams), \
+             patch.object(views, "get_programme_duration", return_value=40), \
+             patch.object(views, "check_user_stream_limits", return_value=True), \
+             patch.object(views, "RedisClient") as redis_cls, \
+             patch.object(views, "reserve_profile_slot",
+                          return_value=(True, 1, None)) as reserve_mock, \
+             patch.object(views, "release_profile_slot"), \
+             patch.object(views.M3UAccountProfile.objects, "get",
+                          return_value=profile), \
+             patch.object(views, "get_transformed_credentials", side_effect=_fake_creds), \
+             patch.object(views, "get_user_active_connections", return_value=[]), \
+             patch.object(views, "_preempt_playback_streams") as preempt_mock, \
+             patch.object(views, "_stream_reused_session", return_value=ok) as reuse_mock, \
+             patch.object(views, "_attempt_timeshift_stream") as attempt_mock:
+            redis_cls.get_client.return_value = self.redis
+            channel_cls.objects.get.return_value = MagicMock(
+                id=8, name="Test", logo_id=None,
+            )
+            response = views.timeshift_proxy(
+                request, "u", "p", "8", "2026-06-08:17-00", "8.ts",
+            )
+        self.assertIs(response, ok)
+        preempt_mock.assert_not_called()
+        reuse_mock.assert_called_once()
+        attempt_mock.assert_not_called()
+        # Pool acquire re-reserves the idle slot once; failover must not add another.
+        reserve_mock.assert_called_once_with(profile, self.redis)
+
 
 
 class RollupSelfHealDbTests(TestCase):

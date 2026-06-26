@@ -183,6 +183,22 @@ def check_user_stream_limits(user, client_id, media_id=None):
             logger.debug(f"[stream limits][{client_id}] Same-channel reconnect for {media_id} allowed (ignore_same_channel=True)")
             return True
 
+        # Timeshift sibling range/probe requests share one provider slot per
+        # session_id. Each distinct client/session still consumes its own slot.
+        if ignore_same_channel and media_id:
+            media_id_str = str(media_id)
+            for conn in active_connections:
+                if conn.get('type') != 'timeshift':
+                    continue
+                if conn.get('client_id') != client_id:
+                    continue
+                conn_media_id = str(conn.get('media_id') or '')
+                if conn_media_id == media_id_str or conn_media_id.startswith(f"{media_id_str}_"):
+                    logger.debug(
+                        f"[stream limits][{client_id}] Same timeshift session probe for {media_id} allowed (ignore_same_channel=True)"
+                    )
+                    return True
+
         if user_stream_count >= user.stream_limit:
             if user_limit_settings.get("terminate_on_limit_exceeded", True) == False:
                 return False
