@@ -45,8 +45,8 @@ class ResolveXcEpgPrevDaysTests(SimpleTestCase):
         mock_compute.assert_not_called()
 
     @patch("apps.channels.utils.compute_provider_archive_days_capped", return_value=14)
-    @patch("core.models.CoreSettings.get_proxy_settings", return_value={"xmltv_prev_days_override": 7})
-    def test_proxy_override_prevents_auto_detect(self, _settings, mock_compute):
+    @patch("core.models.CoreSettings.get_xmltv_prev_days_override", return_value=7)
+    def test_epg_settings_override_prevents_auto_detect(self, _override, mock_compute):
         request = self.factory.get("/xmltv.php")
         self.assertEqual(resolve_xc_epg_prev_days(request, self.user), 7)
         mock_compute.assert_not_called()

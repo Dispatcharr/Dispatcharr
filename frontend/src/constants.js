@@ -61,6 +61,9 @@ export const PROXY_SETTINGS_OPTIONS = {
     description:
       'Seconds of received buffer to start behind live when a new client connects (0 = start at live). Note: this is chunk receive time, not video duration.',
   },
+};
+
+export const EPG_SETTINGS_OPTIONS = {
   xmltv_prev_days_override: {
     label: 'XMLTV prev_days Override (catch-up)',
     description:

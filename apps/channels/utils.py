@@ -67,7 +67,7 @@ def resolve_xc_epg_prev_days(request, user, *, auto_detect_fallback=True):
     Resolution order:
         1. URL ``?prev_days=`` (explicit; 0 means no past programmes)
         2. ``user.custom_properties.epg_prev_days``
-        3. ``CoreSettings.proxy_settings.xmltv_prev_days_override`` when > 0
+        3. ``CoreSettings.epg_settings.xmltv_prev_days_override`` when > 0
         4. Auto-detect (only when *auto_detect_fallback* is True)
     """
     user_custom = (user.custom_properties or {}) if user else {}
@@ -87,9 +87,8 @@ def resolve_xc_epg_prev_days(request, user, *, auto_detect_fallback=True):
 
     from core.models import CoreSettings
 
-    proxy_settings = CoreSettings.get_proxy_settings()
     try:
-        override = int(proxy_settings.get("xmltv_prev_days_override", 0) or 0)
+        override = int(CoreSettings.get_xmltv_prev_days_override() or 0)
     except (TypeError, ValueError):
         override = 0
     if override > 0:
