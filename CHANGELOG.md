@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Performance
 
 - **M3U/XC stream refresh is faster on large accounts.** Steady-state refreshes split `bulk_update` into a lightweight touch pass (`last_seen` / `is_stale` only) for unchanged streams and a full column update only when provider metadata or catch-up fields actually change.
+- **M3U stream filters compile once per refresh.** Account filters are regex-compiled before batch workers start; accounts with no filters skip per-stream filter checks entirely.
 - **Celery workers return RSS after memory-intensive tasks.** `cleanup_memory()` accepts an optional `trim_heap` flag (glibc `malloc_trim`); Celery `task_postrun` enables it after `close_old_connections()` for M3U account/group refresh, EPG, VOD, and channel-matching tasks so worker memory drops back toward baseline instead of ratcheting across successive large jobs.
 
 ### Fixed

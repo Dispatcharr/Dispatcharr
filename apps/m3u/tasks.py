@@ -975,6 +975,39 @@ def collect_xc_streams(account_id, enabled_groups):
     return all_streams
 
 
+def _compile_m3u_stream_filters(filter_queryset):
+    """Compile account M3UFilter rows once per refresh for batch workers."""
+    compiled = []
+    for filter_obj in filter_queryset:
+        flags = (
+            re.IGNORECASE
+            if (filter_obj.custom_properties or {}).get("case_sensitive", True) is False
+            else 0
+        )
+        compiled.append((re.compile(filter_obj.regex_pattern, flags), filter_obj))
+    return compiled
+
+
+def _stream_passes_m3u_filters(name, url, group_title, compiled_filters):
+    """Return False when the first matching filter excludes the stream."""
+    for pattern, filter_obj in compiled_filters:
+        logger.trace("Checking filter pattern %s", pattern.pattern)
+        if filter_obj.filter_type == "url":
+            target = url
+        elif filter_obj.filter_type == "group":
+            target = group_title
+        else:
+            target = name
+
+        if pattern.search(target or ""):
+            logger.debug(
+                "Stream %s - %s matches filter pattern %s",
+                name, url, filter_obj.regex_pattern,
+            )
+            return not filter_obj.exclude
+    return True
+
+
 _STREAM_TOUCH_FIELDS = ("last_seen", "is_stale")
 _STREAM_CHANGED_FIELDS = (
     "name", "url", "logo_url", "tvg_id", "custom_properties", "is_adult",
@@ -1192,8 +1225,12 @@ def process_xc_category_direct(account_id, batch, groups, hash_keys):
     return retval
 
 
-def process_m3u_batch_direct(account_id, batch, groups, hash_keys):
-    """Processes a batch of M3U streams using bulk operations with thread-safe DB connections."""
+def process_m3u_batch_direct(account_id, batch, groups, hash_keys, compiled_filters=None):
+    """Processes a batch of M3U streams using bulk operations with thread-safe DB connections.
+
+    ``compiled_filters`` should be pre-built once per account refresh and shared
+    across batch workers. Pass an empty list when the account has no filters.
+    """
     from django.db import connections
 
     # Ensure clean database connections for threading
@@ -1201,23 +1238,8 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys):
 
     account = M3UAccount.objects.get(id=account_id)
 
-    compiled_filters = [
-        (
-            re.compile(
-                f.regex_pattern,
-                (
-                    re.IGNORECASE
-                    if (f.custom_properties or {}).get(
-                        "case_sensitive", True
-                    )
-                    == False
-                    else 0
-                ),
-            ),
-            f,
-        )
-        for f in account.filters.order_by("order")
-    ]
+    if compiled_filters is None:
+        compiled_filters = _compile_m3u_stream_filters(account.filters.order_by("order"))
 
     streams_to_create = []
     streams_to_update = []
@@ -1228,7 +1250,10 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys):
 
     logger.debug(f"Processing batch of {len(batch)} for M3U account {account_id}")
     if compiled_filters:
-        logger.debug(f"Using compiled filters: {[f[1].regex_pattern for f in compiled_filters]}")
+        logger.debug(
+            "Using compiled filters: %s",
+            [filter_obj.regex_pattern for _, filter_obj in compiled_filters],
+        )
     for stream_info in batch:
         try:
             name, url = stream_info["name"], stream_info["url"]
@@ -1249,25 +1274,12 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys):
             group_title = get_case_insensitive_attr(
                 stream_info["attributes"], "group-title", "Default Group"
             )
-            logger.debug(f"Processing stream: {name} - {url} in group {group_title}")
-            include = True
-            for pattern, filter in compiled_filters:
-                logger.trace(f"Checking filter pattern {pattern}")
-                target = name
-                if filter.filter_type == "url":
-                    target = url
-                elif filter.filter_type == "group":
-                    target = group_title
+            logger.trace("Processing stream: %s - %s in group %s", name, url, group_title)
 
-                if pattern.search(target or ""):
-                    logger.debug(
-                        f"Stream {name} - {url} matches filter pattern {filter.regex_pattern}"
-                    )
-                    include = not filter.exclude
-                    break
-
-            if not include:
-                logger.debug(f"Stream excluded by filter, skipping.")
+            if compiled_filters and not _stream_passes_m3u_filters(
+                name, url, group_title, compiled_filters,
+            ):
+                logger.debug("Stream excluded by filter, skipping.")
                 continue
 
             # Filter out disabled groups for this account
@@ -3322,7 +3334,15 @@ def _refresh_single_m3u_account_impl(account_id):
         )
         account = _get_active_m3u_account(account_id)
 
-        filters = list(account.filters.all())
+        compiled_stream_filters = _compile_m3u_stream_filters(
+            account.filters.order_by("order")
+        )
+        if compiled_stream_filters:
+            logger.debug(
+                "Account %s has %s stream filter(s) for this refresh",
+                account_id,
+                len(compiled_stream_filters),
+            )
 
         # Check if VOD is enabled for this account
         vod_enabled = ensure_custom_properties_dict(account.custom_properties).get(
@@ -3499,7 +3519,14 @@ def _refresh_single_m3u_account_impl(account_id):
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 # Submit batch processing tasks using direct functions (now thread-safe)
                 future_to_batch = {
-                    executor.submit(process_m3u_batch_direct, account_id, batch, existing_groups, hash_keys): i
+                    executor.submit(
+                        process_m3u_batch_direct,
+                        account_id,
+                        batch,
+                        existing_groups,
+                        hash_keys,
+                        compiled_stream_filters,
+                    ): i
                     for i, batch in enumerate(batches)
                 }
 
@@ -3612,7 +3639,14 @@ def _refresh_single_m3u_account_impl(account_id):
                 with ThreadPoolExecutor(max_workers=max_workers) as executor:
                     # Submit stream batch processing tasks (reuse standard M3U processing)
                     future_to_batch = {
-                        executor.submit(process_m3u_batch_direct, account_id, batch, existing_groups, hash_keys): i
+                        executor.submit(
+                            process_m3u_batch_direct,
+                            account_id,
+                            batch,
+                            existing_groups,
+                            hash_keys,
+                            compiled_stream_filters,
+                        ): i
                         for i, batch in enumerate(batches)
                     }
 
@@ -3819,6 +3853,8 @@ def _refresh_single_m3u_account_impl(account_id):
             del filtered_groups
         if 'channel_group_relationships' in locals():
             del channel_group_relationships
+        if 'compiled_stream_filters' in locals():
+            del compiled_stream_filters
 
         # Remove cache file after processing (success or failure)
         cache_path = os.path.join(m3u_dir, f"{account_id}.json")
