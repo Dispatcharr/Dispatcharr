@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **XC catch-up (timeshift) support**. Adds a native `/timeshift/{user}/{pass}/{stream_id}/{timestamp}/{duration}.ts` endpoint that proxies replay sessions from an Xtream Codes provider to clients such as iPlayTV (Apple TV) and TiviMate. Auth reuses the same `xc_password` custom-property the live `/live/.../{id}.ts` endpoint already uses. Catch-up sessions appear on `/stats` with a violet `TIMESHIFT` badge alongside live sessions and respect per-channel access rules. — Thanks [@cedric-marcoux](https://github.com/cedric-marcoux) (#1242)
-  - **Catch-up flags** (`tv_archive`, `tv_archive_duration`) denormalized at import time for zero-cost output queries; the per-account rollup also self-heals channels left flagged with no remaining catch-up stream (e.g. after stale-stream cleanup on manual/multi-provider channels).
+  - **Catch-up flags** (`tv_archive`, `tv_archive_duration`) denormalized at import time for zero-cost output queries; end-of-refresh SQL rollup updates channels linked to the refreshed account and self-heals stale flags on those channels only (e.g. after catch-up streams are removed or an account is deactivated).
   - **Strictly-UTC API surface, automatic per-provider timezone.** `server_info.timezone` is always `UTC` and the XC EPG `start`/`end` strings are emitted in UTC; the proxy converts the requested instant to the serving provider's own reported timezone (`server_info.timezone` captured on account refresh) at request time. No timezone to configure.
   - **Multi-provider failover.** Catch-up walks the channel's catch-up streams in order (like live playback): if one provider cannot serve the archive the next is tried, each attempt with its own account context (credentials, reported timezone, user-agent). Accounts that fail with an auth/ban-class status are not retried via their other streams.
   - **Provider pool accounting.** Catch-up reserves a provider profile slot (`connection_pool`) before connecting upstream — same contract as live and VOD — and releases it when the session ends. When the default profile is at capacity it walks the account's alternate profiles with their own resolved credentials, and answers `503` when every profile is full.
@@ -18,6 +18,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **`xmltv_prev_days_override` under `Settings → EPG`** (default `0` = auto-detect). Verbose timeshift logging follows the standard logger DEBUG level.
   - **EPG XMLTV `prev_days` auto-detection** from the provider's largest `tv_archive_duration` (capped at 30 days), overridable via setting or `?prev_days=` URL parameter.
   - **Byte path streams directly via `iter_content` + generator yield** (same pattern as the VOD proxy), with an upfront MPEG-TS sync peek that strips any PHP-warning preamble before bytes reach strict demuxers. Throughput stays comfortably above the typical 5 Mbps FHD bitrate so clients don't buffer.
+
+### Performance
+
+- **M3U/XC stream refresh is faster on large accounts.** Steady-state refreshes split `bulk_update` into a lightweight touch pass (`last_seen` / `is_stale` only) for unchanged streams and a full column update only when provider metadata or catch-up fields actually change.
+- **Celery workers return RSS after memory-intensive tasks.** `cleanup_memory()` accepts an optional `trim_heap` flag (glibc `malloc_trim`); Celery `task_postrun` enables it after `close_old_connections()` for M3U account/group refresh, EPG, VOD, and channel-matching tasks so worker memory drops back toward baseline instead of ratcheting across successive large jobs.
+
+### Fixed
+
+- **M3U group processing retries on poisoned DB connections.** `_db_query_with_retry` now treats psycopg desync errors (`DatabaseError`, e.g. `lost synchronization with server`) as transient; `process_groups` relationship loading uses it so a stale Celery worker connection resets once instead of failing the whole refresh.
 
 ## [0.27.1] - 2026-06-25
 

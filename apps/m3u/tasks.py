@@ -52,9 +52,9 @@ def _db_query_with_retry(fn, *, label="DB query", max_retries=2):
     Poisoned Celery worker connections often surface as OperationalError or as
     ``IndexError: list index out of range`` inside Django's row converters.
     """
-    from django.db import InterfaceError, OperationalError
+    from django.db import DatabaseError, InterfaceError, OperationalError
 
-    transient_errors = (OperationalError, InterfaceError, IndexError)
+    transient_errors = (OperationalError, InterfaceError, IndexError, DatabaseError)
     for attempt in range(max_retries):
         try:
             return fn()
@@ -746,13 +746,16 @@ def process_groups(account, groups, scan_start_time=None):
     all_group_objs = existing_group_objs + newly_created_group_objs
 
     # Get existing relationships for this account
-    existing_relationships = {
-        rel.channel_group.name: rel
-        for rel in ChannelGroupM3UAccount.objects.filter(
-            m3u_account=account,
-            channel_group__name__in=groups.keys()
-        ).select_related('channel_group')
-    }
+    existing_relationships = _db_query_with_retry(
+        lambda: {
+            rel.channel_group.name: rel
+            for rel in ChannelGroupM3UAccount.objects.filter(
+                m3u_account=account,
+                channel_group__name__in=groups.keys(),
+            ).select_related("channel_group")
+        },
+        label=f"process_groups relationships for account {account.id}",
+    )
 
     relations_to_create = []
     relations_to_update = []
@@ -971,6 +974,27 @@ def collect_xc_streams(account_id, enabled_groups):
     )
     return all_streams
 
+
+_STREAM_TOUCH_FIELDS = ("last_seen", "is_stale")
+_STREAM_CHANGED_FIELDS = (
+    "name", "url", "logo_url", "tvg_id", "custom_properties", "is_adult",
+    "last_seen", "updated_at", "is_stale", "stream_id", "stream_chno",
+    "channel_group_id", "is_catchup", "catchup_days",
+)
+
+
+def _bulk_update_stream_refresh_batches(changed_streams, touch_streams, *, batch_size):
+    """Unchanged streams only need last_seen/is_stale; changed rows get the full set."""
+    if touch_streams:
+        Stream.objects.bulk_update(
+            touch_streams, list(_STREAM_TOUCH_FIELDS), batch_size=batch_size,
+        )
+    if changed_streams:
+        Stream.objects.bulk_update(
+            changed_streams, list(_STREAM_CHANGED_FIELDS), batch_size=batch_size,
+        )
+
+
 def process_xc_category_direct(account_id, batch, groups, hash_keys):
     from django.db import connections
 
@@ -981,6 +1005,7 @@ def process_xc_category_direct(account_id, batch, groups, hash_keys):
 
     streams_to_create = []
     streams_to_update = []
+    streams_to_touch = []
     stream_hashes = {}
 
     try:
@@ -1111,10 +1136,6 @@ def process_xc_category_direct(account_id, batch, groups, hash_keys):
                     obj.catchup_days != stream_props["catchup_days"]
                 )
 
-                # Keep denormalized catch-up columns in memory (bulk_update reads them).
-                obj.is_catchup = stream_props["is_catchup"]
-                obj.catchup_days = stream_props["catchup_days"]
-
                 if changed:
                     for key, value in stream_props.items():
                         setattr(obj, key, value)
@@ -1123,11 +1144,9 @@ def process_xc_category_direct(account_id, batch, groups, hash_keys):
                     obj.is_stale = False
                     streams_to_update.append(obj)
                 else:
-                    # Always update last_seen, even if nothing else changed
                     obj.last_seen = timezone.now()
                     obj.is_stale = False
-                    # Don't update updated_at for unchanged streams
-                    streams_to_update.append(obj)
+                    streams_to_touch.append(obj)
 
                 # Remove from existing_streams since we've processed it
                 del existing_streams[stream_hash]
@@ -1144,13 +1163,9 @@ def process_xc_category_direct(account_id, batch, groups, hash_keys):
                 if streams_to_create:
                     Stream.objects.bulk_create(streams_to_create, ignore_conflicts=True)
 
-                if streams_to_update:
-                    # Simplified bulk update for better performance
-                    Stream.objects.bulk_update(
-                        streams_to_update,
-                        ['name', 'url', 'logo_url', 'tvg_id', 'custom_properties', 'is_adult', 'last_seen', 'updated_at', 'is_stale', 'stream_id', 'stream_chno', 'channel_group_id', 'is_catchup', 'catchup_days'],
-                        batch_size=150  # Smaller batch size for XC processing
-                    )
+                _bulk_update_stream_refresh_batches(
+                    streams_to_update, streams_to_touch, batch_size=150,
+                )
 
                 # Update last_seen for any remaining existing streams that weren't processed
                 if len(existing_streams.keys()) > 0:
@@ -1158,7 +1173,10 @@ def process_xc_category_direct(account_id, batch, groups, hash_keys):
         except Exception as e:
             logger.error(f"Bulk operation failed for XC streams: {str(e)}")
 
-        retval = f"Batch processed: {len(streams_to_create)} created, {len(streams_to_update)} updated."
+        retval = (
+            f"Batch processed: {len(streams_to_create)} created, "
+            f"{len(streams_to_update) + len(streams_to_touch)} updated."
+        )
 
     except Exception as e:
         logger.error(f"XC category processing error: {str(e)}")
@@ -1168,7 +1186,7 @@ def process_xc_category_direct(account_id, batch, groups, hash_keys):
         connections.close_all()
 
     # Aggressive garbage collection
-    del streams_to_create, streams_to_update, stream_hashes, existing_streams
+    del streams_to_create, streams_to_update, streams_to_touch, stream_hashes, existing_streams
     gc.collect()
 
     return retval
@@ -1203,6 +1221,7 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys):
 
     streams_to_create = []
     streams_to_update = []
+    streams_to_touch = []
     stream_hashes = {}
 
     name_max_length = Stream._meta.get_field('name').max_length
@@ -1350,15 +1369,10 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys):
                 obj.catchup_days != stream_props["catchup_days"]
             )
 
-            # Keep denormalized catch-up columns in memory (bulk_update reads them).
-            obj.is_catchup = stream_props["is_catchup"]
-            obj.catchup_days = stream_props["catchup_days"]
-
-            # Always update last_seen
             obj.last_seen = timezone.now()
+            obj.is_stale = False
 
             if changed:
-                # Only update fields that changed and set updated_at
                 obj.name = stream_props["name"]
                 obj.url = stream_props["url"]
                 obj.logo_url = stream_props["logo_url"]
@@ -1368,12 +1382,12 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys):
                 obj.stream_id = stream_props["stream_id"]
                 obj.stream_chno = stream_props["stream_chno"]
                 obj.channel_group_id = stream_props["channel_group_id"]
+                obj.is_catchup = stream_props["is_catchup"]
+                obj.catchup_days = stream_props["catchup_days"]
                 obj.updated_at = timezone.now()
-
-            # Always mark as not stale since we saw it in this refresh
-            obj.is_stale = False
-
-            streams_to_update.append(obj)
+                streams_to_update.append(obj)
+            else:
+                streams_to_touch.append(obj)
         else:
             # New stream
             stream_props["last_seen"] = timezone.now()
@@ -1386,23 +1400,22 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys):
             if streams_to_create:
                 Stream.objects.bulk_create(streams_to_create, ignore_conflicts=True)
 
-            if streams_to_update:
-                # Update all streams in a single bulk operation
-                Stream.objects.bulk_update(
-                    streams_to_update,
-                    ['name', 'url', 'logo_url', 'tvg_id', 'custom_properties', 'is_adult', 'last_seen', 'updated_at', 'is_stale', 'stream_id', 'stream_chno', 'channel_group_id', 'is_catchup', 'catchup_days'],
-                    batch_size=200
-                )
+            _bulk_update_stream_refresh_batches(
+                streams_to_update, streams_to_touch, batch_size=200,
+            )
     except Exception as e:
         logger.error(f"Bulk operation failed: {str(e)}")
 
-    retval = f"M3U account: {account_id}, Batch processed: {len(streams_to_create)} created, {len(streams_to_update)} updated."
+    retval = (
+        f"M3U account: {account_id}, Batch processed: {len(streams_to_create)} created, "
+        f"{len(streams_to_update) + len(streams_to_touch)} updated."
+    )
 
     # Clean up database connections for threading
     connections.close_all()
 
     # Free batch data structures (reference-counted deallocation)
-    del streams_to_create, streams_to_update, stream_hashes, existing_streams
+    del streams_to_create, streams_to_update, streams_to_touch, stream_hashes, existing_streams
     gc.collect()
 
     return retval
@@ -3813,8 +3826,6 @@ def _refresh_single_m3u_account_impl(account_id):
             os.remove(cache_path)
         except OSError:
             pass
-
-        _release_task_db_connection()
 
     return f"Dispatched jobs complete."
 

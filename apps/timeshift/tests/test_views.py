@@ -1901,9 +1901,12 @@ class TimeshiftScrubPreemptTests(TestCase):
 
 
 class RollupSelfHealDbTests(TestCase):
-    """Catch-up flag consistency after stream removal — the ChannelStream signal
-    handles bulk deletes (locked by a regression test) and the account-scoped
-    rollup self-heals stale flags on channels still linked to that account."""
+    """Catch-up flag consistency after stream removal.
+
+    The ChannelStream signal handles bulk deletes (locked by a regression test).
+    The account-scoped rollup self-heals stale flags on channels still linked
+    to that account.
+    """
 
     @classmethod
     def setUpTestData(cls):
@@ -1945,7 +1948,7 @@ class RollupSelfHealDbTests(TestCase):
 
     def test_rollup_self_heals_stale_channel_with_non_catchup_stream(self):
         # Channel still linked to the account but no active catch-up streams
-        # (e.g. catch-up flag cleared on import) — rollup must reset stale flags.
+        # (e.g. catch-up flag cleared on import). Rollup must reset stale flags.
         from apps.channels.models import Channel, ChannelStream, Stream
         from apps.m3u.tasks import rollup_channel_catchup_fields
 
@@ -1988,8 +1991,7 @@ class RollupSelfHealDbTests(TestCase):
 
     def test_rollup_keeps_and_corrects_channels_with_catchup_streams(self):
         # The self-heal pass must not touch channels that legitimately have
-        # catch-up streams — and the account-scoped pass still corrects their
-        # values.
+        # catch-up streams. The account-scoped pass still corrects their values.
         from apps.channels.models import Channel
         from apps.m3u.tasks import rollup_channel_catchup_fields
 
