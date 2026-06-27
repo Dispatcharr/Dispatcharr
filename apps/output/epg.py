@@ -1088,7 +1088,7 @@ def generate_dummy_epg(
     return xml_lines
 
 
-def generate_epg(request, profile_name=None, user=None):
+def generate_epg(request, profile_name=None, user=None, *, xc_catchup_prev_days=False):
     """
     Dynamically generate an XMLTV (EPG) file using a streaming response.
     Since the EPG data is stored independently of Channels, we group programmes
@@ -1100,11 +1100,16 @@ def generate_epg(request, profile_name=None, user=None):
         num_days = max(0, min(num_days, 365))
     except (ValueError, TypeError):
         num_days = 0
-    try:
-        prev_days = int(request.GET.get('prev_days', user_custom.get('epg_prev_days', 0)))
-        prev_days = max(0, min(prev_days, 30))
-    except (ValueError, TypeError):
-        prev_days = 0
+    if xc_catchup_prev_days:
+        from apps.channels.utils import resolve_xc_epg_prev_days
+
+        prev_days = resolve_xc_epg_prev_days(request, user)
+    else:
+        try:
+            prev_days = int(request.GET.get('prev_days', user_custom.get('epg_prev_days', 0)))
+            prev_days = max(0, min(prev_days, 30))
+        except (ValueError, TypeError):
+            prev_days = 0
     use_cached_logos = request.GET.get('cachedlogos', 'true').lower() != 'false'
     tvg_id_source = request.GET.get('tvg_id_source', 'channel_number').lower()
     cache_params = (

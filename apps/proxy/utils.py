@@ -1,6 +1,7 @@
 import logging
 from core.utils import RedisClient
 from apps.proxy.vod_proxy.multi_worker_connection_manager import MultiWorkerVODConnectionManager, get_vod_client_stop_key
+from apps.proxy.live_proxy.redis_keys import RedisKeys
 from core.models import CoreSettings
 from apps.proxy.live_proxy.services.channel_service import ChannelService
 
@@ -61,6 +62,15 @@ def attempt_stream_termination(user_id, requesting_client_id, active_connections
                 result = ChannelService.stop_client(t['media_id'], t['client_id'])
                 if result.get("status") == "error":
                     logger.warning(f"[stream limits][{requesting_client_id}] Failed to stop client {t['client_id']} on channel {t['media_id']}")
+            elif t['type'] == 'timeshift':
+                # Same Redis stop key as live; timeshift generator polls it every 5s.
+                redis_client = RedisClient.get_client()
+                if not redis_client:
+                    # Deny the new stream if we cannot stop the old one.
+                    return False
+                stop_key = RedisKeys.client_stop(t['media_id'], t['client_id'])
+                redis_client.setex(stop_key, 60, "true")
+                logger.info(f"[stream limits][{requesting_client_id}] Set stop key for timeshift client {t['client_id']}")
             else:
                 connection_manager = MultiWorkerVODConnectionManager.get_instance()
                 redis_client = connection_manager.redis_client
@@ -106,13 +116,14 @@ def get_user_active_connections(user_id):
 
                 if user_id is None or (client_user_id and int(client_user_id) == user_id):
                     try:
-                        logger.debug(f"[stream limits] Found LIVE connection for user {user_id} on channel {channel_id} with client ID {client_id}")
+                        conn_type = 'timeshift' if channel_id.startswith('timeshift_') else 'live'
+                        logger.debug(f"[stream limits] Found {conn_type.upper()} connection for user {user_id} on channel {channel_id} with client ID {client_id}")
                         connected_at = float(connected_at) if connected_at else 0
                         connections.append({
                             'media_id': channel_id,
                             'client_id': client_id,
                             'connected_at': connected_at,
-                            'type': 'live',
+                            'type': conn_type,
                         })
                     except (ValueError, TypeError):
                         pass
@@ -172,6 +183,22 @@ def check_user_stream_limits(user, client_id, media_id=None):
             logger.debug(f"[stream limits][{client_id}] Same-channel reconnect for {media_id} allowed (ignore_same_channel=True)")
             return True
 
+        # Timeshift sibling range/probe requests share one provider slot per
+        # session_id. Each distinct client/session still consumes its own slot.
+        if ignore_same_channel and media_id:
+            media_id_str = str(media_id)
+            for conn in active_connections:
+                if conn.get('type') != 'timeshift':
+                    continue
+                if conn.get('client_id') != client_id:
+                    continue
+                conn_media_id = str(conn.get('media_id') or '')
+                if conn_media_id == media_id_str or conn_media_id.startswith(f"{media_id_str}_"):
+                    logger.debug(
+                        f"[stream limits][{client_id}] Same timeshift session probe for {media_id} allowed (ignore_same_channel=True)"
+                    )
+                    return True
+
         if user_stream_count >= user.stream_limit:
             if user_limit_settings.get("terminate_on_limit_exceeded", True) == False:
                 return False
@@ -186,3 +213,28 @@ def check_user_stream_limits(user, client_id, media_id=None):
                     return False
 
     return True
+
+
+_TS_PACKET_SIZE = 188
+_TS_SYNC_BYTE = 0x47
+
+
+def find_ts_sync(buf):
+    """Return byte offset of the first valid MPEG-TS sync chain in *buf*, or -1.
+
+    Args:
+        buf: Raw bytes from an upstream HTTP response (typically the first 1 KB).
+
+    Returns:
+        Offset of the first 0x47 byte that starts three consecutive 188-byte
+        packets, or -1. Used to strip PHP/HTML preamble before streaming.
+    """
+    end = len(buf) - 2 * _TS_PACKET_SIZE
+    for i in range(0, end):
+        if (
+            buf[i] == _TS_SYNC_BYTE
+            and buf[i + _TS_PACKET_SIZE] == _TS_SYNC_BYTE
+            and buf[i + 2 * _TS_PACKET_SIZE] == _TS_SYNC_BYTE
+        ):
+            return i
+    return -1

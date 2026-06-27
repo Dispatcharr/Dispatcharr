@@ -565,13 +565,15 @@ def trim_c_allocator_heap():
         return False
 
 
-def cleanup_memory(log_usage=False, force_collection=True):
+def cleanup_memory(log_usage=False, force_collection=True, trim_heap=False):
     """
     Comprehensive memory cleanup function to reduce memory footprint
 
     Args:
         log_usage: Whether to log memory usage before and after cleanup
         force_collection: Whether to force garbage collection
+        trim_heap: Return freed C heap pages to the OS. Only use after DB
+            connections are closed (e.g. Celery task_postrun).
     """
     logger.trace("Starting memory cleanup django memory cleanup")
     # Skip logging if log level is not set to debug or more verbose (like trace)
@@ -606,6 +608,8 @@ def cleanup_memory(log_usage=False, force_collection=True):
             logger.debug(f"Memory after cleanup: {after_mem:.2f} MB (change: {after_mem-before_mem:.2f} MB)")
         except (ImportError, Exception):
             pass
+    if trim_heap:
+        trim_c_allocator_heap()
     logger.trace("Memory cleanup complete for django")
 
 
@@ -618,8 +622,7 @@ def spawn_memory_trim(close_connections=False):
     so the pooled DB connection is released first.
     """
     def _run():
-        cleanup_memory(force_collection=True)
-        trim_c_allocator_heap()
+        cleanup_memory(force_collection=True, trim_heap=True)
 
     if close_connections:
         from django.db import close_old_connections

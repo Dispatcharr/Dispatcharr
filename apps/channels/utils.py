@@ -1,7 +1,12 @@
 import logging
 import threading
 
+from django.core.cache import cache
+
 logger = logging.getLogger(__name__)
+
+PROVIDER_ARCHIVE_CACHE_TTL_SECONDS = 300
+MAX_AUTO_PREV_DAYS = 30
 
 # Bound memory/DB work per chunk for large libraries (20k+ channels).
 EPG_LOGO_APPLY_BATCH_SIZE = 500
@@ -22,6 +27,91 @@ def format_channel_number(value, empty=""):
     if value == int(value):
         return int(value)
     return value
+
+
+def compute_provider_archive_days_capped():
+    """Max ``catchup_days`` across active XC catch-up streams (capped, cached).
+
+    Cached briefly so XC XMLTV exports without an explicit ``prev_days`` do not
+    repeat the aggregate query on every request.
+    """
+    def _scan():
+        from django.db.models import Max
+
+        from apps.channels.models import Stream
+
+        result = Stream.objects.filter(
+            m3u_account__account_type="XC",
+            m3u_account__is_active=True,
+            is_catchup=True,
+        ).aggregate(max_days=Max("catchup_days"))
+        return min(result["max_days"] or 0, MAX_AUTO_PREV_DAYS)
+
+    return cache.get_or_set(
+        "channels:provider_archive_days_capped",
+        _scan,
+        PROVIDER_ARCHIVE_CACHE_TTL_SECONDS,
+    )
+
+
+def resolve_xc_epg_prev_days(request, user, *, auto_detect_fallback=True):
+    """Resolve ``prev_days`` for XC XMLTV and player_api EPG.
+
+    Args:
+        request: HTTP request (reads ``?prev_days=``).
+        user: Authenticated user (reads ``custom_properties.epg_prev_days``).
+        auto_detect_fallback: When True (XC XMLTV), fall back to the largest
+            provider archive depth. When False (per-channel EPG), return 0 so
+            ``xc_get_epg`` can expand to each channel's ``catchup_days``.
+
+    Resolution order:
+        1. URL ``?prev_days=`` (explicit; 0 means no past programmes)
+        2. ``user.custom_properties.epg_prev_days``
+        3. ``CoreSettings.epg_settings.xmltv_prev_days_override`` when > 0
+        4. Auto-detect (only when *auto_detect_fallback* is True)
+    """
+    user_custom = (user.custom_properties or {}) if user else {}
+    url_prev = request.GET.get("prev_days")
+    user_prev = user_custom.get("epg_prev_days") if user_custom else None
+
+    if url_prev is not None:
+        try:
+            return max(0, min(int(url_prev), MAX_AUTO_PREV_DAYS))
+        except (ValueError, TypeError):
+            return 0
+    if user_prev not in (None, ""):
+        try:
+            return max(0, min(int(user_prev), MAX_AUTO_PREV_DAYS))
+        except (ValueError, TypeError):
+            return 0
+
+    from core.models import CoreSettings
+
+    try:
+        override = int(CoreSettings.get_xmltv_prev_days_override() or 0)
+    except (TypeError, ValueError):
+        override = 0
+    if override > 0:
+        return max(0, min(override, MAX_AUTO_PREV_DAYS))
+    if auto_detect_fallback:
+        return compute_provider_archive_days_capped()
+    return 0
+
+
+def get_channel_catchup_streams(channel):
+    """Active catch-up streams for a channel, in ``channelstream`` order.
+
+    Inactive M3U accounts are excluded, matching live dispatch.
+    """
+    if not getattr(channel, "is_catchup", False):
+        return []
+
+    return list(
+        channel.streams.filter(is_catchup=True, m3u_account__is_active=True)
+        .order_by("channelstream__order")
+        .select_related("m3u_account")
+    )
+
 
 def increment_stream_count(account):
     with lock:

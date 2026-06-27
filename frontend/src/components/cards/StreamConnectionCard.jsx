@@ -22,6 +22,7 @@ import {
   Gauge,
   HardDriveDownload,
   HardDriveUpload,
+  Rewind,
   SquareX,
   Timer,
   Users,
@@ -486,7 +487,10 @@ const StreamConnectionCard = ({
   }, [channel.name, channel.stream_id]);
 
   const channelName =
-    channel.name || previewedStream?.name || 'Unnamed Channel';
+    channel.name ||
+    channel.channel_name ||
+    previewedStream?.name ||
+    'Unnamed Channel';
   const uptime = channel.uptime || 0;
   const bitrates = channel.bitrates || [];
   const totalBytes = channel.total_bytes || 0;
@@ -661,6 +665,18 @@ const StreamConnectionCard = ({
 
         {/* Add stream information badges */}
         <Group gap="xs" mt="5">
+          {channel.is_timeshift && (
+            <Tooltip label="Catch-up (timeshift)">
+              <Badge
+                size="sm"
+                variant="light"
+                color="violet"
+                leftSection={<Rewind size={12} />}
+              >
+                TIMESHIFT
+              </Badge>
+            </Tooltip>
+          )}
           {channel.resolution && (
             <Tooltip label="Video resolution">
               <Badge size="sm" variant="light" color="red">

@@ -2079,6 +2079,9 @@ class ProxyServer:
                     if not channel_id:
                         continue
 
+                    if channel_id.startswith("timeshift_"):
+                        continue
+
                     # Get metadata first
                     metadata = self.redis_client.hgetall(key)
                     if not metadata:
