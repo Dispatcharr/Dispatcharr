@@ -7,6 +7,7 @@ vi.mock('../../../utils/dateTimeUtils.js', () => ({
   fromNow: vi.fn(() => '5 minutes ago'),
   toFriendlyDuration: vi.fn((secs) => (secs ? `${secs}s` : null)),
   useDateTimeFormat: vi.fn(() => ({ fullDateTimeFormat: 'MM/DD/YYYY h:mm A' })),
+  formatDuration: vi.fn((secs) => (secs ? `${secs}s` : null)),
 }));
 
 // ── VodConnectionCardUtils ────────────────────────────────────────────────────
@@ -18,8 +19,6 @@ vi.mock('../../../utils/cards/VodConnectionCardUtils.js', () => ({
     currentTime: 0,
     percentage: 0,
   })),
-  formatDuration: vi.fn((secs) => (secs ? `${secs}s` : null)),
-  formatTime: vi.fn((secs) => `${secs}s`),
   getEpisodeDisplayTitle: vi.fn(() => 'S01E02 — Pilot'),
   getEpisodeSubtitle: vi.fn(() => ['Test Series', 'Season 1']),
   getMovieDisplayTitle: vi.fn(() => 'Test Movie (2022)'),

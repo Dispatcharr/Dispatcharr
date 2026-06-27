@@ -8,12 +8,16 @@ vi.mock('../../../../utils/notificationUtils.js', () => ({
 }));
 
 // Mock other heavy dependencies so the import doesn't pull in stores.
-vi.mock('../../../../api', () => ({ default: {} }));
 vi.mock('../../../../store/channelsTable', () => ({ default: { getState: vi.fn() } }));
 vi.mock('../../../../store/logos', () => ({ default: vi.fn() }));
 vi.mock('../../../../utils/forms/ChannelUtils.js', () => ({
-  OVERRIDABLE_FIELDS: new Set(['name', 'channel_number', 'tvg_id']),
-  normalizeFieldValue: (v) => v,
+  requeryChannels: vi.fn(),
+  updateChannel: vi.fn(),
+}));
+vi.mock('../../../../utils/tables/ChannelsTableUtils.js', () => ({
+  buildInlinePatch: vi.fn(),
+  getEpgOptions: vi.fn(),
+  getLogoOptions: vi.fn(),
 }));
 
 import { notifyInlineSaveError } from '../EditableCell.jsx';
