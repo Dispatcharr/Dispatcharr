@@ -3,7 +3,7 @@
 import hmac
 import itertools
 import logging
-import random
+import secrets
 import time
 from urllib.parse import urlencode
 
@@ -104,18 +104,19 @@ def timeshift_proxy(request, username, password, stream_id, timestamp, duration)
 
     session_id = request.GET.get("session_id")
     if not session_id:
-        session_id = f"timeshift_{int(time.time() * 1000)}_{random.randint(1000, 9999)}"
-        query_params = {k: request.GET.getlist(k) for k in request.GET}
-        query_params["session_id"] = [session_id]
-        redirect_url = f"{request.path}?{urlencode(query_params, doseq=True)}"
-        logger.debug("Timeshift session redirect: %s -> %s", request.path, session_id)
-        return HttpResponse(status=301, headers={"Location": redirect_url})
+        logger.debug("Timeshift session redirect: %s (new session)", request.path)
+        return _redirect_with_new_session(request)
+
+    session_entry = _get_pool_entry(redis_client, session_id)
+    if session_entry and not _pool_entry_owned_by_user(session_entry, user.id):
+        logger.info(
+            "Timeshift: rejecting foreign session_id for user %s", user.id,
+        )
+        return _redirect_with_new_session(request)
 
     # Stable client identity for stats, stop keys, and the provider pool.
     effective_session_id = session_id
     client_id = session_id
-
-    session_entry = _get_pool_entry(redis_client, session_id)
 
     # Reuse an idle pool owned by this session, or fingerprint-match a prior
     # idle session from the same client (VOD-style) before opening upstream.
@@ -178,11 +179,12 @@ def timeshift_proxy(request, username, password, stream_id, timestamp, duration)
                 acquired = _wait_for_idle_pool_session(
                     redis_client,
                     effective_session_id,
+                    user_id=user.id,
                     wait_seconds=_POOL_PREEMPT_WAIT_SECONDS,
                 )
         else:
             acquired = _acquire_idle_pool_session(
-                redis_client, effective_session_id,
+                redis_client, effective_session_id, user_id=user.id,
             )
 
     if acquired is not None:
@@ -466,6 +468,28 @@ def _score_pool_fingerprint(entry, client_ip, client_user_agent):
     return score
 
 
+def _mint_timeshift_session_id():
+    return f"timeshift_{secrets.token_urlsafe(16)}"
+
+
+def _redirect_with_new_session(request):
+    session_id = _mint_timeshift_session_id()
+    query_params = {k: request.GET.getlist(k) for k in request.GET}
+    query_params["session_id"] = [session_id]
+    redirect_url = f"{request.path}?{urlencode(query_params, doseq=True)}"
+    return HttpResponse(status=301, headers={"Location": redirect_url})
+
+
+def _pool_entry_owned_by_user(entry, user_id):
+    """True when *entry* is unclaimed or owned by *user_id*."""
+    if not entry or not entry.get("profile_id"):
+        return True
+    owner = entry.get("user_id")
+    if owner is None or owner == "":
+        return False
+    return str(owner) == str(user_id)
+
+
 def _find_matching_idle_session(
     redis_client, *, media_id, user_id, client_ip, client_user_agent,
 ):
@@ -583,7 +607,7 @@ def _pool_lock(redis_client, session_id):
     )
 
 
-def _acquire_idle_pool_session(redis_client, session_id):
+def _acquire_idle_pool_session(redis_client, session_id, *, user_id=None):
     """Re-reserve an idle session's profile slot and mark it busy."""
     if redis_client is None or not session_id:
         return None
@@ -592,6 +616,8 @@ def _acquire_idle_pool_session(redis_client, session_id):
         with _pool_lock(redis_client, session_id):
             data = redis_client.hgetall(key)
             if not data or not data.get("profile_id"):
+                return None
+            if user_id is not None and not _pool_entry_owned_by_user(data, user_id):
                 return None
             if data.get("busy") == "1":
                 return None
@@ -614,12 +640,16 @@ def _acquire_idle_pool_session(redis_client, session_id):
     return None
 
 
-def _wait_for_idle_pool_session(redis_client, session_id, wait_seconds=_POOL_WAIT_SECONDS):
+def _wait_for_idle_pool_session(
+    redis_client, session_id, *, user_id=None, wait_seconds=_POOL_WAIT_SECONDS,
+):
     if redis_client is None or not session_id:
         return None
     deadline = time.time() + wait_seconds
     while True:
-        acquired = _acquire_idle_pool_session(redis_client, session_id)
+        acquired = _acquire_idle_pool_session(
+            redis_client, session_id, user_id=user_id,
+        )
         if acquired is not None:
             return acquired
         if not _get_pool_entry(redis_client, session_id):

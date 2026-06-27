@@ -550,7 +550,7 @@ class TimeshiftProxyTimestampWiringTests(TestCase):
     def _call(self, timestamp, provider_tz="Europe/Brussels"):
         request = self.factory.get(f"/timeshift/u/p/8/{timestamp}/8.ts?session_id={TEST_SESSION_ID}")
         sentinel = MagicMock(status_code=200)
-        with patch.object(views, "_authenticate_user", return_value=MagicMock()), \
+        with patch.object(views, "_authenticate_user", return_value=MagicMock(id=5)), \
              patch.object(views, "network_access_allowed", return_value=True), \
              patch.object(views, "Channel") as channel_cls, \
              patch.object(views, "_user_can_access_channel", return_value=True), \
@@ -596,7 +596,7 @@ class TimeshiftProxyTimestampWiringTests(TestCase):
 
     def test_invalid_timestamp_rejected_before_upstream(self):
         request = self.factory.get("/timeshift/u/p/8/garbage/8.ts")
-        with patch.object(views, "_authenticate_user", return_value=MagicMock()), \
+        with patch.object(views, "_authenticate_user", return_value=MagicMock(id=5)), \
              patch.object(views, "network_access_allowed", return_value=True), \
              patch.object(views, "Channel") as channel_cls, \
              patch.object(views, "_user_can_access_channel", return_value=True), \
@@ -611,7 +611,7 @@ class TimeshiftProxyTimestampWiringTests(TestCase):
     def test_network_access_denied_returns_403(self):
         # Same network gate as other XC API endpoints (player_api, xmltv, etc.).
         request = self.factory.get(_proxy_url())
-        with patch.object(views, "_authenticate_user", return_value=MagicMock()), \
+        with patch.object(views, "_authenticate_user", return_value=MagicMock(id=5)), \
              patch.object(views, "network_access_allowed", return_value=False) as gate, \
              patch.object(views, "Channel") as channel_cls, \
              patch.object(views, "_stream_from_provider") as stream_mock:
@@ -634,7 +634,7 @@ class TimeshiftProxyFailoverTests(TestCase):
 
     def _call(self, streams, provider_responses):
         request = self.factory.get(_proxy_url())
-        with patch.object(views, "_authenticate_user", return_value=MagicMock()), \
+        with patch.object(views, "_authenticate_user", return_value=MagicMock(id=5)), \
              patch.object(views, "network_access_allowed", return_value=True), \
              patch.object(views, "Channel") as channel_cls, \
              patch.object(views, "_user_can_access_channel", return_value=True), \
@@ -758,7 +758,7 @@ class _ProxyLoopTestMixin:
             if build_side_effect is not None
             else {"return_value": ["http://example.test/x.ts"]}
         )
-        with patch.object(views, "_authenticate_user", return_value=MagicMock()), \
+        with patch.object(views, "_authenticate_user", return_value=MagicMock(id=5)), \
              patch.object(views, "network_access_allowed", return_value=True), \
              patch.object(views, "Channel") as channel_cls, \
              patch.object(views, "_user_can_access_channel", return_value=True), \
@@ -1359,7 +1359,7 @@ class TimeshiftTakeoverTests(TestCase):
         # the user's own seek gets denied.
         call_order = []
         request = RequestFactory().get(_proxy_url())
-        with patch.object(views, "_authenticate_user", return_value=MagicMock()), \
+        with patch.object(views, "_authenticate_user", return_value=MagicMock(id=5)), \
              patch.object(views, "network_access_allowed", return_value=True), \
              patch.object(views, "Channel") as channel_cls, \
              patch.object(views, "_user_can_access_channel", return_value=True), \
@@ -1413,7 +1413,9 @@ class TimeshiftSessionReuseTests(TestCase):
                           return_value=profile), \
              patch.object(views, "reserve_profile_slot",
                           return_value=(True, 1, None)) as reserve_mock:
-            acquired = views._acquire_idle_pool_session(self.redis, self.SESSION)
+            acquired = views._acquire_idle_pool_session(
+                self.redis, self.SESSION, user_id=5,
+            )
         self.assertIsNotNone(acquired)
         descriptor, got_profile = acquired
         self.assertEqual(descriptor["stream_id"], "111")
@@ -1425,10 +1427,52 @@ class TimeshiftSessionReuseTests(TestCase):
         _seed_pool_session(self.redis, session_id=self.SESSION, busy="1")
         with patch.object(views.M3UAccountProfile.objects, "get") as prof_mock, \
              patch.object(views, "reserve_profile_slot") as reserve_mock:
-            acquired = views._acquire_idle_pool_session(self.redis, self.SESSION)
+            acquired = views._acquire_idle_pool_session(
+                self.redis, self.SESSION, user_id=5,
+            )
         self.assertIsNone(acquired)
         prof_mock.assert_not_called()
         reserve_mock.assert_not_called()
+
+    def test_acquire_rejects_foreign_user(self):
+        self._make_idle_entry()
+        profile = MagicMock(id=31)
+        with patch.object(views.M3UAccountProfile.objects, "get",
+                          return_value=profile), \
+             patch.object(views, "reserve_profile_slot",
+                          return_value=(True, 1, None)) as reserve_mock:
+            acquired = views._acquire_idle_pool_session(
+                self.redis, self.SESSION, user_id=99,
+            )
+        self.assertIsNone(acquired)
+        reserve_mock.assert_not_called()
+
+    def test_foreign_session_id_redirects_instead_of_reusing_pool(self):
+        victim_session = "timeshift_victim_session"
+        _seed_pool_session(self.redis, session_id=victim_session, user_id=99)
+        request = self.factory.get(_proxy_url(victim_session))
+        attacker = MagicMock(id=5)
+        with patch.object(views, "_authenticate_user", return_value=attacker), \
+             patch.object(views, "network_access_allowed", return_value=True), \
+             patch.object(views, "Channel") as channel_cls, \
+             patch.object(views, "_user_can_access_channel", return_value=True), \
+             patch.object(views, "get_channel_catchup_streams",
+                          return_value=[_make_catchup_stream()]), \
+             patch.object(views, "get_programme_duration", return_value=40), \
+             patch.object(views, "parse_catchup_timestamp", return_value=True), \
+             patch.object(views, "RedisClient") as redis_cls, \
+             patch.object(views, "_acquire_idle_pool_session") as acquire_mock, \
+             patch.object(views, "_attempt_timeshift_stream") as attempt_mock:
+            redis_cls.get_client.return_value = self.redis
+            channel_cls.objects.get.return_value = MagicMock(id=8)
+            response = views.timeshift_proxy(
+                request, "u", "p", "8", "2026-06-08:17-00", "8.ts",
+            )
+        self.assertEqual(response.status_code, 301)
+        self.assertIn("session_id=timeshift_", response["Location"])
+        self.assertNotIn(victim_session, response["Location"])
+        acquire_mock.assert_not_called()
+        attempt_mock.assert_not_called()
 
     def test_find_matching_idle_session_requires_ip_and_user_agent(self):
         _seed_pool_session(
@@ -1729,7 +1773,7 @@ class TimeshiftScrubPreemptTests(TestCase):
             HTTP_RANGE="bytes=1000-",
         )
         streams = [_make_catchup_stream(account_id=1, stream_id="111", profile_id=31)]
-        with patch.object(views, "_authenticate_user", return_value=MagicMock()), \
+        with patch.object(views, "_authenticate_user", return_value=MagicMock(id=5)), \
              patch.object(views, "network_access_allowed", return_value=True), \
              patch.object(views, "Channel") as channel_cls, \
              patch.object(views, "_user_can_access_channel", return_value=True), \
@@ -1768,7 +1812,7 @@ class TimeshiftScrubPreemptTests(TestCase):
             HTTP_RANGE="bytes=0-",
         )
         streams = [_make_catchup_stream(account_id=1, stream_id="111", profile_id=31)]
-        with patch.object(views, "_authenticate_user", return_value=MagicMock()), \
+        with patch.object(views, "_authenticate_user", return_value=MagicMock(id=5)), \
              patch.object(views, "network_access_allowed", return_value=True), \
              patch.object(views, "Channel") as channel_cls, \
              patch.object(views, "_user_can_access_channel", return_value=True), \
@@ -1800,7 +1844,7 @@ class TimeshiftScrubPreemptTests(TestCase):
             HTTP_RANGE="bytes=2527702896-",
         )
         streams = [_make_catchup_stream(account_id=1, stream_id="111", profile_id=31)]
-        with patch.object(views, "_authenticate_user", return_value=MagicMock()), \
+        with patch.object(views, "_authenticate_user", return_value=MagicMock(id=5)), \
              patch.object(views, "network_access_allowed", return_value=True), \
              patch.object(views, "Channel") as channel_cls, \
              patch.object(views, "_user_can_access_channel", return_value=True), \
@@ -1866,7 +1910,7 @@ class TimeshiftScrubPreemptTests(TestCase):
         streams = [_make_catchup_stream(account_id=1, stream_id="111", profile_id=31)]
         profile = MagicMock(id=31)
         ok = MagicMock(status_code=206)
-        with patch.object(views, "_authenticate_user", return_value=MagicMock()), \
+        with patch.object(views, "_authenticate_user", return_value=MagicMock(id=5)), \
              patch.object(views, "network_access_allowed", return_value=True), \
              patch.object(views, "Channel") as channel_cls, \
              patch.object(views, "_user_can_access_channel", return_value=True), \
