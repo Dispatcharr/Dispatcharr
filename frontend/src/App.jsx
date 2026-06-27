@@ -40,7 +40,10 @@ const miniDrawerWidth = 60;
 const defaultRoute = '/channels';
 
 const App = () => {
-  const [open, setOpen] = useState(true);
+  const [open, setOpen] = useState(() => {
+    const stored = localStorage.getItem('dispatcharr_sidebar_open');
+    return stored === null ? true : stored === 'true';
+  });
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
   const isInitialized = useAuthStore((s) => s.isInitialized);
   const setIsAuthenticated = useAuthStore((s) => s.setIsAuthenticated);
@@ -53,7 +56,11 @@ const App = () => {
   const superuserCheckStarted = useRef(false);
 
   const toggleDrawer = () => {
-    setOpen(!open);
+    setOpen((prev) => {
+      const next = !prev;
+      localStorage.setItem('dispatcharr_sidebar_open', String(next));
+      return next;
+    });
   };
 
   // Check if a superuser exists on first load.
