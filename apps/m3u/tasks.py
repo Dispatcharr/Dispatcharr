@@ -906,6 +906,11 @@ def collect_xc_streams(account_id, enabled_groups):
             account.get_user_agent(),
         ) as xc_client:
 
+            stream_url_prefix = (
+                f"{xc_client.server_url.rstrip('/')}/live/"
+                f"{xc_client.username}/{xc_client.password}/"
+            )
+
             # Fetch ALL live streams in a single API call (much more efficient)
             logger.info("Fetching ALL live streams from XC provider...")
             all_xc_streams = xc_client.get_all_live_streams()  # Get all streams without category filter
@@ -918,46 +923,49 @@ def collect_xc_streams(account_id, enabled_groups):
 
             # Filter streams based on enabled categories
             for stream in all_xc_streams:
-                # Fall back to a generated name if the provider returns null/empty
-                stream_name = stream.get("name") or f"{account.name} - {stream.get('stream_id', 'Unknown')}"
+                category_id = str(stream.get("category_id", ""))
+                if category_id not in enabled_category_ids:
+                    continue
+
+                group_info = enabled_category_ids[category_id]
+                stream_name = stream.get("name") or (
+                    f"{account.name} - {stream.get('stream_id', 'Unknown')}"
+                )
                 if not stream.get("name"):
                     logger.warning(
-                        f"XC stream has null/empty name; using generated name '{stream_name}' "
-                        f"(stream_id={stream.get('stream_id', 'unknown')})"
+                        "XC stream has null/empty name; using generated name '%s' "
+                        "(stream_id=%s)",
+                        stream_name, stream.get("stream_id", "unknown"),
                     )
 
-                # Get the category_id for this stream
-                category_id = str(stream.get("category_id", ""))
-
-                # Only include streams from enabled categories
-                if category_id in enabled_category_ids:
-                    group_info = enabled_category_ids[category_id]
-
-                    # Convert XC stream to our standard format with all properties preserved
-                    stream_data = {
-                        "name": stream_name,
-                        "url": xc_client.get_stream_url(stream["stream_id"]),
-                        "attributes": {
-                            "tvg-id": stream.get("epg_channel_id", ""),
-                            "tvg-logo": stream.get("stream_icon", ""),
-                            "group-title": group_info["name"],
-                            # Preserve all XC stream properties as custom attributes
-                            "stream_id": str(stream.get("stream_id", "")),
-                            "num": stream.get("num"),
-                            "category_id": category_id,
-                            "stream_type": stream.get("stream_type", ""),
-                            "added": stream.get("added", ""),
-                            "is_adult": str(stream.get("is_adult", "0")),
-                            "custom_sid": stream.get("custom_sid", ""),
-                            # Include any other properties that might be present
-                            **{k: str(v) for k, v in stream.items() if k not in [
-                                "name", "stream_id", "epg_channel_id", "stream_icon",
-                                "category_id", "stream_type", "added", "is_adult", "custom_sid", "num"
-                            ] and v is not None}
-                        }
-                    }
-                    all_streams.append(stream_data)
-                    filtered_count += 1
+                stream_id = stream.get("stream_id")
+                attributes = {
+                    "tvg-id": stream.get("epg_channel_id", ""),
+                    "tvg-logo": stream.get("stream_icon", ""),
+                    "group-title": group_info["name"],
+                    "stream_id": str(stream.get("stream_id", "")),
+                    "num": stream.get("num"),
+                    "category_id": category_id,
+                    "stream_type": stream.get("stream_type", ""),
+                    "added": stream.get("added", ""),
+                    "is_adult": str(stream.get("is_adult", "0")),
+                    "custom_sid": stream.get("custom_sid", ""),
+                    **{
+                        k: str(v)
+                        for k, v in stream.items()
+                        if k not in [
+                            "name", "stream_id", "epg_channel_id", "stream_icon",
+                            "category_id", "stream_type", "added", "is_adult",
+                            "custom_sid", "num",
+                        ] and v is not None
+                    },
+                }
+                all_streams.append({
+                    "name": stream_name,
+                    "url": f"{stream_url_prefix}{stream_id}.ts",
+                    "attributes": attributes,
+                })
+                filtered_count += 1
 
             # Drop the full provider catalog before returning; only filtered rows are needed.
             del all_xc_streams
@@ -2927,6 +2935,17 @@ def sync_auto_channels(account_id, scan_start_time=None):
                     f"{pack_result['failed']} failed"
                 )
 
+            # Release per-group working sets before the next group iteration.
+            del (
+                current_streams,
+                logo_cache_by_url,
+                epg_cache_by_tvg_id,
+                existing_channel_map,
+                existing_channels_by_id,
+                existing_channel_streams,
+                processed_stream_ids,
+            )
+
         # Cleanup mode read from account.custom_properties.orphan_channel_cleanup:
         # "always" (default; key absent) removes every orphan auto channel;
         # "preserve_customized" keeps those with a ChannelOverride row;
@@ -2962,7 +2981,7 @@ def sync_auto_channels(account_id, scan_start_time=None):
             f"{channels_created} created, {channels_updated} updated, "
             f"{channels_deleted} deleted, {channels_failed} failed"
         )
-        return {
+        result = {
             "status": "ok",
             "channels_created": channels_created,
             "channels_updated": channels_updated,
@@ -2970,6 +2989,9 @@ def sync_auto_channels(account_id, scan_start_time=None):
             "channels_failed": channels_failed,
             "failed_stream_details": failed_stream_details,
         }
+        del failed_stream_details
+        gc.collect()
+        return result
 
     except Exception as e:
         logger.error(f"Error in auto channel sync for account {account_id}: {str(e)}")
@@ -3641,6 +3663,8 @@ def _refresh_single_m3u_account_impl(account_id):
             logger.info("Fetching all XC streams from provider and filtering by enabled categories...")
             all_xc_streams = collect_xc_streams(account_id, filtered_groups)
 
+            del channel_group_relationships, filtered_groups
+
             if not all_xc_streams:
                 logger.warning("No streams collected from XC groups")
             else:
@@ -3847,6 +3871,9 @@ def _refresh_single_m3u_account_impl(account_id):
             failed_stream_details=auto_sync_result.get("failed_stream_details", []),
             message=account.last_message,
         )
+
+        del auto_sync_result
+        gc.collect()
 
         # Trigger VOD refresh if enabled and account is XtreamCodes type
         if vod_enabled and account.account_type == M3UAccount.Types.XC:
