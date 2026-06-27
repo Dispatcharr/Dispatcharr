@@ -372,3 +372,39 @@ export const MONTH_ABBR = [
   'nov',
   'dec',
 ];
+
+/**
+ * @param {number} seconds
+ * @param {object} [options]
+ * @param {'hms'|'hm'|'m'} [options.precision='hms'] - Segments to include
+ * @param {boolean} [options.alwaysShowHours=false] - Always include hours segment
+ * @param {string|null} [options.zeroValue=null] - Return this when seconds is 0/falsy
+ */
+export const formatDuration = (seconds, options = {}) => {
+  const { precision = 'hms', alwaysShowHours = false, zeroValue = null } = options;
+
+  if (!seconds || seconds === 0) return zeroValue ?? '0:00';
+
+  const abs = Math.abs(seconds);
+  const h = Math.floor(abs / 3600);
+  const m = Math.floor((abs % 3600) / 60);
+  const s = Math.floor(abs % 60);
+
+  const mm = m.toString().padStart(2, '0');
+  const ss = s.toString().padStart(2, '0');
+  const hh = h.toString().padStart(2, '0');
+
+  switch (precision) {
+    case 'm':
+      return `${Math.floor(abs / 60)}`;
+    case 'hm':
+      return (alwaysShowHours || h > 0)
+        ? `${hh}:${mm}`
+        : `${m}`;
+    case 'hms':
+    default:
+      return (alwaysShowHours || h > 0)
+        ? `${hh}:${mm}:${ss}`
+        : `${m}:${ss}`;
+  }
+};

@@ -34,7 +34,7 @@ export const createLogo = (newLogoData) => {
 const setChannelEPG = (channel, values) => {
   return API.setChannelEPG(channel.id, values.epg_data_id);
 };
-const updateChannel = (values) => {
+export const updateChannel = (values) => {
   return API.updateChannel(values);
 };
 export const addChannel = (channel) => {
