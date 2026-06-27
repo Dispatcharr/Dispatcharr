@@ -1901,10 +1901,9 @@ class TimeshiftScrubPreemptTests(TestCase):
 
 
 class RollupSelfHealDbTests(TestCase):
-    """Catch-up flag consistency after stream removal — the review-#4 point 1
-    guarantees: the ChannelStream signal handles bulk deletes (locked by a
-    regression test) and the rollup self-heals any channel left flagged with
-    no catch-up stream, regardless of how the link rows disappeared."""
+    """Catch-up flag consistency after stream removal — the ChannelStream signal
+    handles bulk deletes (locked by a regression test) and the account-scoped
+    rollup self-heals stale flags on channels still linked to that account."""
 
     @classmethod
     def setUpTestData(cls):
@@ -1944,14 +1943,21 @@ class RollupSelfHealDbTests(TestCase):
         self.assertFalse(channel.is_catchup)
         self.assertEqual(channel.catchup_days, 0)
 
-    def test_rollup_self_heals_stale_channel_without_streams(self):
-        # Simulate staleness no signal caught (raw SQL delete, historic data):
-        # a flagged channel with zero catch-up streams must be reset by the
-        # rollup even though no remaining stream ties it to the account.
-        from apps.channels.models import Channel
+    def test_rollup_self_heals_stale_channel_with_non_catchup_stream(self):
+        # Channel still linked to the account but no active catch-up streams
+        # (e.g. catch-up flag cleared on import) — rollup must reset stale flags.
+        from apps.channels.models import Channel, ChannelStream, Stream
         from apps.m3u.tasks import rollup_channel_catchup_fields
 
         channel = Channel.objects.create(name="ts-rollup-stale")
+        stream = Stream.objects.create(
+            name="ts-rollup-stale-stream",
+            url="http://example.test/ts-rollup-stale",
+            m3u_account=self.account,
+            is_catchup=False,
+            catchup_days=0,
+        )
+        ChannelStream.objects.create(channel=channel, stream=stream, order=0)
         Channel.objects.filter(pk=channel.pk).update(is_catchup=True, catchup_days=9)
 
         rollup_channel_catchup_fields(self.account.id)
@@ -1959,6 +1965,26 @@ class RollupSelfHealDbTests(TestCase):
         channel.refresh_from_db()
         self.assertFalse(channel.is_catchup)
         self.assertEqual(channel.catchup_days, 0)
+
+    def test_rollup_self_heal_skips_channels_not_linked_to_account(self):
+        from apps.channels.models import Channel
+        from apps.m3u.models import M3UAccount
+        from apps.m3u.tasks import rollup_channel_catchup_fields
+
+        other_account = M3UAccount.objects.create(
+            name="ts-rollup-other",
+            server_url="http://example.test/other",
+            account_type="XC",
+            is_active=True,
+        )
+        channel = Channel.objects.create(name="ts-rollup-unrelated")
+        Channel.objects.filter(pk=channel.pk).update(is_catchup=True, catchup_days=9)
+
+        rollup_channel_catchup_fields(other_account.id)
+
+        channel.refresh_from_db()
+        self.assertTrue(channel.is_catchup)
+        self.assertEqual(channel.catchup_days, 9)
 
     def test_rollup_keeps_and_corrects_channels_with_catchup_streams(self):
         # The self-heal pass must not touch channels that legitimately have

@@ -1885,11 +1885,22 @@ def _classify_sync_failure(exc):
 
 
 def rollup_channel_catchup_fields(account_id):
-    """Roll up catch-up flags from streams to channels (active accounts only)."""
+    """Roll up catch-up flags from streams to channels (active accounts only).
+
+    Both the aggregate update and the self-heal pass are limited to channels
+    that still have at least one stream from *account_id*.
+    """
     from django.db import connection
 
+    account_channels = """
+        SELECT DISTINCT cs.channel_id
+        FROM dispatcharr_channels_channelstream cs
+        JOIN dispatcharr_channels_stream s ON s.id = cs.stream_id
+        WHERE s.m3u_account_id = %s
+    """
+
     with connection.cursor() as cur:
-        cur.execute("""
+        cur.execute(f"""
             WITH agg AS (
                 SELECT
                     cs.channel_id,
@@ -1898,12 +1909,7 @@ def rollup_channel_catchup_fields(account_id):
                 FROM dispatcharr_channels_channelstream cs
                 JOIN dispatcharr_channels_stream s ON s.id = cs.stream_id
                 JOIN m3u_m3uaccount a ON a.id = s.m3u_account_id
-                WHERE cs.channel_id IN (
-                    SELECT DISTINCT cs2.channel_id
-                    FROM dispatcharr_channels_channelstream cs2
-                    JOIN dispatcharr_channels_stream s2 ON s2.id = cs2.stream_id
-                    WHERE s2.m3u_account_id = %s
-                )
+                WHERE cs.channel_id IN ({account_channels})
                 GROUP BY cs.channel_id
             )
             UPDATE dispatcharr_channels_channel c
@@ -1914,11 +1920,12 @@ def rollup_channel_catchup_fields(account_id):
             WHERE c.id = agg.channel_id
         """, [account_id])
 
-        # Self-heal stale is_catchup flags.
-        cur.execute("""
+        # Self-heal stale is_catchup flags on account-linked channels only.
+        cur.execute(f"""
             UPDATE dispatcharr_channels_channel c
             SET is_catchup = FALSE, catchup_days = 0
             WHERE c.is_catchup = TRUE
+              AND c.id IN ({account_channels})
               AND NOT EXISTS (
                   SELECT 1
                   FROM dispatcharr_channels_channelstream cs
@@ -1928,7 +1935,7 @@ def rollup_channel_catchup_fields(account_id):
                     AND s.is_catchup = TRUE
                     AND a.is_active = TRUE
               )
-        """)
+        """, [account_id])
 
 
 @shared_task
