@@ -1089,7 +1089,7 @@ def process_xc_category_direct(account_id, batch, groups, hash_keys):
         existing_streams = {
             s.stream_hash: s
             for s in Stream.objects.filter(stream_hash__in=stream_hashes.keys()).select_related('m3u_account').only(
-                'id', 'stream_hash', 'name', 'url', 'logo_url', 'tvg_id', 'custom_properties', 'last_seen', 'updated_at', 'm3u_account', 'stream_id', 'stream_chno', 'channel_group_id'
+                'id', 'stream_hash', 'name', 'url', 'logo_url', 'tvg_id', 'custom_properties', 'last_seen', 'updated_at', 'm3u_account', 'stream_id', 'stream_chno', 'channel_group_id', 'is_catchup', 'catchup_days'
             )
         }
 
@@ -1106,8 +1106,14 @@ def process_xc_category_direct(account_id, batch, groups, hash_keys):
                     obj.is_adult != stream_props["is_adult"] or
                     obj.stream_id != stream_props["stream_id"] or
                     obj.stream_chno != stream_props["stream_chno"] or
-                    obj.channel_group_id != stream_props["channel_group_id"]
+                    obj.channel_group_id != stream_props["channel_group_id"] or
+                    obj.is_catchup != stream_props["is_catchup"] or
+                    obj.catchup_days != stream_props["catchup_days"]
                 )
+
+                # Keep denormalized catch-up columns in memory (bulk_update reads them).
+                obj.is_catchup = stream_props["is_catchup"]
+                obj.catchup_days = stream_props["catchup_days"]
 
                 if changed:
                     for key, value in stream_props.items():
@@ -1322,7 +1328,7 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys):
     existing_streams = {
         s.stream_hash: s
         for s in Stream.objects.filter(stream_hash__in=stream_hashes.keys()).select_related('m3u_account').only(
-            'id', 'stream_hash', 'name', 'url', 'logo_url', 'tvg_id', 'custom_properties', 'last_seen', 'updated_at', 'm3u_account', 'stream_id', 'stream_chno', 'channel_group_id'
+            'id', 'stream_hash', 'name', 'url', 'logo_url', 'tvg_id', 'custom_properties', 'last_seen', 'updated_at', 'm3u_account', 'stream_id', 'stream_chno', 'channel_group_id', 'is_catchup', 'catchup_days'
         )
     }
 
@@ -1339,8 +1345,14 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys):
                 obj.is_adult != stream_props["is_adult"] or
                 obj.stream_id != stream_props["stream_id"] or
                 obj.stream_chno != stream_props["stream_chno"] or
-                obj.channel_group_id != stream_props["channel_group_id"]
+                obj.channel_group_id != stream_props["channel_group_id"] or
+                obj.is_catchup != stream_props["is_catchup"] or
+                obj.catchup_days != stream_props["catchup_days"]
             )
+
+            # Keep denormalized catch-up columns in memory (bulk_update reads them).
+            obj.is_catchup = stream_props["is_catchup"]
+            obj.catchup_days = stream_props["catchup_days"]
 
             # Always update last_seen
             obj.last_seen = timezone.now()
