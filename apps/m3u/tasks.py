@@ -26,7 +26,7 @@ from core.utils import (
 from core.models import CoreSettings, UserAgent
 from core.xtream_codes import Client as XCClient
 from core.utils import send_websocket_update
-from .utils import normalize_stream_url
+from .utils import convert_js_numbered_backreferences, normalize_stream_url
 
 logger = logging.getLogger(__name__)
 
@@ -2019,6 +2019,11 @@ def sync_auto_channels(account_id, scan_start_time=None):
     from apps.epg.models import EPGData
     from django.utils import timezone
 
+    channel_name_max_len = Channel._meta.get_field("name").max_length
+    # Per-call cap on the rename substitution; bounds catastrophic
+    # backtracking on a user-supplied pattern so it cannot hang the worker.
+    rename_regex_timeout = 0.1
+
     try:
         account = M3UAccount.objects.get(id=account_id)
         logger.info(f"Starting auto channel sync for M3U account {account.name}")
@@ -2572,16 +2577,29 @@ def sync_auto_channels(account_id, scan_start_time=None):
                             else ""
                         )
                         try:
-                            # Convert $1, $2, etc. to \1, \2, etc. for consistency with M3U profiles
-                            safe_replace_pattern = re.sub(r'\$(\d+)', r'\\\1', replace)
-                            new_name = re.sub(
-                                name_regex_pattern, safe_replace_pattern, original_name
+                            # Use the regex module (not stdlib re) so rename
+                            # patterns match the JS-style semantics the UI
+                            # authors and the preview uses; the timeout bounds
+                            # catastrophic backtracking.
+                            safe_replace_pattern = convert_js_numbered_backreferences(replace)
+                            new_name = regex.sub(
+                                name_regex_pattern,
+                                safe_replace_pattern,
+                                original_name,
+                                timeout=rename_regex_timeout,
                             )
-                        except re.error as e:
+                        except (regex.error, TimeoutError) as e:
                             logger.warning(
                                 f"Regex error for group '{channel_group.name}': {e}. Using original name."
                             )
                             new_name = original_name
+
+                    # Channel.name is bounded by the column length; a rename
+                    # that expands past it would otherwise fail the whole
+                    # bulk_create and abort the sync. Cap it so one overlong
+                    # result cannot break the batch, and so the preview (which
+                    # applies the same cap) stays faithful.
+                    new_name = new_name[:channel_name_max_len]
 
                     # Check if we already have a channel for this stream
                     existing_channel = existing_channel_map.get(stream.id)

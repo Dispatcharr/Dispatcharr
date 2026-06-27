@@ -30,6 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **M3U group processing retries on poisoned DB connections.** `_db_query_with_retry` now treats psycopg desync errors (`DatabaseError`, e.g. `lost synchronization with server`) as transient; `process_groups` relationship loading uses it so a stale Celery worker connection resets once instead of failing the whole refresh.
+- **Auto Channel Sync's Find and Replace preview now matches the rename it performs.** The preview rendered the literal `$1` instead of substituting numbered capture groups, and compiled patterns with a stricter engine than the rename, so patterns like `^*` previewed a change the sync silently skipped. The live rename now uses the same `regex` engine as the preview (with a substitution timeout to bound catastrophic backtracking), both apply the `$1`→`\1` conversion through one shared helper, and a rename whose result exceeds the channel-name column length is truncated instead of aborting the whole sync. (Fixes #1332)
 
 ## [0.27.1] - 2026-06-25
 
