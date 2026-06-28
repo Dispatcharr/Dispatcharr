@@ -1034,6 +1034,26 @@ def _bulk_update_stream_refresh_batches(changed_streams, touch_streams, *, batch
         )
 
 
+def _batch_stream_count_message(created, updated, unchanged):
+    """Human-readable batch summary; unchanged = last_seen touch only."""
+    return (
+        f"{created} created, {updated} updated, {unchanged} unchanged."
+    )
+
+
+def _parse_batch_stream_counts(result):
+    """Extract (created, updated, unchanged) from a batch processing result string."""
+    if not isinstance(result, str):
+        return 0, 0, 0
+    try:
+        created = int(re.search(r"(\d+) created", result).group(1))
+        updated = int(re.search(r"(\d+) updated", result).group(1))
+        unchanged = int(re.search(r"(\d+) unchanged", result).group(1))
+        return created, updated, unchanged
+    except (AttributeError, ValueError):
+        return 0, 0, 0
+
+
 def process_xc_category_direct(account_id, batch, groups, hash_keys):
     from django.db import connections
 
@@ -1213,8 +1233,12 @@ def process_xc_category_direct(account_id, batch, groups, hash_keys):
             logger.error(f"Bulk operation failed for XC streams: {str(e)}")
 
         retval = (
-            f"Batch processed: {len(streams_to_create)} created, "
-            f"{len(streams_to_update) + len(streams_to_touch)} updated."
+            "Batch processed: "
+            + _batch_stream_count_message(
+                len(streams_to_create),
+                len(streams_to_update),
+                len(streams_to_touch),
+            )
         )
 
     except Exception as e:
@@ -1425,8 +1449,12 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys, compiled_filt
         logger.error(f"Bulk operation failed: {str(e)}")
 
     retval = (
-        f"M3U account: {account_id}, Batch processed: {len(streams_to_create)} created, "
-        f"{len(streams_to_update) + len(streams_to_touch)} updated."
+        f"M3U account: {account_id}, Batch processed: "
+        + _batch_stream_count_message(
+            len(streams_to_create),
+            len(streams_to_update),
+            len(streams_to_touch),
+        )
     )
 
     # Clean up database connections for threading
@@ -3359,6 +3387,8 @@ def _refresh_single_m3u_account_impl(account_id):
     start_time = time.time()  # For tracking elapsed time as float
     streams_created = 0
     streams_updated = 0
+    streams_unchanged = 0
+    streams_stale = 0
     streams_deleted = 0
 
     try:
@@ -3540,6 +3570,7 @@ def _refresh_single_m3u_account_impl(account_id):
         # Initialize stream counters
         streams_created = 0
         streams_updated = 0
+        streams_unchanged = 0
 
         if account.account_type == M3UAccount.Types.STADNARD:
             logger.debug(
@@ -3582,17 +3613,13 @@ def _refresh_single_m3u_account_impl(account_id):
                         completed_batches += 1
 
                         # Extract stream counts from result
-                        if isinstance(result, str):
-                            try:
-                                created_match = re.search(r"(\d+) created", result)
-                                updated_match = re.search(r"(\d+) updated", result)
-                                if created_match and updated_match:
-                                    created_count = int(created_match.group(1))
-                                    updated_count = int(updated_match.group(1))
-                                    streams_created += created_count
-                                    streams_updated += updated_count
-                            except (AttributeError, ValueError):
-                                pass
+                        created_count, updated_count, unchanged_count = (
+                            _parse_batch_stream_counts(result)
+                        )
+                        if created_count or updated_count or unchanged_count:
+                            streams_created += created_count
+                            streams_updated += updated_count
+                            streams_unchanged += unchanged_count
 
                         # Send progress update
                         progress = int((completed_batches / total_batches) * 100)
@@ -3610,7 +3637,7 @@ def _refresh_single_m3u_account_impl(account_id):
                             progress,
                             elapsed_time=current_elapsed,
                             time_remaining=time_remaining,
-                            streams_processed=streams_created + streams_updated,
+                            streams_processed=streams_created + streams_updated + streams_unchanged,
                         )
 
                         logger.debug(f"Thread batch {completed_batches}/{total_batches} completed")
@@ -3708,17 +3735,13 @@ def _refresh_single_m3u_account_impl(account_id):
                             completed_batches += 1
 
                             # Extract stream counts from result
-                            if isinstance(result, str):
-                                try:
-                                    created_match = re.search(r"(\d+) created", result)
-                                    updated_match = re.search(r"(\d+) updated", result)
-                                    if created_match and updated_match:
-                                        created_count = int(created_match.group(1))
-                                        updated_count = int(updated_match.group(1))
-                                        streams_created += created_count
-                                        streams_updated += updated_count
-                                except (AttributeError, ValueError):
-                                    pass
+                            created_count, updated_count, unchanged_count = (
+                                _parse_batch_stream_counts(result)
+                            )
+                            if created_count or updated_count or unchanged_count:
+                                streams_created += created_count
+                                streams_updated += updated_count
+                                streams_unchanged += unchanged_count
 
                             # Send progress update
                             progress = int((completed_batches / total_batches) * 100)
@@ -3736,7 +3759,7 @@ def _refresh_single_m3u_account_impl(account_id):
                                 progress,
                                 elapsed_time=current_elapsed,
                                 time_remaining=time_remaining,
-                                streams_processed=streams_created + streams_updated,
+                                streams_processed=streams_created + streams_updated + streams_unchanged,
                             )
 
                             logger.debug(f"XC thread batch {completed_batches}/{total_batches} completed")
@@ -3762,11 +3785,11 @@ def _refresh_single_m3u_account_impl(account_id):
         ).exists()  # This will never find anything but ensures DB sync
 
         # Mark streams that weren't seen in this refresh as stale (pending deletion)
-        stale_stream_count = Stream.objects.filter(
+        streams_stale = Stream.objects.filter(
             m3u_account=account,
             last_seen__lt=refresh_start_timestamp
         ).update(is_stale=True)
-        logger.info(f"Marked {stale_stream_count} streams as stale for account {account_id}")
+        logger.info(f"Marked {streams_stale} streams as stale for account {account_id}")
 
         # Mark group relationships that weren't seen in this refresh as stale (pending deletion)
         stale_group_count = ChannelGroupM3UAccount.objects.filter(
@@ -3826,13 +3849,14 @@ def _refresh_single_m3u_account_impl(account_id):
         elapsed_time = time.time() - start_time
 
         # Calculate total streams processed
-        streams_processed = streams_created + streams_updated
+        streams_processed = streams_created + streams_updated + streams_unchanged
 
         # Set status to success and update timestamp BEFORE sending the final update
         account.status = M3UAccount.Status.SUCCESS
         account.last_message = (
             f"Processing completed in {elapsed_time:.1f} seconds. "
-            f"Streams: {streams_created} created, {streams_updated} updated, {streams_deleted} removed. "
+            f"Streams: {streams_created} created, {streams_updated} updated, "
+            f"{streams_stale} marked stale, {streams_deleted} removed. "
             f"Total processed: {streams_processed}.{auto_sync_message}"
         )
         account.updated_at = timezone.now()
@@ -3845,6 +3869,7 @@ def _refresh_single_m3u_account_impl(account_id):
             elapsed_time=round(elapsed_time, 2),
             streams_created=streams_created,
             streams_updated=streams_updated,
+            streams_stale=streams_stale,
             streams_deleted=streams_deleted,
             total_processed=streams_processed,
         )
@@ -3860,6 +3885,7 @@ def _refresh_single_m3u_account_impl(account_id):
             streams_processed=streams_processed,
             streams_created=streams_created,
             streams_updated=streams_updated,
+            streams_stale=streams_stale,
             streams_deleted=streams_deleted,
             # Structured auto-sync counts so the frontend can render a
             # warning card when anything failed, without parsing the

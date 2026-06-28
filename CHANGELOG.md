@@ -29,6 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **M3U refresh completion counts now reflect actual stream changes.** The "updated" count previously included every existing stream because the summary treated `last_seen` touch-only rows as updates; it now counts only streams whose provider metadata changed. "Total processed" includes unchanged streams separately. The completion message, WebSocket payload, and parsing notification now also report how many streams were **marked stale** (missing from this refresh, pending retention-gated deletion) versus **removed** (deleted this run).
 - **M3U group processing retries on poisoned DB connections.** `_db_query_with_retry` now treats psycopg desync errors (`DatabaseError`, e.g. `lost synchronization with server`) as transient; `process_groups` relationship loading uses it so a stale Celery worker connection resets once instead of failing the whole refresh.
 
 ## [0.27.1] - 2026-06-25
