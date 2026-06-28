@@ -24,6 +24,7 @@ const ProxySettingsOptions = React.memo(({ proxySettingsForm }) => {
       'redis_chunk_ttl',
       'channel_shutdown_delay',
       'channel_init_grace_period',
+      'channel_client_wait_period',
       'new_client_behind_seconds',
     ].includes(key);
   };
@@ -37,9 +38,11 @@ const ProxySettingsOptions = React.memo(({ proxySettingsForm }) => {
         ? 3600
         : key === 'channel_shutdown_delay'
           ? 300
-          : key === 'new_client_behind_seconds'
-            ? 120
-            : 60;
+          : key === 'channel_client_wait_period'
+            ? 300
+            : key === 'new_client_behind_seconds'
+              ? 120
+              : 300;
   };
   return (
     <>

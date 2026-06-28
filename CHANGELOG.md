@@ -31,6 +31,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **M3U refresh completion counts now reflect actual stream changes.** The "updated" count previously included every existing stream because the summary treated `last_seen` touch-only rows as updates; it now counts only streams whose provider metadata changed. "Total processed" includes unchanged streams separately. The completion message, WebSocket payload, and parsing notification now also report how many streams were **marked stale** (missing from this refresh, pending retention-gated deletion) versus **removed** (deleted this run).
 - **M3U group processing retries on poisoned DB connections.** `_db_query_with_retry` now treats psycopg desync errors (`DatabaseError`, e.g. `lost synchronization with server`) as transient; `process_groups` relationship loading uses it so a stale Celery worker connection resets once instead of failing the whole refresh.
+- **New proxy setting: Client Connect Grace Period (`channel_client_wait_period`, default 5s).** Restores the grace-period behaviour that was unintentionally dropped in 0.27.1. When a channel's buffer becomes ready but no client has connected yet (e.g. after an API warmup), this controls how long to keep the channel alive before tearing down.
+
+### Changed
+
+- **Proxy grace-period settings are now split into three distinct timeouts.** In 0.27.1, `channel_init_grace_period` was repurposed as the channel startup/failover timeout (replacing a hardcoded 10s). That left API-warmup "wait for the first client" behaviour tied to `channel_shutdown_delay` (default 0s), so warmed-up channels stopped almost immediately. Behaviour is now:
+  - **`channel_init_grace_period` (default 60s, max 300s):** how long the proxy may spend connecting and cycling failover streams before giving up on startup.
+  - **`channel_client_wait_period` (default 5s):** how long a ready channel with no viewers stays up waiting for the first client (the original grace-period use case).
+  - **`channel_shutdown_delay` (default 0s):** delay after the last client disconnects only; no longer applies to warmup.
+- **Migration 0026 bumps `channel_init_grace_period` to 60s when the stored value is below 60.** Existing installs on the old 5s default (or any custom value under 60) are raised automatically. Values already at 60s or higher are unchanged. If you previously raised `channel_shutdown_delay` to keep warmed-up channels alive, set `channel_client_wait_period` instead.
 
 ## [0.27.1] - 2026-06-25
 

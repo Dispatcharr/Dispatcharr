@@ -96,7 +96,8 @@ class ProxySettingsSerializer(serializers.Serializer):
     buffering_speed = serializers.FloatField(min_value=0.1, max_value=10.0)
     redis_chunk_ttl = serializers.IntegerField(min_value=10, max_value=3600)
     channel_shutdown_delay = serializers.IntegerField(min_value=0, max_value=300)
-    channel_init_grace_period = serializers.IntegerField(min_value=0, max_value=60)
+    channel_init_grace_period = serializers.IntegerField(min_value=0, max_value=300)
+    channel_client_wait_period = serializers.IntegerField(min_value=0, max_value=300, required=False, default=5)
     new_client_behind_seconds = serializers.IntegerField(min_value=0, max_value=120, required=False, default=5)
 
     def validate_buffering_timeout(self, value):
@@ -120,9 +121,16 @@ class ProxySettingsSerializer(serializers.Serializer):
         return value
 
     def validate_channel_init_grace_period(self, value):
-        if value < 0 or value > 60:
+        if value < 0 or value > 300:
             raise serializers.ValidationError(
-                "Channel initialization timeout must be between 0 and 60 seconds"
+                "Channel initialization timeout must be between 0 and 300 seconds"
+            )
+        return value
+
+    def validate_channel_client_wait_period(self, value):
+        if value < 0 or value > 300:
+            raise serializers.ValidationError(
+                "Client connect grace period must be between 0 and 300 seconds"
             )
         return value
 

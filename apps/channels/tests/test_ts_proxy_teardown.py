@@ -923,3 +923,62 @@ class StreamManagerStillOwnerTests(TestCase):
             return_value=5,
         ):
             self.assertTrue(manager._still_owner())
+
+
+class PreActiveNoClientsTimeoutTests(TestCase):
+    @patch("apps.proxy.live_proxy.server.ConfigHelper.channel_client_wait_period", return_value=5)
+    def test_buffer_ready_uses_client_wait_period(self, _mock_client_wait):
+        should_stop, timeout, reason = ProxyServer._pre_active_no_clients_should_stop(
+            connection_ready_time=1000.0,
+            start_time=900.0,
+            now=1006.0,
+        )
+        self.assertTrue(should_stop)
+        self.assertEqual(timeout, 5)
+        self.assertEqual(reason, "client_wait")
+
+    @patch("apps.proxy.live_proxy.server.ConfigHelper.channel_client_wait_period", return_value=5)
+    def test_buffer_ready_within_client_wait_period(self, _mock_client_wait):
+        should_stop, timeout, reason = ProxyServer._pre_active_no_clients_should_stop(
+            connection_ready_time=1000.0,
+            start_time=900.0,
+            now=1003.0,
+        )
+        self.assertFalse(should_stop)
+        self.assertEqual(timeout, 5)
+        self.assertEqual(reason, "client_wait")
+
+    @patch("apps.proxy.live_proxy.server.ConfigHelper.channel_init_grace_period", return_value=60)
+    def test_startup_uses_init_grace_period(self, _mock_init_grace):
+        should_stop, timeout, reason = ProxyServer._pre_active_no_clients_should_stop(
+            connection_ready_time=None,
+            start_time=1000.0,
+            now=1070.0,
+        )
+        self.assertTrue(should_stop)
+        self.assertEqual(timeout, 60)
+        self.assertEqual(reason, "startup")
+
+    @patch("apps.proxy.live_proxy.server.ConfigHelper.channel_init_grace_period", return_value=60)
+    def test_startup_within_init_grace_period(self, _mock_init_grace):
+        should_stop, timeout, reason = ProxyServer._pre_active_no_clients_should_stop(
+            connection_ready_time=None,
+            start_time=1000.0,
+            now=1030.0,
+        )
+        self.assertFalse(should_stop)
+        self.assertEqual(timeout, 60)
+        self.assertEqual(reason, "startup")
+
+    @patch("apps.proxy.live_proxy.server.ConfigHelper.channel_shutdown_delay", return_value=30)
+    @patch("apps.proxy.live_proxy.server.ConfigHelper.channel_client_wait_period", return_value=5)
+    def test_buffer_ready_does_not_use_shutdown_delay(self, mock_client_wait, mock_shutdown_delay):
+        should_stop, _, reason = ProxyServer._pre_active_no_clients_should_stop(
+            connection_ready_time=1000.0,
+            start_time=900.0,
+            now=1006.0,
+        )
+        self.assertTrue(should_stop)
+        self.assertEqual(reason, "client_wait")
+        mock_client_wait.assert_called_once()
+        mock_shutdown_delay.assert_not_called()
