@@ -226,6 +226,42 @@ def _get_content_and_relation(content_type, content_id, preferred_m3u_account_id
         logger.error(f"Error getting content object: {e}")
         return None, None
 
+def _get_all_relations_ordered(content_obj, content_type, preferred_relation=None):
+    """Return ALL active M3U relations for the content, ordered by account
+    priority, with the already-selected preferred_relation first.
+
+    This enables provider failover: stream_vod/head_vod iterate over these
+    relations and use the first whose account has spare capacity, instead of
+    giving up after a single saturated account (the upstream behaviour).
+    """
+    try:
+        if content_type == 'series':
+            # series resolves to its first episode's relations
+            episode = content_obj.episodes.first() if hasattr(content_obj, 'episodes') else None
+            rel_owner = episode if episode is not None else content_obj
+        else:
+            rel_owner = content_obj
+
+        if not hasattr(rel_owner, 'm3u_relations'):
+            return [preferred_relation] if preferred_relation else []
+
+        relations = list(
+            rel_owner.m3u_relations
+            .filter(m3u_account__is_active=True)
+            .select_related('m3u_account')
+            .order_by('-m3u_account__priority', 'id')
+        )
+
+        if preferred_relation is not None:
+            # Put the preferred relation first, drop duplicates
+            relations = [preferred_relation] + [
+                r for r in relations if r.id != preferred_relation.id
+            ]
+        return relations
+    except Exception as e:
+        logger.error(f"[VOD-FAILOVER] Error collecting relations: {e}")
+        return [preferred_relation] if preferred_relation else []
+
 def _get_stream_url_from_relation(relation):
     """Get stream URL from the M3U relation"""
     try:
@@ -567,24 +603,40 @@ def stream_vod(request, content_type, content_id, session_id=None, profile_id=No
 
         logger.info(f"[VOD-CONTENT] Found content: {getattr(content_obj, 'name', 'Unknown')}")
 
-        # Get M3U account from relation
-        m3u_account = relation.m3u_account
-        logger.info(f"[VOD-ACCOUNT] Using M3U account: {m3u_account.name}")
+        # --- VOD FAILOVER PATCH ---
+        # Upstream uses only the single highest-priority relation and returns
+        # 503 if that account is saturated. Instead, iterate over ALL relations
+        # (preferred first, then by priority) and use the first account that
+        # has spare capacity.
+        candidate_relations = _get_all_relations_ordered(content_obj, content_type, relation)
 
-        # Get stream URL from relation
-        stream_url = _get_stream_url_from_relation(relation)
-        logger.info(f"[VOD-CONTENT] Content URL: {stream_url or 'No URL found'}")
+        m3u_account = None
+        stream_url = None
+        profile_result = None
+        for cand in candidate_relations:
+            cand_account = cand.m3u_account
+            cand_url = _get_stream_url_from_relation(cand)
+            if not cand_url:
+                logger.warning(f"[VOD-FAILOVER] No URL for relation on account {cand_account.name}, skipping")
+                continue
+            cand_profile = _get_m3u_profile(cand_account, profile_id, session_id)
+            if cand_profile and cand_profile[0]:
+                relation = cand
+                m3u_account = cand_account
+                stream_url = cand_url
+                profile_result = cand_profile
+                logger.info(f"[VOD-FAILOVER] Selected account {cand_account.name} (priority {cand_account.priority})")
+                break
+            else:
+                logger.warning(f"[VOD-FAILOVER] Account {cand_account.name} at capacity, trying next provider")
 
-        if not stream_url:
-            logger.error(f"[VOD-ERROR] No stream URL available for {content_type} {content_id}")
-            return HttpResponse("No stream URL available", status=503)
-
-        # Get M3U profile (returns profile and current connection count)
-        profile_result = _get_m3u_profile(m3u_account, profile_id, session_id)
-
-        if not profile_result or not profile_result[0]:
-            logger.error(f"[VOD-ERROR] No suitable M3U profile found for {content_type} {content_id}")
+        if not m3u_account or not stream_url or not profile_result or not profile_result[0]:
+            logger.error(f"[VOD-ERROR] No available provider with capacity for {content_type} {content_id}")
             return HttpResponse("No available stream", status=503)
+
+        logger.info(f"[VOD-ACCOUNT] Using M3U account: {m3u_account.name}")
+        logger.info(f"[VOD-CONTENT] Content URL: {stream_url or 'No URL found'}")
+        # --- END VOD FAILOVER PATCH ---
 
         m3u_profile, current_connections = profile_result
         logger.info(f"[VOD-PROFILE] Using M3U profile: {m3u_profile.id} (max_streams: {m3u_profile.max_streams}, current: {current_connections})")
@@ -686,20 +738,30 @@ def head_vod(request, content_type, content_id, session_id=None, profile_id=None
             logger.error(f"[VOD-HEAD] Content or relation not found: {content_type} {content_id}")
             return HttpResponse("Content not found", status=404)
 
-        # Get M3U account and stream URL
-        m3u_account = relation.m3u_account
-        stream_url = _get_stream_url_from_relation(relation)
-        if not stream_url:
-            logger.error(f"[VOD-HEAD] No stream URL available for {content_type} {content_id}")
-            return HttpResponse("No stream URL available", status=503)
+        # --- VOD FAILOVER PATCH (HEAD) ---
+        candidate_relations = _get_all_relations_ordered(content_obj, content_type, relation)
+        m3u_account = None
+        stream_url = None
+        profile_result = None
+        for cand in candidate_relations:
+            cand_account = cand.m3u_account
+            cand_url = _get_stream_url_from_relation(cand)
+            if not cand_url:
+                continue
+            cand_profile = _get_m3u_profile(cand_account, profile_id, session_id)
+            if cand_profile and cand_profile[0]:
+                relation = cand
+                m3u_account = cand_account
+                stream_url = cand_url
+                profile_result = cand_profile
+                break
 
-        # Get M3U profile (returns profile and current connection count)
-        profile_result = _get_m3u_profile(m3u_account, profile_id, session_id)
-        if not profile_result or not profile_result[0]:
-            logger.error(f"[VOD-HEAD] No M3U profile found or all profiles at capacity")
+        if not m3u_account or not stream_url or not profile_result or not profile_result[0]:
+            logger.error(f"[VOD-HEAD] No available provider with capacity for {content_type} {content_id}")
             return HttpResponse("No available stream", status=503)
 
         m3u_profile, current_connections = profile_result
+        # --- END VOD FAILOVER PATCH (HEAD) ---
 
         # Transform URL if needed
         final_stream_url = _transform_url(stream_url, m3u_profile)
