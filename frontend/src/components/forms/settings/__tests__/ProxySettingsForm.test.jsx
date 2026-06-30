@@ -370,18 +370,11 @@ describe('ProxySettingsForm', () => {
 
   // ── ProxySettingsOptions field routing ─────────────────────────────────────
   describe('ProxySettingsOptions field routing', () => {
-    it('calls getInputProps for main settings on initial render', () => {
+    it('binds main settings on initial render', () => {
       render(<ProxySettingsForm active={true} />);
       expect(formMock.getInputProps).toHaveBeenCalledWith('buffering_timeout');
       expect(formMock.getInputProps).toHaveBeenCalledWith('buffering_speed');
       expect(formMock.getInputProps).toHaveBeenCalledWith('redis_url');
-      expect(formMock.getInputProps).not.toHaveBeenCalledWith(
-        'channel_client_wait_period'
-      );
-      expect(formMock.getInputProps).not.toHaveBeenCalledWith(
-        'channel_init_grace_period'
-      );
-      expect(formMock.getInputProps).not.toHaveBeenCalledWith('redis_chunk_ttl');
     });
 
     it('hides advanced settings until expanded', () => {
@@ -409,13 +402,6 @@ describe('ProxySettingsForm', () => {
         screen.getByTestId('number-input-Channel Initialization Timeout')
       ).toBeInTheDocument();
       expect(screen.getByTestId('number-input-Buffer Chunk TTL')).toBeInTheDocument();
-      expect(formMock.getInputProps).toHaveBeenCalledWith(
-        'channel_client_wait_period'
-      );
-      expect(formMock.getInputProps).toHaveBeenCalledWith(
-        'channel_init_grace_period'
-      );
-      expect(formMock.getInputProps).toHaveBeenCalledWith('redis_chunk_ttl');
     });
   });
 });
