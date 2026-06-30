@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **New proxy setting: Client Connect Grace Period (`channel_client_wait_period`, default 5s).** Adds a dedicated timeout for channels that have filled their buffer but still have no viewers (`waiting_for_clients`). Previously that window reused `channel_shutdown_delay` (default 0s), so those channels were torn down almost immediately.
+
+### Changed
+
+- **Proxy grace-period settings are now split into three distinct timeouts.** The cleanup watchdog already applied `channel_init_grace_period` while a channel was still connecting (buffer not ready) and reused `channel_shutdown_delay` once `connection_ready_time` was set, including for `waiting_for_clients` with zero viewers. With the default `channel_shutdown_delay` of 0s, a buffered channel waiting for its first viewer was stopped almost immediately; raising shutdown delay was the only workaround, but that also delayed teardown after real disconnects. Behaviour is now:
+  - **`channel_init_grace_period` (default 60s, max 300s):** how long the proxy may spend connecting and cycling failover streams before giving up on startup.
+  - **`channel_client_wait_period` (default 5s):** how long a ready channel with no viewers stays up waiting for the first client (the original grace-period use case).
+  - **`channel_shutdown_delay` (default 0s):** delay after the last client disconnects only; no longer applies when the buffer is ready but no viewer has connected yet.
+- **Migration 0026 bumps `channel_init_grace_period` to 60s when the stored value is below 60.** Existing installs on the old 5s default (or any custom value under 60) are raised automatically. Values already at 60s or higher are unchanged. If you previously raised `channel_shutdown_delay` to keep buffered channels alive with no viewers, set `channel_client_wait_period` instead (Settings → Proxy → Advanced).
+- **Proxy settings UI: less-used options moved under Advanced.** Settings → Proxy now shows the day-to-day tuning fields by default (`buffering_timeout`, `buffering_speed`, `channel_shutdown_delay`, `new_client_behind_seconds`). **Buffer Chunk TTL**, **Channel Initialization Timeout**, and **Client Connect Grace Period** are tucked under **Show Advanced Settings**.
+
 ## [0.27.1] - 2026-06-25
 
 ### Security
