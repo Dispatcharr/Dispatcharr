@@ -1,4 +1,5 @@
 # apps/m3u/utils.py
+import regex
 import threading
 import logging
 from django.db import models
@@ -7,6 +8,18 @@ lock = threading.Lock()
 # Dictionary to track usage: {m3u_account_id: current_usage}
 active_streams_map = {}
 logger = logging.getLogger(__name__)
+
+
+def convert_js_numbered_backreferences(replacement):
+    """Translate JS-style ``$1``/``$2`` backreferences to Python ``\\1``/``\\2``.
+
+    Auto-sync replace patterns are authored in JS regex syntax, but Python's
+    regex engines honor backslash backreferences, not ``$1``. The live rename
+    and the UI preview must convert identically, so both call this single
+    helper and cannot drift apart (otherwise the preview promises an output
+    the sync would never produce).
+    """
+    return regex.sub(r"\$(\d+)", r"\\\1", replacement)
 
 
 def normalize_stream_url(url):

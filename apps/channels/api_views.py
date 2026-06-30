@@ -27,6 +27,7 @@ from apps.accounts.permissions import (
 
 from core.models import UserAgent, CoreSettings
 from core.utils import RedisClient, safe_upload_path
+from apps.m3u.utils import convert_js_numbered_backreferences
 
 from .models import (
     Stream,
@@ -368,6 +369,17 @@ class StreamViewSet(viewsets.ModelViewSet):
             except re.error as e:
                 exclude_error = str(e)
 
+        # The replace field accepts JS-style $1 backreferences, but the regex
+        # engine honors \1. Convert once so the preview's "after" matches the
+        # name the live rename produces (apps/m3u/tasks.py sync_auto_channels
+        # applies the same conversion on the same engine).
+        replace_repl = convert_js_numbered_backreferences(replace_pat)
+
+        # The live rename caps the result at Channel.name's column length
+        # before bulk_create; mirror that cap so the preview never shows a
+        # name the sync would truncate.
+        name_max_len = Channel._meta.get_field("name").max_length
+
         # Capped at SCAN_CAP to bound memory on huge groups; the
         # separate COUNT lets the client surface scan_limit_hit when
         # the preview covers only a sample.
@@ -390,11 +402,12 @@ class StreamViewSet(viewsets.ModelViewSet):
             total_scanned += 1
             if find_re is not None:
                 try:
-                    new_name = find_re.sub(replace_pat, name, timeout=REGEX_TIMEOUT)
+                    new_name = find_re.sub(replace_repl, name, timeout=REGEX_TIMEOUT)
                 except (TimeoutError, re.error) as e:
                     find_error = find_error or f"Pattern timed out: {e}"
                     find_re = None
                     continue
+                new_name = new_name[:name_max_len]
                 if new_name != name:
                     find_match_count += 1
                     if len(find_matches) < limit:
