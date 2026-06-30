@@ -851,4 +851,37 @@ describe('M3URefreshNotification', () => {
       expect(call[0].autoClose).toBe(12000);
     });
   });
+
+  describe('Stream count rendering on parsing complete', () => {
+    it('inlines stream summary including marked stale count', async () => {
+      mockPlaylistsStore.refreshProgress = {
+        1: {
+          account: 1,
+          action: 'parsing',
+          progress: 100,
+          status: 'success',
+          streams_created: 2,
+          streams_updated: 5,
+          streams_stale: 18,
+          streams_deleted: 3,
+          streams_processed: 1200,
+        },
+      };
+
+      renderWithProviders(<M3URefreshNotification />);
+
+      await waitFor(() => {
+        expect(showNotification).toHaveBeenCalled();
+      });
+      const call = showNotification.mock.calls.find(
+        (c) => typeof c[0]?.message === 'object'
+      );
+      expect(call).toBeDefined();
+      const { container } = render(<>{call[0].message}</>);
+      expect(container.textContent).toContain('Stream parsing complete!');
+      expect(container.textContent).toContain('18 marked stale');
+      expect(container.textContent).toContain('3 removed');
+      expect(container.textContent).toContain('Total processed: 1200');
+    });
+  });
 });

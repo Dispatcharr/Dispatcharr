@@ -39,6 +39,7 @@ export const saveChangedSettings = async (settings, changedSettings) => {
     'epg_match_ignore_prefixes',
     'epg_match_ignore_suffixes',
     'epg_match_ignore_custom',
+    'xmltv_prev_days_override',
   ];
   const dvrFields = [
     'tv_template',
@@ -125,6 +126,7 @@ export const saveChangedSettings = async (settings, changedSettings) => {
       'retention_count',
       'schedule_day_of_week',
       'max_system_events',
+      'xmltv_prev_days_override',
     ];
     if (numericFields.includes(formKey) && value != null) {
       value = typeof value === 'number' ? value : parseInt(value, 10);
@@ -222,6 +224,20 @@ export const getChangedSettings = (values, settings) => {
       continue;
     }
 
+    if (settingKey === 'xmltv_prev_days_override') {
+      const baseline = Number(
+        settings['epg_settings']?.value?.xmltv_prev_days_override ?? 0,
+      );
+      const nextVal =
+        typeof actualValue === 'number'
+          ? actualValue
+          : parseInt(actualValue, 10) || 0;
+      if (nextVal !== baseline) {
+        changedSettings[settingKey] = nextVal;
+      }
+      continue;
+    }
+
     // Convert array values (like m3u_hash_key) to comma-separated strings for comparison
     if (Array.isArray(actualValue)) {
       actualValue = actualValue.join(',');
@@ -296,6 +312,12 @@ export const parseSettings = (settings) => {
     epgSettings && Array.isArray(epgSettings.epg_match_ignore_custom)
       ? epgSettings.epg_match_ignore_custom
       : [];
+  parsed.xmltv_prev_days_override =
+    epgSettings && epgSettings.xmltv_prev_days_override != null
+      ? typeof epgSettings.xmltv_prev_days_override === 'number'
+        ? epgSettings.xmltv_prev_days_override
+        : parseInt(epgSettings.xmltv_prev_days_override, 10) || 0
+      : 0;
 
   // DVR settings - direct mapping with underscore keys
   const dvrSettings = settings['dvr_settings']?.value;

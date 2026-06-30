@@ -43,23 +43,39 @@ export const PROXY_SETTINGS_OPTIONS = {
   },
   redis_chunk_ttl: {
     label: 'Buffer Chunk TTL',
+    advanced: true,
     description:
       'Time-to-live for buffer chunks in seconds (how long stream data is cached)',
   },
   channel_shutdown_delay: {
     label: 'Channel Shutdown Delay',
     description:
-      'Delay in seconds before shutting down a channel after last client disconnects',
+      'Delay in seconds before shutting down a channel after the last client disconnects',
   },
   channel_init_grace_period: {
     label: 'Channel Initialization Timeout',
+    advanced: true,
     description:
       'Maximum seconds to wait for the initial buffer to fill while a channel is connecting. Channels that never receive enough buffered data are stopped after this limit.',
+  },
+  channel_client_wait_period: {
+    label: 'Client Connect Grace Period',
+    advanced: true,
+    description:
+      'Seconds to keep a buffered channel alive when no viewer is connected yet. Rarely needed unless you start channels programmatically.',
   },
   new_client_behind_seconds: {
     label: 'New Client Buffer (seconds)',
     description:
       'Seconds of received buffer to start behind live when a new client connects (0 = start at live). Note: this is chunk receive time, not video duration.',
+  },
+};
+
+export const EPG_SETTINGS_OPTIONS = {
+  xmltv_prev_days_override: {
+    label: 'XMLTV prev_days Override (catch-up)',
+    description:
+      'Days of past programmes in the XC EPG output. 0 = auto-detect from the providers’ tv_archive_duration (capped at 30).',
   },
 };
 

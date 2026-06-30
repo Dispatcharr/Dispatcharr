@@ -11,10 +11,9 @@ from apps.accounts.models import User
 from dispatcharr.utils import network_access_allowed
 from django.utils import timezone as django_timezone
 from django.shortcuts import get_object_or_404
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone as dt_timezone
 import html
 import time
-from tzlocal import get_localzone
 from urllib.parse import urlencode
 import base64
 import logging
@@ -23,6 +22,7 @@ import os
 from apps.m3u.utils import calculate_tuner_count
 from apps.proxy.utils import get_user_active_connections
 import regex
+from core.models import CoreSettings
 from core.utils import log_system_event, build_absolute_uri_with_port
 import hashlib
 from apps.output.epg import generate_epg, generate_dummy_programs
@@ -368,6 +368,24 @@ def _xc_allowed_output_formats(user):
     return ['ts', 'mp4']
 
 
+def _build_xc_server_info(request, hostname, port):
+    """Build XC ``server_info``; keep timezone, ``time_now``, and EPG times in UTC.
+
+    XC clients use ``server_info.timezone`` to interpret EPG start/end strings.
+    Provider-local conversion happens in the timeshift proxy at request time.
+    """
+    # datetime.timezone.utc, not ZoneInfo("UTC"); avoids mis-set Docker /etc/timezone.
+    return {
+        "url": hostname,
+        "server_protocol": request.scheme,
+        "port": port,
+        "timezone": "UTC",
+        "timestamp_now": int(time.time()),
+        "time_now": datetime.now(dt_timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
+        "process": True,
+    }
+
+
 def xc_get_info(request, full=False):
     user = xc_get_user(request)
 
@@ -400,15 +418,7 @@ def xc_get_info(request, full=False):
             "max_connections": str(max_connections),
             "allowed_output_formats": _xc_allowed_output_formats(user),
         },
-        "server_info": {
-            "url": hostname,
-            "server_protocol": request.scheme,
-            "port": port,
-            "timezone": get_localzone().key,
-            "timestamp_now": int(time.time()),
-            "time_now": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "process": True,
-        },
+        "server_info": _build_xc_server_info(request, hostname, port),
     }
 
     if full == True:
@@ -534,7 +544,7 @@ def xc_xmltv(request):
         )
         return JsonResponse({'error': 'Unauthorized'}, status=401)
 
-    return generate_epg(request, None, user)
+    return generate_epg(request, None, user, xc_catchup_prev_days=True)
 
 
 def xc_get_live_categories(user):
@@ -683,6 +693,14 @@ def _xc_channel_entry(channel, channel_num_map, _get_default_group_id, _logo_url
     effective_logo = channel.effective_logo_obj
     effective_group = channel.effective_channel_group_obj
     group_id = effective_group.id if effective_group else _get_default_group_id()
+
+    if channel.is_catchup:
+        tv_archive = 1
+        tv_archive_duration = channel.catchup_days
+    else:
+        tv_archive = 0
+        tv_archive_duration = 0
+
     return {
         "num": channel_num_int,
         "name": channel.effective_name,
@@ -697,10 +715,10 @@ def _xc_channel_entry(channel, channel_num_map, _get_default_group_id, _logo_url
         "is_adult": int(channel.is_adult),
         "category_id": str(group_id),
         "category_ids": [group_id],
-        "custom_sid": None,
-        "tv_archive": 0,
+        "custom_sid": "",
+        "tv_archive": tv_archive,
         "direct_source": "",
-        "tv_archive_duration": 0,
+        "tv_archive_duration": tv_archive_duration,
     }
 
 
@@ -733,10 +751,12 @@ def xc_get_epg(request, user, short=False):
     if not channel_id:
         raise Http404()
 
+    try:
+        resolved_channel_id = int(channel_id)
+    except (TypeError, ValueError):
+        raise Http404()
+
     channel = None
-    # Apply effective-value annotation + hidden-exclusion at every channel
-    # resolution path so a single channel lookup honors the same visibility
-    # rules as xc_get_live_streams.
     def _annotate(qs):
         return with_effective_values(qs, select_related_fks=True).exclude(hidden_from_output=True)
 
@@ -747,7 +767,7 @@ def xc_get_epg(request, user, short=False):
         if user_profile_count == 0:
             # No profile filtering - user sees all channels based on user_level
             filters = {
-                "id": channel_id,
+                "id": resolved_channel_id,
                 "user_level__lte": user.user_level
             }
             # Hide adult content if user preference is set
@@ -757,7 +777,7 @@ def xc_get_epg(request, user, short=False):
         else:
             # User has specific limited profiles assigned
             filters = {
-                "id": channel_id,
+                "id": resolved_channel_id,
                 "channelprofilemembership__enabled": True,
                 "user_level__lte": user.user_level,
                 "channelprofilemembership__channel_profile__in": user.channel_profiles.all()
@@ -770,7 +790,7 @@ def xc_get_epg(request, user, short=False):
         if not channel:
             raise Http404()
     else:
-        channel = _annotate(Channel.objects.filter(id=channel_id).select_related('epg_data__epg_source')).first()
+        channel = _annotate(Channel.objects.filter(id=resolved_channel_id).select_related('epg_data__epg_source')).first()
         if not channel:
             raise Http404()
 
@@ -818,6 +838,8 @@ def xc_get_epg(request, user, short=False):
         int(channel.effective_channel_number) if channel.effective_channel_number is not None else 0,
     )
 
+    from apps.channels.utils import resolve_xc_epg_prev_days
+
     limit = int(request.GET.get('limit', 4))
     user_custom = user.custom_properties or {}
     try:
@@ -825,12 +847,15 @@ def xc_get_epg(request, user, short=False):
         num_days = max(0, min(num_days, 365))
     except (ValueError, TypeError):
         num_days = 0
-    try:
-        prev_days = int(request.GET.get('prev_days', user_custom.get('epg_prev_days', 0)))
-        prev_days = max(0, min(prev_days, 30))
-    except (ValueError, TypeError):
-        prev_days = 0
+    prev_days = resolve_xc_epg_prev_days(request, user, auto_detect_fallback=False)
     now = django_timezone.now()
+
+    # XC catch-up clients expect past programmes when prev_days was not set.
+    _channel_is_catchup = getattr(channel, "is_catchup", False)
+    _channel_catchup_days = min(getattr(channel, "catchup_days", 0) or 0, 30)
+    if _channel_is_catchup and prev_days == 0:
+        prev_days = _channel_catchup_days
+
     lookback_cutoff = now - timedelta(days=prev_days)
     forward_cutoff = now + timedelta(days=num_days) if num_days > 0 else None
     effective_epg_data = channel.effective_epg_data_obj
@@ -876,6 +901,13 @@ def xc_get_epg(request, user, short=False):
 
     output = {"epg_listings": []}
 
+    if _channel_is_catchup:
+        archive_window = timedelta(days=_channel_catchup_days)
+    else:
+        archive_window = None
+
+    _epg_utc = dt_timezone.utc
+
     for program in programs:
         title = program['title'] if isinstance(program, dict) else program.title
         description = program['description'] if isinstance(program, dict) else program.description
@@ -900,8 +932,8 @@ def xc_get_epg(request, user, short=False):
             "epg_id": epg_id,
             "title": base64.b64encode((title or "").encode()).decode(),
             "lang": "",
-            "start": start.strftime("%Y-%m-%d %H:%M:%S"),
-            "end": end.strftime("%Y-%m-%d %H:%M:%S"),
+            "start": start.astimezone(_epg_utc).strftime("%Y-%m-%d %H:%M:%S"),
+            "end": end.astimezone(_epg_utc).strftime("%Y-%m-%d %H:%M:%S"),
             "description": base64.b64encode((description or "").encode()).decode(),
             "channel_id": str(channel_num_int),
             "start_timestamp": str(int(start.timestamp())),
@@ -909,9 +941,13 @@ def xc_get_epg(request, user, short=False):
             "stream_id": f"{channel_id}",
         }
 
-        if short == False:
-            program_output["now_playing"] = 1 if start <= django_timezone.now() <= end else 0
+        if archive_window is not None and end < now and end > now - archive_window:
+            program_output["has_archive"] = 1
+        else:
             program_output["has_archive"] = 0
+
+        if short == False:
+            program_output["now_playing"] = 1 if start <= now <= end else 0
 
         output['epg_listings'].append(program_output)
 

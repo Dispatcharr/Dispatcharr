@@ -52,6 +52,22 @@ const M3uSetupSuccess = ({ data }) => {
 };
 
 // One-line outcome summary for the notification body.
+const buildStreamSummary = (data) => {
+  if (data.streams_processed == null && data.streams_created == null) {
+    return null;
+  }
+  const created = data.streams_created || 0;
+  const updated = data.streams_updated || 0;
+  const stale = data.streams_stale || 0;
+  const removed = data.streams_deleted || 0;
+  const processed = data.streams_processed || 0;
+  return (
+    `Streams: ${created} created, ${updated} updated, ` +
+    `${stale} marked stale, ${removed} removed. ` +
+    `Total processed: ${processed}.`
+  );
+};
+
 const buildAutoSyncSummary = (data) => {
   const created = data.channels_created || 0;
   const updated = data.channels_updated || 0;
@@ -211,21 +227,29 @@ export default function M3URefreshNotification() {
 
     let body = message;
     let autoClose = 2000;
-    // Surface auto-sync counts attached to the parsing-complete event
-    // so the channel-side outcome appears in the notification body.
+    // Surface stream and auto-sync counts attached to the parsing-complete
+    // event so the outcome appears in the notification body.
     if (data.progress == 100 && data.action === 'parsing') {
+      const streamSummary = buildStreamSummary(data);
       const autoSyncSummary = buildAutoSyncSummary(data);
       const failed = data.channels_failed || 0;
       const failedDetails = Array.isArray(data.failed_stream_details)
         ? data.failed_stream_details
         : [];
-      if (autoSyncSummary) {
+      if (streamSummary || autoSyncSummary) {
         body = (
           <Stack gap={4}>
             <Text size="sm">{message}</Text>
-            <Text size="xs" c="dimmed">
-              {autoSyncSummary}
-            </Text>
+            {streamSummary && (
+              <Text size="xs" c="dimmed">
+                {streamSummary}
+              </Text>
+            )}
+            {autoSyncSummary && (
+              <Text size="xs" c="dimmed">
+                {autoSyncSummary}
+              </Text>
+            )}
             {failed > 0 && failedDetails.length > 0 && (
               <Button
                 size="xs"

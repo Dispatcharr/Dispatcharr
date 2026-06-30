@@ -14,6 +14,21 @@ vi.mock('../../../../constants.js', () => ({
       description: 'Speed multiplier',
     },
     redis_url: { label: 'Redis URL', description: 'Redis connection URL' },
+    redis_chunk_ttl: {
+      label: 'Buffer Chunk TTL',
+      advanced: true,
+      description: 'Chunk TTL',
+    },
+    channel_init_grace_period: {
+      label: 'Channel Initialization Timeout',
+      advanced: true,
+      description: 'Init timeout',
+    },
+    channel_client_wait_period: {
+      label: 'Client Connect Grace Period',
+      advanced: true,
+      description: 'Advanced grace period',
+    },
   },
 }));
 
@@ -71,6 +86,8 @@ vi.mock('@mantine/core', () => ({
     </div>
   ),
   Stack: ({ children }) => <div>{children}</div>,
+  Collapse: ({ in: isOpen, children }) =>
+    isOpen ? <div data-testid="collapse-open">{children}</div> : null,
   TextInput: ({ label, description, ...rest }) => (
     <div>
       <label>{label}</label>
@@ -353,11 +370,38 @@ describe('ProxySettingsForm', () => {
 
   // ── ProxySettingsOptions field routing ─────────────────────────────────────
   describe('ProxySettingsOptions field routing', () => {
-    it('calls getInputProps for each PROXY_SETTINGS_OPTIONS key', () => {
+    it('binds main settings on initial render', () => {
       render(<ProxySettingsForm active={true} />);
       expect(formMock.getInputProps).toHaveBeenCalledWith('buffering_timeout');
       expect(formMock.getInputProps).toHaveBeenCalledWith('buffering_speed');
       expect(formMock.getInputProps).toHaveBeenCalledWith('redis_url');
+    });
+
+    it('hides advanced settings until expanded', () => {
+      render(<ProxySettingsForm active={true} />);
+      expect(
+        screen.queryByTestId('number-input-Client Connect Grace Period')
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByTestId('number-input-Channel Initialization Timeout')
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByTestId('number-input-Buffer Chunk TTL')
+      ).not.toBeInTheDocument();
+      expect(screen.getByText('Show Advanced Settings')).toBeInTheDocument();
+    });
+
+    it('shows advanced settings when expanded', () => {
+      render(<ProxySettingsForm active={true} />);
+      fireEvent.click(screen.getByText('Show Advanced Settings'));
+      expect(screen.getByTestId('collapse-open')).toBeInTheDocument();
+      expect(
+        screen.getByTestId('number-input-Client Connect Grace Period')
+      ).toBeInTheDocument();
+      expect(
+        screen.getByTestId('number-input-Channel Initialization Timeout')
+      ).toBeInTheDocument();
+      expect(screen.getByTestId('number-input-Buffer Chunk TTL')).toBeInTheDocument();
     });
   });
 });

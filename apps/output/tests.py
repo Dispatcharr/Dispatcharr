@@ -896,3 +896,22 @@ class XcVodSeriesRegressionTests(TestCase):
         stream = xc_get_vod_streams(self.request, self.user)[0]
 
         self.assertEqual(stream["container_extension"], first.container_extension)
+
+
+class GenerateEpgPrevDaysTests(SimpleTestCase):
+    """Profile EPG keeps legacy prev_days=0 unless URL or user setting says otherwise."""
+
+    def setUp(self):
+        self.factory = RequestFactory()
+
+    @patch("apps.output.epg.stream_cached_response")
+    @patch("apps.output.epg.Channel.objects")
+    def test_non_xc_epg_defaults_prev_days_to_zero(self, _channels, mock_cache):
+        from apps.output.epg import generate_epg
+
+        mock_cache.side_effect = lambda cache_key, _source, **_kwargs: cache_key
+        request = self.factory.get("/epg/")
+
+        cache_key = generate_epg(request, profile_name="test", user=None)
+
+        self.assertIn(":p=0:", cache_key)
