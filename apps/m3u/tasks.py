@@ -3711,7 +3711,23 @@ def _refresh_single_m3u_account_impl(account_id):
             del channel_group_relationships, filtered_groups
 
             if not all_xc_streams:
-                logger.warning("No streams collected from XC groups")
+                # Empty XC fetch (provider hiccup, fetch error, or no enabled
+                # category matched) must not fall through to stale-marking and
+                # auto-sync, which would delete the entire auto-created lineup.
+                logger.error(
+                    f"No streams collected from XC provider for account "
+                    f"{account_id}; aborting refresh to preserve the existing "
+                    f"channel lineup."
+                )
+                error_msg = "No streams returned from Xtream Codes provider"
+                _set_m3u_account_status(
+                    account_id,
+                    M3UAccount.Status.ERROR,
+                    error_msg,
+                    notify_error=True,
+                    ws_error=error_msg,
+                )
+                return "Failed to update m3u account, no streams returned from provider"
             else:
                 # Now batch by stream count (like standard M3U processing)
                 batches = [
