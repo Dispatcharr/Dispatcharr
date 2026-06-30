@@ -99,6 +99,7 @@ def cleanup_task_memory(**kwargs):
     memory_intensive_tasks = [
         'apps.m3u.tasks.refresh_single_m3u_account',
         'apps.m3u.tasks.refresh_m3u_accounts',
+        'apps.m3u.tasks.refresh_m3u_groups',
         'apps.m3u.tasks.process_m3u_batch',
         'apps.m3u.tasks.process_xc_category',
         'apps.m3u.tasks.sync_auto_channels',
@@ -121,7 +122,7 @@ def cleanup_task_memory(**kwargs):
         from core.utils import cleanup_memory
 
         # Use the comprehensive cleanup function
-        cleanup_memory(log_usage=True, force_collection=True)
+        cleanup_memory(log_usage=True, force_collection=True, trim_heap=True)
 
         # Log memory usage if psutil is installed
         try:

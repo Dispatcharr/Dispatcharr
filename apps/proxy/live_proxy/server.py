@@ -789,7 +789,7 @@ class ProxyServer:
                 attempt_key = RedisKeys.connection_attempt(channel_id)
                 self.redis_client.setex(attempt_key, 60, str(time.time()))
 
-                logger.info(f"Channel {channel_id} in {ChannelState.CONNECTING} state - will start grace period after connection")
+                logger.info(f"Channel {channel_id} in {ChannelState.CONNECTING} state - waiting for buffer to fill")
             return True
 
         except Exception as e:
@@ -909,6 +909,26 @@ class ProxyServer:
     def _shutdown_disconnect_ttl():
         delay = ConfigHelper.channel_shutdown_delay()
         return max(int(delay * 2), 60)
+
+    @staticmethod
+    def _pre_active_no_clients_should_stop(connection_ready_time, start_time, now=None):
+        """
+        Decide whether a pre-active channel with zero clients should be stopped.
+
+        Returns (should_stop, timeout_seconds, reason) where reason is
+        'client_wait' (buffer ready, waiting for first viewer) or 'startup'
+        (still connecting / filling buffer).
+        """
+        now = now if now is not None else time.time()
+        if connection_ready_time:
+            elapsed = now - connection_ready_time
+            timeout = ConfigHelper.channel_client_wait_period()
+            return elapsed > timeout, timeout, "client_wait"
+        if start_time:
+            elapsed = now - start_time
+            timeout = ConfigHelper.channel_init_grace_period()
+            return elapsed > timeout, timeout, "startup"
+        return False, None, None
 
     def _wait_for_shutdown_delay(self, channel_id):
         """
@@ -1758,7 +1778,7 @@ class ProxyServer:
                             if time.time() % 30 < 1:  # Every ~30 seconds
                                 logger.info(f"Channel {channel_id} has {total_clients} clients, state: {channel_state}")
 
-                            # If in connecting or waiting_for_clients state, check grace period
+                            # Pre-active channels: init timeouts and buffer-ready promotion
                             if channel_state in [ChannelState.INITIALIZING, ChannelState.CONNECTING, ChannelState.WAITING_FOR_CLIENTS]:
                                 # Check if channel is already stopping
                                 if self.redis_client:
@@ -1799,52 +1819,34 @@ class ProxyServer:
                                     start_time = connection_attempt_time or init_time
 
                                     if start_time:
-                                        # Check which timeout to apply based on channel lifecycle
-                                        if connection_ready_time:
-                                            # Already reached ready - use shutdown_delay
-                                            time_since_ready = time.time() - connection_ready_time
-                                            shutdown_delay = ConfigHelper.channel_shutdown_delay()
-
-                                            if time_since_ready > shutdown_delay:
+                                        should_stop, timeout, reason = (
+                                            self._pre_active_no_clients_should_stop(
+                                                connection_ready_time,
+                                                start_time,
+                                            )
+                                        )
+                                        if should_stop:
+                                            if reason == "client_wait":
+                                                time_since_ready = time.time() - connection_ready_time
                                                 logger.warning(
                                                     f"Channel {channel_id} in {channel_state} state with 0 clients for {time_since_ready:.1f}s "
-                                                    f"(after reaching ready, shutdown_delay: {shutdown_delay}s) - stopping channel"
+                                                    f"(buffer ready, no client connected, client_wait_period: {timeout}s) - stopping channel"
                                                 )
-                                                self._coordinated_stop_channel(channel_id)
-                                                continue
-                                        else:
-                                            # Never reached ready - use grace_period timeout
-                                            time_since_start = time.time() - start_time
-                                            connecting_timeout = ConfigHelper.channel_init_grace_period()
-
-                                            if time_since_start > connecting_timeout:
+                                            else:
+                                                time_since_start = time.time() - start_time
                                                 logger.warning(
                                                     f"Channel {channel_id} stuck in {channel_state} state for {time_since_start:.1f}s "
-                                                    f"with no clients (timeout: {connecting_timeout}s) - stopping channel due to upstream issues"
+                                                    f"with no clients (timeout: {timeout}s) - stopping channel due to upstream issues"
                                                 )
-                                                self._coordinated_stop_channel(channel_id)
-                                                continue
-                                elif connection_ready_time:
-                                    # We have clients now, but check grace period for state transition
-                                    grace_period = ConfigHelper.channel_init_grace_period()
-                                    time_since_ready = time.time() - connection_ready_time
+                                            self._coordinated_stop_channel(channel_id)
+                                            continue
+                                elif (
+                                    channel_state == ChannelState.WAITING_FOR_CLIENTS
+                                    and total_clients > 0
+                                ):
+                                    from .services.channel_service import ChannelService
 
-                                    logger.debug(f"GRACE PERIOD CHECK: Channel {channel_id} in {channel_state} state, "
-                                                 f"time_since_ready={time_since_ready:.1f}s, grace_period={grace_period}s, "
-                                                 f"total_clients={total_clients}")
-
-                                    if time_since_ready <= grace_period:
-                                        # Still within grace period
-                                        logger.debug(f"Channel {channel_id} in grace period - {time_since_ready:.1f}s of {grace_period}s elapsed")
-                                        continue
-                                    else:
-                                        # Grace period expired with clients - mark channel as active
-                                        logger.info(f"Grace period expired with {total_clients} clients - marking channel {channel_id} as active")
-                                        if self.update_channel_state(channel_id, ChannelState.ACTIVE, {
-                                            "grace_period_ended_at": str(time.time()),
-                                            "clients_at_activation": str(total_clients)
-                                        }):
-                                            logger.info(f"Channel {channel_id} activated with {total_clients} clients after grace period")
+                                    ChannelService.promote_channel_when_buffer_ready(channel_id)
                             # If active and no clients, start normal shutdown procedure
                             elif channel_state not in [ChannelState.CONNECTING, ChannelState.WAITING_FOR_CLIENTS] and total_clients == 0:
                                 # Check if channel is already stopping
@@ -2091,6 +2093,9 @@ class ProxyServer:
                 try:
                     channel_id = self._channel_id_from_metadata_key(key)
                     if not channel_id:
+                        continue
+
+                    if channel_id.startswith("timeshift_"):
                         continue
 
                     # Get metadata first

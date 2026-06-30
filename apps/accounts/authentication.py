@@ -93,7 +93,8 @@ class QueryParamJWTAuthentication(JWTAuthentication):
     where the browser cannot set Authorization headers (e.g. <video src>)."""
 
     def authenticate(self, request):
-        raw_token = request.GET.get('token')
+        params = getattr(request, "query_params", request.GET)
+        raw_token = params.get("token")
         if not raw_token:
             return None
         try:

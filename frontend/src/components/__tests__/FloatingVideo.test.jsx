@@ -20,8 +20,49 @@ vi.mock('mpegts.js', () => ({
   },
 }));
 
+const mockHlsInstance = {
+  attachMedia: vi.fn(),
+  loadSource: vi.fn(),
+  destroy: vi.fn(),
+  on: vi.fn(),
+};
+
+let capturedHlsConfig = null;
+let forceHlsInitError = false;
+
+vi.mock('hls.js', () => ({
+  default: class MockHls {
+    static isSupported = vi.fn(() => true);
+
+    static Events = {
+      ERROR: 'error',
+      MEDIA_ATTACHED: 'media_attached',
+    };
+
+    static ErrorTypes = {
+      NETWORK_ERROR: 'networkError',
+      MEDIA_ERROR: 'mediaError',
+    };
+
+    constructor(config) {
+      if (forceHlsInitError) {
+        throw new Error('Illegal hls.js config');
+      }
+      capturedHlsConfig = config;
+      Object.assign(this, mockHlsInstance);
+    }
+  },
+}));
+
+vi.mock('../../store/auth', () => ({
+  default: {
+    getState: vi.fn(() => ({ accessToken: 'test-token' })),
+  },
+}));
+
 // Import the mocked module after mocking
 const mpegts = (await import('mpegts.js')).default;
+const Hls = (await import('hls.js')).default;
 
 // Mock react-draggable
 vi.mock('react-draggable', () => ({
@@ -53,6 +94,8 @@ describe('FloatingVideo', () => {
 
   beforeEach(async () => {
     vi.clearAllMocks();
+    capturedHlsConfig = null;
+    forceHlsInitError = false;
 
     // Mock HTMLVideoElement methods
     HTMLVideoElement.prototype.load = vi.fn();
@@ -237,6 +280,57 @@ describe('FloatingVideo', () => {
       expect(video).toBeInTheDocument();
       expect(video.src).toBe('http://example.com/video.mp4');
       expect(video.poster).toBe('http://example.com/poster.jpg');
+    });
+
+    it('should disable live-edge sync for in-progress recording HLS', () => {
+      useVideoStore.mockImplementation((selector) => {
+        const state = {
+          isVisible: true,
+          streamUrl:
+            'http://example.com/api/channels/recordings/1/hls/index.m3u8',
+          contentType: 'vod',
+          metadata: { name: 'News Recording' },
+          hideVideo: mockHideVideo,
+        };
+        return selector ? selector(state) : state;
+      });
+
+      Hls.isSupported.mockReturnValue(true);
+
+      render(<FloatingVideo />);
+
+      expect(capturedHlsConfig).toEqual(
+        expect.objectContaining({
+          startPosition: 0,
+        })
+      );
+      expect(capturedHlsConfig).not.toHaveProperty(
+        'liveMaxLatencyDurationCount'
+      );
+      expect(capturedHlsConfig).not.toHaveProperty('liveSyncDurationCount');
+    });
+
+    it('shows an in-player error when hls.js config is invalid', () => {
+      useVideoStore.mockImplementation((selector) => {
+        const state = {
+          isVisible: true,
+          streamUrl:
+            'http://example.com/api/channels/recordings/1/hls/index.m3u8',
+          contentType: 'vod',
+          metadata: { name: 'News Recording' },
+          hideVideo: mockHideVideo,
+        };
+        return selector ? selector(state) : state;
+      });
+
+      Hls.isSupported.mockReturnValue(true);
+      forceHlsInitError = true;
+
+      render(<FloatingVideo />);
+
+      expect(
+        screen.getByText(/HLS initialization error: Illegal hls.js config/i)
+      ).toBeInTheDocument();
     });
 
     it('should show metadata overlay', () => {

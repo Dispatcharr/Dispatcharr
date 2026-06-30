@@ -61,16 +61,17 @@
     "globals": "^15.15.0",
     "jsdom": "^27.0.0",
     "prettier": "^3.5.3",
-    "vite": "^7.1.7",
+    "vite": "^7.3.5",
     "vitest": "^4.1.8"
   },
   "resolutions": {
-    "vite": "7.1.7",
+    "vite": "7.3.5",
     "react": "19.1.0",
     "react-dom": "19.1.0"
   },
   "overrides": {
-    "js-yaml": "^4.1.1",
+    "esbuild": "^0.28.1",
+    "js-yaml": "^5.1.0",
     "minimatch": "^10.2.1"
   }
 }

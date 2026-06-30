@@ -107,8 +107,13 @@ class ConfigHelper:
 
     @staticmethod
     def channel_init_grace_period():
-        """Get channel initialization grace period in seconds"""
+        """Max seconds to wait for initial buffer fill during channel startup."""
         return Config.get_channel_init_grace_period()
+
+    @staticmethod
+    def channel_client_wait_period():
+        """Seconds to keep a ready channel alive waiting for the first client to connect."""
+        return Config.get_channel_client_wait_period()
 
     @staticmethod
     def chunk_timeout():

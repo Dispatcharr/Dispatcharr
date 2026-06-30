@@ -57,6 +57,18 @@ export const isExpectedOccupantForGroup = (
   );
 };
 
+// The group the sync's own channels actually land in. A group_override
+// routes auto-created channels into a different ChannelGroup, so the
+// conflict check must recognize occupants of that target group as this
+// config's own output rather than flagging them against the source group.
+export const effectiveSyncGroupId = (group) => {
+  const override = group?.custom_properties?.group_override;
+  if (override !== undefined && override !== null && override !== '') {
+    return Number(override);
+  }
+  return group?.channel_group;
+};
+
 export const rangeFor = (g) => {
   if (!g.enabled || !g.auto_channel_sync) return null;
   const mode = g.custom_properties?.channel_numbering_mode || 'fixed';

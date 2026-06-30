@@ -193,6 +193,78 @@ class ChannelService:
         )
 
     @staticmethod
+    def promote_channel_when_buffer_ready(channel_id):
+        """
+        Promote channel state once the initial buffer threshold is met.
+
+        - connecting/initializing + buffer ready + clients -> active
+        - connecting/initializing + buffer ready + no clients -> waiting_for_clients
+        - waiting_for_clients + clients -> active
+
+        Returns the resulting state, or None when no promotion applies.
+        """
+        proxy_server = ProxyServer.get_instance()
+        redis_client = proxy_server.redis_client
+        if not redis_client:
+            return None
+
+        metadata_key = RedisKeys.channel_metadata(channel_id)
+        state_raw = redis_client.hget(metadata_key, ChannelMetadataField.STATE)
+        if not state_raw:
+            return None
+
+        state = state_raw.decode() if isinstance(state_raw, bytes) else state_raw
+        if state == ChannelState.ACTIVE:
+            return ChannelState.ACTIVE
+
+        if state == ChannelState.WAITING_FOR_CLIENTS:
+            ready_raw = redis_client.hget(
+                metadata_key, ChannelMetadataField.CONNECTION_READY_TIME
+            )
+            if not ready_raw:
+                return None
+            client_count = redis_client.scard(RedisKeys.clients(channel_id)) or 0
+            if client_count <= 0:
+                return ChannelState.WAITING_FOR_CLIENTS
+            proxy_server.update_channel_state(
+                channel_id,
+                ChannelState.ACTIVE,
+                {"clients_at_activation": str(client_count)},
+            )
+            return ChannelState.ACTIVE
+
+        if state not in (ChannelState.INITIALIZING, ChannelState.CONNECTING):
+            return None
+
+        try:
+            buffer_index = int(redis_client.get(RedisKeys.buffer_index(channel_id)) or 0)
+        except (TypeError, ValueError):
+            buffer_index = 0
+
+        chunks_needed = ConfigHelper.initial_behind_chunks()
+        if buffer_index < chunks_needed:
+            return None
+
+        client_count = redis_client.scard(RedisKeys.clients(channel_id)) or 0
+        new_state = (
+            ChannelState.ACTIVE if client_count > 0 else ChannelState.WAITING_FOR_CLIENTS
+        )
+        current_time = str(time.time())
+        extra = {
+            ChannelMetadataField.CONNECTION_READY_TIME: current_time,
+            ChannelMetadataField.BUFFER_CHUNKS: str(buffer_index),
+        }
+        if new_state == ChannelState.ACTIVE:
+            extra["clients_at_activation"] = str(client_count)
+
+        proxy_server.update_channel_state(channel_id, new_state, extra)
+        logger.info(
+            f"Channel {channel_id} buffer ready ({buffer_index}/{chunks_needed} chunks) "
+            f"-> {new_state} (clients={client_count})"
+        )
+        return new_state
+
+    @staticmethod
     def initialize_channel(channel_id, stream_url, user_agent, transcode=False, stream_profile_value=None, stream_id=None, m3u_profile_id=None, channel_name=None, stream_name=None):
         """
         Initialize a channel with the given parameters.

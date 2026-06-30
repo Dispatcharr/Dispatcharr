@@ -644,6 +644,34 @@ class NumbersInRangeLookupTests(TestCase):
         )
         self.assertFalse(occupant["has_channel_number_override"])
 
+    def test_group_override_channel_reports_target_group(self):
+        # When auto-sync routes channels into a different group via
+        # group_override, the occupant's channel_group_id is the override
+        # target, not the source group being configured. The frontend relies
+        # on this to recognize override-routed channels as the config's own
+        # output (effectiveSyncGroupId), so the warning does not flag them.
+        account = _make_account()
+        source = _make_group(name="SourceGrp")
+        target = _make_group(name="TargetGrp")
+        Channel.objects.create(
+            name="Routed",
+            channel_number=3210,
+            channel_group=target,
+            auto_created=True,
+            auto_created_by=account,
+        )
+        client = self._client()
+
+        response = client.get(
+            "/api/channels/channels/numbers-in-range/?start=3210&end=3210"
+        )
+
+        occupant = response.data["occupants"][0]
+        self.assertEqual(occupant["channel_group_id"], target.id)
+        self.assertNotEqual(occupant["channel_group_id"], source.id)
+        self.assertTrue(occupant["auto_created"])
+        self.assertEqual(occupant["auto_created_by_account_id"], account.id)
+
     def test_manual_channel_exposed_with_auto_created_false(self):
         # Manual channels are always a real collision worth surfacing.
         # The response must flag them with auto_created=False and a null
@@ -734,6 +762,128 @@ class RegexPreviewTests(TestCase):
         self.assertEqual(response.data["total_in_group"], 3)
         self.assertEqual(response.data["total_scanned"], 3)
         self.assertFalse(response.data["scan_limit_hit"])
+
+    def test_find_replace_applies_numbered_capture_group(self):
+        # The replace field accepts JS-style $1 backreferences, but the regex
+        # engine expects \1. Without the conversion the preview echoes the
+        # literal "$1", so the previewed "after" disagrees with the name the
+        # live rename produces.
+        account = self._make_account()
+        group = _make_group(name="Sports")
+        Stream.objects.create(
+            name="High Limit Racing at Eagle @ Jun 9 7:00 PM",
+            url="http://example.com/hlr.m3u8",
+            m3u_account=account,
+            channel_group=group,
+            last_seen=timezone.now(),
+        )
+        client = self._client()
+
+        response = client.get(
+            "/api/channels/streams/regex-preview/",
+            {"channel_group": "Sports", "find": r"(.+) @.*", "replace": "$1"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["find_match_count"], 1)
+        after = response.data["find_matches"][0]["after"]
+        self.assertEqual(after, "High Limit Racing at Eagle")
+        self.assertNotIn("$1", after)
+
+    def test_preview_after_matches_live_sync_rename(self):
+        # Guards the defect class: the preview and the live rename are
+        # separate code paths that must convert the replacement identically,
+        # so the preview can never promise an output the sync would not yield.
+        name = "High Limit Racing at Eagle @ Jun 9 7:00 PM"
+        account = self._make_account()
+        group = _make_group(name="Racing")
+        _attach_group_to_account(
+            account,
+            group,
+            custom_properties={
+                "name_regex_pattern": r"(.+) @.*",
+                "name_replace_pattern": "$1",
+            },
+        )
+        _make_stream(account, group, name=name, tvg_id="hlr")
+
+        result = _sync(account)
+        self.assertEqual(result.get("status"), "ok")
+        channel = Channel.objects.get(auto_created=True, auto_created_by=account)
+        live_name = channel.name
+
+        client = self._client()
+        response = client.get(
+            "/api/channels/streams/regex-preview/",
+            {"channel_group": "Racing", "find": r"(.+) @.*", "replace": "$1"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        preview_after = response.data["find_matches"][0]["after"]
+        self.assertEqual(preview_after, live_name)
+        self.assertEqual(preview_after, "High Limit Racing at Eagle")
+
+    def test_regex_engine_pattern_transforms_in_preview(self):
+        # Both the preview and the live rename use the regex module, which is
+        # more permissive than stdlib re and matches the JS-style syntax the UI
+        # authors. A quantified anchor like "^*" (which stdlib re rejects)
+        # compiles and transforms rather than reporting an error.
+        account = self._make_account()
+        group = _make_group(name="Sports")
+        Stream.objects.create(
+            name="Doc95",
+            url="http://example.com/doc95.m3u8",
+            m3u_account=account,
+            channel_group=group,
+            last_seen=timezone.now(),
+        )
+        client = self._client()
+
+        response = client.get(
+            "/api/channels/streams/regex-preview/",
+            {"channel_group": "Sports", "find": "^*", "replace": "$"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("find_error", response.data)
+        self.assertEqual(response.data["find_match_count"], 1)
+        # ^* matches the empty string at every position, so the literal $
+        # replacement is inserted between characters.
+        self.assertEqual(
+            response.data["find_matches"][0]["after"], "$D$o$c$9$5$"
+        )
+
+    def test_preview_and_sync_agree_on_regex_only_pattern(self):
+        # Parity guard for the engine alignment: a pattern valid in regex but
+        # not stdlib re must transform identically in the sync and the preview,
+        # rather than diverging (the sync no longer silently keeps the
+        # original name for these patterns).
+        name = "Doc95"
+        account = self._make_account()
+        group = _make_group(name="Docs")
+        _attach_group_to_account(
+            account,
+            group,
+            custom_properties={
+                "name_regex_pattern": "^*",
+                "name_replace_pattern": "$",
+            },
+        )
+        _make_stream(account, group, name=name, tvg_id="doc95")
+
+        result = _sync(account)
+        self.assertEqual(result.get("status"), "ok")
+        channel = Channel.objects.get(auto_created=True, auto_created_by=account)
+        live_name = channel.name
+        self.assertNotEqual(live_name, name)
+
+        client = self._client()
+        response = client.get(
+            "/api/channels/streams/regex-preview/",
+            {"channel_group": "Docs", "find": "^*", "replace": "$"},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["find_matches"][0]["after"], live_name)
 
     def test_filter_returns_matched_names_with_count(self):
         account = self._make_account()

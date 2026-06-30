@@ -1,6 +1,6 @@
 """Tests for multi-worker channel teardown coordination."""
 import time
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 
 from django.test import TestCase
 
@@ -692,9 +692,8 @@ class InitWaitAbortTests(TestCase):
 
         self.assertEqual(generator._init_wait_abort_reason(server, time.time()), "client_gone")
 
-    def test_abort_when_connect_stalled_without_buffer(self):
-        from apps.proxy.config import TSConfig as Config
-
+    @patch("apps.proxy.live_proxy.output.ts.generator.ConfigHelper.channel_init_grace_period", return_value=10)
+    def test_abort_when_connect_stalled_without_buffer(self, _mock_grace):
         generator = self._make_generator()
         server = MagicMock()
         client_manager = MagicMock()
@@ -707,8 +706,127 @@ class InitWaitAbortTests(TestCase):
         server.redis_client.hget.return_value = b"connecting"
         server.redis_client.get.return_value = None
 
-        started = time.time() - (getattr(Config, "CONNECTION_TIMEOUT", 10) + 1)
+        started = time.time() - 11
         self.assertEqual(generator._init_wait_abort_reason(server, started), "stalled")
+
+    @patch("apps.proxy.live_proxy.output.ts.generator.ConfigHelper.channel_init_grace_period", return_value=30)
+    def test_no_stall_abort_within_init_grace_period(self, _mock_grace):
+        generator = self._make_generator()
+        server = MagicMock()
+        client_manager = MagicMock()
+        client_manager.clients = {"client-1"}
+        server.client_managers = {CHANNEL_ID: client_manager}
+        buffer = MagicMock()
+        buffer.index = 0
+        server.stream_buffers = {CHANNEL_ID: buffer}
+        server.redis_client = MagicMock()
+        server.redis_client.hget.return_value = b"connecting"
+        server.redis_client.get.return_value = None
+
+        started = time.time() - 15
+        self.assertIsNone(generator._init_wait_abort_reason(server, started))
+
+    @patch("apps.proxy.live_proxy.output.ts.generator.ConfigHelper.channel_init_grace_period", return_value=30)
+    def test_stall_abort_after_init_grace_period(self, _mock_grace):
+        generator = self._make_generator()
+        server = MagicMock()
+        client_manager = MagicMock()
+        client_manager.clients = {"client-1"}
+        server.client_managers = {CHANNEL_ID: client_manager}
+        buffer = MagicMock()
+        buffer.index = 0
+        server.stream_buffers = {CHANNEL_ID: buffer}
+        server.redis_client = MagicMock()
+        server.redis_client.hget.return_value = b"connecting"
+        server.redis_client.get.return_value = None
+
+        started = time.time() - 31
+        self.assertEqual(generator._init_wait_abort_reason(server, started), "stalled")
+
+
+class PromoteChannelWhenBufferReadyTests(TestCase):
+    def _mock_proxy(self, redis_client):
+        proxy_server = MagicMock()
+        proxy_server.redis_client = redis_client
+        return patch(
+            "apps.proxy.live_proxy.services.channel_service.ProxyServer.get_instance",
+            return_value=proxy_server,
+        ), proxy_server
+
+    @patch("apps.proxy.live_proxy.services.channel_service.ConfigHelper.initial_behind_chunks", return_value=4)
+    def test_buffer_ready_with_clients_becomes_active(self, _mock_chunks):
+        redis = MagicMock()
+        redis.hget.return_value = ChannelState.CONNECTING.encode()
+        redis.get.return_value = b"4"
+        redis.scard.return_value = 2
+
+        ctx, proxy_server = self._mock_proxy(redis)
+        with ctx:
+            result = ChannelService.promote_channel_when_buffer_ready(CHANNEL_ID)
+
+        self.assertEqual(result, ChannelState.ACTIVE)
+        proxy_server.update_channel_state.assert_called_once()
+        args = proxy_server.update_channel_state.call_args[0]
+        self.assertEqual(args[1], ChannelState.ACTIVE)
+        self.assertEqual(args[2]["clients_at_activation"], "2")
+
+    @patch("apps.proxy.live_proxy.services.channel_service.ConfigHelper.initial_behind_chunks", return_value=4)
+    def test_buffer_ready_without_clients_becomes_waiting(self, _mock_chunks):
+        redis = MagicMock()
+        redis.hget.return_value = ChannelState.CONNECTING.encode()
+        redis.get.return_value = b"5"
+        redis.scard.return_value = 0
+
+        ctx, proxy_server = self._mock_proxy(redis)
+        with ctx:
+            result = ChannelService.promote_channel_when_buffer_ready(CHANNEL_ID)
+
+        self.assertEqual(result, ChannelState.WAITING_FOR_CLIENTS)
+        proxy_server.update_channel_state.assert_called_once_with(
+            CHANNEL_ID,
+            ChannelState.WAITING_FOR_CLIENTS,
+            {
+                ChannelMetadataField.CONNECTION_READY_TIME: ANY,
+                ChannelMetadataField.BUFFER_CHUNKS: "5",
+            },
+        )
+
+    @patch("apps.proxy.live_proxy.services.channel_service.ConfigHelper.initial_behind_chunks", return_value=4)
+    def test_buffer_not_ready_does_not_promote(self, _mock_chunks):
+        redis = MagicMock()
+        redis.hget.return_value = ChannelState.CONNECTING.encode()
+        redis.get.return_value = b"2"
+
+        ctx, proxy_server = self._mock_proxy(redis)
+        with ctx:
+            result = ChannelService.promote_channel_when_buffer_ready(CHANNEL_ID)
+
+        self.assertIsNone(result)
+        proxy_server.update_channel_state.assert_not_called()
+
+    def test_waiting_for_clients_with_clients_becomes_active(self):
+        redis = MagicMock()
+
+        def hget_side_effect(key, field):
+            if field == ChannelMetadataField.STATE:
+                return ChannelState.WAITING_FOR_CLIENTS.encode()
+            if field == ChannelMetadataField.CONNECTION_READY_TIME:
+                return b"1700000000.0"
+            return None
+
+        redis.hget.side_effect = hget_side_effect
+        redis.scard.return_value = 1
+
+        ctx, proxy_server = self._mock_proxy(redis)
+        with ctx:
+            result = ChannelService.promote_channel_when_buffer_ready(CHANNEL_ID)
+
+        self.assertEqual(result, ChannelState.ACTIVE)
+        proxy_server.update_channel_state.assert_called_once_with(
+            CHANNEL_ID,
+            ChannelState.ACTIVE,
+            {"clients_at_activation": "1"},
+        )
 
 
 class UpstreamStopBroadcastTests(TestCase):
@@ -805,3 +923,62 @@ class StreamManagerStillOwnerTests(TestCase):
             return_value=5,
         ):
             self.assertTrue(manager._still_owner())
+
+
+class PreActiveNoClientsTimeoutTests(TestCase):
+    @patch("apps.proxy.live_proxy.server.ConfigHelper.channel_client_wait_period", return_value=5)
+    def test_buffer_ready_uses_client_wait_period(self, _mock_client_wait):
+        should_stop, timeout, reason = ProxyServer._pre_active_no_clients_should_stop(
+            connection_ready_time=1000.0,
+            start_time=900.0,
+            now=1006.0,
+        )
+        self.assertTrue(should_stop)
+        self.assertEqual(timeout, 5)
+        self.assertEqual(reason, "client_wait")
+
+    @patch("apps.proxy.live_proxy.server.ConfigHelper.channel_client_wait_period", return_value=5)
+    def test_buffer_ready_within_client_wait_period(self, _mock_client_wait):
+        should_stop, timeout, reason = ProxyServer._pre_active_no_clients_should_stop(
+            connection_ready_time=1000.0,
+            start_time=900.0,
+            now=1003.0,
+        )
+        self.assertFalse(should_stop)
+        self.assertEqual(timeout, 5)
+        self.assertEqual(reason, "client_wait")
+
+    @patch("apps.proxy.live_proxy.server.ConfigHelper.channel_init_grace_period", return_value=60)
+    def test_startup_uses_init_grace_period(self, _mock_init_grace):
+        should_stop, timeout, reason = ProxyServer._pre_active_no_clients_should_stop(
+            connection_ready_time=None,
+            start_time=1000.0,
+            now=1070.0,
+        )
+        self.assertTrue(should_stop)
+        self.assertEqual(timeout, 60)
+        self.assertEqual(reason, "startup")
+
+    @patch("apps.proxy.live_proxy.server.ConfigHelper.channel_init_grace_period", return_value=60)
+    def test_startup_within_init_grace_period(self, _mock_init_grace):
+        should_stop, timeout, reason = ProxyServer._pre_active_no_clients_should_stop(
+            connection_ready_time=None,
+            start_time=1000.0,
+            now=1030.0,
+        )
+        self.assertFalse(should_stop)
+        self.assertEqual(timeout, 60)
+        self.assertEqual(reason, "startup")
+
+    @patch("apps.proxy.live_proxy.server.ConfigHelper.channel_shutdown_delay", return_value=30)
+    @patch("apps.proxy.live_proxy.server.ConfigHelper.channel_client_wait_period", return_value=5)
+    def test_buffer_ready_does_not_use_shutdown_delay(self, mock_client_wait, mock_shutdown_delay):
+        should_stop, _, reason = ProxyServer._pre_active_no_clients_should_stop(
+            connection_ready_time=1000.0,
+            start_time=900.0,
+            now=1006.0,
+        )
+        self.assertTrue(should_stop)
+        self.assertEqual(reason, "client_wait")
+        mock_client_wait.assert_called_once()
+        mock_shutdown_delay.assert_not_called()

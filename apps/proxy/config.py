@@ -42,7 +42,8 @@ class BaseConfig:
                 "buffering_speed": 1.0,
                 "redis_chunk_ttl": 60,
                 "channel_shutdown_delay": 0,
-                "channel_init_grace_period": 5,
+                "channel_init_grace_period": 60,
+                "channel_client_wait_period": 5,
                 "new_client_behind_seconds": 5,
             }
 
@@ -133,9 +134,15 @@ class TSConfig(BaseConfig):
 
     @classmethod
     def get_channel_init_grace_period(cls):
-        """Get channel init grace period from database or default"""
+        """Max seconds to wait for initial buffer fill during channel startup."""
         settings = cls.get_proxy_settings()
-        return settings.get("channel_init_grace_period", 5)
+        return settings.get("channel_init_grace_period", 60)
+
+    @classmethod
+    def get_channel_client_wait_period(cls):
+        """Seconds to keep a ready channel alive waiting for the first client to connect."""
+        settings = cls.get_proxy_settings()
+        return settings.get("channel_client_wait_period", 5)
 
     # Dynamic property access for these settings
     @property
@@ -154,5 +161,6 @@ class TSConfig(BaseConfig):
     def CHANNEL_INIT_GRACE_PERIOD(self):
         return self.get_channel_init_grace_period()
 
-
-
+    @property
+    def CHANNEL_CLIENT_WAIT_PERIOD(self):
+        return self.get_channel_client_wait_period()

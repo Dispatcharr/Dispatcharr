@@ -301,6 +301,8 @@ class ClientManager:
                     # Trigger channel stats update via WebSocket
                     self._trigger_stats_update()
 
+                    ChannelService.promote_channel_when_buffer_ready(self.channel_id)
+
                 # Get total clients across all workers
                 total_clients = self.get_total_client_count()
                 logger.info(f"New client connected: {client_id} (local: {len(self.clients)}, total: {total_clients})")
