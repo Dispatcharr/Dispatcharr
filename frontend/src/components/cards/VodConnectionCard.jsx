@@ -372,7 +372,10 @@ const VodConnectionCard = ({ vodContent, stopVODClient }) => {
           {metadata.duration_secs && (
             <Tooltip label="Content Duration">
               <Badge size="sm" variant="light" color="blue">
-                {formatDuration(metadata.duration_secs, { zeroValue: 'Unknown', precision: 'hm' })}
+                {formatDuration(metadata.duration_secs, {
+                  zeroValue: 'Unknown',
+                  precision: 'human',
+                })}
               </Badge>
             </Tooltip>
           )}

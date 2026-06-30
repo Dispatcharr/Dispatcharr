@@ -147,7 +147,10 @@ vi.mock('lucide-react', () => ({
 }));
 
 // ── Imports after mocks ───────────────────────────────────────────────────────
-import { useDateTimeFormat } from '../../../utils/dateTimeUtils.js';
+import {
+  formatDuration,
+  useDateTimeFormat,
+} from '../../../utils/dateTimeUtils.js';
 import {
   calculateProgress,
   getEpisodeDisplayTitle,
@@ -394,6 +397,75 @@ describe('VodConnectionCard', () => {
         />
       );
       expect(getEpisodeDisplayTitle).not.toHaveBeenCalled();
+    });
+  });
+
+  // ── Content duration badge ─────────────────────────────────────────────────
+
+  describe('content duration badge', () => {
+    it('requests human-readable formatting for the content duration badge', () => {
+      render(
+        <VodConnectionCard
+          vodContent={makeEpisodeContent()}
+          stopVODClient={vi.fn()}
+        />
+      );
+
+      expect(formatDuration).toHaveBeenCalledWith(2700, {
+        zeroValue: 'Unknown',
+        precision: 'human',
+      });
+    });
+
+    it('renders the human-readable duration returned by formatDuration', () => {
+      vi.mocked(formatDuration).mockImplementation((seconds, options = {}) => {
+        if (options?.precision === 'human') {
+          const hours = Math.floor(seconds / 3600);
+          const minutes = Math.floor((seconds % 3600) / 60);
+          return hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
+        }
+        return `${seconds}s`;
+      });
+
+      render(
+        <VodConnectionCard
+          vodContent={makeEpisodeContent()}
+          stopVODClient={vi.fn()}
+        />
+      );
+
+      expect(screen.getByText('45m')).toBeInTheDocument();
+    });
+
+    it('shows hours and minutes for long-form content', () => {
+      vi.mocked(formatDuration).mockImplementation((seconds, options = {}) => {
+        if (options?.precision === 'human') {
+          const hours = Math.floor(seconds / 3600);
+          const minutes = Math.floor((seconds % 3600) / 60);
+          return hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
+        }
+        return `${seconds}s`;
+      });
+
+      render(
+        <VodConnectionCard
+          vodContent={makeMovieContent()}
+          stopVODClient={vi.fn()}
+        />
+      );
+
+      expect(screen.getByText('2h 0m')).toBeInTheDocument();
+    });
+
+    it('does not render the duration badge when duration_secs is missing', () => {
+      render(
+        <VodConnectionCard
+          vodContent={makeUnknownContent()}
+          stopVODClient={vi.fn()}
+        />
+      );
+
+      expect(formatDuration).not.toHaveBeenCalled();
     });
   });
 

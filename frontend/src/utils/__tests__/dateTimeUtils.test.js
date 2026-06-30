@@ -73,11 +73,21 @@ describe('dateTimeUtils', () => {
 
     it('should handle strict parsing', () => {
       // With strict=true, a date that doesn't match the format should be invalid
-      const invalid = dateTimeUtils.initializeTime('15-01-2024', 'YYYY-MM-DD', null, true);
+      const invalid = dateTimeUtils.initializeTime(
+        '15-01-2024',
+        'YYYY-MM-DD',
+        null,
+        true
+      );
       expect(invalid.isValid()).toBe(false);
 
       // With strict=true and a matching format, it should be valid
-      const valid = dateTimeUtils.initializeTime('2024-01-15', 'YYYY-MM-DD', null, true);
+      const valid = dateTimeUtils.initializeTime(
+        '2024-01-15',
+        'YYYY-MM-DD',
+        null,
+        true
+      );
       expect(valid.isValid()).toBe(true);
     });
   });
@@ -870,6 +880,35 @@ describe('dateTimeUtils', () => {
         expect(dateTimeUtils.formatDuration(0, { precision: 'hm' })).toBe(
           '0:00'
         );
+      });
+    });
+
+    describe('precision: human', () => {
+      it('should format sub-hour content as minutes with suffix', () => {
+        expect(dateTimeUtils.formatDuration(2700, { precision: 'human' })).toBe(
+          '45m'
+        );
+      });
+
+      it('should floor partial minutes for short content', () => {
+        expect(dateTimeUtils.formatDuration(90, { precision: 'human' })).toBe(
+          '1m'
+        );
+      });
+
+      it('should format hour-plus content as hours and minutes', () => {
+        expect(dateTimeUtils.formatDuration(5400, { precision: 'human' })).toBe(
+          '1h 30m'
+        );
+      });
+
+      it('should return custom zeroValue when seconds is 0', () => {
+        expect(
+          dateTimeUtils.formatDuration(0, {
+            precision: 'human',
+            zeroValue: 'Unknown',
+          })
+        ).toBe('Unknown');
       });
     });
 
