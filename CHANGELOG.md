@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.27.2] - 2026-06-30
+
 ### Added
 
 - **New proxy setting: Client Connect Grace Period (`channel_client_wait_period`, default 5s).** Adds a dedicated timeout for channels that have filled their buffer but still have no viewers (`waiting_for_clients`). Previously that window reused `channel_shutdown_delay` (default 0s), so those channels were torn down almost immediately.
