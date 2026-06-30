@@ -6,8 +6,14 @@ import {
   Flex,
   Group,
   Menu,
-  NumberInput,
+  MenuDivider,
+  MenuDropdown,
+  MenuItem,
+  MenuLabel,
+  MenuTarget,
   Popover,
+  PopoverDropdown,
+  PopoverTarget,
   Select,
   Text,
   TextInput,
@@ -19,22 +25,20 @@ import {
   Binary,
   CircleCheck,
   EllipsisVertical,
-  SquareMinus,
-  SquarePen,
-  SquarePlus,
-  Settings,
   Eye,
   EyeOff,
   Filter,
-  Square,
-  SquareCheck,
-  Pin,
-  PinOff,
   Lock,
   LockOpen,
+  Pin,
+  PinOff,
+  Settings,
+  Square,
+  SquareCheck,
+  SquareMinus,
+  SquarePen,
+  SquarePlus,
 } from 'lucide-react';
-import API from '../../../api';
-import { notifications } from '@mantine/notifications';
 import useChannelsStore from '../../../store/channels';
 import useChannelsTableStore from '../../../store/channelsTable';
 import useAuthStore from '../../../store/auth';
@@ -45,6 +49,10 @@ import ConfirmationDialog from '../../ConfirmationDialog';
 import useWarningsStore from '../../../store/warnings';
 import ProfileModal, { renderProfileOption } from '../../modals/ProfileModal';
 import EPGMatchModal from '../../modals/EPGMatchModal';
+import {
+  addChannelProfile,
+  deleteChannelProfile,
+} from '../../../utils/tables/ChannelsTableUtils.js';
 
 const CreateProfilePopover = React.memo(() => {
   const [opened, setOpened] = useState(false);
@@ -59,7 +67,7 @@ const CreateProfilePopover = React.memo(() => {
   };
 
   const submit = async () => {
-    await API.addChannelProfile({ name });
+    await addChannelProfile({ name });
     setName('');
     setOpened(false);
   };
@@ -72,7 +80,7 @@ const CreateProfilePopover = React.memo(() => {
       withArrow
       shadow="md"
     >
-      <Popover.Target>
+      <PopoverTarget>
         <ActionIcon
           variant="transparent"
           color={theme.tailwind.green[5]}
@@ -81,9 +89,9 @@ const CreateProfilePopover = React.memo(() => {
         >
           <SquarePlus />
         </ActionIcon>
-      </Popover.Target>
+      </PopoverTarget>
 
-      <Popover.Dropdown>
+      <PopoverDropdown>
         <Group>
           <TextInput
             placeholder="Profile Name"
@@ -101,7 +109,7 @@ const CreateProfilePopover = React.memo(() => {
             <CircleCheck />
           </ActionIcon>
         </Group>
-      </Popover.Dropdown>
+      </PopoverDropdown>
     </Popover>
   );
 });
@@ -125,7 +133,6 @@ const ChannelTableHeader = ({
 }) => {
   const theme = useMantineTheme();
 
-  const [channelNumAssignmentStart, setChannelNumAssignmentStart] = useState(1);
   const [assignNumbersModalOpen, setAssignNumbersModalOpen] = useState(false);
   const [groupManagerOpen, setGroupManagerOpen] = useState(false);
   const [epgMatchModalOpen, setEpgMatchModalOpen] = useState(false);
@@ -179,35 +186,10 @@ const ChannelTableHeader = ({
   const executeDeleteProfile = async (id) => {
     setDeletingProfile(true);
     try {
-      await API.deleteChannelProfile(id);
+      await deleteChannelProfile(id);
     } finally {
       setDeletingProfile(false);
       setConfirmDeleteProfileOpen(false);
-    }
-  };
-
-  const assignChannels = async () => {
-    try {
-      // Call our custom API endpoint
-      const result = await API.assignChannelNumbers(
-        selectedTableIds,
-        channelNumAssignmentStart
-      );
-
-      // We might get { message: "Channels have been auto-assigned!" }
-      notifications.show({
-        title: result.message || 'Channels assigned',
-        color: 'green.5',
-      });
-
-      // Refresh the channel list
-      API.requeryChannels();
-    } catch (err) {
-      console.error(err);
-      notifications.show({
-        title: 'Failed to assign channels',
-        color: 'red.5',
-      });
     }
   };
 
@@ -302,14 +284,14 @@ const ChannelTableHeader = ({
       >
         <Flex gap={6}>
           <Menu shadow="md" width={200}>
-            <Menu.Target>
+            <MenuTarget>
               <Button size="xs" variant="default" onClick={() => {}}>
                 <Filter size={18} />
               </Button>
-            </Menu.Target>
+            </MenuTarget>
 
-            <Menu.Dropdown>
-              <Menu.Item
+            <MenuDropdown>
+              <MenuItem
                 onClick={toggleShowDisabled}
                 leftSection={
                   showDisabled ? <Eye size={18} /> : <EyeOff size={18} />
@@ -319,9 +301,9 @@ const ChannelTableHeader = ({
                 <Text size="xs">
                   {showDisabled ? 'Hide Disabled' : 'Show Disabled'}
                 </Text>
-              </Menu.Item>
+              </MenuItem>
 
-              <Menu.Item
+              <MenuItem
                 onClick={toggleShowOnlyStreamlessChannels}
                 leftSection={
                   showOnlyStreamlessChannels ? (
@@ -332,9 +314,9 @@ const ChannelTableHeader = ({
                 }
               >
                 <Text size="xs">Only Empty Channels</Text>
-              </Menu.Item>
+              </MenuItem>
 
-              <Menu.Item
+              <MenuItem
                 onClick={toggleShowOnlyStaleChannels}
                 leftSection={
                   showOnlyStaleChannels ? (
@@ -345,9 +327,9 @@ const ChannelTableHeader = ({
                 }
               >
                 <Text size="xs">Has Stale Streams</Text>
-              </Menu.Item>
+              </MenuItem>
 
-              <Menu.Item
+              <MenuItem
                 onClick={toggleShowOnlyOverriddenChannels}
                 leftSection={
                   showOnlyOverriddenChannels ? (
@@ -358,19 +340,19 @@ const ChannelTableHeader = ({
                 }
               >
                 <Text size="xs">Has Overrides</Text>
-              </Menu.Item>
+              </MenuItem>
 
-              <Menu.Divider />
-              <Menu.Label>
+              <MenuDivider />
+              <MenuLabel>
                 <Text size="xs">Visibility</Text>
-              </Menu.Label>
+              </MenuLabel>
 
               {[
                 { value: 'active', label: 'Active Only' },
                 { value: 'hidden', label: 'Hidden Only' },
                 { value: 'all', label: 'Show All' },
               ].map(({ value, label }) => (
-                <Menu.Item
+                <MenuItem
                   key={value}
                   onClick={() =>
                     setVisibilityFilter && setVisibilityFilter(value)
@@ -384,9 +366,9 @@ const ChannelTableHeader = ({
                   }
                 >
                   <Text size="xs">{label}</Text>
-                </Menu.Item>
+                </MenuItem>
               ))}
-            </Menu.Dropdown>
+            </MenuDropdown>
           </Menu>
 
           <Button
@@ -435,14 +417,14 @@ const ChannelTableHeader = ({
           </Button>
 
           <Menu>
-            <Menu.Target>
+            <MenuTarget>
               <ActionIcon variant="default" size={30}>
                 <EllipsisVertical size={18} />
               </ActionIcon>
-            </Menu.Target>
+            </MenuTarget>
 
-            <Menu.Dropdown>
-              <Menu.Item
+            <MenuDropdown>
+              <MenuItem
                 leftSection={
                   headerPinned ? <Pin size={18} /> : <PinOff size={18} />
                 }
@@ -451,9 +433,9 @@ const ChannelTableHeader = ({
                 <Text size="xs">
                   {headerPinned ? 'Unpin Headers' : 'Pin Headers'}
                 </Text>
-              </Menu.Item>
+              </MenuItem>
 
-              <Menu.Item
+              <MenuItem
                 leftSection={
                   isUnlocked ? <LockOpen size={18} /> : <Lock size={18} />
                 }
@@ -463,11 +445,11 @@ const ChannelTableHeader = ({
                 <Text size="xs">
                   {isUnlocked ? 'Lock Table' : 'Unlock for Editing'}
                 </Text>
-              </Menu.Item>
+              </MenuItem>
 
-              <Menu.Divider />
+              <MenuDivider />
 
-              <Menu.Item
+              <MenuItem
                 leftSection={<ArrowDown01 size={18} />}
                 disabled={
                   selectedTableIds.length == 0 ||
@@ -476,9 +458,9 @@ const ChannelTableHeader = ({
                 onClick={() => setAssignNumbersModalOpen(true)}
               >
                 <Text size="xs">Assign #s</Text>
-              </Menu.Item>
+              </MenuItem>
 
-              <Menu.Item
+              <MenuItem
                 leftSection={<Binary size={18} />}
                 disabled={authUser.user_level != USER_LEVELS.ADMIN}
                 onClick={() => setEpgMatchModalOpen(true)}
@@ -488,16 +470,16 @@ const ChannelTableHeader = ({
                     ? `Auto-Match (${selectedTableIds.length} selected)`
                     : 'Auto-Match EPG'}
                 </Text>
-              </Menu.Item>
+              </MenuItem>
 
-              <Menu.Item
+              <MenuItem
                 leftSection={<Settings size={18} />}
                 disabled={authUser.user_level != USER_LEVELS.ADMIN}
                 onClick={() => setGroupManagerOpen(true)}
               >
                 <Text size="xs">Edit Groups</Text>
-              </Menu.Item>
-            </Menu.Dropdown>
+              </MenuItem>
+            </MenuDropdown>
           </Menu>
         </Flex>
       </Box>

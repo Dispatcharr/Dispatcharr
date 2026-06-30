@@ -1,44 +1,46 @@
-import React, { useMemo, useCallback, useState, useEffect } from 'react';
-import API from '../../api';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import LogoForm from '../forms/Logo';
 import useLogosStore from '../../store/logos';
 import useLocalStorage from '../../hooks/useLocalStorage';
 import {
-  SquarePlus,
+  ExternalLink,
   SquareMinus,
   SquarePen,
-  ExternalLink,
-  Filter,
-  Trash2,
+  SquarePlus,
   Trash,
 } from 'lucide-react';
 import {
   ActionIcon,
-  Box,
-  Text,
-  Paper,
-  Button,
-  Flex,
-  Group,
-  useMantineTheme,
-  LoadingOverlay,
-  Stack,
-  Image,
-  Center,
   Badge,
-  Tooltip,
-  Select,
-  TextInput,
-  Menu,
+  Box,
+  Button,
+  Center,
   Checkbox,
-  Pagination,
+  Group,
+  Image,
+  LoadingOverlay,
   NativeSelect,
+  Pagination,
+  Paper,
+  Select,
+  Stack,
+  Text,
+  TextInput,
+  Tooltip,
+  useMantineTheme,
 } from '@mantine/core';
 import { CustomTable, useTable } from './CustomTable';
 import ConfirmationDialog from '../ConfirmationDialog';
-import { notifications } from '@mantine/notifications';
+import { showNotification } from '../../utils/notificationUtils.js';
+import {
+  cleanupUnusedLogos,
+  deleteLogo,
+  deleteLogos,
+  generateUsageLabel,
+  getFilteredLogos,
+} from '../../utils/tables/LogosTableUtils.js';
 
-const LogoRowActions = ({ theme, row, editLogo, deleteLogo }) => {
+const LogoRowActions = ({ theme, row, editLogo, handleDeleteLogo }) => {
   const [tableSize, _] = useLocalStorage('table-size', 'default');
 
   const onEdit = useCallback(() => {
@@ -46,8 +48,8 @@ const LogoRowActions = ({ theme, row, editLogo, deleteLogo }) => {
   }, [row.original, editLogo]);
 
   const onDelete = useCallback(() => {
-    deleteLogo(row.original.id);
-  }, [row.original.id, deleteLogo]);
+    handleDeleteLogo(row.original.id);
+  }, [row.original.id, handleDeleteLogo]);
 
   const iconSize =
     tableSize == 'default' ? 'sm' : tableSize == 'compact' ? 'xs' : 'md';
@@ -127,24 +129,7 @@ const LogosTable = () => {
   }, [filters.name]);
 
   const data = useMemo(() => {
-    const logosArray = Object.values(logos || {});
-
-    // Apply filters
-    let filteredLogos = logosArray;
-
-    if (debouncedNameFilter) {
-      filteredLogos = filteredLogos.filter((logo) =>
-        logo.name.toLowerCase().includes(debouncedNameFilter.toLowerCase())
-      );
-    }
-
-    if (filters.used === 'used') {
-      filteredLogos = filteredLogos.filter((logo) => logo.is_used);
-    } else if (filters.used === 'unused') {
-      filteredLogos = filteredLogos.filter((logo) => !logo.is_used);
-    }
-
-    return filteredLogos.sort((a, b) => a.id - b.id);
+    return getFilteredLogos(logos, debouncedNameFilter, filters.used);
   }, [logos, debouncedNameFilter, filters.used]);
 
   // Get paginated data
@@ -175,15 +160,15 @@ const LogosTable = () => {
     async (id, deleteFile = false) => {
       setIsLoading(true);
       try {
-        await API.deleteLogo(id, deleteFile);
+        await deleteLogo(id, deleteFile);
         await fetchAllLogos(); // Refresh all logos to maintain full view
-        notifications.show({
+        showNotification({
           title: 'Success',
           message: 'Logo deleted successfully',
           color: 'green',
         });
-      } catch (error) {
-        notifications.show({
+      } catch {
+        showNotification({
           title: 'Error',
           message: 'Failed to delete logo',
           color: 'red',
@@ -206,16 +191,16 @@ const LogosTable = () => {
 
       setIsLoading(true);
       try {
-        await API.deleteLogos(Array.from(selectedRows), deleteFiles);
+        await deleteLogos(Array.from(selectedRows), deleteFiles);
         await fetchAllLogos(); // Refresh all logos to maintain full view
 
-        notifications.show({
+        showNotification({
           title: 'Success',
           message: `${selectedRows.size} logos deleted successfully`,
           color: 'green',
         });
-      } catch (error) {
-        notifications.show({
+      } catch {
+        showNotification({
           title: 'Error',
           message: 'Failed to delete logos',
           color: 'red',
@@ -234,14 +219,14 @@ const LogosTable = () => {
     async (deleteFiles = false) => {
       setIsCleaningUp(true);
       try {
-        const result = await API.cleanupUnusedLogos(deleteFiles);
+        const result = await cleanupUnusedLogos(deleteFiles);
 
         let message = `Successfully deleted ${result.deleted_count} unused logos`;
         if (result.local_files_deleted > 0) {
           message += ` and deleted ${result.local_files_deleted} local files`;
         }
 
-        notifications.show({
+        showNotification({
           title: 'Cleanup Complete',
           message: message,
           color: 'green',
@@ -249,8 +234,8 @@ const LogosTable = () => {
 
         // Force refresh all logos after cleanup to maintain full view
         await fetchAllLogos(true);
-      } catch (error) {
-        notifications.show({
+      } catch {
+        showNotification({
           title: 'Cleanup Failed',
           message: 'Failed to cleanup unused logos',
           color: 'red',
@@ -269,7 +254,7 @@ const LogosTable = () => {
     setLogoModalOpen(true);
   }, []);
 
-  const deleteLogo = useCallback(
+  const handleDeleteLogo = useCallback(
     async (id) => {
       const logosArray = Object.values(logos || {});
       const logo = logosArray.find((l) => l.id === id);
@@ -428,40 +413,7 @@ const LogosTable = () => {
             );
           }
 
-          // Analyze channel_names to categorize types
-          const categorizeUsage = (names) => {
-            const types = { channels: 0, movies: 0, series: 0 };
-
-            names.forEach((name) => {
-              if (name.startsWith('Channel:')) types.channels++;
-              else if (name.startsWith('Movie:')) types.movies++;
-              else if (name.startsWith('Series:')) types.series++;
-            });
-
-            return types;
-          };
-
-          const types = categorizeUsage(channelNames);
-          const typeCount = Object.values(types).filter(
-            (count) => count > 0
-          ).length;
-
-          // Generate smart label based on usage
-          const generateLabel = () => {
-            if (typeCount === 1) {
-              // Only one type - be specific
-              if (types.channels > 0)
-                return `${types.channels} channel${types.channels !== 1 ? 's' : ''}`;
-              if (types.movies > 0)
-                return `${types.movies} movie${types.movies !== 1 ? 's' : ''}`;
-              if (types.series > 0) return `${types.series} series`;
-            } else {
-              // Multiple types - use generic "items"
-              return `${count} item${count !== 1 ? 's' : ''}`;
-            }
-          };
-
-          const label = generateLabel();
+          const label = generateUsageLabel(channelNames, count);
 
           return (
             <Tooltip
@@ -528,7 +480,7 @@ const LogosTable = () => {
             theme={theme}
             row={row}
             editLogo={editLogo}
-            deleteLogo={deleteLogo}
+            handleDeleteLogo={handleDeleteLogo}
           />
         ),
       },
@@ -536,7 +488,7 @@ const LogosTable = () => {
     [
       theme,
       editLogo,
-      deleteLogo,
+      handleDeleteLogo,
       selectedRows,
       handleSelectRow,
       handleSelectAll,

@@ -1,6 +1,6 @@
-import { Box, Flex } from '@mantine/core';
+import { Box } from '@mantine/core';
 import CustomTableHeader from './CustomTableHeader';
-import { useCallback, useState, useRef, useMemo } from 'react';
+import { useMemo } from 'react';
 import CustomTableBody from './CustomTableBody';
 
 const CustomTable = ({ table }) => {
@@ -17,14 +17,13 @@ const CustomTable = ({ table }) => {
     const headerGroups = table.getHeaderGroups();
     if (!headerGroups || headerGroups.length === 0) return 0;
 
-    const width =
+    return (
       headerGroups[0]?.headers.reduce((total, header) => {
         const colDef = header.column.columnDef;
         const size = colDef.grow ? colDef.minSize || 0 : header.getSize();
         return total + size;
-      }, 0) || 0;
-
-    return width;
+      }, 0) || 0
+    );
   }, [table, columnSizing]);
 
   // CSS custom properties for each fixed-width column's current size.

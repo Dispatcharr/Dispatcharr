@@ -1,6 +1,6 @@
 import { Box, Center, Checkbox, Flex } from '@mantine/core';
 import { flexRender } from '@tanstack/react-table';
-import { useCallback, useMemo } from 'react';
+import { useMemo } from 'react';
 import MultiSelectHeaderWrapper from './MultiSelectHeaderWrapper';
 import useChannelsTableStore from '../../../store/channelsTable';
 
@@ -55,25 +55,6 @@ const CustomTableHeader = ({
     return <MultiSelectHeaderWrapper>{content}</MultiSelectHeaderWrapper>;
   };
 
-  // Get header groups for dependency tracking
-  const headerGroups = getHeaderGroups();
-
-  // Calculate minimum width based only on fixed-size columns
-  const minTableWidth = useMemo(() => {
-    if (!headerGroups || headerGroups.length === 0) return 0;
-
-    const width =
-      headerGroups[0]?.headers.reduce((total, header) => {
-        // Only count columns with fixed sizes, flexible columns will expand
-        const columnSize = header.column.columnDef.size
-          ? header.getSize()
-          : header.column.columnDef.minSize || 150; // Default min for flexible columns
-        return total + columnSize;
-      }, 0) || 0;
-
-    return width;
-  }, [headerGroups]);
-
   // Memoize the style object to ensure it updates when headerPinned changes
   const headerStyle = useMemo(
     () => ({
@@ -122,7 +103,6 @@ const CustomTableHeader = ({
                         maxWidth: `var(--header-${header.id}-size)`,
                       }),
                   position: 'relative',
-                  // ...(tableCellProps && tableCellProps({ cell: header })),
                 }}
               >
                 <Flex
