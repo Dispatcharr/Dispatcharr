@@ -18,7 +18,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **`xmltv_prev_days_override` under `Settings → EPG`** (default `0` = auto-detect). Verbose timeshift logging follows the standard logger DEBUG level.
   - **EPG XMLTV `prev_days` auto-detection** from the provider's largest `tv_archive_duration` (capped at 30 days), overridable via setting or `?prev_days=` URL parameter.
   - **Byte path streams directly via `iter_content` + generator yield** (same pattern as the VOD proxy), with an upfront MPEG-TS sync peek that strips any PHP-warning preamble before bytes reach strict demuxers. Throughput stays comfortably above the typical 5 Mbps FHD bitrate so clients don't buffer.
-- **New proxy setting: Client Connect Grace Period (`channel_client_wait_period`, default 5s).** Adds a dedicated timeout for channels that have filled their buffer but still have no viewers (`waiting_for_clients`). Previously that window reused `channel_shutdown_delay` (default 0s), so those channels were torn down almost immediately.
 
 ### Performance
 
@@ -32,6 +31,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **M3U refresh completion counts now reflect actual stream changes.** The "updated" count previously included every existing stream because the summary treated `last_seen` touch-only rows as updates; it now counts only streams whose provider metadata changed. "Total processed" includes unchanged streams separately. The completion message, WebSocket payload, and parsing notification now also report how many streams were **marked stale** (missing from this refresh, pending retention-gated deletion) versus **removed** (deleted this run).
 - **M3U group processing retries on poisoned DB connections.** `_db_query_with_retry` now treats psycopg desync errors (`DatabaseError`, e.g. `lost synchronization with server`) as transient; `process_groups` relationship loading uses it so a stale Celery worker connection resets once instead of failing the whole refresh.
+
+## [0.27.2] - 2026-06-30
+
+### Added
+
+- **New proxy setting: Client Connect Grace Period (`channel_client_wait_period`, default 5s).** Adds a dedicated timeout for channels that have filled their buffer but still have no viewers (`waiting_for_clients`). Previously that window reused `channel_shutdown_delay` (default 0s), so those channels were torn down almost immediately.
 
 ### Changed
 
