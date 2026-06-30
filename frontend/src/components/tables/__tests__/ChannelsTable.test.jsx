@@ -1,5 +1,11 @@
 import React from 'react';
-import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
+import {
+  render,
+  screen,
+  fireEvent,
+  waitFor,
+  within,
+} from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // ── DnD Kit ────────────────────────────────────────────────────────────────────
@@ -79,7 +85,10 @@ vi.mock('../CustomTable', () => ({
 vi.mock('../ChannelsTable/ChannelsTableOnboarding', () => ({
   default: ({ editChannel }) => (
     <div data-testid="onboarding">
-      <button data-testid="onboarding-add" onClick={() => editChannel(null, { forceAdd: true })}>
+      <button
+        data-testid="onboarding-add"
+        onClick={() => editChannel(null, { forceAdd: true })}
+      >
         Add Channel
       </button>
     </div>
@@ -99,7 +108,10 @@ vi.mock('../ChannelsTable/ChannelTableHeader', () => ({
     setShowOnlyOverriddenChannels,
   }) => (
     <div data-testid="channel-table-header">
-      <button data-testid="header-add-channel" onClick={() => editChannel(null, { forceAdd: true })}>
+      <button
+        data-testid="header-add-channel"
+        onClick={() => editChannel(null, { forceAdd: true })}
+      >
         Add Channel
       </button>
       <button data-testid="header-delete-channels" onClick={deleteChannels}>
@@ -113,7 +125,9 @@ vi.mock('../ChannelsTable/ChannelTableHeader', () => ({
       </button>
       <button
         data-testid="toggle-streamless"
-        onClick={() => setShowOnlyStreamlessChannels(!showOnlyStreamlessChannels)}
+        onClick={() =>
+          setShowOnlyStreamlessChannels(!showOnlyStreamlessChannels)
+        }
       >
         Toggle Streamless
       </button>
@@ -125,7 +139,9 @@ vi.mock('../ChannelsTable/ChannelTableHeader', () => ({
       </button>
       <button
         data-testid="toggle-overridden"
-        onClick={() => setShowOnlyOverriddenChannels(!showOnlyOverriddenChannels)}
+        onClick={() =>
+          setShowOnlyOverriddenChannels(!showOnlyOverriddenChannels)
+        }
       >
         Toggle Overridden
       </button>
@@ -175,7 +191,15 @@ vi.mock('../../forms/Recording', () => ({
     ) : null,
 }));
 vi.mock('../../ConfirmationDialog', () => ({
-  default: ({ opened, onClose, onConfirm, title, loading, confirmLabel, cancelLabel }) =>
+  default: ({
+    opened,
+    onClose,
+    onConfirm,
+    title,
+    loading,
+    confirmLabel,
+    cancelLabel,
+  }) =>
     opened ? (
       <div data-testid="confirm-dialog">
         <span data-testid="confirm-title">{title}</span>
@@ -205,7 +229,11 @@ vi.mock('@mantine/core', () => ({
     </div>
   ),
   Button: ({ children, onClick, leftSection, disabled, loading }) => (
-    <button data-testid="button" onClick={onClick} disabled={disabled || loading}>
+    <button
+      data-testid="button"
+      onClick={onClick}
+      disabled={disabled || loading}
+    >
       {leftSection}
       {children}
     </button>
@@ -236,27 +264,57 @@ vi.mock('@mantine/core', () => ({
   ),
   MenuTarget: ({ children }) => <div>{children}</div>,
   MultiSelect: ({ value, data }) => (
-    <select data-testid="multi-select" multiple value={value || []} onChange={() => {}}>
+    <select
+      data-testid="multi-select"
+      multiple
+      value={value || []}
+      onChange={() => {}}
+    >
       {(data || []).map((d) => (
-        <option key={d.value ?? d} value={d.value ?? d}>{d.label ?? d}</option>
+        <option key={d.value ?? d} value={d.value ?? d}>
+          {d.label ?? d}
+        </option>
       ))}
     </select>
   ),
   NativeSelect: ({ value, data, onChange }) => (
-    <select data-testid="native-select" value={String(value)} onChange={onChange}>
+    <select
+      data-testid="native-select"
+      value={String(value)}
+      onChange={onChange}
+    >
       {(data || []).map((d) => (
-        <option key={d} value={d}>{d}</option>
+        <option key={d} value={d}>
+          {d}
+        </option>
       ))}
     </select>
   ),
   NumberInput: ({ value, onChange }) => (
-    <input data-testid="number-input" type="number" value={value} onChange={(e) => onChange(Number(e.target.value))} />
+    <input
+      data-testid="number-input"
+      type="number"
+      value={value}
+      onChange={(e) => onChange(Number(e.target.value))}
+    />
   ),
   Pagination: ({ total, value, onChange }) => (
     <div data-testid="pagination">
-      <button data-testid="pagination-prev" onClick={() => onChange(value - 1)} disabled={value <= 1}>Prev</button>
+      <button
+        data-testid="pagination-prev"
+        onClick={() => onChange(value - 1)}
+        disabled={value <= 1}
+      >
+        Prev
+      </button>
       <span data-testid="pagination-page">{value}</span>
-      <button data-testid="pagination-next" onClick={() => onChange(value + 1)} disabled={value >= total}>Next</button>
+      <button
+        data-testid="pagination-next"
+        onClick={() => onChange(value + 1)}
+        disabled={value >= total}
+      >
+        Next
+      </button>
     </div>
   ),
   Paper: ({ children, style }) => <div style={style}>{children}</div>,
@@ -264,11 +322,17 @@ vi.mock('@mantine/core', () => ({
     ({ children }) => <div data-testid="popover">{children}</div>,
     {
       Target: ({ children }) => <div>{children}</div>,
-      Dropdown: ({ children }) => <div data-testid="popover-dropdown">{children}</div>,
+      Dropdown: ({ children }) => (
+        <div data-testid="popover-dropdown">{children}</div>
+      ),
     }
   ),
   PopoverDropdown: ({ children, onClick, onMouseDown }) => (
-    <div data-testid="popover-dropdown" onClick={onClick} onMouseDown={onMouseDown}>
+    <div
+      data-testid="popover-dropdown"
+      onClick={onClick}
+      onMouseDown={onMouseDown}
+    >
       {children}
     </div>
   ),
@@ -281,7 +345,9 @@ vi.mock('@mantine/core', () => ({
     >
       <option value="">{placeholder}</option>
       {(data || []).map((d) => (
-        <option key={d.value ?? d} value={d.value ?? d}>{d.label ?? d}</option>
+        <option key={d.value ?? d} value={d.value ?? d}>
+          {d.label ?? d}
+        </option>
       ))}
     </select>
   ),
@@ -297,7 +363,9 @@ vi.mock('@mantine/core', () => ({
     />
   ),
   Text: ({ children, style }) => (
-    <span data-testid="text" style={style}>{children}</span>
+    <span data-testid="text" style={style}>
+      {children}
+    </span>
   ),
   TextInput: ({ value, placeholder, onChange, readOnly }) => (
     <input
@@ -310,12 +378,22 @@ vi.mock('@mantine/core', () => ({
   ),
   Tooltip: ({ children, label }) => <div data-tooltip={label}>{children}</div>,
   UnstyledButton: ({ children, onClick }) => (
-    <button data-testid="unstyled-button" onClick={onClick}>{children}</button>
+    <button data-testid="unstyled-button" onClick={onClick}>
+      {children}
+    </button>
   ),
   useMantineTheme: vi.fn(() => ({
-    tailwind: { yellow: { 3: '#fde047' }, red: { 6: '#dc2626' }, green: { 5: '#22c55e' } },
+    tailwind: {
+      yellow: { 3: '#fde047' },
+      red: { 6: '#dc2626' },
+      green: { 5: '#22c55e' },
+    },
     palette: {
-      custom: { greenMain: '#22c55e', indigoMain: '#6366f1', greyBorder: '#71717a' },
+      custom: {
+        greenMain: '#22c55e',
+        indigoMain: '#6366f1',
+        greyBorder: '#71717a',
+      },
     },
   })),
 }));
@@ -353,7 +431,12 @@ import useOutputProfilesStore from '../../../store/outputProfiles';
 import useWarningsStore from '../../../store/warnings';
 import useLocalStorage from '../../../hooks/useLocalStorage';
 import { useTable } from '../CustomTable';
-import { deleteChannel, deleteChannels, queryChannels, getAllChannelIds } from '../../../utils/tables/ChannelsTableUtils.js';
+import {
+  deleteChannel,
+  deleteChannels,
+  queryChannels,
+  getAllChannelIds,
+} from '../../../utils/tables/ChannelsTableUtils.js';
 import { requeryChannels } from '../../../utils/forms/ChannelUtils.js';
 import { copyToClipboard } from '../../../utils';
 import { buildLiveStreamUrl } from '../../../utils/components/FloatingVideoUtils.js';
@@ -433,9 +516,7 @@ const setupMocks = ({
     })
   );
 
-  vi.mocked(useAuthStore).mockImplementation((sel) =>
-    sel({ user: authUser })
-  );
+  vi.mocked(useAuthStore).mockImplementation((sel) => sel({ user: authUser }));
 
   vi.mocked(useEPGsStore).mockImplementation((sel) =>
     sel({ epgs, tvgsById: {}, tvgsLoaded: true })
@@ -471,8 +552,7 @@ const setupMocks = ({
 const getActionsCol = () =>
   capturedTableOptions.columns.find((c) => c.id === 'actions');
 
-const getCol = (id) =>
-  capturedTableOptions.columns.find((c) => c.id === id);
+const getCol = (id) => capturedTableOptions.columns.find((c) => c.id === id);
 
 // ══════════════════════════════════════════════════════════════════════════════
 // Tests
@@ -516,10 +596,17 @@ describe('ChannelsTable', () => {
         tableOverrides: { getRowModel: () => ({ rows: [] }) },
       });
       vi.mocked(useChannelsStore).mockImplementation((sel) =>
-        sel({ channelIds: [], profiles: {}, selectedProfileId: '0', channelGroups: {} })
+        sel({
+          channelIds: [],
+          profiles: {},
+          selectedProfileId: '0',
+          channelGroups: {},
+        })
       );
       render(<ChannelsTable />);
-      await waitFor(() => expect(screen.getByTestId('onboarding')).toBeInTheDocument());
+      await waitFor(() =>
+        expect(screen.getByTestId('onboarding')).toBeInTheDocument()
+      );
     });
 
     it('renders pagination controls when channels exist', () => {
@@ -633,7 +720,12 @@ describe('ChannelsTable', () => {
         tableOverrides: { getRowModel: () => ({ rows: [] }) },
       });
       vi.mocked(useChannelsStore).mockImplementation((sel) =>
-        sel({ channelIds: [], profiles: {}, selectedProfileId: '0', channelGroups: {} })
+        sel({
+          channelIds: [],
+          profiles: {},
+          selectedProfileId: '0',
+          channelGroups: {},
+        })
       );
       render(<ChannelsTable />);
       const addBtn = await screen.findByTestId('onboarding-add');
@@ -665,7 +757,9 @@ describe('ChannelsTable', () => {
       const { tableInstance } = setupMocks({ authUser: makeAdminUser() });
       render(<ChannelsTable />);
       const { getByTestId } = renderActionCell(channel, tableInstance);
-      expect(getByTestId('icon-square-pen').closest('button')).not.toBeDisabled();
+      expect(
+        getByTestId('icon-square-pen').closest('button')
+      ).not.toBeDisabled();
     });
 
     it('clicking edit button opens channel form populated with the channel', () => {
@@ -702,7 +796,9 @@ describe('ChannelsTable', () => {
       const { tableInstance } = setupMocks({ authUser: makeAdminUser() });
       render(<ChannelsTable />);
       const { getByTestId } = renderActionCell(channel, tableInstance);
-      expect(getByTestId('icon-square-minus').closest('button')).not.toBeDisabled();
+      expect(
+        getByTestId('icon-square-minus').closest('button')
+      ).not.toBeDisabled();
     });
 
     it('opens confirmation dialog when delete is clicked and warning is not suppressed', () => {
@@ -820,9 +916,38 @@ describe('ChannelsTable', () => {
       render(<ChannelsTable />);
       fireEvent.click(screen.getByTestId('header-delete-channels'));
       fireEvent.click(screen.getByTestId('confirm-ok'));
-      await waitFor(() =>
-        expect(deleteChannels).toHaveBeenCalledWith([1, 2])
-      );
+      await waitFor(() => expect(deleteChannels).toHaveBeenCalledWith([1, 2]));
+    });
+
+    it('awaits requeryChannels before clearing bulk selection', async () => {
+      const channels = [makeChannel({ id: 1 }), makeChannel({ id: 2 })];
+      const setSelectedTableIds = vi.fn();
+      let resolveRequery;
+      const requeryPromise = new Promise((resolve) => {
+        resolveRequery = resolve;
+      });
+      vi.mocked(requeryChannels).mockReturnValue(requeryPromise);
+
+      setupMocks({
+        channels,
+        tableOverrides: {
+          getRowModel: vi.fn(() => ({ rows: [] })),
+          getHeaderGroups: vi.fn(() => []),
+          setSelectedTableIds,
+          selectedTableIds: [1, 2],
+        },
+        isWarningSuppressed: vi.fn(() => false),
+      });
+      render(<ChannelsTable />);
+      fireEvent.click(screen.getByTestId('header-delete-channels'));
+      fireEvent.click(screen.getByTestId('confirm-ok'));
+
+      await waitFor(() => expect(deleteChannels).toHaveBeenCalledWith([1, 2]));
+      expect(requeryChannels).toHaveBeenCalled();
+      expect(setSelectedTableIds).not.toHaveBeenCalled();
+
+      resolveRequery();
+      await waitFor(() => expect(setSelectedTableIds).toHaveBeenCalledWith([]));
     });
 
     it('skips dialog and calls deleteChannels directly when warning is suppressed', async () => {
@@ -839,9 +964,7 @@ describe('ChannelsTable', () => {
       });
       render(<ChannelsTable />);
       fireEvent.click(screen.getByTestId('header-delete-channels'));
-      await waitFor(() =>
-        expect(deleteChannels).toHaveBeenCalledWith([1, 2])
-      );
+      await waitFor(() => expect(deleteChannels).toHaveBeenCalledWith([1, 2]));
       expect(screen.queryByTestId('confirm-dialog')).not.toBeInTheDocument();
     });
   });
@@ -856,7 +979,9 @@ describe('ChannelsTable', () => {
       vi.mocked(useVideoStore).mockImplementation((sel) =>
         sel({ showVideo: showVideoMock })
       );
-      vi.mocked(buildLiveStreamUrl).mockReturnValue('/proxy/ts/stream/uuid-abc');
+      vi.mocked(buildLiveStreamUrl).mockReturnValue(
+        '/proxy/ts/stream/uuid-abc'
+      );
       render(<ChannelsTable />);
       const col = getActionsCol();
       const { getByTestId } = render(
@@ -884,10 +1009,14 @@ describe('ChannelsTable', () => {
       );
       // Record menu item is the second menu-item (after Copy URL)
       const menuItems = getAllByTestId('menu-item');
-      const recordItem = menuItems.find((el) => el.textContent.includes('Record'));
+      const recordItem = menuItems.find((el) =>
+        el.textContent.includes('Record')
+      );
       fireEvent.click(recordItem);
       expect(screen.getByTestId('recording-form')).toBeInTheDocument();
-      expect(screen.getByTestId('recording-form-channel')).toHaveTextContent('CNN');
+      expect(screen.getByTestId('recording-form-channel')).toHaveTextContent(
+        'CNN'
+      );
     });
 
     it('closes recording form when onClose is called', () => {
@@ -899,7 +1028,9 @@ describe('ChannelsTable', () => {
         col.cell({ row: { original: channel }, table: tableInstance })
       );
       const menuItems = getAllByTestId('menu-item');
-      const recordItem = menuItems.find((el) => el.textContent.includes('Record'));
+      const recordItem = menuItems.find((el) =>
+        el.textContent.includes('Record')
+      );
       fireEvent.click(recordItem);
       fireEvent.click(screen.getByTestId('recording-form-close'));
       expect(screen.queryByTestId('recording-form')).not.toBeInTheDocument();
@@ -918,7 +1049,9 @@ describe('ChannelsTable', () => {
         col.cell({ row: { original: channel }, table: tableInstance })
       );
       const menuItems = getAllByTestId('unstyled-button');
-      const copyBtn = menuItems.find((el) => el.textContent.includes('Copy URL'));
+      const copyBtn = menuItems.find((el) =>
+        el.textContent.includes('Copy URL')
+      );
       fireEvent.click(copyBtn);
       expect(copyToClipboard).toHaveBeenCalled();
     });
@@ -949,7 +1082,9 @@ describe('ChannelsTable', () => {
       const tableInstance = makeDefaultTableInstance({
         getState: () => ({ selectedTableIds: [] }),
       });
-      return render(col.cell({ row: { original: channel }, table: tableInstance }));
+      return render(
+        col.cell({ row: { original: channel }, table: tableInstance })
+      );
     };
 
     it('renders a Switch for the enabled column', () => {
@@ -1002,7 +1137,10 @@ describe('ChannelsTable', () => {
       setupMocks();
       render(<ChannelsTable />);
       const col = getCol('name');
-      const result = col.accessorFn({ effective_name: 'Override Name', name: 'Original' });
+      const result = col.accessorFn({
+        effective_name: 'Override Name',
+        name: 'Original',
+      });
       expect(result).toBe('Override Name');
     });
 
@@ -1057,7 +1195,10 @@ describe('ChannelsTable', () => {
 
   describe('expandedRowRenderer', () => {
     it('renders ChannelTableStreams for the expanded row', () => {
-      const channel = makeChannel({ id: 1, streams: [{ id: 10, is_stale: false }] });
+      const channel = makeChannel({
+        id: 1,
+        streams: [{ id: 10, is_stale: false }],
+      });
       setupMocks({ channels: [channel] });
       render(<ChannelsTable />);
       const { expandedRowRenderer } = capturedTableOptions;

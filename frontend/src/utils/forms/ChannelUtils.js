@@ -40,9 +40,7 @@ export const updateChannel = (values) => {
 export const addChannel = (channel) => {
   return API.addChannel(channel);
 };
-export const requeryChannels = () => {
-  API.requeryChannels();
-};
+export const requeryChannels = () => API.requeryChannels();
 
 // PATCH semantic: `override: null` deletes the override row; per-field
 // nulls only clear the matching field.
