@@ -3711,15 +3711,9 @@ def _refresh_single_m3u_account_impl(account_id):
             del channel_group_relationships, filtered_groups
 
             if not all_xc_streams:
-                # collect_xc_streams() returns an empty list when the provider
-                # returned no live streams, the fetch raised, or no enabled
-                # category matched. Falling through would mark every existing
-                # stream stale and then let sync_auto_channels delete the
-                # account's entire auto-created channel lineup (its per-group
-                # "no streams remaining" branch). A routine refresh must not
-                # destroy channels because of a transient upstream failure, so
-                # abort here, before stale-marking and auto-sync, exactly as the
-                # standard-path guards above do for an empty/failed download.
+                # Empty XC fetch (provider hiccup, fetch error, or no enabled
+                # category matched) must not fall through to stale-marking and
+                # auto-sync, which would delete the entire auto-created lineup.
                 logger.error(
                     f"No streams collected from XC provider for account "
                     f"{account_id}; aborting refresh to preserve the existing "
