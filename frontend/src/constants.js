@@ -43,6 +43,7 @@ export const PROXY_SETTINGS_OPTIONS = {
   },
   redis_chunk_ttl: {
     label: 'Buffer Chunk TTL',
+    advanced: true,
     description:
       'Time-to-live for buffer chunks in seconds (how long stream data is cached)',
   },
@@ -53,13 +54,15 @@ export const PROXY_SETTINGS_OPTIONS = {
   },
   channel_init_grace_period: {
     label: 'Channel Initialization Timeout',
+    advanced: true,
     description:
       'Maximum seconds to wait for the initial buffer to fill while a channel is connecting. Channels that never receive enough buffered data are stopped after this limit.',
   },
   channel_client_wait_period: {
     label: 'Client Connect Grace Period',
+    advanced: true,
     description:
-      'Seconds to keep a ready channel alive when no client has connected yet (e.g. after an API warmup). Once a client connects the channel becomes active; if none connect within this window the channel stops.',
+      'Seconds to keep a buffered channel alive when no viewer is connected yet. Rarely needed unless you start channels programmatically.',
   },
   new_client_behind_seconds: {
     label: 'New Client Buffer (seconds)',
