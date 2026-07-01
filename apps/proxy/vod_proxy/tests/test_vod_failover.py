@@ -3,21 +3,27 @@ Tests for VOD provider failover (PR: "Add VOD failover logic for M3U relations")
 
 The VOD proxy previously selected a single highest-priority relation and
 returned 503 if that account was at capacity, without trying other accounts
-that carry the same title. `_get_all_relations_ordered()` is the helper that
-enables failover by returning ALL active relations ordered by account
-priority, with the already-selected preferred relation first.
+that carry the same title.
 
-These tests cover the helper's ordering, preferred-first placement,
-de-duplication, content-type handling (movie / episode / series) and its
-defensive fallbacks.
+`_get_content_and_relation()` now materialises the active, priority-ordered
+relations once (single DB query) and returns that list. `_order_candidates()`
+is a pure in-memory helper that moves the preferred relation to the front and
+removes duplicates, so the initial connection path hits the database exactly
+once. stream_vod()/head_vod() then walk the ordered list and use the first
+account with spare capacity.
+
+These tests cover the in-memory ordering helper: preferred-first placement,
+de-duplication, empty-input fallbacks, and the guarantee that it performs no
+database access.
 """
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 from django.test import TestCase
+
+from apps.proxy.vod_proxy.views import _order_candidates
 
 
 def _rel(rel_id, priority):
-    """Build a fake relation with an account of the given priority."""
     rel = MagicMock()
     rel.id = rel_id
     rel.m3u_account = MagicMock()
@@ -25,142 +31,60 @@ def _rel(rel_id, priority):
     return rel
 
 
-class FakeRelationQuerySet:
-    """Minimal stand-in for the m3u_relations manager/queryset chain.
-
-    Records the filter/order_by calls so tests can assert the helper only
-    asks for active accounts, and returns a fixed, already-ordered list.
-    """
-
-    def __init__(self, relations):
-        self._relations = relations
-        self.filter_kwargs = None
-        self.order_by_args = None
-
-    def filter(self, **kwargs):
-        self.filter_kwargs = kwargs
-        return self
-
-    def select_related(self, *args):
-        return self
-
-    def order_by(self, *args):
-        self.order_by_args = args
-        return self
-
-    def __iter__(self):
-        return iter(self._relations)
-
-    def __list__(self):
-        return list(self._relations)
-
-
-def _import_helper():
-    """Import the helper with heavy Django model deps stubbed out."""
-    import sys
-    for mod in ['apps.vod.models', 'apps.m3u.models', 'core.utils']:
-        if mod not in sys.modules:
-            sys.modules[mod] = MagicMock()
-    from apps.proxy.vod_proxy.views import _get_all_relations_ordered
-    return _get_all_relations_ordered
-
-
-class TestGetAllRelationsOrdered(TestCase):
-    def setUp(self):
-        self.helper = _import_helper()
-
+class TestOrderCandidates(TestCase):
     def test_preferred_relation_is_placed_first(self):
-        """The already-selected relation must come first even if not top priority."""
         preferred = _rel(rel_id=2, priority=0)
-        all_rels = [_rel(rel_id=1, priority=5), preferred, _rel(rel_id=3, priority=2)]
+        candidates = [_rel(rel_id=1, priority=5), _rel(rel_id=3, priority=2), preferred]
 
-        content = MagicMock()
-        content.m3u_relations = FakeRelationQuerySet(all_rels)
-
-        result = self.helper(content, 'movie', preferred_relation=preferred)
+        result = _order_candidates(candidates, preferred_relation=preferred)
 
         self.assertEqual(result[0].id, 2, "Preferred relation must be first")
-        # All relations are still present
         self.assertEqual({r.id for r in result}, {1, 2, 3})
 
     def test_preferred_relation_not_duplicated(self):
-        """If the preferred relation is also in the queryset, it must appear once."""
         preferred = _rel(rel_id=2, priority=0)
-        all_rels = [preferred, _rel(rel_id=1, priority=5)]
+        candidates = [preferred, _rel(rel_id=1, priority=5)]
 
-        content = MagicMock()
-        content.m3u_relations = FakeRelationQuerySet(all_rels)
-
-        result = self.helper(content, 'movie', preferred_relation=preferred)
+        result = _order_candidates(candidates, preferred_relation=preferred)
 
         ids = [r.id for r in result]
         self.assertEqual(ids.count(2), 1, "Preferred relation must not be duplicated")
         self.assertEqual(len(result), 2)
 
-    def test_only_active_accounts_requested(self):
-        """Helper must filter on active accounts only."""
-        all_rels = [_rel(rel_id=1, priority=0)]
-        qs = FakeRelationQuerySet(all_rels)
-        content = MagicMock()
-        content.m3u_relations = qs
+    def test_no_preferred_keeps_order(self):
+        candidates = [_rel(rel_id=1, priority=0), _rel(rel_id=2, priority=5)]
 
-        self.helper(content, 'movie', preferred_relation=None)
+        result = _order_candidates(candidates, preferred_relation=None)
 
-        self.assertEqual(qs.filter_kwargs, {'m3u_account__is_active': True})
+        self.assertEqual([r.id for r in result], [1, 2])
 
-    def test_no_preferred_returns_all(self):
-        """Without a preferred relation, all relations are returned."""
-        all_rels = [_rel(rel_id=1, priority=0), _rel(rel_id=2, priority=5)]
-        content = MagicMock()
-        content.m3u_relations = FakeRelationQuerySet(all_rels)
+    def test_empty_with_preferred_returns_preferred(self):
+        preferred = _rel(rel_id=7, priority=0)
 
-        result = self.helper(content, 'movie', preferred_relation=None)
-
-        self.assertEqual({r.id for r in result}, {1, 2})
-
-    def test_series_uses_first_episode_relations(self):
-        """For series, relations come from the first episode."""
-        episode = MagicMock()
-        episode.m3u_relations = FakeRelationQuerySet([_rel(rel_id=10, priority=0)])
-
-        series = MagicMock()
-        series.episodes.first.return_value = episode
-
-        result = self.helper(series, 'series', preferred_relation=None)
-
-        series.episodes.first.assert_called_once()
-        self.assertEqual([r.id for r in result], [10])
-
-    def test_missing_relations_attr_falls_back_to_preferred(self):
-        """If the content object has no m3u_relations, return just the preferred."""
-        preferred = _rel(rel_id=4, priority=0)
-
-        class NoRelations:
-            pass
-
-        result = self.helper(NoRelations(), 'movie', preferred_relation=preferred)
+        result = _order_candidates([], preferred_relation=preferred)
 
         self.assertEqual(result, [preferred])
 
-    def test_missing_relations_attr_and_no_preferred_returns_empty(self):
-        """No relations and no preferred relation must yield an empty list, not raise."""
-        class NoRelations:
-            pass
-
-        result = self.helper(NoRelations(), 'movie', preferred_relation=None)
+    def test_empty_without_preferred_returns_empty(self):
+        result = _order_candidates([], preferred_relation=None)
 
         self.assertEqual(result, [])
 
-    def test_db_error_falls_back_to_preferred(self):
-        """Any error while collecting relations must not raise; return preferred."""
-        preferred = _rel(rel_id=7, priority=0)
+    def test_no_database_access(self):
+        """The helper must be pure in-memory: it must never touch the ORM."""
+        class Boom:
+            def __init__(self, rel_id, priority):
+                self.id = rel_id
+                self.m3u_account = MagicMock()
+                self.m3u_account.priority = priority
 
-        content = MagicMock()
-        # Accessing .filter raises to simulate a DB/ORM failure
-        broken_qs = MagicMock()
-        broken_qs.filter.side_effect = RuntimeError("DB down")
-        content.m3u_relations = broken_qs
+            def __getattr__(self, name):
+                if name in ('filter', 'objects', 'all', 'select_related', 'order_by'):
+                    raise AssertionError(f"ORM access attempted via .{name}()")
+                raise AttributeError(name)
 
-        result = self.helper(content, 'movie', preferred_relation=preferred)
+        candidates = [Boom(1, 0), Boom(2, 5)]
 
-        self.assertEqual(result, [preferred])
+        result = _order_candidates(candidates, preferred_relation=None)
+
+        self.assertEqual([r.id for r in result], [1, 2])
