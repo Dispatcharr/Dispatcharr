@@ -1197,6 +1197,35 @@ def extract_compressed_file(file_path, output_path=None, delete_original=False):
         logger.error(f"Error extracting {file_path}: {str(e)}", exc_info=True)
         return None
 
+_CHANNEL_PARSE_PROGRESS_START = 25
+_CHANNEL_PARSE_PROGRESS_CAP = 98
+_CHANNEL_PARSE_PROGRESS_SCALE = 0.98
+
+
+def _channel_parse_progress(processed_channels, channel_estimate, had_db_baseline):
+    """Map channel parsing onto 25-98%. Bump estimate when the XML has grown."""
+    if not had_db_baseline:
+        if processed_channels <= 0:
+            return _CHANNEL_PARSE_PROGRESS_START, channel_estimate
+        return (
+            min(
+                _CHANNEL_PARSE_PROGRESS_START + (processed_channels // 100),
+                _CHANNEL_PARSE_PROGRESS_CAP - 1,
+            ),
+            channel_estimate,
+        )
+
+    if processed_channels > channel_estimate:
+        channel_estimate = processed_channels
+    if channel_estimate <= 0:
+        return _CHANNEL_PARSE_PROGRESS_START, channel_estimate
+
+    span = _CHANNEL_PARSE_PROGRESS_CAP - _CHANNEL_PARSE_PROGRESS_START
+    progress = _CHANNEL_PARSE_PROGRESS_START + int(
+        (processed_channels / channel_estimate) * span * _CHANNEL_PARSE_PROGRESS_SCALE
+    )
+    return min(_CHANNEL_PARSE_PROGRESS_CAP, progress), channel_estimate
+
 
 def parse_channels_only(source):
     # Use extracted file if available, otherwise use the original file path
@@ -1309,6 +1338,8 @@ def parse_channels_only(source):
         epgs_to_create = []
         epgs_to_update = []
         total_channels = 0
+        channel_estimate = 0
+        had_db_baseline = False
         processed_channels = 0
         batch_size = 500  # Process in batches to limit memory usage
         progress = 0  # Initialize progress variable here
@@ -1323,10 +1354,14 @@ def parse_channels_only(source):
             # Attempt to count existing channels in the database
             try:
                 total_channels = EPGData.objects.filter(epg_source=source).count()
+                channel_estimate = total_channels
+                had_db_baseline = total_channels > 0
                 logger.info(f"Found {total_channels} existing channels for this source")
             except Exception as e:
                 logger.error(f"Error counting channels: {e}")
                 total_channels = 500  # Default estimate
+                channel_estimate = total_channels
+                had_db_baseline = True
             if process:
                 logger.debug(f"[parse_channels_only] Memory after closing initial file: {process.memory_info().rss / 1024 / 1024:.2f} MB")
 
@@ -1453,20 +1488,36 @@ def parse_channels_only(source):
                         if process:
                             logger.info(f"[parse_channels_only] Memory after clearing cache: {process.memory_info().rss / 1024 / 1024:.2f} MB")
 
-                    # Send progress updates
-                    if processed_channels % 100 == 0 or processed_channels == total_channels:
-                        progress = 25 + int((processed_channels / total_channels) * 65) if total_channels > 0 else 90
+                    # Send progress updates (~20 ticks when the DB count still holds; else every 100)
+                    estimate_exceeded = had_db_baseline and processed_channels > total_channels
+                    interval = (
+                        max(1, total_channels // 20)
+                        if had_db_baseline and total_channels and not estimate_exceeded
+                        else 100
+                    )
+                    if processed_channels % interval == 0:
+                        progress, channel_estimate = _channel_parse_progress(
+                            processed_channels,
+                            channel_estimate,
+                            had_db_baseline,
+                        )
                         send_epg_update(
                             source.id,
                             "parsing_channels",
                             progress,
                             processed=processed_channels,
-                            total=total_channels
+                            total=channel_estimate,
                         )
-                    if processed_channels > total_channels:
-                        logger.debug(f"[parse_channels_only] Processed channel {tvg_id} - processed {processed_channels - total_channels} additional channels")
+                    if had_db_baseline and processed_channels > total_channels:
+                        logger.debug(
+                            f"[parse_channels_only] Processed channel {tvg_id} - "
+                            f"processed {processed_channels - total_channels} additional channels"
+                        )
                     else:
-                        logger.debug(f"[parse_channels_only] Processed channel {tvg_id} - processed {processed_channels}/{total_channels}")
+                        logger.debug(
+                            f"[parse_channels_only] Processed channel {tvg_id} - "
+                            f"processed {processed_channels}/{channel_estimate or total_channels}"
+                        )
                     if process:
                         logger.debug(f"[parse_channels_only] Memory before elem cleanup: {process.memory_info().rss / 1024 / 1024:.2f} MB")
                     # Clear memory
@@ -1499,6 +1550,21 @@ def parse_channels_only(source):
             logger.info(f"[parse_channels_only] Processed {processed_channels} channels current memory: {process.memory_info().rss / 1024 / 1024:.2f} MB")
         else:
             logger.info(f"[parse_channels_only] Processed {processed_channels} channels")
+
+        if processed_channels > 0:
+            progress, channel_estimate = _channel_parse_progress(
+                processed_channels,
+                channel_estimate,
+                had_db_baseline,
+            )
+            send_epg_update(
+                source.id,
+                "parsing_channels",
+                progress,
+                processed=processed_channels,
+                total=channel_estimate,
+            )
+
         # Process any remaining items
         if epgs_to_create:
             EPGData.objects.bulk_create(epgs_to_create, ignore_conflicts=True)
