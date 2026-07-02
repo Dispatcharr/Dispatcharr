@@ -2,7 +2,7 @@ from unittest.mock import patch
 
 from django.test import SimpleTestCase
 
-from dispatcharr.db.process_label import get_process_role
+from dispatcharr.db.process_label import get_process_role, uses_geventpool_database_backend
 
 
 class ProcessLabelTests(SimpleTestCase):
@@ -27,3 +27,26 @@ class ProcessLabelTests(SimpleTestCase):
         with patch.dict("sys.modules", {"uwsgi": fake_uwsgi}):
             role = get_process_role(["/dispatcharrpy/bin/python", "-c", "pass"])
         self.assertEqual(role, "django")
+
+
+class DatabaseBackendSelectionTests(SimpleTestCase):
+    def test_celery_workers_use_standard_postgres_backend(self):
+        self.assertFalse(uses_geventpool_database_backend(
+            ["celery", "-A", "dispatcharr", "worker", "-Q", "celery"]
+        ))
+        self.assertFalse(uses_geventpool_database_backend(
+            ["celery", "-A", "dispatcharr", "worker", "-Q", "dvr", "--pool=threads"]
+        ))
+        self.assertFalse(uses_geventpool_database_backend(
+            ["celery", "-A", "dispatcharr", "beat"]
+        ))
+
+    def test_uwsgi_uses_geventpool_backend(self):
+        self.assertTrue(uses_geventpool_database_backend(
+            ["uwsgi", "--ini", "/app/docker/uwsgi.ini"]
+        ))
+
+    def test_manage_uses_geventpool_backend(self):
+        self.assertTrue(uses_geventpool_database_backend(
+            ["manage.py", "migrate"]
+        ))

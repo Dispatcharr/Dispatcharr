@@ -5,6 +5,8 @@ from datetime import timedelta
 from urllib.parse import quote_plus
 from django.core.exceptions import ImproperlyConfigured
 
+from dispatcharr.db.process_label import db_application_name, uses_geventpool_database_backend
+
 
 def _validate_tls_cert_paths(paths, service_name):
     """Validate that configured TLS certificate file paths exist on disk.
@@ -228,23 +230,38 @@ if os.getenv("DB_ENGINE", None) == "sqlite":
         }
     }
 else:
+    _use_geventpool_db = uses_geventpool_database_backend()
+    _pg_options = {"pool": False} if _use_geventpool_db else {
+        "application_name": db_application_name(),
+    }
+    if _use_geventpool_db:
+        _pg_options.update({
+            "MAX_CONNS": 8,   # Per-worker pool size; 4 workers × 8 = 32 total < pg max_connections=100
+            "REUSE_CONNS": 3, # Connections to keep warm between requests
+            "CONN_MAX_LIFETIME": DATABASE_POOL_CONN_MAX_LIFETIME or None,
+        })
+
     DATABASES = {
         "default": {
-            "ENGINE": "dispatcharr.db.backends.postgresql_psycopg3",
+            "ENGINE": (
+                "dispatcharr.db.backends.postgresql_psycopg3"
+                if _use_geventpool_db
+                else "django.db.backends.postgresql"
+            ),
             "NAME": os.environ.get("POSTGRES_DB", "dispatcharr"),
             "USER": os.environ.get("POSTGRES_USER", "dispatch"),
             "PASSWORD": os.environ.get("POSTGRES_PASSWORD", "secret"),
             "HOST": os.environ.get("POSTGRES_HOST", "localhost"),
             "PORT": int(os.environ.get("POSTGRES_PORT", 5432)),
             "CONN_MAX_AGE": DATABASE_CONN_MAX_AGE,
-            "OPTIONS": {
-                "MAX_CONNS": 8,   # Per-worker pool size; 4 workers × 8 = 32 total < pg max_connections=100
-                "REUSE_CONNS": 3, # Connections to keep warm between requests
-                "pool": False,    # Disable Django's native psycopg3 pool; geventpool manages connections
-                "CONN_MAX_LIFETIME": DATABASE_POOL_CONN_MAX_LIFETIME or None,
-            },
+            "OPTIONS": _pg_options,
         }
     }
+
+    if not _use_geventpool_db:
+        print(
+            f"PostgreSQL: standard backend for Celery ({_pg_options.get('application_name')})"
+        )
 
     if POSTGRES_SSL:
         _validate_tls_cert_paths([
