@@ -2,7 +2,7 @@
 import os
 from celery import Celery
 import logging
-from celery.signals import task_postrun, worker_ready
+from celery.signals import task_postrun, task_prerun, worker_process_init, worker_ready
 
 logger = logging.getLogger(__name__)
 
@@ -42,13 +42,26 @@ app.autodiscover_tasks()
 # Plugins live outside INSTALLED_APPS, so autodiscover_tasks() never imports
 # them. Without an eager import, workers reject plugin @shared_tasks with
 # "Received unregistered task" until a lazy event import warms the module.
-@worker_ready.connect(weak=False)
-def discover_plugins_on_worker_ready(**_kwargs):
+# Discovery runs in worker_process_init (each prefork child / thread worker)
+# rather than worker_ready (the long-lived arbiter) so the parent process
+# never opens DB connections that autoscale children would inherit via fork().
+@worker_process_init.connect(weak=False)
+def init_worker_process(**_kwargs):
+    from django.db import connections
+
+    # Standard Celery + Django guidance for prefork pools: discard any
+    # connection state inherited from the parent across fork().
+    try:
+        connections.close_all()
+    except Exception:
+        logger.warning("Failed to close inherited DB connections after fork", exc_info=True)
+
     try:
         from apps.plugins.loader import PluginManager
         PluginManager.get().discover_plugins(sync_db=False)
     except Exception:
-        logger.exception("plugin discovery on worker_ready failed")
+        logger.exception("plugin discovery on worker_process_init failed")
+
 
 # Use environment variable for log level with fallback to INFO
 CELERY_LOG_LEVEL = os.environ.get('DISPATCHARR_LOG_LEVEL', 'INFO').upper()
@@ -68,18 +81,30 @@ app.conf.task_routes = {
     'apps.channels.tasks.run_recording': {'queue': 'dvr'},
 }
 
+
+@task_prerun.connect
+def reset_db_connection_before_task(**kwargs):
+    """Discard stale DB connections before each task (Celery workers are long-lived)."""
+    from django.db import close_old_connections
+
+    try:
+        close_old_connections()
+    except Exception:
+        pass
+
+
 # Add memory cleanup after task completion
 @task_postrun.connect  # Use the imported signal
 def cleanup_task_memory(**kwargs):
     """Clean up memory and database connections after each task completes"""
-    from django.db import connection
+    from django.db import close_old_connections
 
     # Get task name from kwargs
     task_name = kwargs.get('task').name if kwargs.get('task') else ''
 
-    # Close database connection for this Celery worker process
+    # Return all DB connections to the pool in a clean state
     try:
-        connection.close()
+        close_old_connections()
     except Exception:
         pass
 
@@ -87,6 +112,7 @@ def cleanup_task_memory(**kwargs):
     memory_intensive_tasks = [
         'apps.m3u.tasks.refresh_single_m3u_account',
         'apps.m3u.tasks.refresh_m3u_accounts',
+        'apps.m3u.tasks.refresh_m3u_groups',
         'apps.m3u.tasks.process_m3u_batch',
         'apps.m3u.tasks.process_xc_category',
         'apps.m3u.tasks.sync_auto_channels',
@@ -94,10 +120,13 @@ def cleanup_task_memory(**kwargs):
         'apps.epg.tasks.refresh_all_epg_data',
         'apps.epg.tasks.parse_programs_for_source',
         'apps.epg.tasks.parse_programs_for_tvg_id',
+        'apps.epg.tasks.build_programme_index_task',
         'apps.channels.tasks.match_epg_channels',
         'apps.channels.tasks.match_selected_channels_epg',
         'apps.channels.tasks.match_single_channel_epg',
-        'core.tasks.rehash_streams'
+        'core.tasks.rehash_streams',
+        'apps.vod.tasks.refresh_vod_content',
+        'apps.vod.tasks.batch_refresh_series_episodes',
     ]
 
     # Check if this is a memory-intensive task
@@ -106,7 +135,7 @@ def cleanup_task_memory(**kwargs):
         from core.utils import cleanup_memory
 
         # Use the comprehensive cleanup function
-        cleanup_memory(log_usage=True, force_collection=True)
+        cleanup_memory(log_usage=True, force_collection=True, trim_heap=True)
 
         # Log memory usage if psutil is installed
         try:

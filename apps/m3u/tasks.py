@@ -7,46 +7,150 @@ import os
 import gc
 import gzip, zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from celery.app.control import Inspect
-from celery.result import AsyncResult
-from celery import shared_task, current_app, group
+from celery import shared_task
 from django.conf import settings
-from django.core.cache import cache
 from django.db import models, transaction
 from .models import M3UAccount
 from apps.channels.models import Stream, ChannelGroup, ChannelGroupM3UAccount
-from asgiref.sync import async_to_sync
-from channels.layers import get_channel_layer
 from django.utils import timezone
 import time
 import json
 from core.utils import (
-    RedisClient,
     acquire_task_lock,
     release_task_lock,
     TaskLockRenewer,
     natural_sort_key,
     log_system_event,
+    ensure_custom_properties_dict,
 )
 from core.models import CoreSettings, UserAgent
-from asgiref.sync import async_to_sync
 from core.xtream_codes import Client as XCClient
 from core.utils import send_websocket_update
-from .utils import normalize_stream_url
+from .utils import convert_js_numbered_backreferences, normalize_stream_url
 
 logger = logging.getLogger(__name__)
 
 BATCH_SIZE = 1500  # Optimized batch size for threading
 m3u_dir = os.path.join(settings.MEDIA_ROOT, "cached_m3u")
 
+_NON_TERMINAL_REFRESH_STATUSES = frozenset({
+    M3UAccount.Status.FETCHING,
+    M3UAccount.Status.PARSING,
+})
+
+
+def _release_task_db_connection():
+    """Return the Celery worker's DB connection to a clean state after ORM errors."""
+    from django.db import close_old_connections
+    close_old_connections()
+
+
+def _db_query_with_retry(fn, *, label="DB query", max_retries=2):
+    """
+    Run an ORM read with one connection reset + retry on transient failures.
+
+    Poisoned Celery worker connections often surface as OperationalError or as
+    ``IndexError: list index out of range`` inside Django's row converters.
+    """
+    from django.db import DatabaseError, InterfaceError, OperationalError
+
+    transient_errors = (OperationalError, InterfaceError, IndexError, DatabaseError)
+    for attempt in range(max_retries):
+        try:
+            return fn()
+        except transient_errors as exc:
+            if attempt + 1 >= max_retries:
+                raise
+            logger.warning(
+                "%s failed (%s), resetting DB connection (%s/%s)",
+                label,
+                exc,
+                attempt + 1,
+                max_retries,
+            )
+            _release_task_db_connection()
+
+
+def _get_active_m3u_account(account_id):
+    return _db_query_with_retry(
+        lambda: M3UAccount.objects.get(id=account_id, is_active=True),
+        label=f"load active M3U account {account_id}",
+    )
+
+
+def _set_m3u_account_status(
+    account_id,
+    status,
+    last_message=None,
+    *,
+    notify_error=False,
+    ws_action="parsing",
+    ws_error=None,
+):
+    """Update account status using a fresh connection (safe after DB failures)."""
+    _release_task_db_connection()
+    update = {"status": status}
+    if last_message is not None:
+        update["last_message"] = last_message
+    try:
+        M3UAccount.objects.filter(id=account_id).update(**update)
+        if notify_error:
+            send_m3u_update(
+                account_id,
+                ws_action,
+                100,
+                status="error",
+                error=ws_error or last_message,
+            )
+    except Exception as e:
+        logger.error(
+            f"Failed to set account {account_id} status to {status}: {e}"
+        )
+
+
+def _ensure_m3u_refresh_terminal_status(account_id):
+    """Mark refresh as failed when the task exits while still in progress."""
+    _release_task_db_connection()
+    try:
+        current_status = (
+            M3UAccount.objects.filter(id=account_id)
+            .values_list("status", flat=True)
+            .first()
+        )
+        if current_status in _NON_TERMINAL_REFRESH_STATUSES:
+            message = "Refresh did not complete successfully"
+            M3UAccount.objects.filter(id=account_id).update(
+                status=M3UAccount.Status.ERROR,
+                last_message=message,
+            )
+            send_m3u_update(
+                account_id, "parsing", 100, status="error", error=message
+            )
+    except Exception as e:
+        logger.debug(
+            f"Could not verify terminal refresh status for account {account_id}: {e}"
+        )
+
 _EXTINF_ATTR_RE = re.compile(r'([^\s=]+)\s*=\s*(["\'])(.*?)\2')
 
 
+def _open_m3u_text_source(source_path):
+    """Open an on-disk M3U (or .m3u.gz) file for line-by-line parsing."""
+    if source_path.endswith(".gz"):
+        return gzip.open(source_path, "rt", encoding="utf-8")
+    return open(source_path, "r", encoding="utf-8")
+
+
 def fetch_m3u_lines(account, use_cache=False):
+    """Fetch M3U source for parsing.
+
+    On success returns ``(source, True)`` where *source* is either a filesystem
+    path (streamed during parse) or, for ZIP uploads only, an in-memory line
+    list. Failures return ``(None, False)``.
+    """
     os.makedirs(m3u_dir, exist_ok=True)
     file_path = os.path.join(m3u_dir, f"{account.id}.m3u")
 
-    """Fetch M3U file lines efficiently."""
     if account.server_url:
         if not use_cache or not os.path.exists(file_path):
             try:
@@ -121,7 +225,7 @@ def fetch_m3u_lines(account, use_cache=False):
                         status="error",
                         error=error_msg,
                     )
-                    return [], False
+                    return None, False
 
                 # Only call raise_for_status if we have a success code (this should not raise now)
                 response.raise_for_status()
@@ -196,7 +300,7 @@ def fetch_m3u_lines(account, use_cache=False):
                             status="error",
                             error=error_msg,
                         )
-                        return [], False
+                        return None, False
 
                     # Validate the file by reading only the first portion from
                     # disk — no need to load the entire file into memory just
@@ -268,7 +372,7 @@ def fetch_m3u_lines(account, use_cache=False):
                                 status="error",
                                 error=error_msg,
                             )
-                            return [], False
+                            return None, False
 
                     except UnicodeDecodeError:
                         with open(temp_path, "rb") as vf:
@@ -286,7 +390,7 @@ def fetch_m3u_lines(account, use_cache=False):
                             status="error",
                             error=error_msg,
                         )
-                        return [], False
+                        return None, False
 
                     # Validation passed — promote temp file to final path
                     os.replace(temp_path, file_path)
@@ -341,7 +445,7 @@ def fetch_m3u_lines(account, use_cache=False):
                     status="error",
                     error=error_msg,
                 )
-                return [], False
+                return None, False
             except requests.exceptions.RequestException as e:
                 # Handle other request errors (connection, timeout, etc.)
                 if "timeout" in str(e).lower():
@@ -362,7 +466,7 @@ def fetch_m3u_lines(account, use_cache=False):
                     status="error",
                     error=error_msg,
                 )
-                return [], False
+                return None, False
             except Exception as e:
                 # Handle any other unexpected errors
                 error_msg = f"Unexpected error while fetching M3U file from URL: {account.server_url} - {str(e)}"
@@ -377,7 +481,7 @@ def fetch_m3u_lines(account, use_cache=False):
                     status="error",
                     error=error_msg,
                 )
-                return [], False
+                return None, False
 
         # Check if the file exists and is not empty (fallback check - should not happen with new validation)
         if not os.path.exists(file_path) or os.path.getsize(file_path) == 0:
@@ -389,27 +493,14 @@ def fetch_m3u_lines(account, use_cache=False):
             send_m3u_update(
                 account.id, "downloading", 100, status="error", error=error_msg
             )
-            return [], False  # Return empty list and False for success
+            return None, False
 
-        try:
-            with open(file_path, "r", encoding="utf-8") as f:
-                return f.readlines(), True
-        except Exception as e:
-            error_msg = f"Error reading M3U file: {str(e)}"
-            logger.error(error_msg)
-            account.status = M3UAccount.Status.ERROR
-            account.last_message = error_msg
-            account.save(update_fields=["status", "last_message"])
-            send_m3u_update(
-                account.id, "downloading", 100, status="error", error=error_msg
-            )
-            return [], False
+        return file_path, True
 
     elif account.file_path:
         try:
             if account.file_path.endswith(".gz"):
-                with gzip.open(account.file_path, "rt", encoding="utf-8") as f:
-                    return f.readlines(), True
+                return account.file_path, True
 
             elif account.file_path.endswith(".zip"):
                 with zipfile.ZipFile(account.file_path, "r") as zip_file:
@@ -430,11 +521,10 @@ def fetch_m3u_lines(account, use_cache=False):
                     send_m3u_update(
                         account.id, "downloading", 100, status="error", error=error_msg
                     )
-                    return [], False
+                    return None, False
 
             else:
-                with open(account.file_path, "r", encoding="utf-8") as f:
-                    return f.readlines(), True
+                return account.file_path, True
 
         except (IOError, OSError, zipfile.BadZipFile, gzip.BadGzipFile) as e:
             error_msg = f"Error opening file {account.file_path}: {e}"
@@ -445,7 +535,7 @@ def fetch_m3u_lines(account, use_cache=False):
             send_m3u_update(
                 account.id, "downloading", 100, status="error", error=error_msg
             )
-            return [], False
+            return None, False
 
     # Neither server_url nor uploaded_file is available
     error_msg = "No M3U source available (missing URL and file)"
@@ -454,7 +544,7 @@ def fetch_m3u_lines(account, use_cache=False):
     account.last_message = error_msg
     account.save(update_fields=["status", "last_message"])
     send_m3u_update(account.id, "downloading", 100, status="error", error=error_msg)
-    return [], False
+    return None, False
 
 
 def get_case_insensitive_attr(attributes, key, default=""):
@@ -630,7 +720,7 @@ def process_groups(account, groups, scan_start_time=None):
     logger.info(f"Currently {len(existing_groups)} existing groups")
 
     # Check if we should auto-enable new groups based on account settings
-    account_custom_props = account.custom_properties or {}
+    account_custom_props = ensure_custom_properties_dict(account.custom_properties)
     auto_enable_new_groups_live = account_custom_props.get("auto_enable_new_groups_live", True)
 
     # Separate existing groups from groups that need to be created
@@ -654,13 +744,16 @@ def process_groups(account, groups, scan_start_time=None):
     all_group_objs = existing_group_objs + newly_created_group_objs
 
     # Get existing relationships for this account
-    existing_relationships = {
-        rel.channel_group.name: rel
-        for rel in ChannelGroupM3UAccount.objects.filter(
-            m3u_account=account,
-            channel_group__name__in=groups.keys()
-        ).select_related('channel_group')
-    }
+    existing_relationships = _db_query_with_retry(
+        lambda: {
+            rel.channel_group.name: rel
+            for rel in ChannelGroupM3UAccount.objects.filter(
+                m3u_account=account,
+                channel_group__name__in=groups.keys(),
+            ).select_related("channel_group")
+        },
+        label=f"process_groups relationships for account {account.id}",
+    )
 
     relations_to_create = []
     relations_to_update = []
@@ -673,7 +766,9 @@ def process_groups(account, groups, scan_start_time=None):
             existing_rel = existing_relationships[group.name]
 
             # Get existing custom properties (now JSONB, no need to parse)
-            existing_custom_props = existing_rel.custom_properties or {}
+            existing_custom_props = ensure_custom_properties_dict(
+                existing_rel.custom_properties
+            )
 
             # Get the new xc_id from groups data
             new_xc_id = custom_props.get("xc_id")
@@ -696,6 +791,8 @@ def process_groups(account, groups, scan_start_time=None):
                 logger.debug(f"Updated xc_id for group '{group.name}' from '{existing_xc_id}' to '{new_xc_id}' - account {account.id}")
             else:
                 # Update last_seen even if xc_id hasn't changed
+                if isinstance(existing_rel.custom_properties, str):
+                    existing_rel.custom_properties = existing_custom_props
                 existing_rel.last_seen = scan_start_time
                 existing_rel.is_stale = False
                 relations_to_update.append(existing_rel)
@@ -790,6 +887,7 @@ def collect_xc_streams(account_id, enabled_groups):
     """Collect all XC streams in a single API call and filter by enabled groups."""
     account = M3UAccount.objects.get(id=account_id)
     all_streams = []
+    filtered_count = 0
 
     # Create a mapping from category_id to group info for filtering
     enabled_category_ids = {}
@@ -808,6 +906,11 @@ def collect_xc_streams(account_id, enabled_groups):
             account.get_user_agent(),
         ) as xc_client:
 
+            stream_url_prefix = (
+                f"{xc_client.server_url.rstrip('/')}/live/"
+                f"{xc_client.username}/{xc_client.password}/"
+            )
+
             # Fetch ALL live streams in a single API call (much more efficient)
             logger.info("Fetching ALL live streams from XC provider...")
             all_xc_streams = xc_client.get_all_live_streams()  # Get all streams without category filter
@@ -819,55 +922,137 @@ def collect_xc_streams(account_id, enabled_groups):
             logger.info(f"Retrieved {len(all_xc_streams)} total live streams from provider")
 
             # Filter streams based on enabled categories
-            filtered_count = 0
             for stream in all_xc_streams:
-                # Fall back to a generated name if the provider returns null/empty
-                stream_name = stream.get("name") or f"{account.name} - {stream.get('stream_id', 'Unknown')}"
+                category_id = str(stream.get("category_id", ""))
+                if category_id not in enabled_category_ids:
+                    continue
+
+                group_info = enabled_category_ids[category_id]
+                stream_name = stream.get("name") or (
+                    f"{account.name} - {stream.get('stream_id', 'Unknown')}"
+                )
                 if not stream.get("name"):
                     logger.warning(
-                        f"XC stream has null/empty name; using generated name '{stream_name}' "
-                        f"(stream_id={stream.get('stream_id', 'unknown')})"
+                        "XC stream has null/empty name; using generated name '%s' "
+                        "(stream_id=%s)",
+                        stream_name, stream.get("stream_id", "unknown"),
                     )
 
-                # Get the category_id for this stream
-                category_id = str(stream.get("category_id", ""))
+                stream_id = stream.get("stream_id")
+                attributes = {
+                    "tvg-id": stream.get("epg_channel_id", ""),
+                    "tvg-logo": stream.get("stream_icon", ""),
+                    "group-title": group_info["name"],
+                    "stream_id": str(stream.get("stream_id", "")),
+                    "num": stream.get("num"),
+                    "category_id": category_id,
+                    "stream_type": stream.get("stream_type", ""),
+                    "added": stream.get("added", ""),
+                    "is_adult": str(stream.get("is_adult", "0")),
+                    "custom_sid": stream.get("custom_sid", ""),
+                    **{
+                        k: str(v)
+                        for k, v in stream.items()
+                        if k not in [
+                            "name", "stream_id", "epg_channel_id", "stream_icon",
+                            "category_id", "stream_type", "added", "is_adult",
+                            "custom_sid", "num",
+                        ] and v is not None
+                    },
+                }
+                all_streams.append({
+                    "name": stream_name,
+                    "url": f"{stream_url_prefix}{stream_id}.ts",
+                    "attributes": attributes,
+                })
+                filtered_count += 1
 
-                # Only include streams from enabled categories
-                if category_id in enabled_category_ids:
-                    group_info = enabled_category_ids[category_id]
-
-                    # Convert XC stream to our standard format with all properties preserved
-                    stream_data = {
-                        "name": stream_name,
-                        "url": xc_client.get_stream_url(stream["stream_id"]),
-                        "attributes": {
-                            "tvg-id": stream.get("epg_channel_id", ""),
-                            "tvg-logo": stream.get("stream_icon", ""),
-                            "group-title": group_info["name"],
-                            # Preserve all XC stream properties as custom attributes
-                            "stream_id": str(stream.get("stream_id", "")),
-                            "num": stream.get("num"),
-                            "category_id": category_id,
-                            "stream_type": stream.get("stream_type", ""),
-                            "added": stream.get("added", ""),
-                            "is_adult": str(stream.get("is_adult", "0")),
-                            "custom_sid": stream.get("custom_sid", ""),
-                            # Include any other properties that might be present
-                            **{k: str(v) for k, v in stream.items() if k not in [
-                                "name", "stream_id", "epg_channel_id", "stream_icon",
-                                "category_id", "stream_type", "added", "is_adult", "custom_sid", "num"
-                            ] and v is not None}
-                        }
-                    }
-                    all_streams.append(stream_data)
-                    filtered_count += 1
+            # Drop the full provider catalog before returning; only filtered rows are needed.
+            del all_xc_streams
+            gc.collect()
 
     except Exception as e:
         logger.error(f"Failed to fetch XC streams: {str(e)}")
         return []
 
-    logger.info(f"Filtered {filtered_count} streams from {len(enabled_category_ids)} enabled categories")
+    logger.info(
+        f"Filtered {filtered_count} streams from {len(enabled_category_ids)} enabled categories"
+    )
     return all_streams
+
+
+def _compile_m3u_stream_filters(filter_queryset):
+    """Compile account M3UFilter rows once per refresh for batch workers."""
+    compiled = []
+    for filter_obj in filter_queryset:
+        flags = (
+            re.IGNORECASE
+            if (filter_obj.custom_properties or {}).get("case_sensitive", True) is False
+            else 0
+        )
+        compiled.append((re.compile(filter_obj.regex_pattern, flags), filter_obj))
+    return compiled
+
+
+def _stream_passes_m3u_filters(name, url, group_title, compiled_filters):
+    """Return False when the first matching filter excludes the stream."""
+    for pattern, filter_obj in compiled_filters:
+        logger.trace("Checking filter pattern %s", pattern.pattern)
+        if filter_obj.filter_type == "url":
+            target = url
+        elif filter_obj.filter_type == "group":
+            target = group_title
+        else:
+            target = name
+
+        if pattern.search(target or ""):
+            logger.debug(
+                "Stream %s - %s matches filter pattern %s",
+                name, url, filter_obj.regex_pattern,
+            )
+            return not filter_obj.exclude
+    return True
+
+
+_STREAM_TOUCH_FIELDS = ("last_seen", "is_stale")
+_STREAM_CHANGED_FIELDS = (
+    "name", "url", "logo_url", "tvg_id", "custom_properties", "is_adult",
+    "last_seen", "updated_at", "is_stale", "stream_id", "stream_chno",
+    "channel_group_id", "is_catchup", "catchup_days",
+)
+
+
+def _bulk_update_stream_refresh_batches(changed_streams, touch_streams, *, batch_size):
+    """Unchanged streams only need last_seen/is_stale; changed rows get the full set."""
+    if touch_streams:
+        Stream.objects.bulk_update(
+            touch_streams, list(_STREAM_TOUCH_FIELDS), batch_size=batch_size,
+        )
+    if changed_streams:
+        Stream.objects.bulk_update(
+            changed_streams, list(_STREAM_CHANGED_FIELDS), batch_size=batch_size,
+        )
+
+
+def _batch_stream_count_message(created, updated, unchanged):
+    """Human-readable batch summary; unchanged = last_seen touch only."""
+    return (
+        f"{created} created, {updated} updated, {unchanged} unchanged."
+    )
+
+
+def _parse_batch_stream_counts(result):
+    """Extract (created, updated, unchanged) from a batch processing result string."""
+    if not isinstance(result, str):
+        return 0, 0, 0
+    try:
+        created = int(re.search(r"(\d+) created", result).group(1))
+        updated = int(re.search(r"(\d+) updated", result).group(1))
+        unchanged = int(re.search(r"(\d+) unchanged", result).group(1))
+        return created, updated, unchanged
+    except (AttributeError, ValueError):
+        return 0, 0, 0
+
 
 def process_xc_category_direct(account_id, batch, groups, hash_keys):
     from django.db import connections
@@ -879,6 +1064,7 @@ def process_xc_category_direct(account_id, batch, groups, hash_keys):
 
     streams_to_create = []
     streams_to_update = []
+    streams_to_touch = []
     stream_hashes = {}
 
     try:
@@ -951,6 +1137,13 @@ def process_xc_category_direct(account_id, batch, groups, hash_keys):
                             name, url, tvg_id, hash_keys, m3u_id=account_id, group=group_title,
                             account_type='XC', stream_id=provider_stream_id
                         )
+                        _tv_archive = str(stream.get("tv_archive", "0"))
+                        _is_catchup = _tv_archive in ("1", "True")
+                        try:
+                            _catchup_days = int(stream.get("tv_archive_duration", 0) or 0)
+                        except (TypeError, ValueError):
+                            _catchup_days = 0
+
                         stream_props = {
                             "name": name,
                             "url": url,
@@ -964,6 +1157,8 @@ def process_xc_category_direct(account_id, batch, groups, hash_keys):
                             "is_stale": False,
                             "stream_id": provider_stream_id,
                             "stream_chno": stream_chno,
+                            "is_catchup": _is_catchup,
+                            "catchup_days": _catchup_days,
                         }
 
                         if stream_hash not in stream_hashes:
@@ -978,7 +1173,7 @@ def process_xc_category_direct(account_id, batch, groups, hash_keys):
         existing_streams = {
             s.stream_hash: s
             for s in Stream.objects.filter(stream_hash__in=stream_hashes.keys()).select_related('m3u_account').only(
-                'id', 'stream_hash', 'name', 'url', 'logo_url', 'tvg_id', 'custom_properties', 'last_seen', 'updated_at', 'm3u_account', 'stream_id', 'stream_chno', 'channel_group_id'
+                'id', 'stream_hash', 'name', 'url', 'logo_url', 'tvg_id', 'custom_properties', 'last_seen', 'updated_at', 'm3u_account', 'stream_id', 'stream_chno', 'channel_group_id', 'is_catchup', 'catchup_days'
             )
         }
 
@@ -995,7 +1190,9 @@ def process_xc_category_direct(account_id, batch, groups, hash_keys):
                     obj.is_adult != stream_props["is_adult"] or
                     obj.stream_id != stream_props["stream_id"] or
                     obj.stream_chno != stream_props["stream_chno"] or
-                    obj.channel_group_id != stream_props["channel_group_id"]
+                    obj.channel_group_id != stream_props["channel_group_id"] or
+                    obj.is_catchup != stream_props["is_catchup"] or
+                    obj.catchup_days != stream_props["catchup_days"]
                 )
 
                 if changed:
@@ -1006,11 +1203,9 @@ def process_xc_category_direct(account_id, batch, groups, hash_keys):
                     obj.is_stale = False
                     streams_to_update.append(obj)
                 else:
-                    # Always update last_seen, even if nothing else changed
                     obj.last_seen = timezone.now()
                     obj.is_stale = False
-                    # Don't update updated_at for unchanged streams
-                    streams_to_update.append(obj)
+                    streams_to_touch.append(obj)
 
                 # Remove from existing_streams since we've processed it
                 del existing_streams[stream_hash]
@@ -1027,13 +1222,9 @@ def process_xc_category_direct(account_id, batch, groups, hash_keys):
                 if streams_to_create:
                     Stream.objects.bulk_create(streams_to_create, ignore_conflicts=True)
 
-                if streams_to_update:
-                    # Simplified bulk update for better performance
-                    Stream.objects.bulk_update(
-                        streams_to_update,
-                        ['name', 'url', 'logo_url', 'tvg_id', 'custom_properties', 'is_adult', 'last_seen', 'updated_at', 'is_stale', 'stream_id', 'stream_chno', 'channel_group_id'],
-                        batch_size=150  # Smaller batch size for XC processing
-                    )
+                _bulk_update_stream_refresh_batches(
+                    streams_to_update, streams_to_touch, batch_size=150,
+                )
 
                 # Update last_seen for any remaining existing streams that weren't processed
                 if len(existing_streams.keys()) > 0:
@@ -1041,7 +1232,14 @@ def process_xc_category_direct(account_id, batch, groups, hash_keys):
         except Exception as e:
             logger.error(f"Bulk operation failed for XC streams: {str(e)}")
 
-        retval = f"Batch processed: {len(streams_to_create)} created, {len(streams_to_update)} updated."
+        retval = (
+            "Batch processed: "
+            + _batch_stream_count_message(
+                len(streams_to_create),
+                len(streams_to_update),
+                len(streams_to_touch),
+            )
+        )
 
     except Exception as e:
         logger.error(f"XC category processing error: {str(e)}")
@@ -1051,14 +1249,18 @@ def process_xc_category_direct(account_id, batch, groups, hash_keys):
         connections.close_all()
 
     # Aggressive garbage collection
-    del streams_to_create, streams_to_update, stream_hashes, existing_streams
+    del streams_to_create, streams_to_update, streams_to_touch, stream_hashes, existing_streams
     gc.collect()
 
     return retval
 
 
-def process_m3u_batch_direct(account_id, batch, groups, hash_keys):
-    """Processes a batch of M3U streams using bulk operations with thread-safe DB connections."""
+def process_m3u_batch_direct(account_id, batch, groups, hash_keys, compiled_filters=None):
+    """Processes a batch of M3U streams using bulk operations with thread-safe DB connections.
+
+    ``compiled_filters`` should be pre-built once per account refresh and shared
+    across batch workers. Pass an empty list when the account has no filters.
+    """
     from django.db import connections
 
     # Ensure clean database connections for threading
@@ -1066,33 +1268,22 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys):
 
     account = M3UAccount.objects.get(id=account_id)
 
-    compiled_filters = [
-        (
-            re.compile(
-                f.regex_pattern,
-                (
-                    re.IGNORECASE
-                    if (f.custom_properties or {}).get(
-                        "case_sensitive", True
-                    )
-                    == False
-                    else 0
-                ),
-            ),
-            f,
-        )
-        for f in account.filters.order_by("order")
-    ]
+    if compiled_filters is None:
+        compiled_filters = _compile_m3u_stream_filters(account.filters.order_by("order"))
 
     streams_to_create = []
     streams_to_update = []
+    streams_to_touch = []
     stream_hashes = {}
 
     name_max_length = Stream._meta.get_field('name').max_length
 
     logger.debug(f"Processing batch of {len(batch)} for M3U account {account_id}")
     if compiled_filters:
-        logger.debug(f"Using compiled filters: {[f[1].regex_pattern for f in compiled_filters]}")
+        logger.debug(
+            "Using compiled filters: %s",
+            [filter_obj.regex_pattern for _, filter_obj in compiled_filters],
+        )
     for stream_info in batch:
         try:
             name, url = stream_info["name"], stream_info["url"]
@@ -1113,25 +1304,12 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys):
             group_title = get_case_insensitive_attr(
                 stream_info["attributes"], "group-title", "Default Group"
             )
-            logger.debug(f"Processing stream: {name} - {url} in group {group_title}")
-            include = True
-            for pattern, filter in compiled_filters:
-                logger.trace(f"Checking filter pattern {pattern}")
-                target = name
-                if filter.filter_type == "url":
-                    target = url
-                elif filter.filter_type == "group":
-                    target = group_title
+            logger.trace("Processing stream: %s - %s in group %s", name, url, group_title)
 
-                if pattern.search(target or ""):
-                    logger.debug(
-                        f"Stream {name} - {url} matches filter pattern {filter.regex_pattern}"
-                    )
-                    include = not filter.exclude
-                    break
-
-            if not include:
-                logger.debug(f"Stream excluded by filter, skipping.")
+            if compiled_filters and not _stream_passes_m3u_filters(
+                name, url, group_title, compiled_filters,
+            ):
+                logger.debug("Stream excluded by filter, skipping.")
                 continue
 
             # Filter out disabled groups for this account
@@ -1177,6 +1355,14 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys):
                 account_type=account_type_for_hash, stream_id=provider_stream_id
             )
 
+            _attrs = stream_info["attributes"]
+            _tv_archive_m3u = str(_attrs.get("tv_archive", "0"))
+            _is_catchup_m3u = _tv_archive_m3u in ("1", "True")
+            try:
+                _catchup_days_m3u = int(_attrs.get("tv_archive_duration", 0) or 0)
+            except (TypeError, ValueError):
+                _catchup_days_m3u = 0
+
             stream_props = {
                 "name": name,
                 "url": url,
@@ -1185,11 +1371,13 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys):
                 "m3u_account": account,
                 "channel_group_id": int(groups.get(group_title)),
                 "stream_hash": stream_hash,
-                "custom_properties": {**stream_info["attributes"], "vlc_opts": stream_info["vlc_opts"]} if "vlc_opts" in stream_info else stream_info["attributes"],
-                "is_adult": parse_is_adult(stream_info["attributes"].get("is_adult", 0)),
+                "custom_properties": {**_attrs, "vlc_opts": stream_info["vlc_opts"]} if "vlc_opts" in stream_info else _attrs,
+                "is_adult": parse_is_adult(_attrs.get("is_adult", 0)),
                 "is_stale": False,
                 "stream_id": provider_stream_id,
                 "stream_chno": channel_num,
+                "is_catchup": _is_catchup_m3u,
+                "catchup_days": _catchup_days_m3u,
             }
 
             if stream_hash not in stream_hashes:
@@ -1201,7 +1389,7 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys):
     existing_streams = {
         s.stream_hash: s
         for s in Stream.objects.filter(stream_hash__in=stream_hashes.keys()).select_related('m3u_account').only(
-            'id', 'stream_hash', 'name', 'url', 'logo_url', 'tvg_id', 'custom_properties', 'last_seen', 'updated_at', 'm3u_account', 'stream_id', 'stream_chno', 'channel_group_id'
+            'id', 'stream_hash', 'name', 'url', 'logo_url', 'tvg_id', 'custom_properties', 'last_seen', 'updated_at', 'm3u_account', 'stream_id', 'stream_chno', 'channel_group_id', 'is_catchup', 'catchup_days'
         )
     }
 
@@ -1218,14 +1406,15 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys):
                 obj.is_adult != stream_props["is_adult"] or
                 obj.stream_id != stream_props["stream_id"] or
                 obj.stream_chno != stream_props["stream_chno"] or
-                obj.channel_group_id != stream_props["channel_group_id"]
+                obj.channel_group_id != stream_props["channel_group_id"] or
+                obj.is_catchup != stream_props["is_catchup"] or
+                obj.catchup_days != stream_props["catchup_days"]
             )
 
-            # Always update last_seen
             obj.last_seen = timezone.now()
+            obj.is_stale = False
 
             if changed:
-                # Only update fields that changed and set updated_at
                 obj.name = stream_props["name"]
                 obj.url = stream_props["url"]
                 obj.logo_url = stream_props["logo_url"]
@@ -1235,12 +1424,12 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys):
                 obj.stream_id = stream_props["stream_id"]
                 obj.stream_chno = stream_props["stream_chno"]
                 obj.channel_group_id = stream_props["channel_group_id"]
+                obj.is_catchup = stream_props["is_catchup"]
+                obj.catchup_days = stream_props["catchup_days"]
                 obj.updated_at = timezone.now()
-
-            # Always mark as not stale since we saw it in this refresh
-            obj.is_stale = False
-
-            streams_to_update.append(obj)
+                streams_to_update.append(obj)
+            else:
+                streams_to_touch.append(obj)
         else:
             # New stream
             stream_props["last_seen"] = timezone.now()
@@ -1253,23 +1442,27 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys):
             if streams_to_create:
                 Stream.objects.bulk_create(streams_to_create, ignore_conflicts=True)
 
-            if streams_to_update:
-                # Update all streams in a single bulk operation
-                Stream.objects.bulk_update(
-                    streams_to_update,
-                    ['name', 'url', 'logo_url', 'tvg_id', 'custom_properties', 'is_adult', 'last_seen', 'updated_at', 'is_stale', 'stream_id', 'stream_chno', 'channel_group_id'],
-                    batch_size=200
-                )
+            _bulk_update_stream_refresh_batches(
+                streams_to_update, streams_to_touch, batch_size=200,
+            )
     except Exception as e:
         logger.error(f"Bulk operation failed: {str(e)}")
 
-    retval = f"M3U account: {account_id}, Batch processed: {len(streams_to_create)} created, {len(streams_to_update)} updated."
+    retval = (
+        f"M3U account: {account_id}, Batch processed: "
+        + _batch_stream_count_message(
+            len(streams_to_create),
+            len(streams_to_update),
+            len(streams_to_touch),
+        )
+    )
 
     # Clean up database connections for threading
     connections.close_all()
 
     # Free batch data structures (reference-counted deallocation)
-    del streams_to_create, streams_to_update, stream_hashes, existing_streams
+    del streams_to_create, streams_to_update, streams_to_touch, stream_hashes, existing_streams
+    gc.collect()
 
     return retval
 
@@ -1555,28 +1748,49 @@ def refresh_m3u_groups(account_id, use_cache=False, full_refresh=False, scan_sta
             release_task_lock("refresh_m3u_account_groups", account_id)
             return error_msg, None
     else:
-        lines, success = fetch_m3u_lines(account, use_cache)
+        source, success = fetch_m3u_lines(account, use_cache)
         if not success:
             # If fetch failed, don't continue processing
             lock_renewer.stop()
             release_task_lock("refresh_m3u_account_groups", account_id)
             return f"Failed to fetch M3U data for account_id={account_id}.", None
 
-        # Log basic file structure for debugging
-        logger.debug(f"Processing {len(lines)} lines from M3U file")
-
         valid_stream_count = 0
 
-        for entry in iter_m3u_entries(lines):
-            valid_stream_count += 1
-            group_title_attr = get_case_insensitive_attr(entry["attributes"], "group-title", "")
-            if group_title_attr and group_title_attr not in groups:
-                logger.debug(f"Found new group for M3U account {account_id}: '{group_title_attr}'")
-                groups[group_title_attr] = {}
-            extinf_data.append(entry)
+        if isinstance(source, str):
+            logger.debug(f"Streaming M3U parse from {source}")
+            with _open_m3u_text_source(source) as m3u_file:
+                entry_iter = iter_m3u_entries(m3u_file)
+                for entry in entry_iter:
+                    valid_stream_count += 1
+                    group_title_attr = get_case_insensitive_attr(entry["attributes"], "group-title", "")
+                    if group_title_attr and group_title_attr not in groups:
+                        logger.debug(f"Found new group for M3U account {account_id}: '{group_title_attr}'")
+                        groups[group_title_attr] = {}
+                    extinf_data.append(entry)
 
-            if valid_stream_count % 1000 == 0:
-                logger.debug(f"Processed {valid_stream_count} valid streams so far for M3U account: {account_id}")
+                    if valid_stream_count % 1000 == 0:
+                        logger.debug(
+                            f"Processed {valid_stream_count} valid streams so far for M3U account: {account_id}"
+                        )
+        else:
+            logger.debug(f"Processing {len(source)} in-memory M3U lines (zip upload)")
+            try:
+                for entry in iter_m3u_entries(source):
+                    valid_stream_count += 1
+                    group_title_attr = get_case_insensitive_attr(entry["attributes"], "group-title", "")
+                    if group_title_attr and group_title_attr not in groups:
+                        logger.debug(f"Found new group for M3U account {account_id}: '{group_title_attr}'")
+                        groups[group_title_attr] = {}
+                    extinf_data.append(entry)
+
+                    if valid_stream_count % 1000 == 0:
+                        logger.debug(
+                            f"Processed {valid_stream_count} valid streams so far for M3U account: {account_id}"
+                        )
+            finally:
+                del source
+                gc.collect()
 
         logger.info(f"M3U parsing complete - Valid streams: {valid_stream_count}")
 
@@ -1716,70 +1930,36 @@ def _pick_target_number(
     fixed_cursor,
     fallback_start,
     end_number=None,
-    range_start=None,
 ):
     """
-    Return the channel number a given stream should claim under the group's
-    numbering mode, or None if the configured range is exhausted.
+    Return the channel number a stream should claim under the group's numbering
+    mode, or None if the range is exhausted. Shared by the renumber and create
+    passes. Each mode reads only the fields its UI exposes:
 
-    Shared by the existing-channel renumber pass and the new-channel create
-    pass so both honor identical mode semantics: provider-supplied number
-    when available and free, otherwise fall back; or always next-available;
-    or fixed-cursor sequential.
-
-    `range_start`, when provided, is the inclusive lower bound for the
-    group's configured numbering range. Provider-supplied numbers below
-    this bound fall back to the next-available picker so freshly-created
-    channels never land outside the configured range.
+    - provider: the provider number is authoritative and used as-is when free.
+      Start (`channel_numbering_fallback`) and End bound only the fallback for
+      streams with no provider number; `auto_sync_channel_start` does not apply.
+    - next_available: lowest free number from 1; End does not apply (its UI has
+      no range, so a stale End must not cap it).
+    - fixed: sequential from the cursor, bounded by End.
     """
     if mode == "provider":
         chno = stream.stream_chno
-        if (
-            chno is not None
-            and chno not in used_numbers
-            and (range_start is None or chno >= range_start)
-            and (end_number is None or chno <= end_number)
-        ):
+        if chno is not None and chno not in used_numbers:
             return chno
-        # No usable provider number: walk from fallback_start, bumped up
-        # to range_start when set so the fallback never lands below the
-        # configured range.
-        effective_start = (
-            max(fallback_start, range_start)
-            if range_start is not None
-            else fallback_start
-        )
-        return _next_available_number(used_numbers, effective_start, end=end_number)
+        # No usable provider number: fall back into the configured range.
+        return _next_available_number(used_numbers, fallback_start, end=end_number)
     if mode == "next_available":
-        return _next_available_number(used_numbers, 1, end=end_number)
+        return _next_available_number(used_numbers, 1)
     return _next_available_number(used_numbers, fixed_cursor, end=end_number)
 
 
-def _custom_properties_as_dict(value):
-    """
-    Normalize a JSONField-backed custom_properties value into a dict.
-
-    Historical data has rows where the field holds a JSON-encoded string
-    instead of a dict. Django's JSONField serializes whatever it gets, so
-    `.get()` on one of those rows raises AttributeError and aborts the
-    entire sync. Treat string values as JSON to parse, and fall back to an
-    empty dict for anything that isn't a dict after parsing.
-    """
-    import json
-
-    if isinstance(value, dict):
-        return value
-    if isinstance(value, str):
-        try:
-            parsed = json.loads(value)
-        except (ValueError, TypeError):
-            logger.warning(
-                "custom_properties stored as non-JSON string; ignoring: %r",
-                value[:100],
-            )
-            return {}
-        return parsed if isinstance(parsed, dict) else {}
-    return {}
+def _range_exhausted_error(mode, start_number, end_number, fallback_start):
+    """User-facing range text for RANGE_EXHAUSTED failures."""
+    range_start = (
+        int(fallback_start) if mode == "provider" else int(start_number)
+    )
+    return f"Channel number range {range_start}-{int(end_number)} is full"
 
 
 def _classify_sync_failure(exc):
@@ -1794,6 +1974,60 @@ def _classify_sync_failure(exc):
     if isinstance(exc, IntegrityError):
         return "INTEGRITY_ERROR"
     return "OTHER"
+
+
+def rollup_channel_catchup_fields(account_id):
+    """Roll up catch-up flags from streams to channels (active accounts only).
+
+    Both the aggregate update and the self-heal pass are limited to channels
+    that still have at least one stream from *account_id*.
+    """
+    from django.db import connection
+
+    account_channels = """
+        SELECT DISTINCT cs.channel_id
+        FROM dispatcharr_channels_channelstream cs
+        JOIN dispatcharr_channels_stream s ON s.id = cs.stream_id
+        WHERE s.m3u_account_id = %s
+    """
+
+    with connection.cursor() as cur:
+        cur.execute(f"""
+            WITH agg AS (
+                SELECT
+                    cs.channel_id,
+                    bool_or(s.is_catchup AND a.is_active)  AS any_catchup,
+                    MAX(s.catchup_days) FILTER (WHERE s.is_catchup AND a.is_active) AS max_days
+                FROM dispatcharr_channels_channelstream cs
+                JOIN dispatcharr_channels_stream s ON s.id = cs.stream_id
+                JOIN m3u_m3uaccount a ON a.id = s.m3u_account_id
+                WHERE cs.channel_id IN ({account_channels})
+                GROUP BY cs.channel_id
+            )
+            UPDATE dispatcharr_channels_channel c
+            SET
+                is_catchup   = COALESCE(agg.any_catchup, FALSE),
+                catchup_days = COALESCE(agg.max_days, 0)
+            FROM agg
+            WHERE c.id = agg.channel_id
+        """, [account_id])
+
+        # Self-heal stale is_catchup flags on account-linked channels only.
+        cur.execute(f"""
+            UPDATE dispatcharr_channels_channel c
+            SET is_catchup = FALSE, catchup_days = 0
+            WHERE c.is_catchup = TRUE
+              AND c.id IN ({account_channels})
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM dispatcharr_channels_channelstream cs
+                  JOIN dispatcharr_channels_stream s ON s.id = cs.stream_id
+                  JOIN m3u_m3uaccount a ON a.id = s.m3u_account_id
+                  WHERE cs.channel_id = c.id
+                    AND s.is_catchup = TRUE
+                    AND a.is_active = TRUE
+              )
+        """, [account_id])
 
 
 @shared_task
@@ -1812,6 +2046,11 @@ def sync_auto_channels(account_id, scan_start_time=None):
     )
     from apps.epg.models import EPGData
     from django.utils import timezone
+
+    channel_name_max_len = Channel._meta.get_field("name").max_length
+    # Per-call cap on the rename substitution; bounds catastrophic
+    # backtracking on a user-supplied pattern so it cannot hang the worker.
+    rename_regex_timeout = 0.1
 
     try:
         account = M3UAccount.objects.get(id=account_id)
@@ -1890,7 +2129,7 @@ def sync_auto_channels(account_id, scan_start_time=None):
             custom_epg_id = None  # New option: select specific EPG source (takes priority over force_dummy_epg)
             channel_numbering_mode = "fixed"  # Default mode
             channel_numbering_fallback = 1  # Default fallback for provider mode
-            group_custom_props = _custom_properties_as_dict(
+            group_custom_props = ensure_custom_properties_dict(
                 group_relation.custom_properties
             )
             if group_custom_props:
@@ -2253,7 +2492,6 @@ def sync_auto_channels(account_id, scan_start_time=None):
                         temp_channel_number,
                         channel_numbering_fallback,
                         end_number=end_number,
-                        range_start=start_number,
                     )
 
                     # Range exhausted: leave the channel at its existing
@@ -2290,17 +2528,16 @@ def sync_auto_channels(account_id, scan_start_time=None):
                     f"Renumbered {len(channels_to_renumber)} channels to maintain sort order"
                 )
 
-            # When the group's configured range is narrower than its existing
-            # channels span, any non-hidden auto-created channel whose number
-            # falls outside [start, end] gets deleted. The new-channel
-            # creation loop below picks up the freed stream and re-creates
-            # the channel at a slot inside the new range, so the net user
-            # outcome is a renumber, not a failure. Counted in
-            # channels_deleted; the replacement counts in channels_created.
-            # Hidden channels are preserved. Runs BEFORE new-channel creation
-            # so slots freed by the deletions are available to incoming
-            # streams.
-            if end_number is not None:
+            # Range enforcement runs in fixed mode only: it is the one mode with
+            # a user-set [start, end]. Provider numbers are authoritative and
+            # next_available has no range, so their channels are never deleted
+            # for falling outside start/end.
+            #
+            # Channels outside the range are deleted (hidden ones preserved);
+            # the creation loop below re-adds the freed streams inside the range,
+            # so the net effect is a renumber, not a failure. Runs first so the
+            # freed slots are available.
+            if end_number is not None and channel_numbering_mode == "fixed":
                 overflow_delete_ids = []
                 for stream_id, ch in list(existing_channel_map.items()):
                     if ch.hidden_from_output:
@@ -2368,16 +2605,29 @@ def sync_auto_channels(account_id, scan_start_time=None):
                             else ""
                         )
                         try:
-                            # Convert $1, $2, etc. to \1, \2, etc. for consistency with M3U profiles
-                            safe_replace_pattern = re.sub(r'\$(\d+)', r'\\\1', replace)
-                            new_name = re.sub(
-                                name_regex_pattern, safe_replace_pattern, original_name
+                            # Use the regex module (not stdlib re) so rename
+                            # patterns match the JS-style semantics the UI
+                            # authors and the preview uses; the timeout bounds
+                            # catastrophic backtracking.
+                            safe_replace_pattern = convert_js_numbered_backreferences(replace)
+                            new_name = regex.sub(
+                                name_regex_pattern,
+                                safe_replace_pattern,
+                                original_name,
+                                timeout=rename_regex_timeout,
                             )
-                        except re.error as e:
+                        except (regex.error, TimeoutError) as e:
                             logger.warning(
                                 f"Regex error for group '{channel_group.name}': {e}. Using original name."
                             )
                             new_name = original_name
+
+                    # Channel.name is bounded by the column length; a rename
+                    # that expands past it would otherwise fail the whole
+                    # bulk_create and abort the sync. Cap it so one overlong
+                    # result cannot break the batch, and so the preview (which
+                    # applies the same cap) stays faithful.
+                    new_name = new_name[:channel_name_max_len]
 
                     # Check if we already have a channel for this stream
                     existing_channel = existing_channel_map.get(stream.id)
@@ -2461,7 +2711,6 @@ def sync_auto_channels(account_id, scan_start_time=None):
                             current_channel_number,
                             channel_numbering_fallback,
                             end_number=end_number,
-                            range_start=start_number,
                         )
 
                         if target_number is None:
@@ -2472,9 +2721,11 @@ def sync_auto_channels(account_id, scan_start_time=None):
                                     "stream_id": stream.id,
                                     "group": channel_group.name,
                                     "reason": "RANGE_EXHAUSTED",
-                                    "error": (
-                                        f"Channel number range "
-                                        f"{int(start_number)}-{int(end_number)} is full"
+                                    "error": _range_exhausted_error(
+                                        channel_numbering_mode,
+                                        start_number,
+                                        end_number,
+                                        channel_numbering_fallback,
                                     ),
                                 })
                             processed_stream_ids.add(stream.id)
@@ -2570,20 +2821,18 @@ def sync_auto_channels(account_id, scan_start_time=None):
 
                 channels_created += len(channel_objs)
 
-                # One EPG parse task per unique EPGData replaces the
-                # per-channel post_save dispatch bypassed by bulk_create.
-                from apps.epg.tasks import parse_programs_for_tvg_id
+                from apps.epg.tasks import dispatch_program_refresh_for_epg_ids
 
                 unique_epg_ids = {
                     ch.epg_data_id for ch in channel_objs if ch.epg_data_id
                 }
-                for epg_id in unique_epg_ids:
-                    parse_programs_for_tvg_id.delay(epg_id)
+                parse_dispatched = dispatch_program_refresh_for_epg_ids(unique_epg_ids)
 
                 logger.debug(
                     f"Bulk created {len(channel_objs)} channels in group "
                     f"'{channel_group.name}'; dispatched "
-                    f"{len(unique_epg_ids)} unique EPG parse task(s)"
+                    f"{parse_dispatched} EPG refresh task(s) for "
+                    f"{len(unique_epg_ids)} unique EPG id(s)"
                 )
 
             # bulk_update writes only the columns named in `fields` and
@@ -2597,17 +2846,14 @@ def sync_auto_channels(account_id, scan_start_time=None):
                     batch_size=500,
                 )
                 if epg_dirty_channel_ids:
-                    from apps.epg.tasks import parse_programs_for_tvg_id
+                    from apps.epg.tasks import dispatch_program_refresh_for_epg_ids
 
-                    # Dispatch only for channels whose epg_data_id changed.
-                    # Other dirty channels would queue redundant parses.
                     unique_epg_ids = {
                         ch.epg_data_id
                         for ch in existing_dirty_channels
                         if ch.id in epg_dirty_channel_ids and ch.epg_data_id
                     }
-                    for epg_id in unique_epg_ids:
-                        parse_programs_for_tvg_id.delay(epg_id)
+                    dispatch_program_refresh_for_epg_ids(unique_epg_ids)
                 logger.debug(
                     f"Bulk updated {len(existing_dirty_channels)} existing "
                     f"channels (fields: {sorted(existing_dirty_field_set)})"
@@ -2735,12 +2981,23 @@ def sync_auto_channels(account_id, scan_start_time=None):
                     f"{pack_result['failed']} failed"
                 )
 
+            # Release per-group working sets before the next group iteration.
+            del (
+                current_streams,
+                logo_cache_by_url,
+                epg_cache_by_tvg_id,
+                existing_channel_map,
+                existing_channels_by_id,
+                existing_channel_streams,
+                processed_stream_ids,
+            )
+
         # Cleanup mode read from account.custom_properties.orphan_channel_cleanup:
         # "always" (default; key absent) removes every orphan auto channel;
         # "preserve_customized" keeps those with a ChannelOverride row;
         # "never" disables cleanup. Hidden channels are preserved across all
         # modes so event/PPV channels that come and go are not silently lost.
-        cleanup_mode = (account.custom_properties or {}).get(
+        cleanup_mode = ensure_custom_properties_dict(account.custom_properties).get(
             "orphan_channel_cleanup", "always"
         )
         if cleanup_mode != "never":
@@ -2770,7 +3027,7 @@ def sync_auto_channels(account_id, scan_start_time=None):
             f"{channels_created} created, {channels_updated} updated, "
             f"{channels_deleted} deleted, {channels_failed} failed"
         )
-        return {
+        result = {
             "status": "ok",
             "channels_created": channels_created,
             "channels_updated": channels_updated,
@@ -2778,6 +3035,9 @@ def sync_auto_channels(account_id, scan_start_time=None):
             "channels_failed": channels_failed,
             "failed_stream_details": failed_stream_details,
         }
+        del failed_stream_details
+        gc.collect()
+        return result
 
     except Exception as e:
         logger.error(f"Error in auto channel sync for account {account_id}: {str(e)}")
@@ -2822,12 +3082,13 @@ def get_transformed_credentials(account, profile=None):
             logger.warning(f"Could not get primary profile for account {account.name}: {e}")
             profile = None
 
-    base_url = account.server_url
+    from core.xtream_codes import normalize_server_url
+
+    base_url = normalize_server_url(account.server_url)
     base_username = account.username
     base_password = account.password    # Build a complete URL with credentials (similar to how IPTV URLs are structured)
     # Format: http://server.com:port/live/username/password/1234.ts
     if base_url and base_username and base_password:
-        # Remove trailing slash from server URL if present
         clean_server_url = base_url.rstrip('/')
 
         # Build the complete URL with embedded credentials
@@ -2953,12 +3214,19 @@ def refresh_account_profiles(account_id):
                     if profile_client.authenticate():
                         # Get account information specific to this profile's credentials
                         profile_account_info = profile_client.get_account_info()
+                        if not isinstance(profile_account_info, dict):
+                            raise TypeError(
+                                f"Unexpected account info type: {type(profile_account_info).__name__}"
+                            )
 
                         # Merge with existing custom_properties if they exist
-                        existing_props = profile.custom_properties or {}
-                        existing_props.update(profile_account_info)
-                        profile.custom_properties = existing_props
-                        profile.save(update_fields=['custom_properties'])
+                        profile.custom_properties = {
+                            **ensure_custom_properties_dict(
+                                profile.custom_properties
+                            ),
+                            **profile_account_info,
+                        }
+                        profile.save(update_fields=['custom_properties', 'exp_date'])
 
                         profiles_updated += 1
                         logger.info(f"Updated account information for profile '{profile.name}' ({profiles_updated}/{profiles.count()})")
@@ -2969,6 +3237,7 @@ def refresh_account_profiles(account_id):
             except Exception as profile_error:
                 profiles_failed += 1
                 logger.error(f"Failed to update account information for profile '{profile.name}': {str(profile_error)}")
+                _release_task_db_connection()
                 # Continue with other profiles even if one fails
 
         result_msg = f"Profile refresh complete for account {account.name}: {profiles_updated} updated, {profiles_failed} failed"
@@ -2983,6 +3252,8 @@ def refresh_account_profiles(account_id):
         error_msg = f"Error refreshing profiles for account {account_id}: {str(e)}"
         logger.error(error_msg)
         return error_msg
+    finally:
+        _release_task_db_connection()
 
 
 @shared_task
@@ -3037,10 +3308,11 @@ def refresh_account_info(profile_id):
         account_info = client.get_account_info()
 
         # Update only this specific profile with the new account info
-        if not profile.custom_properties:
-            profile.custom_properties = {}
-        profile.custom_properties.update(account_info)
-        profile.save()
+        profile.custom_properties = {
+            **ensure_custom_properties_dict(profile.custom_properties),
+            **account_info,
+        }
+        profile.save(update_fields=['custom_properties', 'exp_date'])
 
         # Send success notification to frontend via websocket
         send_websocket_update(
@@ -3103,10 +3375,25 @@ def refresh_single_m3u_account(account_id):
     lock_renewer = TaskLockRenewer("refresh_single_m3u_account", account_id)
     lock_renewer.start()
 
+    _release_task_db_connection()
+
     try:
         return _refresh_single_m3u_account_impl(account_id)
+    except Exception as e:
+        logger.error(
+            f"refresh_single_m3u_account failed for account {account_id}: {e}",
+            exc_info=True,
+        )
+        _set_m3u_account_status(
+            account_id,
+            M3UAccount.Status.ERROR,
+            f"Error processing M3U: {str(e)[:500]}",
+            notify_error=True,
+            ws_error=str(e)[:500],
+        )
     finally:
-        # Guaranteed cleanup on all exit paths (success, exception, early return)
+        _ensure_m3u_refresh_terminal_status(account_id)
+        _release_task_db_connection()
         lock_renewer.stop()
         release_task_lock("refresh_single_m3u_account", account_id)
 
@@ -3118,25 +3405,38 @@ def _refresh_single_m3u_account_impl(account_id):
     start_time = time.time()  # For tracking elapsed time as float
     streams_created = 0
     streams_updated = 0
+    streams_unchanged = 0
+    streams_stale = 0
     streams_deleted = 0
 
     try:
-        account = M3UAccount.objects.get(id=account_id, is_active=True)
+        account = _get_active_m3u_account(account_id)
         if not account.is_active:
             logger.debug(f"Account {account_id} is not active, skipping.")
             return
 
-        # Set status to fetching
-        account.status = M3UAccount.Status.FETCHING
-        account.save(update_fields=['status'])
+        # Set status to fetching and replace stale completion messages.
+        _set_m3u_account_status(
+            account_id,
+            M3UAccount.Status.FETCHING,
+            "Refresh in progress...",
+        )
+        account = _get_active_m3u_account(account_id)
 
-        filters = list(account.filters.all())
+        compiled_stream_filters = _compile_m3u_stream_filters(
+            account.filters.order_by("order")
+        )
+        if compiled_stream_filters:
+            logger.debug(
+                "Account %s has %s stream filter(s) for this refresh",
+                account_id,
+                len(compiled_stream_filters),
+            )
 
         # Check if VOD is enabled for this account
-        vod_enabled = False
-        if account.custom_properties:
-            custom_props = account.custom_properties or {}
-            vod_enabled = custom_props.get('enable_vod', False)
+        vod_enabled = ensure_custom_properties_dict(account.custom_properties).get(
+            'enable_vod', False
+        )
 
     except M3UAccount.DoesNotExist:
         # The M3U account doesn't exist, so delete the periodic task if it exists
@@ -3202,6 +3502,16 @@ def _refresh_single_m3u_account_impl(account_id):
                 logger.error(
                     f"Failed to refresh M3U groups for account {account_id}: {result}"
                 )
+                error_msg = (
+                    "Failed to refresh M3U groups - download failed or other error"
+                )
+                _set_m3u_account_status(
+                    account_id,
+                    M3UAccount.Status.ERROR,
+                    error_msg,
+                    notify_error=True,
+                    ws_error=error_msg,
+                )
                 return "Failed to update m3u account - download failed or other error"
 
             extinf_data, groups = result
@@ -3216,23 +3526,23 @@ def _refresh_single_m3u_account_impl(account_id):
             # For XC accounts, empty extinf_data is normal at this stage
             if not extinf_data and not is_xc_account:
                 logger.error(f"No streams found for non-XC account {account_id}")
-                account.status = M3UAccount.Status.ERROR
-                account.last_message = "No streams found in M3U source"
-                account.save(update_fields=["status", "last_message"])
-                send_m3u_update(
-                    account_id, "parsing", 100, status="error", error="No streams found"
+                error_msg = "No streams found in M3U source"
+                _set_m3u_account_status(
+                    account_id,
+                    M3UAccount.Status.ERROR,
+                    error_msg,
+                    notify_error=True,
+                    ws_error=error_msg,
                 )
         except Exception as e:
             logger.error(f"Exception in refresh_m3u_groups: {str(e)}", exc_info=True)
-            account.status = M3UAccount.Status.ERROR
-            account.last_message = f"Error refreshing M3U groups: {str(e)}"
-            account.save(update_fields=["status", "last_message"])
-            send_m3u_update(
+            error_msg = f"Error refreshing M3U groups: {str(e)[:500]}"
+            _set_m3u_account_status(
                 account_id,
-                "parsing",
-                100,
-                status="error",
-                error=f"Error refreshing M3U groups: {str(e)}",
+                M3UAccount.Status.ERROR,
+                error_msg,
+                notify_error=True,
+                ws_error=error_msg,
             )
             return "Failed to update m3u account"
 
@@ -3246,15 +3556,13 @@ def _refresh_single_m3u_account_impl(account_id):
     # Modified validation logic for different account types
     if (not groups) or (not is_xc_account and not extinf_data):
         logger.error(f"No data to process for account {account_id}")
-        account.status = M3UAccount.Status.ERROR
-        account.last_message = "No data available for processing"
-        account.save(update_fields=["status", "last_message"])
-        send_m3u_update(
+        error_msg = "No data available for processing"
+        _set_m3u_account_status(
             account_id,
-            "parsing",
-            100,
-            status="error",
-            error="No data available for processing",
+            M3UAccount.Status.ERROR,
+            error_msg,
+            notify_error=True,
+            ws_error=error_msg,
         )
         return "Failed to update m3u account, no data available"
 
@@ -3280,6 +3588,7 @@ def _refresh_single_m3u_account_impl(account_id):
         # Initialize stream counters
         streams_created = 0
         streams_updated = 0
+        streams_unchanged = 0
 
         if account.account_type == M3UAccount.Types.STADNARD:
             logger.debug(
@@ -3300,7 +3609,14 @@ def _refresh_single_m3u_account_impl(account_id):
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 # Submit batch processing tasks using direct functions (now thread-safe)
                 future_to_batch = {
-                    executor.submit(process_m3u_batch_direct, account_id, batch, existing_groups, hash_keys): i
+                    executor.submit(
+                        process_m3u_batch_direct,
+                        account_id,
+                        batch,
+                        existing_groups,
+                        hash_keys,
+                        compiled_stream_filters,
+                    ): i
                     for i, batch in enumerate(batches)
                 }
 
@@ -3315,17 +3631,13 @@ def _refresh_single_m3u_account_impl(account_id):
                         completed_batches += 1
 
                         # Extract stream counts from result
-                        if isinstance(result, str):
-                            try:
-                                created_match = re.search(r"(\d+) created", result)
-                                updated_match = re.search(r"(\d+) updated", result)
-                                if created_match and updated_match:
-                                    created_count = int(created_match.group(1))
-                                    updated_count = int(updated_match.group(1))
-                                    streams_created += created_count
-                                    streams_updated += updated_count
-                            except (AttributeError, ValueError):
-                                pass
+                        created_count, updated_count, unchanged_count = (
+                            _parse_batch_stream_counts(result)
+                        )
+                        if created_count or updated_count or unchanged_count:
+                            streams_created += created_count
+                            streams_updated += updated_count
+                            streams_unchanged += unchanged_count
 
                         # Send progress update
                         progress = int((completed_batches / total_batches) * 100)
@@ -3343,7 +3655,7 @@ def _refresh_single_m3u_account_impl(account_id):
                             progress,
                             elapsed_time=current_elapsed,
                             time_remaining=time_remaining,
-                            streams_processed=streams_created + streams_updated,
+                            streams_processed=streams_created + streams_updated + streams_unchanged,
                         )
 
                         logger.debug(f"Thread batch {completed_batches}/{total_batches} completed")
@@ -3351,8 +3663,14 @@ def _refresh_single_m3u_account_impl(account_id):
                     except Exception as e:
                         logger.error(f"Error in thread batch {batch_idx}: {str(e)}")
                         completed_batches += 1  # Still count it to avoid hanging
+                    finally:
+                        batches[batch_idx] = None
 
             logger.info(f"Thread-based processing completed for account {account_id}")
+
+            # Parsed catalog is no longer needed; drop before stale cleanup / auto-sync.
+            del extinf_data, batches
+            gc.collect()
         else:
             # For XC accounts, get the groups with their custom properties containing xc_id
             logger.debug(f"Processing XC account with groups: {existing_groups}")
@@ -3368,7 +3686,7 @@ def _refresh_single_m3u_account_impl(account_id):
                 group_id = rel.channel_group.id
 
                 # Load the custom properties with the xc_id
-                custom_props = rel.custom_properties or {}
+                custom_props = ensure_custom_properties_dict(rel.custom_properties)
                 if "xc_id" in custom_props:
                     filtered_groups[group_name] = {
                         "xc_id": custom_props["xc_id"],
@@ -3390,8 +3708,26 @@ def _refresh_single_m3u_account_impl(account_id):
             logger.info("Fetching all XC streams from provider and filtering by enabled categories...")
             all_xc_streams = collect_xc_streams(account_id, filtered_groups)
 
+            del channel_group_relationships, filtered_groups
+
             if not all_xc_streams:
-                logger.warning("No streams collected from XC groups")
+                # Empty XC fetch (provider hiccup, fetch error, or no enabled
+                # category matched) must not fall through to stale-marking and
+                # auto-sync, which would delete the entire auto-created lineup.
+                logger.error(
+                    f"No streams collected from XC provider for account "
+                    f"{account_id}; aborting refresh to preserve the existing "
+                    f"channel lineup."
+                )
+                error_msg = "No streams returned from Xtream Codes provider"
+                _set_m3u_account_status(
+                    account_id,
+                    M3UAccount.Status.ERROR,
+                    error_msg,
+                    notify_error=True,
+                    ws_error=error_msg,
+                )
+                return "Failed to update m3u account, no streams returned from provider"
             else:
                 # Now batch by stream count (like standard M3U processing)
                 batches = [
@@ -3411,7 +3747,14 @@ def _refresh_single_m3u_account_impl(account_id):
                 with ThreadPoolExecutor(max_workers=max_workers) as executor:
                     # Submit stream batch processing tasks (reuse standard M3U processing)
                     future_to_batch = {
-                        executor.submit(process_m3u_batch_direct, account_id, batch, existing_groups, hash_keys): i
+                        executor.submit(
+                            process_m3u_batch_direct,
+                            account_id,
+                            batch,
+                            existing_groups,
+                            hash_keys,
+                            compiled_stream_filters,
+                        ): i
                         for i, batch in enumerate(batches)
                     }
 
@@ -3426,17 +3769,13 @@ def _refresh_single_m3u_account_impl(account_id):
                             completed_batches += 1
 
                             # Extract stream counts from result
-                            if isinstance(result, str):
-                                try:
-                                    created_match = re.search(r"(\d+) created", result)
-                                    updated_match = re.search(r"(\d+) updated", result)
-                                    if created_match and updated_match:
-                                        created_count = int(created_match.group(1))
-                                        updated_count = int(updated_match.group(1))
-                                        streams_created += created_count
-                                        streams_updated += updated_count
-                                except (AttributeError, ValueError):
-                                    pass
+                            created_count, updated_count, unchanged_count = (
+                                _parse_batch_stream_counts(result)
+                            )
+                            if created_count or updated_count or unchanged_count:
+                                streams_created += created_count
+                                streams_updated += updated_count
+                                streams_unchanged += unchanged_count
 
                             # Send progress update
                             progress = int((completed_batches / total_batches) * 100)
@@ -3454,7 +3793,7 @@ def _refresh_single_m3u_account_impl(account_id):
                                 progress,
                                 elapsed_time=current_elapsed,
                                 time_remaining=time_remaining,
-                                streams_processed=streams_created + streams_updated,
+                                streams_processed=streams_created + streams_updated + streams_unchanged,
                             )
 
                             logger.debug(f"XC thread batch {completed_batches}/{total_batches} completed")
@@ -3462,8 +3801,13 @@ def _refresh_single_m3u_account_impl(account_id):
                         except Exception as e:
                             logger.error(f"Error in XC thread batch {batch_idx}: {str(e)}")
                             completed_batches += 1  # Still count it to avoid hanging
+                        finally:
+                            batches[batch_idx] = None
 
                 logger.info(f"XC thread-based processing completed for account {account_id}")
+
+                del batches
+                gc.collect()
 
         # Ensure all database transactions are committed before cleanup
         logger.info(
@@ -3475,11 +3819,11 @@ def _refresh_single_m3u_account_impl(account_id):
         ).exists()  # This will never find anything but ensures DB sync
 
         # Mark streams that weren't seen in this refresh as stale (pending deletion)
-        stale_stream_count = Stream.objects.filter(
+        streams_stale = Stream.objects.filter(
             m3u_account=account,
             last_seen__lt=refresh_start_timestamp
         ).update(is_stale=True)
-        logger.info(f"Marked {stale_stream_count} streams as stale for account {account_id}")
+        logger.info(f"Marked {streams_stale} streams as stale for account {account_id}")
 
         # Mark group relationships that weren't seen in this refresh as stale (pending deletion)
         stale_group_count = ChannelGroupM3UAccount.objects.filter(
@@ -3529,17 +3873,24 @@ def _refresh_single_m3u_account_impl(account_id):
                 f"Error running auto channel sync for account {account_id}: {str(e)}"
             )
 
+        try:
+            rollup_channel_catchup_fields(account_id)
+            logger.debug(f"Catch-up field rollup complete for account {account_id}")
+        except Exception as e:
+            logger.error(f"Error rolling up catch-up fields for account {account_id}: {str(e)}")
+
         # Calculate elapsed time
         elapsed_time = time.time() - start_time
 
         # Calculate total streams processed
-        streams_processed = streams_created + streams_updated
+        streams_processed = streams_created + streams_updated + streams_unchanged
 
         # Set status to success and update timestamp BEFORE sending the final update
         account.status = M3UAccount.Status.SUCCESS
         account.last_message = (
             f"Processing completed in {elapsed_time:.1f} seconds. "
-            f"Streams: {streams_created} created, {streams_updated} updated, {streams_deleted} removed. "
+            f"Streams: {streams_created} created, {streams_updated} updated, "
+            f"{streams_stale} marked stale, {streams_deleted} removed. "
             f"Total processed: {streams_processed}.{auto_sync_message}"
         )
         account.updated_at = timezone.now()
@@ -3552,6 +3903,7 @@ def _refresh_single_m3u_account_impl(account_id):
             elapsed_time=round(elapsed_time, 2),
             streams_created=streams_created,
             streams_updated=streams_updated,
+            streams_stale=streams_stale,
             streams_deleted=streams_deleted,
             total_processed=streams_processed,
         )
@@ -3567,6 +3919,7 @@ def _refresh_single_m3u_account_impl(account_id):
             streams_processed=streams_processed,
             streams_created=streams_created,
             streams_updated=streams_updated,
+            streams_stale=streams_stale,
             streams_deleted=streams_deleted,
             # Structured auto-sync counts so the frontend can render a
             # warning card when anything failed, without parsing the
@@ -3578,6 +3931,9 @@ def _refresh_single_m3u_account_impl(account_id):
             failed_stream_details=auto_sync_result.get("failed_stream_details", []),
             message=account.last_message,
         )
+
+        del auto_sync_result
+        gc.collect()
 
         # Trigger VOD refresh if enabled and account is XtreamCodes type
         if vod_enabled and account.account_type == M3UAccount.Types.XC:
@@ -3591,13 +3947,7 @@ def _refresh_single_m3u_account_impl(account_id):
 
     except Exception as e:
         logger.error(f"Error processing M3U for account {account_id}: {str(e)}")
-        try:
-            account.status = M3UAccount.Status.ERROR
-            account.last_message = f"Error processing M3U: {str(e)}"
-            account.save(update_fields=["status", "last_message"])
-        except Exception:
-            logger.debug(f"Failed to update account {account_id} status during error handling")
-        raise  # Re-raise the exception for Celery to handle
+        raise
     finally:
         # Free large data structures regardless of success or failure
         if 'existing_groups' in locals():
@@ -3616,6 +3966,10 @@ def _refresh_single_m3u_account_impl(account_id):
             del filtered_groups
         if 'channel_group_relationships' in locals():
             del channel_group_relationships
+        if 'compiled_stream_filters' in locals():
+            del compiled_stream_filters
+
+        gc.collect()
 
         # Remove cache file after processing (success or failure)
         cache_path = os.path.join(m3u_dir, f"{account_id}.json")

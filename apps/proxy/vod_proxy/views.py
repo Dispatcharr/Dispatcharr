@@ -8,6 +8,7 @@ import random
 import logging
 import requests
 from urllib.parse import urlencode
+from django.db import close_old_connections
 from django.http import  JsonResponse, Http404, HttpResponse
 from django.shortcuts import get_object_or_404
 from django.views.decorators.csrf import csrf_exempt
@@ -23,6 +24,7 @@ from rest_framework_simplejwt.authentication import JWTAuthentication
 from apps.accounts.authentication import ApiKeyAuthentication, QueryParamJWTAuthentication
 from apps.proxy.utils import check_user_stream_limits
 from dispatcharr.utils import network_access_allowed
+from core.utils import dispatcharr_user_agent
 
 logger = logging.getLogger(__name__)
 
@@ -84,32 +86,39 @@ def _get_content_and_relation(content_type, content_id, preferred_m3u_account_id
                 )
             logger.info(f"[CONTENT-FOUND] Movie: {content_obj.name} (ID: {content_obj.id})")
 
-            # Filter by preferred stream ID first (most specific)
-            relations_query = content_obj.m3u_relations.filter(m3u_account__is_active=True)
+            # Materialise the active relations once (single DB hit), ordered by
+            # priority. Selection below is done in memory, and the full ordered
+            # list is returned so the caller can fail over without re-querying.
+            candidates = list(
+                content_obj.m3u_relations
+                .filter(m3u_account__is_active=True)
+                .select_related('m3u_account')
+                .order_by('-m3u_account__priority', 'id')
+            )
+
             if preferred_stream_id:
-                specific_relation = relations_query.filter(stream_id=preferred_stream_id).first()
+                specific_relation = next(
+                    (r for r in candidates if str(r.stream_id) == str(preferred_stream_id)), None)
                 if specific_relation:
                     logger.info(f"[STREAM-SELECTED] Using specific stream: {specific_relation.stream_id} from provider: {specific_relation.m3u_account.name}")
-                    return content_obj, specific_relation
+                    return content_obj, specific_relation, candidates
                 else:
                     logger.warning(f"[STREAM-FALLBACK] Preferred stream ID {preferred_stream_id} not found, falling back to account/priority selection")
 
-            # Filter by preferred M3U account if specified
             if preferred_m3u_account_id:
-                specific_relation = relations_query.filter(m3u_account__id=preferred_m3u_account_id).first()
+                specific_relation = next(
+                    (r for r in candidates if r.m3u_account_id == preferred_m3u_account_id), None)
                 if specific_relation:
                     logger.info(f"[PROVIDER-SELECTED] Using preferred provider: {specific_relation.m3u_account.name}")
-                    return content_obj, specific_relation
+                    return content_obj, specific_relation, candidates
                 else:
                     logger.warning(f"[PROVIDER-FALLBACK] Preferred M3U account {preferred_m3u_account_id} not found, using highest priority")
 
-            # Get the highest priority active relation (fallback or default)
-            relation = relations_query.select_related('m3u_account').order_by('-m3u_account__priority', 'id').first()
-
+            relation = candidates[0] if candidates else None
             if relation:
                 logger.info(f"[PROVIDER-SELECTED] Using provider: {relation.m3u_account.name} (priority: {relation.m3u_account.priority})")
 
-            return content_obj, relation
+            return content_obj, relation, candidates
 
         elif content_type == 'episode':
             content_obj = Episode.objects.filter(uuid=content_id).first()
@@ -152,32 +161,39 @@ def _get_content_and_relation(content_type, content_id, preferred_m3u_account_id
                 )
             logger.info(f"[CONTENT-FOUND] Episode: {content_obj.name} (ID: {content_obj.id}, Series: {content_obj.series.name})")
 
-            # Filter by preferred stream ID first (most specific)
-            relations_query = content_obj.m3u_relations.filter(m3u_account__is_active=True)
+            # Materialise the active relations once (single DB hit), ordered by
+            # priority. Selection below is done in memory, and the full ordered
+            # list is returned so the caller can fail over without re-querying.
+            candidates = list(
+                content_obj.m3u_relations
+                .filter(m3u_account__is_active=True)
+                .select_related('m3u_account')
+                .order_by('-m3u_account__priority', 'id')
+            )
+
             if preferred_stream_id:
-                specific_relation = relations_query.filter(stream_id=preferred_stream_id).first()
+                specific_relation = next(
+                    (r for r in candidates if str(r.stream_id) == str(preferred_stream_id)), None)
                 if specific_relation:
                     logger.info(f"[STREAM-SELECTED] Using specific stream: {specific_relation.stream_id} from provider: {specific_relation.m3u_account.name}")
-                    return content_obj, specific_relation
+                    return content_obj, specific_relation, candidates
                 else:
                     logger.warning(f"[STREAM-FALLBACK] Preferred stream ID {preferred_stream_id} not found, falling back to account/priority selection")
 
-            # Filter by preferred M3U account if specified
             if preferred_m3u_account_id:
-                specific_relation = relations_query.filter(m3u_account__id=preferred_m3u_account_id).first()
+                specific_relation = next(
+                    (r for r in candidates if r.m3u_account_id == preferred_m3u_account_id), None)
                 if specific_relation:
                     logger.info(f"[PROVIDER-SELECTED] Using preferred provider: {specific_relation.m3u_account.name}")
-                    return content_obj, specific_relation
+                    return content_obj, specific_relation, candidates
                 else:
                     logger.warning(f"[PROVIDER-FALLBACK] Preferred M3U account {preferred_m3u_account_id} not found, using highest priority")
 
-            # Get the highest priority active relation (fallback or default)
-            relation = relations_query.select_related('m3u_account').order_by('-m3u_account__priority', 'id').first()
-
+            relation = candidates[0] if candidates else None
             if relation:
                 logger.info(f"[PROVIDER-SELECTED] Using provider: {relation.m3u_account.name} (priority: {relation.m3u_account.priority})")
 
-            return content_obj, relation
+            return content_obj, relation, candidates
 
         elif content_type == 'series':
             # For series, get the first episode
@@ -186,43 +202,64 @@ def _get_content_and_relation(content_type, content_id, preferred_m3u_account_id
             episode = series.episodes.first()
             if not episode:
                 logger.error(f"[CONTENT-ERROR] No episodes found for series {series.name}")
-                return None, None
+                return None, None, []
 
             logger.info(f"[CONTENT-FOUND] First episode: {episode.name} (ID: {episode.id})")
 
-            # Filter by preferred stream ID first (most specific)
-            relations_query = episode.m3u_relations.filter(m3u_account__is_active=True)
+            # Materialise once (single DB hit), ordered by priority; select in memory.
+            candidates = list(
+                episode.m3u_relations
+                .filter(m3u_account__is_active=True)
+                .select_related('m3u_account')
+                .order_by('-m3u_account__priority', 'id')
+            )
+
             if preferred_stream_id:
-                specific_relation = relations_query.filter(stream_id=preferred_stream_id).first()
+                specific_relation = next(
+                    (r for r in candidates if str(r.stream_id) == str(preferred_stream_id)), None)
                 if specific_relation:
                     logger.info(f"[STREAM-SELECTED] Using specific stream: {specific_relation.stream_id} from provider: {specific_relation.m3u_account.name}")
-                    return episode, specific_relation
+                    return episode, specific_relation, candidates
                 else:
                     logger.warning(f"[STREAM-FALLBACK] Preferred stream ID {preferred_stream_id} not found, falling back to account/priority selection")
 
-            # Filter by preferred M3U account if specified
             if preferred_m3u_account_id:
-                specific_relation = relations_query.filter(m3u_account__id=preferred_m3u_account_id).first()
+                specific_relation = next(
+                    (r for r in candidates if r.m3u_account_id == preferred_m3u_account_id), None)
                 if specific_relation:
                     logger.info(f"[PROVIDER-SELECTED] Using preferred provider: {specific_relation.m3u_account.name}")
-                    return episode, specific_relation
+                    return episode, specific_relation, candidates
                 else:
                     logger.warning(f"[PROVIDER-FALLBACK] Preferred M3U account {preferred_m3u_account_id} not found, using highest priority")
 
-            # Get the highest priority active relation (fallback or default)
-            relation = relations_query.select_related('m3u_account').order_by('-m3u_account__priority', 'id').first()
-
+            relation = candidates[0] if candidates else None
             if relation:
                 logger.info(f"[PROVIDER-SELECTED] Using provider: {relation.m3u_account.name} (priority: {relation.m3u_account.priority})")
 
-            return episode, relation
+            return episode, relation, candidates
         else:
             logger.error(f"[CONTENT-ERROR] Invalid content type: {content_type}")
-            return None, None
+            return None, None, []
 
     except Exception as e:
         logger.error(f"Error getting content object: {e}")
-        return None, None
+        return None, None, []
+
+def _order_candidates(candidates, preferred_relation=None):
+    """In-memory ordering helper (no DB access).
+
+    `candidates` is the already-materialised, priority-ordered list of active
+    relations produced by _get_content_and_relation(). This helper only moves
+    the preferred relation to the front and removes duplicates, so the initial
+    connection path hits the database exactly once.
+    """
+    if not candidates:
+        return [preferred_relation] if preferred_relation else []
+    if preferred_relation is not None:
+        return [preferred_relation] + [
+            r for r in candidates if r.id != preferred_relation.id
+        ]
+    return list(candidates)
 
 def _get_stream_url_from_relation(relation):
     """Get stream URL from the M3U relation"""
@@ -558,31 +595,43 @@ def stream_vod(request, content_type, content_id, session_id=None, profile_id=No
             logger.info(f"[VOD-PARAM] Preferred stream ID: {preferred_stream_id}")
 
         # Get the content object and its relation
-        content_obj, relation = _get_content_and_relation(content_type, content_id, preferred_m3u_account_id, preferred_stream_id)
+        content_obj, relation, candidates = _get_content_and_relation(content_type, content_id, preferred_m3u_account_id, preferred_stream_id)
         if not content_obj or not relation:
             logger.error(f"[VOD-ERROR] Content or relation not found: {content_type} {content_id}")
             raise Http404(f"Content not found: {content_type} {content_id}")
 
         logger.info(f"[VOD-CONTENT] Found content: {getattr(content_obj, 'name', 'Unknown')}")
 
-        # Get M3U account from relation
-        m3u_account = relation.m3u_account
-        logger.info(f"[VOD-ACCOUNT] Using M3U account: {m3u_account.name}")
+        # Provider failover: walk the already-materialised candidate list
+        # (preferred relation first, then by account priority) and use the
+        # first account whose profile pool has spare capacity. Only return 503
+        # when every account carrying the title is genuinely full. No extra DB
+        # query — candidates come from _get_content_and_relation().
+        ordered = _order_candidates(candidates, relation)
+        m3u_account = stream_url = profile_result = None
+        for cand in ordered:
+            cand_account = cand.m3u_account
+            cand_url = _get_stream_url_from_relation(cand)
+            if not cand_url:
+                logger.warning(f"[VOD-FAILOVER] No URL for relation on account {cand_account.name}, skipping")
+                continue
+            cand_profile = _get_m3u_profile(cand_account, profile_id, session_id)
+            if cand_profile and cand_profile[0]:
+                relation = cand
+                m3u_account = cand_account
+                stream_url = cand_url
+                profile_result = cand_profile
+                logger.info(f"[VOD-FAILOVER] Selected account {cand_account.name} (priority {cand_account.priority})")
+                break
+            else:
+                logger.warning(f"[VOD-FAILOVER] Account {cand_account.name} at capacity, trying next provider")
 
-        # Get stream URL from relation
-        stream_url = _get_stream_url_from_relation(relation)
-        logger.info(f"[VOD-CONTENT] Content URL: {stream_url or 'No URL found'}")
-
-        if not stream_url:
-            logger.error(f"[VOD-ERROR] No stream URL available for {content_type} {content_id}")
-            return HttpResponse("No stream URL available", status=503)
-
-        # Get M3U profile (returns profile and current connection count)
-        profile_result = _get_m3u_profile(m3u_account, profile_id, session_id)
-
-        if not profile_result or not profile_result[0]:
-            logger.error(f"[VOD-ERROR] No suitable M3U profile found for {content_type} {content_id}")
+        if not m3u_account or not stream_url or not profile_result or not profile_result[0]:
+            logger.error(f"[VOD-ERROR] No available provider with capacity for {content_type} {content_id}")
             return HttpResponse("No available stream", status=503)
+
+        logger.info(f"[VOD-ACCOUNT] Using M3U account: {m3u_account.name}")
+        logger.info(f"[VOD-CONTENT] Content URL: {stream_url or 'No URL found'}")
 
         m3u_profile, current_connections = profile_result
         logger.info(f"[VOD-PROFILE] Using M3U profile: {m3u_profile.id} (max_streams: {m3u_profile.max_streams}, current: {current_connections})")
@@ -599,6 +648,9 @@ def stream_vod(request, content_type, content_id, session_id=None, profile_id=No
 
         # Get connection manager (Redis-backed for multi-worker support)
         connection_manager = MultiWorkerVODConnectionManager.get_instance()
+
+        # Release ORM checkout before returning a long-lived StreamingHttpResponse.
+        close_old_connections()
 
         # Stream the content with session-based connection reuse
         logger.info("[VOD-STREAM] Calling connection manager to stream content")
@@ -676,22 +728,29 @@ def head_vod(request, content_type, content_id, session_id=None, profile_id=None
             logger.info(f"[VOD-HEAD] Preferred stream ID: {preferred_stream_id}")
 
         # Get content and relation (same as GET)
-        content_obj, relation = _get_content_and_relation(content_type, content_id, preferred_m3u_account_id, preferred_stream_id)
+        content_obj, relation, candidates = _get_content_and_relation(content_type, content_id, preferred_m3u_account_id, preferred_stream_id)
         if not content_obj or not relation:
             logger.error(f"[VOD-HEAD] Content or relation not found: {content_type} {content_id}")
             return HttpResponse("Content not found", status=404)
 
-        # Get M3U account and stream URL
-        m3u_account = relation.m3u_account
-        stream_url = _get_stream_url_from_relation(relation)
-        if not stream_url:
-            logger.error(f"[VOD-HEAD] No stream URL available for {content_type} {content_id}")
-            return HttpResponse("No stream URL available", status=503)
+        # Provider failover (same logic as GET), reusing the materialised list.
+        ordered = _order_candidates(candidates, relation)
+        m3u_account = stream_url = profile_result = None
+        for cand in ordered:
+            cand_account = cand.m3u_account
+            cand_url = _get_stream_url_from_relation(cand)
+            if not cand_url:
+                continue
+            cand_profile = _get_m3u_profile(cand_account, profile_id, session_id)
+            if cand_profile and cand_profile[0]:
+                relation = cand
+                m3u_account = cand_account
+                stream_url = cand_url
+                profile_result = cand_profile
+                break
 
-        # Get M3U profile (returns profile and current connection count)
-        profile_result = _get_m3u_profile(m3u_account, profile_id, session_id)
-        if not profile_result or not profile_result[0]:
-            logger.error(f"[VOD-HEAD] No M3U profile found or all profiles at capacity")
+        if not m3u_account or not stream_url or not profile_result or not profile_result[0]:
+            logger.error(f"[VOD-HEAD] No available provider with capacity for {content_type} {content_id}")
             return HttpResponse("No available stream", status=503)
 
         m3u_profile, current_connections = profile_result
@@ -704,7 +763,7 @@ def head_vod(request, content_type, content_id, session_id=None, profile_id=None
         # Use M3U account's user agent as primary, client user agent as fallback
         m3u_user_agent = m3u_account.get_user_agent().user_agent if m3u_account.get_user_agent() else None
         headers = {
-            'User-Agent': m3u_user_agent or client_user_agent or 'Dispatcharr/1.0',
+            'User-Agent': m3u_user_agent or client_user_agent or dispatcharr_user_agent(),
             'Accept': '*/*',
             'Range': 'bytes=0-1'  # Request only first 2 bytes
         }
@@ -1062,6 +1121,8 @@ def build_vod_stats_data(redis_client):
     except Exception as e:
         logger.error(f"Error building VOD stats: {e}")
         return {'vod_connections': [], 'total_connections': 0, 'timestamp': time.time()}
+    finally:
+        close_old_connections()
 
 
 @api_view(["GET"])

@@ -218,7 +218,7 @@ class DoStatsUpdateTests(TestCase):
         mock_redis.scan.return_value = (0, [])
 
         with patch("apps.proxy.live_proxy.client_manager.send_websocket_update") as mock_ws, \
-             patch("redis.Redis.from_url", return_value=mock_redis):
+             patch("core.utils.RedisClient.get_client", return_value=mock_redis):
             cm._do_stats_update()
 
         mock_ws.assert_called_once()
@@ -231,25 +231,25 @@ class DoStatsUpdateTests(TestCase):
         """Redis failure must be swallowed (logged), not propagated."""
         cm = self._make_client_manager()
 
-        with patch("redis.Redis.from_url", side_effect=Exception("Redis down")):
+        with patch("core.utils.RedisClient.get_client", side_effect=Exception("Redis down")):
             try:
                 cm._do_stats_update()
             except Exception as e:
                 self.fail(f"_do_stats_update raised an exception: {e}")
 
-    def test_do_stats_update_scans_channel_client_keys(self):
-        """Must scan for live:channel:*:clients pattern."""
+    def test_do_stats_update_scans_channel_metadata_keys(self):
+        """Must scan for live:channel:*:metadata pattern."""
         cm = self._make_client_manager()
 
         mock_redis = MagicMock()
         mock_redis.scan.return_value = (0, [])
 
         with patch("apps.proxy.live_proxy.client_manager.send_websocket_update"), \
-             patch("redis.Redis.from_url", return_value=mock_redis):
+             patch("core.utils.RedisClient.get_client", return_value=mock_redis):
             cm._do_stats_update()
 
         scan_call = mock_redis.scan.call_args
-        self.assertIn("live:channel:*:clients", str(scan_call))
+        self.assertIn("live:channel:*:metadata", str(scan_call))
 
 
 # ---------------------------------------------------------------------------

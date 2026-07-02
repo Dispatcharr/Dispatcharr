@@ -1,21 +1,46 @@
 from unittest.mock import patch, MagicMock
 
-from django.test import TestCase
+from django.test import TestCase, SimpleTestCase
 
-from apps.epg.models import EPGSource
+from apps.epg.models import EPGSource, EPGSourceIndex
 from core.models import CoreSettings, DVR_SETTINGS_KEY, EPG_SETTINGS_KEY
+
+
+class DispatcharrUserAgentTests(TestCase):
+    @patch('version.__version__', '1.2.3')
+    def test_dispatcharr_user_agent(self):
+        from core.utils import dispatcharr_user_agent
+        self.assertEqual(dispatcharr_user_agent(), 'Dispatcharr/1.2.3')
+
+    def test_dispatcharr_dvr_user_agent(self):
+        from core.utils import dispatcharr_dvr_user_agent
+        self.assertEqual(dispatcharr_dvr_user_agent(42), 'Dispatcharr-DVR/recording-42')
+
+    @patch('version.__version__', '1.2.3')
+    def test_dispatcharr_http_headers_with_token(self):
+        from core.utils import dispatcharr_http_headers
+        headers = dispatcharr_http_headers(token='tok123')
+        self.assertEqual(headers, {
+            'User-Agent': 'Dispatcharr/1.2.3',
+            'Content-Type': 'application/json',
+            'token': 'tok123',
+        })
+
+    @patch('version.__version__', '1.2.3')
+    def test_dispatcharr_http_headers_without_content_type(self):
+        from core.utils import dispatcharr_http_headers
+        self.assertEqual(
+            dispatcharr_http_headers(content_type=None),
+            {'User-Agent': 'Dispatcharr/1.2.3'},
+        )
 
 
 class ProgrammeIndexRebuildTests(TestCase):
     def test_startup_rebuild_does_not_lock_out_queued_build_task(self):
-        EPGSource.objects.update(
-            programme_index={"channels": {}, "interleaved_channels": []}
-        )
         source = EPGSource.objects.create(
             name="Missing Index",
             source_type="xmltv",
             is_active=True,
-            programme_index=None,
         )
 
         class FakeRedis:
@@ -272,3 +297,14 @@ class DropDBCommandTlsTest(TestCase):
             host='localhost', port=5432,
             autocommit=True,
         )
+
+
+class MallocTrimTests(SimpleTestCase):
+    def test_trim_is_noop_when_libc_has_no_malloc_trim(self):
+        from core.utils import trim_c_allocator_heap
+
+        fake_libc = MagicMock(spec=[])
+        with patch('ctypes.util.find_library', return_value='libc.so.6'), patch(
+            'ctypes.CDLL', return_value=fake_libc
+        ):
+            self.assertFalse(trim_c_allocator_heap())

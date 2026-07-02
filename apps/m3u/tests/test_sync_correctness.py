@@ -46,13 +46,14 @@ def _attach_group_to_account(account, group, custom_properties=None):
     )
 
 
-def _make_stream(account, group, name="ESPN", tvg_id="espn"):
+def _make_stream(account, group, name="ESPN", tvg_id="espn", stream_chno=None):
     return Stream.objects.create(
         name=name,
         url=f"http://example.com/{name.lower()}.m3u8",
         m3u_account=account,
         channel_group=group,
         tvg_id=tvg_id,
+        stream_chno=stream_chno,
         last_seen=timezone.now(),
     )
 
@@ -413,21 +414,21 @@ class RangeEnforcementTests(TestCase):
             "new auto-channel duplicates A's effective channel number.",
         )
 
-    def test_provider_mode_fallback_respects_range_start(self):
-        # Provider-mode streams without a usable stream_chno fall back to
-        # the next-available picker. The fallback must honor the group's
-        # configured `auto_sync_channel_start` so freshly-created channels
-        # never land below the user's chosen range. Without this, a group
-        # configured for [100, 200] silently spawned channels at #1 when
-        # the provider omitted channel-number metadata.
+    def test_provider_mode_numberless_fallback_uses_visible_start(self):
+        # In provider mode the visible "Start #" is channel_numbering_fallback,
+        # so a numberless stream's fallback walks from there, not from the
+        # hidden auto_sync_channel_start (set far above the range here to prove
+        # it is ignored).
+        # Fail signature: 0 channels created, or a channel below 100 = fallback
+        # seeded from the wrong field.
         account = _make_account()
         group = _make_group(name="Sports")
         rel = _attach_group_to_account(account, group)
-        rel.auto_sync_channel_start = 100
+        rel.auto_sync_channel_start = 5000  # hidden; must be ignored
         rel.auto_sync_channel_end = 200
         rel.custom_properties = {
             "channel_numbering_mode": "provider",
-            "channel_numbering_fallback": 1,
+            "channel_numbering_fallback": 100,  # the visible "Start #"
         }
         rel.save()
 
@@ -643,6 +644,34 @@ class NumbersInRangeLookupTests(TestCase):
         )
         self.assertFalse(occupant["has_channel_number_override"])
 
+    def test_group_override_channel_reports_target_group(self):
+        # When auto-sync routes channels into a different group via
+        # group_override, the occupant's channel_group_id is the override
+        # target, not the source group being configured. The frontend relies
+        # on this to recognize override-routed channels as the config's own
+        # output (effectiveSyncGroupId), so the warning does not flag them.
+        account = _make_account()
+        source = _make_group(name="SourceGrp")
+        target = _make_group(name="TargetGrp")
+        Channel.objects.create(
+            name="Routed",
+            channel_number=3210,
+            channel_group=target,
+            auto_created=True,
+            auto_created_by=account,
+        )
+        client = self._client()
+
+        response = client.get(
+            "/api/channels/channels/numbers-in-range/?start=3210&end=3210"
+        )
+
+        occupant = response.data["occupants"][0]
+        self.assertEqual(occupant["channel_group_id"], target.id)
+        self.assertNotEqual(occupant["channel_group_id"], source.id)
+        self.assertTrue(occupant["auto_created"])
+        self.assertEqual(occupant["auto_created_by_account_id"], account.id)
+
     def test_manual_channel_exposed_with_auto_created_false(self):
         # Manual channels are always a real collision worth surfacing.
         # The response must flag them with auto_created=False and a null
@@ -733,6 +762,128 @@ class RegexPreviewTests(TestCase):
         self.assertEqual(response.data["total_in_group"], 3)
         self.assertEqual(response.data["total_scanned"], 3)
         self.assertFalse(response.data["scan_limit_hit"])
+
+    def test_find_replace_applies_numbered_capture_group(self):
+        # The replace field accepts JS-style $1 backreferences, but the regex
+        # engine expects \1. Without the conversion the preview echoes the
+        # literal "$1", so the previewed "after" disagrees with the name the
+        # live rename produces.
+        account = self._make_account()
+        group = _make_group(name="Sports")
+        Stream.objects.create(
+            name="High Limit Racing at Eagle @ Jun 9 7:00 PM",
+            url="http://example.com/hlr.m3u8",
+            m3u_account=account,
+            channel_group=group,
+            last_seen=timezone.now(),
+        )
+        client = self._client()
+
+        response = client.get(
+            "/api/channels/streams/regex-preview/",
+            {"channel_group": "Sports", "find": r"(.+) @.*", "replace": "$1"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["find_match_count"], 1)
+        after = response.data["find_matches"][0]["after"]
+        self.assertEqual(after, "High Limit Racing at Eagle")
+        self.assertNotIn("$1", after)
+
+    def test_preview_after_matches_live_sync_rename(self):
+        # Guards the defect class: the preview and the live rename are
+        # separate code paths that must convert the replacement identically,
+        # so the preview can never promise an output the sync would not yield.
+        name = "High Limit Racing at Eagle @ Jun 9 7:00 PM"
+        account = self._make_account()
+        group = _make_group(name="Racing")
+        _attach_group_to_account(
+            account,
+            group,
+            custom_properties={
+                "name_regex_pattern": r"(.+) @.*",
+                "name_replace_pattern": "$1",
+            },
+        )
+        _make_stream(account, group, name=name, tvg_id="hlr")
+
+        result = _sync(account)
+        self.assertEqual(result.get("status"), "ok")
+        channel = Channel.objects.get(auto_created=True, auto_created_by=account)
+        live_name = channel.name
+
+        client = self._client()
+        response = client.get(
+            "/api/channels/streams/regex-preview/",
+            {"channel_group": "Racing", "find": r"(.+) @.*", "replace": "$1"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        preview_after = response.data["find_matches"][0]["after"]
+        self.assertEqual(preview_after, live_name)
+        self.assertEqual(preview_after, "High Limit Racing at Eagle")
+
+    def test_regex_engine_pattern_transforms_in_preview(self):
+        # Both the preview and the live rename use the regex module, which is
+        # more permissive than stdlib re and matches the JS-style syntax the UI
+        # authors. A quantified anchor like "^*" (which stdlib re rejects)
+        # compiles and transforms rather than reporting an error.
+        account = self._make_account()
+        group = _make_group(name="Sports")
+        Stream.objects.create(
+            name="Doc95",
+            url="http://example.com/doc95.m3u8",
+            m3u_account=account,
+            channel_group=group,
+            last_seen=timezone.now(),
+        )
+        client = self._client()
+
+        response = client.get(
+            "/api/channels/streams/regex-preview/",
+            {"channel_group": "Sports", "find": "^*", "replace": "$"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("find_error", response.data)
+        self.assertEqual(response.data["find_match_count"], 1)
+        # ^* matches the empty string at every position, so the literal $
+        # replacement is inserted between characters.
+        self.assertEqual(
+            response.data["find_matches"][0]["after"], "$D$o$c$9$5$"
+        )
+
+    def test_preview_and_sync_agree_on_regex_only_pattern(self):
+        # Parity guard for the engine alignment: a pattern valid in regex but
+        # not stdlib re must transform identically in the sync and the preview,
+        # rather than diverging (the sync no longer silently keeps the
+        # original name for these patterns).
+        name = "Doc95"
+        account = self._make_account()
+        group = _make_group(name="Docs")
+        _attach_group_to_account(
+            account,
+            group,
+            custom_properties={
+                "name_regex_pattern": "^*",
+                "name_replace_pattern": "$",
+            },
+        )
+        _make_stream(account, group, name=name, tvg_id="doc95")
+
+        result = _sync(account)
+        self.assertEqual(result.get("status"), "ok")
+        channel = Channel.objects.get(auto_created=True, auto_created_by=account)
+        live_name = channel.name
+        self.assertNotEqual(live_name, name)
+
+        client = self._client()
+        response = client.get(
+            "/api/channels/streams/regex-preview/",
+            {"channel_group": "Docs", "find": "^*", "replace": "$"},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["find_matches"][0]["after"], live_name)
 
     def test_filter_returns_matched_names_with_count(self):
         account = self._make_account()
@@ -2299,4 +2450,316 @@ class CompactNumberingIdempotencyTests(TransactionTestCase):
             "Repack is not idempotent: channel numbers changed on a second "
             "pass with no hide or override change. _repack_inner is following "
             "physical row order instead of id order.",
+        )
+
+
+class ProviderNumberingHonorsProviderNumberTests(TestCase):
+    """
+    Provider numbering uses a stream's provider number (stream_chno) verbatim.
+    The group start is auto-populated by the UI and is not editable in provider
+    mode (the UI binds "Start #" to channel_numbering_fallback), so treating it
+    as a lower bound silently discarded valid provider numbers: on a lineup
+    topping out near 5000, provider numbers 100-150 landed at ~5000.
+
+    The start and end bound only the fallback for numberless streams.
+    """
+
+    def test_provider_number_below_high_auto_start_is_honored(self):
+        # Provider numbers 100-104 with an auto-set start of 5000 must land at
+        # their provider numbers.
+        # Fail signature: channels at 5000-5004 = start used as a hard floor.
+        account = _make_account()
+        group = _make_group(name="PPV")
+        rel = _attach_group_to_account(account, group)
+        rel.auto_sync_channel_start = 5000
+        rel.auto_sync_channel_end = None
+        rel.custom_properties = {
+            "channel_numbering_mode": "provider",
+            "channel_numbering_fallback": 1,
+        }
+        rel.save()
+        for i in range(5):
+            _make_stream(
+                account, group, name=f"PPV {i}", tvg_id=f"ppv{i}",
+                stream_chno=100 + i,
+            )
+
+        result = _sync(account)
+
+        self.assertEqual(result["status"], "ok")
+        numbers = sorted(
+            Channel.objects.filter(
+                auto_created=True, auto_created_by=account
+            ).values_list("channel_number", flat=True)
+        )
+        self.assertEqual(numbers, [100.0, 101.0, 102.0, 103.0, 104.0])
+
+    def test_provider_number_honored_when_start_unset(self):
+        # start blank -> defaults to 1.0; provider numbers still honored.
+        account = _make_account()
+        group = _make_group(name="PPV")
+        rel = _attach_group_to_account(account, group)
+        rel.auto_sync_channel_start = None
+        rel.auto_sync_channel_end = None
+        rel.custom_properties = {"channel_numbering_mode": "provider"}
+        rel.save()
+        _make_stream(account, group, name="PPV", tvg_id="ppv", stream_chno=100)
+
+        result = _sync(account)
+
+        self.assertEqual(result["status"], "ok")
+        created = Channel.objects.get(auto_created=True, auto_created_by=account)
+        self.assertEqual(created.channel_number, 100.0)
+
+    def test_numberless_stream_uses_fallback_not_hidden_start(self):
+        # In provider mode without a range, a stream lacking a provider
+        # number falls back to channel_numbering_fallback (the visible
+        # "Start #"), not the hidden auto_sync_channel_start.
+        # Fail signature: channel at 5000 = fallback bumped to hidden start.
+        account = _make_account()
+        group = _make_group(name="PPV")
+        rel = _attach_group_to_account(account, group)
+        rel.auto_sync_channel_start = 5000
+        rel.auto_sync_channel_end = None
+        rel.custom_properties = {
+            "channel_numbering_mode": "provider",
+            "channel_numbering_fallback": 300,
+        }
+        rel.save()
+        _make_stream(account, group, name="NoChno", tvg_id="nc")
+
+        result = _sync(account)
+
+        self.assertEqual(result["status"], "ok")
+        created = Channel.objects.get(auto_created=True, auto_created_by=account)
+        self.assertEqual(created.channel_number, 300.0)
+
+    def test_provider_number_below_range_is_honored_verbatim(self):
+        # A provider number below the group's Start/End is used as-is, not
+        # coerced into the range.
+        # Fail signature: channel pulled to >= 100 = range coercing a provider
+        # number.
+        account = _make_account()
+        group = _make_group(name="PPV")
+        rel = _attach_group_to_account(account, group)
+        rel.auto_sync_channel_end = 200
+        rel.custom_properties = {
+            "channel_numbering_mode": "provider",
+            "channel_numbering_fallback": 100,
+        }
+        rel.save()
+        _make_stream(account, group, name="Low", tvg_id="low", stream_chno=50)
+
+        result = _sync(account)
+
+        self.assertEqual(result["status"], "ok")
+        created = Channel.objects.get(auto_created=True, auto_created_by=account)
+        self.assertEqual(created.channel_number, 50.0)
+
+    def test_provider_number_above_end_is_honored_verbatim(self):
+        # Provider numbers above the configured End are also honored as-is;
+        # the End caps only the fallback for numberless streams.
+        account = _make_account()
+        group = _make_group(name="PPV")
+        rel = _attach_group_to_account(account, group)
+        rel.auto_sync_channel_end = 200
+        rel.custom_properties = {
+            "channel_numbering_mode": "provider",
+            "channel_numbering_fallback": 1,
+        }
+        rel.save()
+        _make_stream(account, group, name="High", tvg_id="high", stream_chno=5000)
+
+        result = _sync(account)
+
+        self.assertEqual(result["status"], "ok")
+        created = Channel.objects.get(auto_created=True, auto_created_by=account)
+        self.assertEqual(created.channel_number, 5000.0)
+
+    def test_provider_number_within_range_is_honored(self):
+        # An in-range provider number is used as-is.
+        account = _make_account()
+        group = _make_group(name="PPV")
+        rel = _attach_group_to_account(account, group)
+        rel.auto_sync_channel_end = 200
+        rel.custom_properties = {
+            "channel_numbering_mode": "provider",
+            "channel_numbering_fallback": 1,
+        }
+        rel.save()
+        _make_stream(account, group, name="Mid", tvg_id="mid", stream_chno=150)
+
+        result = _sync(account)
+
+        self.assertEqual(result["status"], "ok")
+        created = Channel.objects.get(auto_created=True, auto_created_by=account)
+        self.assertEqual(created.channel_number, 150.0)
+
+    def test_duplicate_provider_numbers_keep_one_and_fall_back_the_other(self):
+        # Two streams claim the same provider number (common in messy event
+        # feeds). One keeps it; the colliding one falls back to a different free
+        # number rather than being dropped or overwriting the first.
+        account = _make_account()
+        group = _make_group(name="PPV")
+        rel = _attach_group_to_account(account, group)
+        rel.custom_properties = {
+            "channel_numbering_mode": "provider",
+            "channel_numbering_fallback": 1,
+        }
+        rel.save()
+        _make_stream(account, group, name="A", tvg_id="a", stream_chno=77250)
+        _make_stream(account, group, name="B", tvg_id="b", stream_chno=77250)
+
+        result = _sync(account)
+
+        self.assertEqual(result["status"], "ok")
+        numbers = sorted(
+            Channel.objects.filter(
+                auto_created=True, auto_created_by=account
+            ).values_list("channel_number", flat=True)
+        )
+        self.assertEqual(len(numbers), 2)
+        self.assertIn(77250.0, numbers)
+        self.assertNotEqual(numbers[0], numbers[1])
+
+    def test_provider_number_colliding_with_manual_channel_falls_back(self):
+        # A provider number matching an existing channel must not overwrite it;
+        # the auto-created channel falls back to a different free number.
+        account = _make_account()
+        group = _make_group(name="PPV")
+        rel = _attach_group_to_account(account, group)
+        rel.custom_properties = {
+            "channel_numbering_mode": "provider",
+            "channel_numbering_fallback": 1,
+        }
+        rel.save()
+        manual = Channel.objects.create(name="Manual", channel_number=88250)
+        _make_stream(account, group, name="P", tvg_id="p", stream_chno=88250)
+
+        result = _sync(account)
+
+        self.assertEqual(result["status"], "ok")
+        created = Channel.objects.get(auto_created=True, auto_created_by=account)
+        self.assertNotEqual(created.channel_number, 88250.0)
+        manual.refresh_from_db()
+        self.assertEqual(manual.channel_number, 88250.0)
+
+    def test_provider_fallback_exhaustion_reports_visible_start(self):
+        # RANGE_EXHAUSTED must cite the fallback range (channel_numbering_fallback
+        # to End), not the hidden auto_sync_channel_start left from another mode.
+        account = _make_account()
+        group = _make_group(name="PPV")
+        rel = _attach_group_to_account(account, group)
+        rel.auto_sync_channel_start = 5000
+        rel.auto_sync_channel_end = 102
+        rel.custom_properties = {
+            "channel_numbering_mode": "provider",
+            "channel_numbering_fallback": 100,
+        }
+        rel.save()
+        for i in range(4):
+            _make_stream(account, group, name=f"S{i}", tvg_id=f"s{i}")
+
+        result = _sync(account)
+
+        self.assertEqual(result["channels_created"], 3)
+        self.assertEqual(result["channels_failed"], 1)
+        error = result["failed_stream_details"][0]["error"]
+        self.assertIn("100-102", error)
+        self.assertNotIn("5000", error)
+
+
+class CrossModeNumberingFieldTests(TestCase):
+    """
+    Each numbering mode's UI exposes only a subset of the persisted fields,
+    and switching modes does not reset the others. The backend must therefore
+    read only the fields a mode actually owns, so a stale/hidden value left by
+    another mode cannot silently change numbering. These guard the two
+    remaining facets of that family (the provider-floor facet is covered by
+    ProviderNumberingHonorsProviderNumberTests).
+    """
+
+    def _restamp(self, account):
+        Stream.objects.filter(m3u_account=account).update(
+            last_seen=timezone.now()
+        )
+
+    def test_next_available_ignores_configured_end(self):
+        # next_available exposes no Start/End in its UI, so a stale End left
+        # over from a prior mode must not cap it. Every stream gets the lowest
+        # free number from 1 regardless of the End.
+        # Fail signature: streams beyond the End fail = next_available honoring
+        # a hidden cap.
+        account = _make_account()
+        group = _make_group(name="PPV")
+        rel = _attach_group_to_account(account, group)
+        rel.auto_sync_channel_start = 1
+        rel.auto_sync_channel_end = 3  # stale cap from a prior mode
+        rel.custom_properties = {"channel_numbering_mode": "next_available"}
+        rel.save()
+        for i in range(5):
+            _make_stream(account, group, name=f"S{i}", tvg_id=f"s{i}")
+
+        result = _sync(account)
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["channels_created"], 5)
+        self.assertEqual(result["channels_failed"], 0)
+
+    def test_provider_channels_outside_range_are_not_deleted(self):
+        # Range enforcement (the overflow-delete) is fixed-mode only. A provider
+        # channel whose number is outside [start, end] is authoritative and must
+        # survive sync, not be deleted and churned into a new row.
+        # Fail signature: channels_deleted > 0 on the second sync = overflow
+        # delete firing in provider mode.
+        account = _make_account()
+        group = _make_group(name="PPV")
+        rel = _attach_group_to_account(account, group)
+        rel.auto_sync_channel_end = 200
+        rel.custom_properties = {
+            "channel_numbering_mode": "provider",
+            "channel_numbering_fallback": 1,
+        }
+        rel.save()
+        _make_stream(account, group, name="High", tvg_id="high", stream_chno=5000)
+
+        first = _sync(account)
+        self.assertEqual(first["channels_created"], 1)
+        original = Channel.objects.get(auto_created=True, auto_created_by=account)
+        self.assertEqual(original.channel_number, 5000.0)
+
+        self._restamp(account)
+        second = _sync(account)
+
+        self.assertEqual(second["channels_deleted"], 0)
+        survivor = Channel.objects.get(auto_created=True, auto_created_by=account)
+        self.assertEqual(survivor.id, original.id)
+        self.assertEqual(survivor.channel_number, 5000.0)
+
+    def test_next_available_channels_outside_stale_range_not_deleted(self):
+        # Same gate for next_available: tightening a stale End must not delete
+        # already-assigned channels (range enforcement is fixed-mode only).
+        account = _make_account()
+        group = _make_group(name="PPV")
+        rel = _attach_group_to_account(account, group)
+        rel.auto_sync_channel_start = 1
+        rel.auto_sync_channel_end = None
+        rel.custom_properties = {"channel_numbering_mode": "next_available"}
+        rel.save()
+        for i in range(5):
+            _make_stream(account, group, name=f"S{i}", tvg_id=f"s{i}")
+
+        self.assertEqual(_sync(account)["channels_created"], 5)
+
+        rel.auto_sync_channel_end = 3  # stale cap appears
+        rel.save()
+        self._restamp(account)
+        second = _sync(account)
+
+        self.assertEqual(second["channels_deleted"], 0)
+        self.assertEqual(
+            Channel.objects.filter(
+                auto_created=True, auto_created_by=account
+            ).count(),
+            5,
         )

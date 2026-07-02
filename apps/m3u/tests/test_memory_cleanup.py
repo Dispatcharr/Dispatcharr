@@ -30,8 +30,46 @@ class ProcessM3UBatchCleanupTests(SimpleTestCase):
         mock_stream_cls.generate_hash_key = MagicMock(return_value="hash123")
 
         with patch("django.db.connections") as mock_connections:
-            process_m3u_batch_direct(1, [], {}, ["name", "url"])
+            process_m3u_batch_direct(1, [], {}, ["name", "url"], compiled_filters=[])
             mock_connections.close_all.assert_called()
+
+    @patch("apps.m3u.tasks.Stream")
+    @patch("apps.m3u.tasks.M3UAccount")
+    def test_batch_calls_gc_collect(self, mock_account_cls, mock_stream_cls):
+        """gc.collect() must run after each batch so XC refresh threads release promptly."""
+        from apps.m3u.tasks import process_m3u_batch_direct
+
+        mock_account = MagicMock()
+        mock_account.filters.order_by.return_value = []
+        mock_account_cls.objects.get.return_value = mock_account
+        mock_stream_cls.objects.filter.return_value.select_related.return_value.only.return_value = (
+            []
+        )
+        mock_stream_cls.generate_hash_key = MagicMock(return_value="hash123")
+
+        with patch("gc.collect") as mock_gc, patch("django.db.connections"):
+            process_m3u_batch_direct(1, [], {}, ["name", "url"], compiled_filters=[])
+            mock_gc.assert_called()
+
+    @patch("apps.m3u.tasks.Stream")
+    @patch("apps.m3u.tasks.M3UAccount")
+    def test_precompiled_empty_filters_skip_db_lookup(
+        self, mock_account_cls, mock_stream_cls,
+    ):
+        """When filters are precompiled as empty, batch workers must not query filters."""
+        from apps.m3u.tasks import process_m3u_batch_direct
+
+        mock_account = MagicMock()
+        mock_account_cls.objects.get.return_value = mock_account
+        mock_stream_cls.objects.filter.return_value.select_related.return_value.only.return_value = (
+            []
+        )
+        mock_stream_cls.generate_hash_key = MagicMock(return_value="hash123")
+
+        with patch("django.db.connections"):
+            process_m3u_batch_direct(1, [], {}, ["name", "url"], compiled_filters=[])
+
+        mock_account.filters.order_by.assert_not_called()
 
 
 class LockReleaseTests(SimpleTestCase):

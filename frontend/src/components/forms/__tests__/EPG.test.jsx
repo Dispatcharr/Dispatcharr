@@ -215,12 +215,20 @@ vi.mock('@mantine/core', async () => ({
       {(data ?? []).map((opt) => {
         const val = typeof opt === 'string' ? opt : opt.value;
         const lbl = typeof opt === 'string' ? opt : opt.label;
-        return <option key={val} value={val}>{lbl}</option>;
+        return (
+          <option key={val} value={val}>
+            {lbl}
+          </option>
+        );
       })}
     </select>
   ),
   Loader: ({ size }) => <div data-testid="loader" data-size={size} />,
-  Badge: ({ children, color }) => <span data-testid="badge" data-color={color}>{children}</span>,
+  Badge: ({ children, color }) => (
+    <span data-testid="badge" data-color={color}>
+      {children}
+    </span>
+  ),
   ScrollArea: ({ children }) => <div data-testid="scroll-area">{children}</div>,
   Table: ({ children }) => <table>{children}</table>,
   Tooltip: ({ children }) => <div>{children}</div>,
@@ -237,10 +245,15 @@ vi.mock('@mantine/core', async () => ({
     </label>
   ),
   UnstyledButton: ({ children, onClick, ...props }) => (
-    <button type="button" onClick={onClick} {...props}>{children}</button>
+    <button type="button" onClick={onClick} {...props}>
+      {children}
+    </button>
   ),
   Alert: ({ children, title, color, icon }) => (
-    <div data-testid="alert" data-color={color}><strong>{title}</strong>{children}</div>
+    <div data-testid="alert" data-color={color}>
+      <strong>{title}</strong>
+      {children}
+    </div>
   ),
   Stack: ({ children, gap }) => <div data-testid="stack">{children}</div>,
   Text: ({ children, ...props }) => <span>{children}</span>,

@@ -13,6 +13,7 @@ from .api_views import (
     UpdateChannelMembershipAPIView,
     BulkUpdateChannelMembershipAPIView,
     RecordingViewSet,
+    RECORDING_PLAYBACK_AUTHENTICATORS,
     RecurringRecordingRuleViewSet,
     GetChannelStreamsAPIView,
     GetChannelStreamStatsAPIView,
@@ -53,7 +54,10 @@ urlpatterns = [
     path('recordings/bulk-delete-upcoming/', BulkDeleteUpcomingRecordingsAPIView.as_view(), name='bulk_delete_upcoming_recordings'),
     path(
         'recordings/<int:pk>/hls/<path:seg_path>',
-        RecordingViewSet.as_view({'get': 'hls'}),
+        RecordingViewSet.as_view(
+            {'get': 'hls'},
+            authentication_classes=RECORDING_PLAYBACK_AUTHENTICATORS,
+        ),
         name='recording-hls',
     ),
     path('dvr/comskip-config/', ComskipConfigAPIView.as_view(), name='comskip_config'),

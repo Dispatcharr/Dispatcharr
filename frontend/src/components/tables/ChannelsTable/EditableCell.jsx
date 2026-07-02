@@ -1,28 +1,14 @@
-import React, {
-  useState,
-  useCallback,
-  useEffect,
-  useRef,
-  useMemo,
-  memo,
-} from 'react';
-import {
-  Box,
-  TextInput,
-  Select,
-  NumberInput,
-  Tooltip,
-  Center,
-  Skeleton,
-} from '@mantine/core';
-import API from '../../../api';
+import React, { memo, useCallback, useEffect, useMemo, useRef, useState, } from 'react';
+import { Box, NumberInput, Select, Skeleton, TextInput, Tooltip, } from '@mantine/core';
 import useChannelsTableStore from '../../../store/channelsTable';
 import useLogosStore from '../../../store/logos';
-import {
-  OVERRIDABLE_FIELDS,
-  normalizeFieldValue,
-} from '../../../utils/forms/ChannelUtils.js';
+import { requeryChannels, updateChannel, } from '../../../utils/forms/ChannelUtils.js';
 import { showNotification } from '../../../utils/notificationUtils.js';
+import {
+  buildInlinePatch,
+  getEpgOptions,
+  getLogoOptions,
+} from '../../../utils/tables/ChannelsTableUtils.js';
 
 // Surfaces server-side validation failures so the user knows the
 // inline edit was rejected (otherwise the cell silently reverts).
@@ -41,30 +27,6 @@ export const notifyInlineSaveError = (columnId, error) => {
     color: 'red',
     autoClose: 5000,
   });
-};
-
-// Inline edits on auto-synced channels route into the override row so
-// sync cannot overwrite them. If the new value matches the provider's,
-// clear that field's override instead of writing a duplicate. Manual
-// channels keep direct Channel.* writes.
-const buildInlinePatch = (rowOriginal, fieldId, newValue) => {
-  if (rowOriginal?.auto_created && OVERRIDABLE_FIELDS.includes(fieldId)) {
-    // Normalize both sides so a stringified form value compares
-    // cleanly against the typed provider value.
-    const formValue = normalizeFieldValue(fieldId, newValue);
-    const providerValue = normalizeFieldValue(fieldId, rowOriginal[fieldId]);
-    const overrideFieldValue = formValue === providerValue ? null : formValue;
-    return {
-      id: rowOriginal.id,
-      override: { [fieldId]: overrideFieldValue },
-    };
-  }
-  const normalized =
-    newValue === undefined || newValue === '' ? null : newValue;
-  return {
-    id: rowOriginal.id,
-    [fieldId]: normalized,
-  };
 };
 
 // Lightweight wrapper that only renders full editable cell when unlocked
@@ -151,7 +113,7 @@ const EditableTextCellInner = ({ row, column, getValue, onBlur }) => {
       }
 
       try {
-        const response = await API.updateChannel(
+        const response = await updateChannel(
           buildInlinePatch(row.original, column.id, newValue)
         );
         previousValue.current = newValue;
@@ -298,7 +260,7 @@ const EditableNumberCellInner = ({ row, column, getValue, onBlur }) => {
       }
 
       try {
-        const response = await API.updateChannel(
+        const response = await updateChannel(
           buildInlinePatch(row.original, column.id, newValue)
         );
         previousValue.current = newValue;
@@ -309,7 +271,7 @@ const EditableNumberCellInner = ({ row, column, getValue, onBlur }) => {
 
           // If channel_number was changed, refetch to reorder the table
           if (column.id === 'channel_number') {
-            await API.requeryChannels();
+            await requeryChannels();
             onBlur();
           }
         }
@@ -416,7 +378,7 @@ const EditableGroupCellInner = ({
       }
 
       try {
-        const response = await API.updateChannel(
+        const response = await updateChannel(
           buildInlinePatch(
             row.original,
             'channel_group_id',
@@ -591,7 +553,7 @@ const EditableEPGCellInner = ({
       }
 
       try {
-        const response = await API.updateChannel(
+        const response = await updateChannel(
           buildInlinePatch(
             row.original,
             'epg_data_id',
@@ -620,51 +582,7 @@ const EditableEPGCellInner = ({
 
   // Build EPG options
   const epgOptions = useMemo(() => {
-    const options = [{ value: 'null', label: 'Not Assigned' }];
-
-    // Convert tvgsById to an array and sort by EPG source name, then by tvg_id
-    const tvgsArray = Object.values(tvgsById);
-    tvgsArray.sort((a, b) => {
-      const aEpgName =
-        a.epg_source && epgs[a.epg_source]
-          ? epgs[a.epg_source].name
-          : a.epg_source || '';
-      const bEpgName =
-        b.epg_source && epgs[b.epg_source]
-          ? epgs[b.epg_source].name
-          : b.epg_source || '';
-      const epgCompare = aEpgName.localeCompare(bEpgName);
-      if (epgCompare !== 0) return epgCompare;
-      // Secondary sort by tvg_id
-      return (a.tvg_id || '').localeCompare(b.tvg_id || '');
-    });
-
-    tvgsArray.forEach((tvg) => {
-      const epgSourceName =
-        tvg.epg_source && epgs[tvg.epg_source]
-          ? epgs[tvg.epg_source].name
-          : tvg.epg_source;
-      const tvgName = tvg.name;
-      // Create a comprehensive label: "EPG Name | TVG-ID | TVG Name"
-      let label;
-      if (epgSourceName && tvg.tvg_id) {
-        label = `${epgSourceName} | ${tvg.tvg_id}`;
-        if (tvgName && tvgName !== tvg.tvg_id) {
-          label += ` | ${tvgName}`;
-        }
-      } else if (tvgName) {
-        label = tvgName;
-      } else {
-        label = `ID: ${tvg.id}`;
-      }
-
-      options.push({
-        value: String(tvg.id),
-        label: label,
-      });
-    });
-
-    return options;
+    return getEpgOptions(tvgsById, epgs);
   }, [tvgsById, epgs]);
 
   return (
@@ -761,7 +679,7 @@ const EditableLogoCellInner = ({ row, logoId, onBlur }) => {
       }
 
       try {
-        const response = await API.updateChannel(
+        const response = await updateChannel(
           buildInlinePatch(
             row.original,
             'logo_id',
@@ -790,27 +708,7 @@ const EditableLogoCellInner = ({ row, logoId, onBlur }) => {
 
   // Build logo options with logo data
   const logoOptions = useMemo(() => {
-    const options = [
-      {
-        value: 'null',
-        label: 'Default',
-        logo: null,
-      },
-    ];
-
-    // Convert channelLogos object to array and sort by name
-    const logosArray = Object.values(channelLogos);
-    logosArray.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
-
-    logosArray.forEach((logo) => {
-      options.push({
-        value: String(logo.id),
-        label: logo.name || `Logo ${logo.id}`,
-        logo: logo,
-      });
-    });
-
-    return options;
+    return getLogoOptions(channelLogos);
   }, [channelLogos]);
 
   // Get display text for the current logo

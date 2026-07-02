@@ -3,6 +3,8 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework.permissions import AllowAny
 from rest_framework.decorators import action
+from rest_framework_simplejwt.authentication import JWTAuthentication
+from apps.accounts.authentication import ApiKeyAuthentication, QueryParamJWTAuthentication
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from drf_spectacular.utils import extend_schema, OpenApiParameter, inline_serializer
 from drf_spectacular.types import OpenApiTypes
@@ -12,6 +14,7 @@ from django.db import connection, transaction
 from django.db.models import Count, F, Prefetch
 from django.db.models import Q
 import os, json, requests, logging, mimetypes, threading, time
+from urllib.parse import urlencode
 from datetime import timedelta
 from django.utils.http import http_date
 from apps.accounts.permissions import (
@@ -24,6 +27,7 @@ from apps.accounts.permissions import (
 
 from core.models import UserAgent, CoreSettings
 from core.utils import RedisClient, safe_upload_path
+from apps.m3u.utils import convert_js_numbered_backreferences
 
 from .models import (
     Stream,
@@ -365,6 +369,17 @@ class StreamViewSet(viewsets.ModelViewSet):
             except re.error as e:
                 exclude_error = str(e)
 
+        # The replace field accepts JS-style $1 backreferences, but the regex
+        # engine honors \1. Convert once so the preview's "after" matches the
+        # name the live rename produces (apps/m3u/tasks.py sync_auto_channels
+        # applies the same conversion on the same engine).
+        replace_repl = convert_js_numbered_backreferences(replace_pat)
+
+        # The live rename caps the result at Channel.name's column length
+        # before bulk_create; mirror that cap so the preview never shows a
+        # name the sync would truncate.
+        name_max_len = Channel._meta.get_field("name").max_length
+
         # Capped at SCAN_CAP to bound memory on huge groups; the
         # separate COUNT lets the client surface scan_limit_hit when
         # the preview covers only a sample.
@@ -387,11 +402,12 @@ class StreamViewSet(viewsets.ModelViewSet):
             total_scanned += 1
             if find_re is not None:
                 try:
-                    new_name = find_re.sub(replace_pat, name, timeout=REGEX_TIMEOUT)
+                    new_name = find_re.sub(replace_repl, name, timeout=REGEX_TIMEOUT)
                 except (TimeoutError, re.error) as e:
                     find_error = find_error or f"Pattern timed out: {e}"
                     find_re = None
                     continue
+                new_name = new_name[:name_max_len]
                 if new_name != name:
                     find_match_count += 1
                     if len(find_matches) < limit:
@@ -2163,22 +2179,14 @@ class ChannelViewSet(viewsets.ModelViewSet):
 
             epg_data = EPGData.objects.get(pk=epg_data_id)
 
-            # Set the EPG data and save
+            # Set the EPG data and save. refresh_epg_programs (post_save) queues
+            # parse_programs_for_tvg_id for non-dummy sources — no second dispatch here.
             channel.epg_data = epg_data
             channel.save(update_fields=["epg_data"])
 
-            # Only trigger program refresh for non-dummy EPG sources
             status_message = None
             if epg_data.epg_source.source_type != 'dummy':
-                # Explicitly trigger program refresh for this EPG
-                from apps.epg.tasks import parse_programs_for_tvg_id
-
-                task_result = parse_programs_for_tvg_id.delay(epg_data.id)
-
-                # Prepare response with task status info
                 status_message = "EPG refresh queued"
-                if task_result.result == "Task already running":
-                    status_message = "EPG refresh already in progress"
 
             # Build response message
             message = f"EPG data set to {epg_data.tvg_id} for channel {channel.name}"
@@ -2356,27 +2364,9 @@ class ChannelViewSet(viewsets.ModelViewSet):
 
         channels_updated = len(channels_to_update)
 
-        # Trigger program refresh only for EPG ids newly assigned (skip dummy/SD)
-        from apps.epg.tasks import parse_programs_for_tvg_id
-        from apps.epg.models import EPGData
+        from apps.epg.tasks import dispatch_program_refresh_for_epg_ids
 
-        # Batch fetch EPG data (single query)
-        epg_data_dict = {
-            epg.id: epg
-            for epg in EPGData.objects.filter(id__in=changed_epg_ids).select_related('epg_source')
-        }
-
-        programs_refreshed = 0
-        for epg_id in changed_epg_ids:
-            epg_data = epg_data_dict.get(epg_id)
-            if not epg_data:
-                logger.error(f"EPGData with ID {epg_id} not found")
-                continue
-
-            source_type = epg_data.epg_source.source_type if epg_data.epg_source else None
-            if source_type not in ('dummy', 'schedules_direct'):
-                parse_programs_for_tvg_id.delay(epg_id)
-                programs_refreshed += 1
+        programs_refreshed = dispatch_program_refresh_for_epg_ids(changed_epg_ids)
 
         return Response(
             {
@@ -2800,8 +2790,9 @@ class LogoViewSet(viewsets.ModelViewSet):
                     user_agent_obj = UserAgent.objects.get(id=int(default_user_agent_id))
                     user_agent = user_agent_obj.user_agent
                 except (CoreSettings.DoesNotExist, UserAgent.DoesNotExist, ValueError):
-                    # Fallback to hardcoded if default not found
-                    user_agent = 'Dispatcharr/1.0'
+                    # Fallback if default not found
+                    from core.utils import dispatcharr_user_agent
+                    user_agent = dispatcharr_user_agent()
 
                 # Hard total timeout (connect + full download) prevents a slow
                 # server dripping bytes from holding a greenlet indefinitely.
@@ -3261,12 +3252,41 @@ def _stop_dvr_clients(channel_uuid, recording_id=None):
     return stopped
 
 
+# QueryParamJWTAuthentication supports native <video src> clients that cannot
+# send Authorization headers. Authorization still requires an authenticated
+# user via _user_can_play_recording; these classes only populate request.user.
+RECORDING_PLAYBACK_AUTHENTICATORS = [
+    JWTAuthentication,
+    ApiKeyAuthentication,
+    QueryParamJWTAuthentication,
+]
+
+
+def _recording_auth_query_suffix(request):
+    """Suffix for rewritten recording URLs when auth used ?token= (native <video>).
+
+    hls.js clients authenticate via Authorization on each XHR and do not need
+    tokens embedded in playlist segment lines.
+    """
+    from rest_framework.request import Request as DRFRequest
+
+    if isinstance(request, DRFRequest):
+        params = request.query_params
+    else:
+        params = request.GET
+    token = params.get("token")
+    if not token:
+        return ""
+    return "?" + urlencode({"token": token})
+
+
 class RecordingViewSet(viewsets.ModelViewSet):
     queryset = Recording.objects.all()
     serializer_class = RecordingSerializer
 
     def get_permissions(self):
-        # Allow unauthenticated playback of recording files (like other streaming endpoints)
+        # file/hls use AllowAny so DRF does not reject requests before auth
+        # classes run; _user_can_play_recording enforces authenticated access.
         if self.action in ('file', 'hls'):
             return [AllowAny()]
         try:
@@ -3330,7 +3350,12 @@ class RecordingViewSet(viewsets.ModelViewSet):
         except Exception as e:
             return Response({"success": False, "error": str(e)}, status=400)
 
-    @action(detail=True, methods=["get"], url_path="file")
+    @action(
+        detail=True,
+        methods=["get"],
+        url_path="file",
+        authentication_classes=RECORDING_PLAYBACK_AUTHENTICATORS,
+    )
     def file(self, request, pk=None):
         """Stream a completed recording file with HTTP Range support for seeking.
 
@@ -3354,7 +3379,7 @@ class RecordingViewSet(viewsets.ModelViewSet):
             if hls_dir and os.path.isdir(hls_dir):
                 hls_url = request.build_absolute_uri(
                     f"/api/channels/recordings/{pk}/hls/index.m3u8"
-                )
+                ) + _recording_auth_query_suffix(request)
                 return HttpResponseRedirect(hls_url)
             if not file_path or not os.path.exists(file_path):
                 raise Http404("Recording file not found")
@@ -3418,7 +3443,12 @@ class RecordingViewSet(viewsets.ModelViewSet):
         response["Content-Disposition"] = f"inline; filename=\"{file_name}\""
         return response
 
-    @action(detail=True, methods=["get"], url_path="hls/(?P<seg_path>.+)")
+    @action(
+        detail=True,
+        methods=["get"],
+        url_path="hls/(?P<seg_path>.+)",
+        authentication_classes=RECORDING_PLAYBACK_AUTHENTICATORS,
+    )
     def hls(self, request, pk=None, seg_path=None):
         """Serve HLS playlist and segment files for an in-progress (or completed) recording.
 
@@ -3442,9 +3472,10 @@ class RecordingViewSet(viewsets.ModelViewSet):
             cp = recording.custom_properties or {}
             file_path = cp.get("file_path")
             if seg_path.endswith(".m3u8") and file_path and os.path.exists(file_path) and os.path.getsize(file_path) > 0:
-                return HttpResponseRedirect(
-                    request.build_absolute_uri(f"/api/channels/recordings/{pk}/file/")
-                )
+                file_url = request.build_absolute_uri(
+                    f"/api/channels/recordings/{pk}/file/"
+                ) + _recording_auth_query_suffix(request)
+                return HttpResponseRedirect(file_url)
             raise Http404("HLS content not available for this recording")
 
         # Security: prevent path traversal outside the HLS directory
@@ -3457,16 +3488,18 @@ class RecordingViewSet(viewsets.ModelViewSet):
             raise Http404(f"HLS file not found: {seg_path}")
 
         if seg_path.endswith(".m3u8"):
-            # Rewrite relative segment lines to absolute URLs through this API
+            # Rewrite relative segment lines to absolute URLs through this API.
+            # Propagate ?token= only for native <video> clients (see helper).
             base_url = request.build_absolute_uri(
                 f"/api/channels/recordings/{pk}/hls/"
             )
+            auth_suffix = _recording_auth_query_suffix(request)
             lines = []
             with open(requested) as _f:
                 for line in _f:
                     stripped = line.strip()
                     if stripped and not stripped.startswith("#"):
-                        lines.append(f"{base_url}{stripped}\n")
+                        lines.append(f"{base_url}{stripped}{auth_suffix}\n")
                     else:
                         lines.append(line)
             return HttpResponse("".join(lines), content_type="application/x-mpegURL")

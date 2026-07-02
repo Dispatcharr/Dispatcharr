@@ -43,6 +43,9 @@ const DvrSettingsForm = React.lazy(
 const SystemSettingsForm = React.lazy(
   () => import('../components/forms/settings/SystemSettingsForm.jsx')
 );
+const EpgSettingsForm = React.lazy(
+  () => import('../components/forms/settings/EpgSettingsForm.jsx')
+);
 const NavOrderForm = React.lazy(
   () => import('../components/forms/settings/NavOrderForm.jsx')
 );
@@ -54,6 +57,7 @@ const COMPONENT_MAP = {
   'stream-profiles': StreamProfilesTable,
   'output-profiles': OutputProfilesTable,
   'dvr-settings': DvrSettingsForm,
+  'epg-settings': EpgSettingsForm,
   'user-agents': UserAgentsTable,
   'network-access': NetworkAccessForm,
   'proxy-settings': ProxySettingsForm,

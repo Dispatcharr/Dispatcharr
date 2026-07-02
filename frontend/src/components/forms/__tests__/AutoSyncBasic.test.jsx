@@ -289,6 +289,25 @@ describe('AutoSyncBasic', () => {
       const call = onApplyGroupChange.mock.calls[0][0];
       expect(call.custom_properties.channel_numbering_fallback).toBe(1);
     });
+
+    it('drops End when the fallback start exceeds End in provider mode', () => {
+      // Mirrors fixed mode: an inverted fallback range would fail every
+      // numberless stream, so End is dropped rather than silently kept.
+      const { onApplyGroupChange } = renderComponent({
+        custom_properties: {
+          channel_numbering_mode: 'provider',
+          channel_numbering_fallback: 1,
+        },
+        auto_sync_channel_end: 200,
+      });
+      vi.mocked(clampChannelNumber).mockReturnValueOnce(500);
+      fireEvent.change(screen.getByTestId(/start/i), {
+        target: { value: '500' },
+      });
+      const call = onApplyGroupChange.mock.calls[0][0];
+      expect(call.custom_properties.channel_numbering_fallback).toBe(500);
+      expect(call.auto_sync_channel_end).toBeFalsy();
+    });
   });
 
   // ── updateEnd ──────────────────────────────────────────────────────────────

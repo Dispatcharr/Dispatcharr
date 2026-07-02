@@ -398,12 +398,16 @@ def scan_and_process_files():
 def _rebuild_programme_indices():
     """Queue index builds for active EPG sources that are missing their DB index."""
     try:
+        from django.db.models import Q
         from apps.epg.tasks import build_programme_index_task
 
         sources = EPGSource.objects.filter(
             is_active=True,
-            programme_index__isnull=True,
-        ).exclude(source_type__in=('dummy', 'schedules_direct'))
+        ).exclude(
+            source_type__in=('dummy', 'schedules_direct')
+        ).filter(
+            Q(index_record__isnull=True) | Q(index_record__data__isnull=True)
+        )
 
         count = 0
         for source in sources:
@@ -796,11 +800,11 @@ def check_for_version_update():
     from packaging import version as pkg_version
     from version import __version__, __timestamp__
     from core.models import SystemNotification
-    from core.utils import send_websocket_notification
+    from core.utils import dispatcharr_http_headers, send_websocket_notification
 
     try:
         is_dev_build = __timestamp__ is not None
-        DISPATCHARR_HEADERS = {'User-Agent': f'Dispatcharr/{__version__}'}
+        DISPATCHARR_HEADERS = dispatcharr_http_headers(content_type=None)
 
         if is_dev_build:
             # Check Docker Hub for newer dev builds

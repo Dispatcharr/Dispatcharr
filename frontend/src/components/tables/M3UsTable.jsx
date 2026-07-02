@@ -1,11 +1,10 @@
-import React, {
+import {
   useEffect,
   useMemo,
   useRef,
   useState,
   useCallback,
 } from 'react';
-import API from '../../api';
 import usePlaylistsStore from '../../store/playlists';
 import M3UForm from '../forms/M3U';
 import ServerGroupsManagerModal from '../ServerGroupsManagerModal';
@@ -20,16 +19,11 @@ import {
   ActionIcon,
   Tooltip,
   Switch,
-  Group,
-  Center,
 } from '@mantine/core';
 import {
   SquareMinus,
   SquarePen,
   RefreshCcw,
-  ArrowUpDown,
-  ArrowUpNarrowWide,
-  ArrowDownWideNarrow,
   SquarePlus,
 } from 'lucide-react';
 import useLocalStorage from '../../hooks/useLocalStorage';
@@ -42,55 +36,42 @@ import {
 import ConfirmationDialog from '../../components/ConfirmationDialog';
 import useWarningsStore from '../../store/warnings';
 import { CustomTable, useTable } from './CustomTable';
+import {
+  deletePlaylist,
+  getExpirationInfo,
+  getExpirationTooltip,
+  getPlaylistAutoCreatedChannelsCount,
+  getSortedPlaylists,
+  getStatusColor,
+  getStatusContent,
+  formatStatusText,
+  refreshPlaylist,
+  updatePlaylist,
+} from '../../utils/tables/M3UsTableUtils.js';
+import {
+  makeHeaderCellRenderer,
+  makeSortingChangeHandler,
+} from './M3uTableUtils.jsx';
 
-// Helper function to format status text
-const formatStatusText = (status) => {
-  switch (status) {
-    case 'idle':
-      return 'Idle';
-    case 'fetching':
-      return 'Fetching';
-    case 'parsing':
-      return 'Parsing';
-    case 'error':
-      return 'Error';
-    case 'success':
-      return 'Success';
-    case 'pending_setup':
-      return 'Pending Setup';
-    default:
-      return status
-        ? status.charAt(0).toUpperCase() + status.slice(1)
-        : 'Unknown';
-  }
-};
+const StatusRow = ({ label, value }) => (
+  <Flex justify="space-between" align="center">
+    <Text size="xs" fw={500}>{label}{value ? ':' : ''}</Text>
+    {value && <Text size="xs">{value}</Text>}
+  </Flex>
+);
 
-// Helper function to get status text color
-const getStatusColor = (status) => {
-  switch (status) {
-    case 'idle':
-      return 'gray.5';
-    case 'fetching':
-      return 'blue.5';
-    case 'parsing':
-      return 'indigo.5';
-    case 'error':
-      return 'red.5';
-    case 'success':
-      return 'green.5';
-    case 'pending_setup':
-      return 'orange.5'; // Orange to indicate action needed
-    default:
-      return 'gray.5';
-  }
-};
+const StatusBox = ({ children }) => (
+  <Box>
+    <Flex direction="column" gap={2}>{children}</Flex>
+  </Box>
+);
 
 const RowActions = ({
   tableSize,
   editPlaylist,
-  deletePlaylist,
+  handleDeletePlaylist,
   row,
-  refreshPlaylist,
+  handleRefreshPlaylist,
 }) => {
   const iconSize =
     tableSize == 'default' ? 'sm' : tableSize == 'compact' ? 'xs' : 'md';
@@ -111,7 +92,7 @@ const RowActions = ({
         variant="transparent"
         size={iconSize}
         color="red.9"
-        onClick={() => deletePlaylist(row.original.id)}
+        onClick={() => handleDeletePlaylist(row.original.id)}
       >
         <SquareMinus size={tableSize === 'compact' ? 16 : 18} />
       </ActionIcon>
@@ -119,7 +100,7 @@ const RowActions = ({
         variant="transparent"
         size={iconSize}
         color="blue.5"
-        onClick={() => refreshPlaylist(row.original.id)}
+        onClick={() => handleRefreshPlaylist(row.original.id)}
         disabled={!row.original.is_active}
       >
         <RefreshCcw size={tableSize === 'compact' ? 16 : 18} />
@@ -128,10 +109,10 @@ const RowActions = ({
   );
 };
 
+
 const M3UTable = () => {
   const [playlist, setPlaylist] = useState(null);
   const [playlistModalOpen, setPlaylistModalOpen] = useState(false);
-  const [rowSelection, setRowSelection] = useState([]);
   const [playlistCreated, setPlaylistCreated] = useState(false);
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState(null);
@@ -179,201 +160,50 @@ const M3UTable = () => {
       return 'Idle';
     }
 
-    switch (data.action) {
+    const content = getStatusContent(data);
+
+    switch (content.type) {
       case 'initializing':
-        return buildInitializingStats();
-
+        return (
+          <StatusBox><StatusRow label="Initializing refresh..." /></StatusBox>
+        );
       case 'downloading':
-        return buildDownloadingStats(data);
-
-      case 'processing_groups':
-        return buildGroupProcessingStats(data);
-
+        return (
+          <StatusBox>
+            <StatusRow label="Downloading" value={`${content.progress}%`} />
+            <StatusRow label="Speed" value={content.speed} />
+            <StatusRow label="Time left" value={content.timeRemaining} />
+          </StatusBox>
+        );
+      case 'groups':
+        return (
+          <StatusBox>
+            <StatusRow label="Processing groups" value={`${content.progress}%`} />
+            {content.elapsedTime && <StatusRow label="Elapsed" value={content.elapsedTime} />}
+            {content.groupsProcessed && <StatusRow label="Groups" value={content.groupsProcessed} />}
+          </StatusBox>
+        );
       case 'parsing':
-        return buildParsingStats(data);
-
+        return (
+          <StatusBox>
+            <StatusRow label="Parsing" value={`${content.progress}%`} />
+            {content.elapsedTime && <StatusRow label="Elapsed" value={content.elapsedTime} />}
+            {content.timeRemaining && <StatusRow label="Remaining" value={content.timeRemaining} />}
+            {content.streamsProcessed && <StatusRow label="Streams" value={content.streamsProcessed} />}
+          </StatusBox>
+        );
+      case 'error':
+        return (
+          <StatusBox>
+            <Text size="xs" fw={500} color="red">Error:</Text>
+            <Text size="xs" color="red" style={{ lineHeight: 1.3 }}>
+              {content.error || 'Unknown error occurred'}
+            </Text>
+          </StatusBox>
+        );
       default:
-        return data.status === 'error'
-          ? buildErrorStats(data)
-          : `${data.action || 'Processing'}...`;
+        return content.label;
     }
-  };
-
-  const buildDownloadingStats = (data) => {
-    if (data.progress == 100) {
-      return 'Download complete!';
-    }
-
-    if (data.progress == 0) {
-      return 'Downloading...';
-    }
-
-    // Format time remaining in minutes:seconds
-    const timeRemaining = data.time_remaining
-      ? `${Math.floor(data.time_remaining / 60)}:${String(Math.floor(data.time_remaining % 60)).padStart(2, '0')}`
-      : 'calculating...';
-
-    // Format speed with appropriate unit (KB/s or MB/s)
-    const speed =
-      data.speed >= 1024
-        ? `${(data.speed / 1024).toFixed(2)} MB/s`
-        : `${Math.round(data.speed)} KB/s`;
-
-    return (
-      <Box>
-        <Flex direction="column" gap={2}>
-          <Flex justify="space-between" align="center">
-            <Text size="xs" fw={500}>
-              Downloading:
-            </Text>
-            <Text size="xs">{parseInt(data.progress)}%</Text>
-          </Flex>
-          <Flex justify="space-between" align="center">
-            <Text size="xs" fw={500}>
-              Speed:
-            </Text>
-            <Text size="xs">{speed}</Text>
-          </Flex>
-          <Flex justify="space-between" align="center">
-            <Text size="xs" fw={500}>
-              Time left:
-            </Text>
-            <Text size="xs">{timeRemaining}</Text>
-          </Flex>
-        </Flex>
-      </Box>
-    );
-  };
-
-  const buildGroupProcessingStats = (data) => {
-    if (data.progress == 100) {
-      return 'Groups processed!';
-    }
-
-    if (data.progress == 0) {
-      return 'Processing groups...';
-    }
-
-    // Format time displays if available
-    const elapsedTime = data.elapsed_time
-      ? `${Math.floor(data.elapsed_time / 60)}:${String(Math.floor(data.elapsed_time % 60)).padStart(2, '0')}`
-      : null;
-
-    return (
-      <Box>
-        <Flex direction="column" gap={2}>
-          <Flex justify="space-between" align="center">
-            <Text size="xs" fw={500}>
-              Processing groups:
-            </Text>
-            <Text size="xs">{parseInt(data.progress)}%</Text>
-          </Flex>
-          {elapsedTime && (
-            <Flex justify="space-between" align="center">
-              <Text size="xs" fw={500}>
-                Elapsed:
-              </Text>
-              <Text size="xs">{elapsedTime}</Text>
-            </Flex>
-          )}
-          {data.groups_processed && (
-            <Flex justify="space-between" align="center">
-              <Text size="xs" fw={500}>
-                Groups:
-              </Text>
-              <Text size="xs">{data.groups_processed}</Text>
-            </Flex>
-          )}
-        </Flex>
-      </Box>
-    );
-  };
-
-  const buildErrorStats = (data) => {
-    return (
-      <Box>
-        <Flex direction="column" gap={2}>
-          <Flex align="center">
-            <Text size="xs" fw={500} color="red">
-              Error:
-            </Text>
-          </Flex>
-          <Text size="xs" color="red" style={{ lineHeight: 1.3 }}>
-            {data.error || 'Unknown error occurred'}
-          </Text>
-        </Flex>
-      </Box>
-    );
-  };
-
-  const buildParsingStats = (data) => {
-    if (data.progress == 100) {
-      return 'Parsing complete!';
-    }
-
-    if (data.progress == 0) {
-      return 'Parsing...';
-    }
-
-    // Format time displays
-    const timeRemaining = data.time_remaining
-      ? `${Math.floor(data.time_remaining / 60)}:${String(Math.floor(data.time_remaining % 60)).padStart(2, '0')}`
-      : 'calculating...';
-
-    const elapsedTime = data.elapsed_time
-      ? `${Math.floor(data.elapsed_time / 60)}:${String(Math.floor(data.elapsed_time % 60)).padStart(2, '0')}`
-      : '0:00';
-
-    return (
-      <Box>
-        <Flex direction="column" gap={2}>
-          <Flex justify="space-between" align="center">
-            <Text size="xs" fw={500} style={{ width: '80px' }}>
-              Parsing:
-            </Text>
-            <Text size="xs">{parseInt(data.progress)}%</Text>
-          </Flex>
-          {data.elapsed_time && (
-            <Flex justify="space-between" align="center">
-              <Text size="xs" fw={500} style={{ width: '80px' }}>
-                Elapsed:
-              </Text>
-              <Text size="xs">{elapsedTime}</Text>
-            </Flex>
-          )}
-          {data.time_remaining && (
-            <Flex justify="space-between" align="center">
-              <Text size="xs" fw={500} style={{ width: '60px' }}>
-                Remaining:
-              </Text>
-              <Text size="xs">{timeRemaining}</Text>
-            </Flex>
-          )}
-          {data.streams_processed && (
-            <Flex justify="space-between" align="center">
-              <Text size="xs" fw={500} style={{ width: '80px' }}>
-                Streams:
-              </Text>
-              <Text size="xs">{data.streams_processed}</Text>
-            </Flex>
-          )}
-        </Flex>
-      </Box>
-    );
-  };
-
-  const buildInitializingStats = () => {
-    return (
-      <Box>
-        <Flex direction="column" gap={2}>
-          <Flex align="center">
-            <Text size="xs" fw={500}>
-              Initializing refresh...
-            </Text>
-          </Flex>
-        </Flex>
-      </Box>
-    );
   };
 
   const editPlaylist = async (playlist = null) => {
@@ -381,7 +211,7 @@ const M3UTable = () => {
     setPlaylistModalOpen(true);
   };
 
-  const refreshPlaylist = async (id) => {
+  const handleRefreshPlaylist = async (id) => {
     // Provide immediate visual feedback before the API call
     setRefreshProgress(id, {
       action: 'initializing',
@@ -391,9 +221,9 @@ const M3UTable = () => {
     });
 
     try {
-      await API.refreshPlaylist(id);
+      await refreshPlaylist(id);
       // No need to set again since WebSocket will update us once the task starts
-    } catch (error) {
+    } catch {
       // If the API call fails, show an error state
       setRefreshProgress(id, {
         action: 'error',
@@ -406,7 +236,7 @@ const M3UTable = () => {
     }
   };
 
-  const deletePlaylist = async (id) => {
+  const handleDeletePlaylist = async (id) => {
     // Get playlist details for the confirmation dialog
     const playlist = playlists.find((p) => p.id === id);
     setPlaylistToDelete(playlist);
@@ -418,7 +248,7 @@ const M3UTable = () => {
     // thinking there are zero auto-created channels.
     let info;
     try {
-      const result = await API.getPlaylistAutoCreatedChannelsCount(id);
+      const result = await getPlaylistAutoCreatedChannelsCount(id);
       info = result || { count: 0, sample_names: [] };
     } catch {
       info = {
@@ -448,7 +278,9 @@ const M3UTable = () => {
     setIsLoading(true);
     setDeleting(true);
     try {
-      await API.deletePlaylist(id);
+      await deletePlaylist(id);
+    } catch (error) {
+      console.error('Error deleting playlist:', error);
     } finally {
       setDeleting(false);
       setIsLoading(false);
@@ -460,11 +292,11 @@ const M3UTable = () => {
   const toggleActive = async (playlist) => {
     try {
       // Send only the is_active field to trigger our special handling
-      await API.updatePlaylist(
+      await updatePlaylist(
         {
-          id: playlist.id,
           is_active: !playlist.is_active,
         },
+        playlist,
         true
       ); // Add a new parameter to indicate this is just a toggle
     } catch (error) {
@@ -685,34 +517,10 @@ const M3UTable = () => {
 
           const now = getNow();
           const daysLeft = diff(earliest, now, 'day');
-          let color;
-          let label;
-          if (daysLeft < 0) {
-            color = 'red.7';
-            label = 'Expired';
-          } else if (daysLeft === 0) {
-            color = 'red.5';
-            label = 'Expires today';
-          } else if (daysLeft <= 7) {
-            color = 'orange.5';
-            label = `${daysLeft}d left`;
-          } else if (daysLeft <= 30) {
-            color = 'yellow.5';
-            label = `${daysLeft}d left`;
-          } else {
-            label = format(earliest, fullDateFormat);
-          }
+          const { color, label } = getExpirationInfo(daysLeft, earliest, fullDateFormat);
 
           const allExpirations = data.all_expirations || [];
-          const tooltipContent =
-            allExpirations.length > 0
-              ? allExpirations
-                  .map(
-                    (e) =>
-                      `${e.profile_name}: ${format(e.exp_date, fullDateTimeFormat)}${!e.is_active ? ' (inactive)' : ''}`
-                  )
-                  .join('\n')
-              : label;
+          const tooltipContent = getExpirationTooltip(allExpirations, fullDateTimeFormat, label);
 
           return (
             <Tooltip
@@ -764,9 +572,9 @@ const M3UTable = () => {
       },
     ],
     [
-      refreshPlaylist,
+      handleRefreshPlaylist,
       editPlaylist,
-      deletePlaylist,
+      handleDeletePlaylist,
       toggleActive,
       fullDateFormat,
       fullDateTimeFormat,
@@ -776,7 +584,7 @@ const M3UTable = () => {
   //optionally access the underlying virtualizer instance
   const rowVirtualizerInstanceRef = useRef(null);
 
-  const [isLoading, setIsLoading] = useState(true);
+  const [_isLoading, setIsLoading] = useState(true);
 
   const closeModal = (newPlaylist = null) => {
     if (newPlaylist) {
@@ -812,85 +620,11 @@ const M3UTable = () => {
     }
   }, [editPlaylistId, processedData, playlists, setEditPlaylistId]);
 
-  const onSortingChange = (column) => {
-    console.log(column);
-    const sortField = sorting[0]?.id;
-    const sortDirection = sorting[0]?.desc;
+  const onSortingChange = makeSortingChangeHandler(sorting, setSorting, (col, desc) =>
+    setData(getSortedPlaylists(playlists, col, desc))
+  );
 
-    const newSorting = [];
-    if (sortField == column) {
-      if (sortDirection == false) {
-        newSorting[0] = {
-          id: column,
-          desc: true,
-        };
-      }
-    } else {
-      newSorting[0] = {
-        id: column,
-        desc: false,
-      };
-    }
-
-    setSorting(newSorting);
-    if (newSorting.length > 0) {
-      const compareColumn = newSorting[0].id;
-      const compareDesc = newSorting[0].desc;
-
-      setData(
-        playlists
-          .filter((playlist) => playlist.locked === false)
-          .sort((a, b) => {
-            const aVal = a[compareColumn];
-            const bVal = b[compareColumn];
-
-            // Always sort nulls/undefined to the end regardless of direction
-            if (aVal == null && bVal == null) return 0;
-            if (aVal == null) return 1;
-            if (bVal == null) return -1;
-
-            let comparison;
-            if (typeof aVal === 'string') {
-              comparison = aVal.localeCompare(bVal);
-            } else {
-              comparison = aVal < bVal ? -1 : aVal > bVal ? 1 : 0;
-            }
-
-            return compareDesc ? -comparison : comparison;
-          })
-      );
-    }
-  };
-
-  const renderHeaderCell = (header) => {
-    let sortingIcon = ArrowUpDown;
-    if (sorting[0]?.id == header.id) {
-      if (sorting[0].desc === false) {
-        sortingIcon = ArrowUpNarrowWide;
-      } else {
-        sortingIcon = ArrowDownWideNarrow;
-      }
-    }
-
-    switch (header.id) {
-      default:
-        return (
-          <Group>
-            <Text size="sm" name={header.id}>
-              {header.column.columnDef.header}
-            </Text>
-            {header.column.columnDef.sortable && (
-              <Center>
-                {React.createElement(sortingIcon, {
-                  onClick: () => onSortingChange(header.id),
-                  size: 14,
-                })}
-              </Center>
-            )}
-          </Group>
-        );
-    }
-  };
+  const renderHeaderCell = makeHeaderCellRenderer(sorting, onSortingChange);
 
   const renderBodyCell = useCallback(({ cell, row }) => {
     switch (cell.column.id) {
@@ -899,9 +633,9 @@ const M3UTable = () => {
           <RowActions
             tableSize={tableSize}
             editPlaylist={editPlaylist}
-            deletePlaylist={deletePlaylist}
+            handleDeletePlaylist={handleDeletePlaylist}
             row={row}
-            refreshPlaylist={refreshPlaylist}
+            handleRefreshPlaylist={handleRefreshPlaylist}
           />
         );
     }
@@ -915,7 +649,6 @@ const M3UTable = () => {
     enablePagination: false,
     enableRowVirtualization: true,
     enableRowSelection: false,
-    onRowSelectionChange: setRowSelection,
     renderTopToolbar: false,
     sorting,
     manualSorting: true,
@@ -1027,11 +760,8 @@ const M3UTable = () => {
         <Box
           style={{
             display: 'flex',
-            // alignItems: 'center',
-            // backgroundColor: theme.palette.background.paper,
             justifyContent: 'flex-end',
             padding: 0,
-            // gap: 1,
           }}
         ></Box>
       </Paper>
@@ -1115,7 +845,7 @@ This action cannot be undone.`}
                   }}
                 >
                   <Text size="sm" fw={600}>
-                    {`${autoChannelsInfo.count} auto-synced channel${autoChannelsInfo.count === 1 ? '' : 's'} created by this provider will also be deleted.`}
+                    {`${autoChannelsInfo.count} auto-synced ${autoChannelsInfo.count === 1 ? 'channel' : 'channels'} created by this provider will also be deleted.`}
                   </Text>
                 </div>
               ) : null}

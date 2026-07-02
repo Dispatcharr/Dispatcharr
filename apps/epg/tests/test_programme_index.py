@@ -1,7 +1,7 @@
 import os
 import gzip
 import tempfile
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 from django.test import TestCase
 from django.utils import timezone
@@ -11,6 +11,7 @@ from apps.epg.tasks import (
     find_current_program_for_tvg_id,
     build_programme_index,
     build_programme_index_task,
+    _EPG_TVG_PARSE_DEFER_SECONDS,
 )
 
 FIXTURE_DIR = os.path.join(os.path.dirname(__file__), "fixtures")
@@ -519,7 +520,6 @@ class FindCurrentProgramTests(TestCase):
             name="No Index",
             source_type="xmltv",
             file_path=FIXTURE_XML,
-            programme_index=None,
         )
         epg = EPGData.objects.create(
             tvg_id="channel.current",
@@ -664,38 +664,40 @@ class BuildProgrammeIndexTests(TestCase):
         build_programme_index(99999)
 
     @patch("apps.epg.tasks.build_programme_index")
-    def test_task_builds_and_releases_lock_when_free(self, mock_build):
-        mock_redis = MagicMock()
-        mock_redis.set.return_value = True  # lock acquired
-        with patch("core.utils.RedisClient.get_client", return_value=mock_redis):
-            build_programme_index_task(42)
+    @patch("apps.epg.tasks.release_task_lock")
+    @patch("apps.epg.tasks.acquire_task_lock", return_value=True)
+    def test_task_builds_and_releases_lock_when_free(
+        self, mock_acquire, mock_release, mock_build
+    ):
+        build_programme_index_task(42)
 
         mock_build.assert_called_once_with(42)
-        mock_redis.set.assert_called_once()
-        self.assertEqual(
-            mock_redis.set.call_args.args[0], "building_programme_index_42"
-        )
-        mock_redis.delete.assert_called_once_with("building_programme_index_42")
+        mock_acquire.assert_called_once_with("epg_source_file", 42)
+        mock_release.assert_called_once_with("epg_source_file", 42)
 
     @patch("apps.epg.tasks.build_programme_index")
-    def test_task_skips_when_lock_held(self, mock_build):
-        mock_redis = MagicMock()
-        mock_redis.set.return_value = False  # another build in flight
-        with patch("core.utils.RedisClient.get_client", return_value=mock_redis):
+    @patch("apps.epg.tasks.acquire_task_lock", return_value=False)
+    def test_task_defers_when_lock_held(self, mock_acquire, mock_build):
+        with patch("apps.epg.tasks.build_programme_index_task.apply_async") as mock_apply:
             build_programme_index_task(42)
 
         mock_build.assert_not_called()
-        mock_redis.delete.assert_not_called()
+        mock_apply.assert_called_once_with(
+            args=[42],
+            kwargs={'_defer_retry': 1},
+            countdown=_EPG_TVG_PARSE_DEFER_SECONDS,
+        )
 
     @patch("apps.epg.tasks.build_programme_index", side_effect=RuntimeError("boom"))
-    def test_task_releases_lock_on_failure(self, mock_build):
-        mock_redis = MagicMock()
-        mock_redis.set.return_value = True
-        with patch("core.utils.RedisClient.get_client", return_value=mock_redis):
-            with self.assertRaises(RuntimeError):
-                build_programme_index_task(42)
+    @patch("apps.epg.tasks.release_task_lock")
+    @patch("apps.epg.tasks.acquire_task_lock", return_value=True)
+    def test_task_releases_lock_on_failure(
+        self, mock_acquire, mock_release, mock_build
+    ):
+        with self.assertRaises(RuntimeError):
+            build_programme_index_task(42)
 
-        mock_redis.delete.assert_called_once_with("building_programme_index_42")
+        mock_release.assert_called_once_with("epg_source_file", 42)
 
     def test_per_channel_interleaved_marking(self):
         xml = (

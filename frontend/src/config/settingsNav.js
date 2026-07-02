@@ -1,5 +1,6 @@
 import {
   ArrowLeftRight,
+  CalendarDays,
   DatabaseBackup,
   FileOutput,
   Menu,
@@ -39,6 +40,14 @@ export const SETTINGS_GROUPS = [
     adminOnly: true,
     sections: [
       { id: 'dvr-settings', label: 'DVR Settings', icon: Tv },
+    ],
+  },
+  {
+    id: 'epg',
+    label: 'EPG',
+    adminOnly: true,
+    sections: [
+      { id: 'epg-settings', label: 'EPG', icon: CalendarDays },
     ],
   },
   {

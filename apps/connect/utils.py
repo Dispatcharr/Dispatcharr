@@ -1,5 +1,5 @@
 # connect/utils.py
-import logging, json
+import logging
 from django.template import Template, Context
 from .models import EventSubscription, DeliveryLog, SUPPORTED_EVENTS
 from .handlers.webhook import WebhookHandler
@@ -94,23 +94,44 @@ def trigger_event(event_name, payload):
 
     pm = PluginManager.get()
     pm.discover_plugins(sync_db=False, use_cache=True)
-    plugins = pm.list_plugins()
+    handlers = list(pm.iter_actions_for_event(event_name))
+    if not handlers:
+        return
 
-    logger.debug(f"Checking {len(plugins)} plugins for event '{event_name}'")
-    for plugin in plugins:
-        if not plugin["enabled"]:
-            logger.debug(f"Skipping disabled plugin id={plugin['key']} name={plugin['name']}")
+    from apps.plugins.models import PluginConfig
+
+    handler_keys = {key for key, _ in handlers}
+    enabled_keys = set(
+        PluginConfig.objects.filter(enabled=True, key__in=handler_keys).values_list(
+            "key", flat=True
+        )
+    )
+
+    logger.debug(
+        "Dispatching event '%s' to %d plugin action(s) (%d enabled)",
+        event_name,
+        len(handlers),
+        len(enabled_keys),
+    )
+    params = {"event": event_name, "payload": payload}
+    for key, action_id in handlers:
+        if key not in enabled_keys:
+            logger.debug(
+                "Skipping disabled plugin id=%s for event '%s'", key, event_name
+            )
             continue
-
-        logger.debug(json.dumps(plugin))
-        for action in plugin["actions"]:
-            if "events" in action and event_name in action["events"]:
-                key = plugin["key"]
-                params = {"event": event_name, "payload": payload}
-                action_name = action.get("label") or action.get("id")
-                action_id = action.get("id")
-                logger.debug(
-                    f"Triggering plugin action for event '{event_name}' on plugin id={key} action={action_name}"
-                )
-                if action_id:
-                    pm.run_action(key, action_id, params)
+        logger.debug(
+            "Triggering plugin action for event '%s' on plugin id=%s action=%s",
+            event_name,
+            key,
+            action_id,
+        )
+        try:
+            pm.run_action(key, action_id, params)
+        except Exception:
+            logger.exception(
+                "Plugin action failed for event '%s' on plugin id=%s action=%s",
+                event_name,
+                key,
+                action_id,
+            )

@@ -1,3 +1,4 @@
+import json
 import redis
 import logging
 import time
@@ -7,7 +8,6 @@ from pathlib import Path
 import re
 from django.conf import settings
 from redis.exceptions import ConnectionError, TimeoutError
-from django.core.cache import cache
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 from django.core.validators import URLValidator
@@ -20,6 +20,33 @@ logger = logging.getLogger(__name__)
 
 # Import the command detector
 from .command_utils import is_management_command
+
+
+def dispatcharr_user_agent():
+    """Return the standard Dispatcharr User-Agent string (Dispatcharr/{version})."""
+    from version import __version__
+    return f'Dispatcharr/{__version__}'
+
+
+def dispatcharr_dvr_user_agent(recording_id):
+    """Return the User-Agent string used by DVR FFmpeg clients for a recording."""
+    return f'Dispatcharr-DVR/recording-{recording_id}'
+
+
+def dispatcharr_http_headers(*, token=None, content_type='application/json'):
+    """
+    Build HTTP headers for outbound Dispatcharr requests.
+
+    content_type=None omits Content-Type (e.g. simple GET proxies).
+    token is included when authenticating with Schedules Direct.
+    """
+    headers = {'User-Agent': dispatcharr_user_agent()}
+    if content_type:
+        headers['Content-Type'] = content_type
+    if token:
+        headers['token'] = token
+    return headers
+
 
 def natural_sort_key(text):
     """
@@ -43,6 +70,46 @@ def natural_sort_key(text):
         return int(chunk) if chunk.isdigit() else chunk.lower()
 
     return [convert(c) for c in re.split('([0-9]+)', text)]
+
+
+def custom_properties_as_dict(value):
+    """
+    Normalize a JSONField-backed custom_properties value into a dict.
+
+    Historical rows (TextField era and early JSONField migration) may store a
+    JSON-encoded string instead of an object. API clients can also submit a
+    string value because JSONField accepts any JSON type. Call this before
+    reading or merging custom_properties.
+    """
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except (ValueError, TypeError):
+            logger.warning(
+                "custom_properties stored as non-JSON string; ignoring: %r",
+                value[:100],
+            )
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    if value is None:
+        return {}
+    return {}
+
+
+def ensure_custom_properties_dict(value):
+    """
+    Return a dict for read/merge/bulk-write paths. Dict values pass through
+    without re-parsing. Use model ``save()`` (not this) as the canonical
+    normalizer for ORM writes that go through ``save()``.
+    """
+    if isinstance(value, dict):
+        return value
+    if value is None:
+        return {}
+    return custom_properties_as_dict(value)
+
 
 class RedisClient:
     _client = None
@@ -242,6 +309,15 @@ def release_task_lock(task_name, id):
 
     # Remove the lock
     redis_client.delete(lock_id)
+
+
+def is_task_lock_held(task_name, id):
+    """Return True when another worker holds the task lock (read-only check)."""
+    redis_client = RedisClient.get_client()
+    if redis_client is None:
+        return False
+    lock_id = f"task_lock_{task_name}_{id}"
+    return bool(redis_client.exists(lock_id))
 
 
 class TaskLockRenewer:
@@ -470,13 +546,34 @@ def monitor_memory_usage(func):
         return result
     return wrapper
 
-def cleanup_memory(log_usage=False, force_collection=True):
+def trim_c_allocator_heap():
+    """Return unused C heap pages to the OS where supported (glibc malloc_trim)."""
+    try:
+        import ctypes
+        import ctypes.util
+
+        libc_name = ctypes.util.find_library("c")
+        if not libc_name:
+            return False
+        libc = ctypes.CDLL(libc_name)
+        if not hasattr(libc, "malloc_trim"):
+            return False
+        libc.malloc_trim(0)
+        return True
+    except Exception:
+        logger.debug("malloc_trim unavailable or failed", exc_info=True)
+        return False
+
+
+def cleanup_memory(log_usage=False, force_collection=True, trim_heap=False):
     """
     Comprehensive memory cleanup function to reduce memory footprint
 
     Args:
         log_usage: Whether to log memory usage before and after cleanup
         force_collection: Whether to force garbage collection
+        trim_heap: Return freed C heap pages to the OS. Only use after DB
+            connections are closed (e.g. Celery task_postrun).
     """
     logger.trace("Starting memory cleanup django memory cleanup")
     # Skip logging if log level is not set to debug or more verbose (like trace)
@@ -511,7 +608,32 @@ def cleanup_memory(log_usage=False, force_collection=True):
             logger.debug(f"Memory after cleanup: {after_mem:.2f} MB (change: {after_mem-before_mem:.2f} MB)")
         except (ImportError, Exception):
             pass
+    if trim_heap:
+        trim_c_allocator_heap()
     logger.trace("Memory cleanup complete for django")
+
+
+def spawn_memory_trim(close_connections=False):
+    """Reclaim a request's heap pages: GC, then return freed C pages to the OS.
+
+    On gevent uWSGI workers the trim runs in a spawned greenlet so it never
+    blocks the caller; Celery prefork workers (no gevent hub) run it inline.
+    Set close_connections=True when called from a streaming generator's teardown
+    so the pooled DB connection is released first.
+    """
+    def _run():
+        cleanup_memory(force_collection=True, trim_heap=True)
+
+    if close_connections:
+        from django.db import close_old_connections
+        close_old_connections()
+
+    if _is_gevent_monkey_patched():
+        import gevent
+        gevent.spawn(_run)
+    else:
+        _run()
+
 
 def safe_upload_path(filename: str, base_dir) -> str:
     """Return a safe absolute path for an uploaded file within base_dir.
@@ -587,6 +709,8 @@ def validate_flexible_url(value):
         raise ValidationError("Enter a valid URL.")
 
 def dispatch_event_system(event_type, channel_id=None, channel_name=None, **details):
+    from django.db import close_old_connections
+
     try:
         from apps.connect.utils import trigger_event
         from apps.channels.models import Channel, Stream
@@ -660,9 +784,48 @@ def dispatch_event_system(event_type, channel_id=None, channel_name=None, **deta
 
         trigger_event(event_type, payload)
 
-    except Exception as e:
+    except Exception:
         # Don't fail main path if connect dispatch fails
         pass
+    finally:
+        close_old_connections()
+
+
+def _dispatch_system_event_integrations(
+    event_type, channel_id=None, channel_name=None, **details
+):
+    """
+    Run Connect subscriptions and plugin event hooks without blocking the caller.
+
+    On gevent uWSGI workers, dispatch runs in a spawned greenlet so slow webhooks,
+    scripts, or plugin handlers cannot stall live-proxy teardown or streaming paths.
+    Celery prefork workers (gevent patched but no hub) run synchronously instead.
+    """
+
+    def _run():
+        try:
+            dispatch_event_system(
+                event_type,
+                channel_id=channel_id,
+                channel_name=channel_name,
+                **details,
+            )
+        except Exception as e:
+            logger.error(
+                "Failed to dispatch Connect/plugin handlers for event %s: %s",
+                event_type,
+                e,
+            )
+
+    if _should_use_sync_websocket_send():
+        _run()
+    elif _is_gevent_monkey_patched():
+        import gevent
+
+        gevent.spawn(_run)
+    else:
+        _run()
+
 
 def log_system_event(event_type, channel_id=None, channel_name=None, **details):
     """
@@ -679,6 +842,7 @@ def log_system_event(event_type, channel_id=None, channel_name=None, **details):
                         stream_url='http://...', user='admin')
     """
     from core.models import SystemEvent, CoreSettings
+    from django.db import close_old_connections
 
     try:
         # Create the event
@@ -689,8 +853,13 @@ def log_system_event(event_type, channel_id=None, channel_name=None, **details):
             details=details
         )
 
-        # Trigger connect integrations for specific events
-        dispatch_event_system(event_type, channel_id=channel_id, channel_name=channel_name, **details)
+        # Connect integrations and plugin event hooks (non-blocking on gevent uWSGI)
+        _dispatch_system_event_integrations(
+            event_type,
+            channel_id=channel_id,
+            channel_name=channel_name,
+            **details,
+        )
 
         # Get max events from settings (default 100)
         try:
@@ -714,6 +883,10 @@ def log_system_event(event_type, channel_id=None, channel_name=None, **details):
     except Exception as e:
         # Don't let event logging break the main application
         logger.error(f"Failed to log system event {event_type}: {e}")
+    finally:
+        # geventpool keeps checked-out connections until close(); release promptly
+        # when logging from proxy greenlets/threads outside a normal request cycle.
+        close_old_connections()
 
 
 def _send_async(channel_layer, group, message):

@@ -8,9 +8,9 @@ import sys
 import threading
 import types
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 
-from django.db import transaction
+from django.db import close_old_connections, transaction
 
 from .models import PluginConfig
 
@@ -92,6 +92,29 @@ class PluginManager:
                 key: lp.path for key, lp in self._registry.items() if lp and lp.path
             }
 
+        try:
+            return self._discover_plugins_impl(
+                sync_db=sync_db,
+                force_reload=force_reload,
+                previous_packages=previous_packages,
+                previous_aliases=previous_aliases,
+                previous_paths=previous_paths,
+                token=token,
+            )
+        finally:
+            # Discovery runs outside Django's request/task cycle (boot, worker_ready).
+            close_old_connections()
+
+    def _discover_plugins_impl(
+        self,
+        *,
+        sync_db: bool,
+        force_reload: bool,
+        previous_packages: Dict[str, str],
+        previous_aliases: Dict[str, str],
+        previous_paths: Dict[str, str],
+        token: int,
+    ) -> Dict[str, LoadedPlugin]:
         try:
             configs: Optional[Dict[str, PluginConfig]] = None
             try:
@@ -246,6 +269,23 @@ class PluginManager:
                 # Defer sync if database is not ready (e.g., first startup before migrate)
                 logger.exception("Deferring plugin DB sync; database not ready yet")
         return self._registry
+
+    def iter_actions_for_event(self, event_name: str) -> Iterator[Tuple[str, str]]:
+        """Yield (plugin_key, action_id) pairs from the in-memory registry."""
+        with self._lock:
+            registry = list(self._registry.items())
+        for key, lp in registry:
+            for action in lp.actions or []:
+                if not isinstance(action, dict):
+                    continue
+                action_id = action.get("id")
+                events = action.get("events")
+                if (
+                    action_id
+                    and isinstance(events, (list, tuple))
+                    and event_name in events
+                ):
+                    yield key, action_id
 
     def _load_plugin(
         self,
@@ -492,79 +532,85 @@ class PluginManager:
         return cfg.settings
 
     def run_action(self, key: str, action_id: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        lp = self.get_plugin(key)
-        if not lp or not lp.instance:
-            # Attempt a lightweight re-discovery in case the registry was rebuilt
-            self.discover_plugins(sync_db=False, force_reload=False, use_cache=False)
+        try:
             lp = self.get_plugin(key)
             if not lp or not lp.instance:
-                raise ValueError(f"Plugin '{key}' not found")
+                # Attempt a lightweight re-discovery in case the registry was rebuilt
+                self.discover_plugins(sync_db=False, force_reload=False, use_cache=False)
+                lp = self.get_plugin(key)
+                if not lp or not lp.instance:
+                    raise ValueError(f"Plugin '{key}' not found")
 
-        cfg = PluginConfig.objects.get(key=key)
-        if not cfg.enabled:
-            raise PermissionError(f"Plugin '{key}' is disabled")
-        params = params or {}
+            cfg = PluginConfig.objects.get(key=key)
+            if not cfg.enabled:
+                raise PermissionError(f"Plugin '{key}' is disabled")
+            params = params or {}
 
-        context = self._build_context(lp, cfg)
+            context = self._build_context(lp, cfg)
 
-        # Run either via Celery if plugin provides a delayed method, or inline
-        run_method = getattr(lp.instance, "run", None)
-        if not callable(run_method):
-            raise ValueError(f"Plugin '{key}' has no runnable 'run' method")
+            run_method = getattr(lp.instance, "run", None)
+            if not callable(run_method):
+                raise ValueError(f"Plugin '{key}' has no runnable 'run' method")
 
-        try:
-            result = run_method(action_id, params, context)
-        except Exception:
-            logger.exception(f"Plugin '{key}' action '{action_id}' failed")
-            raise
+            try:
+                result = run_method(action_id, params, context)
+            except Exception:
+                logger.exception(f"Plugin '{key}' action '{action_id}' failed")
+                raise
 
-        # Normalize return
-        if isinstance(result, dict):
-            return result
-        return {"status": "ok", "result": result}
+            if isinstance(result, dict):
+                return result
+            return {"status": "ok", "result": result}
+        finally:
+            # Return geventpool checkouts for this greenlet/thread after every action,
+            # including Connect event hooks and manual UI runs.
+            close_old_connections()
 
     def stop_plugin(self, key: str, reason: Optional[str] = None) -> bool:
-        lp = self.get_plugin(key)
-        if not lp or not lp.instance:
-            return False
         try:
-            cfg = PluginConfig.objects.get(key=key)
-        except PluginConfig.DoesNotExist:
-            return False
-        if not cfg.enabled:
-            return False
-
-        context = self._build_context(lp, cfg)
-        if reason:
-            context["reason"] = reason
-
-        stop_method = getattr(lp.instance, "stop", None)
-        if callable(stop_method):
+            lp = self.get_plugin(key)
+            if not lp or not lp.instance:
+                return False
             try:
-                stop_method(context)
-                return True
-            except TypeError:
+                cfg = PluginConfig.objects.get(key=key)
+            except PluginConfig.DoesNotExist:
+                return False
+            if not cfg.enabled:
+                return False
+
+            context = self._build_context(lp, cfg)
+            if reason:
+                context["reason"] = reason
+
+            stop_method = getattr(lp.instance, "stop", None)
+            if callable(stop_method):
                 try:
-                    stop_method()
+                    stop_method(context)
                     return True
+                except TypeError:
+                    try:
+                        stop_method()
+                        return True
+                    except Exception:
+                        logger.exception("Plugin '%s' stop() failed", key)
+                        return False
                 except Exception:
                     logger.exception("Plugin '%s' stop() failed", key)
                     return False
-            except Exception:
-                logger.exception("Plugin '%s' stop() failed", key)
-                return False
 
-        run_method = getattr(lp.instance, "run", None)
-        if callable(run_method):
-            actions = {a.get("id") for a in (lp.actions or []) if isinstance(a, dict)}
-            if "stop" in actions:
-                try:
-                    run_method("stop", {}, context)
-                    return True
-                except Exception:
-                    logger.exception("Plugin '%s' stop action failed", key)
-                    return False
-        return False
+            run_method = getattr(lp.instance, "run", None)
+            if callable(run_method):
+                actions = {a.get("id") for a in (lp.actions or []) if isinstance(a, dict)}
+                if "stop" in actions:
+                    try:
+                        run_method("stop", {}, context)
+                        return True
+                    except Exception:
+                        logger.exception("Plugin '%s' stop action failed", key)
+                        return False
+            return False
+        finally:
+            close_old_connections()
 
     def stop_all_plugins(self, reason: Optional[str] = None) -> int:
         stopped = 0

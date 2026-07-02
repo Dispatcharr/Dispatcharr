@@ -60,7 +60,8 @@ describe('ProxySettingsFormUtils', () => {
         buffering_speed: 1.0,
         redis_chunk_ttl: 60,
         channel_shutdown_delay: 0,
-        channel_init_grace_period: 5,
+        channel_init_grace_period: 60,
+        channel_client_wait_period: 5,
         new_client_behind_seconds: 5,
       });
     });
@@ -81,6 +82,7 @@ describe('ProxySettingsFormUtils', () => {
       expect(typeof result.redis_chunk_ttl).toBe('number');
       expect(typeof result.channel_shutdown_delay).toBe('number');
       expect(typeof result.channel_init_grace_period).toBe('number');
+      expect(typeof result.channel_client_wait_period).toBe('number');
       expect(typeof result.new_client_behind_seconds).toBe('number');
     });
   });

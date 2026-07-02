@@ -1,27 +1,5 @@
 import { format, getNowMs, toFriendlyDuration } from '../dateTimeUtils.js';
 
-export const formatDuration = (seconds) => {
-  if (!seconds) return 'Unknown';
-  const hours = Math.floor(seconds / 3600);
-  const minutes = Math.floor((seconds % 3600) / 60);
-  return hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
-};
-
-// Format time for display (e.g., "1:23:45" or "23:45")
-export const formatTime = (seconds) => {
-  if (!seconds || seconds === 0) return '0:00';
-
-  const hours = Math.floor(seconds / 3600);
-  const minutes = Math.floor((seconds % 3600) / 60);
-  const secs = seconds % 60;
-
-  if (hours > 0) {
-    return `${hours}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
-  } else {
-    return `${minutes}:${secs.toString().padStart(2, '0')}`;
-  }
-};
-
 export const getMovieDisplayTitle = (vodContent) => {
   return vodContent.content_name;
 };

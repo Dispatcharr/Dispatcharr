@@ -64,8 +64,6 @@ class EPGSourceViewSet(viewsets.ModelViewSet):
         from apps.channels.models import Channel
         return EPGSource.objects.select_related(
             "refresh_task__crontab", "refresh_task__interval"
-        ).defer(
-            'programme_index'
         ).annotate(
             has_channels=Exists(
                 Channel.objects.filter(epg_data__epg_source_id=OuterRef('pk'))
@@ -128,7 +126,7 @@ class EPGSourceViewSet(viewsets.ModelViewSet):
         import hashlib
         import requests as http_requests
         from apps.epg.tasks import SD_BASE_URL
-        from version import __version__ as dispatcharr_version
+        from core.utils import dispatcharr_http_headers
 
         username = (source.username or '').strip()
         password = (source.password or '').strip()
@@ -143,7 +141,7 @@ class EPGSourceViewSet(viewsets.ModelViewSet):
             auth_response = http_requests.post(
                 f"{SD_BASE_URL}/token",
                 json={'username': username, 'password': sha1_password},
-                headers={'Content-Type': 'application/json', 'User-Agent': f'Dispatcharr/{dispatcharr_version}'},
+                headers=dispatcharr_http_headers(),
                 timeout=15,
             )
             auth_response.raise_for_status()
@@ -227,6 +225,24 @@ class EPGSourceViewSet(viewsets.ModelViewSet):
             f"Lockout set until {reset_at.isoformat()}."
         )
 
+    def _fetch_sd_countries(self):
+        """Fetch the SD country list (token not required; User-Agent is)."""
+        import requests as http_requests
+        from apps.epg.tasks import SD_BASE_URL
+        from core.utils import dispatcharr_http_headers
+
+        try:
+            resp = http_requests.get(
+                f"{SD_BASE_URL}/available/countries",
+                headers=dispatcharr_http_headers(content_type=None),
+                timeout=15,
+            )
+            resp.raise_for_status()
+            return resp.json()
+        except http_requests.exceptions.RequestException as e:
+            logger.warning(f"Failed to fetch SD countries: {e}")
+            return None
+
     @action(detail=True, methods=["get", "post", "delete"], url_path="sd-lineups")
     def sd_lineups(self, request, pk=None):
         """
@@ -236,7 +252,7 @@ class EPGSourceViewSet(viewsets.ModelViewSet):
         """
         import requests as http_requests
         from apps.epg.tasks import SD_BASE_URL
-        from version import __version__ as dispatcharr_version
+        from core.utils import dispatcharr_http_headers
 
         source = self.get_object()
         if source.source_type != 'schedules_direct':
@@ -249,13 +265,10 @@ class EPGSourceViewSet(viewsets.ModelViewSet):
         if error:
             return error
 
-        headers = {
-            'Content-Type': 'application/json',
-            'User-Agent': f'Dispatcharr/{dispatcharr_version}',
-            'token': token,
-        }
+        headers = dispatcharr_http_headers(token=token)
 
         if request.method == "GET":
+            countries = self._fetch_sd_countries()
             try:
                 resp = http_requests.get(
                     f"{SD_BASE_URL}/lineups",
@@ -272,6 +285,7 @@ class EPGSourceViewSet(viewsets.ModelViewSet):
                             "changes_remaining": self._get_sd_changes_remaining(source),
                             "changes_reset_at": self._get_sd_reset_at(source),
                             "notice": "No lineups are currently configured on this Schedules Direct account. Use the search below to add one.",
+                            "countries": countries,
                         })
                 resp.raise_for_status()
                 data = resp.json()
@@ -281,6 +295,7 @@ class EPGSourceViewSet(viewsets.ModelViewSet):
                     "max_lineups": 4,
                     "changes_remaining": self._get_sd_changes_remaining(source),
                     "changes_reset_at": self._get_sd_reset_at(source),
+                    "countries": countries,
                 })
             except http_requests.exceptions.RequestException as e:
                 return Response(
@@ -399,7 +414,7 @@ class EPGSourceViewSet(viewsets.ModelViewSet):
         """
         import requests as http_requests
         from apps.epg.tasks import SD_BASE_URL
-        from version import __version__ as dispatcharr_version
+        from core.utils import dispatcharr_http_headers
 
         source = self.get_object()
         if source.source_type != 'schedules_direct':
@@ -420,11 +435,7 @@ class EPGSourceViewSet(viewsets.ModelViewSet):
         if error:
             return error
 
-        headers = {
-            'Content-Type': 'application/json',
-            'User-Agent': f'Dispatcharr/{dispatcharr_version}',
-            'token': token,
-        }
+        headers = dispatcharr_http_headers(token=token)
 
         try:
             resp = http_requests.get(
@@ -493,6 +504,7 @@ class ProgramViewSet(viewsets.ModelViewSet):
         """Proxy endpoint for SD program poster images. Nginx caches the response."""
         import requests as http_requests
         from apps.epg.tasks import SD_BASE_URL
+        from core.utils import dispatcharr_http_headers
 
         program = self.get_object()
         poster_sd_url = (program.custom_properties or {}).get('sd_icon')
@@ -516,14 +528,10 @@ class ProgramViewSet(viewsets.ModelViewSet):
         if not token:
             sha1_password = hashlib.sha1(source.password.encode('utf-8')).hexdigest()
             try:
-                from version import __version__ as dispatcharr_version
                 auth_resp = http_requests.post(
                     f"{SD_BASE_URL}/token",
                     json={'username': source.username, 'password': sha1_password},
-                    headers={
-                        'Content-Type': 'application/json',
-                        'User-Agent': f'Dispatcharr/{dispatcharr_version}',
-                    },
+                    headers=dispatcharr_http_headers(),
                     timeout=10,
                 )
                 auth_data = auth_resp.json()
@@ -549,7 +557,7 @@ class ProgramViewSet(viewsets.ModelViewSet):
         try:
             img_resp = http_requests.get(
                 poster_sd_url,
-                headers={'token': token},
+                headers=dispatcharr_http_headers(token=token, content_type=None),
                 timeout=15,
                 allow_redirects=True,
             )
@@ -976,7 +984,9 @@ class EPGGridAPIView(APIView):
                     channel_name=name_to_parse,
                     num_days=1,
                     program_length_hours=4,
-                    epg_source=epg_source
+                    epg_source=epg_source,
+                    export_lookback=one_hour_ago,
+                    export_cutoff=twenty_four_hours_later,
                 )
 
                 # Custom dummy should always return data (either from patterns or fallback)
@@ -1072,13 +1082,19 @@ class EPGGridAPIView(APIView):
                     f"Error creating standard dummy programs for channel {channel.name} (ID: {channel.id}): {str(e)}"
                 )
 
-        # Combine regular and dummy programs
-        all_programs = list(serialized_programs) + dummy_programs
+        # Combine regular and dummy programs in place to avoid copying the large list
+        serialized_programs.extend(dummy_programs)
         logger.debug(
-            f"EPGGridAPIView: Returning {len(all_programs)} total programs (including {len(dummy_programs)} dummy programs)."
+            f"EPGGridAPIView: Returning {len(serialized_programs)} total programs (including {len(dummy_programs)} dummy programs)."
         )
 
-        return Response({"data": all_programs}, status=status.HTTP_200_OK)
+        # The grid materializes tens of thousands of program dicts plus the
+        # rendered JSON; trim once the response is sent so worker RSS does not
+        # ratchet up per request.
+        from core.utils import spawn_memory_trim
+        response = Response({"data": serialized_programs}, status=status.HTTP_200_OK)
+        response._resource_closers.append(spawn_memory_trim)
+        return response
 
 
 # ─────────────────────────────
@@ -1109,18 +1125,24 @@ class EPGImportAPIView(APIView):
         epg_id = request.data.get("id", None)
         force = bool(request.data.get("force", False))
 
-        # Check if this is a dummy EPG source
-        try:
+        # Reject dummy sources with a narrow existence query, no full row load.
+        if epg_id is not None:
             from .models import EPGSource
-            epg_source = EPGSource.objects.get(id=epg_id)
-            if epg_source.source_type == 'dummy':
-                logger.info(f"EPGImportAPIView: Skipping refresh for dummy EPG source {epg_id}")
+
+            if EPGSource.objects.filter(
+                id=epg_id, source_type="dummy"
+            ).exists():
+                logger.info(
+                    "EPGImportAPIView: Skipping refresh for dummy EPG source %s",
+                    epg_id,
+                )
                 return Response(
-                    {"success": False, "message": "Dummy EPG sources do not require refreshing."},
+                    {
+                        "success": False,
+                        "message": "Dummy EPG sources do not require refreshing.",
+                    },
                     status=status.HTTP_400_BAD_REQUEST,
                 )
-        except EPGSource.DoesNotExist:
-            pass  # Let the task handle the missing source
 
         refresh_epg_data.delay(epg_id, force=force)  # Trigger Celery task
         logger.info("EPGImportAPIView: Task dispatched to refresh EPG data.")
@@ -1220,10 +1242,9 @@ class CurrentProgramsAPIView(APIView):
             # Limit to 50 IDs per request
             epg_data_ids = epg_data_ids[:50]
 
-            # Defer the multi-MB programme_index the JOIN would pull once per row. The lookup reads it via a targeted refresh_from_db
-            epg_data_entries = EPGData.objects.select_related('epg_source').defer(
-                'epg_source__programme_index'
-            ).filter(id__in=epg_data_ids)
+            epg_data_entries = EPGData.objects.select_related('epg_source').filter(
+                id__in=epg_data_ids
+            )
 
             # Batch-fetch current programs for all requested EPG entries in one query
             db_programs = ProgramData.objects.filter(

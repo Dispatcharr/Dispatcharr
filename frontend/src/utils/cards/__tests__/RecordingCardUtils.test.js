@@ -272,34 +272,36 @@ describe('RecordingCardUtils', () => {
 
   describe('getRecordingUrl', () => {
     it('returns file_url when available', () => {
-      const customProps = { file_url: '/recordings/file.mp4' };
+      const customProps = { file_url: '/api/channels/recordings/67/file/' };
       const result = getRecordingUrl(customProps, 'production');
 
-      expect(result).toBe('/recordings/file.mp4');
+      expect(result).toBe('/api/channels/recordings/67/file/');
     });
 
     it('returns output_file_url when file_url is not available', () => {
-      const customProps = { output_file_url: '/output/file.mp4' };
+      const customProps = { output_file_url: '/api/channels/recordings/1/file/' };
       const result = getRecordingUrl(customProps, 'production');
 
-      expect(result).toBe('/output/file.mp4');
+      expect(result).toBe('/api/channels/recordings/1/file/');
     });
 
     it('prefers file_url over output_file_url', () => {
       const customProps = {
-        file_url: '/recordings/file.mp4',
-        output_file_url: '/output/file.mp4',
+        file_url: '/api/channels/recordings/2/file/',
+        output_file_url: '/api/channels/recordings/3/file/',
       };
       const result = getRecordingUrl(customProps, 'production');
 
-      expect(result).toBe('/recordings/file.mp4');
+      expect(result).toBe('/api/channels/recordings/2/file/');
     });
 
     it('prepends dev server URL in dev mode for relative paths', () => {
-      const customProps = { file_url: '/recordings/file.mp4' };
+      const customProps = { file_url: '/api/channels/recordings/4/hls/index.m3u8' };
       const result = getRecordingUrl(customProps, 'dev');
 
-      expect(result).toMatch(/^https?:\/\/.*:5656\/recordings\/file\.mp4$/);
+      expect(result).toMatch(
+        /^https?:\/\/.*:5656\/api\/channels\/recordings\/4\/hls\/index\.m3u8$/
+      );
     });
 
     it('does not prepend dev URL for absolute URLs', () => {
