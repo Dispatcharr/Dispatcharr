@@ -327,6 +327,7 @@ const User = ({ user = null, isOpen, onClose }) => {
                   data={[
                     { value: 'mpegts', label: 'MPEG-TS' },
                     { value: 'fmp4', label: 'fMP4 (fragmented MP4)' },
+                    { value: 'hls', label: 'HLS' },
                   ]}
                   {...form.getInputProps('output_format')}
                   key={form.key('output_format')}
