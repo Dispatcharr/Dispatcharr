@@ -197,6 +197,7 @@ class EPGDataSerializer(serializers.ModelSerializer):
             'tvg_id',
             'name',
             'icon_url',
+            'lineup',
             'epg_source',
         ]
 
