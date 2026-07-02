@@ -32,6 +32,35 @@ if (typeof window !== 'undefined' && !window.ResizeObserver) {
   window.ResizeObserver = ResizeObserver;
 }
 
+if (
+  typeof window !== 'undefined' &&
+  typeof window.localStorage?.clear !== 'function'
+) {
+  let store = {};
+  const storage = {
+    getItem: (key) => store[key] ?? null,
+    setItem: (key, value) => {
+      store[key] = String(value);
+    },
+    removeItem: (key) => {
+      delete store[key];
+    },
+    clear: () => {
+      store = {};
+    },
+    get length() {
+      return Object.keys(store).length;
+    },
+    key: (i) => Object.keys(store)[i] ?? null,
+  };
+  Object.defineProperty(window, 'localStorage', {
+    configurable: true,
+    enumerable: true,
+    writable: true,
+    value: storage,
+  });
+}
+
 if (typeof window !== 'undefined') {
   if (!window.requestAnimationFrame) {
     window.requestAnimationFrame = (cb) => setTimeout(cb, 16);
