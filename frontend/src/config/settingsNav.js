@@ -30,6 +30,7 @@ export const SETTINGS_GROUPS = [
     adminOnly: true,
     sections: [
       { id: 'stream-settings', label: 'Stream Settings', icon: Video },
+      { id: 'proxy-settings', label: 'Proxy Settings', icon: ArrowLeftRight },
       { id: 'stream-profiles', label: 'Stream Profiles', icon: SlidersHorizontal },
       { id: 'output-profiles', label: 'Output Profiles', icon: FileOutput },
     ],
@@ -57,7 +58,6 @@ export const SETTINGS_GROUPS = [
     sections: [
       { id: 'user-agents', label: 'User-Agents', icon: Monitor },
       { id: 'network-access', label: 'Network Access', icon: Network },
-      { id: 'proxy-settings', label: 'Proxy Settings', icon: ArrowLeftRight },
     ],
   },
   {
