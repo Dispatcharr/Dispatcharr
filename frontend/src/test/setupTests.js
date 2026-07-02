@@ -32,33 +32,41 @@ if (typeof window !== 'undefined' && !window.ResizeObserver) {
   window.ResizeObserver = ResizeObserver;
 }
 
-if (
-  typeof window !== 'undefined' &&
-  typeof window.localStorage?.clear !== 'function'
-) {
-  let store = {};
-  const storage = {
-    getItem: (key) => store[key] ?? null,
-    setItem: (key, value) => {
-      store[key] = String(value);
-    },
-    removeItem: (key) => {
-      delete store[key];
-    },
-    clear: () => {
-      store = {};
-    },
-    get length() {
-      return Object.keys(store).length;
-    },
-    key: (i) => Object.keys(store)[i] ?? null,
-  };
-  Object.defineProperty(window, 'localStorage', {
-    configurable: true,
-    enumerable: true,
-    writable: true,
-    value: storage,
-  });
+// Node 25+ exposes a broken native localStorage stub on globalThis (missing
+// Storage methods) that shadows jsdom's implementation.
+if (typeof window !== 'undefined') {
+  const brokenTargets = [globalThis, window].filter(
+    (target) => typeof target?.localStorage?.getItem !== 'function'
+  );
+
+  if (brokenTargets.length > 0) {
+    let store = {};
+    const storage = {
+      getItem: (key) => store[key] ?? null,
+      setItem: (key, value) => {
+        store[key] = String(value);
+      },
+      removeItem: (key) => {
+        delete store[key];
+      },
+      clear: () => {
+        store = {};
+      },
+      get length() {
+        return Object.keys(store).length;
+      },
+      key: (i) => Object.keys(store)[i] ?? null,
+    };
+
+    for (const target of brokenTargets) {
+      Object.defineProperty(target, 'localStorage', {
+        configurable: true,
+        enumerable: true,
+        writable: true,
+        value: storage,
+      });
+    }
+  }
 }
 
 if (typeof window !== 'undefined') {
