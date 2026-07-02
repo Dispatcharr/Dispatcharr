@@ -1,15 +1,12 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useMemo, useState } from 'react';
 import API from '../../api';
 import useUserAgentsStore from '../../store/userAgents';
 import UserAgentForm from '../forms/UserAgent';
-import { TableHelper } from '../../helpers';
 import useSettingsStore from '../../store/settings';
-import { notifications } from '@mantine/notifications';
 import {
   ActionIcon,
   Center,
   Flex,
-  Select,
   Tooltip,
   Text,
   Paper,
@@ -20,8 +17,20 @@ import {
 import { SquareMinus, SquarePen, Check, X, SquarePlus } from 'lucide-react';
 import { CustomTable, useTable } from './CustomTable';
 import useLocalStorage from '../../hooks/useLocalStorage';
+import { showNotification } from '../../utils/notificationUtils.js';
 
-const RowActions = ({ row, editUserAgent, deleteUserAgent }) => {
+const deleteUserAgents = async (ids) => {
+  for (const id of ids) {
+    try {
+      await API.deleteUserAgent(id);
+    } catch {
+      /* empty */
+    }
+  }
+};
+const deleteUserAgent = (id) => API.deleteUserAgent(id);
+
+const RowActions = ({ row, editUserAgent, handleDeleteUserAgent }) => {
   return (
     <>
       <ActionIcon
@@ -38,7 +47,7 @@ const RowActions = ({ row, editUserAgent, deleteUserAgent }) => {
         variant="transparent"
         size="sm"
         color="red.9" // Red color for delete actions
-        onClick={() => deleteUserAgent(row.original.id)}
+        onClick={() => handleDeleteUserAgent(row.original.id)}
       >
         <SquareMinus size="18" /> {/* Small icon size */}
       </ActionIcon>
@@ -49,7 +58,6 @@ const RowActions = ({ row, editUserAgent, deleteUserAgent }) => {
 const UserAgentsTable = () => {
   const [userAgent, setUserAgent] = useState(null);
   const [userAgentModalOpen, setUserAgentModalOpen] = useState(false);
-  const [activeFilterValue, setActiveFilterValue] = useState('all');
 
   const userAgents = useUserAgentsStore((state) => state.userAgents);
   const settings = useSettingsStore((s) => s.settings);
@@ -117,35 +125,30 @@ const UserAgentsTable = () => {
     []
   );
 
-  const [isLoading, setIsLoading] = useState(true);
-  const [sorting, setSorting] = useState([]);
-
   const editUserAgent = async (userAgent = null) => {
     setUserAgent(userAgent);
     setUserAgentModalOpen(true);
   };
 
-  const deleteUserAgent = async (ids) => {
+  const handleDeleteUserAgent = async (ids) => {
     if (Array.isArray(ids)) {
       if (ids.includes(settings.default_user_agent)) {
-        notifications.show({
+        showNotification({
           title: 'Cannot delete default user-agent',
           color: 'red.5',
         });
         return;
       }
-
-      await API.deleteUserAgents(ids);
+      await deleteUserAgents(ids);
     } else {
       if (ids == settings.default_user_agent) {
-        notifications.show({
+        showNotification({
           title: 'Cannot delete default user-agent',
           color: 'red.5',
         });
         return;
       }
-
-      await API.deleteUserAgent(ids);
+      await deleteUserAgent(ids);
     }
   };
 
@@ -153,12 +156,6 @@ const UserAgentsTable = () => {
     setUserAgent(null);
     setUserAgentModalOpen(false);
   };
-
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      setIsLoading(false);
-    }
-  }, []);
 
   const renderHeaderCell = (header) => {
     switch (header.id) {
@@ -178,7 +175,7 @@ const UserAgentsTable = () => {
           <RowActions
             row={row}
             editUserAgent={editUserAgent}
-            deleteUserAgent={deleteUserAgent}
+            handleDeleteUserAgent={handleDeleteUserAgent}
           />
         );
     }

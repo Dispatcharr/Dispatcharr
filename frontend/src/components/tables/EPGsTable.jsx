@@ -1,46 +1,50 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
-import API from '../../api';
+import { useEffect, useMemo, useState } from 'react';
 import useEPGsStore from '../../store/epgs';
 import EPGForm from '../forms/EPG';
 import DummyEPGForm from '../forms/DummyEPG';
 import {
   ActionIcon,
-  Text,
-  Tooltip,
   Box,
-  Paper,
   Button,
   Flex,
-  useMantineTheme,
-  Switch,
+  Menu,
+  MenuDropdown,
+  MenuItem,
+  MenuTarget,
+  Paper,
   Progress,
   Stack,
-  Group,
-  Menu,
+  Switch,
+  Text,
+  Tooltip,
+  useMantineTheme,
 } from '@mantine/core';
-import { notifications } from '@mantine/notifications';
 import {
-  ArrowDownWideNarrow,
-  ArrowUpDown,
-  ArrowUpNarrowWide,
+  ChevronDown,
   RefreshCcw,
   SquareMinus,
   SquarePen,
   SquarePlus,
-  ChevronDown,
 } from 'lucide-react';
-import { format } from '../../utils/dateTimeUtils.js';
+import { format, useDateTimeFormat } from '../../utils/dateTimeUtils.js';
 import useLocalStorage from '../../hooks/useLocalStorage';
-import { useDateTimeFormat } from '../../utils/dateTimeUtils.js';
 import ConfirmationDialog from '../../components/ConfirmationDialog';
 import useWarningsStore from '../../store/warnings';
 import { CustomTable, useTable } from './CustomTable';
-
-// Helper function to format status text
-const formatStatusText = (status) => {
-  if (!status) return 'Unknown';
-  return status.charAt(0).toUpperCase() + status.slice(1).toLowerCase();
-};
+import { showNotification } from '../../utils/notificationUtils.js';
+import {
+  deleteEpg,
+  formatStatusText,
+  getProgressInfo,
+  getProgressLabel,
+  getSortedEpgs,
+  refreshEpg,
+  updateEpg,
+} from '../../utils/tables/EPGsTableUtils.js';
+import {
+  makeHeaderCellRenderer,
+  makeSortingChangeHandler,
+} from './M3uTableUtils.jsx';
 
 // Helper function to get status text color
 const getStatusColor = (status) => {
@@ -116,38 +120,10 @@ const EPGStatusCell = ({ epg }) => {
       progress.status === 'in_progress' ||
       (progress.action === 'parsing_channels' && epg.status === 'parsing'))
   ) {
-    let label = '';
-    switch (progress.action) {
-      case 'downloading':
-        label = 'Downloading';
-        break;
-      case 'extracting':
-        label = 'Extracting';
-        break;
-      case 'parsing_channels':
-        label = 'Parsing Channels';
-        break;
-      case 'parsing_programs':
-        label = 'Parsing Programs';
-        break;
-      default:
-        return null;
-    }
+    const label = getProgressLabel(progress.action);
+    if (!label) return null;
 
-    let additionalInfo = '';
-    if (progress.message) {
-      additionalInfo = progress.message;
-    } else if (
-      progress.processed !== undefined &&
-      progress.channels !== undefined
-    ) {
-      additionalInfo = `${progress.processed.toLocaleString()} programs for ${progress.channels} channels`;
-    } else if (
-      progress.processed !== undefined &&
-      progress.total !== undefined
-    ) {
-      additionalInfo = `${progress.processed.toLocaleString()} / ${progress.total.toLocaleString()}`;
-    }
+    const additionalInfo = getProgressInfo(progress);
 
     return (
       <Stack spacing={2}>
@@ -225,7 +201,6 @@ const EPGsTable = () => {
   const [epg, setEPG] = useState(null);
   const [epgModalOpen, setEPGModalOpen] = useState(false);
   const [dummyEpgModalOpen, setDummyEpgModalOpen] = useState(false);
-  const [rowSelection, setRowSelection] = useState([]);
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [epgToDelete, setEpgToDelete] = useState(null);
@@ -251,11 +226,11 @@ const EPGsTable = () => {
       }
 
       // Send only the is_active field to trigger our special handling
-      await API.updateEPG(
+      await updateEpg(
         {
-          id: epg.id,
           is_active: !epg.is_active,
         },
+        epg,
         true
       ); // Add a new parameter to indicate this is just a toggle
     } catch (error) {
@@ -395,7 +370,6 @@ const EPGsTable = () => {
     [fullDateTimeFormat]
   );
 
-  const [isLoading, setIsLoading] = useState(true);
   const [sorting, setSorting] = useState([]);
 
   const editEPG = async (epg = null) => {
@@ -436,7 +410,7 @@ const EPGsTable = () => {
   const executeDeleteEPG = async (id) => {
     setDeleting(true);
     try {
-      await API.deleteEPG(id);
+      await deleteEpg(id);
     } finally {
       setDeleting(false);
       setConfirmDeleteOpen(false);
@@ -444,8 +418,8 @@ const EPGsTable = () => {
   };
 
   const refreshEPG = async (id, force = false) => {
-    await API.refreshEPG(id, force);
-    notifications.show({
+    await refreshEpg(id, force);
+    showNotification({
       title: 'EPG refresh initiated',
     });
   };
@@ -502,74 +476,11 @@ const EPGsTable = () => {
     }
   };
 
-  const renderHeaderCell = (header) => {
-    let sortingIcon = ArrowUpDown;
-    if (sorting[0]?.id == header.id) {
-      if (sorting[0].desc === false) {
-        sortingIcon = ArrowUpNarrowWide;
-      } else {
-        sortingIcon = ArrowDownWideNarrow;
-      }
-    }
+  const onSortingChange = makeSortingChangeHandler(sorting, setSorting, (col, desc) =>
+    setData(getSortedEpgs(epgs, col, desc))
+  );
 
-    switch (header.id) {
-      default:
-        return (
-          <Group>
-            <Text size="sm" name={header.id}>
-              {header.column.columnDef.header}
-            </Text>
-            {header.column.columnDef.sortable && (
-              <Center>
-                {React.createElement(sortingIcon, {
-                  onClick: () => onSortingChange(header.id),
-                  size: 14,
-                })}
-              </Center>
-            )}
-          </Group>
-        );
-    }
-  };
-
-  const onSortingChange = (column) => {
-    console.log(column);
-    const sortField = sorting[0]?.id;
-    const sortDirection = sorting[0]?.desc;
-
-    const newSorting = [];
-    if (sortField == column) {
-      if (sortDirection == false) {
-        newSorting[0] = {
-          id: column,
-          desc: true,
-        };
-      }
-    } else {
-      newSorting[0] = {
-        id: column,
-        desc: false,
-      };
-    }
-
-    setSorting(newSorting);
-    if (newSorting.length > 0) {
-      const compareColumn = newSorting[0].id;
-      const compareDesc = newSorting[0].desc;
-
-      setData(
-        epgs.sort((a, b) => {
-          console.log(a);
-          console.log(newSorting[0].id);
-          if (a[compareColumn] !== b[compareColumn]) {
-            return compareDesc ? 1 : -1;
-          }
-
-          return 0;
-        })
-      );
-    }
-  };
+  const renderHeaderCell = makeHeaderCellRenderer(sorting, onSortingChange);
 
   const table = useTable({
     columns,
@@ -578,7 +489,6 @@ const EPGsTable = () => {
     enablePagination: false,
     enableRowSelection: false,
     renderTopToolbar: false,
-    onRowSelectionChange: setRowSelection,
     manualSorting: true,
     bodyCellRenderFns: {
       actions: renderBodyCell,
@@ -632,7 +542,7 @@ const EPGsTable = () => {
           EPGs
         </Text>
         <Menu shadow="md" width={200}>
-          <Menu.Target>
+          <MenuTarget>
             <Button
               leftSection={<SquarePlus size={18} />}
               rightSection={<ChevronDown size={16} />}
@@ -648,13 +558,11 @@ const EPGsTable = () => {
             >
               Add EPG
             </Button>
-          </Menu.Target>
-          <Menu.Dropdown>
-            <Menu.Item onClick={createStandardEPG}>
-              Standard EPG Source
-            </Menu.Item>
-            <Menu.Item onClick={createDummyEPG}>Dummy EPG Source</Menu.Item>
-          </Menu.Dropdown>
+          </MenuTarget>
+          <MenuDropdown>
+            <MenuItem onClick={createStandardEPG}>Standard EPG Source</MenuItem>
+            <MenuItem onClick={createDummyEPG}>Dummy EPG Source</MenuItem>
+          </MenuDropdown>
         </Menu>
       </Flex>
 
@@ -668,11 +576,8 @@ const EPGsTable = () => {
         <Box
           style={{
             display: 'flex',
-            // alignItems: 'center',
-            // backgroundColor: theme.palette.background.paper,
             justifyContent: 'flex-end',
             padding: 0,
-            // gap: 1,
           }}
         ></Box>
       </Paper>

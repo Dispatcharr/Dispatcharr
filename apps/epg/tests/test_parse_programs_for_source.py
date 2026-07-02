@@ -13,6 +13,8 @@ from apps.epg.tasks import (
     parse_programs_for_source,
     _flush_epg_program_staging_batch,
     _swap_staged_epg_programs,
+    _delete_orphaned_epg_programs,
+    _dispatch_late_mapped_epg_parses,
     _EPG_PARSE_BATCH_SIZE,
 )
 
@@ -236,3 +238,37 @@ class ParseProgramsForSourceTests(TestCase):
 
         self.assertFalse(result)
         self.assertEqual(ProgramData.objects.get(epg=self.mapped_epg).title, 'Keep Me')
+
+    def test_orphan_cleanup_respects_channels_mapped_during_bulk_parse(self):
+        late_start = self.base_time - timedelta(days=1)
+        ProgramData.objects.create(
+            epg=self.unmapped_epg,
+            start_time=late_start,
+            end_time=late_start + timedelta(hours=1),
+            title='Late Match Programme',
+            tvg_id=self.unmapped_epg.tvg_id,
+        )
+        Channel.objects.create(
+            channel_number=2,
+            name='Late Mapped Channel',
+            epg_data=self.unmapped_epg,
+        )
+
+        deleted = _delete_orphaned_epg_programs(self.source)
+
+        self.assertEqual(deleted, 0)
+        self.assertEqual(ProgramData.objects.filter(epg=self.unmapped_epg).count(), 1)
+
+    @patch('apps.epg.tasks.dispatch_program_refresh_for_epg_ids', return_value=1)
+    def test_late_mapped_dispatches_per_channel_parse(self, mock_dispatch):
+        Channel.objects.create(
+            channel_number=2,
+            name='Late Mapped Channel',
+            epg_data=self.unmapped_epg,
+        )
+        bulk_snapshot = {self.mapped_epg.id}
+
+        dispatched = _dispatch_late_mapped_epg_parses(self.source, bulk_snapshot)
+
+        self.assertEqual(dispatched, 1)
+        mock_dispatch.assert_called_once_with({self.unmapped_epg.id})

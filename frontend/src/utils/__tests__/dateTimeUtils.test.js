@@ -73,11 +73,21 @@ describe('dateTimeUtils', () => {
 
     it('should handle strict parsing', () => {
       // With strict=true, a date that doesn't match the format should be invalid
-      const invalid = dateTimeUtils.initializeTime('15-01-2024', 'YYYY-MM-DD', null, true);
+      const invalid = dateTimeUtils.initializeTime(
+        '15-01-2024',
+        'YYYY-MM-DD',
+        null,
+        true
+      );
       expect(invalid.isValid()).toBe(false);
 
       // With strict=true and a matching format, it should be valid
-      const valid = dateTimeUtils.initializeTime('2024-01-15', 'YYYY-MM-DD', null, true);
+      const valid = dateTimeUtils.initializeTime(
+        '2024-01-15',
+        'YYYY-MM-DD',
+        null,
+        true
+      );
       expect(valid.isValid()).toBe(true);
     });
   });
@@ -785,6 +795,143 @@ describe('dateTimeUtils', () => {
     it('should return 0 for a date with no milliseconds', () => {
       const date = dayjs.utc('2024-01-15T14:00:00.000Z');
       expect(dateTimeUtils.getMillisecond(date)).toBe(0);
+    });
+  });
+
+  describe('formatDuration', () => {
+    describe('default precision (hms)', () => {
+      it('should return "0:00" for 0 seconds', () => {
+        expect(dateTimeUtils.formatDuration(0)).toBe('0:00');
+      });
+
+      it('should return "0:00" for falsy input', () => {
+        expect(dateTimeUtils.formatDuration(null)).toBe('0:00');
+        expect(dateTimeUtils.formatDuration(undefined)).toBe('0:00');
+      });
+
+      it('should return custom zeroValue when seconds is 0', () => {
+        expect(dateTimeUtils.formatDuration(0, { zeroValue: 'N/A' })).toBe(
+          'N/A'
+        );
+      });
+
+      it('should format seconds under 1 minute without hours', () => {
+        expect(dateTimeUtils.formatDuration(45)).toBe('0:45');
+      });
+
+      it('should format minutes and seconds without hours when under 1 hour', () => {
+        expect(dateTimeUtils.formatDuration(90)).toBe('1:30');
+      });
+
+      it('should format minutes with padded seconds', () => {
+        expect(dateTimeUtils.formatDuration(65)).toBe('1:05');
+      });
+
+      it('should format hours when >= 1 hour', () => {
+        expect(dateTimeUtils.formatDuration(3661)).toBe('01:01:01');
+      });
+
+      it('should pad all segments when hours are present', () => {
+        expect(dateTimeUtils.formatDuration(3600 + 60 + 5)).toBe('01:01:05');
+      });
+
+      it('should handle exactly 1 hour', () => {
+        expect(dateTimeUtils.formatDuration(3600)).toBe('01:00:00');
+      });
+
+      it('should handle negative seconds by taking absolute value', () => {
+        expect(dateTimeUtils.formatDuration(-90)).toBe('1:30');
+      });
+
+      it('should show hours when alwaysShowHours is true even under 1 hour', () => {
+        expect(
+          dateTimeUtils.formatDuration(90, { alwaysShowHours: true })
+        ).toBe('00:01:30');
+      });
+
+      it('should show hours when alwaysShowHours is true for 0 minutes', () => {
+        expect(
+          dateTimeUtils.formatDuration(45, { alwaysShowHours: true })
+        ).toBe('00:00:45');
+      });
+    });
+
+    describe('precision: hm', () => {
+      it('should return minutes only when under 1 hour and no alwaysShowHours', () => {
+        expect(dateTimeUtils.formatDuration(90, { precision: 'hm' })).toBe('1');
+      });
+
+      it('should return HH:MM when >= 1 hour', () => {
+        expect(dateTimeUtils.formatDuration(3661, { precision: 'hm' })).toBe(
+          '01:01'
+        );
+      });
+
+      it('should return HH:MM when alwaysShowHours is true', () => {
+        expect(
+          dateTimeUtils.formatDuration(90, {
+            precision: 'hm',
+            alwaysShowHours: true,
+          })
+        ).toBe('00:01');
+      });
+
+      it('should return "0:00" for 0 seconds', () => {
+        expect(dateTimeUtils.formatDuration(0, { precision: 'hm' })).toBe(
+          '0:00'
+        );
+      });
+    });
+
+    describe('precision: human', () => {
+      it('should format sub-hour content as minutes with suffix', () => {
+        expect(dateTimeUtils.formatDuration(2700, { precision: 'human' })).toBe(
+          '45m'
+        );
+      });
+
+      it('should floor partial minutes for short content', () => {
+        expect(dateTimeUtils.formatDuration(90, { precision: 'human' })).toBe(
+          '1m'
+        );
+      });
+
+      it('should format hour-plus content as hours and minutes', () => {
+        expect(dateTimeUtils.formatDuration(5400, { precision: 'human' })).toBe(
+          '1h 30m'
+        );
+      });
+
+      it('should return custom zeroValue when seconds is 0', () => {
+        expect(
+          dateTimeUtils.formatDuration(0, {
+            precision: 'human',
+            zeroValue: 'Unknown',
+          })
+        ).toBe('Unknown');
+      });
+    });
+
+    describe('precision: m', () => {
+      it('should return total minutes as integer', () => {
+        expect(dateTimeUtils.formatDuration(90, { precision: 'm' })).toBe('1');
+      });
+
+      it('should return total minutes across hours', () => {
+        expect(dateTimeUtils.formatDuration(3661, { precision: 'm' })).toBe(
+          '61'
+        );
+      });
+
+      it('should truncate partial minutes', () => {
+        expect(dateTimeUtils.formatDuration(89, { precision: 'm' })).toBe('1');
+      });
+
+      it('should return "0:00" for 0 seconds', () => {
+        expect(dateTimeUtils.formatDuration(0, { precision: 'm' })).toBe(
+          '0:00'
+        );
+      });
     });
   });
 });

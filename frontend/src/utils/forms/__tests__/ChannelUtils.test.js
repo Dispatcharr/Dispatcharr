@@ -114,13 +114,20 @@ describe('ChannelUtils', () => {
 
   describe('requeryChannels', () => {
     it('calls API.requeryChannels', () => {
+      vi.mocked(API.requeryChannels).mockResolvedValue(undefined);
       requeryChannels();
       expect(API.requeryChannels).toHaveBeenCalledTimes(1);
     });
 
-    it('returns undefined', () => {
-      const result = requeryChannels();
-      expect(result).toBeUndefined();
+    it('returns the promise from API.requeryChannels', async () => {
+      const response = { results: [{ id: 1 }] };
+      vi.mocked(API.requeryChannels).mockResolvedValue(response);
+      await expect(requeryChannels()).resolves.toBe(response);
+    });
+
+    it('propagates rejection from API.requeryChannels', async () => {
+      vi.mocked(API.requeryChannels).mockRejectedValue(new Error('network'));
+      await expect(requeryChannels()).rejects.toThrow('network');
     });
   });
 

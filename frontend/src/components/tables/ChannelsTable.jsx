@@ -1,71 +1,59 @@
-import React, {
-  useEffect,
-  useMemo,
-  useState,
-  useCallback,
-  useRef,
-} from 'react';
-import {
-  DndContext,
-  closestCenter,
-  PointerSensor,
-  useSensor,
-  useSensors,
-} from '@dnd-kit/core';
-import {
-  SortableContext,
-  verticalListSortingStrategy,
-} from '@dnd-kit/sortable';
+import React, { useCallback, useEffect, useMemo, useRef, useState, } from 'react';
+import { closestCenter, DndContext, PointerSensor, useSensor, useSensors, } from '@dnd-kit/core';
+import { SortableContext, verticalListSortingStrategy, } from '@dnd-kit/sortable';
 import useChannelsStore from '../../store/channels';
-import API from '../../api';
 import ChannelForm from '../forms/Channel';
 import ChannelBatchForm from '../forms/ChannelBatch';
 import RecordingForm from '../forms/Recording';
-import { useDebounce, copyToClipboard } from '../../utils';
+import { copyToClipboard, useDebounce } from '../../utils';
 import useVideoStore from '../../store/useVideoStore';
 import useSettingsStore from '../../store/settings';
 import {
-  Tv2,
-  ScreenShare,
-  Scroll,
-  SquareMinus,
-  CirclePlay,
-  SquarePen,
-  Copy,
-  ScanEye,
-  EllipsisVertical,
-  ArrowUpNarrowWide,
-  ArrowUpDown,
   ArrowDownWideNarrow,
-  Search,
+  ArrowUpDown,
+  ArrowUpNarrowWide,
+  CirclePlay,
+  Copy,
+  EllipsisVertical,
   EyeOff,
   Pencil,
+  ScanEye,
+  ScreenShare,
+  Scroll,
+  Search,
+  SquareMinus,
+  SquarePen,
+  Tv2,
 } from 'lucide-react';
-import { listOverriddenFields } from '../../utils/forms/ChannelUtils.js';
+import { listOverriddenFields, requeryChannels, } from '../../utils/forms/ChannelUtils.js';
 import { buildLiveStreamUrl } from '../../utils/components/FloatingVideoUtils.js';
 import {
-  Box,
-  TextInput,
-  Popover,
   ActionIcon,
+  Box,
   Button,
-  Paper,
-  Flex,
-  Text,
-  Group,
-  useMantineTheme,
   Center,
-  Switch,
+  Flex,
+  Group,
   Menu,
+  MenuDropdown,
+  MenuItem,
+  MenuTarget,
   MultiSelect,
-  Pagination,
   NativeSelect,
-  UnstyledButton,
-  Stack,
-  Select,
   NumberInput,
+  Pagination,
+  Paper,
+  Popover,
+  PopoverDropdown,
+  PopoverTarget,
+  Select,
+  Stack,
+  Switch,
+  Text,
+  TextInput,
   Tooltip,
-  Skeleton,
+  UnstyledButton,
+  useMantineTheme,
 } from '@mantine/core';
 import './table.css';
 import useChannelsTableStore from '../../store/channelsTable';
@@ -79,21 +67,33 @@ import ChannelsTableOnboarding from './ChannelsTable/ChannelsTableOnboarding';
 import ChannelTableHeader from './ChannelsTable/ChannelTableHeader';
 import useOutputProfilesStore from '../../store/outputProfiles';
 import {
-  EditableTextCell,
-  EditableNumberCell,
-  EditableGroupCell,
   EditableEPGCell,
+  EditableGroupCell,
   EditableLogoCell,
+  EditableNumberCell,
+  EditableTextCell,
 } from './ChannelsTable/EditableCell';
-import { DraggableRow } from './ChannelsTable/DraggableRow';
 import useWarningsStore from '../../store/warnings';
 import ConfirmationDialog from '../ConfirmationDialog';
 import useAuthStore from '../../store/auth';
 import { USER_LEVELS } from '../../constants';
-
-const m3uUrlBase = `${window.location.protocol}//${window.location.host}/output/m3u`;
-const epgUrlBase = `${window.location.protocol}//${window.location.host}/output/epg`;
-const hdhrUrlBase = `${window.location.protocol}//${window.location.host}/hdhr`;
+import { getShowVideoUrl } from '../../utils/cards/RecordingCardUtils.js';
+import {
+  buildEPGUrl,
+  buildFetchParams,
+  buildHDHRUrl,
+  buildM3UUrl,
+  deleteChannel,
+  deleteChannels,
+  epgUrlBase,
+  getAllChannelIds,
+  hdhrUrlBase,
+  m3uUrlBase,
+  queryChannels,
+  reorderChannel,
+  updateProfileChannel,
+  updateProfileChannels,
+} from '../../utils/tables/ChannelsTableUtils.js';
 
 const ChannelEnabledSwitch = React.memo(
   ({ rowId, selectedProfileId, selectedTableIds }) => {
@@ -109,13 +109,13 @@ const ChannelEnabledSwitch = React.memo(
 
     const handleToggle = () => {
       if (selectedTableIds.length > 1) {
-        API.updateProfileChannels(
+        updateProfileChannels(
           selectedTableIds,
           selectedProfileId,
           !isEnabled
         );
       } else {
-        API.updateProfileChannel(rowId, selectedProfileId, !isEnabled);
+        updateProfileChannel(rowId, selectedProfileId, !isEnabled);
       }
     };
 
@@ -208,22 +208,22 @@ const ChannelRowActions = React.memo(
           </ActionIcon>
 
           <Menu>
-            <Menu.Target>
+            <MenuTarget>
               <ActionIcon variant="transparent" size={iconSize}>
                 <EllipsisVertical size="18" />
               </ActionIcon>
-            </Menu.Target>
+            </MenuTarget>
 
-            <Menu.Dropdown>
-              <Menu.Item leftSection={<Copy size="14" />}>
+            <MenuDropdown>
+              <MenuItem leftSection={<Copy size="14" />}>
                 <UnstyledButton
                   size="xs"
                   onClick={() => copyToClipboard(getChannelURL(row.original))}
                 >
                   <Text size="xs">Copy URL</Text>
                 </UnstyledButton>
-              </Menu.Item>
-              <Menu.Item
+              </MenuItem>
+              <MenuItem
                 onClick={onRecord}
                 disabled={authUser.user_level != USER_LEVELS.ADMIN}
                 leftSection={
@@ -239,8 +239,8 @@ const ChannelRowActions = React.memo(
                 }
               >
                 <Text size="xs">Record</Text>
-              </Menu.Item>
-            </Menu.Dropdown>
+              </MenuItem>
+            </MenuDropdown>
           </Menu>
         </Center>
       </Box>
@@ -421,130 +421,47 @@ const ChannelsTable = ({ onReady }) => {
   /**
    * Functions
    */
+  const handleFetchSuccess = useCallback((ids) => {
+    setTablePrefs((prev) => ({ ...prev, pageSize: pagination.pageSize }));
+    setAllRowIds(ids);
+    hasFetchedData.current = true;
+    if (!hasSignaledReady.current && onReady && tvgsLoaded) {
+      hasSignaledReady.current = true;
+      onReady();
+    }
+  }, [pagination.pageSize, setTablePrefs, setAllRowIds, onReady, tvgsLoaded]);
+
   const fetchData = useCallback(async () => {
-    // Build params first to check for duplicates
-    const params = new URLSearchParams();
-    params.append('page', pagination.pageIndex + 1);
-    params.append('page_size', pagination.pageSize);
-    params.append('include_streams', 'true');
-    if (selectedProfileId !== '0') {
-      params.append('channel_profile_id', selectedProfileId);
-    }
-    if (showDisabled === true) {
-      params.append('show_disabled', true);
-    }
-    if (showOnlyStreamlessChannels === true) {
-      params.append('only_streamless', true);
-    }
-    if (showOnlyStaleChannels === true) {
-      params.append('only_stale', true);
-    }
-    if (showOnlyOverriddenChannels === true) {
-      params.append('only_has_overrides', true);
-    }
-    // The backend defaults to "active"; send other choices explicitly so
-    // hidden rows surface when the user opts into "Hidden Only" or "Show All".
-    if (visibilityFilter && visibilityFilter !== 'active') {
-      params.append('visibility_filter', visibilityFilter);
-    }
-
-    // Apply sorting
-    if (sorting.length > 0) {
-      let sortField = sorting[0].id;
-      // Map frontend column ids to backend ordering field names
-      const fieldMapping = {
-        channel_group: 'channel_group__name',
-        epg: 'epg_data__name',
-      };
-      if (fieldMapping[sortField]) {
-        sortField = fieldMapping[sortField];
-      }
-      const sortDirection = sorting[0].desc ? '-' : '';
-      params.append('ordering', `${sortDirection}${sortField}`);
-    }
-
-    // Apply debounced filters
-    Object.entries(debouncedFilters).forEach(([key, value]) => {
-      if (value) {
-        if (Array.isArray(value)) {
-          // Convert null values to "null" string for URL parameter
-          const processedValue = value
-            .map((v) => (v === null ? 'null' : v))
-            .join(',');
-          params.append(key, processedValue);
-        } else {
-          params.append(key, value);
-        }
-      }
+    const params = buildFetchParams({
+      pagination, sorting, debouncedFilters, selectedProfileId,
+      showDisabled, showOnlyStreamlessChannels, showOnlyStaleChannels,
+      showOnlyOverriddenChannels, visibilityFilter,
     });
-
     const paramsString = params.toString();
 
-    // Skip if same fetch is already in progress (prevents StrictMode double-fetch)
-    if (
-      fetchInProgressRef.current &&
-      lastFetchParamsRef.current === paramsString
-    ) {
-      return;
-    }
+    if (fetchInProgressRef.current && lastFetchParamsRef.current === paramsString) return;
 
-    // Increment fetch version to track this specific fetch request
     const currentFetchVersion = ++fetchVersionRef.current;
     lastFetchParamsRef.current = paramsString;
     fetchInProgressRef.current = true;
-
     setIsLoading(true);
 
     try {
-      const [, ids] = await Promise.all([
-        API.queryChannels(params),
-        API.getAllChannelIds(params),
-      ]);
-
+      const [, ids] = await Promise.all([queryChannels(params), getAllChannelIds(params)]);
       fetchInProgressRef.current = false;
-
-      // Skip state updates if a newer fetch has been initiated
-      if (currentFetchVersion !== fetchVersionRef.current) {
-        return;
-      }
-
+      if (currentFetchVersion !== fetchVersionRef.current) return;
       setIsLoading(false);
-      hasFetchedData.current = true;
-
-      setTablePrefs((prev) => ({
-        ...prev,
-        pageSize: pagination.pageSize,
-      }));
-      setAllRowIds(ids);
-
-      // Signal ready after first successful data fetch AND EPG data is loaded
-      // This prevents the EPG column from showing "Not Assigned" while EPG data is still loading
-      if (!hasSignaledReady.current && onReady && tvgsLoaded) {
-        hasSignaledReady.current = true;
-        onReady();
-      }
+      handleFetchSuccess(ids);
     } catch (error) {
       fetchInProgressRef.current = false;
-
-      // Skip state updates if a newer fetch has been initiated
-      if (currentFetchVersion !== fetchVersionRef.current) {
-        return;
-      }
+      if (currentFetchVersion !== fetchVersionRef.current) return;
       setIsLoading(false);
-      // API layer handles "Invalid page" errors by resetting and retrying
-      // Just re-throw to show notification for actual errors
       throw error;
     }
   }, [
-    pagination,
-    sorting,
-    debouncedFilters,
-    showDisabled,
-    selectedProfileId,
-    showOnlyStreamlessChannels,
-    showOnlyStaleChannels,
-    showOnlyOverriddenChannels,
-    visibilityFilter,
+    pagination, sorting, debouncedFilters, selectedProfileId,
+    showDisabled, showOnlyStreamlessChannels, showOnlyStaleChannels,
+    showOnlyOverriddenChannels, visibilityFilter, handleFetchSuccess,
   ]);
 
   const stopPropagation = useCallback((e) => {
@@ -604,7 +521,7 @@ const ChannelsTable = ({ onReady }) => {
     }
   }, []);
 
-  const deleteChannel = async (id) => {
+  const handleDeleteChannel = async (id) => {
     console.log(`Deleting channel with ID: ${id}`);
 
     const rows = table.getRowModel().rows;
@@ -642,15 +559,15 @@ const ChannelsTable = ({ onReady }) => {
   const executeDeleteChannel = async (id) => {
     setDeleting(true);
     try {
-      await API.deleteChannel(id);
-      API.requeryChannels();
+      await deleteChannel(id);
+      requeryChannels();
     } finally {
       setDeleting(false);
       setConfirmDeleteOpen(false);
     }
   };
 
-  const deleteChannels = async () => {
+  const handleDeleteChannels = async () => {
     if (isWarningSuppressed('delete-channels')) {
       // Skip warning if suppressed
       return executeDeleteChannels();
@@ -664,8 +581,8 @@ const ChannelsTable = ({ onReady }) => {
     setIsLoading(true);
     setDeleting(true);
     try {
-      await API.deleteChannels(table.selectedTableIds);
-      await API.requeryChannels();
+      await deleteChannels(table.selectedTableIds);
+      await requeryChannels();
       setSelectedChannelIds([]);
       table.setSelectedTableIds([]);
     } finally {
@@ -688,9 +605,9 @@ const ChannelsTable = ({ onReady }) => {
         return '';
       }
 
-      const path = `/proxy/ts/stream/${channel.uuid}`;
+      const path = getShowVideoUrl(channel, env_mode);
       if (env_mode == 'dev') {
-        return `${window.location.protocol}//${window.location.hostname}:5656${path}`;
+        return path;
       }
       return `${window.location.protocol}//${window.location.host}${path}`;
     },
@@ -754,51 +671,23 @@ const ChannelsTable = ({ onReady }) => {
     setRecordingModalOpen(false);
   };
 
-  // Build URLs with parameters
-  const buildM3UUrl = () => {
-    const params = new URLSearchParams();
-    if (!m3uParams.cachedlogos) params.append('cachedlogos', 'false');
-    if (m3uParams.direct) params.append('direct', 'true');
-    if (m3uParams.tvg_id_source !== 'channel_number')
-      params.append('tvg_id_source', m3uParams.tvg_id_source);
-    if (m3uParams.output_format)
-      params.append('output_format', m3uParams.output_format);
-    if (m3uParams.output_profile)
-      params.append('output_profile', m3uParams.output_profile);
-
-    const baseUrl = m3uUrl;
-    return params.toString() ? `${baseUrl}?${params.toString()}` : baseUrl;
-  };
-
-  const buildEPGUrl = () => {
-    const params = new URLSearchParams();
-    if (!epgParams.cachedlogos) params.append('cachedlogos', 'false');
-    if (epgParams.tvg_id_source !== 'channel_number')
-      params.append('tvg_id_source', epgParams.tvg_id_source);
-    if (epgParams.days > 0) params.append('days', epgParams.days.toString());
-    if (epgParams.prev_days > 0)
-      params.append('prev_days', epgParams.prev_days.toString());
-
-    const baseUrl = epgUrl;
-    return params.toString() ? `${baseUrl}?${params.toString()}` : baseUrl;
-  };
   // Example copy URLs
   const copyM3UUrl = async () => {
-    await copyToClipboard(buildM3UUrl(), {
+    await copyToClipboard(buildM3UUrl(m3uParams, m3uUrl), {
       successTitle: 'M3U URL Copied!',
       successMessage: 'The M3U URL has been copied to your clipboard.',
     });
   };
 
   const copyEPGUrl = async () => {
-    await copyToClipboard(buildEPGUrl(), {
+    await copyToClipboard(buildEPGUrl(epgParams, epgUrl), {
       successTitle: 'EPG URL Copied!',
       successMessage: 'The EPG URL has been copied to your clipboard.',
     });
   };
 
   const copyHDHRUrl = async () => {
-    await copyToClipboard(buildHDHRUrl(), {
+    await copyToClipboard(buildHDHRUrl(hdhrOutputProfileId, hdhrUrl), {
       successTitle: 'HDHR URL Copied!',
       successMessage: 'The HDHR URL has been copied to your clipboard.',
     });
@@ -854,7 +743,7 @@ const ChannelsTable = ({ onReady }) => {
       useChannelsTableStore.setState({ channels: reorderedData });
 
       // Call backend to reorder
-      await API.reorderChannel(
+      await reorderChannel(
         activeChannel.id,
         overIndex > activeIndex
           ? overChannel.id
@@ -862,11 +751,11 @@ const ChannelsTable = ({ onReady }) => {
       );
 
       // Refetch to get updated channel numbers
-      await API.requeryChannels();
+      await requeryChannels();
     } catch (error) {
       // Revert on error
       console.error('Failed to reorder channel:', error);
-      await API.requeryChannels();
+      await requeryChannels();
     }
   };
 
@@ -884,13 +773,6 @@ const ChannelsTable = ({ onReady }) => {
     setEPGUrl(`${epgUrlBase}${profileString}`);
     setM3UUrl(`${m3uUrlBase}${profileString}`);
   }, [selectedProfileId, profiles]);
-
-  const buildHDHRUrl = () => {
-    if (!hdhrOutputProfileId) return hdhrUrl;
-    // Insert output_profile segment before the trailing slash (or at end)
-    const base = hdhrUrl.replace(/\/$/, '');
-    return `${base}/output_profile/${hdhrOutputProfileId}`;
-  };
 
   useEffect(() => {
     const startItem = pagination.pageIndex * pagination.pageSize + 1; // +1 to start from 1, not 0
@@ -1053,7 +935,7 @@ const ChannelsTable = ({ onReady }) => {
             row={row}
             table={table}
             editChannel={editChannel}
-            deleteChannel={deleteChannel}
+            deleteChannel={handleDeleteChannel}
             handleWatchStream={handleWatchStream}
             createRecording={createRecording}
             getChannelURL={getChannelURL}
@@ -1298,7 +1180,7 @@ const ChannelsTable = ({ onReady }) => {
                 position="bottom-start"
                 withinPortal
               >
-                <Popover.Target>
+                <PopoverTarget>
                   <Button
                     leftSection={<Tv2 size={18} />}
                     size="compact-sm"
@@ -1312,8 +1194,8 @@ const ChannelsTable = ({ onReady }) => {
                   >
                     HDHR
                   </Button>
-                </Popover.Target>
-                <Popover.Dropdown>
+                </PopoverTarget>
+                <PopoverDropdown>
                   <Stack
                     gap="sm"
                     style={{
@@ -1329,7 +1211,7 @@ const ChannelsTable = ({ onReady }) => {
                       clients.
                     </Text>
                     <TextInput
-                      value={buildHDHRUrl()}
+                      value={buildHDHRUrl(hdhrOutputProfileId, hdhrUrl)}
                       size="sm"
                       readOnly
                       label="Generated URL"
@@ -1359,7 +1241,7 @@ const ChannelsTable = ({ onReady }) => {
                         .map((p) => ({ value: `${p.id}`, label: p.name }))}
                     />
                   </Stack>
-                </Popover.Dropdown>
+                </PopoverDropdown>
               </Popover>
               <Popover
                 withArrow
@@ -1368,7 +1250,7 @@ const ChannelsTable = ({ onReady }) => {
                 position="bottom-start"
                 withinPortal
               >
-                <Popover.Target>
+                <PopoverTarget>
                   <Button
                     leftSection={<ScreenShare size={18} />}
                     size="compact-sm"
@@ -1381,8 +1263,8 @@ const ChannelsTable = ({ onReady }) => {
                   >
                     M3U
                   </Button>
-                </Popover.Target>
-                <Popover.Dropdown>
+                </PopoverTarget>
+                <PopoverDropdown>
                   <Stack
                     gap="sm"
                     style={{
@@ -1398,7 +1280,7 @@ const ChannelsTable = ({ onReady }) => {
                       channel list.
                     </Text>
                     <TextInput
-                      value={buildM3UUrl()}
+                      value={buildM3UUrl(m3uParams, m3uUrl)}
                       size="sm"
                       readOnly
                       label="Generated URL"
@@ -1492,7 +1374,7 @@ const ChannelsTable = ({ onReady }) => {
                         .map((p) => ({ value: `${p.id}`, label: p.name }))}
                     />
                   </Stack>
-                </Popover.Dropdown>
+                </PopoverDropdown>
               </Popover>
               <Popover
                 withArrow
@@ -1501,7 +1383,7 @@ const ChannelsTable = ({ onReady }) => {
                 position="bottom-start"
                 withinPortal
               >
-                <Popover.Target>
+                <PopoverTarget>
                   <Button
                     leftSection={<Scroll size={18} />}
                     size="compact-sm"
@@ -1515,8 +1397,8 @@ const ChannelsTable = ({ onReady }) => {
                   >
                     EPG
                   </Button>
-                </Popover.Target>
-                <Popover.Dropdown>
+                </PopoverTarget>
+                <PopoverDropdown>
                   <Stack
                     gap="sm"
                     style={{
@@ -1534,7 +1416,7 @@ const ChannelsTable = ({ onReady }) => {
                       clients.
                     </Text>
                     <TextInput
-                      value={buildEPGUrl()}
+                      value={buildEPGUrl(epgParams, epgUrl)}
                       size="sm"
                       readOnly
                       label="Generated URL"
@@ -1608,7 +1490,7 @@ const ChannelsTable = ({ onReady }) => {
                       }
                     />
                   </Stack>
-                </Popover.Dropdown>
+                </PopoverDropdown>
               </Popover>
             </Group>
           </Flex>
@@ -1626,7 +1508,7 @@ const ChannelsTable = ({ onReady }) => {
           <ChannelTableHeader
             rows={rows}
             editChannel={editChannel}
-            deleteChannels={deleteChannels}
+            deleteChannels={handleDeleteChannels}
             selectedTableIds={table.selectedTableIds}
             table={table}
             showDisabled={showDisabled}

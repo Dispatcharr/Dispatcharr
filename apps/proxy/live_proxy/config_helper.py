@@ -111,6 +111,11 @@ class ConfigHelper:
         return Config.get_channel_init_grace_period()
 
     @staticmethod
+    def channel_client_wait_period():
+        """Seconds to keep a ready channel alive waiting for the first client to connect."""
+        return Config.get_channel_client_wait_period()
+
+    @staticmethod
     def chunk_timeout():
         """
         Get chunk timeout in seconds (used for both socket and HTTP read timeouts).

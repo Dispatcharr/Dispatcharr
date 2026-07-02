@@ -1,10 +1,8 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import API from '../../api';
 import StreamProfileForm from '../forms/StreamProfile';
 import useStreamProfilesStore from '../../store/streamProfiles';
-import { TableHelper } from '../../helpers';
 import useSettingsStore from '../../store/settings';
-import { notifications } from '@mantine/notifications';
 import {
   Box,
   ActionIcon,
@@ -21,16 +19,16 @@ import {
 import {
   SquareMinus,
   SquarePen,
-  Check,
-  X,
   Eye,
   EyeOff,
   SquarePlus,
 } from 'lucide-react';
 import { CustomTable, useTable } from './CustomTable';
 import useLocalStorage from '../../hooks/useLocalStorage';
+import { showNotification } from '../../utils/notificationUtils.js';
+import { updateStreamProfile } from '../../utils/forms/StreamProfileUtils.js';
 
-const RowActions = ({ row, editStreamProfile, deleteStreamProfile }) => {
+const RowActions = ({ row, editStreamProfile, handleDeleteStreamProfile }) => {
   return (
     <>
       <ActionIcon
@@ -47,13 +45,17 @@ const RowActions = ({ row, editStreamProfile, deleteStreamProfile }) => {
         size="sm"
         color="red.9"
         disabled={row.original.locked}
-        onClick={() => deleteStreamProfile(row.original.id)}
+        onClick={() => handleDeleteStreamProfile(row.original.id)}
       >
         <SquareMinus fontSize="small" /> {/* Small icon size */}
       </ActionIcon>
     </>
   );
 };
+
+const deleteStreamProfile = (id) => {
+  return API.deleteStreamProfile(id);
+}
 
 const StreamProfiles = () => {
   const [profile, setProfile] = useState(null);
@@ -143,27 +145,21 @@ const StreamProfiles = () => {
     []
   );
 
-  //optionally access the underlying virtualizer instance
-  const rowVirtualizerInstanceRef = useRef(null);
-
-  const [isLoading, setIsLoading] = useState(true);
-  const [sorting, setSorting] = useState([]);
-
   const editStreamProfile = async (profile = null) => {
     setProfile(profile);
     setProfileModalOpen(true);
   };
 
-  const deleteStreamProfile = async (id) => {
+  const handleDeleteStreamProfile = async (id) => {
     if (id == settings.default_stream_profile) {
-      notifications.show({
+      showNotification({
         title: 'Cannot delete default stream-profile',
         color: 'red.5',
       });
       return;
     }
 
-    await API.deleteStreamProfile(id);
+    await deleteStreamProfile(id);
   };
 
   const closeStreamProfileForm = () => {
@@ -171,28 +167,14 @@ const StreamProfiles = () => {
     setProfileModalOpen(false);
   };
 
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      setIsLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    //scroll to the top of the table when the sorting changes
-    try {
-      rowVirtualizerInstanceRef.current?.scrollToIndex?.(0);
-    } catch (error) {
-      console.error(error);
-    }
-  }, [sorting]);
-
   const toggleHideInactive = () => {
     setHideInactive(!hideInactive);
   };
 
   const toggleProfileIsActive = async (profile) => {
-    await API.updateStreamProfile({
-      id: profile.id,
+    await updateStreamProfile(
+      profile.id,
+      {
       ...profile,
       is_active: !profile.is_active,
     });
@@ -200,9 +182,7 @@ const StreamProfiles = () => {
 
   useEffect(() => {
     setData(
-      streamProfiles.filter((profile) =>
-        hideInactive && !profile.is_active ? false : true
-      )
+      streamProfiles.filter((profile) => !(hideInactive && !profile.is_active))
     );
   }, [streamProfiles, hideInactive]);
 
@@ -221,7 +201,7 @@ const StreamProfiles = () => {
           <RowActions
             row={row}
             editStreamProfile={editStreamProfile}
-            deleteStreamProfile={deleteStreamProfile}
+            handleDeleteStreamProfile={handleDeleteStreamProfile}
           />
         );
     }
@@ -255,11 +235,8 @@ const StreamProfiles = () => {
         <Box
           style={{
             display: 'flex',
-            // alignItems: 'center',
-            // backgroundColor: theme.palette.background.paper,
             justifyContent: 'flex-end',
             padding: 10,
-            // gap: 1,
           }}
         >
           <Flex gap={6}>
