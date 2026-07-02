@@ -31,7 +31,7 @@ class StreamVodDbCleanupTests(SimpleTestCase):
         movie.name = "Test Movie"
         relation = MagicMock()
         relation.m3u_account.name = "Provider"
-        mock_content.return_value = (movie, relation)
+        mock_content.return_value = (movie, relation, [relation])
 
         profile = MagicMock()
         profile.id = 1

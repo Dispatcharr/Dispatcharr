@@ -20,6 +20,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Byte path streams directly via `iter_content` + generator yield** (same pattern as the VOD proxy), with an upfront MPEG-TS sync peek that strips any PHP-warning preamble before bytes reach strict demuxers. Throughput stays comfortably above the typical 5 Mbps FHD bitrate so clients don't buffer.
 - **Frontend unit tests extended to table components.** `ChannelsTable`, `StreamsTable`, `M3UsTable`, `EPGsTable`, `LogosTable`, `CustomTable`, and related header/editable subcomponents now have Vitest + Testing Library suites. Table business logic was extracted into `frontend/src/utils/tables/*` (with shared `M3uTableUtils` for M3U/EPG sort headers) and covered by dedicated util tests. `dateTimeUtils.formatDuration` gained a `human` precision mode for readable content lengths. — Thanks [@nick4810](https://github.com/nick4810)
 
+### Changed
+
+- **VOD proxy now fails over across M3U accounts when the selected account is at capacity.** `stream_vod()` and `head_vod()` previously picked the highest-priority relation and returned HTTP 503 if that account's profile pool was full, without trying other accounts carrying the same title. The proxy now materialises active relations in a single query, walks them in priority order (preferred stream/account first), and streams from the first account with spare capacity—matching live-channel failover. (Closes #1385) — Thanks [@francescodg89-crypto](https://github.com/francescodg89-crypto) (#1398)
+
 ### Performance
 
 - **M3U/XC stream refresh is faster on large accounts.** Steady-state refreshes split `bulk_update` into a lightweight touch pass (`last_seen` / `is_stale` only) for unchanged streams and a full column update only when provider metadata or catch-up fields actually change.
