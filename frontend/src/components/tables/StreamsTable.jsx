@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState, } from 'react';
 import StreamForm from '../forms/Stream';
+import CatchupIndicator from '../CatchupIndicator';
 import usePlaylistsStore from '../../store/playlists';
 import useChannelsStore from '../../store/channels';
 import { copyToClipboard, useDebounce } from '../../utils';
@@ -395,18 +396,26 @@ const StreamsTable = ({ onReady }) => {
         grow: true,
         size: columnSizing.name || 200,
         minSize: 100,
-        cell: ({ getValue }) => (
-          <Tooltip label={getValue()} openDelay={500}>
-            <Box
-              style={{
-                whiteSpace: 'pre',
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-              }}
-            >
-              {getValue()}
-            </Box>
-          </Tooltip>
+        cell: ({ getValue, row }) => (
+          <Flex align="center" gap={6} style={{ minWidth: 0 }}>
+            <Tooltip label={getValue()} openDelay={500}>
+              <Box
+                style={{
+                  whiteSpace: 'pre',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  minWidth: 0,
+                  flex: 1,
+                }}
+              >
+                {getValue()}
+              </Box>
+            </Tooltip>
+            <CatchupIndicator
+              isCatchup={row.original.is_catchup}
+              catchupDays={row.original.catchup_days}
+            />
+          </Flex>
         ),
       },
       {

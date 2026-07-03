@@ -142,6 +142,8 @@ class StreamSerializer(serializers.ModelSerializer):
             "stream_stats_updated_at",
             "stream_id",
             "stream_chno",
+            "is_catchup",
+            "catchup_days",
         ]
 
     def get_fields(self):
@@ -449,6 +451,7 @@ class ChannelSerializer(serializers.ModelSerializer):
             "user_level",
             "is_adult",
             "is_catchup",
+            "catchup_days",
             "hidden_from_output",
             "auto_created",
             "auto_created_by",

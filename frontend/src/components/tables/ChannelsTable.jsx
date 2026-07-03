@@ -58,6 +58,7 @@ import {
 import './table.css';
 import useChannelsTableStore from '../../store/channelsTable';
 import ChannelTableStreams from './ChannelTableStreams';
+import CatchupIndicator from '../CatchupIndicator';
 import LazyLogo from '../LazyLogo';
 import useLocalStorage from '../../hooks/useLocalStorage';
 import useEPGsStore from '../../store/epgs';
@@ -873,6 +874,10 @@ const ChannelsTable = ({ onReady }) => {
                   </Box>
                 </Tooltip>
               )}
+              <CatchupIndicator
+                isCatchup={row.is_catchup}
+                catchupDays={row.catchup_days}
+              />
             </Flex>
           );
         },

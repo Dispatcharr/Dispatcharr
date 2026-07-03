@@ -21,6 +21,7 @@ import useChannelsTableStore from '../../store/channelsTable';
 import usePlaylistsStore from '../../store/playlists';
 import useVideoStore from '../../store/useVideoStore';
 import useSettingsStore from '../../store/settings';
+import CatchupIndicator from '../CatchupIndicator';
 import {
   closestCenter,
   DndContext,
@@ -195,6 +196,11 @@ const StreamInfoCell = React.memo(
           <Badge size="xs" variant="light" color="teal">
             {accountName}
           </Badge>
+          <CatchupIndicator
+            isCatchup={stream.is_catchup}
+            catchupDays={stream.catchup_days}
+            variant="badge"
+          />
           {stream.quality && (
             <Badge size="xs" variant="light" color="gray">
               {stream.quality}
