@@ -202,6 +202,7 @@ export const buildFetchParams = ({
   showOnlyStaleChannels,
   showOnlyOverriddenChannels,
   visibilityFilter,
+  showOnlyCatchupChannels,
 }) => {
   const params = new URLSearchParams();
   params.append('page', pagination.pageIndex + 1);
@@ -214,6 +215,7 @@ export const buildFetchParams = ({
   if (showOnlyStreamlessChannels) params.append('only_streamless', true);
   if (showOnlyStaleChannels) params.append('only_stale', true);
   if (showOnlyOverriddenChannels) params.append('only_has_overrides', true);
+  if (showOnlyCatchupChannels) params.append('only_catchup', true);
   if (visibilityFilter && visibilityFilter !== 'active')
     params.append('visibility_filter', visibilityFilter);
   if (sorting.length > 0) {

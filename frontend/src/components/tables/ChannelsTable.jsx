@@ -333,6 +333,8 @@ const ChannelsTable = ({ onReady }) => {
   const [showOnlyStaleChannels, setShowOnlyStaleChannels] = useState(false);
   const [showOnlyOverriddenChannels, setShowOnlyOverriddenChannels] =
     useState(false);
+  const [showOnlyCatchupChannels, setShowOnlyCatchupChannels] =
+    useState(false);
   const [visibilityFilter, setVisibilityFilter] = useState('active');
 
   const [paginationString, setPaginationString] = useState('');
@@ -436,7 +438,7 @@ const ChannelsTable = ({ onReady }) => {
     const params = buildFetchParams({
       pagination, sorting, debouncedFilters, selectedProfileId,
       showDisabled, showOnlyStreamlessChannels, showOnlyStaleChannels,
-      showOnlyOverriddenChannels, visibilityFilter,
+      showOnlyOverriddenChannels, visibilityFilter, showOnlyCatchupChannels,
     });
     const paramsString = params.toString();
 
@@ -462,7 +464,8 @@ const ChannelsTable = ({ onReady }) => {
   }, [
     pagination, sorting, debouncedFilters, selectedProfileId,
     showDisabled, showOnlyStreamlessChannels, showOnlyStaleChannels,
-    showOnlyOverriddenChannels, visibilityFilter, handleFetchSuccess,
+    showOnlyOverriddenChannels, visibilityFilter, showOnlyCatchupChannels,
+    handleFetchSuccess,
   ]);
 
   const stopPropagation = useCallback((e) => {
@@ -1524,6 +1527,8 @@ const ChannelsTable = ({ onReady }) => {
             setShowOnlyStaleChannels={setShowOnlyStaleChannels}
             showOnlyOverriddenChannels={showOnlyOverriddenChannels}
             setShowOnlyOverriddenChannels={setShowOnlyOverriddenChannels}
+            showOnlyCatchupChannels={showOnlyCatchupChannels}
+            setShowOnlyCatchupChannels={setShowOnlyCatchupChannels}
             visibilityFilter={visibilityFilter}
             setVisibilityFilter={setVisibilityFilter}
           />

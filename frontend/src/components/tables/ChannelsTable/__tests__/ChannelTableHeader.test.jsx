@@ -225,6 +225,8 @@ const makeDefaultProps = (overrides = {}) => ({
   setShowOnlyStaleChannels: vi.fn(),
   showOnlyOverriddenChannels: false,
   setShowOnlyOverriddenChannels: vi.fn(),
+  showOnlyCatchupChannels: false,
+  setShowOnlyCatchupChannels: vi.fn(),
   visibilityFilter: 'active',
   setVisibilityFilter: vi.fn(),
   ...overrides,
@@ -396,6 +398,14 @@ describe('ChannelTableHeader', () => {
       render(<ChannelTableHeader {...props} />);
       fireEvent.click(screen.getByText('Has Overrides'));
       expect(props.setShowOnlyOverriddenChannels).toHaveBeenCalledWith(true);
+    });
+
+    it('calls setShowOnlyCatchupChannels when Only Catch-up is clicked', () => {
+      const props = makeDefaultProps({ showOnlyCatchupChannels: false });
+      setupMocks();
+      render(<ChannelTableHeader {...props} />);
+      fireEvent.click(screen.getByText('Only Catch-up'));
+      expect(props.setShowOnlyCatchupChannels).toHaveBeenCalledWith(true);
     });
 
     it('calls setVisibilityFilter with "hidden" when Hidden Only is clicked', () => {

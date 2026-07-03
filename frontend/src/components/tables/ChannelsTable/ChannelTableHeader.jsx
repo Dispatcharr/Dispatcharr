@@ -128,6 +128,8 @@ const ChannelTableHeader = ({
   setShowOnlyStaleChannels,
   showOnlyOverriddenChannels,
   setShowOnlyOverriddenChannels,
+  showOnlyCatchupChannels,
+  setShowOnlyCatchupChannels,
   visibilityFilter,
   setVisibilityFilter,
 }) => {
@@ -226,6 +228,12 @@ const ChannelTableHeader = ({
   const toggleShowOnlyOverriddenChannels = () => {
     if (setShowOnlyOverriddenChannels) {
       setShowOnlyOverriddenChannels(!showOnlyOverriddenChannels);
+    }
+  };
+
+  const toggleShowOnlyCatchupChannels = () => {
+    if (setShowOnlyCatchupChannels) {
+      setShowOnlyCatchupChannels(!showOnlyCatchupChannels);
     }
   };
 
@@ -340,6 +348,19 @@ const ChannelTableHeader = ({
                 }
               >
                 <Text size="xs">Has Overrides</Text>
+              </MenuItem>
+
+              <MenuItem
+                onClick={toggleShowOnlyCatchupChannels}
+                leftSection={
+                  showOnlyCatchupChannels ? (
+                    <SquareCheck size={18} />
+                  ) : (
+                    <Square size={18} />
+                  )
+                }
+              >
+                <Text size="xs">Only Catch-up</Text>
               </MenuItem>
 
               <MenuDivider />

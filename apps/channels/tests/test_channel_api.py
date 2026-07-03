@@ -573,3 +573,48 @@ class ChannelListIncludeStreamsQueryTests(TestCase):
             "include_streams list should use prefetched channelstream_set, "
             "not one streams M2M query per channel",
         )
+
+
+class ChannelListOnlyCatchupFilterTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username="catchup_filter", password="x")
+        self.user.user_level = 10
+        self.user.save()
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+        self.catchup_channel = Channel.objects.create(
+            channel_number=1.0,
+            name="Catch-up Channel",
+            is_catchup=True,
+            catchup_days=7,
+        )
+        self.live_channel = Channel.objects.create(
+            channel_number=2.0,
+            name="Live Channel",
+            is_catchup=False,
+        )
+
+    def test_only_catchup_returns_catchup_channels(self):
+        response = self.client.get(
+            "/api/channels/channels/",
+            {"only_catchup": "true", "page_size": 50},
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        ids = {row["id"] for row in response.data["results"]}
+        self.assertEqual(ids, {self.catchup_channel.id})
+
+    def test_only_catchup_does_not_force_distinct(self):
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        with CaptureQueriesContext(connection) as ctx:
+            response = self.client.get(
+                "/api/channels/channels/",
+                {"only_catchup": "true", "page_size": 50},
+            )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        sql = " ".join(q["sql"] for q in ctx.captured_queries).upper()
+        self.assertNotIn("DISTINCT", sql)

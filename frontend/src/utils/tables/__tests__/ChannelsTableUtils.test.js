@@ -414,6 +414,7 @@ describe('ChannelsTableUtils', () => {
       showOnlyStreamlessChannels: false,
       showOnlyStaleChannels: false,
       showOnlyOverriddenChannels: false,
+      showOnlyCatchupChannels: false,
       visibilityFilter: 'active',
     };
 
@@ -476,6 +477,14 @@ describe('ChannelsTableUtils', () => {
         showOnlyOverriddenChannels: true,
       });
       expect(params.get('only_has_overrides')).toBe('true');
+    });
+
+    it('includes only_catchup when true', () => {
+      const params = ChannelsTableUtils.buildFetchParams({
+        ...defaults,
+        showOnlyCatchupChannels: true,
+      });
+      expect(params.get('only_catchup')).toBe('true');
     });
 
     it('does not include visibility_filter when "active"', () => {

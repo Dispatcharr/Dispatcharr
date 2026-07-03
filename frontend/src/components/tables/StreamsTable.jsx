@@ -247,6 +247,7 @@ const StreamsTable = ({ onReady }) => {
     m3u_account: '',
     unassigned: false,
     hide_stale: false,
+    is_catchup: false,
   });
   const [columnSizing, setColumnSizing] = useLocalStorage(
     'streams-table-column-sizing',
@@ -563,6 +564,13 @@ const StreamsTable = ({ onReady }) => {
     setFilters((prev) => ({
       ...prev,
       hide_stale: !prev.hide_stale,
+    }));
+  };
+
+  const toggleCatchupOnly = () => {
+    setFilters((prev) => ({
+      ...prev,
+      is_catchup: !prev.is_catchup,
     }));
   };
 
@@ -1467,6 +1475,18 @@ const StreamsTable = ({ onReady }) => {
                   }
                 >
                   <Text size="xs">Hide Stale</Text>
+                </MenuItem>
+                <MenuItem
+                  onClick={toggleCatchupOnly}
+                  leftSection={
+                    filters.is_catchup === true ? (
+                      <SquareCheck size={18} />
+                    ) : (
+                      <Square size={18} />
+                    )
+                  }
+                >
+                  <Text size="xs">Only Catch-up</Text>
                 </MenuItem>
               </MenuDropdown>
             </Menu>
