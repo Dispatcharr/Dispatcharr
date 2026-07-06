@@ -934,7 +934,13 @@ class StreamManager:
                 parser = LogParserFactory._parsers.get(self.parser_type)
                 if parser:
                     stream_type = parser.can_parse(content)
-                    if stream_type:
+                    if stream_type == 'vlc_input_failed':
+                        logger.warning(
+                            f"VLC could not open input for channel {self.channel_id}: {content}"
+                        )
+                        self.connected = False
+                        self._close_socket()
+                    elif stream_type:
                         # Parser can handle this line, parse it directly
                         parsed_data = LogParserFactory.parse(stream_type, content)
                         if parsed_data:
