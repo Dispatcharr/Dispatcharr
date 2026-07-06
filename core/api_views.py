@@ -290,6 +290,8 @@ class ProxySettingsViewSet(viewsets.ViewSet):
 _IP_CACHE_KEY = "dispatcharr:ip_lookup_result"
 _IP_CACHE_TTL = 3600  # 1 hour
 _IP_LOCK_KEY = "dispatcharr:ip_lookup_lock"
+_IP_FRESH_KEY = "dispatcharr:ip_lookup_fresh"
+_IP_FRESH_TTL = 60  # re-verify the public IP at most once per minute
 
 
 def _perform_ip_lookup():
@@ -347,11 +349,19 @@ def _perform_ip_lookup():
         "country_name": country_name,
         "city": city,
     }
-    cache.set(_IP_CACHE_KEY, result, _IP_CACHE_TTL)
+    # A failed re-check must not clobber the last known good result. Only
+    # store/broadcast when the lookup succeeded, or when nothing is cached
+    # yet (first lookup — store the negative result so the frontend skeleton
+    # resolves).
+    should_store = public_ip is not None or cache.get(_IP_CACHE_KEY) is None
+    if should_store:
+        cache.set(_IP_CACHE_KEY, result, _IP_CACHE_TTL)
+    cache.set(_IP_FRESH_KEY, True, _IP_FRESH_TTL)
     cache.delete(_IP_LOCK_KEY)
 
-    from core.utils import send_websocket_update
-    send_websocket_update("updates", "update", {"type": "ip_lookup_complete", **result})
+    if should_store:
+        from core.utils import send_websocket_update
+        send_websocket_update("updates", "update", {"type": "ip_lookup_complete", **result})
 
 
 @extend_schema(
@@ -379,6 +389,12 @@ def environment(request):
             country_code = cached.get("country_code")
             country_name = cached.get("country_name")
             city = cached.get("city")
+            # Serve the cached result immediately, but if it hasn't been
+            # verified recently, re-check in the background. The websocket
+            # push from _perform_ip_lookup corrects all connected clients if
+            # the IP changed (e.g. after a VPN reconnect). See issue #1395.
+            if not cache.get(_IP_FRESH_KEY) and cache.add(_IP_LOCK_KEY, True, 30):
+                threading.Thread(target=_perform_ip_lookup, daemon=True).start()
         else:
             if cache.add(_IP_LOCK_KEY, True, 30):
                 threading.Thread(target=_perform_ip_lookup, daemon=True).start()
