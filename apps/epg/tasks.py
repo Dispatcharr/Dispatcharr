@@ -36,6 +36,7 @@ from core.utils import (
     send_websocket_update,
     cleanup_memory,
     log_system_event,
+    _is_celery_worker_context,
 )
 
 logger = logging.getLogger(__name__)
@@ -100,6 +101,8 @@ _NON_TERMINAL_REFRESH_STATUSES = frozenset({
 
 def _release_task_db_connection():
     """Return the Celery worker's DB connection to a clean state after ORM errors."""
+    if not _is_celery_worker_context():
+        return
     from django.db import close_old_connections
     close_old_connections()
 
