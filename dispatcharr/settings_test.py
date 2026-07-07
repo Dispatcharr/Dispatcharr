@@ -21,6 +21,8 @@ import os
 
 from dispatcharr.settings import *  # noqa: F401,F403
 
+TEST_RUNNER = "dispatcharr.test_runner.DispatcharrDiscoverRunner"
+
 # Fast password hashing for tests.
 PASSWORD_HASHERS = ["django.contrib.auth.hashers.MD5PasswordHasher"]
 
