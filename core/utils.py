@@ -788,7 +788,8 @@ def dispatch_event_system(event_type, channel_id=None, channel_name=None, **deta
         # Don't fail main path if connect dispatch fails
         pass
     finally:
-        close_old_connections()
+        if _should_use_sync_websocket_send() or _is_gevent_monkey_patched():
+            close_old_connections()
 
 
 def _dispatch_system_event_integrations(
@@ -886,7 +887,8 @@ def log_system_event(event_type, channel_id=None, channel_name=None, **details):
     finally:
         # geventpool keeps checked-out connections until close(); release promptly
         # when logging from proxy greenlets/threads outside a normal request cycle.
-        close_old_connections()
+        if _is_gevent_monkey_patched():
+            close_old_connections()
 
 
 def _send_async(channel_layer, group, message):
