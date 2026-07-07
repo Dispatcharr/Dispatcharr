@@ -671,6 +671,16 @@ class ShutdownDelayWaitTests(TestCase):
 
 
 class InitWaitAbortTests(TestCase):
+    def setUp(self):
+        self._teardown_patch = patch(
+            "apps.proxy.live_proxy.services.channel_service.ChannelService.is_channel_teardown_active",
+            return_value=False,
+        )
+        self._teardown_patch.start()
+
+    def tearDown(self):
+        self._teardown_patch.stop()
+
     def _make_generator(self):
         from apps.proxy.live_proxy.output.ts.generator import StreamGenerator
 

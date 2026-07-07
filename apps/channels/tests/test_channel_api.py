@@ -293,7 +293,8 @@ class ChannelSummaryEffectiveValuesTests(TestCase):
     def test_summary_returns_effective_values(self):
         response = self.client.get("/api/channels/channels/summary/")
         self.assertEqual(response.status_code, 200)
-        row = next(r for r in response.data if r["id"] == self.channel.id)
+        data = response.json()
+        row = next(r for r in data if r["id"] == self.channel.id)
         self.assertEqual(row["name"], "Override Name")
         self.assertEqual(row["channel_number"], 99.0)
         self.assertEqual(row["channel_group_id"], self.other_group.id)
@@ -598,7 +599,7 @@ class ChannelListOnlyCatchupFilterTests(TestCase):
     def test_only_catchup_returns_catchup_channels(self):
         response = self.client.get(
             "/api/channels/channels/",
-            {"only_catchup": "true", "page_size": 50},
+            {"only_catchup": "true", "page": 1, "page_size": 50},
         )
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
@@ -612,7 +613,7 @@ class ChannelListOnlyCatchupFilterTests(TestCase):
         with CaptureQueriesContext(connection) as ctx:
             response = self.client.get(
                 "/api/channels/channels/",
-                {"only_catchup": "true", "page_size": 50},
+                {"only_catchup": "true", "page": 1, "page_size": 50},
             )
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)

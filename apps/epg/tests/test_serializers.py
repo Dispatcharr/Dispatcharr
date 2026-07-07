@@ -100,27 +100,38 @@ class ProgramDataSerializerTests(TestCase):
         self.assertEqual(set(data.keys()), expected_fields)
 
     def test_season_episode_from_onscreen_episode(self):
-        """Season and episode should be parsed from onscreen_episode string."""
+        """Serializer reads precomputed season/episode from custom_properties (set at import)."""
         program = self._create_program(
-            custom_properties={"onscreen_episode": "S12 E6"}
+            custom_properties={
+                "onscreen_episode": "S12 E6",
+                "season": 12,
+                "episode": 6,
+            }
         )
         data = ProgramDataSerializer(program).data
         self.assertEqual(data["season"], 12)
         self.assertEqual(data["episode"], 6)
 
     def test_onscreen_episode_no_space(self):
-        """Should parse onscreen_episode without space between S and E."""
+        """Precomputed S/E in custom_properties is exposed by the serializer."""
         program = self._create_program(
-            custom_properties={"onscreen_episode": "S3E21"}
+            custom_properties={
+                "onscreen_episode": "S3E21",
+                "season": 3,
+                "episode": 21,
+            }
         )
         data = ProgramDataSerializer(program).data
         self.assertEqual(data["season"], 3)
         self.assertEqual(data["episode"], 21)
 
     def test_onscreen_episode_with_part(self):
-        """Should parse season/episode even when part info follows."""
         program = self._create_program(
-            custom_properties={"onscreen_episode": "S8 E8 P2/2"}
+            custom_properties={
+                "onscreen_episode": "S8 E8 P2/2",
+                "season": 8,
+                "episode": 8,
+            }
         )
         data = ProgramDataSerializer(program).data
         self.assertEqual(data["season"], 8)
@@ -139,7 +150,7 @@ class ProgramDataSerializerTests(TestCase):
         self.assertEqual(data["episode"], 2)
 
     def test_onscreen_episode_invalid_format(self):
-        """Should return None for onscreen_episode that doesn't match S/E pattern."""
+        """Without precomputed S/E keys, serializer returns None."""
         program = self._create_program(
             custom_properties={"onscreen_episode": "Episode 5"}
         )
@@ -433,7 +444,7 @@ class ExtractSeasonEpisodeFromDescriptionTests(TestCase):
 
 
 class ProgramDataSerializerDescriptionFallbackTests(TestCase):
-    """Integration tests: serializer uses description fallback for S/E."""
+    """Serializer does not parse description at request time; import precomputes S/E."""
 
     def setUp(self):
         self.epg_source = EPGSource.objects.create(
@@ -460,8 +471,8 @@ class ProgramDataSerializerDescriptionFallbackTests(TestCase):
             description="S2 E5 The Episode Title",
         )
         data = ProgramDataSerializer(program).data
-        self.assertEqual(data["season"], 2)
-        self.assertEqual(data["episode"], 5)
+        self.assertIsNone(data["season"])
+        self.assertIsNone(data["episode"])
 
     def test_se_from_description_not_used_when_cp_has_values(self):
         program = self._create_program(
@@ -506,6 +517,8 @@ class ProgramDetailSerializerTests(TestCase):
             "credits", "video_quality", "aspect_ratio", "stereo", "is_previously_shown",
             "country", "language", "production_date", "original_air_date",
             "imdb_id", "tmdb_id", "tvdb_id", "icon", "images",
+            "poster_url", "content_advisory", "content_ratings", "event_details",
+            "runtime", "runtime_units",
         }
         self.assertEqual(set(data.keys()), expected_fields)
 
@@ -631,9 +644,13 @@ class ProgramDetailSerializerTests(TestCase):
         self.assertEqual(data["images"], [])
 
     def test_season_episode_uses_shared_helper(self):
-        """Detail serializer should use the same onscreen_episode fallback."""
+        """Detail serializer reads precomputed S/E from custom_properties."""
         program = self._create_program(
-            custom_properties={"onscreen_episode": "S5E14"}
+            custom_properties={
+                "onscreen_episode": "S5E14",
+                "season": 5,
+                "episode": 14,
+            }
         )
         data = ProgramDetailSerializer(program).data
         self.assertEqual(data["season"], 5)

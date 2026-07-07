@@ -1,6 +1,6 @@
 from unittest.mock import patch
 
-from django.test import RequestFactory, SimpleTestCase, TestCase
+from django.test import RequestFactory, TestCase
 
 from apps.accounts.models import User
 from apps.channels.models import Channel, ChannelStream, Stream
@@ -8,7 +8,7 @@ from apps.channels.utils import resolve_xc_epg_prev_days
 from apps.m3u.models import M3UAccount
 
 
-class ResolveXcEpgPrevDaysTests(SimpleTestCase):
+class ResolveXcEpgPrevDaysTests(TestCase):
     def setUp(self):
         self.factory = RequestFactory()
         self.user = User(username="xc-prev", custom_properties={})

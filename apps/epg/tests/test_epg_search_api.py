@@ -7,6 +7,7 @@ from rest_framework import status
 from rest_framework.test import APIClient
 
 from apps.epg.models import EPGData, EPGSource, ProgramData
+from apps.channels.models import Channel
 
 User = get_user_model()
 
@@ -63,6 +64,13 @@ class ProgramSearchAPIViewTests(TestCase):
 
         cls.now = now
         cls.user = User.objects.create_user(username="testuser", password="pass", user_level=1)
+        # Standard users only see programs for EPG entries linked to accessible channels.
+        Channel.objects.create(
+            name="Test Channel",
+            channel_number=1,
+            epg_data=cls.epg,
+            user_level=1,
+        )
 
     def setUp(self):
         self.client = APIClient(REMOTE_ADDR="127.0.0.1")

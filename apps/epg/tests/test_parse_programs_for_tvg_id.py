@@ -39,6 +39,14 @@ def _xmltv_file(programmes):
 
 class ParseProgramsForTvgIdSwapTests(TestCase):
     def setUp(self):
+        self._lock_patches = [
+            patch('apps.epg.tasks.is_task_lock_held', return_value=False),
+            patch('apps.epg.tasks.acquire_task_lock', return_value=True),
+            patch('apps.epg.tasks.release_task_lock'),
+        ]
+        for p in self._lock_patches:
+            p.start()
+
         self.source = EPGSource.objects.create(
             name='Per-Channel Parse Test',
             source_type='xmltv',
@@ -58,6 +66,8 @@ class ParseProgramsForTvgIdSwapTests(TestCase):
         self.stop = (self.base_time + timedelta(hours=1)).strftime('%Y%m%d%H%M%S +0000')
 
     def tearDown(self):
+        for p in self._lock_patches:
+            p.stop()
         if getattr(self, 'xml_path', None) and os.path.exists(self.xml_path):
             os.unlink(self.xml_path)
 

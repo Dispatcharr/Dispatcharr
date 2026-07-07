@@ -1,7 +1,7 @@
 """Tests for M3U stream filter compilation and batch application."""
 from unittest.mock import MagicMock, patch
 
-from django.test import SimpleTestCase
+from django.test import SimpleTestCase, TestCase
 
 from apps.m3u.tasks import (
     _compile_m3u_stream_filters,
@@ -78,7 +78,7 @@ class StreamPassesM3UFiltersTests(SimpleTestCase):
         )
 
 
-class ProcessM3UBatchFilterTests(SimpleTestCase):
+class ProcessM3UBatchFilterTests(TestCase):
     def _mock_stream_meta(self, mock_stream_cls, max_length=255):
         mock_field = MagicMock()
         mock_field.max_length = max_length

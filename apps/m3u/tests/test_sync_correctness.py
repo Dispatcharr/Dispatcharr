@@ -7,6 +7,7 @@ the correct post-fix behavior. Comments call out the failure mode and the
 fix location.
 """
 from unittest import skipUnless
+from unittest.mock import MagicMock
 
 from django.db import connection
 from django.test import TestCase, TransactionTestCase
@@ -2190,10 +2191,13 @@ class Migration0037DemoteOrphansTests(TestCase):
             "apps.channels.migrations.0037_auto_sync_overhaul"
         )
 
-        # The migration function takes (apps, schema_editor); apps is
-        # the historical app registry. For this unit test we call with
-        # the live registry.
-        module.backfill_auto_created_by_null(django_apps, None)
+        connection = MagicMock()
+        cursor = MagicMock()
+        connection.cursor.return_value.__enter__.return_value = cursor
+        connection.cursor.return_value.__exit__.return_value = False
+        schema_editor = MagicMock(connection=connection)
+
+        module.backfill_auto_created_by_null(django_apps, schema_editor)
 
         ch.refresh_from_db()
         self.assertFalse(

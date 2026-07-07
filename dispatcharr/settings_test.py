@@ -53,6 +53,10 @@ else:
             "PORT": int(os.environ.get("POSTGRES_PORT", 5432)),
             "TEST": {
                 "NAME": "test_" + _pg_name,
+                # Match production UTF-8 so JSON programme indexes and EPG text
+                # with non-ASCII characters can be stored in tests.
+                "CHARSET": "UTF8",
+                "TEMPLATE": "template0",
             },
         }
     }
