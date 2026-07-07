@@ -1,0 +1,161 @@
+name: Backend Tests
+
+on:
+  push:
+    branches: [main, dev]
+    paths:
+      - 'apps/**'
+      - 'core/**'
+      - 'tests/**'
+      - 'dispatcharr/**'
+      - 'pyproject.toml'
+      - 'version.py'
+      - 'manage.py'
+      - 'scripts/ci_backend_test_labels.py'
+      - 'scripts/ci_bootstrap_backend.sh'
+      - '.github/workflows/backend-tests.yml'
+  pull_request:
+    branches: [main, dev]
+    paths:
+      - 'apps/**'
+      - 'core/**'
+      - 'tests/**'
+      - 'dispatcharr/**'
+      - 'pyproject.toml'
+      - 'version.py'
+      - 'manage.py'
+      - 'scripts/ci_backend_test_labels.py'
+      - 'scripts/ci_bootstrap_backend.sh'
+      - '.github/workflows/backend-tests.yml'
+  workflow_dispatch:
+    inputs:
+      full_suite:
+        description: Run the full backend test suite
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  packages: read
+
+concurrency:
+  group: backend-tests-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  plan:
+    name: Plan test groups
+    runs-on: ubuntu-latest
+    outputs:
+      labels: ${{ steps.resolve.outputs.labels }}
+      has_tests: ${{ steps.resolve.outputs.has_tests }}
+      base_image: ${{ steps.base_image.outputs.image }}
+      sync_python_deps: ${{ steps.base_image.outputs.sync_python_deps }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Collect changed paths
+        id: changed
+        shell: bash
+        run: |
+          set -euo pipefail
+          : > /tmp/changed_paths.txt
+
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            if [ "${{ inputs.full_suite }}" = "true" ]; then
+              : > /tmp/changed_paths.txt
+              echo "mode=full" >> "$GITHUB_OUTPUT"
+            else
+              git diff --name-only HEAD~1 HEAD > /tmp/changed_paths.txt || true
+              echo "mode=diff" >> "$GITHUB_OUTPUT"
+            fi
+          elif [ "${{ github.event_name }}" = "pull_request" ]; then
+            git fetch origin "${{ github.base_ref }}"
+            git diff --name-only "origin/${{ github.base_ref }}...HEAD" > /tmp/changed_paths.txt
+            echo "mode=pr" >> "$GITHUB_OUTPUT"
+          else
+            if [ "${{ github.event.before }}" = "0000000000000000000000000000000000000000" ]; then
+              git ls-files > /tmp/changed_paths.txt
+              echo "mode=initial-push" >> "$GITHUB_OUTPUT"
+            else
+              git diff --name-only "${{ github.event.before }}" "${{ github.sha }}" > /tmp/changed_paths.txt
+              echo "mode=push" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+
+      - name: Select base image
+        id: base_image
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            TARGET_BRANCH="${{ github.base_ref }}"
+          else
+            TARGET_BRANCH="${{ github.ref_name }}"
+          fi
+          if [ "$TARGET_BRANCH" = "main" ]; then
+            TAG="base"
+          else
+            TAG="base-dev"
+          fi
+          REPO_OWNER="$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')"
+          REPO_NAME="$(echo "${{ github.event.repository.name }}" | tr '[:upper:]' '[:lower:]')"
+          echo "image=ghcr.io/${REPO_OWNER}/${REPO_NAME}:${TAG}" >> "$GITHUB_OUTPUT"
+          if grep -qx 'pyproject.toml' /tmp/changed_paths.txt || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "sync_python_deps=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "sync_python_deps=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "Using base image: ghcr.io/${REPO_OWNER}/${REPO_NAME}:${TAG}"
+
+      - name: Resolve Django test labels
+        id: resolve
+        env:
+          FULL_SUITE: ${{ github.event_name == 'workflow_dispatch' && inputs.full_suite == true && 'true' || 'false' }}
+        run: |
+          set -euo pipefail
+          LABELS=$(python scripts/ci_backend_test_labels.py < /tmp/changed_paths.txt)
+          echo "labels=${LABELS}" >> "$GITHUB_OUTPUT"
+          if [ "${LABELS}" = "[]" ]; then
+            echo "has_tests=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_tests=true" >> "$GITHUB_OUTPUT"
+          fi
+          echo "Selected labels: ${LABELS}"
+
+  test:
+    name: ${{ matrix.label }}
+    needs: plan
+    if: needs.plan.outputs.has_tests == 'true'
+    runs-on: ubuntu-latest
+    container:
+      image: ${{ needs.plan.outputs.base_image }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --entrypoint ""
+    strategy:
+      max-parallel: 6
+      fail-fast: false
+      matrix:
+        label: ${{ fromJSON(needs.plan.outputs.labels) }}
+    env:
+      DISPATCHARR_ENV: aio
+      DJANGO_SECRET_KEY: ci-test-secret-key
+      POSTGRES_DB: dispatcharr
+      POSTGRES_USER: dispatch
+      POSTGRES_PASSWORD: secret
+      DISPATCHARR_LOG_LEVEL: WARNING
+      SYNC_PYTHON_DEPS: ${{ needs.plan.outputs.sync_python_deps }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Run tests in base image
+        env:
+          GITHUB_WORKSPACE: ${{ github.workspace }}
+        run: bash scripts/ci_bootstrap_backend.sh "${{ matrix.label }}" -v2
