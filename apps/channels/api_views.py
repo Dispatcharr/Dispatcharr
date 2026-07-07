@@ -759,7 +759,9 @@ class ChannelPagination(PageNumberPagination):
     max_page_size = 10000  # Prevent excessive page sizes
 
     def paginate_queryset(self, queryset, request, view=None):
-        if not request.query_params.get(self.page_query_param):
+        if not request.query_params.get(self.page_query_param) and not request.query_params.get(
+            self.page_size_query_param
+        ):
             return None  # disables pagination, returns full queryset
 
         return super().paginate_queryset(queryset, request, view)
