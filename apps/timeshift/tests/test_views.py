@@ -1556,6 +1556,57 @@ class TimeshiftSessionReuseTests(TestCase):
             1,
         )
 
+    def test_reuse_decisive_failure_skips_same_account_in_failover(self):
+        _seed_pool_session(self.redis, session_id=TEST_SESSION_ID)
+        with patch.object(views, "release_profile_slot"):
+            views._release_pool_session(self.redis, TEST_SESSION_ID, 31)
+
+        streams = [
+            _make_catchup_stream(account_id=1, stream_id="111", profile_id=31),
+            _make_catchup_stream(account_id=1, stream_id="112", profile_id=31),
+            _make_catchup_stream(account_id=2, stream_id="222", profile_id=41),
+        ]
+        profile = MagicMock(id=31, custom_properties={})
+        account = MagicMock(id=1)
+        decisive = MagicMock(status_code=403)
+        decisive.timeshift_decisive = True
+        ok = MagicMock(status_code=200)
+        request = self.factory.get(_proxy_url(TEST_SESSION_ID))
+        with patch.object(views, "_authenticate_user", return_value=self.user), \
+             patch.object(views, "network_access_allowed", return_value=True), \
+             patch.object(views, "Channel") as channel_cls, \
+             patch.object(views, "_user_can_access_channel", return_value=True), \
+             patch.object(views, "get_channel_catchup_streams", return_value=streams), \
+             patch.object(views, "get_programme_duration", return_value=40), \
+             patch.object(views, "check_user_stream_limits", return_value=True), \
+             patch.object(views, "RedisClient") as redis_cls, \
+             patch.object(views, "reserve_profile_slot",
+                          return_value=(True, 1, None)) as reserve_mock, \
+             patch.object(views, "release_profile_slot"), \
+             patch.object(views.M3UAccount.objects, "get", return_value=account), \
+             patch.object(views.M3UAccountProfile.objects, "get",
+                          return_value=profile), \
+             patch.object(views, "get_transformed_credentials", side_effect=_fake_creds), \
+             patch.object(views, "get_user_active_connections", return_value=[]), \
+             patch.object(views, "build_timeshift_candidate_urls",
+                          return_value=["http://example.test/x.ts"]), \
+             patch.object(views, "_stream_from_provider",
+                          side_effect=[decisive, ok]) as stream_mock:
+            redis_cls.get_client.return_value = self.redis
+            channel_cls.objects.get.return_value = MagicMock(
+                id=8, name="Test", logo_id=None,
+            )
+            response = views.timeshift_proxy(
+                request, "u", "p", "8", "2026-06-08:17-00", "8.ts",
+            )
+        self.assertIs(response, ok)
+        self.assertEqual(stream_mock.call_count, 2)
+        self.assertEqual(
+            [c.kwargs["account_id"] for c in stream_mock.call_args_list], [1, 2]
+        )
+        # Reuse reserved once; failover reserved only for the other account.
+        self.assertEqual(reserve_mock.call_count, 2)
+
 
 class TimeshiftSessionRedirectTests(TestCase):
     """First request must establish a session via 301 redirect (VOD-style)."""
@@ -1632,6 +1683,22 @@ class TimeshiftStreamLimitExemptionTests(TestCase):
                    return_value=connections), \
              patch("apps.proxy.utils.CoreSettings.get_user_limits_settings",
                    return_value=self._limits_settings()):
+            allowed = _check_user_stream_limits(
+                self.user, TEST_SESSION_ID, media_id=self.MEDIA,
+            )
+        self.assertTrue(allowed)
+
+    def test_same_session_probe_allowed_without_ignore_same_channel(self):
+        connections = [{
+            "media_id": f"{self.MEDIA}_111",
+            "client_id": TEST_SESSION_ID,
+            "connected_at": 0.0,
+            "type": "timeshift",
+        }]
+        with patch("apps.proxy.utils.get_user_active_connections",
+                   return_value=connections), \
+             patch("apps.proxy.utils.CoreSettings.get_user_limits_settings",
+                   return_value=self._limits_settings(ignore_same_channel=False)):
             allowed = _check_user_stream_limits(
                 self.user, TEST_SESSION_ID, media_id=self.MEDIA,
             )
@@ -1941,7 +2008,6 @@ class TimeshiftScrubPreemptTests(TestCase):
         attempt_mock.assert_not_called()
         # Pool acquire re-reserves the idle slot once; failover must not add another.
         reserve_mock.assert_called_once_with(profile, self.redis)
-
 
 
 class RollupSelfHealDbTests(TestCase):

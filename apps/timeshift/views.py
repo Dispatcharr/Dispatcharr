@@ -187,6 +187,9 @@ def timeshift_proxy(request, username, password, stream_id, timestamp, duration)
                 redis_client, effective_session_id, user_id=user.id,
             )
 
+    last_response = None
+    decisive_accounts = set()
+
     if acquired is not None:
         descriptor, profile = acquired
         reuse_response = _stream_reused_session(
@@ -206,7 +209,16 @@ def timeshift_proxy(request, username, password, stream_id, timestamp, duration)
             debug=debug,
         )
         if reuse_response is not None:
-            return reuse_response
+            if reuse_response.status_code < 400:
+                return reuse_response
+            if getattr(reuse_response, "timeshift_passthrough", False) is True:
+                return reuse_response
+            last_response = reuse_response
+            if getattr(reuse_response, "timeshift_decisive", False):
+                try:
+                    decisive_accounts.add(int(descriptor["account_id"]))
+                except (ValueError, TypeError):
+                    pass
 
     if pool_exists and pool_busy and not _should_displace_busy_playback(
             range_header, pool_content_length, busy_serving_range,
@@ -224,8 +236,6 @@ def timeshift_proxy(request, username, password, stream_id, timestamp, duration)
         )
         return HttpResponse("Stream slot busy", status=503)
 
-    last_response = None
-    decisive_accounts = set()
     capacity_blocked = False
     for catchup_stream in catchup_streams:
         m3u_account = catchup_stream.m3u_account
@@ -943,7 +953,7 @@ def _stream_reused_session(
         return response
 
     _discard_pool_session(redis_client, session_id, profile.id)
-    return None
+    return response
 
 
 class _SlotReleasingStream:
