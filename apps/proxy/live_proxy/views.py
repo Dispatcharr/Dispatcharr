@@ -53,6 +53,18 @@ def _channel_stopping_response():
     return response
 
 
+def _drop_pre_registered_client(proxy_server, channel_id, client_id):
+    """Undo an early add_client() when setup aborts before streaming starts."""
+    mgr = proxy_server.client_managers.get(channel_id)
+    if mgr:
+        mgr.remove_client(client_id)
+        return
+    if not proxy_server.redis_client:
+        return
+    proxy_server.redis_client.srem(RedisKeys.clients(channel_id), client_id)
+    proxy_server.redis_client.delete(RedisKeys.client_metadata(channel_id, client_id))
+
+
 def _resolve_output_format(user, force=None, request=None):
     """Return the output format string to use for this client."""
     _FORMAT_ALIASES = {
@@ -110,6 +122,9 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
     client_user_agent = None
     proxy_server = ProxyServer.get_instance()
     connection_allocated = False  # Track if connection slot was allocated via get_stream()
+    # Initialized before the try so the exception handler can always safely
+    # check/clean it up, regardless of where in the setup a failure occurs.
+    _client_pre_registered = False
 
     try:
         # Generate a unique client ID
@@ -208,7 +223,9 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
                                     f"[{client_id}] Channel {channel_id} owner {owner} is dead, will reinitialize"
                                 )
 
-        _client_pre_registered = False
+        resolved_output_profile = None
+        resolved_output_format = None
+        output_options_resolved = False
 
         # Start initialization if needed
         if needs_initialization or not proxy_server.check_if_channel_exists(channel_id):
@@ -478,18 +495,28 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
             # longer than the grace period). The generator handles waiting
             # with keepalive packets via _wait_for_initialization().
             if proxy_server.am_i_owner(channel_id):
-                output_profile = _resolve_output_profile(request, user)
-                output_format = _resolve_output_format(user, force_output_format, request)
-                resolved_format = f'{output_format}:p{output_profile.id}' if output_profile else output_format
-                client_manager = proxy_server.client_managers[channel_id]
-                client_manager.add_client(
-                    client_id, client_ip, client_user_agent, user,
-                    output_format=output_format,
-                    output_profile_id=output_profile.id if output_profile else None,
+                resolved_output_profile = _resolve_output_profile(request, user)
+                resolved_output_format = _resolve_output_format(user, force_output_format, request)
+                output_options_resolved = True
+                resolved_format = (
+                    f'{resolved_output_format}:p{resolved_output_profile.id}'
+                    if resolved_output_profile else resolved_output_format
                 )
+                client_manager = proxy_server.client_managers[channel_id]
+                if not client_manager.add_client(
+                    client_id, client_ip, client_user_agent, user,
+                    output_format=resolved_output_format,
+                    output_profile_id=resolved_output_profile.id if resolved_output_profile else None,
+                ):
+                    logger.error(
+                        f"[{client_id}] Failed to register client with channel {channel_id} during init"
+                    )
+                    return JsonResponse(
+                        {"error": "Failed to register client"}, status=503
+                    )
                 logger.info(
                     f"[{client_id}] Client registered with channel {channel_id} "
-                    f"(output: {resolved_format}, profile: {output_profile.id if output_profile else None})"
+                    f"(output: {resolved_format}, profile: {resolved_output_profile.id if resolved_output_profile else None})"
                 )
                 _client_pre_registered = True
 
@@ -560,53 +587,84 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
 
         if ChannelService.is_channel_unavailable_for_new_clients(channel_id):
             if _client_pre_registered:
-                mgr = proxy_server.client_managers.get(channel_id)
-                if mgr:
-                    mgr.remove_client(client_id)
+                _drop_pre_registered_client(proxy_server, channel_id, client_id)
             logger.info(
                 f"[{client_id}] Channel {channel_id} became unavailable during setup, rejecting"
             )
             return _channel_stopping_response()
 
-        # Register client
-        output_profile = _resolve_output_profile(request, user)
-        if output_profile:
-            cmd = output_profile.build_command()
-            if not proxy_server.ensure_output_profile(channel_id, output_profile.id, cmd):
+        if not output_options_resolved:
+            resolved_output_profile = _resolve_output_profile(request, user)
+            resolved_output_format = _resolve_output_format(user, force_output_format, request)
+        # When an output profile is active, append :p{id} to the format key so each
+        # (format, profile) pair gets its own independent remux pipeline in Redis.
+        resolved_format = (
+            f'{resolved_output_format}:p{resolved_output_profile.id}'
+            if resolved_output_profile else resolved_output_format
+        )
+
+        # Pre-register before slow setup (ensure_output_profile) so the non-owner
+        # cleanup thread does not tear down local resources while connecting.
+        if not _client_pre_registered:
+            client_manager = proxy_server.client_managers.get(channel_id)
+            if not client_manager:
+                logger.error(
+                    f"[{client_id}] Channel {channel_id} missing client_manager during setup"
+                )
+                return JsonResponse(
+                    {"error": "Channel resources unavailable"}, status=503
+                )
+            if not client_manager.add_client(
+                client_id, client_ip, client_user_agent, user,
+                output_format=resolved_output_format,
+                output_profile_id=resolved_output_profile.id if resolved_output_profile else None,
+            ):
+                logger.error(
+                    f"[{client_id}] Failed to register client with channel {channel_id}"
+                )
+                return JsonResponse(
+                    {"error": "Failed to register client"}, status=503
+                )
+            _client_pre_registered = True
+            logger.info(
+                f"[{client_id}] Client registered with channel {channel_id} "
+                f"(output: {resolved_format}, profile: {resolved_output_profile.id if resolved_output_profile else None})"
+            )
+
+        if resolved_output_profile:
+            cmd = resolved_output_profile.build_command()
+            if not proxy_server.ensure_output_profile(channel_id, resolved_output_profile.id, cmd):
                 if _client_pre_registered:
-                    mgr = proxy_server.client_managers.get(channel_id)
-                    if mgr:
-                        mgr.remove_client(client_id)
+                    _drop_pre_registered_client(proxy_server, channel_id, client_id)
                 return JsonResponse(
                     {"error": "Failed to start output profile transcode"}, status=500
                 )
 
         source_buffer = proxy_server.get_buffer(
             channel_id,
-            profile=output_profile.id if output_profile else None
+            profile=resolved_output_profile.id if resolved_output_profile else None
         )
-        client_manager = proxy_server.client_managers[channel_id]
-
-        output_format = _resolve_output_format(user, force_output_format, request)
-        # When an output profile is active, append :p{id} to the format key so each
-        # (format, profile) pair gets its own independent remux pipeline in Redis.
-        resolved_format = f'{output_format}:p{output_profile.id}' if output_profile else output_format
-        if not _client_pre_registered:
-            client_manager.add_client(
-                client_id, client_ip, client_user_agent, user,
-                output_format=output_format,
-                output_profile_id=output_profile.id if output_profile else None,
+        client_manager = proxy_server.client_managers.get(channel_id)
+        if not client_manager:
+            if _client_pre_registered:
+                _drop_pre_registered_client(proxy_server, channel_id, client_id)
+            logger.error(
+                f"[{client_id}] Channel {channel_id} client_manager removed during setup"
             )
-            logger.info(
-                f"[{client_id}] Client registered with channel {channel_id} "
-                f"(output: {resolved_format}, profile: {output_profile.id if output_profile else None})"
+            return JsonResponse(
+                {"error": "Channel resources unavailable"}, status=503
             )
 
-        if output_format == 'fmp4':
-            proxy_server.ensure_output_format(
+        if resolved_output_format == 'fmp4':
+            if not proxy_server.ensure_output_format(
                 channel_id, resolved_format,
-                source_buffer=source_buffer if output_profile else None,
-            )
+                source_buffer=source_buffer if resolved_output_profile else None,
+            ):
+                if _client_pre_registered:
+                    _drop_pre_registered_client(proxy_server, channel_id, client_id)
+                return JsonResponse(
+                    {"error": "Failed to start output format remux"}, status=500
+                )
             generate = create_fmp4_stream_generator(
                 channel_id, client_id, client_ip, client_user_agent, channel_initializing, user=user,
                 fmt=resolved_format,
@@ -635,6 +693,15 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
                     logger.warning(f"[{client_id}] Failed to release stream in exception handler")
             except Exception:
                 pass
+        # Client may have been pre-registered (before ensure_output_profile /
+        # get_buffer / generator setup) to protect against the non-owner
+        # cleanup thread. If setup then failed with an unhandled exception,
+        # remove it so it doesn't linger as a phantom connection.
+        if _client_pre_registered:
+            try:
+                _drop_pre_registered_client(proxy_server, channel_id, client_id)
+            except Exception:
+                logger.warning(f"[{client_id}] Failed to remove client during exception cleanup")
         return JsonResponse({"error": str(e)}, status=500)
 
 

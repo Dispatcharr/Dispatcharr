@@ -59,6 +59,7 @@ class StreamTsDbCleanupTests(SimpleTestCase):
         response = stream_ts(request, "channel-uuid")
 
         self.assertIsInstance(response, StreamingHttpResponse)
+        client_manager.add_client.assert_called_once()
         mock_close.assert_called_once()
 
 
