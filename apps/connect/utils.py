@@ -93,7 +93,7 @@ def trigger_event(event_name, payload):
             )
 
     pm = PluginManager.get()
-    pm.discover_plugins(sync_db=False, use_cache=True)
+    pm.discover_plugins(sync_db=False, use_cache=True, release_connections=False)
     handlers = list(pm.iter_actions_for_event(event_name))
     if not handlers:
         return
