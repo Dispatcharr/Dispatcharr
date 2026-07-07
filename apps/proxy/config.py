@@ -7,6 +7,8 @@ class BaseConfig:
     CHUNK_SIZE = 8192
     CLIENT_POLL_INTERVAL = 0.1
     MAX_RETRIES = 3
+    RETRY_WINDOW_SECONDS = 1800  # Reset retry counter after this long without a failure
+    STABLE_CONNECTION_THRESHOLD = 30  # Seconds of uptime before switch rotation state resets
     RETRY_WAIT_INTERVAL = 0.5  # seconds to wait between retries
     CONNECTION_TIMEOUT = 10  # seconds to wait for initial connection
     MAX_STREAM_SWITCHES = 10  # Maximum number of stream switch attempts before giving up

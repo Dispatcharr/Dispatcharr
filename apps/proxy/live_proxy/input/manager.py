@@ -38,6 +38,9 @@ class StreamManager:
         self.connected = False
         self.retry_count = 0
         self.max_retries = ConfigHelper.max_retries()
+        self._retry_window_seconds = ConfigHelper.retry_window_seconds()
+        self._last_failure_time = None
+        self._stable_connection_threshold = ConfigHelper.stable_connection_threshold()
         self.current_response = None
         self.current_session = None
         self.url_switching = False
@@ -156,6 +159,29 @@ class StreamManager:
         session.mount('https://', adapter)
 
         return session
+
+    def _record_connection_failure(self):
+        """Record a failure; reset the counter if the last one was long ago."""
+        now = time.time()
+        if (
+            self._last_failure_time is not None
+            and (now - self._last_failure_time) > self._retry_window_seconds
+        ):
+            self.retry_count = 0
+        self._last_failure_time = now
+        self.retry_count += 1
+        return self.retry_count
+
+    def _clear_connection_failure_history(self):
+        self.retry_count = 0
+        self._last_failure_time = None
+
+    def _note_stable_connection(self):
+        """Reset stream-switch bookkeeping after sustained successful playback."""
+        if self.current_stream_id:
+            self.tried_stream_ids = {self.current_stream_id}
+        else:
+            self.tried_stream_ids.clear()
 
     def _wait_for_existing_processes_to_close(self, timeout=5.0):
         """Wait for existing processes/connections to fully close before establishing new ones"""
@@ -373,6 +399,7 @@ class StreamManager:
                     # Attempt reconnect without changing streams
                     if self._attempt_reconnect():
                         logger.info(f"Health-requested reconnect successful for channel {self.channel_id}")
+                        self._clear_connection_failure_history()
                         continue  # Go back to main loop
                     else:
                         logger.warning(f"Health-requested reconnect failed, will try stream switch for channel {self.channel_id}")
@@ -385,10 +412,11 @@ class StreamManager:
                     if self._try_next_stream():
                         logger.info(f"Health-requested stream switch successful for channel {self.channel_id}")
                         stream_switch_attempts += 1
-                        self.retry_count = 0  # Reset retries for new stream
+                        self._clear_connection_failure_history()
                         continue  # Go back to main loop with new stream
                     else:
                         logger.error(f"Health-requested stream switch failed for channel {self.channel_id}")
+                        self._clear_connection_failure_history()
                         # Continue with normal flow
 
                 # Check stream type before connecting
@@ -401,19 +429,26 @@ class StreamManager:
                     self.transcode = True
                     # We'll override the stream profile selection with ffmpeg in the transcoding section
                     self.force_ffmpeg = True
-                # Reset connection retry count for this specific URL
-                self.retry_count = 0
                 url_failed = False
                 if self.url_switching:
                     logger.debug(f"Skipping connection attempt during URL switch for channel {self.channel_id}")
                     gevent.sleep(0.1)
                     continue
                 # Connection retry loop for current URL
-                while self.running and self.retry_count < self.max_retries and not url_failed and not self.needs_stream_switch:
+                while (
+                    self.running
+                    and self.retry_count < self.max_retries
+                    and not url_failed
+                    and not self.needs_stream_switch
+                ):
                     if not self._ensure_owner_or_stop():
                         break
 
-                    logger.info(f"Connection attempt {self.retry_count + 1}/{self.max_retries} for URL: {self.url} for channel {self.channel_id}")
+                    attempt = self.retry_count + 1
+                    logger.info(
+                        f"Connection attempt {attempt}/{self.max_retries} "
+                        f"for URL: {self.url} for channel {self.channel_id}"
+                    )
 
                     # Handle connection based on whether we transcode or not
                     connection_result = False
@@ -434,7 +469,7 @@ class StreamManager:
                                         'channel_reconnect',
                                         channel_id=self.channel_id,
                                         channel_name=self.channel_name,
-                                        attempt=self.retry_count + 1,
+                                        attempt=attempt,
                                         max_attempts=self.max_retries
                                     )
                                 except Exception as e:
@@ -444,16 +479,18 @@ class StreamManager:
                             self._process_stream_data()
                             # If we get here, the connection was closed/failed
 
-                            # Reset stream switch attempts if the connection lasted longer than threshold
-                            # This indicates we had a stable connection for a while before failing
                             connection_duration = time.time() - connection_start_time
-                            stable_connection_threshold = 30  # 30 seconds threshold
+                            stable_threshold = self._stable_connection_threshold
 
                             if self.needs_stream_switch:
                                 logger.info(f"Stream needs to switch after {connection_duration:.1f} seconds for channel: {self.channel_id}")
                                 break  # Exit to switch streams
-                            if connection_duration > stable_connection_threshold:
-                                logger.info(f"Stream was stable for {connection_duration:.1f} seconds, resetting switch attempts counter for channel: {self.channel_id}")
+                            if connection_duration >= stable_threshold:
+                                logger.info(
+                                    f"Stream was stable for {connection_duration:.1f} seconds, "
+                                    f"resetting switch rotation state for channel: {self.channel_id}"
+                                )
+                                self._note_stable_connection()
                                 stream_switch_attempts = 0
 
                         # Connection failed or ended - decide what to do next
@@ -461,14 +498,15 @@ class StreamManager:
                             # Normal shutdown requested
                             return
 
-                        # Connection failed, increment retry count
-                        self.retry_count += 1
                         self.connected = False
+                        failures = self._record_connection_failure()
 
-                        # If we've reached max retries, mark this URL as failed
-                        if self.retry_count >= self.max_retries:
+                        if failures >= self.max_retries:
                             url_failed = True
-                            logger.warning(f"Maximum retry attempts ({self.max_retries}) reached for URL: {self.url} for channel: {self.channel_id}")
+                            logger.warning(
+                                f"Maximum retry attempts ({self.max_retries}) reached for URL: {self.url} "
+                                f"for channel: {self.channel_id}"
+                            )
 
                             # Log connection error event
                             try:
@@ -484,16 +522,20 @@ class StreamManager:
                                 logger.error(f"Could not log connection error event: {e}")
                         else:
                             # Wait with exponential backoff before retrying
-                            timeout = min(.25 * self.retry_count, 3)  # Cap at 3 seconds
-                            logger.info(f"Reconnecting in {timeout} seconds... (attempt {self.retry_count}/{self.max_retries}) for channel: {self.channel_id}")
+                            timeout = min(.25 * failures, 3)  # Cap at 3 seconds
+                            logger.info(
+                                f"Reconnecting in {timeout} seconds... "
+                                f"(attempt {failures}/{self.max_retries}) "
+                                f"for channel: {self.channel_id}"
+                            )
                             gevent.sleep(timeout)
 
                     except Exception as e:
                         logger.error(f"Connection error on channel: {self.channel_id}: {e}", exc_info=True)
-                        self.retry_count += 1
                         self.connected = False
+                        failures = self._record_connection_failure()
 
-                        if self.retry_count >= self.max_retries:
+                        if failures >= self.max_retries:
                             url_failed = True
 
                             # Log connection error event with exception details
@@ -511,8 +553,12 @@ class StreamManager:
                                 logger.error(f"Could not log connection error event: {log_error}")
                         else:
                             # Wait with exponential backoff before retrying
-                            timeout = min(.25 * self.retry_count, 3)  # Cap at 3 seconds
-                            logger.info(f"Reconnecting in {timeout} seconds after error... (attempt {self.retry_count}/{self.max_retries}) for channel: {self.channel_id}")
+                            timeout = min(.25 * failures, 3)  # Cap at 3 seconds
+                            logger.info(
+                                f"Reconnecting in {timeout} seconds after error... "
+                                f"(attempt {failures}/{self.max_retries}) "
+                                f"for channel: {self.channel_id}"
+                            )
                             gevent.sleep(timeout)
 
                 # If URL failed and we're still running, try switching to another stream
@@ -525,8 +571,7 @@ class StreamManager:
                         # Successfully switched to a new stream, continue with the new URL
                         stream_switch_attempts += 1
                         logger.info(f"Successfully switched to new URL: {self.url} (switch attempt {stream_switch_attempts}/{max_stream_switches}) for channel: {self.channel_id}")
-                        # Reset retry count for the new stream - important for the loop to work correctly
-                        self.retry_count = 0
+                        self._clear_connection_failure_history()
                         # Continue outer loop with new URL - DON'T add a break statement here
                     else:
                         # No more streams to try
@@ -1391,7 +1436,7 @@ class StreamManager:
                 logger.info(f"Updated stream ID from {old_stream_id} to {stream_id} for channel {self.channel_id}")
 
             # Reset retry counter to allow immediate reconnect
-            self.retry_count = 0
+            self._clear_connection_failure_history()
 
             # Also reset buffer position to prevent stale data after URL change
             if hasattr(self.buffer, 'reset_buffer_position'):

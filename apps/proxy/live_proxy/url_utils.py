@@ -306,6 +306,33 @@ def get_stream_info_for_switch(channel_id: str, target_stream_id: Optional[int] 
     finally:
         close_old_connections()
 
+def order_alternates_from_current(
+    alternate_streams: List[dict],
+    ordered_stream_ids: List[int],
+    current_stream_id: Optional[int],
+) -> List[dict]:
+    """
+    Reorder failover candidates to start after the current stream in channel order,
+    wrapping around.
+    """
+    if not alternate_streams or not ordered_stream_ids or current_stream_id is None:
+        return alternate_streams
+
+    alt_by_id = {entry['stream_id']: entry for entry in alternate_streams}
+
+    try:
+        current_index = ordered_stream_ids.index(current_stream_id)
+    except ValueError:
+        return alternate_streams
+
+    rotated = []
+    for offset in range(1, len(ordered_stream_ids)):
+        stream_id = ordered_stream_ids[(current_index + offset) % len(ordered_stream_ids)]
+        entry = alt_by_id.get(stream_id)
+        if entry is not None:
+            rotated.append(entry)
+    return rotated
+
 def get_alternate_streams(channel_id: str, current_stream_id: Optional[int] = None) -> List[dict]:
     """
     Get alternative streams for a channel when the current stream fails.
@@ -331,9 +358,10 @@ def get_alternate_streams(channel_id: str, current_stream_id: Optional[int] = No
 
         # Get all assigned streams for this channel using the correct ordering
         streams = channel.streams.all().order_by('channelstream__order')
-        logger.debug(f"Channel {channel_id} has {streams.count()} total assigned streams")
+        ordered_stream_ids = list(streams.values_list('id', flat=True))
+        logger.debug(f"Channel {channel_id} has {len(ordered_stream_ids)} total assigned streams")
 
-        if not streams.exists():
+        if not ordered_stream_ids:
             logger.warning(f"No streams assigned to channel {channel_id}")
             return []
 
@@ -423,7 +451,9 @@ def get_alternate_streams(channel_id: str, current_stream_id: Optional[int] = No
         else:
             logger.warning(f"No alternate streams with available connections found for channel {channel_id}")
 
-        return alternate_streams
+        return order_alternates_from_current(
+            alternate_streams, ordered_stream_ids, current_stream_id
+        )
     except Exception as e:
         logger.error(f"Error getting alternate streams for channel {channel_id}: {e}", exc_info=True)
         return []
