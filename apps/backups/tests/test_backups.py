@@ -10,7 +10,7 @@ from django.contrib.auth import get_user_model
 from rest_framework.test import APIClient
 from rest_framework_simplejwt.tokens import RefreshToken
 
-from . import services
+from apps.backups import services
 
 User = get_user_model()
 
@@ -939,7 +939,7 @@ class BackupSchedulerTestCase(TestCase):
 
     def test_get_schedule_settings_defaults(self):
         """Test that get_schedule_settings returns defaults when no settings exist"""
-        from . import scheduler
+        from apps.backups import scheduler
 
         settings = scheduler.get_schedule_settings()
 
@@ -953,7 +953,7 @@ class BackupSchedulerTestCase(TestCase):
 
     def test_update_schedule_settings_stores_values(self):
         """Test that update_schedule_settings stores values correctly"""
-        from . import scheduler
+        from apps.backups import scheduler
 
         result = scheduler.update_schedule_settings({
             'enabled': True,
@@ -976,7 +976,7 @@ class BackupSchedulerTestCase(TestCase):
 
     def test_update_schedule_settings_invalid_frequency(self):
         """Test that invalid frequency raises ValueError"""
-        from . import scheduler
+        from apps.backups import scheduler
 
         with self.assertRaises(ValueError) as context:
             scheduler.update_schedule_settings({'frequency': 'monthly'})
@@ -985,7 +985,7 @@ class BackupSchedulerTestCase(TestCase):
 
     def test_update_schedule_settings_invalid_time(self):
         """Test that invalid time raises ValueError"""
-        from . import scheduler
+        from apps.backups import scheduler
 
         with self.assertRaises(ValueError) as context:
             scheduler.update_schedule_settings({'time': 'invalid'})
@@ -994,7 +994,7 @@ class BackupSchedulerTestCase(TestCase):
 
     def test_update_schedule_settings_invalid_day_of_week(self):
         """Test that invalid day_of_week raises ValueError"""
-        from . import scheduler
+        from apps.backups import scheduler
 
         with self.assertRaises(ValueError) as context:
             scheduler.update_schedule_settings({'day_of_week': 7})
@@ -1003,7 +1003,7 @@ class BackupSchedulerTestCase(TestCase):
 
     def test_update_schedule_settings_invalid_retention(self):
         """Test that negative retention_count raises ValueError"""
-        from . import scheduler
+        from apps.backups import scheduler
 
         with self.assertRaises(ValueError) as context:
             scheduler.update_schedule_settings({'retention_count': -1})
@@ -1012,7 +1012,7 @@ class BackupSchedulerTestCase(TestCase):
 
     def test_sync_creates_periodic_task_when_enabled(self):
         """Test that enabling schedule creates a PeriodicTask"""
-        from . import scheduler
+        from apps.backups import scheduler
         from django_celery_beat.models import PeriodicTask
 
         scheduler.update_schedule_settings({
@@ -1028,7 +1028,7 @@ class BackupSchedulerTestCase(TestCase):
 
     def test_sync_deletes_periodic_task_when_disabled(self):
         """Test that disabling schedule removes PeriodicTask"""
-        from . import scheduler
+        from apps.backups import scheduler
         from django_celery_beat.models import PeriodicTask
 
         # First enable
@@ -1047,7 +1047,7 @@ class BackupSchedulerTestCase(TestCase):
 
     def test_weekly_schedule_sets_day_of_week(self):
         """Test that weekly schedule sets correct day_of_week in crontab"""
-        from . import scheduler
+        from apps.backups import scheduler
         from django_celery_beat.models import PeriodicTask
 
         scheduler.update_schedule_settings({
@@ -1062,7 +1062,7 @@ class BackupSchedulerTestCase(TestCase):
 
     def test_cron_expression_stores_value(self):
         """Test that cron_expression is stored and retrieved correctly"""
-        from . import scheduler
+        from apps.backups import scheduler
 
         result = scheduler.update_schedule_settings({
             'enabled': True,
@@ -1077,7 +1077,7 @@ class BackupSchedulerTestCase(TestCase):
 
     def test_cron_expression_creates_correct_schedule(self):
         """Test that cron expression creates correct CrontabSchedule"""
-        from . import scheduler
+        from apps.backups import scheduler
         from django_celery_beat.models import PeriodicTask
 
         scheduler.update_schedule_settings({
@@ -1094,7 +1094,7 @@ class BackupSchedulerTestCase(TestCase):
 
     def test_cron_expression_invalid_format(self):
         """Test that invalid cron expression raises ValueError"""
-        from . import scheduler
+        from apps.backups import scheduler
 
         # Too few parts
         with self.assertRaises(ValueError) as context:
@@ -1106,7 +1106,7 @@ class BackupSchedulerTestCase(TestCase):
 
     def test_cron_expression_empty_uses_simple_mode(self):
         """Test that empty cron_expression falls back to simple frequency mode"""
-        from . import scheduler
+        from apps.backups import scheduler
         from django_celery_beat.models import PeriodicTask
 
         scheduler.update_schedule_settings({
@@ -1123,7 +1123,7 @@ class BackupSchedulerTestCase(TestCase):
 
     def test_cron_expression_overrides_simple_settings(self):
         """Test that cron_expression takes precedence over frequency/time"""
-        from . import scheduler
+        from apps.backups import scheduler
         from django_celery_beat.models import PeriodicTask
 
         scheduler.update_schedule_settings({
@@ -1140,7 +1140,7 @@ class BackupSchedulerTestCase(TestCase):
 
     def test_periodic_task_uses_system_timezone(self):
         """Test that CrontabSchedule is created with the system timezone"""
-        from . import scheduler
+        from apps.backups import scheduler
         from django_celery_beat.models import PeriodicTask
         from core.models import CoreSettings
 
@@ -1164,7 +1164,7 @@ class BackupSchedulerTestCase(TestCase):
 
     def test_periodic_task_timezone_updates_with_schedule(self):
         """Test that CrontabSchedule timezone is updated when schedule is modified"""
-        from . import scheduler
+        from apps.backups import scheduler
         from django_celery_beat.models import PeriodicTask
         from core.models import CoreSettings
 
@@ -1197,7 +1197,7 @@ class BackupSchedulerTestCase(TestCase):
 
     def test_orphaned_crontab_cleanup(self):
         """Test that old CrontabSchedule is deleted when schedule changes"""
-        from . import scheduler
+        from apps.backups import scheduler
         from django_celery_beat.models import PeriodicTask, CrontabSchedule
 
         # Create initial daily schedule
@@ -1246,7 +1246,7 @@ class BackupTasksTestCase(TestCase):
     @patch('apps.backups.tasks.services.delete_backup')
     def test_cleanup_old_backups_keeps_recent(self, mock_delete, mock_list):
         """Test that cleanup keeps the most recent backups"""
-        from .tasks import _cleanup_old_backups
+        from apps.backups.tasks import _cleanup_old_backups
 
         mock_list.return_value = [
             {'name': 'backup-3.zip'},  # newest
@@ -1263,7 +1263,7 @@ class BackupTasksTestCase(TestCase):
     @patch('apps.backups.tasks.services.delete_backup')
     def test_cleanup_old_backups_does_nothing_when_under_limit(self, mock_delete, mock_list):
         """Test that cleanup does nothing when under retention limit"""
-        from .tasks import _cleanup_old_backups
+        from apps.backups.tasks import _cleanup_old_backups
 
         mock_list.return_value = [
             {'name': 'backup-2.zip'},
@@ -1279,7 +1279,7 @@ class BackupTasksTestCase(TestCase):
     @patch('apps.backups.tasks.services.delete_backup')
     def test_cleanup_old_backups_zero_retention_keeps_all(self, mock_delete, mock_list):
         """Test that retention_count=0 keeps all backups"""
-        from .tasks import _cleanup_old_backups
+        from apps.backups.tasks import _cleanup_old_backups
 
         mock_list.return_value = [
             {'name': 'backup-3.zip'},
@@ -1296,7 +1296,7 @@ class BackupTasksTestCase(TestCase):
     @patch('apps.backups.tasks._cleanup_old_backups')
     def test_scheduled_backup_task_success(self, mock_cleanup, mock_create):
         """Test scheduled backup task success"""
-        from .tasks import scheduled_backup_task
+        from apps.backups.tasks import scheduled_backup_task
 
         mock_backup_file = MagicMock()
         mock_backup_file.name = 'scheduled-backup.zip'
@@ -1316,7 +1316,7 @@ class BackupTasksTestCase(TestCase):
     @patch('apps.backups.tasks._cleanup_old_backups')
     def test_scheduled_backup_task_no_cleanup_when_retention_zero(self, mock_cleanup, mock_create):
         """Test scheduled backup skips cleanup when retention is 0"""
-        from .tasks import scheduled_backup_task
+        from apps.backups.tasks import scheduled_backup_task
 
         mock_backup_file = MagicMock()
         mock_backup_file.name = 'scheduled-backup.zip'
@@ -1332,7 +1332,7 @@ class BackupTasksTestCase(TestCase):
     @patch('apps.backups.tasks.services.create_backup')
     def test_scheduled_backup_task_failure(self, mock_create):
         """Test scheduled backup task handles failure"""
-        from .tasks import scheduled_backup_task
+        from apps.backups.tasks import scheduled_backup_task
 
         mock_create.side_effect = Exception("Backup failed")
 
