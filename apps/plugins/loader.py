@@ -68,6 +68,7 @@ class PluginManager:
         sync_db: bool = True,
         force_reload: bool = False,
         use_cache: bool = False,
+        release_connections: bool = True,
     ) -> Dict[str, LoadedPlugin]:
         token = self._get_reload_token()
         if use_cache and not force_reload:
@@ -103,7 +104,8 @@ class PluginManager:
             )
         finally:
             # Discovery runs outside Django's request/task cycle (boot, worker_ready).
-            close_old_connections()
+            if release_connections:
+                close_old_connections()
 
     def _discover_plugins_impl(
         self,
