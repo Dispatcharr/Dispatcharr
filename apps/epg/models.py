@@ -90,17 +90,21 @@ class EPGSource(models.Model):
                         file_ext = '.gz'
                     elif mime_type == 'application/zip':
                         file_ext = '.zip'
+                    elif mime_type == 'application/x-xz':
+                        file_ext = '.xz'
                     elif mime_type == 'application/xml' or mime_type == 'text/xml':
                         file_ext = '.xml'
                 else:
                     try:
                         with open(self.file_path, 'rb') as f:
-                            header = f.read(4)
-                            if header[:2] == b'\x1f\x8b':
+                            header = f.read(6)
+                            if header.startswith(b'\x1f\x8b'):
                                 file_ext = '.gz'
-                            elif header[:2] == b'PK':
+                            elif header.startswith(b'PK'):
                                 file_ext = '.zip'
-                            elif header[:5] == b'<?xml' or header[:5] == b'<tv>':
+                            elif header.startswith(b'\xfd7zXZ\x00'):
+                                file_ext = '.xz'
+                            elif header.startswith(b'<?xml') or header.startswith(b'<tv>'):
                                 file_ext = '.xml'
                     except Exception:
                         pass
