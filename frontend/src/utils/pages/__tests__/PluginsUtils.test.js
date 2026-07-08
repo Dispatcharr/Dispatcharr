@@ -10,6 +10,7 @@ vi.mock('../../../api.js', () => ({
     importPlugin: vi.fn(),
     reloadPlugins: vi.fn(),
     deletePlugin: vi.fn(),
+    getPluginDetailManifest: vi.fn(),
   },
 }));
 
@@ -296,6 +297,51 @@ describe('PluginsUtils', () => {
       PluginsUtils.deletePluginByKey(key);
 
       expect(API.deletePlugin).toHaveBeenCalledWith(null);
+    });
+  });
+
+  describe('getPluginDetailManifest', () => {
+    it('should call API getPluginDetailManifest with repoId and manifestUrl', () => {
+      const repoId = 'test-repo';
+      const manifestUrl = 'https://example.com/manifest.json';
+
+      PluginsUtils.getPluginDetailManifest(repoId, manifestUrl);
+
+      expect(API.getPluginDetailManifest).toHaveBeenCalledWith(
+        repoId,
+        manifestUrl
+      );
+      expect(API.getPluginDetailManifest).toHaveBeenCalledTimes(1);
+    });
+
+    it('should return API response', () => {
+      const repoId = 'test-repo';
+      const manifestUrl = 'https://example.com/manifest.json';
+      const mockResponse = { name: 'Test Plugin', version: '1.0.0' };
+
+      API.getPluginDetailManifest.mockReturnValue(mockResponse);
+
+      const result = PluginsUtils.getPluginDetailManifest(repoId, manifestUrl);
+
+      expect(result).toEqual(mockResponse);
+    });
+
+    it('should handle empty string repoId and manifestUrl', () => {
+      const repoId = '';
+      const manifestUrl = '';
+
+      PluginsUtils.getPluginDetailManifest(repoId, manifestUrl);
+
+      expect(API.getPluginDetailManifest).toHaveBeenCalledWith('', '');
+    });
+
+    it('should handle null repoId and manifestUrl', () => {
+      const repoId = null;
+      const manifestUrl = null;
+
+      PluginsUtils.getPluginDetailManifest(repoId, manifestUrl);
+
+      expect(API.getPluginDetailManifest).toHaveBeenCalledWith(null, null);
     });
   });
 });
