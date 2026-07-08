@@ -2,15 +2,7 @@ import useSettingsStore from '../../../store/settings.jsx';
 import React, { useEffect, useState } from 'react';
 import { useForm } from '@mantine/form';
 import { updateSetting } from '../../../utils/pages/SettingsUtils.js';
-import {
-  Alert,
-  Button,
-  Flex,
-  NumberInput,
-  Stack,
-  TextInput,
-  Checkbox,
-} from '@mantine/core';
+import { Alert, Button, Flex, Stack, Checkbox } from '@mantine/core';
 import { USER_LIMITS_OPTIONS } from '../../../constants.js';
 
 const USER_LIMIT_DEFAULTS = Object.keys(USER_LIMITS_OPTIONS).reduce(
@@ -77,20 +69,14 @@ const UserLimitsForm = React.memo(({ active }) => {
           ></Alert>
         )}
 
-        {Object.keys(USER_LIMITS_OPTIONS).reduce((acc, key) => {
-          const option = USER_LIMITS_OPTIONS[key];
-          acc.push(
-            <Checkbox
-              key={key}
-              label={option.label}
-              description={option.description}
-              {...userLimitSettingsForm.getInputProps(key, {
-                type: 'checkbox',
-              })}
-            />
-          );
-          return acc;
-        }, [])}
+        {Object.entries(USER_LIMITS_OPTIONS).map(([key, option]) => (
+          <Checkbox
+            key={key}
+            label={option.label}
+            description={option.description}
+            {...userLimitSettingsForm.getInputProps(key, { type: 'checkbox' })}
+          />
+        ))}
 
         <Flex mih={50} gap="xs" justify="space-between" align="flex-end">
           <Button

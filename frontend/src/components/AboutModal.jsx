@@ -10,8 +10,8 @@ import {
   Text,
   Tooltip,
 } from '@mantine/core';
-import { BookOpen, Github, Heart, Users } from 'lucide-react';
-import { DiscordIcon } from './icons.jsx';
+import { BookOpen, Heart, Users } from 'lucide-react';
+import { DiscordIcon, GitHubIcon } from './icons.jsx';
 import logo from '../images/logo.png';
 import useSettingsStore from '../store/settings';
 
@@ -76,7 +76,7 @@ const AboutModal = ({ isOpen, onClose }) => {
               target="_blank"
               rel="noopener noreferrer"
               variant="default"
-              leftSection={<Github size={15} />}
+              leftSection={<GitHubIcon size={15} />}
               fullWidth
             >
               GitHub

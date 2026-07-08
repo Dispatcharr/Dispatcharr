@@ -1,6 +1,5 @@
 import React, { useState } from 'react';
 import {
-  ActionIcon,
   Avatar,
   Badge,
   Box,
@@ -33,8 +32,7 @@ import {
   PluginSecurityWarning,
   PluginSupportDisclaimer,
 } from '../PluginWarnings.jsx';
-import { useNavigate, useLocation } from 'react-router-dom';
-import API from '../../api';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { usePluginStore } from '../../store/plugins';
 import PluginDetailPanel from '../PluginDetailPanel.jsx';
 import {
@@ -43,6 +41,11 @@ import {
   getInstallInfo,
 } from '../../utils/components/pluginUtils.js';
 import SizedInstallButton from '../theme/SizedInstallButton.jsx';
+import {
+  deletePluginByKey,
+  getPluginDetailManifest,
+  setPluginEnabled,
+} from '../../utils/pages/PluginsUtils.js';
 
 const RepoBadge = ({ isOfficial, repoName, signatureVerified }) => {
   if (isOfficial) {
@@ -319,7 +322,7 @@ const AvailablePluginCard = ({
     if (enableNow && installedKey) {
       setEnabling(true);
       try {
-        await API.setPluginEnabled(installedKey, true);
+        await setPluginEnabled(installedKey, true);
       } finally {
         setEnabling(false);
       }
@@ -333,7 +336,7 @@ const AvailablePluginCard = ({
     if (!key) return;
     setUninstalling(true);
     try {
-      const resp = await API.deletePlugin(key);
+      const resp = await deletePluginByKey(key);
       if (resp?.success) {
         onUninstalled?.(plugin.slug);
         usePluginStore.getState().invalidatePlugins();
@@ -379,7 +382,7 @@ const AvailablePluginCard = ({
       return;
     }
     setDetailLoading(true);
-    const result = await API.getPluginDetailManifest(
+    const result = await getPluginDetailManifest(
       plugin.repo_id,
       plugin.manifest_url
     );
@@ -534,17 +537,17 @@ const AvailablePluginCard = ({
       <Group justify="space-between" mt="sm" align="center" wrap="nowrap">
         {!meetsVersion &&
           (() => {
-            const parts = [];
-            if (!meetsMinVersion)
-              parts.push(`${plugin.min_dispatcharr_version} or newer`);
-            if (!meetsMaxVersion)
-              parts.push(`${plugin.max_dispatcharr_version} or older`);
+            const tooltip = buildCompatibilityTooltip(
+              meetsMinVersion,
+              plugin,
+              meetsMaxVersion
+            );
             const label = !meetsMinVersion
               ? `Min ${plugin.min_dispatcharr_version}`
               : `Max ${plugin.max_dispatcharr_version}`;
             return (
               <Tooltip
-                label={`Incompatible: requires Dispatcharr ${parts.join(' and ')} (you have v${appVersion})`}
+                label={`Incompatible: requires Dispatcharr ${tooltip} (you have v${appVersion})`}
               >
                 <Group gap={4} align="center" wrap="nowrap">
                   <AlertTriangle
@@ -775,16 +778,10 @@ const AvailablePluginCard = ({
 
       {/* Unified install confirmation modal */}
       {(() => {
-        const isDowngrade =
-          pendingInstall &&
-          plugin.installed_version &&
-          compareVersions(pendingInstall.version, plugin.installed_version) < 0;
-        const isUpdate =
-          pendingInstall &&
-          plugin.installed_version &&
-          !isDowngrade &&
-          compareVersions(pendingInstall.version, plugin.installed_version) > 0;
-        const isBadSig = plugin.signature_verified === false;
+        const { isDowngrade, isUpdate, isBadSig } = getInstallInfo(
+          pendingInstall,
+          plugin
+        );
         const actionLabel = isDowngrade
           ? 'Downgrade'
           : isUpdate
