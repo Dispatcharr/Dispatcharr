@@ -9,7 +9,11 @@ export const runPluginAction = async (key, actionId) => {
 export const setPluginEnabled = async (key, next) => {
   return await API.setPluginEnabled(key, next);
 };
-export const importPlugin = async (importFile, overwrite = false, silent = false) => {
+export const importPlugin = async (
+  importFile,
+  overwrite = false,
+  silent = false
+) => {
   return await API.importPlugin(importFile, overwrite, silent);
 };
 export const reloadPlugins = async () => {
@@ -17,4 +21,7 @@ export const reloadPlugins = async () => {
 };
 export const deletePluginByKey = (key) => {
   return API.deletePlugin(key);
+};
+export const getPluginDetailManifest = (repoId, manifestUrl) => {
+  return API.getPluginDetailManifest(repoId, manifestUrl);
 };
