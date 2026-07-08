@@ -6,6 +6,7 @@ import requests
 import os
 import gc
 import gzip, zipfile
+import lzma
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from celery import shared_task
 from django.conf import settings
@@ -135,9 +136,11 @@ _EXTINF_ATTR_RE = re.compile(r'([^\s=]+)\s*=\s*(["\'])(.*?)\2')
 
 
 def _open_m3u_text_source(source_path):
-    """Open an on-disk M3U (or .m3u.gz) file for line-by-line parsing."""
+    """Open an on-disk M3U (or .m3u.gz / .m3u.xz) file for line-by-line parsing."""
     if source_path.endswith(".gz"):
         return gzip.open(source_path, "rt", encoding="utf-8")
+    if source_path.endswith(".xz"):
+        return lzma.open(source_path, "rt", encoding="utf-8")
     return open(source_path, "r", encoding="utf-8")
 
 
@@ -502,6 +505,9 @@ def fetch_m3u_lines(account, use_cache=False):
             if account.file_path.endswith(".gz"):
                 return account.file_path, True
 
+            elif account.file_path.endswith(".xz"):
+                return account.file_path, True
+
             elif account.file_path.endswith(".zip"):
                 with zipfile.ZipFile(account.file_path, "r") as zip_file:
                     for name in zip_file.namelist():
@@ -526,7 +532,7 @@ def fetch_m3u_lines(account, use_cache=False):
             else:
                 return account.file_path, True
 
-        except (IOError, OSError, zipfile.BadZipFile, gzip.BadGzipFile) as e:
+        except (IOError, OSError, zipfile.BadZipFile, gzip.BadGzipFile, lzma.LZMAError) as e:
             error_msg = f"Error opening file {account.file_path}: {e}"
             logger.error(error_msg)
             account.status = M3UAccount.Status.ERROR

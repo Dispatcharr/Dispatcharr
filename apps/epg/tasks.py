@@ -3,6 +3,7 @@
 import logging
 import gzip
 import html.entities
+import lzma
 import os
 import uuid
 import requests
@@ -766,7 +767,7 @@ def fetch_xmltv(source):
         logger.info(f"Using existing local file for EPG source: {source.name} at {source.file_path}")
 
         # Check if the existing file is compressed and we need to extract it
-        if source.file_path.endswith(('.gz', '.zip')) and not source.file_path.endswith('.xml'):
+        if source.file_path.endswith(('.gz', '.zip', '.xz')) and not source.file_path.endswith('.xml'):
             try:
                 # Define the path for the extracted file in the cache directory
                 cache_dir = os.path.join(settings.MEDIA_ROOT, "cached_epg")
@@ -1147,7 +1148,7 @@ def fetch_xmltv(source):
 
 def extract_compressed_file(file_path, output_path=None, delete_original=False):
     """
-    Extracts a compressed file (.gz or .zip) to an XML file.
+    Extracts a compressed file (.gz, .zip, or .xz) to an XML file.
 
     Args:
         file_path: Path to the compressed file
@@ -1208,6 +1209,42 @@ def extract_compressed_file(file_path, output_path=None, delete_original=False):
                 return None
 
             logger.info(f"Successfully extracted gzip file to: {extracted_path}")
+
+            # Delete original compressed file if requested
+            if delete_original:
+                try:
+                    os.remove(file_path)
+                    logger.info(f"Deleted original compressed file: {file_path}")
+                except Exception as e:
+                    logger.warning(f"Failed to delete original compressed file {file_path}: {e}")
+
+            return extracted_path
+
+        elif format_type == 'xz':
+            logger.debug(f"Extracting xz file: {file_path}")
+            try:
+                # First check if the content is XML by reading a sample
+                with lzma.open(file_path, 'rb') as xz_file:
+                    content_sample = xz_file.read(4096)  # Read first 4KB for detection
+                    detected_format, _, _ = detect_file_format(content=content_sample)
+
+                    if detected_format != 'xml':
+                        logger.warning(f"XZ file does not appear to contain XML content: {file_path} (detected as: {detected_format})")
+                        # Continue anyway since XZ only contains one file
+
+                    # Reset file pointer and extract the content
+                    xz_file.seek(0)
+                    with open(extracted_path, 'wb') as out_file:
+                        while True:
+                            chunk = xz_file.read(MAX_EXTRACT_CHUNK_SIZE)
+                            if not chunk or len(chunk) == 0:
+                                break
+                            out_file.write(chunk)
+            except Exception as e:
+                logger.error(f"Error extracting XZ file: {e}", exc_info=True)
+                return None
+
+            logger.info(f"Successfully extracted xz file to: {extracted_path}")
 
             # Delete original compressed file if requested
             if delete_original:
@@ -4543,9 +4580,9 @@ def detect_file_format(file_path=None, content=None):
 
     Returns:
         tuple: (format_type, is_compressed, file_extension)
-        format_type: 'gzip', 'zip', 'xml', or 'unknown'
+        format_type: 'gzip', 'zip', 'xz', 'xml', or 'unknown'
         is_compressed: Boolean indicating if the file is compressed
-        file_extension: Appropriate file extension including dot (.gz, .zip, .xml)
+        file_extension: Appropriate file extension including dot (.gz, .zip, .xz, .xml)
     """
     # Default return values
     format_type = 'unknown'
@@ -4565,6 +4602,10 @@ def detect_file_format(file_path=None, content=None):
         if len(header) >= 2 and header[:2] == b'PK':
             return 'zip', True, '.zip'
 
+        # Check for xz magic number (fd 37 7a 58 5a 00)
+        if len(header) >= 6 and header[:6] == b'\xfd7zXZ\x00':
+            return 'xz', True, '.xz'
+
         # Check for XML - either standard XML header or XMLTV-specific tag
         if len(header) >= 5 and (b'<?xml' in header or b'<tv>' in header):
             return 'xml', False, '.xml'
@@ -4581,6 +4622,8 @@ def detect_file_format(file_path=None, content=None):
             return 'gzip', True, '.gz'
         elif lower_path.endswith('.zip'):
             return 'zip', True, '.zip'
+        elif lower_path.endswith('.xz'):
+            return 'xz', True, '.xz'
         elif lower_path.endswith('.xml'):
             return 'xml', False, '.xml'
 
@@ -4593,6 +4636,8 @@ def detect_file_format(file_path=None, content=None):
                 return 'gzip', True, '.gz'
             elif mime_type == 'application/zip':
                 return 'zip', True, '.zip'
+            elif mime_type == 'application/x-xz':
+                return 'xz', True, '.xz'
             elif mime_type == 'application/xml' or mime_type == 'text/xml':
                 return 'xml', False, '.xml'
 

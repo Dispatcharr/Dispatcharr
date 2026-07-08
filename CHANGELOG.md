@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Native XZ decompression for EPG sources and uploaded M3U playlists.** `.xz`-compressed XMLTV and M3U files are now decompressed using Python's stdlib `lzma` module. EPG ingestion detects XZ via magic bytes, file extension (including compound names like `.xml.xz`), or MIME type; uploaded M3U `.xz` playlists stream line-by-line like `.gz`. The `/data/epgs` auto-import scanner now includes `.xz` files alongside `.xml`, `.gz`, and `.zip`. (Closes #1414) — Thanks [@MotWakorb](https://github.com/MotWakorb)
 - **XC catch-up (timeshift) support**. Adds a native `/timeshift/{user}/{pass}/{stream_id}/{timestamp}/{duration}.ts` endpoint that proxies replay sessions from an Xtream Codes provider to clients such as iPlayTV (Apple TV) and TiviMate. Auth reuses the same `xc_password` custom-property the live `/live/.../{id}.ts` endpoint already uses. Catch-up sessions appear on `/stats` with a violet `TIMESHIFT` badge alongside live sessions and respect per-channel access rules. (Closes #133) — Thanks [@cedric-marcoux](https://github.com/cedric-marcoux)
   - **Catch-up flags** (`tv_archive`, `tv_archive_duration`) denormalized at import time for zero-cost output queries; end-of-refresh SQL rollup updates channels linked to the refreshed account and self-heals stale flags on those channels only (e.g. after catch-up streams are removed or an account is deactivated).
   - **Strictly-UTC API surface, automatic per-provider timezone.** `server_info.timezone` is always `UTC` and the XC EPG `start`/`end` strings are emitted in UTC; the proxy converts the requested instant to the serving provider's own reported timezone (`server_info.timezone` captured on account refresh) at request time. No timezone to configure.
@@ -116,7 +117,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `torch` 2.11.0+cpu → 2.12.1+cpu
   - `sentence-transformers` 5.4.1 → 5.6.0
   - `lxml` 6.1.0 → 6.1.1
-
 
 ### Fixed
 
