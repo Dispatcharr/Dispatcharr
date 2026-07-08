@@ -37,7 +37,11 @@ import { useNavigate, useLocation } from 'react-router-dom';
 import API from '../../api';
 import { usePluginStore } from '../../store/plugins';
 import PluginDetailPanel from '../PluginDetailPanel.jsx';
-import { compareVersions } from '../pluginUtils.js';
+import {
+  buildCompatibilityTooltip,
+  compareVersions,
+  getInstallInfo,
+} from '../../utils/components/pluginUtils.js';
 import SizedInstallButton from '../theme/SizedInstallButton.jsx';
 
 const RepoBadge = ({ isOfficial, repoName, signatureVerified }) => {

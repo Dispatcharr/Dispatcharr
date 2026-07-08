@@ -24,7 +24,7 @@ import useSettingsStore from '../../store/settings.jsx';
 import { usePluginStore } from '../../store/plugins.jsx';
 import API from '../../api';
 import PluginDetailPanel from '../PluginDetailPanel.jsx';
-import { compareVersions } from '../pluginUtils.js';
+import { compareVersions } from '../../utils/components/pluginUtils.js';
 import {
   PluginDowngradeWarning,
   PluginSecurityWarning,
