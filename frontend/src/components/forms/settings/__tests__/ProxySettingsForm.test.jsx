@@ -401,7 +401,9 @@ describe('ProxySettingsForm', () => {
       expect(
         screen.getByTestId('number-input-Channel Initialization Timeout')
       ).toBeInTheDocument();
-      expect(screen.getByTestId('number-input-Buffer Chunk TTL')).toBeInTheDocument();
+      expect(
+        screen.getByTestId('number-input-Buffer Chunk TTL')
+      ).toBeInTheDocument();
     });
   });
 });

@@ -55,7 +55,6 @@ import {
 import useVideoStore from '../../store/useVideoStore';
 import { buildLiveStreamUrl } from '../../utils/components/FloatingVideoUtils.js';
 
-
 // Create a separate component for each channel card to properly handle the hook
 const StreamConnectionCard = ({
   channel,
@@ -74,7 +73,6 @@ const StreamConnectionCard = ({
   const [currentM3UProfile, setCurrentM3UProfile] = useState(null); // Add state for current M3U profile
   const [data, setData] = useState([]);
   const [previewedStream, setPreviewedStream] = useState(null);
-
 
   const theme = useMantineTheme();
 

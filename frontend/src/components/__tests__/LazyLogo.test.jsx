@@ -18,7 +18,13 @@ vi.mock('../../images/logo.png', () => ({
 vi.mock('@mantine/core', async () => {
   return {
     Skeleton: ({ height, width, style, ...props }) => {
-      return <div data-testid="skeleton" style={{ height, width, ...style }} {...props} />;
+      return (
+        <div
+          data-testid="skeleton"
+          style={{ height, width, ...style }}
+          {...props}
+        />
+      );
     },
   };
 });
@@ -103,7 +109,11 @@ describe('LazyLogo', () => {
       };
 
       render(
-        <LazyLogo logoId="logo-1" className="test-class" data-testid="custom-logo" />
+        <LazyLogo
+          logoId="logo-1"
+          className="test-class"
+          data-testid="custom-logo"
+        />
       );
 
       const img = screen.getByTestId('custom-logo');

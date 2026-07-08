@@ -24,11 +24,7 @@ vi.mock('@mantine/core', async () => {
     ),
     Checkbox: ({ label, checked, onChange }) => (
       <label>
-        <input
-          type="checkbox"
-          checked={checked}
-          onChange={onChange}
-        />
+        <input type="checkbox" checked={checked} onChange={onChange} />
         {label}
       </label>
     ),
@@ -64,7 +60,9 @@ describe('ConfirmationDialog', () => {
     );
 
     expect(screen.getByTestId('modal')).toBeInTheDocument();
-    expect(screen.getByText('Are you sure you want to proceed?')).toBeInTheDocument();
+    expect(
+      screen.getByText('Are you sure you want to proceed?')
+    ).toBeInTheDocument();
   });
 
   it('should not render when closed', () => {
@@ -91,7 +89,9 @@ describe('ConfirmationDialog', () => {
     );
 
     expect(screen.getByTestId('modal-title')).toHaveTextContent('Delete Item');
-    expect(screen.getByText('This action cannot be undone')).toBeInTheDocument();
+    expect(
+      screen.getByText('This action cannot be undone')
+    ).toBeInTheDocument();
   });
 
   it('should call onConfirm when confirm button is clicked', () => {
@@ -144,7 +144,9 @@ describe('ConfirmationDialog', () => {
       />
     );
 
-    expect(screen.queryByLabelText("Don't ask me again")).not.toBeInTheDocument();
+    expect(
+      screen.queryByLabelText("Don't ask me again")
+    ).not.toBeInTheDocument();
   });
 
   it('should call suppressWarning when suppress is checked and confirmed', () => {
@@ -188,7 +190,9 @@ describe('ConfirmationDialog', () => {
       />
     );
 
-    expect(screen.getByLabelText('Also delete files from disk')).toBeInTheDocument();
+    expect(
+      screen.getByLabelText('Also delete files from disk')
+    ).toBeInTheDocument();
   });
 
   it('should pass deleteFiles state to onConfirm when delete option is checked', () => {
@@ -229,7 +233,9 @@ describe('ConfirmationDialog', () => {
       />
     );
 
-    expect(screen.getByLabelText('Also delete files from disk')).not.toBeChecked();
+    expect(
+      screen.getByLabelText('Also delete files from disk')
+    ).not.toBeChecked();
   });
 
   it('should show loading state on confirm button', () => {

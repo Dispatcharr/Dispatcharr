@@ -12,7 +12,9 @@ vi.mock('../../utils/cards/RecordingCardUtils.js', () => ({
   getShowVideoUrl: vi.fn(() => 'http://video.test'),
 }));
 
-vi.mock('../../images/logo.png', () => ({ default: 'default-logo.png' }));
+vi.mock('../../images/logo.png', () => ({
+  default: 'default-logo.png',
+}));
 
 vi.mock('../../utils/dateTimeUtils.js', () => ({
   format: vi.fn(() => '12:00 PM'),

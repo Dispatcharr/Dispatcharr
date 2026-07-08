@@ -6,7 +6,16 @@ import RecordingSynopsis from '../RecordingSynopsis';
 // Mock Mantine components
 vi.mock('@mantine/core', async () => {
   return {
-    Text: ({ children, size, c, lineClamp, onClick, title, style, ...props }) => {
+    Text: ({
+      children,
+      size,
+      c,
+      lineClamp,
+      onClick,
+      title,
+      style,
+      ...props
+    }) => {
       return (
         <div
           data-testid="text"
