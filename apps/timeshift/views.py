@@ -198,6 +198,7 @@ def timeshift_proxy(request, username, password, stream_id, timestamp, duration)
             descriptor=descriptor,
             profile=profile,
             channel=channel,
+            media_id=media_id,
             safe_ts=safe_ts,
             timestamp=timestamp,
             duration_minutes=duration_minutes,
@@ -590,6 +591,38 @@ def _store_pool_serving_range(redis_client, session_id, range_header):
         logger.debug("Timeshift pool serving_range store failed: %s", exc)
 
 
+def _update_pool_position(redis_client, session_id, *, media_id, provider_timestamp):
+    """Move a reused session's descriptor to the position actually served.
+
+    A seek keeps the session (provider-slot continuity) but changes the
+    catch-up position; the descriptor must follow it so later fingerprint
+    matches and same-channel displacement compare against the position the
+    session is really on. When the position actually moves, the byte state of
+    the PREVIOUS position's file (content_length, serving_range) is dropped —
+    keeping it would feed the near-EOF/displacement heuristics another
+    programme's size; the next successful open repopulates both.
+    """
+    if redis_client is None or not session_id:
+        return
+    key = _pool_key(session_id)
+    try:
+        with _pool_lock(redis_client, session_id):
+            entry = redis_client.hgetall(key)
+            if not entry:
+                # Entry vanished (Redis restart/eviction): writing here would
+                # resurrect a partial, TTL-less hash that wedges the session.
+                return
+            position_changed = entry.get("media_id") != str(media_id)
+            redis_client.hset(key, mapping={
+                "media_id": str(media_id),
+                "provider_timestamp": str(provider_timestamp),
+            })
+            if position_changed:
+                redis_client.hdel(key, "content_length", "serving_range")
+    except Exception as exc:
+        logger.debug("Timeshift pool position update failed: %s", exc)
+
+
 def _store_pool_content_length(redis_client, session_id, upstream_response):
     if redis_client is None or not session_id or upstream_response is None:
         return
@@ -892,6 +925,7 @@ def _stream_reused_session(
     descriptor,
     profile,
     channel,
+    media_id,
     safe_ts,
     timestamp,
     duration_minutes,
@@ -909,15 +943,30 @@ def _stream_reused_session(
         _discard_pool_session(redis_client, session_id, profile.id)
         return None
 
-    provider_timestamp = descriptor.get("provider_timestamp")
-    if not provider_timestamp:
-        provider_tz_name = None
-        server_info = (profile.custom_properties or {}).get("server_info") or {}
-        if isinstance(server_info, dict):
-            provider_tz_name = server_info.get("timezone")
-        provider_timestamp = convert_timestamp_to_provider_tz(
-            timestamp, provider_tz_name
-        )
+    # The stored provider_timestamp is the position this session was CREATED
+    # for. Clients (TiviMate) keep the ?session_id= query when they rebuild
+    # the seek URL with a new start, so a reused session must serve the
+    # REQUESTED position, never replay the stored one — otherwise every
+    # timestamp-jump FF/RW snaps back to the session's original anchor. The
+    # provider zone is a property of the account (server_info reported on
+    # auth, stored on the default profile), so recomputing costs one trivial
+    # conversion.
+    provider_tz_name = None
+    tz_profile = (
+        m3u_account.profiles.filter(is_active=True, is_default=True).first()
+        or profile
+    )
+    server_info = (tz_profile.custom_properties or {}).get("server_info") or {}
+    if isinstance(server_info, dict):
+        provider_tz_name = server_info.get("timezone")
+    provider_timestamp = convert_timestamp_to_provider_tz(timestamp, provider_tz_name)
+
+    # Move the descriptor to the position actually served so fingerprint
+    # matching and same-channel displacement keep working after the seek.
+    _update_pool_position(
+        redis_client, session_id,
+        media_id=media_id, provider_timestamp=provider_timestamp,
+    )
 
     release_cb = _make_release_once(redis_client, session_id, profile.id)
     try:
@@ -926,7 +975,7 @@ def _stream_reused_session(
             profile=profile,
             stream_id_value=descriptor["stream_id"],
             provider_timestamp=provider_timestamp,
-            provider_tz_name=None,
+            provider_tz_name=provider_tz_name,
             duration_minutes=duration_minutes,
             channel=channel,
             safe_ts=safe_ts,
