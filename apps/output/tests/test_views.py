@@ -9,7 +9,7 @@ from apps.channels.models import Channel, ChannelGroup, ChannelProfile, ChannelP
 from apps.epg.models import EPGData, EPGSource
 from apps.accounts.models import User
 from apps.m3u.models import M3UAccount
-from apps.output.views import xc_get_series, xc_get_vod_streams
+from apps.output.views import xc_get_live_streams, xc_get_series, xc_get_vod_streams
 from apps.vod.models import (
     M3UMovieRelation,
     M3USeriesRelation,
@@ -896,6 +896,45 @@ class XcVodSeriesRegressionTests(TestCase):
         stream = xc_get_vod_streams(self.request, self.user)[0]
 
         self.assertEqual(stream["container_extension"], first.container_extension)
+
+
+class XcLiveStreamsNullChannelNumberTests(TestCase):
+    """XC live streams must not crash when a visible channel has no channel number."""
+
+    def setUp(self):
+        self.factory = RequestFactory()
+        self.user = User.objects.create_user(
+            username=f"xc-live-{uuid4().hex[:8]}",
+            password="pass",
+            user_level=10,
+            custom_properties={"xc_password": "xcpass"},
+        )
+        self.request = self.factory.get("/player_api.php")
+        self.group = ChannelGroup.objects.create(name=f"Group {uuid4().hex[:8]}")
+
+    def test_live_streams_assigns_number_for_null_channel_number(self):
+        numbered = Channel.objects.create(
+            name="Numbered",
+            channel_number=5,
+            channel_group=self.group,
+            user_level=0,
+        )
+        unnumbered = Channel.objects.create(
+            name="Mapped Ch",
+            channel_number=None,
+            channel_group=self.group,
+            user_level=0,
+            hidden_from_output=False,
+        )
+
+        streams = xc_get_live_streams(self.request, self.user)
+
+        self.assertEqual(len(streams), 2)
+        by_id = {s["stream_id"]: s for s in streams}
+        self.assertEqual(by_id[numbered.id]["num"], 5)
+        self.assertIn(unnumbered.id, by_id)
+        self.assertIsInstance(by_id[unnumbered.id]["num"], int)
+        self.assertNotIn(by_id[unnumbered.id]["num"], {5})
 
 
 class GenerateEpgPrevDaysTests(SimpleTestCase):

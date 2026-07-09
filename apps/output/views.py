@@ -662,7 +662,7 @@ def _xc_live_streams_setup(request, user, category_id):
     for channel in channels:  # evaluates and caches the queryset
         effective_num = channel.effective_channel_number
         if effective_num is None:
-            pass
+            float_channels.append((channel.id, None))
         elif effective_num == int(effective_num):
             num = int(effective_num)
             channel_num_map[channel.id] = num
@@ -671,7 +671,10 @@ def _xc_live_streams_setup(request, user, category_id):
             float_channels.append((channel.id, effective_num))
 
     for channel_id, effective_num in float_channels:
-        candidate = int(effective_num)
+        if effective_num is None:
+            candidate = 1
+        else:
+            candidate = int(effective_num)
         while candidate in used_numbers:
             candidate += 1
         channel_num_map[channel_id] = candidate
@@ -689,7 +692,12 @@ def _xc_live_streams_setup(request, user, category_id):
 
 
 def _xc_channel_entry(channel, channel_num_map, _get_default_group_id, _logo_url_prefix, _logo_url_suffix):
-    channel_num_int = channel_num_map[channel.id]
+    channel_num_int = channel_num_map.get(channel.id)
+    if channel_num_int is None:
+        effective_num = channel.effective_channel_number
+        channel_num_int = (
+            int(effective_num) if effective_num is not None else channel.id
+        )
     effective_logo = channel.effective_logo_obj
     effective_group = channel.effective_channel_group_obj
     group_id = effective_group.id if effective_group else _get_default_group_id()
