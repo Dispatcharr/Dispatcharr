@@ -9,6 +9,7 @@ from urllib.parse import urlencode
 
 import requests
 from django.core.cache import cache
+from django.db import close_old_connections
 from django.http import (
     Http404,
     HttpResponse,
@@ -50,6 +51,12 @@ CLIENT_TTL_SECONDS = 60
 _MATCH_SCORE_THRESHOLD = 8  # client_ip (5) + client_user_agent (3)
 
 
+def _finalize_timeshift_response(response):
+    """Release ORM database connections before returning to the client."""
+    close_old_connections()
+    return response
+
+
 def timeshift_proxy(request, username, password, stream_id, timestamp, duration):  # noqa: ARG001 stream_id
     """Proxy an XC catch-up request to the provider with multi-stream failover.
 
@@ -63,26 +70,29 @@ def timeshift_proxy(request, username, password, stream_id, timestamp, duration)
 
     user = _authenticate_user(username, password)
     if user is None:
-        return HttpResponseForbidden("Invalid credentials")
+        return _finalize_timeshift_response(HttpResponseForbidden("Invalid credentials"))
 
     if not network_access_allowed(request, "XC_API", user):
-        return HttpResponseForbidden("Access denied")
+        return _finalize_timeshift_response(HttpResponseForbidden("Access denied"))
 
     try:
         channel = Channel.objects.get(id=int(raw_id))
     except (Channel.DoesNotExist, ValueError, TypeError):
+        close_old_connections()
         raise Http404("Channel not found") from None
 
     if not _user_can_access_channel(user, channel):
-        return HttpResponseForbidden("Access denied")
+        return _finalize_timeshift_response(HttpResponseForbidden("Access denied"))
 
     # Shape helpers pass through on parse failure; reject bad input before upstream.
     if parse_catchup_timestamp(timestamp) is None:
-        return HttpResponseBadRequest("Invalid timestamp")
+        return _finalize_timeshift_response(HttpResponseBadRequest("Invalid timestamp"))
 
     catchup_streams = get_channel_catchup_streams(channel)
     if not catchup_streams:
-        return HttpResponseBadRequest("Timeshift not supported for this channel")
+        return _finalize_timeshift_response(
+            HttpResponseBadRequest("Timeshift not supported for this channel")
+        )
 
     debug = logger.isEnabledFor(logging.DEBUG)
 
@@ -105,14 +115,14 @@ def timeshift_proxy(request, username, password, stream_id, timestamp, duration)
     session_id = request.GET.get("session_id")
     if not session_id:
         logger.debug("Timeshift session redirect: %s (new session)", request.path)
-        return _redirect_with_new_session(request)
+        return _finalize_timeshift_response(_redirect_with_new_session(request))
 
     session_entry = _get_pool_entry(redis_client, session_id)
     if session_entry and not _pool_entry_owned_by_user(session_entry, user.id):
         logger.info(
             "Timeshift: rejecting foreign session_id for user %s", user.id,
         )
-        return _redirect_with_new_session(request)
+        return _finalize_timeshift_response(_redirect_with_new_session(request))
 
     # Stable client identity for stats, stop keys, and the provider pool.
     effective_session_id = session_id
@@ -158,7 +168,7 @@ def timeshift_proxy(request, username, password, stream_id, timestamp, duration)
     )
 
     if not check_user_stream_limits(user, client_id, media_id=media_id):
-        return HttpResponseForbidden("Stream limit exceeded")
+        return _finalize_timeshift_response(HttpResponseForbidden("Stream limit exceeded"))
 
     if effective_session_id == session_id:
         pool = _snapshot_from_entry(session_entry)
@@ -211,9 +221,9 @@ def timeshift_proxy(request, username, password, stream_id, timestamp, duration)
         )
         if reuse_response is not None:
             if reuse_response.status_code < 400:
-                return reuse_response
+                return _finalize_timeshift_response(reuse_response)
             if getattr(reuse_response, "timeshift_passthrough", False) is True:
-                return reuse_response
+                return _finalize_timeshift_response(reuse_response)
             last_response = reuse_response
             if getattr(reuse_response, "timeshift_decisive", False):
                 try:
@@ -228,14 +238,14 @@ def timeshift_proxy(request, username, password, stream_id, timestamp, duration)
             "Timeshift: deferring non-displacing request for session %s range=%s",
             effective_session_id, range_header or "(none)",
         )
-        return HttpResponse("Stream slot busy", status=503)
+        return _finalize_timeshift_response(HttpResponse("Stream slot busy", status=503))
 
     if pool_exists and pool_busy:
         logger.warning(
             "Timeshift: session %s did not become idle in time",
             effective_session_id,
         )
-        return HttpResponse("Stream slot busy", status=503)
+        return _finalize_timeshift_response(HttpResponse("Stream slot busy", status=503))
 
     capacity_blocked = False
     for catchup_stream in catchup_streams:
@@ -301,6 +311,7 @@ def timeshift_proxy(request, username, password, stream_id, timestamp, duration)
             profile_id=reserved_profile.id,
             stream_id=stream_id_value,
             provider_timestamp=provider_timestamp,
+            provider_tz_name=provider_tz_name,
         ):
             try:
                 release_profile_slot(reserved_profile.id, redis_client)
@@ -313,7 +324,9 @@ def timeshift_proxy(request, username, password, stream_id, timestamp, duration)
                 "Timeshift: pool entry already exists for session %s, deferring",
                 effective_session_id,
             )
-            return HttpResponse("Stream slot busy", status=503)
+            return _finalize_timeshift_response(
+                HttpResponse("Stream slot busy", status=503)
+            )
         release_cb = _make_release_once(
             redis_client, effective_session_id, reserved_profile.id
         )
@@ -341,17 +354,18 @@ def timeshift_proxy(request, username, password, stream_id, timestamp, duration)
             )
         except Exception:
             _discard_pool_session(redis_client, effective_session_id, reserved_profile.id)
+            close_old_connections()
             raise
         if response.status_code < 400:
             # Streaming: the generator's close path frees the slot via release_cb.
-            return response
+            return _finalize_timeshift_response(response)
 
         if getattr(response, "timeshift_passthrough", False) is True:
             # Terminal range answer (e.g. 416 past EOF): the upstream session is
             # healthy, so free the slot but keep the entry idle for the next
             # probe, and return verbatim without failing over to other accounts.
             release_cb()
-            return response
+            return _finalize_timeshift_response(response)
 
         # Real failure: drop this session entirely and fail over.
         _discard_pool_session(redis_client, effective_session_id, reserved_profile.id)
@@ -368,10 +382,14 @@ def timeshift_proxy(request, username, password, stream_id, timestamp, duration)
         )
 
     if last_response is not None:
-        return last_response
+        return _finalize_timeshift_response(last_response)
     if capacity_blocked:
-        return HttpResponse("No available stream slot", status=503)
-    return HttpResponseBadRequest("Cannot build timeshift URL")
+        return _finalize_timeshift_response(
+            HttpResponse("No available stream slot", status=503)
+        )
+    return _finalize_timeshift_response(
+        HttpResponseBadRequest("Cannot build timeshift URL")
+    )
 
 
 def _authenticate_user(username, password):
@@ -714,6 +732,7 @@ def _create_pool_session(
     profile_id,
     stream_id,
     provider_timestamp,
+    provider_tz_name=None,
 ):
     """Register an already-reserved slot for this client session."""
     if redis_client is None or not session_id:
@@ -733,6 +752,7 @@ def _create_pool_session(
                 "profile_id": str(profile_id),
                 "stream_id": str(stream_id),
                 "provider_timestamp": str(provider_timestamp),
+                "provider_tz_name": str(provider_tz_name or ""),
                 "busy": "1",
                 "last_activity": now,
             })
@@ -947,18 +967,17 @@ def _stream_reused_session(
     # for. Clients (TiviMate) keep the ?session_id= query when they rebuild
     # the seek URL with a new start, so a reused session must serve the
     # REQUESTED position, never replay the stored one — otherwise every
-    # timestamp-jump FF/RW snaps back to the session's original anchor. The
-    # provider zone is a property of the account (server_info reported on
-    # auth, stored on the default profile), so recomputing costs one trivial
-    # conversion.
-    provider_tz_name = None
-    tz_profile = (
-        m3u_account.profiles.filter(is_active=True, is_default=True).first()
-        or profile
-    )
-    server_info = (tz_profile.custom_properties or {}).get("server_info") or {}
-    if isinstance(server_info, dict):
-        provider_tz_name = server_info.get("timezone")
+    # timestamp-jump FF/RW snaps back to the session's original anchor.
+    # Provider zone is cached on the pool entry at session creation (account
+    # property from server_info); fall back to the reserved profile for legacy
+    # entries created before that field existed.
+    provider_tz_name = descriptor.get("provider_tz_name") or None
+    if provider_tz_name:
+        provider_tz_name = str(provider_tz_name)
+    if not provider_tz_name:
+        server_info = (profile.custom_properties or {}).get("server_info") or {}
+        if isinstance(server_info, dict):
+            provider_tz_name = server_info.get("timezone")
     provider_timestamp = convert_timestamp_to_provider_tz(timestamp, provider_tz_name)
 
     # Move the descriptor to the position actually served so fingerprint
@@ -1216,7 +1235,9 @@ def _stream_from_provider(
                 "Timeshift provider unreachable (%s): %s",
                 _redact_url(url), type(exc).__name__,
             )
-            return HttpResponseBadRequest("Provider connection error")
+            return _finalize_timeshift_response(
+                HttpResponseBadRequest("Provider connection error")
+            )
         last_status = response.status_code
         last_url = url
         if debug:
@@ -1233,7 +1254,7 @@ def _stream_from_provider(
             # and only multiplies upstream connections.
             content_range = response.headers.get("Content-Range")
             response.close()
-            return _passthrough_response(416, content_range)
+            return _finalize_timeshift_response(_passthrough_response(416, content_range))
         if response.status_code in (200, 206):
             peek = response.raw.read(1024)
             sync_offset = find_ts_sync(peek) if peek else -1
@@ -1286,7 +1307,7 @@ def _stream_from_provider(
         else:
             failure = HttpResponseBadRequest("Provider error")
         failure.timeshift_decisive = decisive_failure
-        return failure
+        return _finalize_timeshift_response(failure)
 
     content_type = upstream.headers.get("Content-Type", "video/mp2t")
     content_range = upstream.headers.get("Content-Range", "")
@@ -1400,7 +1421,7 @@ def _stream_from_provider(
     if content_range:
         response["Content-Range"] = content_range
     response["Accept-Ranges"] = "bytes"
-    return response
+    return _finalize_timeshift_response(response)
 
 
 def _redact_url(url):

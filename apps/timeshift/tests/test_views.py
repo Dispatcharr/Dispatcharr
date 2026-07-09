@@ -29,6 +29,7 @@ def _seed_pool_session(
     user_id=5,
     client_ip="1.2.3.4",
     client_user_agent="test-agent",
+    provider_tz_name="Europe/Brussels",
 ):
     views._create_pool_session(
         redis,
@@ -41,6 +42,7 @@ def _seed_pool_session(
         profile_id=31,
         stream_id="111",
         provider_timestamp="2026-06-08:19-00",
+        provider_tz_name=provider_tz_name,
     )
     if serving_range is not None:
         redis.hset(f"timeshift_pool:{session_id}", "serving_range", serving_range)
@@ -182,6 +184,37 @@ class StreamFromProviderStatusMappingTests(TestCase):
             response = views._stream_from_provider(**self.kwargs)
         self.assertEqual(response.status_code, 200)
         self.assertEqual(mocked_open.call_count, 1)
+
+    @patch.object(views, "close_old_connections")
+    @patch.object(views, "_open_upstream")
+    def test_streaming_response_closes_db_before_return(
+        self, mocked_open, mock_close,
+    ):
+        mocked_open.side_effect = [_fake_upstream(200, body=_make_ts_payload())]
+        with patch.object(views, "RedisClient"), \
+             patch.object(views, "_register_stats_client"), \
+             patch.object(views, "_unregister_stats_client"):
+            response = views._stream_from_provider(**self.kwargs)
+        self.assertEqual(response.status_code, 200)
+        mock_close.assert_called_once()
+
+    @patch.object(views, "close_old_connections")
+    @patch.object(views, "_open_upstream")
+    def test_upstream_failure_closes_db_before_return(self, mocked_open, mock_close):
+        mocked_open.return_value = _fake_upstream(404)
+        response = views._stream_from_provider(**self.kwargs)
+        self.assertEqual(response.status_code, 404)
+        mock_close.assert_called_once()
+
+    @patch.object(views, "close_old_connections")
+    @patch.object(views, "_open_upstream")
+    def test_passthrough_416_closes_db_before_return(self, mocked_open, mock_close):
+        upstream = _fake_upstream(416)
+        upstream.headers["Content-Range"] = "bytes */1000"
+        mocked_open.return_value = upstream
+        response = views._stream_from_provider(**self.kwargs)
+        self.assertEqual(response.status_code, 416)
+        mock_close.assert_called_once()
 
     @patch.object(views, "_open_upstream")
     def test_second_candidate_succeeds_after_404(self, mocked_open):
@@ -1617,11 +1650,7 @@ class TimeshiftSessionReuseTests(TestCase):
         """Drive _stream_reused_session against a session anchored at 17-00
         (provider position 19-00) with a NEW requested timestamp."""
         profile = MagicMock(id=31, custom_properties={})
-        tz_profile = MagicMock(
-            custom_properties={"server_info": {"timezone": "Europe/Brussels"}}
-        )
         account = MagicMock(id=1)
-        account.profiles.filter.return_value.first.return_value = tz_profile
         ok = MagicMock(status_code=200)
         with patch.object(views.M3UAccount.objects, "get", return_value=account), \
              patch.object(views, "_attempt_timeshift_stream",
@@ -1633,6 +1662,7 @@ class TimeshiftSessionReuseTests(TestCase):
                     "account_id": "1",
                     "stream_id": "111",
                     "provider_timestamp": "2026-06-08:19-00",
+                    "provider_tz_name": "Europe/Brussels",
                 },
                 profile=profile,
                 channel=self.channel,
@@ -1720,14 +1750,14 @@ class TimeshiftSessionReuseTests(TestCase):
         self.assertFalse(self.redis.exists(self._pool_key()))
 
     def test_reused_session_tz_falls_back_to_reserved_profile(self):
-        # No active default profile -> the reserved profile's server_info is
-        # the only tz source left; conversion must still apply.
-        _seed_pool_session(self.redis, session_id=self.SESSION)
+        # Legacy pool entries without provider_tz_name fall back to the
+        # reserved profile's server_info for conversion.
+        _seed_pool_session(self.redis, session_id=self.SESSION, provider_tz_name=None)
+        self.redis.hset(self._pool_key(), "provider_tz_name", "")
         profile = MagicMock(id=31, custom_properties={
             "server_info": {"timezone": "Europe/Brussels"},
         })
         account = MagicMock(id=1)
-        account.profiles.filter.return_value.first.return_value = None
         ok = MagicMock(status_code=200)
         with patch.object(views.M3UAccount.objects, "get", return_value=account), \
              patch.object(views, "_attempt_timeshift_stream",
@@ -1862,6 +1892,26 @@ class TimeshiftSessionRedirectTests(TestCase):
         self.assertIn("session_id=timeshift_", location)
         self.assertIn("foo=bar", location)
         self.assertIn("baz=1", location)
+
+    @patch.object(views, "close_old_connections")
+    def test_redirect_closes_db_after_orm(self, mock_close):
+        request = self.factory.get(_proxy_url(session_id=None))
+        with patch.object(views, "_authenticate_user", return_value=MagicMock(id=1)), \
+             patch.object(views, "network_access_allowed", return_value=True), \
+             patch.object(views, "Channel") as channel_cls, \
+             patch.object(views, "_user_can_access_channel", return_value=True), \
+             patch.object(views, "get_channel_catchup_streams",
+                          return_value=[_make_catchup_stream()]), \
+             patch.object(views, "get_programme_duration", return_value=40), \
+             patch.object(views, "parse_catchup_timestamp", return_value=True), \
+             patch.object(views, "RedisClient") as redis_cls:
+            redis_cls.get_client.return_value = _FakeRedis()
+            channel_cls.objects.get.return_value = MagicMock(id=8)
+            response = views.timeshift_proxy(
+                request, "u", "p", "8", "2026-06-08:17-00", "8.ts",
+            )
+        self.assertEqual(response.status_code, 301)
+        mock_close.assert_called_once()
 
 
 class TimeshiftStreamLimitExemptionTests(TestCase):
@@ -2170,6 +2220,25 @@ class TimeshiftScrubPreemptTests(TestCase):
         self.assertTrue(first)
         self.assertFalse(second)
         self.assertTrue(self.redis.exists(f"timeshift_pool:{TEST_SESSION_ID}"))
+
+    def test_create_pool_session_stores_provider_tz_name(self):
+        views._create_pool_session(
+            self.redis,
+            session_id=TEST_SESSION_ID,
+            media_id=TEST_MEDIA_ID,
+            user_id=5,
+            client_ip="1.2.3.4",
+            client_user_agent="test-agent",
+            account_id=1,
+            profile_id=31,
+            stream_id="111",
+            provider_timestamp="2026-06-08:19-00",
+            provider_tz_name="Europe/Brussels",
+        )
+        self.assertEqual(
+            self.redis.hget(f"timeshift_pool:{TEST_SESSION_ID}", "provider_tz_name"),
+            "Europe/Brussels",
+        )
 
     def test_scrub_reuses_idle_pool_without_opening_failover(self):
         _seed_pool_session(self.redis, session_id=TEST_SESSION_ID)
