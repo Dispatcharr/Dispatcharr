@@ -453,6 +453,12 @@ class _FakeRedis:
         hash_value = self.store.get(key)
         return hash_value.get(field) if isinstance(hash_value, dict) else None
 
+    def hdel(self, key, *fields):
+        hash_value = self.store.get(key)
+        if not isinstance(hash_value, dict):
+            return 0
+        return sum(1 for f in fields if hash_value.pop(f, None) is not None)
+
     def expire(self, key, ttl):
         return 1 if key in self.store else 0
 
@@ -1675,6 +1681,80 @@ class TimeshiftSessionReuseTests(TestCase):
         )
         self.assertEqual(
             self.redis.hget(self._pool_key(), "provider_timestamp"),
+            "2026-06-08:19-30",
+        )
+
+    def test_position_move_drops_previous_byte_state(self):
+        # content_length / serving_range describe ONE provider file; carrying
+        # them across a seek would feed the near-EOF/displacement heuristics
+        # another programme's size. A same-position update must keep them.
+        _seed_pool_session(self.redis, session_id=self.SESSION)
+        self.redis.hset(self._pool_key(), mapping={
+            "content_length": "2000000000", "serving_range": "start",
+        })
+        self._call_reused_session(
+            "2026-06-08:17-30", "timeshift_8_2026-06-08-17-30",
+        )
+        self.assertIsNone(self.redis.hget(self._pool_key(), "content_length"))
+        self.assertIsNone(self.redis.hget(self._pool_key(), "serving_range"))
+
+        # Same-position call (media unchanged): byte state survives.
+        self.redis.hset(self._pool_key(), mapping={
+            "content_length": "1000000", "serving_range": "range",
+        })
+        self._call_reused_session(
+            "2026-06-08:17-30", "timeshift_8_2026-06-08-17-30",
+        )
+        self.assertEqual(
+            self.redis.hget(self._pool_key(), "content_length"), "1000000",
+        )
+
+    def test_position_update_never_resurrects_vanished_entry(self):
+        # If the pool key expired/vanished mid-request, writing to it would
+        # recreate a partial TTL-less hash that 503-wedges the session_id.
+        views._update_pool_position(
+            self.redis, self.SESSION,
+            media_id="timeshift_8_2026-06-08-17-30",
+            provider_timestamp="2026-06-08:19-30",
+        )
+        self.assertFalse(self.redis.exists(self._pool_key()))
+
+    def test_reused_session_tz_falls_back_to_reserved_profile(self):
+        # No active default profile -> the reserved profile's server_info is
+        # the only tz source left; conversion must still apply.
+        _seed_pool_session(self.redis, session_id=self.SESSION)
+        profile = MagicMock(id=31, custom_properties={
+            "server_info": {"timezone": "Europe/Brussels"},
+        })
+        account = MagicMock(id=1)
+        account.profiles.filter.return_value.first.return_value = None
+        ok = MagicMock(status_code=200)
+        with patch.object(views.M3UAccount.objects, "get", return_value=account), \
+             patch.object(views, "_attempt_timeshift_stream",
+                          return_value=ok) as attempt_mock:
+            views._stream_reused_session(
+                self.redis,
+                session_id=self.SESSION,
+                descriptor={
+                    "account_id": "1",
+                    "stream_id": "111",
+                    "provider_timestamp": "2026-06-08:19-00",
+                },
+                profile=profile,
+                channel=self.channel,
+                media_id="timeshift_8_2026-06-08-17-30",
+                safe_ts="2026-06-08-17-30",
+                timestamp="2026-06-08:17-30",
+                duration_minutes=40,
+                client_id=self.SESSION,
+                client_ip="1.2.3.4",
+                range_header=None,
+                channel_logo_id=None,
+                user=self.user,
+                debug=False,
+            )
+        self.assertEqual(
+            attempt_mock.call_args.kwargs["provider_timestamp"],
             "2026-06-08:19-30",
         )
 

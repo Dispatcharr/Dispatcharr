@@ -597,15 +597,28 @@ def _update_pool_position(redis_client, session_id, *, media_id, provider_timest
     A seek keeps the session (provider-slot continuity) but changes the
     catch-up position; the descriptor must follow it so later fingerprint
     matches and same-channel displacement compare against the position the
-    session is really on.
+    session is really on. When the position actually moves, the byte state of
+    the PREVIOUS position's file (content_length, serving_range) is dropped —
+    keeping it would feed the near-EOF/displacement heuristics another
+    programme's size; the next successful open repopulates both.
     """
     if redis_client is None or not session_id:
         return
+    key = _pool_key(session_id)
     try:
-        redis_client.hset(_pool_key(session_id), mapping={
-            "media_id": str(media_id),
-            "provider_timestamp": str(provider_timestamp),
-        })
+        with _pool_lock(redis_client, session_id):
+            entry = redis_client.hgetall(key)
+            if not entry:
+                # Entry vanished (Redis restart/eviction): writing here would
+                # resurrect a partial, TTL-less hash that wedges the session.
+                return
+            position_changed = entry.get("media_id") != str(media_id)
+            redis_client.hset(key, mapping={
+                "media_id": str(media_id),
+                "provider_timestamp": str(provider_timestamp),
+            })
+            if position_changed:
+                redis_client.hdel(key, "content_length", "serving_range")
     except Exception as exc:
         logger.debug("Timeshift pool position update failed: %s", exc)
 
@@ -940,7 +953,8 @@ def _stream_reused_session(
     # conversion.
     provider_tz_name = None
     tz_profile = (
-        m3u_account.profiles.filter(is_default=True).first() or profile
+        m3u_account.profiles.filter(is_active=True, is_default=True).first()
+        or profile
     )
     server_info = (tz_profile.custom_properties or {}).get("server_info") or {}
     if isinstance(server_info, dict):
