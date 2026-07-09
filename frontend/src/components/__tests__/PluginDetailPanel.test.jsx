@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import PluginDetailPanel from '../PluginDetailPanel';
 
 // ── Utility mocks ──────────────────────────────────────────────────────────────
-vi.mock('../pluginUtils.js', () => ({
+vi.mock('../../utils/components/pluginUtils.js', () => ({
   compareVersions: vi.fn(),
   buildCompatibilityTooltip: vi.fn(),
   buildVersionSelectItems: vi.fn(),
