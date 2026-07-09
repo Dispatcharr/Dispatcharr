@@ -396,6 +396,17 @@ def _is_gevent_monkey_patched():
         return False
 
 
+def _cooperative_yield():
+    """Yield to the gevent hub during CPU-bound loops (no-op otherwise)."""
+    if not _is_gevent_monkey_patched():
+        return
+    try:
+        import gevent
+        gevent.sleep(0)
+    except ImportError:
+        pass
+
+
 def _is_celery_worker_context():
     """True when executing inside an active Celery task (prefork worker)."""
     try:
