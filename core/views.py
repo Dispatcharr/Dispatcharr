@@ -42,6 +42,7 @@ def stream_view(request, channel_uuid):
         redis_db = int(getattr(settings, "REDIS_DB", "0"))
         redis_password = getattr(settings, "REDIS_PASSWORD", "")
         redis_user = getattr(settings, "REDIS_USER", "")
+        redis_url = getattr(settings, "REDIS_URL", "")
         ssl_params = getattr(settings, "REDIS_SSL_PARAMS", {})
         redis_client = redis.Redis(
             host=redis_host,
@@ -49,6 +50,9 @@ def stream_view(request, channel_uuid):
             db=redis_db,
             password=redis_password if redis_password else None,
             username=redis_user if redis_user else None,
+            **ssl_params
+        ) if not redis_url else redis.Redis.from_url(
+            redis_url,
             **ssl_params
         )
 

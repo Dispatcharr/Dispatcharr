@@ -175,7 +175,7 @@ if REDIS_PASSWORD:
 else:
     _redis_auth = ""
 
-_channels_redis_url = f"{_redis_scheme}://{_redis_auth}{REDIS_HOST}:{REDIS_PORT}/{REDIS_DB}"
+_channels_redis_url = os.environ.get("REDIS_URL", f"{_redis_scheme}://{_redis_auth}{REDIS_HOST}:{REDIS_PORT}/{REDIS_DB}")
 # channels_redis accepts either a URL string or a dict with "address" + kwargs.
 # When TLS is enabled, pass SSL params alongside the URL so the connection pool
 # uses the correct CA cert and verification settings.
@@ -335,7 +335,7 @@ STATICFILES_DIRS = [
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 AUTH_USER_MODEL = "accounts.User"
 
-_default_redis_url = f"{_redis_scheme}://{_redis_auth}{REDIS_HOST}:{REDIS_PORT}/{REDIS_DB}"
+_default_redis_url = os.environ.get("REDIS_URL", f"{_redis_scheme}://{_redis_auth}{REDIS_HOST}:{REDIS_PORT}/{REDIS_DB}")
 # Celery/Kombu require SSL parameters in the URL query string because
 # internal URL parsing can overwrite the CELERY_BROKER_USE_SSL dict.
 if REDIS_SSL:

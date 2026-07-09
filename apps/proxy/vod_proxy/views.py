@@ -802,6 +802,7 @@ def head_vod(request, content_type, content_id, session_id=None, profile_id=None
             redis_db = int(getattr(settings, 'REDIS_DB', 0))
             redis_password = getattr(settings, 'REDIS_PASSWORD', '')
             redis_user = getattr(settings, 'REDIS_USER', '')
+            redis_url = getattr(settings, "REDIS_URL", "")
             ssl_params = getattr(settings, 'REDIS_SSL_PARAMS', {})
             r = redis.StrictRedis(
                 host=redis_host,
@@ -809,6 +810,10 @@ def head_vod(request, content_type, content_id, session_id=None, profile_id=None
                 db=redis_db,
                 password=redis_password if redis_password else None,
                 username=redis_user if redis_user else None,
+                decode_responses=True,
+                **ssl_params
+            ) if not redis_url else redis.StrictRedis.from_url(
+                redis_url,
                 decode_responses=True,
                 **ssl_params
             )
