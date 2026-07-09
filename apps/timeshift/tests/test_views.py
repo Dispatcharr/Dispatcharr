@@ -1607,6 +1607,132 @@ class TimeshiftSessionReuseTests(TestCase):
         # Reuse reserved once; failover reserved only for the other account.
         self.assertEqual(reserve_mock.call_count, 2)
 
+    def _call_reused_session(self, timestamp, media_id):
+        """Drive _stream_reused_session against a session anchored at 17-00
+        (provider position 19-00) with a NEW requested timestamp."""
+        profile = MagicMock(id=31, custom_properties={})
+        tz_profile = MagicMock(
+            custom_properties={"server_info": {"timezone": "Europe/Brussels"}}
+        )
+        account = MagicMock(id=1)
+        account.profiles.filter.return_value.first.return_value = tz_profile
+        ok = MagicMock(status_code=200)
+        with patch.object(views.M3UAccount.objects, "get", return_value=account), \
+             patch.object(views, "_attempt_timeshift_stream",
+                          return_value=ok) as attempt_mock:
+            response = views._stream_reused_session(
+                self.redis,
+                session_id=self.SESSION,
+                descriptor={
+                    "account_id": "1",
+                    "stream_id": "111",
+                    "provider_timestamp": "2026-06-08:19-00",
+                },
+                profile=profile,
+                channel=self.channel,
+                media_id=media_id,
+                safe_ts=timestamp.replace(":", "-"),
+                timestamp=timestamp,
+                duration_minutes=40,
+                client_id=self.SESSION,
+                client_ip="1.2.3.4",
+                range_header=None,
+                channel_logo_id=None,
+                user=self.user,
+                debug=False,
+            )
+        return response, ok, attempt_mock
+
+    def test_reused_session_serves_requested_timestamp_not_stored_anchor(self):
+        # Field bug: rewind to X, play, then FF — TiviMate keeps the
+        # ?session_id= query when rebuilding the seek URL with a new start,
+        # and the reused session replayed the STORED position, snapping
+        # playback back to the rewind anchor X. The reuse path must always
+        # serve the REQUESTED timestamp.
+        _seed_pool_session(self.redis, session_id=self.SESSION)
+        response, ok, attempt_mock = self._call_reused_session(
+            "2026-06-08:17-30", "timeshift_8_2026-06-08-17-30",
+        )
+        self.assertIs(response, ok)
+        # June -> CEST: 17:30 UTC reaches the provider as 19:30 local — never
+        # the session's stored 19:00 anchor.
+        self.assertEqual(
+            attempt_mock.call_args.kwargs["provider_timestamp"],
+            "2026-06-08:19-30",
+        )
+
+    def test_reused_session_moves_pool_entry_to_requested_position(self):
+        # The descriptor must follow the seek so fingerprint matching and
+        # same-channel displacement compare against the position actually
+        # being served.
+        _seed_pool_session(self.redis, session_id=self.SESSION)
+        self._call_reused_session(
+            "2026-06-08:17-30", "timeshift_8_2026-06-08-17-30",
+        )
+        self.assertEqual(
+            self.redis.hget(self._pool_key(), "media_id"),
+            "timeshift_8_2026-06-08-17-30",
+        )
+        self.assertEqual(
+            self.redis.hget(self._pool_key(), "provider_timestamp"),
+            "2026-06-08:19-30",
+        )
+
+    def test_seek_same_session_new_timestamp_serves_new_position(self):
+        # End-to-end repro of the field report: idle session anchored at
+        # 17-00, then a timestamp-jump request for 17-30 carrying the SAME
+        # session_id (no Range header).
+        _seed_pool_session(self.redis, session_id=TEST_SESSION_ID)
+        with patch.object(views, "release_profile_slot"):
+            views._release_pool_session(self.redis, TEST_SESSION_ID, 31)
+
+        request = self.factory.get(
+            f"/timeshift/u/p/8/2026-06-08:17-30/8.ts?session_id={TEST_SESSION_ID}"
+        )
+        profile = MagicMock(id=31, custom_properties={})
+        tz_profile = MagicMock(
+            custom_properties={"server_info": {"timezone": "Europe/Brussels"}}
+        )
+        account = MagicMock(id=1)
+        account.profiles.filter.return_value.first.return_value = tz_profile
+        ok = MagicMock(status_code=200)
+        with patch.object(views, "_authenticate_user", return_value=self.user), \
+             patch.object(views, "network_access_allowed", return_value=True), \
+             patch.object(views, "Channel") as channel_cls, \
+             patch.object(views, "_user_can_access_channel", return_value=True), \
+             patch.object(views, "get_channel_catchup_streams",
+                          return_value=[_make_catchup_stream(
+                              account_id=1, stream_id="111", profile_id=31)]), \
+             patch.object(views, "get_programme_duration", return_value=40), \
+             patch.object(views, "check_user_stream_limits", return_value=True), \
+             patch.object(views, "RedisClient") as redis_cls, \
+             patch.object(views, "reserve_profile_slot",
+                          return_value=(True, 1, None)), \
+             patch.object(views, "release_profile_slot"), \
+             patch.object(views.M3UAccount.objects, "get", return_value=account), \
+             patch.object(views.M3UAccountProfile.objects, "get",
+                          return_value=profile), \
+             patch.object(views, "get_user_active_connections", return_value=[]), \
+             patch.object(views, "_attempt_timeshift_stream",
+                          return_value=ok) as attempt_mock:
+            redis_cls.get_client.return_value = self.redis
+            channel_cls.objects.get.return_value = MagicMock(
+                id=8, name="Test", logo_id=None,
+            )
+            response = views.timeshift_proxy(
+                request, "u", "p", "8", "2026-06-08:17-30", "8.ts",
+            )
+        self.assertIs(response, ok)
+        attempt_mock.assert_called_once()
+        self.assertEqual(
+            attempt_mock.call_args.kwargs["provider_timestamp"],
+            "2026-06-08:19-30",
+        )
+        self.assertEqual(
+            self.redis.hget(self._pool_key(), "media_id"),
+            "timeshift_8_2026-06-08-17-30",
+        )
+
 
 class TimeshiftSessionRedirectTests(TestCase):
     """First request must establish a session via 301 redirect (VOD-style)."""
