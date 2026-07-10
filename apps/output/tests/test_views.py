@@ -937,6 +937,53 @@ class XcLiveStreamsNullChannelNumberTests(TestCase):
         self.assertNotIn(by_id[unnumbered.id]["num"], {5})
 
 
+class XcXmltvNullChannelNumberTests(OutputEndpointTestMixin, TestCase):
+    """XC XMLTV EPG must not crash when a visible channel has no channel number."""
+
+    def setUp(self):
+        super().setUp()
+        self.client = Client()
+        self.user = User.objects.create_user(
+            username=f"xc-epg-{uuid4().hex[:8]}",
+            password="pass",
+            user_level=10,
+            custom_properties={"xc_password": "xcpass"},
+        )
+        self.group = ChannelGroup.objects.create(name=f"Group {uuid4().hex[:8]}")
+
+    def test_xmltv_epg_assigns_number_for_null_channel_number(self):
+        Channel.objects.create(
+            name="Numbered",
+            channel_number=5,
+            channel_group=self.group,
+            user_level=0,
+        )
+        Channel.objects.create(
+            name="Unnumbered",
+            channel_number=None,
+            channel_group=self.group,
+            user_level=0,
+            hidden_from_output=False,
+        )
+
+        response = self.client.get(
+            reverse("xc_xmltv"),
+            {
+                "username": self.user.username,
+                "password": "xcpass",
+                "tvg_id_source": "channel_number",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        content = _response_text(response)
+        try:
+            ET.fromstring(content)
+        except ET.ParseError as exc:
+            self.fail(f"Generated XMLTV EPG is not valid XML: {exc}")
+        self.assertIn("Unnumbered", content)
+
+
 class GenerateEpgPrevDaysTests(SimpleTestCase):
     """Profile EPG keeps legacy prev_days=0 unless URL or user setting says otherwise."""
 

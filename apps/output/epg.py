@@ -1192,26 +1192,26 @@ def generate_epg(request, profile_name=None, user=None, *, xc_catchup_prev_days=
         # XC clients require integer channel numbers, so we need to ensure no conflicts
         channel_num_map = {}
         if user is not None:
-            # This is an XC client - build collision-free mapping
             used_numbers = set()
+            deferred_channels = []
 
-            # First pass: assign integers for channels that already have integer numbers
             for channel in channels:
                 effective_num = channel.effective_channel_number
-                if effective_num is not None and effective_num == int(effective_num):
+                if effective_num is None:
+                    deferred_channels.append((channel.id, None))
+                elif effective_num == int(effective_num):
                     num = int(effective_num)
                     channel_num_map[channel.id] = num
                     used_numbers.add(num)
+                else:
+                    deferred_channels.append((channel.id, effective_num))
 
-            # Second pass: assign integers for channels with float numbers
-            for channel in channels:
-                effective_num = channel.effective_channel_number
-                if effective_num is not None and effective_num != int(effective_num):
-                    candidate = int(effective_num)
-                    while candidate in used_numbers:
-                        candidate += 1
-                    channel_num_map[channel.id] = candidate
-                    used_numbers.add(candidate)
+            for channel_id, effective_num in deferred_channels:
+                candidate = 1 if effective_num is None else int(effective_num)
+                while candidate in used_numbers:
+                    candidate += 1
+                channel_num_map[channel_id] = candidate
+                used_numbers.add(candidate)
 
         # Host/port/scheme are constant per request; precompute logo URL prefix once.
         _base_url = build_absolute_uri_with_port(request, "")
