@@ -1715,6 +1715,115 @@ class TimeshiftSessionReuseTests(TestCase):
         )
         self.assertIsNone(matched)
 
+    def test_find_matching_pool_session_fresh_session_skips_idle_exact_media(self):
+        _seed_pool_session(
+            self.redis, session_id="old",
+            user_id=5, client_ip="1.2.3.4", client_user_agent="test-agent",
+        )
+        with patch.object(views, "release_profile_slot"):
+            views._release_pool_session(self.redis, "old", 31)
+        matched = views._find_matching_pool_session(
+            self.redis,
+            media_id=TEST_MEDIA_ID,
+            channel_id=8,
+            user_id=5,
+            client_ip="1.2.3.4",
+            client_user_agent="test-agent",
+            include_busy=True,
+            fresh_session=True,
+        )
+        self.assertIsNone(matched)
+
+    def test_find_matching_pool_session_fresh_session_keeps_busy_exact_media(self):
+        _seed_pool_session(
+            self.redis, session_id="busy",
+            user_id=5, client_ip="1.2.3.4", client_user_agent="test-agent",
+            busy="1",
+        )
+        matched = views._find_matching_pool_session(
+            self.redis,
+            media_id=TEST_MEDIA_ID,
+            channel_id=8,
+            user_id=5,
+            client_ip="1.2.3.4",
+            client_user_agent="test-agent",
+            include_busy=True,
+            fresh_session=True,
+        )
+        self.assertEqual(matched, "busy")
+
+    def test_find_matching_pool_session_fresh_session_keeps_channel_hop_idle(self):
+        _seed_pool_session(
+            self.redis, session_id="old",
+            media_id="8_2026-06-08-17-00",
+            user_id=5, client_ip="1.2.3.4", client_user_agent="test-agent",
+        )
+        with patch.object(views, "release_profile_slot"):
+            views._release_pool_session(self.redis, "old", 31)
+        matched = views._find_matching_pool_session(
+            self.redis,
+            media_id="8_2026-06-08-17-30",
+            channel_id=8,
+            user_id=5,
+            client_ip="1.2.3.4",
+            client_user_agent="test-agent",
+            include_busy=True,
+            fresh_session=True,
+        )
+        self.assertEqual(matched, "old")
+
+    def test_fresh_session_id_does_not_adopt_idle_exact_media_pool(self):
+        """TiviMate FF race: redirect mints a new session, then reconnects to
+        the old programme timestamp before the real seek arrives. Must not
+        fingerprint-adopt the idle pool from the previous session."""
+        old_session = "oldrewsession1"
+        new_session = "newafterredirect1"
+        _seed_pool_session(
+            self.redis,
+            session_id=old_session,
+            user_id=5,
+            client_ip="1.2.3.4",
+            client_user_agent="test-agent",
+        )
+        with patch.object(views, "release_profile_slot"):
+            views._release_pool_session(self.redis, old_session, 31)
+
+        request = self.factory.get(
+            _proxy_url(new_session),
+            HTTP_USER_AGENT="test-agent",
+            REMOTE_ADDR="1.2.3.4",
+        )
+        streams = [_make_catchup_stream(account_id=1, stream_id="111", profile_id=31)]
+        ok = MagicMock(status_code=200)
+        with patch.object(views, "_authenticate_user", return_value=self.user), \
+             patch.object(views, "network_access_allowed", return_value=True), \
+             patch.object(views, "Channel") as channel_cls, \
+             patch.object(views, "_user_can_access_channel", return_value=True), \
+             patch.object(views, "get_channel_catchup_streams", return_value=streams), \
+             patch.object(views, "get_programme_duration", return_value=40), \
+             patch.object(views, "check_user_stream_limits", return_value=True), \
+             patch.object(views, "RedisClient") as redis_cls, \
+             patch.object(views, "reserve_profile_slot", return_value=(True, 1, None)), \
+             patch.object(views, "release_profile_slot"), \
+             patch.object(views, "get_transformed_credentials", side_effect=_fake_creds), \
+             patch.object(views, "get_user_active_connections", return_value=[]), \
+             patch.object(views, "_attempt_timeshift_stream", return_value=ok) as attempt_mock, \
+             patch.object(views, "_acquire_idle_pool_session") as acquire_mock:
+            redis_cls.get_client.return_value = self.redis
+            channel_cls.objects.get.return_value = MagicMock(
+                id=8, name="Test", logo_id=None,
+            )
+            response = views.timeshift_proxy(
+                request, "u", "p", "8", "2026-06-08:17-00", "8.ts",
+            )
+        self.assertIs(response, ok)
+        acquire_mock.assert_not_called()
+        self.assertEqual(
+            attempt_mock.call_args.kwargs["client_id"],
+            new_session,
+        )
+        self.assertTrue(self.redis.exists(f"timeshift:pool:{new_session}"))
+
     def test_find_matching_pool_session_finds_busy_pool_on_same_channel(self):
         _seed_pool_session(
             self.redis, session_id="busy",

@@ -299,7 +299,9 @@ def _serve_catchup(request, user, channel, timestamp):
     effective_session_id = session_id
     client_id = session_id
 
-    # Reuse idle pool or fingerprint-match when XC drops ?session_id= on seek.
+    # Fingerprint-match when this session_id has no pool yet (e.g. after 301).
+    # Do not adopt an idle exact-media pool: that is a duplicate reconnect to a
+    # programme slot the viewer just left, not a programme hop.
     if not session_entry:
         matched = _find_matching_pool_session(
             redis_client,
@@ -309,6 +311,7 @@ def _serve_catchup(request, user, channel, timestamp):
             client_ip=client_ip,
             client_user_agent=client_user_agent,
             include_busy=True,
+            fresh_session=True,
         )
         if matched:
             logger.info(
@@ -1224,12 +1227,17 @@ def _pool_entry_owned_by_user(entry, user_id):
 
 def _find_matching_pool_session(
     redis_client, *, media_id, user_id, client_ip, client_user_agent,
-    channel_id=None, include_busy=False,
+    channel_id=None, include_busy=False, fresh_session=False,
 ):
     """Find a pooled session for the same viewer.
 
     Prefers an exact *media_id* match, then any in-flight or idle session on
     the same channel so XC programme hops can recover a dropped ``session_id``.
+
+    When *fresh_session* is True (request carries a new ``session_id`` with no
+    pool entry yet), skip idle exact-media matches so a spurious reconnect to
+    the same programme slot does not revive a session the player abandoned.
+    Busy exact-media matches are kept for in-programme scrub preemption.
     """
     if redis_client is None:
         return None
@@ -1256,6 +1264,12 @@ def _find_matching_pool_session(
                     elif channel_prefix and stored_media.startswith(channel_prefix):
                         exact_match = False
                     else:
+                        continue
+                    if (
+                        fresh_session
+                        and exact_match
+                        and data.get("busy") != "1"
+                    ):
                         continue
                     session_id = key.rsplit(":", 1)[-1]
                     score = _score_pool_fingerprint(
