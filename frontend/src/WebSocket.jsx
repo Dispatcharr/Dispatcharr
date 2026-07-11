@@ -320,6 +320,10 @@ export const WebsocketProvider = ({ children }) => {
               setVodStats(JSON.parse(parsedEvent.data.stats));
               break;
 
+            case 'timeshift_stats':
+              setTimeshiftStats(JSON.parse(parsedEvent.data.stats));
+              break;
+
             case 'vod_started':
             case 'vod_stopped': {
               const { content_name, client_ip, user_id } = parsedEvent.data;
@@ -1055,6 +1059,7 @@ export const WebsocketProvider = ({ children }) => {
 
   const setChannelStats = useChannelsStore((s) => s.setChannelStats);
   const setVodStats = useChannelsStore((s) => s.setVodStats);
+  const setTimeshiftStats = useChannelsStore((s) => s.setTimeshiftStats);
   const fetchPlaylists = usePlaylistsStore((s) => s.fetchPlaylists);
   const setRefreshProgress = usePlaylistsStore((s) => s.setRefreshProgress);
   const setProfilePreview = usePlaylistsStore((s) => s.setProfilePreview);

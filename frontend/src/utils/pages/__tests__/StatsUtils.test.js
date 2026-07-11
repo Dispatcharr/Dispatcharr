@@ -8,6 +8,8 @@ vi.mock('../../../api.js', () => ({
     stopClient: vi.fn(),
     stopVODClient: vi.fn(),
     fetchActiveChannelStats: vi.fn(),
+    fetchAllConnectionStats: vi.fn(),
+    getAllConnectionStats: vi.fn(),
     getVODStats: vi.fn(),
   },
 }));
@@ -106,6 +108,34 @@ describe('StatsUtils', () => {
 
       await expect(StatsUtils.stopVODClient(clientId)).rejects.toThrow(
         'Failed to stop VOD client'
+      );
+    });
+  });
+
+  describe('fetchAllConnectionStats', () => {
+    it('should call API getAllConnectionStats', async () => {
+      const mockStats = {
+        live: { channels: [], count: 0 },
+        vod: { vod_connections: [] },
+        catchup: { timeshift_sessions: [] },
+      };
+
+      API.getAllConnectionStats.mockResolvedValue(mockStats);
+
+      const result = await StatsUtils.fetchAllConnectionStats();
+
+      expect(API.getAllConnectionStats).toHaveBeenCalledWith();
+      expect(API.getAllConnectionStats).toHaveBeenCalledTimes(1);
+      expect(result).toEqual(mockStats);
+    });
+
+    it('should propagate API errors', async () => {
+      const error = new Error('Failed to fetch combined stats');
+
+      API.getAllConnectionStats.mockRejectedValue(error);
+
+      await expect(StatsUtils.fetchAllConnectionStats()).rejects.toThrow(
+        'Failed to fetch combined stats'
       );
     });
   });

@@ -1,9 +1,10 @@
-"""XC catch-up (timeshift) proxy with multi-provider failover."""
+"""Catch-up (timeshift) proxy with multi-provider failover."""
 
 import hmac
-import itertools
+import json
 import logging
 import secrets
+import threading
 import time
 from urllib.parse import urlencode
 
@@ -16,9 +17,16 @@ from django.http import (
     HttpResponseBadRequest,
     HttpResponseForbidden,
     HttpResponseNotFound,
+    JsonResponse,
     StreamingHttpResponse,
 )
+from rest_framework.decorators import api_view, authentication_classes, permission_classes
+from rest_framework.permissions import AllowAny
+from rest_framework_simplejwt.authentication import JWTAuthentication
+from drf_spectacular.types import OpenApiTypes
+from drf_spectacular.utils import OpenApiParameter, extend_schema
 
+from apps.accounts.authentication import ApiKeyAuthentication, QueryParamJWTAuthentication
 from apps.accounts.models import User
 from apps.channels.models import Channel
 from apps.channels.utils import get_channel_catchup_streams
@@ -27,14 +35,23 @@ from apps.m3u.models import M3UAccount, M3UAccountProfile
 from apps.m3u.tasks import get_transformed_credentials
 from apps.proxy.live_proxy.config_helper import ConfigHelper
 from apps.proxy.live_proxy.constants import ChannelMetadataField, ChannelState
-from apps.proxy.live_proxy.redis_keys import RedisKeys
+from apps.timeshift.redis_keys import (
+    TimeshiftRedisKeys,
+    mint_session_id,
+    programme_media_id,
+    stats_channel_id as make_stats_channel_id,
+    virtual_channel_id as make_virtual_channel_id,
+)
+
+stats_channel_id = make_stats_channel_id
 from apps.proxy.live_proxy.utils import get_client_ip
 from apps.proxy.utils import (
+    _timeshift_stop_channel_id,
     check_user_stream_limits,
     find_ts_sync,
     get_user_active_connections,
 )
-from core.utils import RedisClient
+from core.utils import RedisClient, _is_gevent_monkey_patched
 from dispatcharr.utils import network_access_allowed
 
 from .helpers import (
@@ -44,11 +61,32 @@ from .helpers import (
     get_programme_duration,
     parse_catchup_timestamp,
 )
+from .sessions import catchup_session_exists, delete_catchup_session, resolve_catchup_playback
+from .stats import resolve_stats_playback_fields, seed_stream_stats_metadata
 
 logger = logging.getLogger(__name__)
 
 CLIENT_TTL_SECONDS = 60
+_STATS_DISCONNECT_GRACE_SECONDS = 5  # VOD-style grace before dropping stats on disconnect.
+_STATS_RECONNECT_SETTLE_SECONDS = 1.5  # Brief pause before arming grace (XC reconnects fast).
+_STATS_GRACE_MIN_YIELDED_BYTES = 65536  # Ignore parallel startup probes that die immediately.
+_STATS_GRACE_MIN_ELAPSED_SECONDS = 2.0
+# Atomically drop the grace key only when its value still matches *token*.
+_CLAIM_STATS_GRACE_LUA = """
+if redis.call('get', KEYS[1]) == ARGV[1] then
+    return redis.call('del', KEYS[1])
+else
+    return 0
+end
+"""
 _MATCH_SCORE_THRESHOLD = 8  # client_ip (5) + client_user_agent (3)
+_STOP_REASON_REUSE = "reuse"
+_STOP_REASON_HOP = "hop"
+_STOP_REASON_ADMIN = "admin"
+_STOP_REASON_LIMIT = "limit"
+_TERMINAL_STOP_REASONS = frozenset({
+    _STOP_REASON_HOP, _STOP_REASON_ADMIN, _STOP_REASON_LIMIT,
+})
 
 
 def _finalize_timeshift_response(response):
@@ -84,7 +122,125 @@ def timeshift_proxy(request, username, password, stream_id, timestamp, duration)
     if not _user_can_access_channel(user, channel):
         return _finalize_timeshift_response(HttpResponseForbidden("Access denied"))
 
-    # Shape helpers pass through on parse failure; reject bad input before upstream.
+    return _serve_catchup(request, user, channel, timestamp)
+
+
+@extend_schema(
+    description=(
+        "Stream catch-up (TV archive) MPEG-TS for a channel.\n\n"
+        "**Recommended (native apps):** call ``POST /api/catchup/sessions/`` "
+        "with a JWT or API key to obtain a ``playback_url`` containing "
+        "``session_id`` only. Pass that URL to the video player without an "
+        "``?token=`` required. The session binds the programme ``start`` "
+        "time server-side.\n\n"
+        "**Legacy / direct auth:** supply ``start`` (programme UTC start "
+        "time) plus ``Authorization: Bearer``, ``X-API-Key``, or "
+        "``?token=<jwt>``. Optionally include a client ``session_id`` for "
+        "provider pooling.\n\n"
+        "If ``session_id`` is omitted on a direct-auth request, the server "
+        "responds with **301** adding a server-minted ``session_id``."
+    ),
+    parameters=[
+        OpenApiParameter(
+            name="session_id",
+            type=OpenApiTypes.STR,
+            location=OpenApiParameter.QUERY,
+            required=False,
+            description=(
+                "Playback session from ``POST /api/catchup/sessions/``. "
+                "When present, JWT is optional. The session authenticates "
+                "the player. Reuse for all range/seek requests during the "
+                "same programme."
+            ),
+        ),
+        OpenApiParameter(
+            name="start",
+            type=OpenApiTypes.STR,
+            location=OpenApiParameter.QUERY,
+            required=False,
+            description=(
+                "Programme start time in UTC. Required for direct-auth "
+                "playback (no API session). Ignored when ``session_id`` was "
+                "issued by ``POST /api/catchup/sessions/``."
+            ),
+        ),
+        OpenApiParameter(
+            name="token",
+            type=OpenApiTypes.STR,
+            location=OpenApiParameter.QUERY,
+            required=False,
+            description=(
+                "JWT access token when Authorization headers are unavailable. "
+                "Not needed when using an API playback session."
+            ),
+        ),
+    ],
+    responses={
+        200: {"description": "MPEG-TS stream (may be partial content for Range requests)."},
+        301: {
+            "description": (
+                "Redirect to the same URL with a server-minted ``session_id`` "
+                "when the client did not supply one (direct-auth flow only)."
+            ),
+        },
+        401: {"description": "Missing or expired authentication / session."},
+        403: {"description": "Access denied or session/channel mismatch."},
+    },
+    tags=["proxy"],
+)
+@api_view(["GET"])
+@authentication_classes([JWTAuthentication, ApiKeyAuthentication, QueryParamJWTAuthentication])
+@permission_classes([AllowAny])
+def catchup_proxy(request, channel_id):
+    """Native API catch-up playback for a channel."""
+    if not network_access_allowed(request, "STREAMS"):
+        return JsonResponse({"error": "Forbidden"}, status=403)
+
+    auth_user = (
+        request.user
+        if getattr(request, "user", None) and request.user.is_authenticated
+        else None
+    )
+
+    session_id = request.GET.get("session_id")
+    timestamp = request.GET.get("start")
+    user = auth_user
+
+    if session_id:
+        resolved = resolve_catchup_playback(session_id, channel_id)
+        if resolved is None:
+            if auth_user is None:
+                return JsonResponse(
+                    {"error": "Invalid or expired playback session"},
+                    status=401,
+                )
+        else:
+            session_user, bound_start = resolved
+            if auth_user is not None and auth_user.id != session_user.id:
+                return _finalize_timeshift_response(HttpResponseForbidden("Access denied"))
+            user = session_user
+            timestamp = bound_start
+
+    if user is None:
+        return JsonResponse({"error": "Authentication required"}, status=401)
+
+    try:
+        channel = Channel.objects.get(uuid=channel_id)
+    except Channel.DoesNotExist:
+        close_old_connections()
+        raise Http404("Channel not found") from None
+
+    if not _user_can_access_channel(user, channel):
+        return _finalize_timeshift_response(HttpResponseForbidden("Access denied"))
+
+    if not timestamp:
+        return _finalize_timeshift_response(HttpResponseBadRequest("Missing start parameter"))
+
+    return _serve_catchup(request, user, channel, timestamp)
+
+
+def _serve_catchup(request, user, channel, timestamp):
+    """Shared catch-up proxy logic for XC and native API entry points."""
     if parse_catchup_timestamp(timestamp) is None:
         return _finalize_timeshift_response(HttpResponseBadRequest("Invalid timestamp"))
 
@@ -107,13 +263,28 @@ def timeshift_proxy(request, username, password, stream_id, timestamp, duration)
 
     redis_client = RedisClient.get_client()
 
-    # Content identity (channel + catch-up position). Provider slot sharing is
-    # scoped per client session; never assume all requests for the same
-    # programme belong to one viewer.
-    media_id = f"timeshift_{channel.id}_{safe_ts}"
+    # One provider slot per session_id, not per programme.
+    media_id = programme_media_id(channel.id, safe_ts)
 
     session_id = request.GET.get("session_id")
     if not session_id:
+        matched = _find_matching_pool_session(
+            redis_client,
+            media_id=media_id,
+            channel_id=channel.id,
+            user_id=user.id,
+            client_ip=client_ip,
+            client_user_agent=client_user_agent,
+            include_busy=True,
+        )
+        if matched:
+            logger.debug(
+                "Timeshift session redirect: reusing %s for %s",
+                matched, request.path,
+            )
+            return _finalize_timeshift_response(
+                _redirect_with_session(request, matched),
+            )
         logger.debug("Timeshift session redirect: %s (new session)", request.path)
         return _finalize_timeshift_response(_redirect_with_new_session(request))
 
@@ -128,19 +299,20 @@ def timeshift_proxy(request, username, password, stream_id, timestamp, duration)
     effective_session_id = session_id
     client_id = session_id
 
-    # Reuse an idle pool owned by this session, or fingerprint-match a prior
-    # idle session from the same client (VOD-style) before opening upstream.
+    # Reuse idle pool or fingerprint-match when XC drops ?session_id= on seek.
     if not session_entry:
-        matched = _find_matching_idle_session(
+        matched = _find_matching_pool_session(
             redis_client,
             media_id=media_id,
+            channel_id=channel.id,
             user_id=user.id,
             client_ip=client_ip,
             client_user_agent=client_user_agent,
+            include_busy=True,
         )
         if matched:
             logger.info(
-                "Timeshift fingerprint matched idle session %s for %s",
+                "Timeshift fingerprint matched session %s for %s",
                 matched, session_id,
             )
             effective_session_id = matched
@@ -170,6 +342,8 @@ def timeshift_proxy(request, username, password, stream_id, timestamp, duration)
     if not check_user_stream_limits(user, client_id, media_id=media_id):
         return _finalize_timeshift_response(HttpResponseForbidden("Stream limit exceeded"))
 
+    _touch_stats_on_session_request(redis_client, channel.id, effective_session_id)
+
     if effective_session_id == session_id:
         pool = _snapshot_from_entry(session_entry)
     else:
@@ -178,24 +352,64 @@ def timeshift_proxy(request, username, password, stream_id, timestamp, duration)
     pool_busy = pool["busy"] if pool else False
     pool_content_length = pool["content_length"] if pool else None
     busy_serving_range = pool["serving_range"] if pool else None
+    pool_media_id = None
+    if pool and pool.get("entry"):
+        pool_media_id = pool["entry"].get("media_id")
+    elif session_entry:
+        pool_media_id = session_entry.get("media_id")
+    scrub_displacement = (
+        pool_exists
+        and _should_displace_busy_pool(
+            range_header,
+            pool_content_length,
+            busy_serving_range,
+            pool_media_id=pool_media_id,
+            media_id=media_id,
+        )
+    )
+    # Pool may look idle while the replacement upstream is still active.
+    if (
+        scrub_displacement
+        and not pool_busy
+        and _session_has_active_timeshift_stream(user, effective_session_id)
+    ):
+        pool_busy = True
 
     acquired = None
     if pool_exists:
-        if pool_busy:
-            if _should_displace_busy_playback(
-                range_header, pool_content_length, busy_serving_range,
-            ):
-                _preempt_playback_streams(redis_client, effective_session_id, user)
-                acquired = _wait_for_idle_pool_session(
-                    redis_client,
-                    effective_session_id,
-                    user_id=user.id,
-                    wait_seconds=_POOL_PREEMPT_WAIT_SECONDS,
-                )
-        else:
+        if not pool_busy:
             acquired = _acquire_idle_pool_session(
                 redis_client, effective_session_id, user_id=user.id,
             )
+        elif _should_preempt_for_programme_change(
+            redis_client, effective_session_id, pool_media_id, media_id,
+        ):
+            acquired = _try_reacquire_idle_pool(
+                redis_client, effective_session_id,
+                user_id=user.id, user=user,
+            )
+        elif scrub_displacement:
+            acquired = _try_reacquire_idle_pool(
+                redis_client, effective_session_id,
+                user_id=user.id, user=user,
+                wait_seconds=_POOL_SCRUB_WAIT_SECONDS,
+            )
+            if acquired is None:
+                logger.warning(
+                    "Timeshift: session %s still busy after scrub preempt, opening failover",
+                    effective_session_id,
+                )
+                abandoned_profile_id = None
+                abandoned_entry = pool["entry"] if pool and pool.get("entry") else session_entry
+                if abandoned_entry:
+                    abandoned_profile_id = abandoned_entry.get("profile_id")
+                _force_abandon_busy_pool(
+                    redis_client,
+                    effective_session_id,
+                    abandoned_profile_id,
+                )
+                pool_exists = False
+                pool_busy = False
 
     last_response = None
     decisive_accounts = set()
@@ -214,6 +428,7 @@ def timeshift_proxy(request, username, password, stream_id, timestamp, duration)
             duration_minutes=duration_minutes,
             client_id=client_id,
             client_ip=client_ip,
+            client_user_agent=client_user_agent,
             range_header=range_header,
             channel_logo_id=channel_logo_id,
             user=user,
@@ -231,19 +446,10 @@ def timeshift_proxy(request, username, password, stream_id, timestamp, duration)
                 except (ValueError, TypeError):
                     pass
 
-    if pool_exists and pool_busy and not _should_displace_busy_playback(
-            range_header, pool_content_length, busy_serving_range,
-        ):
+    if pool_exists and pool_busy and acquired is None:
         logger.debug(
-            "Timeshift: deferring non-displacing request for session %s range=%s",
-            effective_session_id, range_header or "(none)",
-        )
-        return _finalize_timeshift_response(HttpResponse("Stream slot busy", status=503))
-
-    if pool_exists and pool_busy:
-        logger.warning(
-            "Timeshift: session %s did not become idle in time",
-            effective_session_id,
+            "Timeshift: deferring busy session %s range=%s media=%s pool_media=%s",
+            effective_session_id, range_header or "(none)", media_id, pool_media_id,
         )
         return _finalize_timeshift_response(HttpResponse("Stream slot busy", status=503))
 
@@ -310,6 +516,7 @@ def timeshift_proxy(request, username, password, stream_id, timestamp, duration)
             account_id=m3u_account.id,
             profile_id=reserved_profile.id,
             stream_id=stream_id_value,
+            dispatcharr_stream_id=catchup_stream.id,
             provider_timestamp=provider_timestamp,
             provider_tz_name=provider_tz_name,
         ):
@@ -344,6 +551,7 @@ def timeshift_proxy(request, username, password, stream_id, timestamp, duration)
                 timestamp=timestamp,
                 client_id=client_id,
                 client_ip=client_ip,
+                client_user_agent=client_user_agent,
                 range_header=range_header,
                 channel_logo_id=channel_logo_id,
                 user=user,
@@ -351,6 +559,8 @@ def timeshift_proxy(request, username, password, stream_id, timestamp, duration)
                 debug=debug,
                 release_cb=release_cb,
                 pool_session_id=effective_session_id,
+                stats_stream_id=catchup_stream.id,
+                stream_stats=catchup_stream.stream_stats,
             )
         except Exception:
             _discard_pool_session(redis_client, effective_session_id, reserved_profile.id)
@@ -361,9 +571,7 @@ def timeshift_proxy(request, username, password, stream_id, timestamp, duration)
             return _finalize_timeshift_response(response)
 
         if getattr(response, "timeshift_passthrough", False) is True:
-            # Terminal range answer (e.g. 416 past EOF): the upstream session is
-            # healthy, so free the slot but keep the entry idle for the next
-            # probe, and return verbatim without failing over to other accounts.
+            # 416 etc.: release slot, keep idle pool, no failover.
             release_cb()
             return _finalize_timeshift_response(response)
 
@@ -423,36 +631,482 @@ def _user_can_access_channel(user, channel):
     )
 
 
-# Per-client session pool (keyed by session_id from the 301 redirect). Each
-# viewer gets their own provider slot even when watching the same catch-up
-# programme. Idle sessions can be fingerprint-matched (VOD-style) when a client
-# returns without its prior session_id.
-_POOL_KEY = "timeshift_pool:{session_id}"
-_POOL_LOCK_KEY = "timeshift_pool_lock:{session_id}"
-_POOL_ENTRY_TTL = 6 * 3600
-_POOL_IDLE_TTL = 30
+# Per-client pool (session_id from 301 redirect). Fingerprint-match when ?session_id= is dropped.
+_POOL_ENTRY_TTL = 10 * 60  # Refreshed on playback GET and active-stream heartbeats.
+_STREAM_READ_INACTIVITY_SECONDS = CLIENT_TTL_SECONDS  # Shorter than pool TTL; data should flow.
+_POOL_IDLE_TTL = CLIENT_TTL_SECONDS  # Must match CLIENT_TTL_SECONDS (stats + fingerprint agree).
 _POOL_WAIT_SECONDS = 1.0
-_POOL_PREEMPT_WAIT_SECONDS = 5.0
+# Brief wait after scrub preempt before failover.
+_POOL_SCRUB_WAIT_SECONDS = 2.0
 _POOL_POLL_INTERVAL = 0.05
 _EOF_PROBE_TAIL_BYTES = 512_000
 _EOF_PROBE_UNKNOWN_LENGTH_MIN = 100_000_000
 
 
 def _pool_key(session_id):
-    return _POOL_KEY.format(session_id=session_id)
+    return TimeshiftRedisKeys.pool(session_id)
+
+
+def _stats_disconnect_grace_key(stats_channel_id, client_id):
+    return TimeshiftRedisKeys.stats_grace(stats_channel_id, client_id)
+
+
+_STATS_GRACE_DEADLINE_FIELD = "stats_grace_deadline"
+_STATS_GRACE_DISCONNECTED_AT_FIELD = "stats_grace_disconnected_at"
+
+
+def _clear_stats_grace_schedule(redis_client, stats_channel_id, client_id):
+    if redis_client is None:
+        return
+    try:
+        redis_client.delete(_stats_disconnect_grace_key(stats_channel_id, client_id))
+        client_key = TimeshiftRedisKeys.client_metadata(stats_channel_id, client_id)
+        redis_client.hdel(
+            client_key,
+            _STATS_GRACE_DEADLINE_FIELD,
+            _STATS_GRACE_DISCONNECTED_AT_FIELD,
+        )
+    except Exception as exc:
+        logger.debug("Timeshift stats grace cancel failed: %s", exc)
+
+
+def _cancel_stats_disconnect_grace(redis_client, stats_channel_id, client_id):
+    _clear_stats_grace_schedule(redis_client, stats_channel_id, client_id)
+
+
+def _pool_session_exists(redis_client, session_id):
+    if redis_client is None or not session_id:
+        return False
+    try:
+        return bool(redis_client.exists(_pool_key(session_id)))
+    except Exception:
+        return False
+
+
+def _pool_session_busy(redis_client, session_id):
+    if redis_client is None or not session_id:
+        return False
+    try:
+        busy = redis_client.hget(_pool_key(session_id), "busy")
+    except Exception:
+        return False
+    if isinstance(busy, bytes):
+        busy = busy.decode()
+    return str(busy) == "1"
+
+
+def _should_schedule_stats_disconnect_grace(
+    total_yielded,
+    elapsed_secs,
+    *,
+    stopped_for_reuse,
+    redis_client=None,
+    client_id=None,
+):
+    if stopped_for_reuse:
+        return False
+    if _is_timeshift_startup_probe(total_yielded, elapsed_secs):
+        return False
+    # XC duplicate requests often return 503 and reset the first connection
+    # within ~1s while the idle pool entry waits for the retry.
+    if (
+        elapsed_secs < _STATS_GRACE_MIN_ELAPSED_SECONDS
+        and redis_client is not None
+        and client_id
+        and _pool_session_exists(redis_client, client_id)
+    ):
+        return False
+    return True
+
+
+def _is_timeshift_startup_probe(total_yielded, elapsed_secs):
+    """XC often probes several programme URLs in parallel; losers die quickly."""
+    return (
+        total_yielded < _STATS_GRACE_MIN_YIELDED_BYTES
+        and elapsed_secs < _STATS_GRACE_MIN_ELAPSED_SECONDS
+    )
+
+
+def _stats_client_reconnected(
+    redis_client, stats_channel_id, client_id, *, disconnected_at,
+):
+    """Return True when a new playback request superseded this disconnect."""
+    if _pool_session_busy(redis_client, client_id):
+        return True
+    client_key = TimeshiftRedisKeys.client_metadata(stats_channel_id, client_id)
+    try:
+        last_active = redis_client.hget(client_key, "last_active")
+        if last_active:
+            if isinstance(last_active, bytes):
+                last_active = last_active.decode()
+            # Strict ``>``: the disconnect path heartbeats stats immediately
+            # before arming grace, so equality means no reconnect yet.
+            if float(last_active) > float(disconnected_at):
+                return True
+    except (TypeError, ValueError):
+        pass
+    return False
+
+
+def _grace_token_claimed(redis_client, grace_key, token):
+    if redis_client is None:
+        return False
+    try:
+        current = redis_client.get(grace_key)
+        if isinstance(current, bytes):
+            current = current.decode()
+        return current == token
+    except Exception:
+        return False
+
+
+def _complete_expired_stats_grace(redis_client, stats_channel_id, client_id):
+    """Run disconnect cleanup when the grace deadline has already passed.
+
+    uWSGI workers often cannot keep a daemon thread alive after the streaming
+    response closes, so heartbeats and reconnect touches also drive this path.
+    """
+    if redis_client is None or not client_id:
+        return
+    client_key = TimeshiftRedisKeys.client_metadata(stats_channel_id, client_id)
+    try:
+        deadline_raw = redis_client.hget(client_key, _STATS_GRACE_DEADLINE_FIELD)
+        if not deadline_raw:
+            return
+        if isinstance(deadline_raw, bytes):
+            deadline_raw = deadline_raw.decode()
+        if time.time() < float(deadline_raw):
+            return
+        grace_key = _stats_disconnect_grace_key(stats_channel_id, client_id)
+        token = redis_client.get(grace_key)
+        if token is None:
+            redis_client.hdel(
+                client_key,
+                _STATS_GRACE_DEADLINE_FIELD,
+                _STATS_GRACE_DISCONNECTED_AT_FIELD,
+            )
+            return
+        if isinstance(token, bytes):
+            token = token.decode()
+        disconnected_raw = redis_client.hget(
+            client_key, _STATS_GRACE_DISCONNECTED_AT_FIELD,
+        )
+        if disconnected_raw is None:
+            disconnected_at = (
+                float(deadline_raw)
+                - _STATS_RECONNECT_SETTLE_SECONDS
+                - _STATS_DISCONNECT_GRACE_SECONDS
+            )
+        else:
+            if isinstance(disconnected_raw, bytes):
+                disconnected_raw = disconnected_raw.decode()
+            disconnected_at = float(disconnected_raw)
+        _run_stats_disconnect_grace(
+            redis_client, stats_channel_id, client_id, token,
+            disconnected_at=disconnected_at,
+        )
+    except Exception as exc:
+        logger.debug("Timeshift stats grace finalize failed: %s", exc)
+
+
+def _touch_stats_on_session_request(redis_client, channel_id, session_id):
+    """Keep an in-flight stats card alive while XC reconnects the same session."""
+    if redis_client is None or not session_id:
+        return
+    stats_channel_id = make_stats_channel_id(channel_id, session_id)
+    client_key = TimeshiftRedisKeys.client_metadata(stats_channel_id, session_id)
+    try:
+        if not redis_client.exists(client_key):
+            return
+        _cancel_stats_disconnect_grace(redis_client, stats_channel_id, session_id)
+        _complete_expired_stats_grace(redis_client, stats_channel_id, session_id)
+        now = str(time.time())
+        client_set_key = TimeshiftRedisKeys.clients(stats_channel_id)
+        metadata_key = TimeshiftRedisKeys.channel_metadata(stats_channel_id)
+        pipe = redis_client.pipeline(transaction=False)
+        pipe.hset(client_key, "last_active", now)
+        pipe.expire(client_key, CLIENT_TTL_SECONDS)
+        pipe.expire(client_set_key, CLIENT_TTL_SECONDS)
+        pipe.expire(metadata_key, CLIENT_TTL_SECONDS)
+        pipe.execute()
+        programme_vid = redis_client.hget(client_key, "programme_vid")
+        if isinstance(programme_vid, bytes):
+            programme_vid = programme_vid.decode()
+        _refresh_active_session_redis_ttl(
+            redis_client, session_id, programme_vid,
+        )
+    except Exception as exc:
+        logger.debug("Timeshift stats touch failed: %s", exc)
+
+
+def _run_stats_disconnect_grace(
+    redis_client, stats_channel_id, client_id, token, *, disconnected_at,
+):
+    """Drop stats after the grace window unless a reconnect cancelled *token*."""
+    if redis_client is None:
+        return
+    grace_key = _stats_disconnect_grace_key(stats_channel_id, client_id)
+    try:
+        claimed = redis_client.eval(
+            _CLAIM_STATS_GRACE_LUA, 1, grace_key, token,
+        )
+        if not claimed:
+            return
+        if _pool_session_busy(redis_client, client_id):
+            return
+        if _stats_client_reconnected(
+            redis_client, stats_channel_id, client_id,
+            disconnected_at=disconnected_at,
+        ):
+            return
+        client_key = TimeshiftRedisKeys.client_metadata(stats_channel_id, client_id)
+        programme_vid = redis_client.hget(client_key, "programme_vid")
+        if isinstance(programme_vid, bytes):
+            programme_vid = programme_vid.decode()
+        _unregister_stats_client(redis_client, stats_channel_id, client_id)
+        _cleanup_all_stream_generations(redis_client, client_id)
+        api_session_ended = _finalize_playback_session_auth(redis_client, client_id)
+        if api_session_ended:
+            _discard_pool_session(redis_client, client_id, None)
+        else:
+            # Keep idle pool fingerprint for XC players that drop ?session_id=.
+            key = _pool_key(client_id)
+            try:
+                if redis_client.exists(key):
+                    redis_client.expire(key, _POOL_IDLE_TTL)
+            except Exception as exc:
+                logger.debug("Timeshift pool idle TTL refresh failed: %s", exc)
+        try:
+            redis_client.delete(_superseded_pool_key(client_id))
+        except Exception:
+            pass
+        _trigger_timeshift_stats_update(redis_client)
+    except Exception as exc:
+        logger.warning("Timeshift delayed stats unregister failed: %s", exc)
+
+
+def _finalize_playback_session_auth(redis_client, session_id):
+    """Drop tokenless API session auth once viewing has genuinely ended.
+
+    Returns ``True`` when an API session record existed and was deleted.
+    """
+    if redis_client is None or not session_id:
+        return False
+    if not catchup_session_exists(session_id, redis_client=redis_client):
+        return False
+    delete_catchup_session(session_id, redis_client=redis_client)
+    return True
+
+
+def _spawn_background_task(func):
+    """Run *func* on a gevent greenlet (uWSGI) or a non-daemon thread.
+
+    Gated on monkey-patching, not gevent importability: in unpatched
+    processes (Celery prefork, tests) a spawned greenlet may never be
+    scheduled because nothing yields to the hub.
+    """
+    if _is_gevent_monkey_patched():
+        import gevent
+        gevent.spawn(func)
+        return
+    thread = threading.Thread(target=func, daemon=False)
+    thread.start()
+
+
+def _schedule_stats_disconnect_grace(redis_client, stats_channel_id, client_id):
+    if redis_client is None:
+        return
+    token = secrets.token_hex(8)
+    grace_key = _stats_disconnect_grace_key(stats_channel_id, client_id)
+    disconnected_at = time.time()
+    grace_deadline = (
+        disconnected_at
+        + _STATS_RECONNECT_SETTLE_SECONDS
+        + _STATS_DISCONNECT_GRACE_SECONDS
+    )
+    ttl = int(
+        _STATS_RECONNECT_SETTLE_SECONDS + _STATS_DISCONNECT_GRACE_SECONDS + 2,
+    )
+    client_key = TimeshiftRedisKeys.client_metadata(stats_channel_id, client_id)
+    try:
+        pipe = redis_client.pipeline(transaction=False)
+        pipe.setex(grace_key, ttl, token)
+        pipe.hset(
+            client_key,
+            mapping={
+                _STATS_GRACE_DEADLINE_FIELD: str(grace_deadline),
+                _STATS_GRACE_DISCONNECTED_AT_FIELD: str(disconnected_at),
+            },
+        )
+        pipe.execute()
+    except Exception as exc:
+        logger.warning("Timeshift stats grace schedule failed: %s", exc)
+        return
+
+    def _delayed_unregister():
+        time.sleep(_STATS_RECONNECT_SETTLE_SECONDS)
+        if not _grace_token_claimed(redis_client, grace_key, token):
+            return
+        if _stats_client_reconnected(
+            redis_client, stats_channel_id, client_id,
+            disconnected_at=disconnected_at,
+        ):
+            try:
+                redis_client.delete(grace_key)
+            except Exception:
+                pass
+            return
+        time.sleep(_STATS_DISCONNECT_GRACE_SECONDS)
+        _run_stats_disconnect_grace(
+            redis_client, stats_channel_id, client_id, token,
+            disconnected_at=disconnected_at,
+        )
+
+    _spawn_background_task(_delayed_unregister)
+
+
+def _trigger_timeshift_stats_update(redis_client):
+    """Push catch-up stats to websocket listeners after real connection changes."""
+    if redis_client is None:
+        return
+
+    def _send():
+        try:
+            from apps.timeshift.stats import build_timeshift_stats_data
+            from core.utils import send_websocket_update
+
+            stats = build_timeshift_stats_data(redis_client)
+            send_websocket_update(
+                "updates",
+                "update",
+                {
+                    "success": True,
+                    "type": "timeshift_stats",
+                    "stats": json.dumps(stats),
+                },
+            )
+        except Exception as exc:
+            logger.debug("Failed to trigger timeshift stats update: %s", exc)
+
+    _spawn_background_task(_send)
 
 
 def _parse_range_start(range_header):
     """Return the byte offset from a ``Range: bytes=START-`` header, or None."""
+    parsed = _parse_client_range(range_header)
+    if parsed is None:
+        return None
+    return parsed[0]
+
+
+def _parse_client_range(range_header):
+    """Return ``(start, end)`` from a client Range header; ``end`` may be None."""
     if not range_header or not range_header.startswith("bytes="):
         return None
-    start_part = range_header[6:].split("-", 1)[0]
-    if not start_part:
+    range_part = range_header[6:]
+    if "-" not in range_part:
         return None
+    start_str, end_str = range_part.split("-", 1)
     try:
-        return int(start_part)
+        start = int(start_str) if start_str else 0
     except (TypeError, ValueError):
         return None
+    if not end_str:
+        return start, None
+    try:
+        return start, int(end_str)
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_content_range_header(content_range):
+    """Parse ``Content-Range: bytes START-END/TOTAL``."""
+    if not content_range or not content_range.startswith("bytes "):
+        return None
+    body = content_range[6:]
+    if "/" not in body:
+        return None
+    range_part, total_part = body.rsplit("/", 1)
+    if "-" not in range_part:
+        return None
+    start_str, end_str = range_part.split("-", 1)
+    try:
+        start = int(start_str) if start_str else 0
+        end = int(end_str) if end_str else None
+        total = None if total_part == "*" else int(total_part)
+    except (TypeError, ValueError):
+        return None
+    return {"start": start, "end": end, "total": total}
+
+
+def _extract_representation_length(upstream_response):
+    """Return the full archived file size from upstream response headers."""
+    if upstream_response is None:
+        return None
+    parsed = _parse_content_range_header(
+        upstream_response.headers.get("Content-Range", ""),
+    )
+    if parsed and parsed.get("total") is not None:
+        return parsed["total"]
+    content_length = upstream_response.headers.get("Content-Length")
+    if content_length:
+        try:
+            return int(content_length)
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def _build_downstream_length_headers(
+    *,
+    range_header,
+    status_code,
+    representation_length,
+    upstream_content_range,
+    upstream_content_length,
+    streaming=False,
+):
+    """Build RFC 7230/7233 length headers for the downstream IPTV client."""
+    headers = {"Accept-Ranges": "bytes"}
+    parsed_upstream = (
+        _parse_content_range_header(upstream_content_range)
+        if upstream_content_range else None
+    )
+
+    if representation_length is None and parsed_upstream:
+        representation_length = parsed_upstream.get("total")
+
+    if status_code == 206:
+        # Trust upstream partial headers; peek bytes are forwarded verbatim.
+        if upstream_content_range:
+            headers["Content-Range"] = upstream_content_range
+        elif range_header and representation_length is not None:
+            client_range = _parse_client_range(range_header)
+            if client_range:
+                start, end = client_range
+                if end is None:
+                    end = representation_length - 1
+                else:
+                    end = min(end, representation_length - 1)
+                headers["Content-Range"] = (
+                    f"bytes {start}-{end}/{representation_length}"
+                )
+        if upstream_content_length:
+            headers["Content-Length"] = str(upstream_content_length)
+        elif parsed_upstream and parsed_upstream.get("end") is not None:
+            up_start = parsed_upstream["start"]
+            up_end = parsed_upstream["end"]
+            headers["Content-Length"] = str(up_end - up_start + 1)
+        return headers
+
+    # Omit Content-Length on streaming full-file responses (seeks may preempt).
+    if not streaming:
+        if representation_length is not None:
+            headers["Content-Length"] = str(representation_length)
+        elif upstream_content_length:
+            headers["Content-Length"] = str(upstream_content_length)
+
+    return headers
 
 
 def _is_near_eof_probe(range_header, content_length=None):
@@ -468,6 +1122,56 @@ def _is_near_eof_probe(range_header, content_length=None):
         else:
             return start >= max(0, total - _EOF_PROBE_TAIL_BYTES)
     return start >= _EOF_PROBE_UNKNOWN_LENGTH_MIN
+
+
+def _should_displace_busy_pool(
+    range_header,
+    content_length,
+    busy_serving_range,
+    *,
+    pool_media_id,
+    media_id,
+):
+    """True when a busy pooled slot should be recycled for this request."""
+    if pool_media_id is not None and str(pool_media_id) != str(media_id):
+        # Programme hops use _should_preempt_for_programme_change, not displacement.
+        return False
+    return _should_displace_busy_playback(
+        range_header, content_length, busy_serving_range,
+    )
+
+
+def _should_preempt_for_programme_change(
+    redis_client, session_id, pool_media_id, media_id,
+):
+    """True when the viewer moved to a different programme on the same session."""
+    if pool_media_id is None or str(pool_media_id) == str(media_id):
+        return False
+    try:
+        last_activity = float(
+            _get_pool_entry(redis_client, session_id).get("last_activity") or 0
+        )
+    except (TypeError, ValueError):
+        last_activity = 0
+    # Ignore parallel startup probes within ~2s.
+    return (time.time() - last_activity) >= _STATS_GRACE_MIN_ELAPSED_SECONDS
+
+
+def _try_reacquire_idle_pool(
+    redis_client, session_id, *, user_id, user,
+    wait_seconds=_POOL_WAIT_SECONDS,
+):
+    """Stop the in-flight stream and wait to reuse the same provider slot."""
+    _preempt_playback_streams(redis_client, session_id, user)
+    acquired = _acquire_idle_pool_session(
+        redis_client, session_id, user_id=user_id, handoff=True,
+    )
+    if acquired is not None:
+        return acquired
+    return _wait_for_idle_pool_session(
+        redis_client, session_id, user_id=user_id, wait_seconds=wait_seconds,
+        handoff=True,
+    )
 
 
 def _should_displace_busy_playback(
@@ -497,16 +1201,15 @@ def _score_pool_fingerprint(entry, client_ip, client_user_agent):
     return score
 
 
-def _mint_timeshift_session_id():
-    return f"timeshift_{secrets.token_urlsafe(16)}"
-
-
-def _redirect_with_new_session(request):
-    session_id = _mint_timeshift_session_id()
+def _redirect_with_session(request, session_id):
     query_params = {k: request.GET.getlist(k) for k in request.GET}
     query_params["session_id"] = [session_id]
     redirect_url = f"{request.path}?{urlencode(query_params, doseq=True)}"
     return HttpResponse(status=301, headers={"Location": redirect_url})
+
+
+def _redirect_with_new_session(request):
+    return _redirect_with_session(request, mint_session_id())
 
 
 def _pool_entry_owned_by_user(entry, user_id):
@@ -519,27 +1222,40 @@ def _pool_entry_owned_by_user(entry, user_id):
     return str(owner) == str(user_id)
 
 
-def _find_matching_idle_session(
+def _find_matching_pool_session(
     redis_client, *, media_id, user_id, client_ip, client_user_agent,
+    channel_id=None, include_busy=False,
 ):
-    """Find an idle pooled session that likely belongs to the same client."""
+    """Find a pooled session for the same viewer.
+
+    Prefers an exact *media_id* match, then any in-flight or idle session on
+    the same channel so XC programme hops can recover a dropped ``session_id``.
+    """
     if redis_client is None:
         return None
+    channel_prefix = f"{channel_id}_" if channel_id is not None else None
     matches = []
     try:
         cursor = 0
         while True:
             cursor, keys = redis_client.scan(
-                cursor, match="timeshift_pool:timeshift_*", count=100,
+                cursor, match=TimeshiftRedisKeys.pool_scan_pattern(), count=100,
             )
             for key in keys:
                 try:
                     data = redis_client.hgetall(key)
-                    if not data or data.get("busy") == "1":
+                    if not data:
+                        continue
+                    if not include_busy and data.get("busy") == "1":
                         continue
                     if str(data.get("user_id") or "") != str(user_id):
                         continue
-                    if str(data.get("media_id") or "") != str(media_id):
+                    stored_media = str(data.get("media_id") or "")
+                    if stored_media == str(media_id):
+                        exact_match = True
+                    elif channel_prefix and stored_media.startswith(channel_prefix):
+                        exact_match = False
+                    else:
                         continue
                     session_id = key.rsplit(":", 1)[-1]
                     score = _score_pool_fingerprint(
@@ -547,7 +1263,9 @@ def _find_matching_idle_session(
                     )
                     if score >= _MATCH_SCORE_THRESHOLD:
                         last_activity = float(data.get("last_activity") or "0")
-                        matches.append((session_id, score, last_activity))
+                        matches.append(
+                            (session_id, score, last_activity, exact_match),
+                        )
                 except Exception as exc:
                     logger.debug("Timeshift pool scan skip %s: %s", key, exc)
             if cursor == 0:
@@ -558,11 +1276,12 @@ def _find_matching_idle_session(
 
     if not matches:
         return None
-    matches.sort(key=lambda item: (item[1], item[2]), reverse=True)
+    matches.sort(key=lambda item: (item[3], item[1], item[2]), reverse=True)
     best = matches[0][0]
     logger.debug(
-        "Timeshift idle match: session=%s score=%s media=%s",
-        best, matches[0][1], media_id,
+        "Timeshift %s match: session=%s score=%s media=%s exact=%s",
+        "pool" if include_busy else "idle",
+        best, matches[0][1], media_id, matches[0][3],
     )
     return best
 
@@ -610,16 +1329,7 @@ def _store_pool_serving_range(redis_client, session_id, range_header):
 
 
 def _update_pool_position(redis_client, session_id, *, media_id, provider_timestamp):
-    """Move a reused session's descriptor to the position actually served.
-
-    A seek keeps the session (provider-slot continuity) but changes the
-    catch-up position; the descriptor must follow it so later fingerprint
-    matches and same-channel displacement compare against the position the
-    session is really on. When the position actually moves, the byte state of
-    the PREVIOUS position's file (content_length, serving_range) is dropped —
-    keeping it would feed the near-EOF/displacement heuristics another
-    programme's size; the next successful open repopulates both.
-    """
+    """Move a reused session's descriptor to the position actually served."""
     if redis_client is None or not session_id:
         return
     key = _pool_key(session_id)
@@ -644,13 +1354,8 @@ def _update_pool_position(redis_client, session_id, *, media_id, provider_timest
 def _store_pool_content_length(redis_client, session_id, upstream_response):
     if redis_client is None or not session_id or upstream_response is None:
         return
-    content_length = upstream_response.headers.get("Content-Length")
-    content_range = upstream_response.headers.get("Content-Range", "")
-    if content_range and "/" in content_range:
-        total = content_range.rsplit("/", 1)[-1]
-        if total != "*":
-            content_length = total
-    if not content_length:
+    content_length = _extract_representation_length(upstream_response)
+    if content_length is None:
         return
     try:
         redis_client.hset(
@@ -662,14 +1367,20 @@ def _store_pool_content_length(redis_client, session_id, upstream_response):
 
 def _pool_lock(redis_client, session_id):
     return redis_client.lock(
-        _POOL_LOCK_KEY.format(session_id=session_id),
+        TimeshiftRedisKeys.pool_lock(session_id),
         timeout=10,
         blocking_timeout=5,
     )
 
 
-def _acquire_idle_pool_session(redis_client, session_id, *, user_id=None):
-    """Re-reserve an idle session's profile slot and mark it busy."""
+def _acquire_idle_pool_session(
+    redis_client, session_id, *, user_id=None, handoff=False,
+):
+    """Re-reserve an idle session's profile slot and mark it busy.
+
+    When *handoff* is True the displaced stream kept its profile reservation;
+    only flip the pool entry back to busy.
+    """
     if redis_client is None or not session_id:
         return None
     key = _pool_key(session_id)
@@ -680,16 +1391,17 @@ def _acquire_idle_pool_session(redis_client, session_id, *, user_id=None):
                 return None
             if user_id is not None and not _pool_entry_owned_by_user(data, user_id):
                 return None
-            if data.get("busy") == "1":
+            if data.get("busy") == "1" and not handoff:
                 return None
             try:
                 profile = M3UAccountProfile.objects.get(id=int(data["profile_id"]))
             except M3UAccountProfile.DoesNotExist:
                 redis_client.delete(key)
                 return None
-            reserved, _count, _reason = reserve_profile_slot(profile, redis_client)
-            if not reserved:
-                return None
+            if not handoff:
+                reserved, _count, _reason = reserve_profile_slot(profile, redis_client)
+                if not reserved:
+                    return None
             redis_client.hset(key, mapping={
                 "busy": "1",
                 "last_activity": str(time.time()),
@@ -703,13 +1415,14 @@ def _acquire_idle_pool_session(redis_client, session_id, *, user_id=None):
 
 def _wait_for_idle_pool_session(
     redis_client, session_id, *, user_id=None, wait_seconds=_POOL_WAIT_SECONDS,
+    handoff=False,
 ):
     if redis_client is None or not session_id:
         return None
     deadline = time.time() + wait_seconds
     while True:
         acquired = _acquire_idle_pool_session(
-            redis_client, session_id, user_id=user_id,
+            redis_client, session_id, user_id=user_id, handoff=handoff,
         )
         if acquired is not None:
             return acquired
@@ -731,6 +1444,7 @@ def _create_pool_session(
     account_id,
     profile_id,
     stream_id,
+    dispatcharr_stream_id,
     provider_timestamp,
     provider_tz_name=None,
 ):
@@ -751,29 +1465,170 @@ def _create_pool_session(
                 "account_id": str(account_id),
                 "profile_id": str(profile_id),
                 "stream_id": str(stream_id),
+                "dispatcharr_stream_id": str(dispatcharr_stream_id),
                 "provider_timestamp": str(provider_timestamp),
                 "provider_tz_name": str(provider_tz_name or ""),
                 "busy": "1",
                 "last_activity": now,
             })
             redis_client.expire(key, _POOL_ENTRY_TTL)
+        try:
+            redis_client.delete(_superseded_pool_key(session_id))
+        except Exception:
+            pass
         return True
     except Exception as exc:
         logger.warning("Timeshift pool create failed for %s: %s", session_id, exc)
         return False
 
 
-def _release_pool_session(redis_client, session_id, profile_id):
+def _superseded_pool_key(session_id):
+    return TimeshiftRedisKeys.pool_superseded(session_id)
+
+
+_active_upstream_lock = threading.Lock()
+_active_upstreams = {}
+
+
+def _active_upstream_key(virtual_channel_id, client_id):
+    return f"{virtual_channel_id}:{client_id}"
+
+
+def _register_active_upstream(virtual_channel_id, client_id, upstream):
+    if not virtual_channel_id or not client_id or upstream is None:
+        return
+    key = _active_upstream_key(virtual_channel_id, client_id)
+    with _active_upstream_lock:
+        _active_upstreams[key] = upstream
+
+
+def _unregister_active_upstream(virtual_channel_id, client_id):
+    if not virtual_channel_id or not client_id:
+        return
+    key = _active_upstream_key(virtual_channel_id, client_id)
+    with _active_upstream_lock:
+        _active_upstreams.pop(key, None)
+
+
+def _close_active_upstream(virtual_channel_id, client_id):
+    """Close an in-worker upstream socket so a scrub preempt unblocks immediately."""
+    if not virtual_channel_id or not client_id:
+        return
+    key = _active_upstream_key(virtual_channel_id, client_id)
+    with _active_upstream_lock:
+        upstream = _active_upstreams.pop(key, None)
+    if upstream is None:
+        return
+    try:
+        upstream.close()
+    except Exception:
+        pass
+
+
+def _force_abandon_busy_pool(redis_client, session_id, profile_id):
+    """Drop a busy pool after a scrub preempt times out.
+
+    The superseded marker prevents the displaced stream's ``release_cb`` from
+    double-releasing the provider profile slot.
+    """
+    if redis_client is None or not session_id:
+        return
+    try:
+        redis_client.setex(_superseded_pool_key(session_id), 120, "1")
+    except Exception as exc:
+        logger.warning("Timeshift supersede mark failed for %s: %s", session_id, exc)
+    _discard_pool_session(redis_client, session_id, profile_id)
+
+
+def _iter_upstream_with_stop(
+    upstream,
+    chunk_size,
+    redis_client,
+    stop_key,
+    stream_generation,
+    peek_data=None,
+    *,
+    inactivity_timeout=_STREAM_READ_INACTIVITY_SECONDS,
+):
+    """Yield upstream bytes, polling the stop key before each blocking read."""
+    last_data_at = time.time()
+    if peek_data:
+        should_stop, _ = _stream_stop_requested(
+            redis_client, stop_key, stream_generation,
+        )
+        if should_stop:
+            try:
+                upstream.close()
+            except Exception:
+                pass
+            return
+        last_data_at = time.time()
+        yield peek_data
+    raw = upstream.raw
+    while True:
+        if (
+            inactivity_timeout is not None
+            and time.time() - last_data_at >= inactivity_timeout
+        ):
+            logger.info(
+                "Timeshift upstream inactive for %ss, closing stream",
+                inactivity_timeout,
+            )
+            try:
+                upstream.close()
+            except Exception:
+                pass
+            break
+        should_stop, _ = _stream_stop_requested(
+            redis_client, stop_key, stream_generation,
+        )
+        if should_stop:
+            try:
+                upstream.close()
+            except Exception:
+                pass
+            break
+        try:
+            chunk = raw.read(chunk_size)
+        except requests.exceptions.ReadTimeout:
+            # Per-chunk read timeout: loop back to check stop (live-proxy pattern).
+            continue
+        except Exception:
+            break
+        if not chunk:
+            break
+        last_data_at = time.time()
+        yield chunk
+
+
+def _release_pool_session(
+    redis_client, session_id, profile_id, *,
+    mark_pool_idle=True, release_profile=True,
+):
     if redis_client is None:
         return
-    if profile_id is not None:
+    superseded = False
+    try:
+        superseded = bool(redis_client.exists(_superseded_pool_key(session_id)))
+    except Exception:
+        pass
+    if superseded and not release_profile:
+        # Displaced stream after a scrub failover: abandon already released.
+        return
+    if superseded and release_profile:
+        # Replacement stream is ending; stale marker must not block release.
+        try:
+            redis_client.delete(_superseded_pool_key(session_id))
+        except Exception:
+            pass
+    if release_profile and profile_id is not None:
         try:
             release_profile_slot(int(profile_id), redis_client)
         except Exception as exc:
             logger.warning(
                 "Timeshift slot release failed for profile %s: %s", profile_id, exc
             )
-    if not session_id:
+    if not mark_pool_idle or not session_id:
         return
     key = _pool_key(session_id)
     try:
@@ -786,6 +1641,45 @@ def _release_pool_session(redis_client, session_id, profile_id):
                 redis_client.expire(key, _POOL_IDLE_TTL)
     except Exception as exc:
         logger.warning("Timeshift pool release failed for %s: %s", session_id, exc)
+
+
+def _refresh_pool_session_ttl(redis_client, session_id):
+    """Extend pool metadata TTL while a session is actively streaming."""
+    if redis_client is None or not session_id:
+        return
+    key = _pool_key(session_id)
+    try:
+        if not redis_client.exists(key):
+            return
+        busy = redis_client.hget(key, "busy")
+        if isinstance(busy, bytes):
+            busy = busy.decode()
+        ttl = _POOL_ENTRY_TTL if str(busy) == "1" else _POOL_IDLE_TTL
+        pipe = redis_client.pipeline(transaction=False)
+        pipe.hset(key, "last_activity", str(time.time()))
+        pipe.expire(key, ttl)
+        pipe.execute()
+    except Exception as exc:
+        logger.debug("Timeshift pool TTL refresh failed: %s", exc)
+
+
+def _refresh_active_session_redis_ttl(
+    redis_client, session_id, programme_vid=None,
+):
+    """Keep pool, stream generation, and API session auth alive during playback."""
+    if redis_client is None or not session_id:
+        return
+    _refresh_pool_session_ttl(redis_client, session_id)
+    if programme_vid:
+        gen_key = _stream_generation_key(programme_vid, session_id)
+        try:
+            if redis_client.exists(gen_key):
+                redis_client.expire(gen_key, _POOL_ENTRY_TTL)
+        except Exception as exc:
+            logger.debug("Timeshift stream generation TTL refresh failed: %s", exc)
+    if catchup_session_exists(session_id, redis_client=redis_client):
+        from .sessions import touch_catchup_session
+        touch_catchup_session(session_id, redis_client=redis_client)
 
 
 def _discard_pool_session(redis_client, session_id, profile_id):
@@ -810,13 +1704,129 @@ def _discard_pool_session(redis_client, session_id, profile_id):
 def _make_release_once(redis_client, session_id, profile_id):
     state = {"done": False}
 
-    def _release():
+    def _release(*, mark_pool_idle=True, release_profile=True):
         if state["done"]:
             return
         state["done"] = True
-        _release_pool_session(redis_client, session_id, profile_id)
+        _release_pool_session(
+            redis_client, session_id, profile_id,
+            mark_pool_idle=mark_pool_idle,
+            release_profile=release_profile,
+        )
 
     return _release
+
+
+def _stream_generation_key(virtual_channel_id, client_id):
+    return TimeshiftRedisKeys.stream_generation(virtual_channel_id, client_id)
+
+
+def _current_stream_generation(redis_client, virtual_channel_id, client_id):
+    if redis_client is None:
+        return 0
+    try:
+        gen = redis_client.get(_stream_generation_key(virtual_channel_id, client_id))
+        return int(gen) if gen else 0
+    except (TypeError, ValueError):
+        return 0
+
+
+def _allocate_stream_generation(redis_client, virtual_channel_id, client_id):
+    if redis_client is None:
+        return 1
+    key = _stream_generation_key(virtual_channel_id, client_id)
+    try:
+        generation = int(redis_client.incr(key))
+        redis_client.expire(key, _POOL_ENTRY_TTL)  # Refreshed on each seek/new stream.
+        try:
+            redis_client.delete(
+                TimeshiftRedisKeys.client_stop(virtual_channel_id, client_id),
+            )
+            redis_client.delete(_superseded_pool_key(client_id))
+        except Exception:
+            pass
+        return generation
+    except Exception:
+        return 1
+
+
+def _cleanup_stream_generation(redis_client, virtual_channel_id, client_id):
+    """Delete the per-programme generation counter once a viewer is gone."""
+    if redis_client is None or not virtual_channel_id or not client_id:
+        return
+    try:
+        redis_client.delete(_stream_generation_key(virtual_channel_id, client_id))
+    except Exception as exc:
+        logger.debug("Timeshift stream generation cleanup failed: %s", exc)
+
+
+def _cleanup_all_stream_generations(redis_client, client_id):
+    """Drop every programme-scoped generation counter for one viewer."""
+    if redis_client is None or not client_id:
+        return
+    pattern = TimeshiftRedisKeys.stream_generation_scan_pattern(client_id)
+    try:
+        cursor = 0
+        while True:
+            cursor, keys = redis_client.scan(cursor, match=pattern, count=100)
+            if keys:
+                redis_client.delete(*keys)
+            if cursor == 0:
+                break
+    except Exception as exc:
+        logger.debug("Timeshift stream generation scan cleanup failed: %s", exc)
+
+
+def _set_client_stop(redis_client, virtual_channel_id, client_id, reason):
+    if redis_client is None:
+        return
+    stop_key = TimeshiftRedisKeys.client_stop(virtual_channel_id, client_id)
+    if reason == _STOP_REASON_REUSE:
+        try:
+            gen = redis_client.get(_stream_generation_key(virtual_channel_id, client_id))
+            cancel_through = int(gen) if gen else 1
+        except (TypeError, ValueError):
+            cancel_through = 1
+        redis_client.setex(stop_key, 60, str(cancel_through))
+    else:
+        redis_client.setex(stop_key, 60, reason)
+
+
+def _stream_stop_requested(redis_client, stop_key, stream_generation):
+    """Return ``(should_stop, stopped_for_reuse)`` for this stream generation."""
+    if redis_client is None or not stop_key:
+        return False, False
+    try:
+        value = redis_client.get(stop_key)
+    except Exception:
+        return False, False
+    if value is None:
+        return False, False
+    if isinstance(value, bytes):
+        value = value.decode()
+    if value == _STOP_REASON_REUSE:
+        return True, True
+    if value.isdigit():
+        cancel_through = int(value)
+        return stream_generation <= cancel_through, True
+    if value in _TERMINAL_STOP_REASONS:
+        return True, False
+    return False, False
+
+
+def _session_has_active_timeshift_stream(user, session_id):
+    """True when *session_id* still has a registered timeshift stats client."""
+    if user is None or not session_id:
+        return False
+    try:
+        for conn in get_user_active_connections(user.id):
+            if conn.get("type") != "timeshift":
+                continue
+            if conn.get("client_id") == session_id:
+                return True
+    except Exception:
+        return False
+    return False
 
 
 def _preempt_playback_streams(redis_client, session_id, user):
@@ -831,13 +1841,17 @@ def _preempt_playback_streams(redis_client, session_id, user):
                 continue
             conn_media_id = str(conn.get("media_id") or "")
             old_client_id = conn.get("client_id")
+            stop_target = _timeshift_stop_channel_id(
+                redis_client, conn_media_id, old_client_id,
+            )
             logger.debug(
                 "Timeshift preempt: stopping client %s on %s for reuse",
-                old_client_id, conn_media_id,
+                old_client_id, stop_target,
             )
-            _unregister_stats_client(redis_client, conn_media_id, old_client_id)
-            stop_key = RedisKeys.client_stop(conn_media_id, old_client_id)
-            redis_client.setex(stop_key, 60, "true")
+            _set_client_stop(
+                redis_client, stop_target, old_client_id, _STOP_REASON_REUSE,
+            )
+            _close_active_upstream(stop_target, old_client_id)
     except Exception as exc:
         logger.warning("Timeshift preempt failed: %s", exc)
 
@@ -848,26 +1862,38 @@ def _terminate_previous_timeshift_sessions(
     """Displace this user's other catch-up positions on the same channel."""
     if redis_client is None or user is None:
         return
-    prefix = f"timeshift_{channel_id}_"
+    channel_prefix = f"{channel_id}_"
+    displaced = False
     try:
         for conn in get_user_active_connections(user.id):
             if conn.get("type") != "timeshift":
                 continue
-            if conn.get("client_id") == current_session_id:
-                continue
             conn_media_id = str(conn.get("media_id") or "")
-            if not conn_media_id.startswith(prefix):
+            old_client_id = conn.get("client_id")
+            if conn.get("client_id") == current_session_id:
+                # Programme hops for the same session are handled by pool
+                # displacement; stats stay on the stable per-session channel id.
+                continue
+            if not conn_media_id.startswith(channel_prefix):
                 continue
             if conn_media_id.startswith(f"{current_media_id}_") or conn_media_id == current_media_id:
                 continue
-            old_client_id = conn.get("client_id")
+            stats_channel_id = make_stats_channel_id(channel_id, old_client_id)
             logger.info(
                 "Timeshift takeover: displacing session %s on %s",
-                old_client_id, conn_media_id,
+                old_client_id, stats_channel_id,
             )
-            _unregister_stats_client(redis_client, conn_media_id, old_client_id)
-            stop_key = RedisKeys.client_stop(conn_media_id, old_client_id)
-            redis_client.setex(stop_key, 60, "true")
+            stop_target = _timeshift_stop_channel_id(
+                redis_client, stats_channel_id, old_client_id,
+                fallback=conn_media_id,
+            )
+            _unregister_stats_client(redis_client, stats_channel_id, old_client_id)
+            displaced = True
+            _set_client_stop(
+                redis_client, stop_target, old_client_id, _STOP_REASON_HOP,
+            )
+        if displaced:
+            _trigger_timeshift_stats_update(redis_client)
     except Exception as exc:
         logger.warning("Timeshift takeover check failed: %s", exc)
 
@@ -885,6 +1911,7 @@ def _attempt_timeshift_stream(
     timestamp,
     client_id,
     client_ip,
+    client_user_agent,
     range_header,
     channel_logo_id,
     user,
@@ -892,6 +1919,8 @@ def _attempt_timeshift_stream(
     debug,
     release_cb=None,
     pool_session_id=None,
+    stats_stream_id=None,
+    stream_stats=None,
 ):
     """Build the provider URL set for one (account, profile, stream) and stream it."""
     server_url, xc_username, xc_password = get_transformed_credentials(
@@ -907,7 +1936,10 @@ def _attempt_timeshift_stream(
     except AttributeError:
         user_agent = ""
 
-    virtual_channel_id = f"timeshift_{channel.id}_{safe_ts}_{stream_id_value}"
+    virtual_channel_id = make_virtual_channel_id(
+        channel.id, safe_ts, stream_id_value,
+    )
+    stats_channel_id = make_stats_channel_id(channel.id, client_id)
 
     if debug:
         logger.debug(
@@ -923,8 +1955,10 @@ def _attempt_timeshift_stream(
         user_agent=user_agent,
         range_header=range_header,
         virtual_channel_id=virtual_channel_id,
+        stats_channel_id=stats_channel_id,
         client_id=client_id,
         client_ip=client_ip,
+        client_user_agent=client_user_agent,
         user=user,
         channel_display_name=channel.name,
         timestamp_utc=timestamp,
@@ -935,6 +1969,11 @@ def _attempt_timeshift_stream(
         redis_client=redis_client,
         release_cb=release_cb,
         pool_session_id=pool_session_id,
+        channel_id=channel.id,
+        channel_uuid=channel.uuid,
+        stats_stream_id=stats_stream_id,
+        stream_stats=stream_stats,
+        duration_minutes=duration_minutes,
     )
 
 
@@ -951,6 +1990,7 @@ def _stream_reused_session(
     duration_minutes,
     client_id,
     client_ip,
+    client_user_agent,
     range_header,
     channel_logo_id,
     user,
@@ -963,14 +2003,7 @@ def _stream_reused_session(
         _discard_pool_session(redis_client, session_id, profile.id)
         return None
 
-    # The stored provider_timestamp is the position this session was CREATED
-    # for. Clients (TiviMate) keep the ?session_id= query when they rebuild
-    # the seek URL with a new start, so a reused session must serve the
-    # REQUESTED position, never replay the stored one — otherwise every
-    # timestamp-jump FF/RW snaps back to the session's original anchor.
-    # Provider zone is cached on the pool entry at session creation (account
-    # property from server_info); fall back to the reserved profile for legacy
-    # entries created before that field existed.
+    # Serve the requested position, not the pool entry's original anchor.
     provider_tz_name = descriptor.get("provider_tz_name") or None
     if provider_tz_name:
         provider_tz_name = str(provider_tz_name)
@@ -988,6 +2021,15 @@ def _stream_reused_session(
     )
 
     release_cb = _make_release_once(redis_client, session_id, profile.id)
+    raw_stream_id = descriptor.get("dispatcharr_stream_id")
+    if isinstance(raw_stream_id, bytes):
+        raw_stream_id = raw_stream_id.decode()
+    stats_stream_id = None
+    if raw_stream_id:
+        try:
+            stats_stream_id = int(raw_stream_id)
+        except (TypeError, ValueError):
+            stats_stream_id = None
     try:
         response = _attempt_timeshift_stream(
             m3u_account=m3u_account,
@@ -1001,6 +2043,7 @@ def _stream_reused_session(
             timestamp=timestamp,
             client_id=client_id,
             client_ip=client_ip,
+            client_user_agent=client_user_agent,
             range_header=range_header,
             channel_logo_id=channel_logo_id,
             user=user,
@@ -1008,6 +2051,7 @@ def _stream_reused_session(
             debug=debug,
             release_cb=release_cb,
             pool_session_id=session_id,
+            stats_stream_id=stats_stream_id,
         )
     except Exception:
         _discard_pool_session(redis_client, session_id, profile.id)
@@ -1025,7 +2069,7 @@ def _stream_reused_session(
 
 
 class _SlotReleasingStream:
-    """Iterator wrapper that releases the pool slot when WSGI closes the response."""
+    """Iterator wrapper that closes the generator when WSGI closes the response."""
 
     def __init__(self, generator, on_close):
         self._generator = generator
@@ -1041,15 +2085,15 @@ class _SlotReleasingStream:
         try:
             self._generator.close()
         finally:
-            self._on_close()
+            self._on_close()  # Backup if generator finally never ran.
 
 
 def _register_stats_client(
     redis_client,
-    virtual_channel_id,
+    stats_channel_id,
     client_id,
     client_ip,
-    user_agent,
+    client_user_agent,
     user,
     *,
     channel_display_name,
@@ -1057,55 +2101,124 @@ def _register_stats_client(
     primary_url,
     channel_logo_id=None,
     m3u_profile_id=None,
+    programme_vid=None,
+    channel_id,
+    channel_uuid,
+    stats_stream_id=None,
+    stream_stats=None,
+    range_start=None,
+    representation_length=None,
+    programme_duration_secs=None,
+    emit_stats_update=False,
 ):
     """Write Redis keys so catch-up viewers appear on ``/stats``."""
     if redis_client is None:
         return
-    client_set_key = RedisKeys.clients(virtual_channel_id)
-    client_key = RedisKeys.client_metadata(virtual_channel_id, client_id)
-    metadata_key = RedisKeys.channel_metadata(virtual_channel_id)
+    _cancel_stats_disconnect_grace(redis_client, stats_channel_id, client_id)
+    client_set_key = TimeshiftRedisKeys.clients(stats_channel_id)
+    client_key = TimeshiftRedisKeys.client_metadata(stats_channel_id, client_id)
+    metadata_key = TimeshiftRedisKeys.channel_metadata(stats_channel_id)
     now = str(time.time())
+    try:
+        existing_connected_at = redis_client.hget(client_key, "connected_at")
+        existing_init_time = redis_client.hget(
+            metadata_key, ChannelMetadataField.INIT_TIME,
+        )
+        existing_programme_start = redis_client.hget(client_key, "programme_start")
+        existing_position_anchor = redis_client.hget(client_key, "position_anchor_at")
+        existing_playback_base = redis_client.hget(client_key, "playback_base_secs")
+        existing_programme_vid = redis_client.hget(client_key, "programme_vid")
+    except Exception:
+        existing_connected_at = None
+        existing_init_time = None
+        existing_programme_start = None
+        existing_position_anchor = None
+        existing_playback_base = None
+        existing_programme_vid = None
+    if isinstance(existing_programme_vid, bytes):
+        existing_programme_vid = existing_programme_vid.decode()
+    notify_stats_update = existing_connected_at is None
+    if (
+        programme_vid
+        and existing_programme_vid
+        and programme_vid != existing_programme_vid
+    ):
+        notify_stats_update = True
+        _cleanup_stream_generation(redis_client, existing_programme_vid, client_id)
+    playback_base_secs, position_anchor_at = resolve_stats_playback_fields(
+        timestamp_utc=timestamp_utc,
+        existing_programme_start=existing_programme_start,
+        existing_position_anchor=existing_position_anchor,
+        existing_playback_base=existing_playback_base,
+        range_start=range_start,
+        representation_length=representation_length,
+        programme_duration_secs=programme_duration_secs,
+        now=now,
+    )
     client_payload = {
-        "user_agent": user_agent or "unknown",
+        "user_agent": client_user_agent or "unknown",
         "ip_address": client_ip,
-        "connected_at": now,
+        "connected_at": existing_connected_at or now,
         "last_active": now,
         "user_id": str(user.id) if user is not None else "0",
         "username": user.username if user is not None else "unknown",
+        "programme_start": timestamp_utc,
+        "position_anchor_at": position_anchor_at,
     }
+    if playback_base_secs is not None:
+        client_payload["playback_base_secs"] = str(playback_base_secs)
+    if programme_vid:
+        client_payload["programme_vid"] = programme_vid
     metadata_payload = {
         ChannelMetadataField.STATE: ChannelState.ACTIVE,
-        ChannelMetadataField.INIT_TIME: now,
-        ChannelMetadataField.OWNER: "timeshift",
+        ChannelMetadataField.INIT_TIME: existing_init_time or now,
+        ChannelMetadataField.CHANNEL_ID: str(channel_id),
+        ChannelMetadataField.CHANNEL_UUID: str(channel_uuid),
         ChannelMetadataField.CHANNEL_NAME: channel_display_name or "Timeshift",
         ChannelMetadataField.STREAM_NAME: f"Catch-up @ {timestamp_utc} UTC" if timestamp_utc else "Catch-up",
         ChannelMetadataField.URL: _redact_url(primary_url) if primary_url else "",
-        ChannelMetadataField.IS_TIMESHIFT: "1",
     }
     if channel_logo_id is not None:
         metadata_payload[ChannelMetadataField.LOGO_ID] = str(channel_logo_id)
     if m3u_profile_id is not None:
         metadata_payload[ChannelMetadataField.M3U_PROFILE] = str(m3u_profile_id)
+    seed_stream_stats_metadata(
+        redis_client,
+        metadata_key,
+        metadata_payload,
+        stats_stream_id=stats_stream_id,
+        stream_stats=stream_stats,
+    )
     try:
         pipe = redis_client.pipeline(transaction=False)
         pipe.hset(client_key, mapping=client_payload)
+        if playback_base_secs is None:
+            pipe.hdel(client_key, "playback_base_secs")
         pipe.expire(client_key, CLIENT_TTL_SECONDS)
         pipe.sadd(client_set_key, client_id)
         pipe.expire(client_set_key, CLIENT_TTL_SECONDS)
         pipe.hset(metadata_key, mapping=metadata_payload)
         pipe.expire(metadata_key, CLIENT_TTL_SECONDS)
         pipe.execute()
+        if emit_stats_update and notify_stats_update:
+            _trigger_timeshift_stats_update(redis_client)
     except Exception as exc:
         logger.warning("Timeshift stats register failed: %s", exc)
 
 
-def _heartbeat_stats_client(redis_client, virtual_channel_id, client_id, bytes_delta=0):
+def _heartbeat_stats_client(
+    redis_client, stats_channel_id, client_id, bytes_delta=0, *,
+    pool_session_id=None, programme_vid=None,
+):
     if redis_client is None:
         return
-    client_set_key = RedisKeys.clients(virtual_channel_id)
-    client_key = RedisKeys.client_metadata(virtual_channel_id, client_id)
-    metadata_key = RedisKeys.channel_metadata(virtual_channel_id)
+    client_set_key = TimeshiftRedisKeys.clients(stats_channel_id)
+    client_key = TimeshiftRedisKeys.client_metadata(stats_channel_id, client_id)
+    metadata_key = TimeshiftRedisKeys.channel_metadata(stats_channel_id)
     try:
+        if not redis_client.exists(client_key):
+            return
+        _complete_expired_stats_grace(redis_client, stats_channel_id, client_id)
         pipe = redis_client.pipeline(transaction=False)
         pipe.hset(client_key, "last_active", str(time.time()))
         pipe.expire(client_key, CLIENT_TTL_SECONDS)
@@ -1114,16 +2227,23 @@ def _heartbeat_stats_client(redis_client, virtual_channel_id, client_id, bytes_d
             pipe.hincrby(metadata_key, ChannelMetadataField.TOTAL_BYTES, bytes_delta)
         pipe.expire(metadata_key, CLIENT_TTL_SECONDS)
         pipe.execute()
+        if programme_vid is None:
+            programme_vid = redis_client.hget(client_key, "programme_vid")
+            if isinstance(programme_vid, bytes):
+                programme_vid = programme_vid.decode()
+        _refresh_active_session_redis_ttl(
+            redis_client, pool_session_id or client_id, programme_vid,
+        )
     except Exception as exc:
         logger.debug("Timeshift stats heartbeat failed: %s", exc)
 
 
-def _unregister_stats_client(redis_client, virtual_channel_id, client_id):
+def _unregister_stats_client(redis_client, stats_channel_id, client_id):
     if redis_client is None:
         return
-    client_set_key = RedisKeys.clients(virtual_channel_id)
-    client_key = RedisKeys.client_metadata(virtual_channel_id, client_id)
-    metadata_key = RedisKeys.channel_metadata(virtual_channel_id)
+    client_set_key = TimeshiftRedisKeys.clients(stats_channel_id)
+    client_key = TimeshiftRedisKeys.client_metadata(stats_channel_id, client_id)
+    metadata_key = TimeshiftRedisKeys.channel_metadata(stats_channel_id)
     try:
         redis_client.srem(client_set_key, client_id)
         redis_client.delete(client_key)
@@ -1146,11 +2266,13 @@ def _open_upstream(url, user_agent, range_header):
         url,
         headers=headers,
         stream=True,
-        timeout=ConfigHelper.connection_timeout(),
+        timeout=(
+            ConfigHelper.connection_timeout(),
+            ConfigHelper.chunk_timeout(),
+        ),
     )
 
 
-_FORMAT_CACHE_KEY = "timeshift:format_idx:{}"
 _FORMAT_CACHE_TTL = 3600  # 1 hour
 
 
@@ -1158,13 +2280,13 @@ def _get_cached_format_index(account_id):
     """Index of the URL shape that last worked for this account, or None."""
     if account_id is None:
         return None
-    return cache.get(_FORMAT_CACHE_KEY.format(account_id))
+    return cache.get(TimeshiftRedisKeys.format_cache(account_id))
 
 
 def _set_cached_format_index(account_id, index):
     if account_id is None:
         return
-    cache.set(_FORMAT_CACHE_KEY.format(account_id), index, _FORMAT_CACHE_TTL)
+    cache.set(TimeshiftRedisKeys.format_cache(account_id), index, _FORMAT_CACHE_TTL)
 
 
 def _passthrough_response(status, content_range=None):
@@ -1176,6 +2298,7 @@ def _passthrough_response(status, content_range=None):
     response = HttpResponse(status=status)
     if content_range:
         response["Content-Range"] = content_range
+    response["Accept-Ranges"] = "bytes"
     response.timeshift_passthrough = True
     return response
 
@@ -1186,8 +2309,10 @@ def _stream_from_provider(
     user_agent,
     range_header,
     virtual_channel_id,
+    stats_channel_id=None,
     client_id,
     client_ip,
+    client_user_agent,
     user,
     channel_display_name,
     timestamp_utc,
@@ -1198,6 +2323,11 @@ def _stream_from_provider(
     redis_client=None,
     release_cb=None,
     pool_session_id=None,
+    channel_id=None,
+    channel_uuid=None,
+    stats_stream_id=None,
+    stream_stats=None,
+    duration_minutes=None,
 ):
     """Try each upstream URL until one returns streamable MPEG-TS.
 
@@ -1207,7 +2337,9 @@ def _stream_from_provider(
     """
     chunk_size = max(ConfigHelper.chunk_size(), 262144)
     if release_cb is None:
-        release_cb = lambda: None  # noqa: E731
+        release_cb = lambda **_kwargs: None  # noqa: E731
+    if stats_channel_id is None:
+        stats_channel_id = virtual_channel_id
 
     cached_index = _get_cached_format_index(account_id)
     if cached_index is not None and 0 <= cached_index < len(candidate_urls):
@@ -1257,20 +2389,17 @@ def _stream_from_provider(
             return _finalize_timeshift_response(_passthrough_response(416, content_range))
         if response.status_code in (200, 206):
             peek = response.raw.read(1024)
-            sync_offset = find_ts_sync(peek) if peek else -1
-            if sync_offset >= 0:
-                response._peek_data = peek[sync_offset:]
-                upstream = response
-                winning_index = orig_idx
-                break
-            # A 206 to a Range request legitimately starts mid-packet, so the
-            # sync byte rarely lands at offset 0. Trust the partial status and
-            # content type rather than the sync probe; only a full 200 carrying
-            # a PHP/HTML error page must be rejected here.
             content_type = response.headers.get("Content-Type", "")
+            # 206 may start mid-packet; accept before sync probe trims peek bytes.
             is_partial = response.status_code == 206 and bool(range_header)
             if is_partial and peek and "html" not in content_type and "json" not in content_type:
                 response._peek_data = peek
+                upstream = response
+                winning_index = orig_idx
+                break
+            sync_offset = find_ts_sync(peek) if peek else -1
+            if sync_offset >= 0:
+                response._peek_data = peek[sync_offset:]
                 upstream = response
                 winning_index = orig_idx
                 break
@@ -1316,64 +2445,117 @@ def _stream_from_provider(
     _store_pool_content_length(redis_client, pool_session_id, upstream)
     _store_pool_serving_range(redis_client, pool_session_id, range_header)
 
+    representation_length = _extract_representation_length(upstream)
+    if representation_length is None and redis_client and pool_session_id:
+        cached_length = redis_client.hget(
+            _pool_key(pool_session_id), "content_length",
+        )
+        if cached_length is not None:
+            try:
+                if isinstance(cached_length, bytes):
+                    cached_length = cached_length.decode()
+                representation_length = int(cached_length)
+            except (TypeError, ValueError):
+                representation_length = None
+
+    client_length_headers = _build_downstream_length_headers(
+        range_header=range_header,
+        status_code=status,
+        representation_length=representation_length,
+        upstream_content_range=content_range or None,
+        upstream_content_length=upstream.headers.get("Content-Length"),
+        streaming=True,
+    )
+
+    programme_duration_secs = None
+    if duration_minutes:
+        programme_duration_secs = float(duration_minutes) * 60.0
+
     _register_stats_client(
         redis_client,
-        virtual_channel_id,
+        stats_channel_id,
         client_id,
         client_ip,
-        user_agent,
+        client_user_agent,
         user,
         channel_display_name=channel_display_name,
         timestamp_utc=timestamp_utc,
         primary_url=last_url,
         channel_logo_id=channel_logo_id,
         m3u_profile_id=m3u_profile_id,
+        programme_vid=virtual_channel_id,
+        channel_id=channel_id,
+        channel_uuid=channel_uuid,
+        stats_stream_id=stats_stream_id,
+        stream_stats=stream_stats,
+        range_start=_parse_range_start(range_header),
+        representation_length=representation_length,
+        programme_duration_secs=programme_duration_secs,
+        emit_stats_update=True,
     )
 
     peek_data = getattr(upstream, "_peek_data", None)
-    chunks_iter = upstream.iter_content(chunk_size=chunk_size)
-    if peek_data:
-        chunks_iter = itertools.chain([peek_data], chunks_iter)
+    _register_active_upstream(virtual_channel_id, client_id, upstream)
 
     session_closed = {"done": False}
 
-    def _finish_session(*, close_upstream=False):
+    def _finish_session(
+        *, close_upstream=False, release_slot=True,
+        mark_pool_idle=True, release_profile=True,
+    ):
         if session_closed["done"]:
             return
         session_closed["done"] = True
+        _unregister_active_upstream(virtual_channel_id, client_id)
         if close_upstream:
             try:
                 upstream.close()
             except Exception:
                 pass
-        _unregister_stats_client(redis_client, virtual_channel_id, client_id)
-        release_cb()
+        if release_slot:
+            release_cb(
+                mark_pool_idle=mark_pool_idle,
+                release_profile=release_profile,
+            )
 
     def stream_generator():
         last_heartbeat = time.time()
         bytes_since_heartbeat = 0
         total_yielded = 0
         loop_start = time.time()
-        stop_key = RedisKeys.client_stop(virtual_channel_id, client_id)
+        stop_key = TimeshiftRedisKeys.client_stop(virtual_channel_id, client_id)
+        stream_generation = _allocate_stream_generation(
+            redis_client, virtual_channel_id, client_id,
+        )
         stream_started_logged = False
+        stopped_for_reuse = False
         try:
-            for data in chunks_iter:
+            for data in _iter_upstream_with_stop(
+                upstream, chunk_size, redis_client, stop_key,
+                stream_generation, peek_data=peek_data,
+            ):
                 if not data:
                     continue
                 if debug and not stream_started_logged:
                     stream_started_logged = True
                     logger.debug(
-                        "Timeshift stream started: client=%s vid=%s range=%s status=%d",
-                        client_id, virtual_channel_id, range_header or "(none)", status,
+                        "Timeshift stream started: client=%s vid=%s range=%s status=%d gen=%d",
+                        client_id, virtual_channel_id, range_header or "(none)",
+                        status, stream_generation,
                     )
                 yield data
                 bytes_since_heartbeat += len(data)
                 total_yielded += len(data)
 
                 now = time.time()
-                if redis_client and redis_client.exists(stop_key):
+                should_stop, is_reuse = _stream_stop_requested(
+                    redis_client, stop_key, stream_generation,
+                )
+                if should_stop:
                     logger.info("Timeshift client %s received stop signal", client_id)
-                    redis_client.delete(stop_key)
+                    stopped_for_reuse = is_reuse
+                    if not is_reuse:
+                        redis_client.delete(stop_key)
                     break
                 # Refresh stats every 5 seconds.
                 if now - last_heartbeat >= 5:
@@ -1387,8 +2569,10 @@ def _stream_from_provider(
                             total_yielded, elapsed, mbps,
                         )
                     _heartbeat_stats_client(
-                        redis_client, virtual_channel_id, client_id,
+                        redis_client, stats_channel_id, client_id,
                         bytes_delta=bytes_since_heartbeat,
+                        pool_session_id=pool_session_id or client_id,
+                        programme_vid=virtual_channel_id,
                     )
                     last_heartbeat = now
                     bytes_since_heartbeat = 0
@@ -1400,8 +2584,10 @@ def _stream_from_provider(
             elapsed = time.time() - loop_start
             if bytes_since_heartbeat > 0:
                 _heartbeat_stats_client(
-                    redis_client, virtual_channel_id, client_id,
+                    redis_client, stats_channel_id, client_id,
                     bytes_delta=bytes_since_heartbeat,
+                    pool_session_id=pool_session_id or client_id,
+                    programme_vid=virtual_channel_id,
                 )
             if debug and total_yielded > 0:
                 mbps = (total_yielded * 8) / elapsed / 1_000_000 if elapsed > 0 else 0
@@ -1409,18 +2595,61 @@ def _stream_from_provider(
                     "Timeshift disconnect: vid=%s client=%s yielded=%d bytes in %.1fs (%.2f Mbps avg)",
                     virtual_channel_id, client_id, total_yielded, elapsed, mbps,
                 )
-            _finish_session(close_upstream=True)
+            if redis_client and redis_client.exists(stop_key):
+                should_stop, is_reuse = _stream_stop_requested(
+                    redis_client, stop_key, stream_generation,
+                )
+                if should_stop:
+                    if not stopped_for_reuse:
+                        stopped_for_reuse = is_reuse
+                    if not is_reuse:
+                        redis_client.delete(stop_key)
+            if (
+                not stopped_for_reuse
+                and redis_client
+                and stream_generation
+                < _current_stream_generation(
+                    redis_client, virtual_channel_id, client_id,
+                )
+            ):
+                # Newer stream generation took over (seek handoff).
+                stopped_for_reuse = True
+            if not stopped_for_reuse:
+                if not _is_timeshift_startup_probe(total_yielded, elapsed):
+                    _cleanup_stream_generation(
+                        redis_client, virtual_channel_id, client_id,
+                    )
+                if _should_schedule_stats_disconnect_grace(
+                    total_yielded,
+                    elapsed,
+                    stopped_for_reuse=stopped_for_reuse,
+                    redis_client=redis_client,
+                    client_id=client_id,
+                ):
+                    _schedule_stats_disconnect_grace(
+                        redis_client, stats_channel_id, client_id,
+                    )
+                _finish_session(close_upstream=True, mark_pool_idle=True)
+            else:
+                # Seek handoff: replacement stream keeps pool busy and profile slot.
+                _finish_session(
+                    close_upstream=True,
+                    mark_pool_idle=False,
+                    release_profile=False,
+                )
 
-    stream_iter = _SlotReleasingStream(stream_generator(), _finish_session)
+    def _finish_session_backup():
+        _finish_session(close_upstream=True)
+
+    stream_iter = _SlotReleasingStream(stream_generator(), _finish_session_backup)
     response = StreamingHttpResponse(
         stream_iter,
         content_type=content_type,
         status=status,
     )
     response["X-Accel-Buffering"] = "no"  # avoid nginx throttling the stream
-    if content_range:
-        response["Content-Range"] = content_range
-    response["Accept-Ranges"] = "bytes"
+    for header_name, header_value in client_length_headers.items():
+        response[header_name] = header_value
     return _finalize_timeshift_response(response)
 
 

@@ -23,18 +23,22 @@ import useLocalStorage from '../hooks/useLocalStorage';
 import SystemEvents from '../components/SystemEvents';
 import ErrorBoundary from '../components/ErrorBoundary.jsx';
 import {
-  fetchActiveChannelStats,
+  fetchAllConnectionStats,
   getClientStats,
+  getCatchupPrograms,
   getCombinedConnections,
   getCurrentPrograms,
   getStatsByChannelId,
-  getVODStats,
   stopChannel,
   stopClient,
+  stopTimeshiftSession,
   stopVODClient,
 } from '../utils/pages/StatsUtils.js';
 const VodConnectionCard = React.lazy(
   () => import('../components/cards/VodConnectionCard.jsx')
+);
+const TimeshiftConnectionCard = React.lazy(
+  () => import('../components/cards/TimeshiftConnectionCard.jsx')
 );
 const StreamConnectionCard = React.lazy(
   () => import('../components/cards/StreamConnectionCard.jsx')
@@ -46,7 +50,9 @@ const Connections = ({
   channelsByUUID,
   channels,
   handleStopVODClient,
+  handleStopTimeshiftSession,
   currentPrograms,
+  catchupPrograms,
 }) => {
   const logos = useLogosStore((s) => s.logos);
 
@@ -88,6 +94,16 @@ const Connections = ({
                 stopVODClient={handleStopVODClient}
               />
             );
+          } else if (connection.type === 'timeshift') {
+            return (
+              <TimeshiftConnectionCard
+                key={connection.id}
+                timeshiftSession={connection.data}
+                currentProgram={catchupPrograms[connection.data.session_id]}
+                stopTimeshiftSession={handleStopTimeshiftSession}
+                logos={logos}
+              />
+            );
           }
           return null;
         })}
@@ -101,17 +117,20 @@ const StatsPage = () => {
   const setChannelStats = useChannelsStore((s) => s.setChannelStats);
   const vodConnections = useChannelsStore((s) => s.activeVodConnections);
   const setVodStats = useChannelsStore((s) => s.setVodStats);
+  const timeshiftSessions = useChannelsStore((s) => s.activeTimeshiftSessions);
+  const setTimeshiftStats = useChannelsStore((s) => s.setTimeshiftStats);
   const streamProfiles = useStreamProfilesStore((s) => s.profiles);
 
   const [clients, setClients] = useState([]);
   const [channelHistory, setChannelHistory] = useState({});
   const [isPollingActive, setIsPollingActive] = useState(false);
   const [currentPrograms, setCurrentPrograms] = useState({});
+  const [catchupPrograms, setCatchupPrograms] = useState({});
   const [channels, setChannels] = useState({}); // id -> channel
   const [channelsByUUID, setChannelsByUUID] = useState({}); // uuid -> id
 
   // Compute needed channel UUIDs from the current active channels.
-  // Stream previews use a non-UUID hash as channel_id — filter those out.
+  // Stream previews use a non-UUID hash as channel_id; filter those out.
   const UUID_REGEX =
     /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   const neededUUIDs = useMemo(
@@ -168,55 +187,51 @@ const StatsPage = () => {
     (total, vodContent) => total + (vodContent.connections?.length || 0),
     0
   );
+  const timeshiftConnectionsCount = timeshiftSessions.reduce(
+    (total, session) => total + (session.connections?.length || 0),
+    0
+  );
 
   const handleStopVODClient = async (clientId) => {
     await stopVODClient(clientId);
-    // Refresh VOD stats after stopping to update the UI
-    fetchVODStats();
+    fetchAllStats();
   };
 
-  // Function to fetch channel stats from API
-  const fetchChannelStats = useCallback(async () => {
-    try {
-      const response = await fetchActiveChannelStats();
-      if (response) {
-        setChannelStats(response);
-      } else {
-        console.log('API response was empty or null');
-      }
-    } catch (error) {
-      console.error('Error fetching channel stats:', error);
-      console.error('Error details:', {
-        message: error.message,
-        status: error.status,
-        body: error.body,
-      });
-    }
-  }, [setChannelStats]);
+  const handleStopTimeshiftSession = async (sessionId) => {
+    await stopTimeshiftSession(sessionId);
+    fetchAllStats();
+  };
 
-  const fetchVODStats = useCallback(async () => {
+  const fetchAllStats = useCallback(async () => {
     try {
-      const response = await getVODStats();
+      const response = await fetchAllConnectionStats();
       if (response) {
-        setVodStats(response);
+        if (response.live) {
+          setChannelStats(response.live);
+        }
+        if (response.vod) {
+          setVodStats(response.vod);
+        }
+        if (response.catchup) {
+          setTimeshiftStats(response.catchup);
+        }
       } else {
-        console.log('VOD API response was empty or null');
+        console.log('Combined stats API response was empty or null');
       }
     } catch (error) {
-      console.error('Error fetching VOD stats:', error);
+      console.error('Error fetching connection stats:', error);
       console.error('Error details:', {
         message: error.message,
         status: error.status,
         body: error.body,
       });
     }
-  }, [setVodStats]);
+  }, [setChannelStats, setVodStats, setTimeshiftStats]);
 
   // Always fetch once on mount, regardless of polling interval setting
   useEffect(() => {
-    fetchChannelStats();
-    fetchVODStats();
-  }, [fetchChannelStats, fetchVODStats]);
+    fetchAllStats();
+  }, [fetchAllStats]);
 
   // Set up polling for stats when on stats page
   useEffect(() => {
@@ -226,8 +241,7 @@ const StatsPage = () => {
       setIsPollingActive(true);
 
       const interval = setInterval(() => {
-        fetchChannelStats();
-        fetchVODStats();
+        fetchAllStats();
       }, refreshInterval);
 
       return () => {
@@ -237,7 +251,7 @@ const StatsPage = () => {
     } else {
       setIsPollingActive(false);
     }
-  }, [refreshInterval, fetchChannelStats, fetchVODStats]);
+  }, [refreshInterval, fetchAllStats]);
 
   useEffect(() => {
     console.log('Processing channel stats:', channelStats);
@@ -328,10 +342,76 @@ const StatsPage = () => {
     };
   }, [activeChannelIds]); // Only re-run when active channel set changes
 
-  // Combine active streams and VOD connections into a single mixed list
+  // Programme metadata for catch-up cards: fetch when sessions or seek
+  // position (programme_start) change, then reschedule at programme end.
+  const timeshiftProgrammeKey = useMemo(() => {
+    return timeshiftSessions
+      .map((session) => `${session.session_id}:${session.programme_start || ''}`)
+      .sort()
+      .join(',');
+  }, [timeshiftSessions]);
+
+  const timeshiftSessionsRef = useRef(timeshiftSessions);
+  useEffect(() => {
+    timeshiftSessionsRef.current = timeshiftSessions;
+  }, [timeshiftSessions]);
+
+  useEffect(() => {
+    if (!timeshiftProgrammeKey) {
+      setCatchupPrograms({});
+      return;
+    }
+
+    let timer = null;
+
+    const fetchPrograms = async () => {
+      const sessions = timeshiftSessionsRef.current.map((session) => ({
+        session_id: session.session_id,
+        channel_uuid: session.channel_uuid,
+        programme_start: session.programme_start,
+      }));
+      const programs = await getCatchupPrograms(sessions);
+      setCatchupPrograms(programs);
+
+      if (programs && Object.keys(programs).length > 0) {
+        const now = new Date();
+        let nearestEndTime = null;
+
+        Object.values(programs).forEach((program) => {
+          if (program && program.end_time) {
+            const endTime = new Date(program.end_time);
+            if (
+              endTime > now &&
+              (!nearestEndTime || endTime < nearestEndTime)
+            ) {
+              nearestEndTime = endTime;
+            }
+          }
+        });
+
+        if (nearestEndTime) {
+          const timeUntilChange = nearestEndTime.getTime() - now.getTime();
+          const fetchDelay = Math.max(timeUntilChange + 5000, 0);
+          timer = setTimeout(fetchPrograms, fetchDelay);
+        }
+      }
+    };
+
+    fetchPrograms();
+
+    return () => {
+      if (timer) clearTimeout(timer);
+    };
+  }, [timeshiftProgrammeKey]);
+
+  // Combine active streams, VOD, and catch-up into a single mixed list
   const combinedConnections = useMemo(() => {
-    return getCombinedConnections(channelHistory, vodConnections);
-  }, [channelHistory, vodConnections]);
+    return getCombinedConnections(
+      channelHistory,
+      vodConnections,
+      timeshiftSessions
+    );
+  }, [channelHistory, vodConnections, timeshiftSessions]);
 
   return (
     <>
@@ -348,6 +428,11 @@ const StatsPage = () => {
                   {vodConnectionsCount !== 1
                     ? 'VOD connections'
                     : 'VOD connection'}
+                  {' • '}
+                  {timeshiftConnectionsCount}{' '}
+                  {timeshiftConnectionsCount !== 1
+                    ? 'catch-up sessions'
+                    : 'catch-up session'}
                 </Text>
                 <Group align="center" gap="xs">
                   <Text size="sm">Refresh Interval (seconds):</Text>
@@ -374,10 +459,7 @@ const StatsPage = () => {
                 <Button
                   size="xs"
                   variant="subtle"
-                  onClick={() => {
-                    fetchChannelStats();
-                    fetchVODStats();
-                  }}
+                  onClick={fetchAllStats}
                   loading={false}
                 >
                   Refresh Now
@@ -402,7 +484,9 @@ const StatsPage = () => {
               channelsByUUID={channelsByUUID}
               channels={channels}
               handleStopVODClient={handleStopVODClient}
+              handleStopTimeshiftSession={handleStopTimeshiftSession}
               currentPrograms={currentPrograms}
+              catchupPrograms={catchupPrograms}
             />
           </Box>
         </Box>

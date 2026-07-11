@@ -1,3 +1,4 @@
+import re
 import time
 from .server import ProxyServer
 from .redis_keys import RedisKeys
@@ -407,8 +408,6 @@ class ChannelStatus:
             if channel_name:
                 info['channel_name'] = channel_name
 
-            info['is_timeshift'] = bool(metadata.get(ChannelMetadataField.IS_TIMESHIFT))
-
             for key, field in (
                 ('logo_id', ChannelMetadataField.LOGO_ID),
                 ('m3u_profile_id', ChannelMetadataField.M3U_PROFILE),
@@ -433,7 +432,7 @@ class ChannelStatus:
                 info['stream_name'] = stream_name
 
             # Add data throughput information to basic info
-            # TOTAL_BYTES is already present in the hgetall result — avoid a redundant round-trip
+            # TOTAL_BYTES is already in the hgetall result; skip a redundant round-trip.
             total_bytes_bytes = metadata.get(ChannelMetadataField.TOTAL_BYTES)
             if total_bytes_bytes:
                 total_bytes = int(total_bytes_bytes)
@@ -552,3 +551,34 @@ class ChannelStatus:
         except Exception as e:
             logger.error(f"Error getting channel info: {e}", exc_info=True)
             return None
+
+
+def build_live_channel_stats_data(redis_client):
+    """Scan Redis for live channel metadata and build the stats payload."""
+    empty = {"channels": [], "count": 0}
+    if not redis_client:
+        return empty
+
+    try:
+        all_channels = []
+        channel_pattern = "live:channel:*:metadata"
+        cursor = 0
+        while True:
+            cursor, keys = redis_client.scan(cursor, match=channel_pattern)
+            for key in keys:
+                key_str = key.decode() if isinstance(key, bytes) else key
+                channel_id_match = re.search(r"live:channel:(.*):metadata", key_str)
+                if not channel_id_match:
+                    continue
+                ch_id = channel_id_match.group(1)
+                channel_info = ChannelStatus.get_basic_channel_info(ch_id)
+                if channel_info:
+                    all_channels.append(channel_info)
+
+            if cursor == 0:
+                break
+
+        return {"channels": all_channels, "count": len(all_channels)}
+    except Exception as e:
+        logger.error(f"Error building live channel stats: {e}", exc_info=True)
+        return empty

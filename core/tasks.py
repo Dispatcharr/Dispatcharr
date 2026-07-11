@@ -7,7 +7,7 @@ import re
 import time
 import os
 from core.utils import RedisClient, send_websocket_update, acquire_task_lock, release_task_lock
-from apps.proxy.live_proxy.channel_status import ChannelStatus
+from apps.proxy.live_proxy.channel_status import build_live_channel_stats_data
 from apps.m3u.models import M3UAccount
 from apps.epg.models import EPGSource
 from apps.m3u.tasks import refresh_single_m3u_account
@@ -425,42 +425,21 @@ def fetch_channel_stats():
     redis_client = RedisClient.get_client()
 
     try:
-        # Basic info for all channels
-        channel_pattern = "live:channel:*:metadata"
-        all_channels = []
-
-        # Extract channel IDs from keys
-        cursor = 0
-        while True:
-            cursor, keys = redis_client.scan(cursor, match=channel_pattern)
-            for key in keys:
-                channel_id_match = re.search(r"live:channel:(.*):metadata", key)
-                if channel_id_match:
-                    ch_id = channel_id_match.group(1)
-                    channel_info = ChannelStatus.get_basic_channel_info(ch_id)
-                    if channel_info:
-                        all_channels.append(channel_info)
-
-            if cursor == 0:
-                break
-
-        send_websocket_update(
-            "updates",
-            "update",
-            {
-                "success": True,
-                "type": "channel_stats",
-                "stats": json.dumps({'channels': all_channels, 'count': len(all_channels)})
-            },
-            collect_garbage=True
-        )
-
-        # Explicitly clean up large data structures
-        all_channels = None
-
+        live_stats = build_live_channel_stats_data(redis_client)
     except Exception as e:
         logger.error(f"Error in channel_status: {e}", exc_info=True)
         return
+
+    send_websocket_update(
+        "updates",
+        "update",
+        {
+            "success": True,
+            "type": "channel_stats",
+            "stats": json.dumps(live_stats),
+        },
+        collect_garbage=True
+    )
 
 @shared_task
 def rehash_streams(keys):

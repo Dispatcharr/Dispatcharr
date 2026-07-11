@@ -165,6 +165,35 @@ describe('ProgramPreview', () => {
     expect(screen.getByText(/elapsed/)).toBeTruthy();
     expect(screen.queryByText('null')).toBeNull();
   });
+
+  it('uses session-based progress for catch-up programmes', () => {
+    const program = {
+      title: 'Archived Show',
+      description: 'Catch-up description',
+      start_time: '2026-06-08T17:00:00+00:00',
+      end_time: '2026-06-08T18:00:00+00:00',
+    };
+    render(
+      <ProgramPreview
+        loading={false}
+        fetched={true}
+        program={program}
+        timelineMode="catchup"
+        label="Watching:"
+        playbackElapsedSeconds={900}
+      />
+    );
+
+    expect(screen.getByText('Watching:')).toBeTruthy();
+
+    const expandButton = screen.getByTestId('chevron-right').closest('button');
+    fireEvent.click(expandButton);
+
+    expect(screen.getByText(/Aired /)).toBeTruthy();
+    expect(screen.getByText('15:00 watched')).toBeTruthy();
+    expect(screen.getByText('45:00 remaining')).toBeTruthy();
+    expect(screen.getByTestId('progress').getAttribute('data-value')).toBe('25');
+  });
 });
 
 describe('formatProgramTime', () => {
