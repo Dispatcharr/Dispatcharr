@@ -2483,6 +2483,56 @@ export default class API {
     }
   }
 
+  static async getTimeshiftStats() {
+    try {
+      const response = await request(`${host}/proxy/catchup/stats/`);
+
+      return response;
+    } catch (e) {
+      errorNotification('Failed to retrieve catch-up stats', e);
+    }
+  }
+
+  static async getAllConnectionStats() {
+    try {
+      const response = await request(`${host}/proxy/stats/`);
+
+      return response;
+    } catch (e) {
+      errorNotification('Failed to retrieve connection stats', e);
+      throw e;
+    }
+  }
+
+  static async getCatchupPrograms(sessions) {
+    try {
+      const response = await request(`${host}/proxy/catchup/programs/`, {
+        method: 'POST',
+        body: { sessions },
+      });
+
+      return response;
+    } catch (e) {
+      console.error('Failed to retrieve catch-up programmes', e);
+      return { sessions: [] };
+    }
+  }
+
+  static async stopTimeshiftSession(sessionId) {
+    try {
+      const response = await request(`${host}/proxy/catchup/stop_client/`, {
+        method: 'POST',
+        body: {
+          session_id: sessionId,
+        },
+      });
+
+      return response;
+    } catch (e) {
+      errorNotification('Failed to stop catch-up session', e);
+    }
+  }
+
   static async stopVODClient(clientId) {
     try {
       const response = await request(`${host}/proxy/vod/stop_client/`, {

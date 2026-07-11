@@ -22,6 +22,7 @@ describe('useChannelsStore', () => {
       stats: {},
       activeChannels: {},
       activeClients: {},
+      activeTimeshiftSessions: [],
       recordings: [],
       recurringRules: [],
       isLoading: false,
@@ -321,6 +322,116 @@ describe('useChannelsStore', () => {
 
       expect(result.current.stats).toEqual(newStats);
       expect(showNotification).toHaveBeenCalled();
+    });
+  });
+
+  describe('setTimeshiftStats', () => {
+    const now = Date.now() / 1000;
+
+    it('should show a notification when a new catch-up session starts', () => {
+      const { result } = renderHook(() => useChannelsStore());
+
+      act(() => {
+        result.current.setTimeshiftStats({
+          timeshift_sessions: [
+            {
+              session_id: 'session-1',
+              channel_name: 'News HD',
+              connections: [
+                {
+                  client_id: 'session-1',
+                  ip_address: '1.2.3.4',
+                  connected_at: now,
+                },
+              ],
+            },
+          ],
+        });
+      });
+
+      expect(result.current.activeTimeshiftSessions).toHaveLength(1);
+      expect(showNotification).toHaveBeenCalledWith(
+        expect.objectContaining({
+          title: 'Catch-up started',
+          color: 'blue.5',
+        })
+      );
+    });
+
+    it('should show a notification when a catch-up session ends', () => {
+      const { result } = renderHook(() => useChannelsStore());
+
+      act(() => {
+        useChannelsStore.setState({
+          activeTimeshiftSessions: [
+            {
+              session_id: 'session-1',
+              channel_name: 'News HD',
+              connections: [
+                {
+                  client_id: 'session-1',
+                  ip_address: '1.2.3.4',
+                  connected_at: now,
+                },
+              ],
+            },
+          ],
+        });
+      });
+
+      act(() => {
+        result.current.setTimeshiftStats({ timeshift_sessions: [] });
+      });
+
+      expect(result.current.activeTimeshiftSessions).toHaveLength(0);
+      expect(showNotification).toHaveBeenCalledWith(
+        expect.objectContaining({
+          title: 'Catch-up ended',
+          color: 'blue.5',
+        })
+      );
+    });
+
+    it('should not show start notifications for sessions already active on first poll', () => {
+      const { result } = renderHook(() => useChannelsStore());
+
+      act(() => {
+        useChannelsStore.setState({
+          activeTimeshiftSessions: [
+            {
+              session_id: 'session-1',
+              channel_name: 'News HD',
+              connections: [
+                {
+                  client_id: 'session-1',
+                  ip_address: '1.2.3.4',
+                  connected_at: now - 3600,
+                },
+              ],
+            },
+          ],
+        });
+      });
+
+      act(() => {
+        result.current.setTimeshiftStats({
+          timeshift_sessions: [
+            {
+              session_id: 'session-1',
+              channel_name: 'News HD',
+              connections: [
+                {
+                  client_id: 'session-1',
+                  ip_address: '1.2.3.4',
+                  connected_at: now - 3600,
+                },
+              ],
+            },
+          ],
+        });
+      });
+
+      expect(showNotification).not.toHaveBeenCalled();
     });
   });
 

@@ -62,6 +62,18 @@ class TimestampFormatTests(TestCase):
             "2026-06-23T04:00:00",
         )
 
+    def test_normalize_iso8601_utc(self):
+        self.assertEqual(
+            normalize_catchup_timestamp_input("2026-06-23T04:00:00Z"),
+            "2026-06-23T04:00:00",
+        )
+
+    def test_normalize_iso8601_with_offset(self):
+        self.assertEqual(
+            normalize_catchup_timestamp_input("2026-06-23T06:00:00+02:00"),
+            "2026-06-23T04:00:00",
+        )
+
     def test_normalize_rejects_garbage(self):
         self.assertIsNone(normalize_catchup_timestamp_input("garbage"))
         self.assertIsNone(normalize_catchup_timestamp_input(""))

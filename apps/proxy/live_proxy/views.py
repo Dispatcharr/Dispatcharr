@@ -8,7 +8,7 @@ from django.http import StreamingHttpResponse, JsonResponse, HttpResponseRedirec
 from django.views.decorators.csrf import csrf_exempt
 from django.shortcuts import get_object_or_404
 from .server import ProxyServer
-from .channel_status import ChannelStatus
+from .channel_status import ChannelStatus, build_live_channel_stats_data
 from .output.ts.generator import create_stream_generator
 from .output.fmp4.generator import create_fmp4_stream_generator
 from .utils import get_client_ip
@@ -872,28 +872,7 @@ def channel_status(request, channel_id=None):
                     {"error": f"Channel {channel_id} not found"}, status=404
                 )
         else:
-            # Basic info for all channels
-            channel_pattern = "live:channel:*:metadata"
-            all_channels = []
-
-            # Extract channel IDs from keys
-            cursor = 0
-            while True:
-                cursor, keys = proxy_server.redis_client.scan(
-                    cursor, match=channel_pattern
-                )
-                for key in keys:
-                    channel_id_match = re.search(
-                        r"live:channel:(.*):metadata", key
-                    )
-                    if channel_id_match:
-                        ch_id = channel_id_match.group(1)
-                        channel_info = ChannelStatus.get_basic_channel_info(ch_id)
-                        if channel_info:
-                            all_channels.append(channel_info)
-
-                if cursor == 0:
-                    break
+            live_stats = build_live_channel_stats_data(proxy_server.redis_client)
 
             # Send WebSocket update with the stats
             # Format it the same way the original Celery task did
@@ -903,11 +882,11 @@ def channel_status(request, channel_id=None):
                 {
                     "success": True,
                     "type": "channel_stats",
-                    "stats": json.dumps({'channels': all_channels, 'count': len(all_channels)})
+                    "stats": json.dumps(live_stats),
                 }
             )
 
-            return JsonResponse({"channels": all_channels, "count": len(all_channels)})
+            return JsonResponse(live_stats)
 
     except Exception as e:
         logger.error(f"Error in channel_status: {e}", exc_info=True)
