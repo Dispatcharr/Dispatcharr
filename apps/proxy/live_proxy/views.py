@@ -771,6 +771,8 @@ def change_stream(request, channel_id):
         new_url = data.get("url")
         user_agent = data.get("user_agent")
         stream_id = data.get("stream_id")
+        m3u_profile_id = None
+        stream_name = None
 
         # If stream_id is provided, get the URL and user_agent from it
         if stream_id:
@@ -788,7 +790,7 @@ def change_stream(request, channel_id):
             new_url = stream_info["url"]
             user_agent = stream_info["user_agent"]
             m3u_profile_id = stream_info.get("m3u_profile_id")
-            # Stream ID will be passed to change_stream_url later
+            stream_name = stream_info.get("stream_name")
         elif not new_url:
             return JsonResponse(
                 {"error": "Either url or stream_id must be provided"}, status=400
@@ -801,7 +803,7 @@ def change_stream(request, channel_id):
         # Use the service layer instead of direct implementation
         # Pass stream_id to ensure proper connection tracking
         result = ChannelService.change_stream_url(
-            channel_id, new_url, user_agent, stream_id, m3u_profile_id
+            channel_id, new_url, user_agent, stream_id, m3u_profile_id, stream_name=stream_name
         )
 
         # Get the stream manager before updating URL
@@ -823,6 +825,20 @@ def change_stream(request, channel_id):
                 },
                 status=404,
             )
+
+        if result.get("success") is False:
+            error_data = {
+                "error": result.get("message", result.get("error", "Stream switch failed")),
+                "channel": channel_id,
+                "url": new_url,
+                "owner": result.get("direct_update", False),
+                "worker_id": proxy_server.worker_id,
+            }
+            if stream_id:
+                error_data["stream_id"] = stream_id
+            # confirmed=False means owner never responded (504); owner reported failure (502)
+            status_code = 504 if result.get("confirmed") is False else 502
+            return JsonResponse(error_data, status=status_code)
 
         # Format response based on whether it was a direct update or event-based
         response_data = {
@@ -1068,6 +1084,7 @@ def next_stream(request, channel_id):
             stream_info["user_agent"],
             next_stream_id,
             stream_info.get("m3u_profile_id"),
+            stream_name=stream_info.get("stream_name"),
         )
 
         if result.get("status") == "error":
@@ -1079,6 +1096,18 @@ def next_stream(request, channel_id):
                     "next_stream_id": next_stream_id,
                 },
                 status=404,
+            )
+
+        if result.get("success") is False:
+            return JsonResponse(
+                {
+                    "error": result.get("message", result.get("error", "Stream switch failed")),
+                    "current_stream_id": current_stream_id,
+                    "next_stream_id": next_stream_id,
+                    "owner": result.get("direct_update", False),
+                    "worker_id": proxy_server.worker_id,
+                },
+                status=504 if result.get("confirmed") is False else 502,
             )
 
         # Format success response

@@ -6,6 +6,7 @@ This separates business logic from HTTP handling in views.
 import logging
 import time
 import json
+import gevent
 from apps.channels.models import Channel, Stream
 from ..server import ProxyServer
 from ..redis_keys import RedisKeys
@@ -16,6 +17,9 @@ from core.utils import log_system_event
 from .log_parsers import LogParserFactory
 
 logger = logging.getLogger("live_proxy")
+
+STREAM_SWITCH_CONFIRM_TIMEOUT = 15  # transcode teardown can take several seconds
+STREAM_SWITCH_POLL_INTERVAL = 0.1
 
 class ChannelService:
     """Service class for channel operations"""
@@ -349,7 +353,7 @@ class ChannelService:
         return success
 
     @staticmethod
-    def change_stream_url(channel_id, new_url=None, user_agent=None, target_stream_id=None, m3u_profile_id=None):
+    def change_stream_url(channel_id, new_url=None, user_agent=None, target_stream_id=None, m3u_profile_id=None, stream_name=None):
         """
         Change the URL of an existing stream.
 
@@ -367,7 +371,6 @@ class ChannelService:
 
         # If no direct URL is provided but a target stream is, get URL from target stream
         stream_id = None
-        stream_name = None
         if not new_url and target_stream_id:
             stream_info = get_stream_info_for_switch(channel_id, target_stream_id)
             if 'error' in stream_info:
@@ -440,9 +443,14 @@ class ChannelService:
             manager = proxy_server.stream_managers[channel_id]
             old_url = manager.url
 
-            # Update the stream
-            success = manager.update_url(new_url, stream_id, m3u_profile_id)
-            logger.info(f"Stream URL changed from {old_url} to {new_url}, result: {success}")
+            if new_url == old_url:
+                # update_url() returns False for same URL; still success so metadata refreshes
+                success = True
+                logger.info(f"Channel {channel_id} already using URL {new_url}, refreshing metadata only")
+            else:
+                # Update the stream
+                success = manager.update_url(new_url, stream_id, m3u_profile_id)
+                logger.info(f"Stream URL changed from {old_url} to {new_url}, result: {success}")
 
             # Update Redis metadata based on the actual outcome.
             # On success, write the new values. On failure, restore whatever URL
@@ -472,16 +480,57 @@ class ChannelService:
             # in the pubsub message, so there is no reason to pre-write metadata here.
             logger.debug(f"This worker is not the owner, publishing stream switch event for channel {channel_id}")
             if proxy_server.redis_client:
-                ChannelService._publish_stream_switch_event(channel_id, new_url, user_agent, stream_id, m3u_profile_id)
+                status_key = RedisKeys.switch_status(channel_id)
+                try:
+                    # Clear stale status from a prior switch
+                    proxy_server.redis_client.delete(status_key)
+                except Exception as e:
+                    logger.warning(f"Could not clear switch status for channel {channel_id}: {e}")
+
+                ChannelService._publish_stream_switch_event(
+                    channel_id, new_url, user_agent, stream_id, m3u_profile_id, stream_name
+                )
+
+                switch_status = None
+                deadline = time.time() + STREAM_SWITCH_CONFIRM_TIMEOUT
+                while time.time() < deadline:
+                    try:
+                        switch_status = proxy_server.redis_client.get(status_key)
+                    except Exception as e:
+                        logger.warning(f"Error polling switch status for channel {channel_id}: {e}")
+                        switch_status = None
+                        break
+                    if switch_status in ("switched", "failed"):
+                        break
+                    gevent.sleep(STREAM_SWITCH_POLL_INTERVAL)
+
                 result.update({
                     'direct_update': False,
                     'event_published': True,
                     'worker_id': proxy_server.worker_id
                 })
+
+                if switch_status == "switched":
+                    result['success'] = True
+                elif switch_status == "failed":
+                    result['success'] = False
+                    result['message'] = 'Owner worker failed to switch stream'
+                else:
+                    result['success'] = False
+                    result['confirmed'] = False
+                    result['message'] = (
+                        f'Stream switch was not confirmed by the channel owner '
+                        f'within {STREAM_SWITCH_CONFIRM_TIMEOUT}s'
+                    )
+                    logger.error(
+                        f"Stream switch for channel {channel_id} not confirmed within "
+                        f"{STREAM_SWITCH_CONFIRM_TIMEOUT}s (owner may be down or still switching)"
+                    )
             else:
                 result.update({
                     'direct_update': False,
                     'event_published': False,
+                    'success': False,
                     'error': 'Redis not available for pubsub'
                 })
 
@@ -865,7 +914,7 @@ class ChannelService:
             close_old_connections()
 
     @staticmethod
-    def _publish_stream_switch_event(channel_id, new_url, user_agent=None, stream_id=None, m3u_profile_id=None):
+    def _publish_stream_switch_event(channel_id, new_url, user_agent=None, stream_id=None, m3u_profile_id=None, stream_name=None):
         """Publish a stream switch event to Redis pubsub"""
         proxy_server = ProxyServer.get_instance()
 
@@ -879,6 +928,7 @@ class ChannelService:
             "user_agent": user_agent,
             "stream_id": stream_id,
             "m3u_profile_id": m3u_profile_id,
+            "stream_name": stream_name,
             "requester": proxy_server.worker_id,
             "timestamp": time.time()
         }
