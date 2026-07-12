@@ -34,7 +34,7 @@ import useSettingsStore from '../store/settings.jsx';
 import AvailablePluginCard from '../components/cards/AvailablePluginCard.jsx';
 import { showNotification } from '../utils/notificationUtils.js';
 import { reloadPlugins } from '../utils/pages/PluginsUtils.js';
-import { compareVersions } from '../components/pluginUtils.js';
+import { compareVersions } from '../utils/components/pluginUtils.js';
 
 export default function PluginBrowsePage() {
   const repos = usePluginStore((s) => s.repos);

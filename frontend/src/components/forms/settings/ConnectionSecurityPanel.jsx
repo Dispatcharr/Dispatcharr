@@ -51,12 +51,11 @@ const RedisStatus = ({ tls }) => {
       : 'The connection is encrypted but the server identity is not verified';
   }
 
-  let mtlsColor = 'gray';
-  let mtlsTooltip = 'Mutual authentication is not active';
-  if (enabled && mtls) {
-    mtlsColor = 'green';
-    mtlsTooltip = 'Both client and server verify each other with certificates';
-  }
+  const mtlsColor = enabled && mtls ? 'green' : 'gray';
+  const mtlsTooltip =
+    enabled && mtls
+      ? 'Both client and server verify each other with certificates'
+      : 'Mutual authentication is not active';
 
   return (
     <TlsServiceCard serviceName="Redis">
@@ -94,11 +93,10 @@ const PostgresStatus = ({ tls }) => {
   const sslMode = tls?.ssl_mode;
   const mtls = tls?.mtls ?? false;
 
+  const modeBadge = enabled && sslMode ? sslMode : 'Off';
   let modeColor = 'gray';
   let modeTooltip = 'Verification mode is not active — TLS is disabled';
-  let modeBadge = 'Off';
   if (enabled && sslMode) {
-    modeBadge = sslMode;
     if (sslMode === 'verify-full') {
       modeColor = 'green';
       modeTooltip = 'Server certificate and hostname are both verified';
@@ -112,12 +110,11 @@ const PostgresStatus = ({ tls }) => {
     }
   }
 
-  let mtlsColor = 'gray';
-  let mtlsTooltip = 'Mutual authentication is not active';
-  if (enabled && mtls) {
-    mtlsColor = 'green';
-    mtlsTooltip = 'Both client and server verify each other with certificates';
-  }
+  const mtlsColor = enabled && mtls ? 'green' : 'gray';
+  const mtlsTooltip =
+    enabled && mtls
+      ? 'Both client and server verify each other with certificates'
+      : 'Mutual authentication is not active';
 
   return (
     <TlsServiceCard serviceName="PostgreSQL">

@@ -520,7 +520,9 @@ describe('Field', () => {
       render(<Field field={field} value={null} onChange={mockOnChange} />);
 
       expect(screen.getByText('Help text takes priority')).toBeInTheDocument();
-      expect(screen.queryByText('This should not appear')).not.toBeInTheDocument();
+      expect(
+        screen.queryByText('This should not appear')
+      ).not.toBeInTheDocument();
     });
 
     it('should use field.value if no help_text or description', () => {
@@ -562,7 +564,10 @@ describe('Field', () => {
 
       render(<Field field={field} value="" onChange={mockOnChange} />);
 
-      expect(screen.getByLabelText('Password')).toHaveAttribute('type', 'password');
+      expect(screen.getByLabelText('Password')).toHaveAttribute(
+        'type',
+        'password'
+      );
     });
 
     it('should render text input when input_type is not password', () => {

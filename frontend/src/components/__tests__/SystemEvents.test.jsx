@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import SystemEvents from '../SystemEvents';
 import API from '../../api';
-import useLocalStorage from "../../hooks/useLocalStorage";
+import useLocalStorage from '../../hooks/useLocalStorage';
 
 // Mock the API module
 vi.mock('../../api', () => ({
@@ -158,7 +158,7 @@ describe('SystemEvents', () => {
     fireEvent.click(refreshButton);
 
     await waitFor(() => {
-      expect(API.getSystemEvents).toHaveBeenCalledTimes(3)
+      expect(API.getSystemEvents).toHaveBeenCalledTimes(3);
     });
   });
 
@@ -203,7 +203,9 @@ describe('SystemEvents', () => {
   });
 
   it('should handle API errors gracefully', async () => {
-    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const consoleErrorSpy = vi
+      .spyOn(console, 'error')
+      .mockImplementation(() => {});
     API.getSystemEvents.mockRejectedValue(new Error('API Error'));
 
     render(<SystemEvents />);

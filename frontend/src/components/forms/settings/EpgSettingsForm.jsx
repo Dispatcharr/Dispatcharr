@@ -1,14 +1,7 @@
 import useSettingsStore from '../../../store/settings.jsx';
 import React, { useEffect, useState } from 'react';
 import { useForm } from '@mantine/form';
-import {
-  Alert,
-  Button,
-  Flex,
-  NumberInput,
-  Stack,
-  Text,
-} from '@mantine/core';
+import { Alert, Button, Flex, NumberInput, Stack, Text } from '@mantine/core';
 import { EPG_SETTINGS_OPTIONS } from '../../../constants.js';
 import {
   getChangedSettings,
@@ -35,7 +28,7 @@ const EpgSettingsForm = React.memo(({ active }) => {
       const parsed = parseSettings(settings);
       form.setFieldValue(
         'xmltv_prev_days_override',
-        parsed.xmltv_prev_days_override ?? 0,
+        parsed.xmltv_prev_days_override ?? 0
       );
     }
   }, [settings]);
