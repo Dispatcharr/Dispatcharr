@@ -25,7 +25,7 @@ from .client_manager import ClientManager
 from .output.fmp4.manager import FMP4RemuxManager
 from .output.profile.manager import OutputProfileManager, PROFILE_STATE_ACTIVE
 from .redis_keys import RedisKeys
-from .constants import ChannelState, EventType, StreamType
+from .constants import ChannelState, EventType, StreamType, REDIS_TTL_MEDIUM
 from .config_helper import ConfigHelper
 from .utils import get_logger
 
@@ -585,17 +585,27 @@ class ProxyServer:
                         active_states = [ChannelState.INITIALIZING, ChannelState.CONNECTING,
                                         ChannelState.WAITING_FOR_CLIENTS, ChannelState.ACTIVE, ChannelState.BUFFERING]
                         if state in active_states:
-                            logger.info(f"Channel {channel_id} already being initialized with state {state}")
-                            # Create buffer and client manager only if we don't have them
-                            if channel_id not in self.stream_buffers:
-                                self.stream_buffers[channel_id] = StreamBuffer(channel_id, redis_client=RedisClient.get_buffer())
-                            if channel_id not in self.client_managers:
-                                self.client_managers[channel_id] = ClientManager(
-                                    channel_id,
-                                    redis_client=self.redis_client,
-                                    worker_id=self.worker_id
+                            if self.is_stale_pre_active(channel_id, metadata):
+                                # Ghost session from a failed init: nobody owns it and it
+                                # will never progress. Clean it up (releases the leaked M3U
+                                # profile slot) and fall through to a fresh initialization.
+                                logger.warning(
+                                    f"Channel {channel_id} metadata shows {state} but no worker "
+                                    f"owns it - discarding stale session and reinitializing"
                                 )
-                            return True
+                                self._clean_redis_keys(channel_id)
+                            else:
+                                logger.info(f"Channel {channel_id} already being initialized with state {state}")
+                                # Create buffer and client manager only if we don't have them
+                                if channel_id not in self.stream_buffers:
+                                    self.stream_buffers[channel_id] = StreamBuffer(channel_id, redis_client=RedisClient.get_buffer())
+                                if channel_id not in self.client_managers:
+                                    self.client_managers[channel_id] = ClientManager(
+                                        channel_id,
+                                        redis_client=self.redis_client,
+                                        worker_id=self.worker_id
+                                    )
+                                return True
 
             # Create buffer and client manager instances (or reuse if they exist)
             if channel_id not in self.stream_buffers:
@@ -621,6 +631,11 @@ class ProxyServer:
                 if stream_id:
                     initial_metadata["stream_id"] = str(stream_id)
                 self.redis_client.hset(metadata_key, mapping=initial_metadata)
+                # A failed init must not leave immortal metadata behind: give the key
+                # a TTL now; successful initialization extends it and the registry
+                # refresh keeps it alive afterwards.
+                if self.redis_client.ttl(metadata_key) == -1:
+                    self.redis_client.expire(metadata_key, REDIS_TTL_MEDIUM)
                 logger.info(f"Set early initializing state for channel {channel_id}")
 
             # Get channel URL from Redis if available
@@ -677,6 +692,7 @@ class ProxyServer:
             # or we can get it from Redis
             if not channel_url:
                 logger.error(f"No URL available for channel {channel_id}")
+                self._mark_init_failure(channel_id, "No URL available during initialization")
                 return False
 
             # Try to acquire ownership with Redis locking
@@ -807,6 +823,9 @@ class ProxyServer:
             logger.error(f"Error initializing channel {channel_id}: {e}", exc_info=True)
             # Release ownership on failure
             self.release_ownership(channel_id)
+            # Leave the channel in a terminal state so future requests reinitialize
+            # instead of attaching to a half-created session that never progresses
+            self._mark_init_failure(channel_id, f"Initialization failed: {e}")
             return False
 
     def check_if_channel_exists(self, channel_id):
@@ -838,6 +857,17 @@ class ProxyServer:
 
                 # If the channel is in a valid state, check if the owner is still active
                 if state in valid_states:
+                    # Ghost detection: a pre-active state with no ownership lock means
+                    # no worker is driving initialization. The owner worker may still be
+                    # alive (its heartbeat passes below), but this channel will never
+                    # progress - clean it up so it can be reinitialized.
+                    if self.is_stale_pre_active(channel_id, metadata):
+                        logger.warning(
+                            f"Channel {channel_id} has stale {state} session with no owner lock - cleaning up"
+                        )
+                        self._clean_zombie_channel(channel_id, metadata)
+                        return False
+
                     # Check if owner still exists by checking heartbeat
                     owner_heartbeat_key = f"live:worker:{owner}:heartbeat"
                     owner_alive = self.redis_client.exists(owner_heartbeat_key)
@@ -898,6 +928,97 @@ class ProxyServer:
                     return False
 
         return False
+
+    def _stale_init_threshold(self):
+        """Age in seconds after which an ownerless pre-active channel is considered dead."""
+        return max(ConfigHelper.channel_init_grace_period(), 30)
+
+    def is_stale_pre_active(self, channel_id, metadata=None, max_age=None):
+        """
+        Detect a ghost session: metadata shows a pre-active state (initializing/
+        connecting) but no worker holds the ownership lock and this worker has no
+        stream manager for it. Nothing will ever advance such a channel — clients
+        that attach to it stall forever — so callers must treat it as dead.
+        """
+        if not self.redis_client:
+            return False
+
+        try:
+            if metadata is None:
+                metadata = self.redis_client.hgetall(RedisKeys.channel_metadata(channel_id))
+            if not metadata:
+                return False
+
+            state = metadata.get('state')
+            if state not in (ChannelState.INITIALIZING, ChannelState.CONNECTING):
+                return False
+
+            # A local stream manager means this worker is driving the channel,
+            # even if the ownership lock momentarily lapsed before re-acquisition.
+            if channel_id in self.stream_managers or channel_id in self._live_stream_managers:
+                return False
+
+            # Ownership lock present -> some worker is actively driving init.
+            if self.redis_client.exists(RedisKeys.channel_owner(channel_id)):
+                return False
+
+            if max_age is None:
+                max_age = self._stale_init_threshold()
+
+            newest = 0.0
+            for field in ('state_changed_at', 'init_time', 'temp_init'):
+                raw = metadata.get(field)
+                if raw:
+                    try:
+                        newest = max(newest, float(raw))
+                    except (ValueError, TypeError):
+                        pass
+
+            if newest <= 0:
+                # Pre-active state with no owner and no usable timestamps -
+                # a half-written session that can only be a ghost.
+                return True
+
+            return (time.time() - newest) > max_age
+        except Exception as e:
+            logger.error(f"Error checking stale pre-active state for channel {channel_id}: {e}")
+            return False
+
+    def _mark_init_failure(self, channel_id, error_message):
+        """
+        Transition a channel whose initialization failed to ERROR so future
+        requests reinitialize instead of attaching to a half-created session.
+        Only touches metadata when no other worker owns the channel.
+        """
+        if not self.redis_client:
+            return
+
+        try:
+            owner = self.get_channel_owner(channel_id)
+            if owner and owner != self.worker_id:
+                return
+
+            metadata_key = RedisKeys.channel_metadata(channel_id)
+            if not self.redis_client.exists(metadata_key):
+                return
+
+            state = self.redis_client.hget(metadata_key, 'state')
+            if state and state not in ChannelState.PRE_ACTIVE:
+                return
+
+            now = str(time.time())
+            self.redis_client.hset(metadata_key, mapping={
+                'state': ChannelState.ERROR,
+                'state_changed_at': now,
+                'error_message': error_message,
+                'error_time': now,
+            })
+            # Failed-init metadata must never become immortal
+            if self.redis_client.ttl(metadata_key) == -1:
+                self.redis_client.expire(metadata_key, REDIS_TTL_MEDIUM)
+            logger.info(f"Marked failed initialization for channel {channel_id}: {error_message}")
+        except Exception as e:
+            logger.error(f"Error marking init failure for channel {channel_id}: {e}")
 
     def _clean_zombie_channel(self, channel_id, metadata=None):
         """Clean up a zombie channel (channel with Redis keys but no active owner)"""
@@ -2167,6 +2288,20 @@ class ProxyServer:
                                     f"{real_count} live client(s) after ghost removal "
                                     f"- may need ownership takeover"
                                 )
+                    elif client_count == 0 and self.is_stale_pre_active(
+                        channel_id, metadata, max_age=2 * self._stale_init_threshold()
+                    ):
+                        # Watchdog for ghost sessions: owner worker is alive but nobody
+                        # holds the ownership lock and the channel has sat in a pre-active
+                        # state past twice the init grace period. A failed initialization
+                        # left it behind - reap it (also releases the M3U profile slot).
+                        state = metadata.get('state', 'unknown')
+                        logger.warning(
+                            f"Reaping ghost channel {channel_id} stuck in {state} "
+                            f"with no owner lock and no clients - cleaning up"
+                        )
+                        self._stop_upstream_before_redis_cleanup(channel_id)
+                        self._clean_redis_keys(channel_id)
 
                 except Exception as e:
                     logger.error(f"Error processing metadata key {key}: {e}", exc_info=True)

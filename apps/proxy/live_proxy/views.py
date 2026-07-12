@@ -158,6 +158,7 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
         needs_initialization = True
         channel_state = None
         channel_initializing = False
+        stale_ghost = False
 
         # Get current channel state from Redis if available
         if proxy_server.redis_client:
@@ -186,10 +187,21 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
                             ChannelState.INITIALIZING,
                             ChannelState.CONNECTING,
                         ]:
-                            channel_initializing = True
-                            logger.debug(
-                                f"[{client_id}] Channel {channel_id} is still initializing, client will wait"
-                            )
+                            if proxy_server.is_stale_pre_active(channel_id, metadata):
+                                # Ghost session from a failed init: no worker owns it,
+                                # so waiting on it would stall forever. Clean up and
+                                # reinitialize instead of attaching.
+                                stale_ghost = True
+                                needs_initialization = True
+                                logger.warning(
+                                    f"[{client_id}] Channel {channel_id} stuck in {channel_state} "
+                                    f"with no owner - cleaning up and reinitializing"
+                                )
+                            else:
+                                channel_initializing = True
+                                logger.debug(
+                                    f"[{client_id}] Channel {channel_id} is still initializing, client will wait"
+                                )
                     elif channel_state == ChannelState.STOPPING:
                         logger.info(
                             f"[{client_id}] Channel {channel_id} is stopping, rejecting request"
@@ -236,8 +248,8 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
                 return _channel_stopping_response()
 
             logger.info(f"[{client_id}] Starting channel {channel_id} initialization")
-            # Force cleanup of any previous instance if in terminal state
-            if channel_state in [
+            # Force cleanup of any previous instance if in terminal state or ghosted
+            if stale_ghost or channel_state in [
                 ChannelState.ERROR,
                 ChannelState.STOPPING,
                 ChannelState.STOPPED,
