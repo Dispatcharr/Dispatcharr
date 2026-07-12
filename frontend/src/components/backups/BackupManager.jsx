@@ -177,7 +177,7 @@ export default function BackupManager() {
         size: 100,
       },
     ],
-    []
+    [fullDateTimeFormat]
   );
 
   const renderHeaderCell = (header) => {
