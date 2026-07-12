@@ -178,14 +178,9 @@ def resolve_stats_playback_fields(
     if range_start == 0:
         return None, now
 
-    if existing_programme_start == timestamp_utc and existing_position_anchor:
-        existing_base = None
-        if existing_playback_base is not None:
-            try:
-                existing_base = float(existing_playback_base)
-            except (TypeError, ValueError):
-                existing_base = None
-        return existing_base, existing_position_anchor
+    # Plain GET (no Range): providers restart from byte 0 on reconnect.
+    if range_start is None:
+        return None, now
 
     return None, now
 

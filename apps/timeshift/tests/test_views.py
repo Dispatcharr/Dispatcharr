@@ -2154,7 +2154,7 @@ class TimeshiftSessionReuseTests(TestCase):
 
 
 class TimeshiftSessionRedirectTests(TestCase):
-    """First request must establish a session via 301 redirect (VOD-style)."""
+    """Session mint (301) and inline pool adopt when session_id is omitted."""
 
     def setUp(self):
         self.factory = RequestFactory()
@@ -2178,7 +2178,7 @@ class TimeshiftSessionRedirectTests(TestCase):
         self.assertEqual(response.status_code, 301)
         self.assertIn("session_id=", response["Location"])
 
-    def test_missing_session_id_redirects_to_existing_busy_pool(self):
+    def test_missing_session_id_serves_existing_busy_pool_without_redirect(self):
         existing = "existingbusy1"
         redis = _FakeRedis()
         _seed_pool_session(
@@ -2194,6 +2194,9 @@ class TimeshiftSessionRedirectTests(TestCase):
             HTTP_USER_AGENT="vlc-test",
             REMOTE_ADDR="127.0.0.1",
         )
+        ok = MagicMock(status_code=200)
+        profile = MagicMock(id=31)
+        descriptor = {"account_id": "1", "stream_id": "111", "profile_id": "31"}
         with patch.object(views, "_authenticate_user", return_value=MagicMock(id=1)), \
              patch.object(views, "network_access_allowed", return_value=True), \
              patch.object(views, "Channel") as channel_cls, \
@@ -2202,16 +2205,23 @@ class TimeshiftSessionRedirectTests(TestCase):
                           return_value=[_make_catchup_stream()]), \
              patch.object(views, "get_programme_duration", return_value=40), \
              patch.object(views, "parse_catchup_timestamp", return_value=True), \
-             patch.object(views, "RedisClient") as redis_cls:
+             patch.object(views, "check_user_stream_limits", return_value=True), \
+             patch.object(views, "RedisClient") as redis_cls, \
+             patch.object(
+                 views, "_try_reacquire_idle_pool",
+                 return_value=(descriptor, profile),
+             ) as reacquire_mock, \
+             patch.object(views, "_stream_reused_session", return_value=ok) as reuse_mock:
             redis_cls.get_client.return_value = redis
             channel_cls.objects.get.return_value = MagicMock(id=8)
             response = views.timeshift_proxy(
                 request, "u", "p", "8", "2026-06-08:17-00", "8.ts",
             )
-        self.assertEqual(response.status_code, 301)
-        self.assertIn(f"session_id={existing}", response["Location"])
+        self.assertIs(response, ok)
+        reacquire_mock.assert_called_once()
+        reuse_mock.assert_called_once()
 
-    def test_missing_session_id_redirects_to_busy_pool_on_channel_hop(self):
+    def test_missing_session_id_serves_busy_pool_on_channel_hop_without_redirect(self):
         existing = "channelhop1"
         redis = _FakeRedis()
         _seed_pool_session(
@@ -2228,6 +2238,9 @@ class TimeshiftSessionRedirectTests(TestCase):
             HTTP_USER_AGENT="vlc-test",
             REMOTE_ADDR="127.0.0.1",
         )
+        ok = MagicMock(status_code=200)
+        profile = MagicMock(id=31)
+        descriptor = {"account_id": "1", "stream_id": "111", "profile_id": "31"}
         with patch.object(views, "_authenticate_user", return_value=MagicMock(id=1)), \
              patch.object(views, "network_access_allowed", return_value=True), \
              patch.object(views, "Channel") as channel_cls, \
@@ -2236,14 +2249,21 @@ class TimeshiftSessionRedirectTests(TestCase):
                           return_value=[_make_catchup_stream()]), \
              patch.object(views, "get_programme_duration", return_value=40), \
              patch.object(views, "parse_catchup_timestamp", return_value=True), \
-             patch.object(views, "RedisClient") as redis_cls:
+             patch.object(views, "check_user_stream_limits", return_value=True), \
+             patch.object(views, "RedisClient") as redis_cls, \
+             patch.object(
+                 views, "_try_reacquire_idle_pool",
+                 return_value=(descriptor, profile),
+             ) as reacquire_mock, \
+             patch.object(views, "_stream_reused_session", return_value=ok) as reuse_mock:
             redis_cls.get_client.return_value = redis
             channel_cls.objects.get.return_value = MagicMock(id=8)
             response = views.timeshift_proxy(
                 request, "u", "p", "8", "2026-06-08:17-30", "8.ts",
             )
-        self.assertEqual(response.status_code, 301)
-        self.assertIn(f"session_id={existing}", response["Location"])
+        self.assertIs(response, ok)
+        reacquire_mock.assert_called_once()
+        reuse_mock.assert_called_once()
 
     def test_redirect_preserves_existing_query_params(self):
         request = self.factory.get(
@@ -2692,12 +2712,13 @@ class TimeshiftStatsClientTests(TestCase):
 
         self.assertNotIn(old_gen, self.redis.store)
 
-    def test_register_stats_preserves_position_anchor_on_same_programme(self):
+    def test_register_stats_reanchors_position_on_plain_get_reconnect(self):
         from apps.timeshift.redis_keys import TimeshiftRedisKeys as RedisKeys, TimeshiftRedisKeys
 
         client_key = RedisKeys.client_metadata(self.stats_channel_id, self.client_id)
         self.redis.hset(client_key, "programme_start", "2026-06-08:17-00")
         self.redis.hset(client_key, "position_anchor_at", "1000.0")
+        self.redis.hset(client_key, "playback_base_secs", "900.0")
 
         views._register_stats_client(
             self.redis,
@@ -2713,7 +2734,8 @@ class TimeshiftStatsClientTests(TestCase):
             channel_id=8,
             channel_uuid="00000000-0000-0000-0000-000000000008",
         )
-        self.assertEqual(self.redis.hget(client_key, "position_anchor_at"), "1000.0")
+        self.assertNotEqual(self.redis.hget(client_key, "position_anchor_at"), "1000.0")
+        self.assertIsNone(self.redis.hget(client_key, "playback_base_secs"))
 
     def test_register_stats_byte_range_seek_sets_playback_base(self):
         from apps.timeshift.redis_keys import TimeshiftRedisKeys as RedisKeys, TimeshiftRedisKeys
@@ -3922,6 +3944,45 @@ class TimeshiftScrubPreemptTests(TestCase):
             wait_seconds=views._POOL_SCRUB_WAIT_SECONDS,
         )
 
+    def test_plain_reconnect_preempts_busy_pool_without_range(self):
+        """TiviMate FF reconnects with plain GET; match provider byte-0 restart."""
+        _seed_pool_session(self.redis, session_id=TEST_SESSION_ID)
+        request = self.factory.get(_proxy_url(TEST_SESSION_ID))
+        streams = [_make_catchup_stream(account_id=1, stream_id="111", profile_id=31)]
+        ok = MagicMock(status_code=200)
+        profile = MagicMock(id=31)
+        descriptor = {"account_id": "1", "stream_id": "111", "profile_id": "31"}
+        with patch.object(views, "_authenticate_user", return_value=MagicMock(id=5)), \
+             patch.object(views, "network_access_allowed", return_value=True), \
+             patch.object(views, "Channel") as channel_cls, \
+             patch.object(views, "_user_can_access_channel", return_value=True), \
+             patch.object(views, "get_channel_catchup_streams", return_value=streams), \
+             patch.object(views, "get_programme_duration", return_value=40), \
+             patch.object(views, "check_user_stream_limits", return_value=True), \
+             patch.object(views, "RedisClient") as redis_cls, \
+             patch.object(views, "reserve_profile_slot", return_value=(True, 1, None)), \
+             patch.object(views, "release_profile_slot"), \
+             patch.object(views, "get_transformed_credentials", side_effect=_fake_creds), \
+             patch.object(views, "get_user_active_connections", return_value=[]), \
+             patch.object(
+                 views, "_try_reacquire_idle_pool",
+                 return_value=(descriptor, profile),
+             ) as reacquire_mock, \
+             patch.object(views, "_stream_reused_session", return_value=ok) as reuse_mock, \
+             patch.object(views, "_attempt_timeshift_stream") as attempt_mock:
+            redis_cls.get_client.return_value = self.redis
+            channel_cls.objects.get.return_value = MagicMock(
+                id=8, name="Test", logo_id=None,
+            )
+            response = views.timeshift_proxy(
+                request, "u", "p", "8", "2026-06-08:17-00", "8.ts",
+            )
+        self.assertIs(response, ok)
+        reacquire_mock.assert_called_once()
+        reuse_mock.assert_called_once()
+        self.assertIsNone(reuse_mock.call_args.kwargs["range_header"])
+        attempt_mock.assert_not_called()
+
     def test_busy_pool_reuses_slot_after_scrub_preempt(self):
         _seed_pool_session(self.redis, session_id=TEST_SESSION_ID)
         request = self.factory.get(
@@ -4326,6 +4387,87 @@ class CatchupProxyTests(TestCase):
         serve.assert_called_once()
 
 
+class TimeshiftProviderFaithfulPlainGetTests(_ProxyLoopTestMixin, TestCase):
+    """Contract tests for TiviMate-style plain GET reconnect (no Range header)."""
+
+    def setUp(self):
+        self.redis = _FakeRedis()
+        self.virtual_channel_id = f"{TEST_MEDIA_ID}_111"
+        self.stats_channel_id = views.stats_channel_id(8, TEST_SESSION_ID)
+        self.client_id = TEST_SESSION_ID
+        self.user = MagicMock(id=5, username="viewer")
+
+    @patch.object(views, "_trigger_timeshift_stats_update")
+    @patch.object(views, "_open_upstream")
+    def test_plain_get_does_not_send_range_to_upstream(self, mocked_open, _trigger_mock):
+        ts = _make_ts_payload(188 * 7)
+        mocked_open.return_value = _fake_upstream(200, body=ts)
+
+        views._stream_from_provider(
+            candidate_urls=["http://example.test/timeshift.ts"],
+            user_agent="provider-agent",
+            range_header=None,
+            virtual_channel_id=self.virtual_channel_id,
+            stats_channel_id=self.stats_channel_id,
+            client_id=self.client_id,
+            client_ip="1.2.3.4",
+            client_user_agent="tivimate",
+            user=self.user,
+            channel_display_name="A&E",
+            timestamp_utc="2026-06-08:17-00",
+            channel_logo_id=None,
+            m3u_profile_id=31,
+            debug=False,
+            account_id=None,
+            redis_client=self.redis,
+            pool_session_id=self.client_id,
+            channel_id=8,
+            channel_uuid="00000000-0000-0000-0000-000000000008",
+            duration_minutes=40,
+        )
+
+        mocked_open.assert_called_once()
+        self.assertIsNone(mocked_open.call_args.args[2])
+
+    @patch.object(views, "_trigger_timeshift_stats_update")
+    @patch.object(views, "_open_upstream")
+    def test_plain_get_passes_through_provider_200_without_content_range(
+        self, mocked_open, _trigger_mock,
+    ):
+        ts = _make_ts_payload(188 * 7)
+        upstream = _fake_upstream(200, body=ts)
+        upstream.headers["Content-Length"] = str(len(ts))
+        mocked_open.return_value = upstream
+
+        response = views._stream_from_provider(
+            candidate_urls=["http://example.test/timeshift.ts"],
+            user_agent="provider-agent",
+            range_header=None,
+            virtual_channel_id=self.virtual_channel_id,
+            stats_channel_id=self.stats_channel_id,
+            client_id=self.client_id,
+            client_ip="1.2.3.4",
+            client_user_agent="tivimate",
+            user=self.user,
+            channel_display_name="A&E",
+            timestamp_utc="2026-06-08:17-00",
+            channel_logo_id=None,
+            m3u_profile_id=31,
+            debug=False,
+            account_id=None,
+            redis_client=self.redis,
+            pool_session_id=self.client_id,
+            channel_id=8,
+            channel_uuid="00000000-0000-0000-0000-000000000008",
+            duration_minutes=40,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("Content-Range", response)
+        self.assertEqual(response["Accept-Ranges"], "bytes")
+        self.assertEqual(response["Content-Length"], str(len(ts)))
+
+
 class TimeshiftDownstreamLengthHeaderTests(TestCase):
     def test_open_ended_range_passthrough_upstream_headers(self):
         headers = views._build_downstream_length_headers(
@@ -4372,7 +4514,7 @@ class TimeshiftDownstreamLengthHeaderTests(TestCase):
         self.assertEqual(headers["Content-Length"], "10000")
         self.assertNotIn("Content-Range", headers)
 
-    def test_streaming_full_file_omits_content_length(self):
+    def test_streaming_plain_get_includes_content_length(self):
         headers = views._build_downstream_length_headers(
             range_header=None,
             status_code=200,
@@ -4381,8 +4523,9 @@ class TimeshiftDownstreamLengthHeaderTests(TestCase):
             upstream_content_length="10000",
             streaming=True,
         )
-        self.assertNotIn("Content-Length", headers)
+        self.assertEqual(headers["Content-Length"], "10000")
         self.assertEqual(headers["Accept-Ranges"], "bytes")
+        self.assertNotIn("Content-Range", headers)
 
     def test_passthrough_includes_accept_ranges(self):
         response = views._passthrough_response(416, "bytes */10000")

@@ -103,6 +103,12 @@ def timeshift_proxy(request, username, password, stream_id, timestamp, duration)
         ``duration``: Dispatcharr ``Channel.id`` (XC API exposes channel.id as stream_id).
         ``timestamp``: UTC programme start (``YYYY-MM-DD:HH-MM`` or XC colon form
             ``YYYY-MM-DD:HH:MM:SS``).
+
+    Session handling (``?session_id=``):
+        First request with no ``session_id`` and no matching pool entry → ``301`` with a
+        minted ``session_id``. Reconnects that omit ``session_id`` but fingerprint-match
+        an in-flight or idle pool entry for the same viewer are served immediately
+        (no redirect). Reuse ``session_id`` for all range/seek requests in a programme.
     """
     raw_id = duration[:-3] if duration.endswith(".ts") else duration
 
@@ -137,8 +143,15 @@ def timeshift_proxy(request, username, password, stream_id, timestamp, duration)
         "time) plus ``Authorization: Bearer``, ``X-API-Key``, or "
         "``?token=<jwt>``. Optionally include a client ``session_id`` for "
         "provider pooling.\n\n"
-        "If ``session_id`` is omitted on a direct-auth request, the server "
-        "responds with **301** adding a server-minted ``session_id``."
+        "**``session_id`` without a matching pool:** the server responds with "
+        "**301** and a minted ``session_id`` (direct-auth / first play only).\n\n"
+        "**``session_id`` omitted but pool match:** when the same viewer "
+        "reconnects (e.g. IPTV fast-forward) and fingerprint-matches an "
+        "existing pool entry, the stream is served on that request with no "
+        "redirect round trip.\n\n"
+        "**Plain GET (no ``Range``):** upstream archive is streamed from byte "
+        "0 with ``Content-Length`` when the provider reports file size "
+        "(provider-faithful behaviour for clients such as TiviMate)."
     ),
     parameters=[
         OpenApiParameter(
@@ -147,10 +160,11 @@ def timeshift_proxy(request, username, password, stream_id, timestamp, duration)
             location=OpenApiParameter.QUERY,
             required=False,
             description=(
-                "Playback session from ``POST /api/catchup/sessions/``. "
-                "When present, JWT is optional. The session authenticates "
-                "the player. Reuse for all range/seek requests during the "
-                "same programme."
+                "Playback session from ``POST /api/catchup/sessions/`` or a "
+                "prior **301** redirect. When present, JWT is optional. Reuse "
+                "for all range/seek requests during the same programme. "
+                "May be omitted on reconnect when the server adopts a "
+                "fingerprint-matched pool entry."
             ),
         ),
         OpenApiParameter(
@@ -176,11 +190,18 @@ def timeshift_proxy(request, username, password, stream_id, timestamp, duration)
         ),
     ],
     responses={
-        200: {"description": "MPEG-TS stream (may be partial content for Range requests)."},
+        200: {
+            "description": (
+                "MPEG-TS stream. Partial content (``206``) when the client "
+                "sent ``Range``. Full-file ``200`` on plain GET includes "
+                "``Content-Length`` when the upstream archive size is known."
+            ),
+        },
         301: {
             "description": (
                 "Redirect to the same URL with a server-minted ``session_id`` "
-                "when the client did not supply one (direct-auth flow only)."
+                "when the client did not supply one and no fingerprint-matched "
+                "pool entry exists (first play / direct-auth only)."
             ),
         },
         401: {"description": "Missing or expired authentication / session."},
@@ -278,15 +299,15 @@ def _serve_catchup(request, user, channel, timestamp):
             include_busy=True,
         )
         if matched:
-            logger.debug(
-                "Timeshift session redirect: reusing %s for %s",
-                matched, request.path,
-            )
-            return _finalize_timeshift_response(
-                _redirect_with_session(request, matched),
-            )
-        logger.debug("Timeshift session redirect: %s (new session)", request.path)
-        return _finalize_timeshift_response(_redirect_with_new_session(request))
+            if debug:
+                logger.debug(
+                    "Timeshift session adopt: reusing %s for %s",
+                    matched, request.path,
+                )
+            session_id = matched
+        else:
+            logger.debug("Timeshift session redirect: %s (new session)", request.path)
+            return _finalize_timeshift_response(_redirect_with_new_session(request))
 
     session_entry = _get_pool_entry(redis_client, session_id)
     if session_entry and not _pool_entry_owned_by_user(session_entry, user.id):
@@ -386,6 +407,17 @@ def _serve_catchup(request, user, channel, timestamp):
             )
         elif _should_preempt_for_programme_change(
             redis_client, effective_session_id, pool_media_id, media_id,
+        ):
+            acquired = _try_reacquire_idle_pool(
+                redis_client, effective_session_id,
+                user_id=user.id, user=user,
+            )
+        elif _should_preempt_plain_reconnect(
+            range_header,
+            pool_exists=pool_exists,
+            pool_busy=pool_busy,
+            pool_media_id=pool_media_id,
+            media_id=media_id,
         ):
             acquired = _try_reacquire_idle_pool(
                 redis_client, effective_session_id,
@@ -634,7 +666,8 @@ def _user_can_access_channel(user, channel):
     )
 
 
-# Per-client pool (session_id from 301 redirect). Fingerprint-match when ?session_id= is dropped.
+# Per-client pool (session_id from 301 redirect or inline adopt when ?session_id=
+# is dropped on reconnect). Fingerprint-match when ?session_id= is absent.
 _POOL_ENTRY_TTL = 10 * 60  # Refreshed on playback GET and active-stream heartbeats.
 _STREAM_READ_INACTIVITY_SECONDS = CLIENT_TTL_SECONDS  # Shorter than pool TTL; data should flow.
 _POOL_IDLE_TTL = CLIENT_TTL_SECONDS  # Must match CLIENT_TTL_SECONDS (stats + fingerprint agree).
@@ -1102,7 +1135,16 @@ def _build_downstream_length_headers(
             headers["Content-Length"] = str(up_end - up_start + 1)
         return headers
 
-    # Omit Content-Length on streaming full-file responses (seeks may preempt).
+    # Plain GET streaming 200: match provider/CDN Content-Length (TiviMate uses
+    # it for archive duration; omitting it breaks FF reconnect playback).
+    if streaming and status_code == 200 and not range_header:
+        if representation_length is not None:
+            headers["Content-Length"] = str(representation_length)
+        elif upstream_content_length:
+            headers["Content-Length"] = str(upstream_content_length)
+        return headers
+
+    # Omit Content-Length on other streaming full-file responses (seeks may preempt).
     if not streaming:
         if representation_length is not None:
             headers["Content-Length"] = str(representation_length)
@@ -1175,6 +1217,24 @@ def _try_reacquire_idle_pool(
         redis_client, session_id, user_id=user_id, wait_seconds=wait_seconds,
         handoff=True,
     )
+
+
+def _should_preempt_plain_reconnect(
+    range_header, *, pool_exists, pool_busy, pool_media_id, media_id,
+):
+    """True when a plain GET should restart playback like the provider does.
+
+    TiviMate fast-forward closes the HTTP connection and reopens the same
+    programme URL without a Range header. Providers answer that with a full
+    200 from byte 0, not an internal byte-range resume.
+    """
+    if range_header:
+        return False
+    if not pool_exists or not pool_busy:
+        return False
+    if pool_media_id is not None and str(pool_media_id) != str(media_id):
+        return False
+    return True
 
 
 def _should_displace_busy_playback(

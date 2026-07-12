@@ -130,7 +130,7 @@ class ByteRangePlaybackTests(TestCase):
         self.assertAlmostEqual(base, 2371.0, delta=2.0)
         self.assertEqual(anchor, "2000.0")
 
-    def test_resolve_same_programme_preserves_without_range(self):
+    def test_resolve_plain_get_reanchors_on_same_programme(self):
         base, anchor = resolve_stats_playback_fields(
             timestamp_utc="2026-06-08:17-00",
             existing_programme_start="2026-06-08:17-00",
@@ -141,8 +141,8 @@ class ByteRangePlaybackTests(TestCase):
             programme_duration_secs=3900,
             now="2000.0",
         )
-        self.assertAlmostEqual(base, 900.0)
-        self.assertEqual(anchor, "1000.0")
+        self.assertIsNone(base)
+        self.assertEqual(anchor, "2000.0")
 
 
 class TimeshiftStreamStatsTests(TestCase):
