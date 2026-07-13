@@ -6,6 +6,7 @@ Supports M3U profiles for authentication and URL transformation.
 import time
 import random
 import logging
+import json
 import requests
 from urllib.parse import urlencode
 from django.db import close_old_connections
@@ -77,11 +78,15 @@ def _find_idle_vod_session(
     omitted session_id can resume an existing proxy pool instead of starting
     a new provider hop.
     """
-    content_obj, _relation, _candidates = _get_content_and_relation(
+    content_obj, relation, _candidates = _get_content_and_relation(
         content_type, content_id, preferred_m3u_account_id, preferred_stream_id
     )
-    if not content_obj:
+    if not content_obj or not relation:
         return None
+
+    source_metadata = _build_vod_source_metadata(
+        content_type, content_obj, relation
+    )
 
     try:
         manager = MultiWorkerVODConnectionManager.get_instance()
@@ -93,6 +98,7 @@ def _find_idle_vod_session(
             utc_start=utc_start,
             utc_end=utc_end,
             offset=offset,
+            source_key=source_metadata["source_key"],
         )
     except Exception as e:
         logger.warning("[VOD-SESSION] Idle session match failed: %s", e)
@@ -219,6 +225,7 @@ def _select_vod_stream(
         )
         return {
             "content_obj": content_obj,
+            "relation": cand,
             "m3u_account": cand_account,
             "m3u_profile": m3u_profile,
             "current_connections": current_connections,
@@ -226,6 +233,55 @@ def _select_vod_stream(
         }
 
     return None
+def _build_vod_source_metadata(content_type, content_obj, relation):
+    """Describe the exact upstream relation selected for a VOD session."""
+    category = None
+    episode_name = getattr(content_obj, "name", "Unknown")
+    description = getattr(content_obj, "description", None)
+    duration_secs = getattr(content_obj, "duration_secs", None)
+
+    if content_type in ("episode", "series"):
+        series_relation = getattr(relation, "series_relation", None)
+        if series_relation:
+            category = getattr(series_relation, "category", None)
+
+        relation_props = getattr(relation, "custom_properties", None) or {}
+        provider_episode = relation_props.get("info") or {}
+        if not isinstance(provider_episode, dict):
+            provider_episode = {}
+        provider_info = provider_episode.get("info") or {}
+        if not isinstance(provider_info, dict):
+            provider_info = {}
+
+        episode_name = (
+            provider_episode.get("title")
+            or provider_info.get("name")
+            or episode_name
+        )
+        description = (
+            provider_info.get("plot")
+            or provider_info.get("overview")
+            or description
+        )
+        duration_secs = provider_info.get("duration_secs") or duration_secs
+    else:
+        category = getattr(relation, "category", None)
+
+    account = relation.m3u_account
+    relation_type = "episode" if content_type in ("episode", "series") else "movie"
+
+    return {
+        "source_key": f"{relation_type}:{relation.id}",
+        "relation_id": relation.id,
+        "stream_id": getattr(relation, "stream_id", None),
+        "m3u_account_id": account.id,
+        "m3u_account_name": account.name,
+        "category_id": getattr(category, "id", None),
+        "category_name": getattr(category, "name", None),
+        "episode_name": episode_name if relation_type == "episode" else None,
+        "description": description,
+        "duration_secs": duration_secs,
+    }
 
 
 def _get_content_and_relation(content_type, content_id, preferred_m3u_account_id=None, preferred_stream_id=None):
@@ -853,6 +909,7 @@ def stream_vod(
             return HttpResponse("No available stream", status=503)
 
         content_obj = selected["content_obj"]
+        relation = selected["relation"]
         m3u_account = selected["m3u_account"]
         m3u_profile = selected["m3u_profile"]
         current_connections = selected["current_connections"]
@@ -868,6 +925,9 @@ def stream_vod(
 
         # Get connection manager (Redis-backed for multi-worker support)
         connection_manager = MultiWorkerVODConnectionManager.get_instance()
+        source_metadata = _build_vod_source_metadata(
+            content_type, content_obj, relation
+        )
 
         # Release ORM checkout before returning a long-lived StreamingHttpResponse.
         close_old_connections()
@@ -887,6 +947,7 @@ def stream_vod(
             offset=offset,
             range_header=range_header,
             user=user,
+            source_metadata=source_metadata,
         )
 
         logger.info(f"[VOD-SUCCESS] Stream response created successfully, type: {type(response)}")
@@ -1126,13 +1187,32 @@ def build_vod_stats_data(redis_client):
                     connection_data = redis_client.hgetall(key)
 
                     if connection_data:
+                        key_text = (
+                            key.decode() if isinstance(key, bytes) else key
+                        )
                         # Extract session ID from key
-                        session_id = key.replace('vod_persistent_connection:', '')
+                        session_id = key_text.replace(
+                            'vod_persistent_connection:', ''
+                        )
 
                         # Decode Redis hash data
-                        combined_data = {}
-                        for k, v in connection_data.items():
-                            combined_data[k] = v
+                        combined_data = {
+                            k.decode() if isinstance(k, bytes) else k:
+                            v.decode() if isinstance(v, bytes) else v
+                            for k, v in connection_data.items()
+                        }
+
+                        raw_source_metadata = combined_data.get(
+                            'source_metadata', '{}'
+                        )
+                        try:
+                            source_metadata = (
+                                json.loads(raw_source_metadata)
+                                if isinstance(raw_source_metadata, str)
+                                else (raw_source_metadata or {})
+                            )
+                        except (TypeError, ValueError):
+                            source_metadata = {}
 
                         # Get content info from the connection data (using correct field names)
                         content_type = combined_data.get('content_obj_type', 'unknown')
@@ -1175,15 +1255,23 @@ def build_vod_stats_data(redis_client):
                                     'description': content_obj.description,
                                     'logo_url': content_obj.logo.url if content_obj.logo else None,
                                     'tmdb_id': content_obj.tmdb_id,
-                                    'imdb_id': content_obj.imdb_id
+                                    'imdb_id': content_obj.imdb_id,
+                                    'm3u_account_name': source_metadata.get('m3u_account_name'),
+                                    'category_name': source_metadata.get('category_name'),
+                                    'stream_id': source_metadata.get('stream_id'),
+                                    'relation_id': source_metadata.get('relation_id'),
                                 }
                             elif content_type == 'episode':
                                 content_obj = Episode.objects.select_related('series', 'series__logo').get(uuid=content_uuid)
-                                content_name = f"{content_obj.series.name} - {content_obj.name}"
+                                episode_name = (
+                                    source_metadata.get('episode_name')
+                                    or content_obj.name
+                                )
+                                content_name = f"{content_obj.series.name} - {episode_name}"
 
                                 # Get duration from content object
-                                duration_secs = None
-                                if hasattr(content_obj, 'duration_secs') and content_obj.duration_secs:
+                                duration_secs = source_metadata.get('duration_secs')
+                                if not duration_secs and hasattr(content_obj, 'duration_secs') and content_obj.duration_secs:
                                     duration_secs = content_obj.duration_secs
 
                                 # If we don't have duration_secs, estimate for episodes
@@ -1193,18 +1281,22 @@ def build_vod_stats_data(redis_client):
 
                                 content_metadata = {
                                     'series_name': content_obj.series.name,
-                                    'episode_name': content_obj.name,
+                                    'episode_name': episode_name,
                                     'season_number': content_obj.season_number,
                                     'episode_number': content_obj.episode_number,
                                     'air_date': content_obj.air_date.isoformat() if content_obj.air_date else None,
                                     'rating': content_obj.rating,
                                     'duration_secs': duration_secs,
-                                    'description': content_obj.description,
+                                    'description': source_metadata.get('description') or content_obj.description,
                                     'logo_url': content_obj.series.logo.url if content_obj.series.logo else None,
                                     'series_year': content_obj.series.year,
                                     'series_genre': content_obj.series.genre,
                                     'tmdb_id': content_obj.tmdb_id,
-                                    'imdb_id': content_obj.imdb_id
+                                    'imdb_id': content_obj.imdb_id,
+                                    'm3u_account_name': source_metadata.get('m3u_account_name'),
+                                    'category_name': source_metadata.get('category_name'),
+                                    'stream_id': source_metadata.get('stream_id'),
+                                    'relation_id': source_metadata.get('relation_id'),
                                 }
                         except:
                             pass
@@ -1296,7 +1388,8 @@ def build_vod_stats_data(redis_client):
                             'last_seek_byte': int(combined_data.get('last_seek_byte', 0)),
                             'last_seek_percentage': float(combined_data.get('last_seek_percentage', 0.0)),
                             'total_content_size': int(combined_data.get('total_content_size', 0)),
-                            'last_seek_timestamp': float(combined_data.get('last_seek_timestamp', 0.0))
+                            'last_seek_timestamp': float(combined_data.get('last_seek_timestamp', 0.0)),
+                            'source_metadata': source_metadata,
                         }
 
                         # Calculate connection duration
@@ -1341,7 +1434,10 @@ def build_vod_stats_data(redis_client):
         # Group connections by content
         content_stats = {}
         for conn in connections:
-            content_key = f"{conn['content_type']}:{conn['content_uuid']}"
+            source_key = conn.get('source_metadata', {}).get('source_key', '')
+            content_key = (
+                f"{conn['content_type']}:{conn['content_uuid']}:{source_key}"
+            )
             if content_key not in content_stats:
                 content_stats[content_key] = {
                     'content_type': conn['content_type'],

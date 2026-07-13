@@ -204,6 +204,17 @@ const VodConnectionCard = ({ vodContent, stopVODClient }) => {
   const connection =
     vodContent.individual_connection ||
     (vodContent.connections && vodContent.connections[0]);
+  const sourceMetadata = connection?.source_metadata || {};
+  const sourceAccountName =
+    metadata.m3u_account_name ||
+    sourceMetadata.m3u_account_name ||
+    connection?.m3u_profile?.account_name;
+  const sourceCategoryName =
+    metadata.category_name || sourceMetadata.category_name;
+  const sourceStreamId = metadata.stream_id || sourceMetadata.stream_id;
+  const sourceLabel = [sourceAccountName, sourceCategoryName]
+    .filter(Boolean)
+    .join(' — ');
 
   // Get poster/logo URL
   const posterUrl = metadata.logo_url || logo;
@@ -329,25 +340,36 @@ const VodConnectionCard = ({ vodContent, stopVODClient }) => {
           </Tooltip>
         </Flex>
 
-        {/* Display M3U profile information - matching channel card style */}
+        {/* Display the exact upstream VOD source and connection profile */}
         {connection &&
-          connection.m3u_profile &&
-          (connection.m3u_profile.profile_name ||
-            connection.m3u_profile.account_name) && (
+          (sourceLabel ||
+            sourceStreamId ||
+            connection.m3u_profile?.profile_name) && (
             <Flex justify="flex-end" align="flex-start" mt={-8}>
               <Group gap={5} align="flex-start">
                 <HardDriveUpload size="18" mt={2} />
                 <Stack gap={0}>
-                  <Tooltip label="M3U Account">
-                    <Text size="xs" fw={500}>
-                      {connection.m3u_profile.account_name || 'Unknown Account'}
-                    </Text>
-                  </Tooltip>
-                  <Tooltip label="M3U Profile">
-                    <Text size="xs" c="dimmed">
-                      {connection.m3u_profile.profile_name || 'Default Profile'}
-                    </Text>
-                  </Tooltip>
+                  {sourceLabel && (
+                    <Tooltip label="M3U Account — VOD Category">
+                      <Text size="xs" fw={500}>
+                        {sourceLabel}
+                      </Text>
+                    </Tooltip>
+                  )}
+                  {connection.m3u_profile?.profile_name && (
+                    <Tooltip label="M3U Profile">
+                      <Text size="xs" c="dimmed">
+                        {connection.m3u_profile.profile_name}
+                      </Text>
+                    </Tooltip>
+                  )}
+                  {sourceStreamId && (
+                    <Tooltip label="Upstream Stream ID">
+                      <Text size="xs" c="dimmed">
+                        Stream ID: {sourceStreamId}
+                      </Text>
+                    </Tooltip>
+                  )}
                 </Stack>
               </Group>
             </Flex>

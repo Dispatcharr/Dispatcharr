@@ -28,12 +28,22 @@ class StreamVodDbCleanupTests(SimpleTestCase):
     ):
         movie = MagicMock()
         movie.name = "Test Movie"
+        movie.description = "Movie description"
+        movie.duration_secs = 7200
+        relation = MagicMock()
+        relation.id = 17
+        relation.stream_id = "movie-stream-17"
+        relation.category.id = 3
+        relation.category.name = "KIDS MOVIES"
+        relation.m3u_account.id = 9
+        relation.m3u_account.name = "Provider"
         profile = MagicMock()
         profile.id = 1
         profile.max_streams = 5
         mock_select.return_value = {
             "content_obj": movie,
-            "m3u_account": MagicMock(name="Provider"),
+            "relation": relation,
+            "m3u_account": relation.m3u_account,
             "m3u_profile": profile,
             "current_connections": 0,
             "final_stream_url": "http://example.com/movie.mp4",
@@ -54,16 +64,24 @@ class StreamVodDbCleanupTests(SimpleTestCase):
 
         from apps.proxy.vod_proxy.views import stream_vod
 
-        response = stream_vod(
-            request,
-            content_type="movie",
-            content_id="uuid",
-            session_id="session123",
-        )
+        with patch("core.utils.RedisClient.get_client", return_value=None):
+            response = stream_vod(
+                request,
+                content_type="movie",
+                content_id="uuid",
+                session_id="session123",
+            )
 
         self.assertIsInstance(response, StreamingHttpResponse)
         mock_close.assert_called_once()
         mock_manager.stream_content_with_session.assert_called_once()
+        source_metadata = mock_manager.stream_content_with_session.call_args.kwargs[
+            "source_metadata"
+        ]
+        self.assertEqual(source_metadata["source_key"], "movie:17")
+        self.assertEqual(source_metadata["stream_id"], "movie-stream-17")
+        self.assertEqual(source_metadata["m3u_account_name"], "Provider")
+        self.assertEqual(source_metadata["category_name"], "KIDS MOVIES")
 
 
 class BuildVodStatsDbCleanupTests(SimpleTestCase):

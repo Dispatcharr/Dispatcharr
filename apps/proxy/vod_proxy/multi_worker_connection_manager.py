@@ -157,7 +157,8 @@ class SerializableConnectionState:
                  content_name: str = None, client_ip: str = None,
                  client_user_agent: str = None, utc_start: str = None,
                  utc_end: str = None, offset: str = None,
-                 worker_id: str = None, connection_type: str = "redis_backed", user_id: str = "unknown"):
+                 worker_id: str = None, connection_type: str = "redis_backed",
+                 user_id: str = "unknown", source_metadata: dict = None):
         self.session_id = session_id
         self.stream_url = stream_url
         self.headers = headers
@@ -181,6 +182,7 @@ class SerializableConnectionState:
         self.offset = offset or ""
         self.worker_id = worker_id
         self.connection_type = connection_type
+        self.source_metadata = source_metadata or {}
         self.created_at = time.time()
 
         # Additional tracking fields
@@ -217,6 +219,9 @@ class SerializableConnectionState:
             'offset': self.offset or '',
             'worker_id': self.worker_id or '',
             'connection_type': self.connection_type or 'redis_backed',
+            'source_metadata': json.dumps(
+                getattr(self, 'source_metadata', {}) or {}
+            ),
             'created_at': str(self.created_at),
             # Additional tracking fields
             'bytes_sent': str(self.bytes_sent),
@@ -251,7 +256,10 @@ class SerializableConnectionState:
             offset=data.get('offset') or '',
             worker_id=data.get('worker_id') or None,
             connection_type=data.get('connection_type', 'redis_backed'),
-            user_id=data.get('user_id', 'unknown')
+            user_id=data.get('user_id', 'unknown'),
+            source_metadata=cls._deserialize_source_metadata(
+                data.get('source_metadata')
+            ),
         )
         obj.last_activity = float(data.get('last_activity', time.time()))
         obj.request_count = int(data.get('request_count', 0))
@@ -266,6 +274,19 @@ class SerializableConnectionState:
         obj.total_content_size = int(data.get('total_content_size', 0))
         obj.last_seek_timestamp = float(data.get('last_seek_timestamp', 0.0))
         return obj
+
+    @staticmethod
+    def _deserialize_source_metadata(value):
+        """Read relation metadata while tolerating old or malformed sessions."""
+        if isinstance(value, dict):
+            return value
+        if not value:
+            return {}
+        try:
+            decoded = json.loads(value)
+        except (TypeError, ValueError):
+            return {}
+        return decoded if isinstance(decoded, dict) else {}
 
 
 class RedisBackedVODConnection:
@@ -402,7 +423,8 @@ class RedisBackedVODConnection:
                          content_name: str = None, client_ip: str = None,
                          client_user_agent: str = None, utc_start: str = None,
                          utc_end: str = None, offset: str = None,
-                         worker_id: str = None, user=None) -> bool:
+                         worker_id: str = None, user=None,
+                         source_metadata: dict = None) -> bool:
         """Create a new connection state in Redis with consolidated session metadata"""
         if not self._acquire_lock():
             logger.warning(f"[{self.session_id}] Could not acquire lock for connection creation")
@@ -431,7 +453,8 @@ class RedisBackedVODConnection:
                 utc_end=utc_end,
                 offset=offset,
                 worker_id=worker_id,
-                user_id=user.id if user else "unknown"
+                user_id=user.id if user else "unknown",
+                source_metadata=source_metadata,
             )
             # Seed active_streams=0 once; later mutations are Lua HINCRBY only.
             success = self._save_connection_state(state, include_active_streams=True)
@@ -733,6 +756,7 @@ class RedisBackedVODConnection:
                 'offset': state.offset,
                 'worker_id': state.worker_id,
                 'connection_type': state.connection_type,
+                'source_metadata': getattr(state, 'source_metadata', {}),
                 'created_at': state.created_at,
                 'last_activity': state.last_activity,
                 'm3u_profile_id': state.m3u_profile_id,
@@ -951,13 +975,19 @@ class MultiWorkerVODConnectionManager:
 
     def stream_content_with_session(self, session_id, content_obj, stream_url, m3u_profile,
                                   client_ip, client_user_agent, request,
-                                  utc_start=None, utc_end=None, offset=None, range_header=None, user=None):
+                                  utc_start=None, utc_end=None, offset=None,
+                                  range_header=None, user=None,
+                                  source_metadata=None):
         """Stream content with Redis-backed persistent connection"""
 
         # Generate client ID
         content_type = "movie" if isinstance(content_obj, Movie) else "episode"
         content_uuid = str(content_obj.uuid)
-        content_name = content_obj.name if hasattr(content_obj, 'name') else str(content_obj)
+        source_metadata = source_metadata or {}
+        content_name = (
+            source_metadata.get('episode_name')
+            or (content_obj.name if hasattr(content_obj, 'name') else str(content_obj))
+        )
         client_id = session_id
 
         # Track whether we incremented profile connections (for cleanup on error)
@@ -976,7 +1006,8 @@ class MultiWorkerVODConnectionManager:
                 client_user_agent=client_user_agent,
                 utc_start=utc_start,
                 utc_end=utc_end,
-                offset=offset
+                offset=offset,
+                source_key=source_metadata.get('source_key'),
             )
 
             # Use matching session if found, otherwise use the provided session_id
@@ -1043,7 +1074,8 @@ class MultiWorkerVODConnectionManager:
                     utc_end=utc_end,
                     offset=str(offset) if offset else None,
                     worker_id=self.worker_id,
-                    user=user
+                    user=user,
+                    source_metadata=source_metadata,
                 ):
                     logger.error(f"[{client_id}] Worker {self.worker_id} - Failed to create Redis connection")
                     # Roll back the profile slot reservation since connection failed
@@ -1657,7 +1689,8 @@ class MultiWorkerVODConnectionManager:
 
     def find_matching_idle_session(self, content_type: str, content_uuid: str,
                                  client_ip: str, client_user_agent: str,
-                                 utc_start=None, utc_end=None, offset=None) -> Optional[str]:
+                                 utc_start=None, utc_end=None, offset=None,
+                                 source_key=None) -> Optional[str]:
         """Find existing Redis-backed session that matches criteria using consolidated connection state"""
         if not self.redis_client:
             return None
@@ -1678,8 +1711,12 @@ class MultiWorkerVODConnectionManager:
                             continue
 
                         # Convert bytes keys/values to strings if needed
-                        if isinstance(list(connection_data.keys())[0], bytes):
-                            connection_data = {k: v for k, v in connection_data.items()}
+                        if isinstance(next(iter(connection_data)), bytes):
+                            connection_data = {
+                                k.decode() if isinstance(k, bytes) else k:
+                                v.decode() if isinstance(v, bytes) else v
+                                for k, v in connection_data.items()
+                            }
 
                         # Check if content matches (using consolidated data)
                         stored_content_type = connection_data.get('content_obj_type', '')
@@ -1688,8 +1725,26 @@ class MultiWorkerVODConnectionManager:
                         if stored_content_type != content_type or stored_content_uuid != content_uuid:
                             continue
 
+                        # The same canonical episode can have several upstream
+                        # category relations. Reuse is safe only for the exact
+                        # selected source.
+                        if source_key:
+                            try:
+                                stored_source = json.loads(
+                                    connection_data.get('source_metadata') or '{}'
+                                )
+                            except (TypeError, ValueError):
+                                stored_source = {}
+                            if stored_source.get('source_key') != source_key:
+                                continue
+
                         # Extract session ID
-                        session_id = key.replace('vod_persistent_connection:', '')
+                        key_text = (
+                            key.decode() if isinstance(key, bytes) else key
+                        )
+                        session_id = key_text.replace(
+                            'vod_persistent_connection:', ''
+                        )
 
                         # Check if Redis-backed connection exists and has no active streams
                         redis_connection = RedisBackedVODConnection(session_id, self.redis_client)

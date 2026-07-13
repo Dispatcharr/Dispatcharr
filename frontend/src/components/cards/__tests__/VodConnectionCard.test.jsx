@@ -608,6 +608,25 @@ describe('VodConnectionCard', () => {
       );
       expect(screen.queryByText('Main M3U')).not.toBeInTheDocument();
     });
+
+    it('renders the exact VOD account, category, and stream ID', () => {
+      const vodContent = makeEpisodeContent({
+        content_metadata: {
+          ...makeEpisodeContent().content_metadata,
+          m3u_account_name: 'tivione-z2u',
+          category_name: 'NICKELODEON',
+          stream_id: '686164',
+        },
+      });
+
+      render(
+        <VodConnectionCard vodContent={vodContent} stopVODClient={vi.fn()} />
+      );
+
+      expect(screen.getByText('tivione-z2u — NICKELODEON')).toBeInTheDocument();
+      expect(screen.getByText('Main M3U')).toBeInTheDocument();
+      expect(screen.getByText('Stream ID: 686164')).toBeInTheDocument();
+    });
   });
 
   // ── Stop client ────────────────────────────────────────────────────────────
