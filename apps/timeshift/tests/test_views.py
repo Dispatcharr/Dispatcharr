@@ -2233,6 +2233,12 @@ class TimeshiftSessionRedirectTests(TestCase):
             client_user_agent="vlc-test",
             busy="1",
         )
+        # Programme-change preempt ignores hops within the startup window.
+        redis.hset(
+            views._pool_key(existing),
+            "last_activity",
+            str(time.time() - 10.0),
+        )
         request = self.factory.get(
             "/timeshift/u/p/8/2026-06-08:17-30/8.ts",
             HTTP_USER_AGENT="vlc-test",
