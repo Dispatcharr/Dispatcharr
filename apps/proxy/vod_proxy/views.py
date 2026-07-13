@@ -233,17 +233,52 @@ def _select_vod_stream(
         }
 
     return None
+
+
+def _get_series_display_name(series, series_relation=None):
+    """Return the clean metadata title while preserving the provider title."""
+    metadata_sources = [getattr(series, "custom_properties", None)]
+    relation_properties = (
+        getattr(series_relation, "custom_properties", None) or {}
+    )
+    if isinstance(relation_properties, dict):
+        metadata_sources.extend([
+            relation_properties.get("detailed_info"),
+            relation_properties.get("basic_data"),
+        ])
+
+    for metadata in metadata_sources:
+        if not isinstance(metadata, dict):
+            continue
+        for field in ("original_name", "o_name"):
+            value = metadata.get(field)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+            if isinstance(value, (list, tuple)):
+                for item in value:
+                    if isinstance(item, str) and item.strip():
+                        return item.strip()
+
+    return series.name
+
+
 def _build_vod_source_metadata(content_type, content_obj, relation):
     """Describe the exact upstream relation selected for a VOD session."""
     category = None
     episode_name = getattr(content_obj, "name", "Unknown")
     description = getattr(content_obj, "description", None)
     duration_secs = getattr(content_obj, "duration_secs", None)
+    series_display_name = None
 
     if content_type in ("episode", "series"):
         series_relation = getattr(relation, "series_relation", None)
         if series_relation:
             category = getattr(series_relation, "category", None)
+        series = getattr(content_obj, "series", None)
+        if series:
+            series_display_name = _get_series_display_name(
+                series, series_relation
+            )
 
         relation_props = getattr(relation, "custom_properties", None) or {}
         provider_episode = relation_props.get("info") or {}
@@ -279,6 +314,7 @@ def _build_vod_source_metadata(content_type, content_obj, relation):
         "category_id": getattr(category, "id", None),
         "category_name": getattr(category, "name", None),
         "episode_name": episode_name if relation_type == "episode" else None,
+        "series_display_name": series_display_name,
         "description": description,
         "duration_secs": duration_secs,
     }
@@ -1267,7 +1303,14 @@ def build_vod_stats_data(redis_client):
                                     source_metadata.get('episode_name')
                                     or content_obj.name
                                 )
-                                content_name = f"{content_obj.series.name} - {episode_name}"
+                                series_display_name = _get_series_display_name(
+                                    content_obj.series
+                                )
+                                series_display_name = (
+                                    source_metadata.get('series_display_name')
+                                    or series_display_name
+                                )
+                                content_name = f"{series_display_name} - {episode_name}"
 
                                 # Get duration from content object
                                 duration_secs = source_metadata.get('duration_secs')
@@ -1281,6 +1324,7 @@ def build_vod_stats_data(redis_client):
 
                                 content_metadata = {
                                     'series_name': content_obj.series.name,
+                                    'series_display_name': series_display_name,
                                     'episode_name': episode_name,
                                     'season_number': content_obj.season_number,
                                     'episode_number': content_obj.episode_number,

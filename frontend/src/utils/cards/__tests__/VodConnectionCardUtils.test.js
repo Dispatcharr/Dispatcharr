@@ -22,6 +22,17 @@ describe('VodConnectionCardUtils', () => {
   });
 
   describe('getEpisodeDisplayTitle', () => {
+    it('should prefer the clean metadata series title', () => {
+      const metadata = {
+        series_name: 'DE - Avatar: Der Herr der Elemente (US)',
+        series_display_name: 'Avatar: The Last Airbender',
+        season_number: 3,
+        episode_number: 1,
+      };
+      const result = VodConnectionCardUtils.getEpisodeDisplayTitle(metadata);
+      expect(result).toBe('Avatar: The Last Airbender - S03E01');
+    });
+
     it('should format title with season and episode numbers', () => {
       const metadata = {
         series_name: 'Breaking Bad',

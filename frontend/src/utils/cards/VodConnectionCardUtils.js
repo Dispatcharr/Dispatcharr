@@ -11,7 +11,8 @@ export const getEpisodeDisplayTitle = (metadata) => {
   const episode = metadata.episode_number
     ? `E${metadata.episode_number.toString().padStart(2, '0')}`
     : 'E??';
-  return `${metadata.series_name} - ${season}${episode}`;
+  const seriesName = metadata.series_display_name || metadata.series_name;
+  return `${seriesName} - ${season}${episode}`;
 };
 
 export const getMovieSubtitle = (metadata) => {

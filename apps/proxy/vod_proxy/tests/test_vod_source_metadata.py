@@ -19,6 +19,7 @@ from apps.proxy.vod_proxy.multi_worker_connection_manager import (
 )
 from apps.proxy.vod_proxy.views import (
     _build_vod_source_metadata,
+    _get_series_display_name,
     build_vod_stats_data,
 )
 
@@ -35,8 +36,9 @@ class VODSourceMetadataStatsTests(TestCase):
             category_type="series",
         )
         series = Series.objects.create(
-            name="Avatar: Der Herr der Elemente",
+            name="DE - Avatar: Der Herr der Elemente (US)",
             tmdb_id="246",
+            custom_properties={"original_name": "Avatar: The Last Airbender"},
         )
         series_relation = M3USeriesRelation.objects.create(
             m3u_account=self.account,
@@ -72,6 +74,10 @@ class VODSourceMetadataStatsTests(TestCase):
         source_metadata = _build_vod_source_metadata(
             "episode", self.episode, self.relation
         )
+        self.assertEqual(
+            source_metadata["series_display_name"],
+            "Avatar: The Last Airbender",
+        )
         redis_client = MagicMock()
         redis_client.scan.return_value = (
             0,
@@ -95,6 +101,14 @@ class VODSourceMetadataStatsTests(TestCase):
         vod = stats["vod_connections"][0]
         connection = vod["connections"][0]
         metadata = vod["content_metadata"]
+        self.assertEqual(
+            metadata["series_name"],
+            "DE - Avatar: Der Herr der Elemente (US)",
+        )
+        self.assertEqual(
+            metadata["series_display_name"],
+            "Avatar: The Last Airbender",
+        )
         self.assertEqual(metadata["episode_name"], "NICK - The Awakening")
         self.assertEqual(metadata["description"], "Nickelodeon plot")
         self.assertEqual(metadata["duration_secs"], 1443)
@@ -105,6 +119,19 @@ class VODSourceMetadataStatsTests(TestCase):
         self.assertEqual(
             connection["source_metadata"]["source_key"],
             f"episode:{self.relation.id}",
+        )
+
+    def test_clean_series_title_can_come_from_provider_relation(self):
+        series = self.episode.series
+        series.custom_properties = None
+        series_relation = self.relation.series_relation
+        series_relation.custom_properties = {
+            "basic_data": {"o_name": "Avatar: The Last Airbender"}
+        }
+
+        self.assertEqual(
+            _get_series_display_name(series, series_relation),
+            "Avatar: The Last Airbender",
         )
 
 
@@ -186,4 +213,3 @@ class VODSourceSessionTests(SimpleTestCase):
         restored = SerializableConnectionState.from_dict(state.to_dict())
 
         self.assertEqual(restored.source_metadata, state.source_metadata)
-
