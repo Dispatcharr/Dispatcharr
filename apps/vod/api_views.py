@@ -38,6 +38,7 @@ from .image_proxy import (
     vodlogo_cache_url,
 )
 from .tasks import refresh_series_episodes, refresh_movie_advanced_data
+from .utils import get_series_display_name, get_series_original_name
 from django.utils import timezone
 from datetime import timedelta
 
@@ -447,6 +448,7 @@ class SeriesViewSet(viewsets.ReadOnlyModelViewSet):
             custom_props = relation.custom_properties or {}
             episodes_fetched = custom_props.get('episodes_fetched', False)
             detailed_fetched = custom_props.get('detailed_fetched', False)
+            detailed_info_stored = 'detailed_info' in custom_props
             missing_episode_links = (
                 episodes_fetched
                 and series.episodes.exists()
@@ -459,6 +461,7 @@ class SeriesViewSet(viewsets.ReadOnlyModelViewSet):
             if (
                 not episodes_fetched
                 or not detailed_fetched
+                or not detailed_info_stored
                 or missing_episode_links
                 or force_refresh
             ):
@@ -513,7 +516,8 @@ class SeriesViewSet(viewsets.ReadOnlyModelViewSet):
             response_data = {
                 'id': series.id,
                 'series_id': relation.external_series_id,
-                'name': series.name,
+                'name': get_series_display_name(series, relation),
+                'o_name': get_series_original_name(series, relation) or '',
                 'description': series.description,
                 'year': series.year,
                 'genre': series.genre,

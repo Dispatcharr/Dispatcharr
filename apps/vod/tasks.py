@@ -1324,6 +1324,7 @@ def parse_date(date_string):
 def refresh_series_episodes(account, series, external_series_id, episodes_data=None):
     """Refresh episodes for a series - only called on-demand"""
     try:
+        detailed_info = None
         if not episodes_data:
             # Fetch detailed series info including episodes
             with XtreamCodesClient(
@@ -1335,7 +1336,17 @@ def refresh_series_episodes(account, series, external_series_id, episodes_data=N
                 series_info = client.get_series_info(external_series_id)
                 if series_info:
                     # Update series with detailed info
-                    info = series_info.get('info', {})
+                    info = series_info.get('info') or {}
+                    if isinstance(info, list):
+                        info = (
+                            info[0]
+                            if info and isinstance(info[0], dict)
+                            else {}
+                        )
+                    elif not isinstance(info, dict):
+                        info = {}
+
+                    detailed_info = clean_custom_properties(info) or {}
                     if info:
                         # Only update fields if new value is non-empty and either no existing value or existing value is empty
                         updated = False
@@ -1374,6 +1385,8 @@ def refresh_series_episodes(account, series, external_series_id, episodes_data=N
 
         if series_relation:
             custom_props = series_relation.custom_properties or {}
+            if detailed_info is not None:
+                custom_props['detailed_info'] = detailed_info
             custom_props['episodes_fetched'] = True
             custom_props['detailed_fetched'] = True
             series_relation.custom_properties = custom_props

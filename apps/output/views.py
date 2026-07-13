@@ -1375,6 +1375,7 @@ def xc_get_series_info(request, user, series_id):
         custom_props = series_relation.custom_properties or {}
         episodes_fetched = custom_props.get('episodes_fetched', False)
         detailed_fetched = custom_props.get('detailed_fetched', False)
+        detailed_info_stored = 'detailed_info' in custom_props
         missing_episode_links = (
             episodes_fetched
             and series.episodes.exists()
@@ -1387,6 +1388,7 @@ def xc_get_series_info(request, user, series_id):
         if (
             not episodes_fetched
             or not detailed_fetched
+            or not detailed_info_stored
             or missing_episode_links
             or should_refresh
         ):

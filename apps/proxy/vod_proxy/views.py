@@ -14,6 +14,7 @@ from django.http import JsonResponse, Http404, HttpResponse, HttpResponseRedirec
 from django.shortcuts import get_object_or_404
 from django.views.decorators.csrf import csrf_exempt
 from apps.vod.models import Movie, Series, Episode, M3UMovieRelation, M3UEpisodeRelation
+from apps.vod.utils import get_series_display_name as _get_series_display_name
 from apps.m3u.models import M3UAccountProfile
 from apps.proxy.vod_proxy.multi_worker_connection_manager import MultiWorkerVODConnectionManager, infer_content_type_from_url, get_vod_client_stop_key
 from .utils import get_client_info
@@ -233,33 +234,6 @@ def _select_vod_stream(
         }
 
     return None
-
-
-def _get_series_display_name(series, series_relation=None):
-    """Return the clean metadata title while preserving the provider title."""
-    metadata_sources = [getattr(series, "custom_properties", None)]
-    relation_properties = (
-        getattr(series_relation, "custom_properties", None) or {}
-    )
-    if isinstance(relation_properties, dict):
-        metadata_sources.extend([
-            relation_properties.get("detailed_info"),
-            relation_properties.get("basic_data"),
-        ])
-
-    for metadata in metadata_sources:
-        if not isinstance(metadata, dict):
-            continue
-        for field in ("original_name", "o_name"):
-            value = metadata.get(field)
-            if isinstance(value, str) and value.strip():
-                return value.strip()
-            if isinstance(value, (list, tuple)):
-                for item in value:
-                    if isinstance(item, str) and item.strip():
-                        return item.strip()
-
-    return series.name
 
 
 def _build_vod_source_metadata(content_type, content_obj, relation):

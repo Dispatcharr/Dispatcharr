@@ -45,6 +45,12 @@ class VODSourceMetadataStatsTests(TestCase):
             series=series,
             category=category,
             external_series_id="nick-avatar",
+            custom_properties={
+                "detailed_info": {
+                    "name": "Avatar: Der Herr der Elemente (US)",
+                    "o_name": "Avatar: The Last Airbender",
+                }
+            },
         )
         self.episode = Episode.objects.create(
             series=series,
@@ -76,7 +82,7 @@ class VODSourceMetadataStatsTests(TestCase):
         )
         self.assertEqual(
             source_metadata["series_display_name"],
-            "Avatar: The Last Airbender",
+            "Avatar: Der Herr der Elemente (US)",
         )
         redis_client = MagicMock()
         redis_client.scan.return_value = (
@@ -107,7 +113,7 @@ class VODSourceMetadataStatsTests(TestCase):
         )
         self.assertEqual(
             metadata["series_display_name"],
-            "Avatar: The Last Airbender",
+            "Avatar: Der Herr der Elemente (US)",
         )
         self.assertEqual(metadata["episode_name"], "NICK - The Awakening")
         self.assertEqual(metadata["description"], "Nickelodeon plot")

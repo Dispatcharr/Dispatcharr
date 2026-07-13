@@ -697,6 +697,7 @@ class XcVodSeriesDistinctTests(TestCase):
             "custom_properties": {
                 "episodes_fetched": True,
                 "detailed_fetched": True,
+                "detailed_info": {},
             },
             "last_episode_refresh": timezone.now(),
         }
