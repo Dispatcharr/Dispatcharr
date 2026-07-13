@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 import requests
 from django.http import HttpResponse
 from django.test import RequestFactory, TestCase, override_settings
+from django.urls import resolve
 from rest_framework.test import APIRequestFactory, force_authenticate
 
 from apps.timeshift import views
@@ -766,6 +767,57 @@ class TimeshiftProxyTimestampWiringTests(TestCase):
         self.assertEqual(gate.call_args[0][1], "XC_API")
         channel_cls.objects.get.assert_not_called()
         stream_mock.assert_not_called()
+
+
+class TimeshiftProxyQueryRoutingTests(TestCase):
+    """Regression test for dispatcharr_timeshift#10: some clients (e.g.
+    Open-TV / Fred TV) build catch-up requests in QUERY layout
+    (``/streaming/timeshift.php?...``) rather than PATH layout. Before this
+    fix, no urlpattern matched that path, so the request silently fell
+    through to the frontend's ``<path:unused_path>`` catch-all and got served
+    ``index.html`` (200 OK, wrong content) instead of reaching the proxy."""
+
+    def test_query_style_path_resolves_to_timeshift_proxy_query(self):
+        match = resolve("/streaming/timeshift.php")
+        self.assertIs(match.func, views.timeshift_proxy_query)
+
+    def test_path_style_still_resolves_to_timeshift_proxy(self):
+        match = resolve("/timeshift/u/p/8/2026-06-08:17-00/8.ts")
+        self.assertIs(match.func, views.timeshift_proxy)
+
+
+class TimeshiftProxyQueryParamMappingTests(TestCase):
+    """`timeshift_proxy_query` must extract the same fields from the
+    querystring that `timeshift_proxy` receives as URL kwargs, and reject
+    the request before touching auth/DB when required params are absent."""
+
+    def setUp(self):
+        self.factory = RequestFactory()
+
+    def test_delegates_with_mapped_params(self):
+        request = self.factory.get(
+            "/streaming/timeshift.php",
+            {
+                "username": "u",
+                "password": "p",
+                "stream": "8",
+                "start": "2026-06-08:17-00",
+                "duration": "40",
+            },
+        )
+        with patch.object(views, "_timeshift_proxy_impl", return_value=HttpResponse()) as impl:
+            views.timeshift_proxy_query(request)
+        impl.assert_called_once_with(request, "u", "p", "2026-06-08:17-00", "8")
+
+    def test_missing_stream_param_returns_400_without_touching_impl(self):
+        request = self.factory.get(
+            "/streaming/timeshift.php",
+            {"username": "u", "password": "p", "start": "2026-06-08:17-00"},
+        )
+        with patch.object(views, "_timeshift_proxy_impl") as impl:
+            response = views.timeshift_proxy_query(request)
+        self.assertEqual(response.status_code, 400)
+        impl.assert_not_called()
 
 
 class TimeshiftProxyFailoverTests(TestCase):

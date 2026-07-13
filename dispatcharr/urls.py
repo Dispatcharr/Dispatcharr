@@ -7,7 +7,7 @@ from .routing import websocket_urlpatterns
 from apps.output.views import xc_player_api, xc_panel_api, xc_get, xc_xmltv
 from apps.proxy.live_proxy.views import stream_xc
 from apps.proxy.vod_proxy.views import stream_xc_movie, stream_xc_episode
-from apps.timeshift.views import timeshift_proxy
+from apps.timeshift.views import timeshift_proxy, timeshift_proxy_query
 
 urlpatterns = [
     # API Routes
@@ -46,6 +46,11 @@ urlpatterns = [
         "timeshift/<str:username>/<str:password>/<str:stream_id>/<str:timestamp>/<str:duration>",
         timeshift_proxy,
         name="timeshift_proxy",
+    ),
+    path(
+        "streaming/timeshift.php",
+        timeshift_proxy_query,
+        name="timeshift_proxy_query",
     ),
     # XC VOD endpoints
     path(
