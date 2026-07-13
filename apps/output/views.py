@@ -1117,7 +1117,7 @@ def _xc_fetch_priority_distinct_relations(
     order_by_name_field,
 ):
     """
-    Return one row dict per distinct content ID (highest account priority wins).
+    Return one row per distinct content key (highest account priority wins).
 
     On PostgreSQL, dedupe on narrow relation rows first, then fetch display
     columns via values() (no ORM model instantiation). That avoids sorting
@@ -1127,6 +1127,11 @@ def _xc_fetch_priority_distinct_relations(
     from django.db import connection, transaction
 
     narrow_qs = manager.filter(**rel_filters)
+    distinct_fields = (
+        (distinct_field,)
+        if isinstance(distinct_field, str)
+        else tuple(distinct_field)
+    )
 
     def _fetch_by_ids(ids):
         return list(
@@ -1138,8 +1143,12 @@ def _xc_fetch_priority_distinct_relations(
     if connection.vendor == 'postgresql':
         winning_ids_qs = (
             narrow_qs
-            .order_by(distinct_field, '-m3u_account__priority', 'id')
-            .distinct(distinct_field)
+            .order_by(
+                *distinct_fields,
+                '-m3u_account__priority',
+                'id',
+            )
+            .distinct(*distinct_fields)
             .values('pk')
         )
         with transaction.atomic():
@@ -1156,7 +1165,7 @@ def _xc_fetch_priority_distinct_relations(
     for row in _xc_annotate_relation_artwork(narrow_qs).values(*value_fields).order_by(
         '-m3u_account__priority', 'id'
     ):
-        key = row[distinct_field]
+        key = tuple(row[field] for field in distinct_fields)
         if key not in seen:
             seen[key] = row
     rows = list(seen.values())
@@ -1200,7 +1209,9 @@ def xc_get_vod_streams(request, user, category_id=None):
     relations = _xc_fetch_priority_distinct_relations(
         manager=M3UMovieRelation.objects,
         rel_filters=rel_filters,
-        distinct_field='movie_id',
+        # Xtream assigns one category to each returned movie item. Keep one
+        # relation per canonical movie and category, matching the series list.
+        distinct_field=('movie_id', 'category_id'),
         value_fields=XC_MOVIE_VALUE_FIELDS,
         order_by_name_field='movie__name',
     )
@@ -1223,7 +1234,9 @@ def xc_get_vod_streams(request, user, category_id=None):
             "num": num,
             "name": row['movie__name'],
             "stream_type": "movie",
-            "stream_id": row['movie__id'],
+            # Expose the concrete relation ID so get_vod_info and playback can
+            # preserve the category/provider selected by the Xtream client.
+            "stream_id": row['id'],
             "stream_icon": _xc_cover_or_logo(
                 request,
                 'movie',
@@ -1289,7 +1302,10 @@ def xc_get_series(request, user, category_id=None):
     relations = _xc_fetch_priority_distinct_relations(
         manager=M3USeriesRelation.objects,
         rel_filters=rel_filters,
-        distinct_field='series_id',
+        # Xtream assigns one category to each returned series item. Keep one
+        # relation per canonical series and category so clients that fetch the
+        # global list can place the same show in every selected category.
+        distinct_field=('series_id', 'category_id'),
         value_fields=XC_SERIES_VALUE_FIELDS,
         order_by_name_field='series__name',
     )
@@ -1642,18 +1658,18 @@ def xc_get_vod_info(request, user, vod_id):
     if not vod_id:
         raise Http404()
 
-    # All authenticated users get access to VOD from all active M3U accounts
-    filters = {"movie_id": vod_id, "m3u_account__is_active": True}
+    # get_vod_streams exposes the concrete movie-relation ID. Resolve that
+    # exact row here, just as get_series_info resolves a series relation.
+    filters = {"id": vod_id, "m3u_account__is_active": True}
     if user.user_level < 10 and (user.custom_properties or {}).get('hide_adult_content', False):
         filters["movie__is_adult"] = False
 
     try:
-        # Order by account priority to get the best relation when multiple exist
-        movie_relation = M3UMovieRelation.objects.select_related('movie', 'movie__logo').filter(**filters).order_by('-m3u_account__priority', 'id').first()
-        if not movie_relation:
-            raise Http404()
+        movie_relation = M3UMovieRelation.objects.select_related(
+            'movie', 'movie__logo'
+        ).get(**filters)
         movie = movie_relation.movie
-    except (M3UMovieRelation.DoesNotExist, M3UMovieRelation.MultipleObjectsReturned):
+    except M3UMovieRelation.DoesNotExist:
         raise Http404()
 
     # Initialize basic movie data first
@@ -1785,7 +1801,7 @@ def xc_get_vod_info(request, user, vod_id):
             'audio': movie_data.get('audio', {}),
         },
         "movie_data": {
-            "stream_id": movie.id,
+            "stream_id": movie_relation.id,
             "name": movie.name,
             "added": str(int(movie_relation.created_at.timestamp())),
             "category_id": str(movie_relation.category.id) if movie_relation.category else "0",

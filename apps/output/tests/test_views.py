@@ -14,6 +14,7 @@ from apps.output.views import (
     xc_get_live_streams,
     xc_get_series,
     xc_get_series_info,
+    xc_get_vod_info,
     xc_get_vod_streams,
 )
 from apps.vod.models import (
@@ -538,7 +539,7 @@ class XcVodSeriesDistinctTests(TestCase):
             stream_id="low-stream",
             container_extension="mkv",
         )
-        M3UMovieRelation.objects.create(
+        high_relation = M3UMovieRelation.objects.create(
             m3u_account=high,
             movie=movie,
             stream_id="high-stream",
@@ -549,7 +550,85 @@ class XcVodSeriesDistinctTests(TestCase):
 
         self.assertEqual(len(streams), 1)
         self.assertEqual(streams[0]["name"], "Shared Movie")
+        self.assertEqual(streams[0]["stream_id"], high_relation.id)
         self.assertEqual(streams[0]["container_extension"], "mp4")
+
+    def test_vod_global_list_keeps_one_item_per_category(self):
+        account = self._account(f"acct-{uuid4().hex[:6]}", priority=5)
+        categories = [
+            VODCategory.objects.create(name=name, category_type="movie")
+            for name in ("NETFLIX FILME", "GERMAN FILME", "KIDS FILME")
+        ]
+        movie = Movie.objects.create(
+            name="Shared Movie",
+            year=2025,
+            tmdb_id="12345",
+        )
+        relations = [
+            M3UMovieRelation.objects.create(
+                m3u_account=account,
+                movie=movie,
+                category=category,
+                stream_id=f"movie-{category.id}",
+            )
+            for category in categories
+        ]
+
+        results = xc_get_vod_streams(self.request, self.user)
+
+        self.assertEqual(len(results), 3)
+        self.assertEqual(
+            {row["stream_id"] for row in results},
+            {relation.id for relation in relations},
+        )
+        self.assertEqual(
+            {row["category_id"] for row in results},
+            {str(category.id) for category in categories},
+        )
+        self.assertTrue(all(row["tmdb_id"] == "12345" for row in results))
+
+    def test_vod_info_keeps_selected_category_relation(self):
+        account = self._account(f"acct-{uuid4().hex[:6]}", priority=5)
+        netflix = VODCategory.objects.create(
+            name="NETFLIX FILME", category_type="movie"
+        )
+        german = VODCategory.objects.create(
+            name="GERMAN FILME", category_type="movie"
+        )
+        movie = Movie.objects.create(
+            name="Canonical Movie",
+            custom_properties={"director": "Director"},
+        )
+        M3UMovieRelation.objects.create(
+            m3u_account=account,
+            movie=movie,
+            category=netflix,
+            stream_id="netflix-movie",
+            container_extension="mp4",
+            custom_properties={"detailed_info": {"name": "Netflix Movie"}},
+            last_advanced_refresh=timezone.now(),
+        )
+        german_relation = M3UMovieRelation.objects.create(
+            m3u_account=account,
+            movie=movie,
+            category=german,
+            stream_id="german-movie",
+            container_extension="mkv",
+            custom_properties={"detailed_info": {"name": "German Movie"}},
+            last_advanced_refresh=timezone.now(),
+        )
+
+        info = xc_get_vod_info(
+            self.request,
+            self.user,
+            german_relation.id,
+        )
+
+        self.assertEqual(info["info"]["name"], "German Movie")
+        self.assertEqual(info["movie_data"]["stream_id"], german_relation.id)
+        self.assertEqual(info["movie_data"]["category_id"], str(german.id))
+        self.assertEqual(info["movie_data"]["category_ids"], [german.id])
+        self.assertEqual(info["movie_data"]["container_extension"], "mkv")
 
     def test_vod_streams_excludes_inactive_accounts(self):
         active = self._account(f"active-{uuid4().hex[:6]}", priority=1)
@@ -681,6 +760,47 @@ class XcVodSeriesDistinctTests(TestCase):
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0]["name"], "Shared Series")
         self.assertEqual(results[0]["series_id"], high_rel.id)
+
+    def test_series_global_list_keeps_one_item_per_category(self):
+        account = self._account(f"acct-{uuid4().hex[:6]}", priority=5)
+        categories = [
+            VODCategory.objects.create(
+                name=name,
+                category_type="series",
+            )
+            for name in (
+                "NETFLIX ANIME",
+                "GERMANY KINDER",
+                "NICKELODEON",
+            )
+        ]
+        series = Series.objects.create(
+            name="DE - Avatar: Der Herr der Elemente (US)",
+            year=2005,
+            tmdb_id="246",
+        )
+        relations = [
+            M3USeriesRelation.objects.create(
+                m3u_account=account,
+                series=series,
+                category=category,
+                external_series_id=f"avatar-{category.id}",
+            )
+            for category in categories
+        ]
+
+        results = xc_get_series(self.request, self.user)
+
+        self.assertEqual(len(results), 3)
+        self.assertEqual(
+            {row["series_id"] for row in results},
+            {relation.id for relation in relations},
+        )
+        self.assertEqual(
+            {row["category_id"] for row in results},
+            {str(category.id) for category in categories},
+        )
+        self.assertTrue(all(row["tmdb_id"] == "246" for row in results))
 
     def test_series_category_selection_keeps_relation_specific_episodes(self):
         account = self._account(f"acct-{uuid4().hex[:6]}", priority=5)
@@ -891,7 +1011,7 @@ class XcVodSeriesRegressionTests(TestCase):
     def test_vod_streams_response_keys(self):
         account = self._account(f"acct-{uuid4().hex[:6]}")
         movie = Movie.objects.create(name="Schema Movie", rating="10")
-        M3UMovieRelation.objects.create(
+        relation = M3UMovieRelation.objects.create(
             m3u_account=account, movie=movie, stream_id="schema-1"
         )
 
@@ -899,7 +1019,7 @@ class XcVodSeriesRegressionTests(TestCase):
 
         self.assertEqual(set(stream.keys()), XC_VOD_STREAM_KEYS)
         self.assertEqual(stream["stream_type"], "movie")
-        self.assertEqual(stream["stream_id"], movie.id)
+        self.assertEqual(stream["stream_id"], relation.id)
         self.assertEqual(stream["rating_5based"], 5.0)
         self.assertEqual(stream["custom_sid"], None)
         self.assertEqual(stream["direct_source"], "")
@@ -925,30 +1045,29 @@ class XcVodSeriesRegressionTests(TestCase):
         self.assertEqual(stream["tmdb_id"], "")
         self.assertEqual(stream["imdb_id"], "")
 
-    def test_vod_streams_category_from_winning_relation(self):
-        """Category must come from the highest-priority relation, not any relation."""
+    def test_vod_streams_priority_is_applied_within_each_category(self):
         low = self._account(f"low-{uuid4().hex[:6]}", priority=1)
         high = self._account(f"high-{uuid4().hex[:6]}", priority=10)
         action = VODCategory.objects.create(name="Action", category_type="movie")
-        comedy = VODCategory.objects.create(name="Comedy", category_type="movie")
-        movie = Movie.objects.create(name="Dual Category Movie")
+        movie = Movie.objects.create(name="Shared Category Movie")
         M3UMovieRelation.objects.create(
             m3u_account=low,
             movie=movie,
             category=action,
             stream_id="low-cat",
         )
-        M3UMovieRelation.objects.create(
+        high_relation = M3UMovieRelation.objects.create(
             m3u_account=high,
             movie=movie,
-            category=comedy,
+            category=action,
             stream_id="high-cat",
         )
 
         stream = xc_get_vod_streams(self.request, self.user)[0]
 
-        self.assertEqual(stream["category_id"], str(comedy.id))
-        self.assertEqual(stream["category_ids"], [comedy.id])
+        self.assertEqual(stream["stream_id"], high_relation.id)
+        self.assertEqual(stream["category_id"], str(action.id))
+        self.assertEqual(stream["category_ids"], [action.id])
 
     def test_vod_streams_stream_icon_falls_back_to_relation_basic_data(self):
         """No synced VODLogo: fall back to the winning relation's own list-sync icon."""

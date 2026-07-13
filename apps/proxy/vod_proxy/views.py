@@ -1572,18 +1572,27 @@ def stream_xc_movie(request, username, password, stream_id, extension):
     if custom_properties["xc_password"] != password:
         return Response({"error": "Invalid credentials"}, status=401)
 
-    # All authenticated users get access to VOD from all active M3U accounts
-    filters = {"movie_id": stream_id, "m3u_account__is_active": True}
-
-    try:
-        # Order by account priority to get the best relation when multiple exist
-        movie_relation = M3UMovieRelation.objects.select_related('movie').filter(**filters).order_by('-m3u_account__priority', 'id').first()
-        if not movie_relation:
-            return JsonResponse({"error": "Movie not found"}, status=404)
-    except (M3UMovieRelation.DoesNotExist, M3UMovieRelation.MultipleObjectsReturned):
+    # xc_get_vod_streams exposes the concrete movie-relation ID. Resolving
+    # that same row here preserves the category/provider selected by the player.
+    movie_relation = M3UMovieRelation.objects.select_related(
+        'movie', 'm3u_account'
+    ).filter(
+        id=stream_id,
+        m3u_account__is_active=True,
+    ).first()
+    if not movie_relation:
         return JsonResponse({"error": "Movie not found"}, status=404)
 
-    return stream_vod(request._request, 'movie', movie_relation.movie.uuid, session_id, profile_id, user)
+    return stream_vod(
+        request._request,
+        'movie',
+        movie_relation.movie.uuid,
+        session_id,
+        profile_id,
+        user,
+        preferred_m3u_account_id=movie_relation.m3u_account_id,
+        preferred_stream_id=movie_relation.stream_id,
+    )
 
 @api_view(["GET"])
 @permission_classes([AllowAny])
