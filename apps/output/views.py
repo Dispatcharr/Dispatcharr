@@ -231,7 +231,7 @@ def generate_m3u(request, profile_name=None, user=None):
         epg_base_url = build_absolute_uri_with_port(request, reverse('output:epg_endpoint', args=[profile_name]) if profile_name else reverse('output:epg_endpoint'))
 
         # Optionally preserve certain query parameters
-        preserved_params = ['tvg_id_source', 'cachedlogos', 'days', 'prev_days']
+        preserved_params = ['tvg_id_source', 'cachedlogos', 'days', 'prev_days', 'program_icon_fallback']
         query_params = {k: v for k, v in request.GET.items() if k in preserved_params}
         if query_params:
             epg_url = f"{epg_base_url}?{urlencode(query_params)}"

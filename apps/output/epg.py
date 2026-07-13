@@ -1112,9 +1112,13 @@ def generate_epg(request, profile_name=None, user=None, *, xc_catchup_prev_days=
             prev_days = 0
     use_cached_logos = request.GET.get('cachedlogos', 'true').lower() != 'false'
     tvg_id_source = request.GET.get('tvg_id_source', 'channel_number').lower()
+    program_icon_fallback = request.GET.get('program_icon_fallback', '').strip().lower()
+    if program_icon_fallback != 'channel':
+        program_icon_fallback = ''
     cache_params = (
         f"{profile_name or 'all'}:{user.username if user else 'anonymous'}"
         f":d={num_days}:p={prev_days}:logos={use_cached_logos}:tvgid={tvg_id_source}"
+        f":pif={program_icon_fallback or 'none'}"
     )
     content_cache_key = f"epg_content:{cache_params}"
 
@@ -1222,6 +1226,7 @@ def generate_epg(request, profile_name=None, user=None, *, xc_catchup_prev_days=
 
         dummy_program_list = []
         real_epg_map = {}
+        channel_logo_by_id = {}
         channel_xml_batch = []
 
         for channel in channels:
@@ -1307,6 +1312,7 @@ def generate_epg(request, profile_name=None, user=None, *, xc_catchup_prev_days=
             channel_xml_batch.append(f'    <display-name>{html.escape(effective_name)}</display-name>')
             channel_xml_batch.append(f'    <icon src="{html.escape(tvg_logo)}" />')
             channel_xml_batch.append("  </channel>")
+            channel_logo_by_id[channel_id] = tvg_logo
 
             if len(channel_xml_batch) >= _EPG_CHANNEL_XML_BATCH_SIZE * 4:
                 yield '\n'.join(channel_xml_batch) + '\n'
@@ -1338,9 +1344,9 @@ def generate_epg(request, profile_name=None, user=None, *, xc_catchup_prev_days=
                         )
 
             if not effective_epg_data:
-                dummy_program_list.append((channel_id, pattern_match_name, None))
+                dummy_program_list.append((channel_id, pattern_match_name, None, tvg_logo))
             elif effective_epg_data.epg_source and effective_epg_data.epg_source.source_type == 'dummy':
-                dummy_program_list.append((channel_id, pattern_match_name, effective_epg_data.epg_source))
+                dummy_program_list.append((channel_id, pattern_match_name, effective_epg_data.epg_source, tvg_logo))
             else:
                 real_epg_map.setdefault(effective_epg_data_id, []).append(channel_id)
 
@@ -1374,6 +1380,8 @@ def generate_epg(request, profile_name=None, user=None, *, xc_catchup_prev_days=
             current_epg_id = None
             channel_ids_for_epg = None
             escaped_primary_cid = None
+            primary_channel_logo = ""
+            escaped_primary_channel_logo = ""
             pending = []
             program_batch = []
             chunk_size = _EPG_PROGRAM_DB_CHUNK_SIZE
@@ -1389,15 +1397,30 @@ def generate_epg(request, profile_name=None, user=None, *, xc_catchup_prev_days=
                 escaped_primary = (
                     escaped_primary_cid if len(channel_ids_for_epg) > 1 else None
                 )
-                for _, _, xml_text in pending:
+                for _, _, xml_text, used_channel_logo_fallback in pending:
                     program_batch.append(xml_text)
                     if escaped_primary:
                         for cid in channel_ids_for_epg[1:]:
-                            program_batch.append(xml_text.replace(
+                            channel_xml = xml_text.replace(
                                 f'channel="{escaped_primary}"',
                                 f'channel="{html.escape(cid)}"',
                                 1,
-                            ))
+                            )
+                            if used_channel_logo_fallback and escaped_primary_channel_logo:
+                                channel_logo = channel_logo_by_id.get(cid, "")
+                                if channel_logo:
+                                    channel_xml = channel_xml.replace(
+                                        f'<icon src="{escaped_primary_channel_logo}" />',
+                                        f'<icon src="{html.escape(channel_logo)}" />',
+                                        1,
+                                    )
+                                else:
+                                    channel_xml = channel_xml.replace(
+                                        f'\n    <icon src="{escaped_primary_channel_logo}" />',
+                                        '',
+                                        1,
+                                    )
+                            program_batch.append(channel_xml)
                     if len(program_batch) >= batch_size:
                         yield '\n'.join(program_batch) + '\n'
                         program_batch = []
@@ -1423,6 +1446,8 @@ def generate_epg(request, profile_name=None, user=None, *, xc_catchup_prev_days=
                         current_epg_id = epg_id
                         channel_ids_for_epg = real_epg_map[epg_id]
                         escaped_primary_cid = html.escape(channel_ids_for_epg[0])
+                        primary_channel_logo = channel_logo_by_id.get(channel_ids_for_epg[0], "")
+                        escaped_primary_channel_logo = html.escape(primary_channel_logo)
 
                     # DB datetimes are UTC (USE_TZ=True, TIME_ZONE=UTC); format
                     # directly instead of strftime("%Y%m%d%H%M%S %z"), which is
@@ -1442,6 +1467,7 @@ def generate_epg(request, profile_name=None, user=None, *, xc_catchup_prev_days=
                         program_xml.append(f"    <desc>{html.escape(prog['description'])}</desc>")
 
                     custom_data = prog['custom_properties'] or {}
+                    used_channel_logo_fallback = False
                     if custom_data:
 
                         if "categories" in custom_data and custom_data["categories"]:
@@ -1589,11 +1615,6 @@ def generate_epg(request, profile_name=None, user=None, *, xc_catchup_prev_days=
                         if "country" in custom_data:
                             program_xml.append(f'    <country>{html.escape(custom_data["country"])}</country>')
 
-                        if "icon" in custom_data:
-                            program_xml.append(f'    <icon src="{html.escape(custom_data["icon"])}" />')
-                        elif "sd_icon" in custom_data:
-                            program_xml.append(f'    <icon src="{html.escape(_poster_url_base)}{prog["id"]}/poster/" />')
-
                         # Add special flags as proper tags with enhanced handling
                         if custom_data.get("previously_shown", False):
                             prev_shown_details = custom_data.get("previously_shown_details", {})
@@ -1625,10 +1646,18 @@ def generate_epg(request, profile_name=None, user=None, *, xc_catchup_prev_days=
                         if custom_data.get('live', False):
                             program_xml.append('    <live />')
 
+                    if "icon" in custom_data:
+                        program_xml.append(f'    <icon src="{html.escape(custom_data["icon"])}" />')
+                    elif "sd_icon" in custom_data:
+                        program_xml.append(f'    <icon src="{html.escape(_poster_url_base)}{prog["id"]}/poster/" />')
+                    elif program_icon_fallback == 'channel' and primary_channel_logo:
+                        program_xml.append(f'    <icon src="{escaped_primary_channel_logo}" />')
+                        used_channel_logo_fallback = True
+
                     program_xml.append("  </programme>")
 
                     xml_text = '\n'.join(program_xml)
-                    pending.append((prog['start_time'], prog['id'], xml_text))
+                    pending.append((prog['start_time'], prog['id'], xml_text, used_channel_logo_fallback))
 
                 del program_chunk
 
@@ -1639,7 +1668,7 @@ def generate_epg(request, profile_name=None, user=None, *, xc_catchup_prev_days=
 
         del real_epg_map
 
-        for channel_id, pattern_match_name, epg_source in dummy_program_list:
+        for channel_id, pattern_match_name, epg_source, channel_logo_url in dummy_program_list:
             program_length_hours = 4
             dummy_programs = generate_dummy_programs(
                 channel_id, pattern_match_name,
@@ -1674,6 +1703,8 @@ def generate_epg(request, profile_name=None, user=None, *, xc_catchup_prev_days=
                     lines.append("    <new />")
                 if 'icon' in custom_data:
                     lines.append(f'    <icon src="{html.escape(custom_data["icon"])}" />')
+                elif program_icon_fallback == 'channel' and channel_logo_url:
+                    lines.append(f'    <icon src="{html.escape(channel_logo_url)}" />')
                 lines.append("  </programme>")
                 dummy_batch.append('\n'.join(lines))
                 if len(dummy_batch) >= batch_size:
