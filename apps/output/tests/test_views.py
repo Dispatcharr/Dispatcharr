@@ -5,12 +5,20 @@ from unittest.mock import patch
 from uuid import uuid4
 from django.db import connection
 from django.test.utils import CaptureQueriesContext
+from django.utils import timezone
 from apps.channels.models import Channel, ChannelGroup, ChannelOverride, ChannelProfile, ChannelProfileMembership
 from apps.epg.models import EPGData, EPGSource
 from apps.accounts.models import User
 from apps.m3u.models import M3UAccount
-from apps.output.views import xc_get_live_streams, xc_get_series, xc_get_vod_streams
+from apps.output.views import (
+    xc_get_live_streams,
+    xc_get_series,
+    xc_get_series_info,
+    xc_get_vod_streams,
+)
 from apps.vod.models import (
+    Episode,
+    M3UEpisodeRelation,
     M3UMovieRelation,
     M3USeriesRelation,
     Movie,
@@ -673,6 +681,84 @@ class XcVodSeriesDistinctTests(TestCase):
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0]["name"], "Shared Series")
         self.assertEqual(results[0]["series_id"], high_rel.id)
+
+    def test_series_category_selection_keeps_relation_specific_episodes(self):
+        account = self._account(f"acct-{uuid4().hex[:6]}", priority=5)
+        netflix = VODCategory.objects.create(
+            name="NETFLIX Kids", category_type="series"
+        )
+        german = VODCategory.objects.create(
+            name="German Kinder", category_type="series"
+        )
+        series = Series.objects.create(name="Avatar", year=2005)
+        relation_defaults = {
+            "m3u_account": account,
+            "series": series,
+            "custom_properties": {
+                "episodes_fetched": True,
+                "detailed_fetched": True,
+            },
+            "last_episode_refresh": timezone.now(),
+        }
+        netflix_series = M3USeriesRelation.objects.create(
+            **relation_defaults,
+            category=netflix,
+            external_series_id="netflix-avatar",
+        )
+        german_series = M3USeriesRelation.objects.create(
+            **relation_defaults,
+            category=german,
+            external_series_id="german-avatar",
+        )
+        episode = Episode.objects.create(
+            series=series,
+            season_number=1,
+            episode_number=1,
+            name="Canonical title",
+        )
+        M3UEpisodeRelation.objects.create(
+            m3u_account=account,
+            episode=episode,
+            series_relation=netflix_series,
+            stream_id="netflix-episode-1",
+            custom_properties={
+                "info": {
+                    "episode_num": 1,
+                    "title": "NF - The Boy in the Iceberg",
+                    "info": {"plot": "Netflix plot"},
+                }
+            },
+        )
+        german_episode = M3UEpisodeRelation.objects.create(
+            m3u_account=account,
+            episode=episode,
+            series_relation=german_series,
+            stream_id="german-episode-1",
+            container_extension="mkv",
+            custom_properties={
+                "info": {
+                    "episode_num": 1,
+                    "title": "DE - Der Junge im Eisberg",
+                    "info": {"plot": "German plot"},
+                }
+            },
+        )
+
+        category_results = xc_get_series(
+            self.request, self.user, category_id=german.id
+        )
+        info = xc_get_series_info(
+            self.request, self.user, category_results[0]["series_id"]
+        )
+        selected_episode = info["episodes"][1][0]
+
+        self.assertEqual(category_results[0]["series_id"], german_series.id)
+        self.assertEqual(info["info"]["category_id"], str(german.id))
+        self.assertEqual(selected_episode["id"], german_episode.id)
+        self.assertEqual(selected_episode["info"]["id"], german_episode.id)
+        self.assertEqual(selected_episode["title"], "DE - Der Junge im Eisberg")
+        self.assertEqual(selected_episode["info"]["overview"], "German plot")
+        self.assertEqual(selected_episode["container_extension"], "mkv")
 
     def test_series_excludes_inactive_accounts(self):
         active = self._account(f"active-{uuid4().hex[:6]}")

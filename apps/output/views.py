@@ -1375,9 +1375,21 @@ def xc_get_series_info(request, user, series_id):
         custom_props = series_relation.custom_properties or {}
         episodes_fetched = custom_props.get('episodes_fetched', False)
         detailed_fetched = custom_props.get('detailed_fetched', False)
+        missing_episode_links = (
+            episodes_fetched
+            and series.episodes.exists()
+            and not M3UEpisodeRelation.objects.filter(
+                series_relation=series_relation
+            ).exists()
+        )
 
         # Force refresh if episodes/details have never been fetched or time interval exceeded
-        if not episodes_fetched or not detailed_fetched or should_refresh:
+        if (
+            not episodes_fetched
+            or not detailed_fetched
+            or missing_episode_links
+            or should_refresh
+        ):
             from apps.vod.tasks import refresh_series_episodes
             account = series_relation.m3u_account
             if account and account.is_active:
@@ -1389,96 +1401,96 @@ def xc_get_series_info(request, user, series_id):
     except Exception as e:
         logger.error(f"Error refreshing series data for relation {series_relation.id}: {str(e)}")
 
-    # Include episodes from any active provider for this shared Series (XC clients
-    # see a unified catalog). Prefer the highest-priority account's stream metadata.
-    from apps.vod.models import Episode, M3UEpisodeRelation
-
-    episodes = list(
-        Episode.objects.filter(
-            series=series,
-            m3u_relations__m3u_account__is_active=True,
-        ).distinct().order_by('season_number', 'episode_number')
+    # Keep the relation selected by get_series all the way through the episode
+    # list. A canonical Episode can be shared by several categories or providers,
+    # but each M3UEpisodeRelation identifies the actual upstream stream.
+    episode_relations = M3UEpisodeRelation.objects.filter(
+        series_relation=series_relation,
+        m3u_account__is_active=True
+    ).select_related('episode').order_by(
+        'episode__season_number', 'episode__episode_number', 'id'
     )
-
-    relations_by_episode_id = {}
-    for rel in M3UEpisodeRelation.objects.filter(
-        episode_id__in=[ep.id for ep in episodes],
-        m3u_account__is_active=True,
-    ).select_related('m3u_account').only(
-        'episode_id',
-        'container_extension',
-        'created_at',
-        'custom_properties',
-        'm3u_account__priority',
-    ).order_by('episode_id', '-m3u_account__priority', 'id'):
-        # First row per episode wins due to priority/id ordering.
-        if rel.episode_id not in relations_by_episode_id:
-            relations_by_episode_id[rel.episode_id] = rel
 
     # Group episodes by season
     seasons = {}
     # One reverse for all episode image rewrites in this response.
     _episode_image_parts = vod_image_url_parts(request, "episode")
-    for episode in episodes:
+    for episode_relation in episode_relations:
+        episode = episode_relation.episode
         season_num = (
             episode.season_number if episode.season_number is not None else 1
         )
         if season_num not in seasons:
             seasons[season_num] = []
 
-        best_relation = relations_by_episode_id.get(episode.id)
-
-        video = audio = bitrate = None
-        container_extension = "mp4"
-        added_timestamp = str(int(episode.created_at.timestamp()))
-
-        if best_relation:
-            container_extension = best_relation.container_extension or "mp4"
-            added_timestamp = str(int(best_relation.created_at.timestamp()))
-            if best_relation.custom_properties:
-                info = best_relation.custom_properties.get('info')
-                if info and isinstance(info, dict):
-                    info_info = info.get('info')
-                    if info_info and isinstance(info_info, dict):
-                        video = info_info.get('video', {})
-                        audio = info_info.get('audio', {})
-                        bitrate = info_info.get('bitrate', 0)
-
-        if video is None:
-            video = episode.custom_properties.get('video', {}) if episode.custom_properties else {}
-        if audio is None:
-            audio = episode.custom_properties.get('audio', {}) if episode.custom_properties else {}
-        if bitrate is None:
-            bitrate = episode.custom_properties.get('bitrate', 0) if episode.custom_properties else 0
+        relation_props = episode_relation.custom_properties or {}
+        provider_episode = relation_props.get('info') or {}
+        if not isinstance(provider_episode, dict):
+            provider_episode = {}
+        provider_info = provider_episode.get('info') or {}
+        if not isinstance(provider_info, dict):
+            provider_info = {}
+        episode_title = (
+            provider_episode.get('title')
+            or provider_info.get('name')
+            or episode.name
+        )
+        episode_description = (
+            provider_info.get('plot')
+            or provider_info.get('overview')
+            or episode.description
+            or ""
+        )
+        video = provider_info.get('video') or (
+            episode.custom_properties.get('video', {})
+            if episode.custom_properties else {}
+        )
+        audio = provider_info.get('audio') or (
+            episode.custom_properties.get('audio', {})
+            if episode.custom_properties else {}
+        )
+        bitrate = provider_info.get('bitrate') or (
+            episode.custom_properties.get('bitrate', 0)
+            if episode.custom_properties else 0
+        )
 
         episode_artwork = prefer_relation_artwork(
-            best_relation.custom_properties if best_relation else None,
+            relation_props,
             episode.custom_properties,
         )
 
         seasons[season_num].append({
-            "id": episode.id,
+            "id": episode_relation.id,
             "season": season_num,
-            "episode_num": episode.episode_number or 0,
-            "title": episode.name,
-            "container_extension": container_extension,
-            "added": added_timestamp,
+            "episode_num": provider_episode.get(
+                'episode_num', episode.episode_number or 0
+            ),
+            "title": episode_title,
+            "container_extension": episode_relation.container_extension or "mp4",
+            "added": str(int(episode_relation.created_at.timestamp())),
             "custom_sid": None,
             "direct_source": "",
             "info": {
-                "id": int(episode.id),
-                "name": episode.name,
-                "overview": episode.description or "",
-                "crew": str(episode.custom_properties.get('crew', "") if episode.custom_properties else ""),
-                "directed_by": episode.custom_properties.get('director', '') if episode.custom_properties else "",
-                "imdb_id": episode.imdb_id or "",
-                "air_date": f"{episode.air_date}" if episode.air_date else "",
+                "id": int(episode_relation.id),
+                "name": episode_title,
+                "overview": episode_description,
+                "crew": str(provider_info.get('crew') or (
+                    episode.custom_properties.get('crew', "")
+                    if episode.custom_properties else ""
+                )),
+                "directed_by": provider_info.get('directed_by') or (
+                    episode.custom_properties.get('director', '')
+                    if episode.custom_properties else ''
+                ),
+                "imdb_id": provider_info.get('imdb_id') or episode.imdb_id or "",
+                "air_date": str(provider_info.get('air_date') or episode.air_date or ""),
                 "backdrop_path": rewrite_backdrop_paths(
                     request,
                     'episode',
                     episode.id,
                     episode_artwork['backdrop_path'],
                     url_parts=_episode_image_parts,
+                    m3u_account_id=episode_relation.m3u_account_id,
                 ),
                 "movie_image": rewrite_single_image_url(
                     request,
@@ -1487,11 +1499,21 @@ def xc_get_series_info(request, user, series_id):
                     'movie_image',
                     episode_artwork['movie_image'],
                     url_parts=_episode_image_parts,
+                    m3u_account_id=episode_relation.m3u_account_id,
                 ),
-                "rating": float(episode.rating or 0),
-                "release_date": f"{episode.air_date}" if episode.air_date else "",
-                "duration_secs": (episode.duration_secs or 0),
-                "duration": format_duration_hms(episode.duration_secs),
+                "rating": float(provider_info.get('rating') or episode.rating or 0),
+                "release_date": str(
+                    provider_info.get('release_date')
+                    or provider_info.get('air_date')
+                    or episode.air_date
+                    or ""
+                ),
+                "duration_secs": provider_info.get(
+                    'duration_secs', episode.duration_secs or 0
+                ),
+                "duration": provider_info.get('duration') or format_duration_hms(
+                    episode.duration_secs
+                ),
                 "video": video,
                 "audio": audio,
                 "bitrate": bitrate,

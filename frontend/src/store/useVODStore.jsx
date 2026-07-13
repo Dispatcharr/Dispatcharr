@@ -90,6 +90,8 @@ const getSeriesDetails = (response, seriesId) => {
     o_name: response.o_name || '',
     age: response.age || '',
     m3u_account: response.m3u_account || '',
+    category_id: response.category_id || null,
+    category_name: response.category_name || '',
     youtube_trailer: response.custom_properties?.youtube_trailer || '',
   };
 };
@@ -97,7 +99,8 @@ const getSeriesDetails = (response, seriesId) => {
 const getEpisodeDetails = (episode, seasonNumber, seriesInfo) => {
   return {
     id: episode.id,
-    stream_id: episode.id,
+    stream_id: episode.stream_id || episode.id,
+    relation_id: episode.relation_id || null,
     name: episode.title || '',
     description: episode.plot || '',
     season_number: parseInt(seasonNumber) || 0,

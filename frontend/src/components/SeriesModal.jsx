@@ -359,16 +359,21 @@ const SeriesModal = ({ series, opened, onClose }) => {
 
   useEffect(() => {
     if (opened && series) {
+      let cancelled = false;
       const requestId = ++detailsRequestIdRef.current;
+
+      setDetailedSeries(null);
+      setProviders([]);
+      setSelectedProvider(null);
       // Fetch detailed series info which now includes episodes
       setLoadingDetails(true);
       fetchSeriesInfo(series.id)
         .then((details) => {
-          if (detailsRequestIdRef.current !== requestId) return;
+          if (cancelled || requestId !== detailsRequestIdRef.current) return;
           setDetailedSeries(details);
         })
         .catch((error) => {
-          if (detailsRequestIdRef.current !== requestId) return;
+          if (cancelled || requestId !== detailsRequestIdRef.current) return;
           console.warn(
             'Failed to fetch series details, using basic info:',
             error
@@ -376,7 +381,7 @@ const SeriesModal = ({ series, opened, onClose }) => {
           setDetailedSeries(series); // Fallback to basic data
         })
         .finally(() => {
-          if (detailsRequestIdRef.current === requestId) {
+          if (!cancelled && requestId === detailsRequestIdRef.current) {
             setLoadingDetails(false);
           }
         });
@@ -385,18 +390,25 @@ const SeriesModal = ({ series, opened, onClose }) => {
       setLoadingProviders(true);
       fetchSeriesProviders(series.id)
         .then((providersData) => {
+          if (cancelled) return;
           setProviders(providersData);
+          // The backend returns providers in the same priority order used by
+          // the default provider-info request.
           if (providersData.length > 0) {
             setSelectedProvider(providersData[0]);
           }
         })
         .catch((error) => {
           console.error('Failed to fetch series providers:', error);
-          setProviders([]);
+          if (!cancelled) setProviders([]);
         })
         .finally(() => {
-          setLoadingProviders(false);
+          if (!cancelled) setLoadingProviders(false);
         });
+
+      return () => {
+        cancelled = true;
+      };
     }
   }, [opened, series, fetchSeriesInfo, fetchSeriesProviders]);
 
@@ -476,7 +488,7 @@ const SeriesModal = ({ series, opened, onClose }) => {
   };
 
   const onChangeSelectedProvider = (value) => {
-    const provider = providers.find((p) => p.id.toString() === value);
+    const provider = providers.find((p) => p.id.toString() === value) || null;
     setSelectedProvider(provider);
     if (provider) {
       const requestId = ++detailsRequestIdRef.current;
@@ -583,12 +595,15 @@ const SeriesModal = ({ series, opened, onClose }) => {
                   <Group spacing="md">
                     <Badge color="blue" variant="light">
                       {displaySeries.m3u_account.name}
+                      {displaySeries.category_name
+                        ? ` — ${displaySeries.category_name}`
+                        : ''}
                     </Badge>
                   </Group>
                 ) : providers.length === 1 ? (
                   <Group spacing="md">
                     <Badge color="blue" variant="light">
-                      {providers[0].m3u_account.name}
+                      {formatStreamLabel(providers[0])}
                     </Badge>
                     {providers[0].stream_id && (
                       <Badge color="orange" variant="outline" size="xs">
