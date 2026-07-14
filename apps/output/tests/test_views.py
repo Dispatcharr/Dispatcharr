@@ -564,14 +564,20 @@ class XcVodSeriesDistinctTests(TestCase):
             year=2025,
             tmdb_id="12345",
         )
+        source_names = (
+            "NF - Shared Movie",
+            "DE - Shared Movie",
+            "KIDS - Shared Movie",
+        )
         relations = [
             M3UMovieRelation.objects.create(
                 m3u_account=account,
                 movie=movie,
                 category=category,
                 stream_id=f"movie-{category.id}",
+                custom_properties={"basic_data": {"name": source_name}},
             )
-            for category in categories
+            for category, source_name in zip(categories, source_names)
         ]
 
         results = xc_get_vod_streams(self.request, self.user)
@@ -585,6 +591,7 @@ class XcVodSeriesDistinctTests(TestCase):
             {row["category_id"] for row in results},
             {str(category.id) for category in categories},
         )
+        self.assertEqual({row["name"] for row in results}, set(source_names))
         self.assertTrue(all(row["tmdb_id"] == "12345" for row in results))
 
     def test_vod_info_keeps_selected_category_relation(self):
@@ -605,7 +612,10 @@ class XcVodSeriesDistinctTests(TestCase):
             category=netflix,
             stream_id="netflix-movie",
             container_extension="mp4",
-            custom_properties={"detailed_info": {"name": "Netflix Movie"}},
+            custom_properties={
+                "basic_data": {"name": "NF - Canonical Movie"},
+                "detailed_info": {"name": "Netflix Movie"},
+            },
             last_advanced_refresh=timezone.now(),
         )
         german_relation = M3UMovieRelation.objects.create(
@@ -614,7 +624,10 @@ class XcVodSeriesDistinctTests(TestCase):
             category=german,
             stream_id="german-movie",
             container_extension="mkv",
-            custom_properties={"detailed_info": {"name": "German Movie"}},
+            custom_properties={
+                "basic_data": {"name": "DE - Canonical Movie"},
+                "detailed_info": {"name": "German Movie"},
+            },
             last_advanced_refresh=timezone.now(),
         )
 
@@ -624,7 +637,9 @@ class XcVodSeriesDistinctTests(TestCase):
             german_relation.id,
         )
 
-        self.assertEqual(info["info"]["name"], "German Movie")
+        self.assertEqual(info["info"]["name"], "DE - Canonical Movie")
+        self.assertEqual(info["info"]["o_name"], "German Movie")
+        self.assertEqual(info["movie_data"]["name"], "DE - Canonical Movie")
         self.assertEqual(info["movie_data"]["stream_id"], german_relation.id)
         self.assertEqual(info["movie_data"]["category_id"], str(german.id))
         self.assertEqual(info["movie_data"]["category_ids"], [german.id])
@@ -779,14 +794,25 @@ class XcVodSeriesDistinctTests(TestCase):
             year=2005,
             tmdb_id="246",
         )
+        source_names = (
+            "NF - Avatar: The Last Airbender",
+            "DE - Avatar: Der Herr der Elemente (US)",
+            "NICK - Avatar: The Last Airbender",
+        )
         relations = [
             M3USeriesRelation.objects.create(
                 m3u_account=account,
                 series=series,
                 category=category,
                 external_series_id=f"avatar-{category.id}",
+                custom_properties={
+                    "basic_data": {"name": source_name},
+                    "detailed_info": {
+                        "name": "Avatar: Der Herr der Elemente (US)"
+                    },
+                },
             )
-            for category in categories
+            for category, source_name in zip(categories, source_names)
         ]
 
         results = xc_get_series(self.request, self.user)
@@ -800,6 +826,7 @@ class XcVodSeriesDistinctTests(TestCase):
             {row["category_id"] for row in results},
             {str(category.id) for category in categories},
         )
+        self.assertEqual({row["name"] for row in results}, set(source_names))
         self.assertTrue(all(row["tmdb_id"] == "246" for row in results))
 
     def test_series_category_selection_keeps_relation_specific_episodes(self):
@@ -831,6 +858,18 @@ class XcVodSeriesDistinctTests(TestCase):
             category=german,
             external_series_id="german-avatar",
         )
+        netflix_series.custom_properties = {
+            **relation_defaults["custom_properties"],
+            "basic_data": {"name": "NF - Avatar"},
+            "detailed_info": {"name": "Avatar"},
+        }
+        netflix_series.save(update_fields=["custom_properties"])
+        german_series.custom_properties = {
+            **relation_defaults["custom_properties"],
+            "basic_data": {"name": "DE - Avatar"},
+            "detailed_info": {"name": "Avatar"},
+        }
+        german_series.save(update_fields=["custom_properties"])
         episode = Episode.objects.create(
             series=series,
             season_number=1,
@@ -874,6 +913,9 @@ class XcVodSeriesDistinctTests(TestCase):
         selected_episode = info["episodes"][1][0]
 
         self.assertEqual(category_results[0]["series_id"], german_series.id)
+        self.assertEqual(category_results[0]["name"], "DE - Avatar")
+        self.assertEqual(info["info"]["name"], "DE - Avatar")
+        self.assertEqual(info["info"]["o_name"], "Avatar")
         self.assertEqual(info["info"]["category_id"], str(german.id))
         self.assertEqual(selected_episode["id"], german_episode.id)
         self.assertEqual(selected_episode["info"]["id"], german_episode.id)
