@@ -17,6 +17,7 @@ celerybeat-schedule*
 dump.rdb
 debugpy*
 uwsgi.sock
+.uwsgi-reload
 package-lock.json
 models
 .idea
