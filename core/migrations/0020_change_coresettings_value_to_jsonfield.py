@@ -1,6 +1,8 @@
 # Generated migration to change CoreSettings value field to JSONField and consolidate settings
 
 import json
+import zoneinfo
+from django.conf import settings as django_settings
 from django.db import migrations, models
 
 
@@ -113,8 +115,15 @@ def consolidate_settings(apps, schema_editor):
     )
 
     # SYSTEM SETTINGS
+    default_time_zone = (
+        getattr(django_settings, "DISPATCHARR_DISPLAY_TZ", None) or "UTC"
+    )
+    try:
+        zoneinfo.ZoneInfo(default_time_zone)
+    except Exception:
+        default_time_zone = "UTC"
     system_settings = {
-        "time_zone": get_value("system-time-zone", "UTC"),
+        "time_zone": get_value("system-time-zone", default_time_zone),
         "max_system_events": int(get_value("max-system-events", 100) or 100),
     }
     CoreSettings.objects.update_or_create(
