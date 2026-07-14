@@ -68,6 +68,58 @@ export function useDebounce(value, delay = 500, callback = null) {
   return debouncedValue;
 }
 
+// Human-readable message for a failed API response (#1261). Backends that
+// are down or timing out answer with whole HTML error pages (Django's
+// "Server Error (500)" page, nginx's 502/504 pages) - rendering those
+// verbatim in a toast is unreadable. JSON error bodies keep their existing
+// formatting; markup and empty bodies collapse to the response's own
+// status line (the full body goes to console.debug for troubleshooting);
+// long plain-text bodies are truncated.
+const ERROR_BODY_MAX_CHARS = 200;
+
+export const formatApiError = (error) => {
+  if (!error || !error.status) {
+    return (error && error.message) || 'Unknown error';
+  }
+
+  // request() attaches the fetch Response as error.response; it carries the
+  // canonical reason phrase and the declared content type.
+  const { status, body, response } = error;
+
+  if (body && typeof body === 'object') {
+    try {
+      return JSON.stringify(body, null, 2);
+    } catch {
+      // Unserializable object; fall through to the string handling below.
+    }
+  }
+
+  const text =
+    typeof body === 'string' ? body.trim() : body == null ? '' : String(body);
+
+  // Trust the declared content type first; sniff only when it is absent
+  // (some proxies omit or mislabel it on error pages).
+  const contentType = response?.headers?.get?.('content-type') || '';
+  const isMarkup =
+    contentType.includes('html') ||
+    contentType.includes('xml') ||
+    text.startsWith('<');
+
+  if (!text || isMarkup) {
+    if (text) {
+      console.debug(`API error ${status} response body:`, text);
+    }
+    // statusText is the protocol's reason phrase ("Bad Gateway"), defined
+    // for every status code. HTTP/2+ does not transmit one, so fall back
+    // to a generic label rather than re-enumerating the HTTP spec here.
+    return `${status} - ${response?.statusText || 'Request failed'}`;
+  }
+
+  return text.length > ERROR_BODY_MAX_CHARS
+    ? `${status} - ${text.slice(0, ERROR_BODY_MAX_CHARS)}...`
+    : `${status} - ${text}`;
+};
+
 export function sleep(ms) {
   return new Promise((resolve) => {
     setTimeout(resolve, ms);
