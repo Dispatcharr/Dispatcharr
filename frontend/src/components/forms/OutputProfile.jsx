@@ -1,8 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useForm } from 'react-hook-form';
-import { yupResolver } from '@hookform/resolvers/yup';
-import * as Yup from 'yup';
-import API from '../../api';
 import {
   Modal,
   TextInput,
@@ -13,27 +10,14 @@ import {
   Stack,
   Checkbox,
 } from '@mantine/core';
-
-const BUILT_IN_COMMANDS = [
-  { value: 'ffmpeg', label: 'FFmpeg' },
-  { value: '__custom__', label: 'Custom…' },
-];
-
-const COMMAND_EXAMPLES = {
-  ffmpeg:
-    '-i pipe:0 -c:v libx264 -b:v 2000k -vf scale=-2:720 -c:a copy -f mpegts pipe:1',
-};
-
-const toCommandSelection = (command) =>
-  BUILT_IN_COMMANDS.find((o) => o.value === command && o.value !== '__custom__')
-    ? command
-    : '__custom__';
-
-const schema = Yup.object({
-  name: Yup.string().required('Name is required'),
-  command: Yup.string().required('Command is required'),
-  parameters: Yup.string(),
-});
+import {
+  addOutputProfile,
+  BUILT_IN_COMMANDS,
+  COMMAND_EXAMPLES,
+  getResolver,
+  toCommandSelection,
+  updateOutputProfile,
+} from '../../utils/forms/OutputProfileUtils';
 
 const OutputProfile = ({ profile = null, isOpen, onClose }) => {
   const [commandSelection, setCommandSelection] = useState('ffmpeg');
@@ -57,7 +41,7 @@ const OutputProfile = ({ profile = null, isOpen, onClose }) => {
     watch,
   } = useForm({
     defaultValues,
-    resolver: yupResolver(schema),
+    resolver: getResolver(),
   });
 
   useEffect(() => {
@@ -67,9 +51,9 @@ const OutputProfile = ({ profile = null, isOpen, onClose }) => {
 
   const onSubmit = async (values) => {
     if (profile?.id) {
-      await API.updateOutputProfile({ id: profile.id, ...values });
+      await updateOutputProfile({ id: profile.id, ...values });
     } else {
-      await API.addOutputProfile(values);
+      await addOutputProfile(values);
     }
     reset();
     onClose();

@@ -1,20 +1,13 @@
 import React, { useEffect, useMemo } from 'react';
 import { useForm } from 'react-hook-form';
-import { yupResolver } from '@hookform/resolvers/yup';
-import * as Yup from 'yup';
-import API from '../../api';
 import { Button, Flex, Modal, TextInput } from '@mantine/core';
+import {
+  getResolver,
+  updateServerGroup,
+  addServerGroup,
+} from '../../utils/forms/ServerGroupUtils';
 
-const schema = Yup.object({
-  name: Yup.string().required('Name is required'),
-});
-
-const ServerGroupForm = ({
-  serverGroup = null,
-  isOpen,
-  onClose,
-  onSaved,
-}) => {
+const ServerGroupForm = ({ serverGroup = null, isOpen, onClose, onSaved }) => {
   const defaultValues = useMemo(
     () => ({
       name: serverGroup?.name || '',
@@ -29,16 +22,13 @@ const ServerGroupForm = ({
     reset,
   } = useForm({
     defaultValues,
-    resolver: yupResolver(schema),
+    resolver: getResolver(),
   });
 
   const onSubmit = async (values) => {
-    let response;
-    if (serverGroup?.id) {
-      response = await API.updateServerGroup({ id: serverGroup.id, ...values });
-    } else {
-      response = await API.addServerGroup(values);
-    }
+    const response = serverGroup?.id
+      ? await updateServerGroup({ id: serverGroup.id, ...values })
+      : await addServerGroup(values);
 
     if (response) {
       onSaved?.(response);
