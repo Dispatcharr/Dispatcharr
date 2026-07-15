@@ -144,6 +144,22 @@ class ByteRangePlaybackTests(TestCase):
         self.assertIsNone(base)
         self.assertEqual(anchor, "2000.0")
 
+    def test_resolve_near_eof_probe_keeps_existing_position(self):
+        # Clients probe ~1.88MB from EOF for duration; must not flash to end.
+        total = 8_783_238_116
+        base, anchor = resolve_stats_playback_fields(
+            timestamp_utc="2026-07-14:14-59",
+            existing_programme_start="2026-07-14:14-59",
+            existing_position_anchor="1000.0",
+            existing_playback_base="2100.0",
+            range_start=total - 1_880_000,
+            representation_length=total,
+            programme_duration_secs=3600,
+            now="2000.0",
+        )
+        self.assertAlmostEqual(base, 2100.0)
+        self.assertEqual(anchor, "1000.0")
+
 
 class TimeshiftStreamStatsTests(TestCase):
     def test_stream_stats_to_metadata_fields(self):

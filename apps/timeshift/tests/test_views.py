@@ -70,7 +70,7 @@ class FindTsSyncTests(TestCase):
         self.assertEqual(_find_ts_sync(preamble + aligned), len(preamble))
 
     def test_returns_minus_one_when_no_chain_exists(self):
-        # Three lone 0x47 bytes that are NOT spaced at 188 — must not be
+        # Three lone 0x47 bytes that are NOT spaced at 188 - must not be
         # mistaken for a sync chain.
         self.assertEqual(_find_ts_sync(b"\x47\x00\x00\x47\x00\x00\x47" * 50), -1)
 
@@ -85,10 +85,11 @@ def _make_ts_payload(size=1024):
     return (packet * ((size // 188) + 1))[:size]
 
 
-def _fake_upstream(status_code, *, content_type="video/mp2t", body=b""):
+def _fake_upstream(status_code, *, content_type="video/mp2t", body=b"", url=None):
     resp = MagicMock()
     resp.status_code = status_code
     resp.headers = {"Content-Type": content_type}
+    resp.url = url or "http://cdn.example.test/timeshift.ts"
     resp.iter_content = MagicMock(return_value=iter([body] if body else []))
     resp.close = MagicMock()
     # Simulate raw.read() for the TS sync peek in _stream_from_provider.
@@ -142,11 +143,103 @@ class StreamFromProviderStatusMappingTests(TestCase):
 
     @patch.object(views, "_open_upstream")
     def test_upstream_403_short_circuits_loop(self, mocked_open):
-        # 403 is decisive (auth) — no retry of further candidates.
+        # 403 is decisive (auth) - no retry of further candidates.
         mocked_open.return_value = _fake_upstream(403)
         response = views._stream_from_provider(**self.kwargs)
         self.assertEqual(response.status_code, 403)
         self.assertEqual(mocked_open.call_count, 1)
+
+    @patch.object(views, "_open_upstream")
+    def test_stores_final_url_after_successful_open(self, mocked_open):
+        redis = _FakeRedis()
+        session_id = "sess-cdn-store"
+        cdn = "http://cdn.example.test/tok/archive.ts"
+        mocked_open.return_value = _fake_upstream(
+            200, body=_make_ts_payload(), url=cdn,
+        )
+        with patch.object(views, "_register_stats_client"), \
+             patch.object(views, "_unregister_stats_client"):
+            response = views._stream_from_provider(
+                **self.kwargs,
+                redis_client=redis,
+                pool_session_id=session_id,
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            redis.hget(views._pool_key(session_id), "final_url"), cdn,
+        )
+
+    @patch.object(views, "_open_upstream")
+    def test_reuses_cached_final_url_without_portal(self, mocked_open):
+        cdn = "http://cdn.example.test/tok/archive.ts"
+        mocked_open.return_value = _fake_upstream(
+            200, body=_make_ts_payload(), url=cdn,
+        )
+        with patch.object(views, "_register_stats_client"), \
+             patch.object(views, "_unregister_stats_client"):
+            response = views._stream_from_provider(
+                **self.kwargs, final_url=cdn,
+            )
+        self.assertEqual(response.status_code, 200)
+        mocked_open.assert_called_once()
+        self.assertEqual(mocked_open.call_args.args[0], cdn)
+        self.assertFalse(mocked_open.call_args.kwargs.get("allow_redirects", True))
+
+    @patch.object(views, "_open_upstream")
+    def test_xc_scrub_rewrite_does_not_byte_map_stats_position(self, mocked_open):
+        # Injected CDN Range is for the provider only; stats must follow the XC
+        # URL timestamp, not archive_offset/programme_duration (false "26:00").
+        cdn = "http://cdn.example.test/timeshift/u/p/60/2026-05-12:17-00/1.ts?token=x"
+        upstream = _fake_upstream(206, body=_make_ts_payload(), url=cdn)
+        upstream.headers["Content-Range"] = "bytes 500000000-999999999/1000000000"
+        upstream.headers["Content-Length"] = "500000000"
+        mocked_open.return_value = upstream
+        kwargs = dict(
+            self.kwargs,
+            final_url=cdn,
+            range_header="bytes=500000000-",
+            rewrite_plain_get=True,
+            presentation_remaining=500000000,
+            presentation_byte_base=500000000,
+            duration_minutes=120,
+        )
+        with patch.object(views, "_register_stats_client") as register_mock, \
+             patch.object(views, "_unregister_stats_client"):
+            response = views._stream_from_provider(**kwargs)
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(register_mock.call_args.kwargs.get("range_start"))
+
+    @patch.object(views, "_open_upstream")
+    def test_expired_final_url_falls_back_to_portal(self, mocked_open):
+        cdn = "http://cdn.example.test/expired.ts"
+        portal = self.kwargs["candidate_urls"][0]
+        redis = _FakeRedis()
+        session_id = "sess-cdn-expire"
+        redis.hset(views._pool_key(session_id), "final_url", cdn)
+        mocked_open.side_effect = [
+            _fake_upstream(403, url=cdn),
+            _fake_upstream(200, body=_make_ts_payload(), url=cdn + "?fresh=1"),
+        ]
+        with patch.object(views, "_register_stats_client"), \
+             patch.object(views, "_unregister_stats_client"):
+            response = views._stream_from_provider(
+                **self.kwargs,
+                final_url=cdn,
+                redis_client=redis,
+                pool_session_id=session_id,
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(mocked_open.call_count, 2)
+        self.assertEqual(mocked_open.call_args_list[0].args[0], cdn)
+        self.assertEqual(mocked_open.call_args_list[1].args[0], portal)
+        self.assertTrue(
+            mocked_open.call_args_list[1].kwargs.get("allow_redirects", True)
+        )
+        # Fresh portal response re-stores CDN URL.
+        self.assertEqual(
+            redis.hget(views._pool_key(session_id), "final_url"),
+            cdn + "?fresh=1",
+        )
 
     @patch.object(views, "_open_upstream")
     def test_upstream_302_short_circuits_loop(self, mocked_open):
@@ -162,7 +255,7 @@ class StreamFromProviderStatusMappingTests(TestCase):
     def test_upstream_500_continues_to_next_candidate(self, mocked_open):
         # A 5xx is format-specific on many XC servers (PHP fatal with
         # display_errors off turns an "Undefined array key" warning into a
-        # hard 500), so the cascade must keep trying — the next timestamp
+        # hard 500), so the cascade must keep trying - the next timestamp
         # shape often succeeds.  Regression: providers that 500 on the first
         # shape used to fail outright because the loop short-circuited.
         mocked_open.side_effect = [
@@ -259,7 +352,7 @@ class StreamFromProviderStatusMappingTests(TestCase):
     @patch.object(views, "_open_upstream")
     def test_cache_promotes_winning_index_to_first(self, mocked_open):
         """Once a candidate succeeds for an account, the next request reorders
-        the list so the cached winner is tried first — saving cascade
+        the list so the cached winner is tried first - saving cascade
         overhead on fast-forward."""
         # locmem cache: isolates this test from the shared Redis-backed django
         # cache (which persists across runs and parallel test sessions).
@@ -280,7 +373,7 @@ class StreamFromProviderStatusMappingTests(TestCase):
         self.assertEqual(mocked_open.call_count, 2)
 
         # Second request: cached winner (index 1) is tried first, succeeds
-        # immediately — no cascade.
+        # immediately - no cascade.
         mocked_open.reset_mock()
         mocked_open.side_effect = [_fake_upstream(200, body=_make_ts_payload())]
         with patch.object(views, "RedisClient"), \
@@ -415,7 +508,7 @@ class StreamFromProviderStatusMappingTests(TestCase):
 
 
 class RedactUrlTests(TestCase):
-    """`_redact_url` is the guard that keeps XC credentials out of logs —
+    """`_redact_url` is the guard that keeps XC credentials out of logs  - 
     both URL forms carry them (query params in format A, path segments in
     format B)."""
 
@@ -686,7 +779,7 @@ def _fake_creds(acc, prof):
 class TimeshiftProxyTimestampWiringTests(TestCase):
     """`timeshift_proxy` must convert the client's UTC timestamp to the
     serving provider's zone for the upstream URL, while keeping the ORIGINAL
-    UTC timestamp for the EPG duration lookup — the only timezone conversion
+    UTC timestamp for the EPG duration lookup - the only timezone conversion
     in the chain."""
 
     def setUp(self):
@@ -723,7 +816,7 @@ class TimeshiftProxyTimestampWiringTests(TestCase):
         self.assertEqual(build_mock.call_args[0][2], "2026-06-08:19-00")
 
     def test_duration_lookup_keeps_original_utc_timestamp(self):
-        # The EPG is stored in UTC — the duration lookup must NOT receive the
+        # The EPG is stored in UTC - the duration lookup must NOT receive the
         # provider-converted value.
         _, _, _, duration_mock, _ = self._call("2026-06-08:17-00")
         self.assertEqual(duration_mock.call_args[0][1], "2026-06-08:17-00")
@@ -822,7 +915,7 @@ class TimeshiftProxyQueryParamMappingTests(TestCase):
 
 class TimeshiftProxyFailoverTests(TestCase):
     """When the first catch-up stream's provider cannot serve the archive,
-    the proxy must fail over to the channel's next catch-up stream — each
+    the proxy must fail over to the channel's next catch-up stream - each
     attempt with its own provider context."""
 
     def setUp(self):
@@ -934,7 +1027,7 @@ class TimeshiftProxyFailoverTests(TestCase):
 
 
 class _ProxyLoopTestMixin:
-    """Shared driver for tests exercising the failover loop end to end —
+    """Shared driver for tests exercising the failover loop end to end  - 
     pool reservation, credential resolution and Redis are all controlled."""
 
     def setUp(self):
@@ -990,7 +1083,7 @@ class TimeshiftProxyFailoverHardeningTests(_ProxyLoopTestMixin, TestCase):
     def test_decisive_failure_skips_same_accounts_other_streams(self):
         # Account 1 carries two variants (e.g. FHD + HD). A decisive
         # (auth/ban-class) failure on the first must NOT retry account 1's
-        # second stream — that would hammer a banning provider — but a
+        # second stream - that would hammer a banning provider - but a
         # DIFFERENT account stays fair game.
         streams = [
             _make_catchup_stream(account_id=1, stream_id="111"),
@@ -1008,7 +1101,7 @@ class TimeshiftProxyFailoverHardeningTests(_ProxyLoopTestMixin, TestCase):
 
     def test_soft_failure_still_tries_same_accounts_other_streams(self):
         # A soft failure (404: this stream's archive missing) is stream-
-        # specific — the same account's other variant may still have it.
+        # specific - the same account's other variant may still have it.
         streams = [
             _make_catchup_stream(account_id=1, stream_id="111"),
             _make_catchup_stream(account_id=1, stream_id="112"),
@@ -1109,7 +1202,7 @@ class StreamFromProviderDecisiveEdgeTests(TestCase):
 
     @patch.object(views, "_open_upstream")
     def test_406_is_decisive_and_marks_response(self, mocked_open):
-        # 406 = IP-wide block in the XC ban escalation — single attempt,
+        # 406 = IP-wide block in the XC ban escalation - single attempt,
         # generic 400 to the client, and the failover loop must see the
         # decisive marker so it skips this account's other streams.
         mocked_open.return_value = _fake_upstream(406)
@@ -1139,7 +1232,7 @@ class StreamFromProviderDecisiveEdgeTests(TestCase):
 
 class CatchupStreamsDbTests(TestCase):
     """get_channel_catchup_streams: the function that defines the failover
-    order — channelstream order, catch-up streams only, active accounts only."""
+    order - channelstream order, catch-up streams only, active accounts only."""
 
     @classmethod
     def setUpTestData(cls):
@@ -1186,7 +1279,7 @@ class CatchupStreamsDbTests(TestCase):
 
 class AuthHelpersDbTests(TestCase):
     """_authenticate_user (xc_password custom property) and
-    _user_can_access_channel (user_level gate) — exercised against real models
+    _user_can_access_channel (user_level gate) - exercised against real models
     instead of being mocked away."""
 
     @classmethod
@@ -1215,7 +1308,7 @@ class AuthHelpersDbTests(TestCase):
 
     def test_user_without_xc_password_rejected(self):
         # Accounts with no xc_password set (e.g. admins) must be denied even
-        # if the caller guesses any string — there is nothing to compare to.
+        # if the caller guesses any string - there is nothing to compare to.
         self.assertIsNone(views._authenticate_user("ts-test-noxc", ""))
         self.assertIsNone(views._authenticate_user("ts-test-noxc", "anything"))
 
@@ -1321,7 +1414,7 @@ class TimeshiftSlotPoolTests(_ProxyLoopTestMixin, TestCase):
 
     def test_capacity_failure_is_not_decisive_for_the_account(self):
         # profile_full on account 1's first stream must NOT mark account 1
-        # decisive — capacity is transient, unlike a ban-class status.
+        # decisive - capacity is transient, unlike a ban-class status.
         streams = [
             _make_catchup_stream(account_id=1, stream_id="111", profile_id=31),
             _make_catchup_stream(account_id=1, stream_id="112", profile_id=31),
@@ -1347,7 +1440,7 @@ class TimeshiftSlotPoolTests(_ProxyLoopTestMixin, TestCase):
 
     def test_exception_from_provider_releases_slot(self):
         # An unexpected exception between reserve and response construction
-        # must release the slot before propagating — otherwise the counter
+        # must release the slot before propagating - otherwise the counter
         # (no TTL) leaks until the next Redis flush.
         streams = [_make_catchup_stream(account_id=1, stream_id="111", profile_id=31)]
         with self.assertRaises(RuntimeError):
@@ -1357,7 +1450,7 @@ class TimeshiftSlotPoolTests(_ProxyLoopTestMixin, TestCase):
 
     def test_exception_before_upstream_releases_slot(self):
         # Same guarantee for failures BEFORE the upstream call (URL building,
-        # credential resolution, user-agent lookup) — the guarded window
+        # credential resolution, user-agent lookup) - the guarded window
         # starts right after the reservation.
         streams = [_make_catchup_stream(account_id=1, stream_id="111", profile_id=31)]
         with self.assertRaises(RuntimeError):
@@ -1642,6 +1735,16 @@ class TimeshiftSessionReuseTests(TestCase):
         with patch.object(views, "release_profile_slot"):
             views._release_pool_session(self.redis, self.SESSION, 31)
 
+    def test_store_pool_provider_user_agent_snapshots_resolved_value(self):
+        _seed_pool_session(self.redis, session_id=self.SESSION)
+        views._store_pool_provider_user_agent(
+            self.redis, self.SESSION, "provider-agent",
+        )
+        self.assertEqual(
+            self.redis.hget(self._pool_key(), "provider_user_agent"),
+            "provider-agent",
+        )
+
     def test_wait_returns_none_without_blocking_when_pool_empty(self):
         start = time.monotonic()
         acquired = views._wait_for_idle_pool_session(self.redis, self.SESSION)
@@ -1825,7 +1928,7 @@ class TimeshiftSessionReuseTests(TestCase):
         self.assertEqual(matched, "old")
 
     def test_fresh_session_id_does_not_adopt_idle_exact_media_pool(self):
-        """TiviMate FF race: redirect mints a new session, then reconnects to
+        """FF race: redirect mints a new session, then reconnects to
         the old programme timestamp before the real seek arrives. Must not
         fingerprint-adopt the idle pool from the previous session."""
         old_session = "oldrewsession1"
@@ -2039,8 +2142,381 @@ class TimeshiftSessionReuseTests(TestCase):
             )
         return response, ok, attempt_mock
 
+    def test_session_scrub_reuses_final_url_and_injects_range(self):
+        # Client FF rebuilds /timeshift/.../<new_start>/... with the same
+        # session_id. That must Range-seek the open CDN archive, not portal.
+        _seed_pool_session(self.redis, session_id=self.SESSION)
+        cdn = "http://cdn.example/archive.ts?token=ok"
+        self.redis.hset(self._pool_key(), mapping={
+            "final_url": cdn,
+            "content_length": "1800000000",
+            "archive_anchor_ts": "2026-06-08:17-00",
+            "archive_duration_secs": "3600",
+        })
+        profile = MagicMock(id=31, custom_properties={})
+        account = MagicMock(id=1)
+        ok = MagicMock(status_code=200)
+        with patch.object(views.M3UAccount.objects, "get", return_value=account), \
+             patch.object(views, "_attempt_timeshift_stream",
+                          return_value=ok) as attempt_mock:
+            views._stream_reused_session(
+                self.redis,
+                session_id=self.SESSION,
+                descriptor={
+                    "account_id": "1",
+                    "stream_id": "111",
+                    "media_id": TEST_MEDIA_ID,
+                    "provider_timestamp": "2026-06-08:19-00",
+                    "provider_tz_name": "Europe/Brussels",
+                    "final_url": cdn,
+                    "content_length": "1800000000",
+                    "archive_anchor_ts": "2026-06-08:17-00",
+                    "archive_duration_secs": "3600",
+                },
+                profile=profile,
+                channel=self.channel,
+                media_id="8_2026-06-08-17-30",
+                safe_ts="2026-06-08-17-30",
+                timestamp="2026-06-08:17-30",
+                duration_minutes=40,
+                client_id=self.SESSION,
+                client_ip="1.2.3.4",
+                client_user_agent="test-agent",
+                range_header=None,
+                channel_logo_id=None,
+                user=self.user,
+                debug=False,
+            )
+        kwargs = attempt_mock.call_args.kwargs
+        self.assertEqual(kwargs.get("final_url"), cdn)
+        self.assertTrue(kwargs.get("rewrite_plain_get"))
+        self.assertTrue(kwargs.get("range_header", "").startswith("bytes="))
+        self.assertIsNotNone(kwargs.get("presentation_remaining"))
+        self.assertIsNotNone(kwargs.get("presentation_byte_base"))
+        # Archive CDN state must survive the media_id move.
+        self.assertEqual(self.redis.hget(self._pool_key(), "final_url"), cdn)
+
+    def test_session_scrub_reuses_opaque_final_url(self):
+        """Opaque CDNs still scrub via Range on the cached URL (no portal hop)."""
+        _seed_pool_session(self.redis, session_id=self.SESSION)
+        opaque = "http://opaque-cdn.example/hash/token/t5/test-stream/serve"
+        self.redis.hset(self._pool_key(), mapping={
+            "final_url": opaque,
+            "content_length": "722718720",
+            "archive_anchor_ts": "2026-06-08:17-00",
+            "archive_duration_secs": "2100",
+        })
+        profile = MagicMock(id=31, custom_properties={})
+        account = MagicMock(id=1)
+        ok = MagicMock(status_code=200)
+        with patch.object(views.M3UAccount.objects, "get", return_value=account), \
+             patch.object(views, "_attempt_timeshift_stream",
+                          return_value=ok) as attempt_mock:
+            views._stream_reused_session(
+                self.redis,
+                session_id=self.SESSION,
+                descriptor={
+                    "account_id": "1",
+                    "stream_id": "111",
+                    "media_id": TEST_MEDIA_ID,
+                    "provider_timestamp": "2026-06-08:19-00",
+                    "provider_tz_name": "Europe/Brussels",
+                    "final_url": opaque,
+                    "content_length": "722718720",
+                    "archive_anchor_ts": "2026-06-08:17-00",
+                    "archive_duration_secs": "2100",
+                },
+                profile=profile,
+                channel=self.channel,
+                media_id="8_2026-06-08-17-11",
+                safe_ts="2026-06-08-17-11",
+                timestamp="2026-06-08:17-11",
+                duration_minutes=35,
+                client_id=self.SESSION,
+                client_ip="1.2.3.4",
+                client_user_agent="test-agent",
+                range_header=None,
+                channel_logo_id=None,
+                user=self.user,
+                debug=False,
+            )
+        kwargs = attempt_mock.call_args.kwargs
+        self.assertEqual(kwargs.get("final_url"), opaque)
+        self.assertTrue(kwargs.get("rewrite_plain_get"))
+        self.assertTrue(str(kwargs.get("range_header") or "").startswith("bytes="))
+
+    def test_session_range_after_scrub_maps_through_presentation_base(self):
+        # After a scrub rewrite, near-EOF probes are relative to the presented
+        # window, not the full CDN file.
+        _seed_pool_session(self.redis, session_id=self.SESSION)
+        cdn = "http://cdn.example/archive.ts?token=ok"
+        base = 314_934_968
+        remaining = 419_913_672
+        self.redis.hset(self._pool_key(), mapping={
+            "final_url": cdn,
+            "content_length": str(base + remaining),
+            "archive_anchor_ts": "2026-06-08:17-00",
+            "archive_duration_secs": "3600",
+            "presentation_length": str(remaining),
+            "presentation_byte_base": str(base),
+            "media_id": "8_2026-06-08-17-30",
+        })
+        profile = MagicMock(id=31, custom_properties={})
+        account = MagicMock(id=1)
+        ok = MagicMock(status_code=206)
+        client_range = f"bytes={remaining - 112_800}-"
+        with patch.object(views.M3UAccount.objects, "get", return_value=account), \
+             patch.object(views, "_attempt_timeshift_stream",
+                          return_value=ok) as attempt_mock:
+            views._stream_reused_session(
+                self.redis,
+                session_id=self.SESSION,
+                descriptor={
+                    "account_id": "1",
+                    "stream_id": "111",
+                    "media_id": "8_2026-06-08-17-30",
+                    "provider_timestamp": "2026-06-08:19-30",
+                    "provider_tz_name": "Europe/Brussels",
+                    "final_url": cdn,
+                    "content_length": str(base + remaining),
+                    "archive_anchor_ts": "2026-06-08:17-00",
+                    "archive_duration_secs": "3600",
+                    "presentation_length": str(remaining),
+                    "presentation_byte_base": str(base),
+                },
+                profile=profile,
+                channel=self.channel,
+                media_id="8_2026-06-08-17-30",
+                safe_ts="2026-06-08-17-30",
+                timestamp="2026-06-08:17-30",
+                duration_minutes=40,
+                client_id=self.SESSION,
+                client_ip="1.2.3.4",
+                client_user_agent="test-agent",
+                range_header=client_range,
+                channel_logo_id=None,
+                user=self.user,
+                debug=False,
+            )
+        kwargs = attempt_mock.call_args.kwargs
+        self.assertEqual(
+            kwargs.get("range_header"),
+            f"bytes={base + remaining - 112_800}-",
+        )
+        self.assertTrue(kwargs.get("relative_presentation_range"))
+        self.assertFalse(kwargs.get("rewrite_plain_get"))
+        self.assertEqual(kwargs.get("final_url"), cdn)
+
+    def test_return_to_archive_start_resets_presentation_base(self):
+        """Scrubbing back to the archive open must clear the prior scrub window."""
+        _seed_pool_session(self.redis, session_id=self.SESSION)
+        cdn = "http://cdn.example/archive.ts?token=ok"
+        archive_total = 870_621_184
+        stale_base = 348_248_380
+        self.redis.hset(self._pool_key(), mapping={
+            "final_url": cdn,
+            "content_length": str(archive_total),
+            "archive_anchor_ts": "2026-06-08:17-00",
+            "archive_duration_secs": "2100",
+            "presentation_length": str(archive_total - stale_base),
+            "presentation_byte_base": str(stale_base),
+            "media_id": "8_2026-06-08-17-14",
+        })
+        profile = MagicMock(id=31, custom_properties={})
+        account = MagicMock(id=1)
+        ok = MagicMock(status_code=200)
+        with patch.object(views.M3UAccount.objects, "get", return_value=account), \
+             patch.object(views, "_attempt_timeshift_stream",
+                          return_value=ok) as attempt_mock:
+            views._stream_reused_session(
+                self.redis,
+                session_id=self.SESSION,
+                descriptor={
+                    "account_id": "1",
+                    "stream_id": "111",
+                    "media_id": "8_2026-06-08-17-14",
+                    "provider_timestamp": "2026-06-08:19-14",
+                    "provider_tz_name": "Europe/Brussels",
+                    "final_url": cdn,
+                    "content_length": str(archive_total),
+                    "archive_anchor_ts": "2026-06-08:17-00",
+                    "archive_duration_secs": "2100",
+                    "presentation_length": str(archive_total - stale_base),
+                    "presentation_byte_base": str(stale_base),
+                },
+                profile=profile,
+                channel=self.channel,
+                media_id=TEST_MEDIA_ID,
+                safe_ts="2026-06-08-17-00",
+                timestamp="2026-06-08:17-00",
+                duration_minutes=35,
+                client_id=self.SESSION,
+                client_ip="1.2.3.4",
+                client_user_agent="test-agent",
+                range_header=None,
+                channel_logo_id=None,
+                user=self.user,
+                debug=False,
+            )
+        kwargs = attempt_mock.call_args.kwargs
+        self.assertEqual(kwargs.get("presentation_byte_base"), 0)
+        self.assertEqual(kwargs.get("presentation_remaining"), archive_total)
+        self.assertIsNone(kwargs.get("range_header"))
+        self.assertFalse(kwargs.get("rewrite_plain_get"))
+        self.assertFalse(kwargs.get("relative_presentation_range"))
+
+    def test_return_to_archive_start_range_skips_stale_presentation_map(self):
+        """Ranges after return-to-start are archive-absolute, not scrub-relative."""
+        _seed_pool_session(self.redis, session_id=self.SESSION)
+        cdn = "http://cdn.example/archive.ts?token=ok"
+        archive_total = 870_621_184
+        stale_base = 348_248_380
+        client_range = f"bytes={archive_total - 112_800}-"
+        self.redis.hset(self._pool_key(), mapping={
+            "final_url": cdn,
+            "content_length": str(archive_total),
+            "archive_anchor_ts": "2026-06-08:17-00",
+            "archive_duration_secs": "2100",
+            "presentation_length": str(archive_total - stale_base),
+            "presentation_byte_base": str(stale_base),
+            "media_id": TEST_MEDIA_ID,
+        })
+        profile = MagicMock(id=31, custom_properties={})
+        account = MagicMock(id=1)
+        ok = MagicMock(status_code=206)
+        with patch.object(views.M3UAccount.objects, "get", return_value=account), \
+             patch.object(views, "_attempt_timeshift_stream",
+                          return_value=ok) as attempt_mock:
+            views._stream_reused_session(
+                self.redis,
+                session_id=self.SESSION,
+                descriptor={
+                    "account_id": "1",
+                    "stream_id": "111",
+                    "media_id": TEST_MEDIA_ID,
+                    "provider_timestamp": "2026-06-08:19-00",
+                    "provider_tz_name": "Europe/Brussels",
+                    "final_url": cdn,
+                    "content_length": str(archive_total),
+                    "archive_anchor_ts": "2026-06-08:17-00",
+                    "archive_duration_secs": "2100",
+                    "presentation_length": str(archive_total - stale_base),
+                    "presentation_byte_base": str(stale_base),
+                },
+                profile=profile,
+                channel=self.channel,
+                media_id=TEST_MEDIA_ID,
+                safe_ts="2026-06-08-17-00",
+                timestamp="2026-06-08:17-00",
+                duration_minutes=35,
+                client_id=self.SESSION,
+                client_ip="1.2.3.4",
+                client_user_agent="test-agent",
+                range_header=client_range,
+                channel_logo_id=None,
+                user=self.user,
+                debug=False,
+            )
+        kwargs = attempt_mock.call_args.kwargs
+        self.assertEqual(kwargs.get("range_header"), client_range)
+        self.assertEqual(kwargs.get("presentation_byte_base"), 0)
+        self.assertFalse(kwargs.get("relative_presentation_range"))
+
+    def test_session_scrub_outside_window_forces_portal(self):
+        _seed_pool_session(self.redis, session_id=self.SESSION)
+        stale_cdn = "http://cdn.example/old.ts?token=stale"
+        self.redis.hset(self._pool_key(), mapping={
+            "final_url": stale_cdn,
+            "content_length": "1800000000",
+            "archive_anchor_ts": "2026-06-08:17-00",
+            "archive_duration_secs": "1800",  # 30 min window
+        })
+        profile = MagicMock(id=31, custom_properties={})
+        account = MagicMock(id=1)
+        ok = MagicMock(status_code=200)
+        with patch.object(views.M3UAccount.objects, "get", return_value=account), \
+             patch.object(views, "_attempt_timeshift_stream",
+                          return_value=ok) as attempt_mock:
+            views._stream_reused_session(
+                self.redis,
+                session_id=self.SESSION,
+                descriptor={
+                    "account_id": "1",
+                    "stream_id": "111",
+                    "media_id": TEST_MEDIA_ID,
+                    "provider_timestamp": "2026-06-08:19-00",
+                    "provider_tz_name": "Europe/Brussels",
+                    "final_url": stale_cdn,
+                    "content_length": "1800000000",
+                    "archive_anchor_ts": "2026-06-08:17-00",
+                    "archive_duration_secs": "1800",
+                },
+                profile=profile,
+                channel=self.channel,
+                # 40 minutes after anchor, outside the 30 min archive window.
+                media_id="8_2026-06-08-17-40",
+                safe_ts="2026-06-08-17-40",
+                timestamp="2026-06-08:17-40",
+                duration_minutes=40,
+                client_id=self.SESSION,
+                client_ip="1.2.3.4",
+                client_user_agent="test-agent",
+                range_header=None,
+                channel_logo_id=None,
+                user=self.user,
+                debug=False,
+            )
+        self.assertIsNone(attempt_mock.call_args.kwargs.get("final_url"))
+        self.assertIsNone(self.redis.hget(self._pool_key(), "final_url"))
+
+    def test_same_programme_reuse_keeps_final_url(self):
+        _seed_pool_session(self.redis, session_id=self.SESSION)
+        cdn = "http://cdn.example/same.ts?token=ok"
+        self.redis.hset(self._pool_key(), mapping={
+            "final_url": cdn,
+            "content_length": "1000000",
+            "archive_anchor_ts": "2026-06-08:17-00",
+            "archive_duration_secs": "3600",
+        })
+        profile = MagicMock(id=31, custom_properties={})
+        account = MagicMock(id=1)
+        ok = MagicMock(status_code=200)
+        with patch.object(views.M3UAccount.objects, "get", return_value=account), \
+             patch.object(views, "_attempt_timeshift_stream",
+                          return_value=ok) as attempt_mock:
+            views._stream_reused_session(
+                self.redis,
+                session_id=self.SESSION,
+                descriptor={
+                    "account_id": "1",
+                    "stream_id": "111",
+                    "media_id": TEST_MEDIA_ID,
+                    "provider_timestamp": "2026-06-08:19-00",
+                    "provider_tz_name": "Europe/Brussels",
+                    "final_url": cdn,
+                    "content_length": "1000000",
+                    "archive_anchor_ts": "2026-06-08:17-00",
+                    "archive_duration_secs": "3600",
+                },
+                profile=profile,
+                channel=self.channel,
+                media_id=TEST_MEDIA_ID,
+                safe_ts="2026-06-08-17-00",
+                timestamp="2026-06-08:17-00",
+                duration_minutes=40,
+                client_id=self.SESSION,
+                client_ip="1.2.3.4",
+                client_user_agent="test-agent",
+                range_header=None,
+                channel_logo_id=None,
+                user=self.user,
+                debug=False,
+            )
+        self.assertEqual(attempt_mock.call_args.kwargs.get("final_url"), cdn)
+        self.assertFalse(attempt_mock.call_args.kwargs.get("rewrite_plain_get"))
+
     def test_reused_session_serves_requested_timestamp_not_stored_anchor(self):
-        # Field bug: rewind to X, play, then FF — TiviMate keeps the
+        # Field bug: rewind to X, play, then FF. Some clients keep the
         # ?session_id= query when rebuilding the seek URL with a new start,
         # and the reused session replayed the STORED position, snapping
         # playback back to the rewind anchor X. The reuse path must always
@@ -2050,7 +2526,7 @@ class TimeshiftSessionReuseTests(TestCase):
             "2026-06-08:17-30", "8_2026-06-08-17-30",
         )
         self.assertIs(response, ok)
-        # June -> CEST: 17:30 UTC reaches the provider as 19:30 local — never
+        # June -> CEST: 17:30 UTC reaches the provider as 19:30 local, never
         # the session's stored 19:00 anchor.
         self.assertEqual(
             attempt_mock.call_args.kwargs["provider_timestamp"],
@@ -2075,28 +2551,37 @@ class TimeshiftSessionReuseTests(TestCase):
         )
 
     def test_position_move_drops_previous_byte_state(self):
-        # content_length / serving_range describe ONE provider file; carrying
-        # them across a seek would feed the near-EOF/displacement heuristics
-        # another programme's size. A same-position update must keep them.
+        # content_length / serving_range / final_url describe ONE provider file;
+        # carrying them across a seek would feed near-EOF heuristics another
+        # programme's size and hit the wrong CDN token. Same-position keeps them.
         _seed_pool_session(self.redis, session_id=self.SESSION)
         self.redis.hset(self._pool_key(), mapping={
-            "content_length": "2000000000", "serving_range": "start",
+            "content_length": "2000000000",
+            "serving_range": "start",
+            "final_url": "http://cdn.example/old.ts",
         })
         self._call_reused_session(
             "2026-06-08:17-30", "8_2026-06-08-17-30",
         )
         self.assertIsNone(self.redis.hget(self._pool_key(), "content_length"))
         self.assertIsNone(self.redis.hget(self._pool_key(), "serving_range"))
+        self.assertIsNone(self.redis.hget(self._pool_key(), "final_url"))
 
         # Same-position call (media unchanged): byte state survives.
         self.redis.hset(self._pool_key(), mapping={
-            "content_length": "1000000", "serving_range": "range",
+            "content_length": "1000000",
+            "serving_range": "range",
+            "final_url": "http://cdn.example/same.ts",
         })
         self._call_reused_session(
             "2026-06-08:17-30", "8_2026-06-08-17-30",
         )
         self.assertEqual(
             self.redis.hget(self._pool_key(), "content_length"), "1000000",
+        )
+        self.assertEqual(
+            self.redis.hget(self._pool_key(), "final_url"),
+            "http://cdn.example/same.ts",
         )
 
     def test_position_update_never_resurrects_vanished_entry(self):
@@ -2284,6 +2769,12 @@ class TimeshiftSessionRedirectTests(TestCase):
             client_ip="127.0.0.1",
             client_user_agent="vlc-test",
             busy="1",
+        )
+        # Programme-change preempt ignores hops within the startup window.
+        redis.hset(
+            views._pool_key(existing),
+            "last_activity",
+            str(time.time() - 10.0),
         )
         request = self.factory.get(
             "/timeshift/u/p/8/2026-06-08:17-30/8.ts",
@@ -2504,7 +2995,7 @@ class FakeRedisScanTests(TestCase):
 
 
 class TimeshiftRangeClassificationTests(TestCase):
-    """Startup probes must not be treated as scrubs."""
+    """Range classification and presentation helpers."""
 
     def test_full_file_request_is_not_displacing(self):
         self.assertFalse(views._should_displace_busy_playback(None))
@@ -2515,6 +3006,7 @@ class TimeshiftRangeClassificationTests(TestCase):
         )
 
     def test_bytes_zero_does_not_displace_active_start_stream(self):
+        # Scrub rule still false; residual same-session path preempts at serve time.
         self.assertFalse(
             views._should_displace_busy_playback("bytes=0-", busy_serving_range="start")
         )
@@ -2526,6 +3018,83 @@ class TimeshiftRangeClassificationTests(TestCase):
         self.assertTrue(views._is_near_eof_probe("bytes=2527702896-"))
         self.assertFalse(views._should_displace_busy_playback("bytes=2527702896-"))
 
+    def test_cap_open_ended_range_limits_probe_span(self):
+        self.assertEqual(
+            views._cap_open_ended_range("bytes=1000-", 100),
+            "bytes=1000-1099",
+        )
+        self.assertEqual(
+            views._cap_open_ended_range("bytes=1000-2000", 100),
+            "bytes=1000-2000",
+        )
+
+    def test_resolve_session_archive_scrub_maps_ff_offset(self):
+        scrub = views._resolve_session_archive_scrub(
+            {
+                "final_url": "http://cdn/x",
+                "content_length": "1800000000",
+                "archive_anchor_ts": "2026-06-08:17-00",
+                "archive_duration_secs": "3600",
+            },
+            "2026-06-08:17-30",
+        )
+        self.assertEqual(scrub["kind"], "scrub")
+        # 30 minutes into 60 minutes ≈ half file, aligned to 188-byte TS packets.
+        self.assertEqual(scrub["byte_offset"] % 188, 0)
+        self.assertAlmostEqual(scrub["byte_offset"] / 1800000000, 0.5, places=2)
+        self.assertEqual(scrub["remaining"], 1800000000 - scrub["byte_offset"])
+
+    def test_resolve_session_archive_scrub_rejects_outside_window(self):
+        self.assertIsNone(
+            views._resolve_session_archive_scrub(
+                {
+                    "final_url": "http://cdn/x",
+                    "content_length": "1800000000",
+                    "archive_anchor_ts": "2026-06-08:17-00",
+                    "archive_duration_secs": "1800",
+                },
+                "2026-06-08:17-40",
+            )
+        )
+
+    def test_map_client_range_through_presentation(self):
+        self.assertEqual(
+            views._map_client_range_through_presentation(
+                "bytes=419800872-", 314934968,
+            ),
+            "bytes=734735840-",
+        )
+        self.assertEqual(
+            views._map_client_range_through_presentation(
+                "bytes=100-200", 1000,
+            ),
+            "bytes=1100-1200",
+        )
+
+    def test_presentation_relative_content_range(self):
+        self.assertEqual(
+            views._presentation_relative_content_range(
+                "bytes 314934968-734848639/734848640",
+                presentation_byte_base=314934968,
+                presentation_length=419913672,
+            ),
+            "bytes 0-419913671/419913672",
+        )
+
+    def test_near_eof_probe_uses_presentation_length_not_full_archive(self):
+        # After scrub rewrite CL≈420MB; Range near that end must not displace
+        # (XC parallel probe) even though the offset is mid-file on the CDN archive.
+        self.assertTrue(
+            views._is_near_eof_probe(
+                "bytes=419800872-", content_length="419913672",
+            )
+        )
+        self.assertFalse(
+            views._should_displace_busy_playback(
+                "bytes=419800872-", content_length="419913672",
+            )
+        )
+
     def test_near_eof_probe_uses_cached_content_length(self):
         # 5 MB into a 10 MB file is a scrub, not a tail probe.
         self.assertFalse(
@@ -2534,9 +3103,20 @@ class TimeshiftRangeClassificationTests(TestCase):
         self.assertTrue(
             views._should_displace_busy_playback("bytes=5000000-", content_length="10000000")
         )
-        # Within 512 KB of EOF is a tail probe once length is known.
+        # Within 2 MiB of EOF (incl. common 1.88MB / 10000-packet probes).
         self.assertTrue(
             views._is_near_eof_probe("bytes=9990000-", content_length="10000000")
+        )
+        total = 8_783_238_116
+        self.assertTrue(
+            views._is_near_eof_probe(
+                f"bytes={total - 1_880_000}-", content_length=str(total),
+            )
+        )
+        self.assertFalse(
+            views._should_displace_busy_playback(
+                f"bytes={total - 1_880_000}-", content_length=str(total),
+            )
         )
 
     def test_midfile_seek_is_displacing(self):
@@ -2590,6 +3170,31 @@ class TimeshiftRangeClassificationTests(TestCase):
                 "8_2026-06-08-17-30",
             ),
         )
+
+    def test_active_playback_seek_always_preempts(self):
+        # Heartbeats keep last_activity fresh; seek during play must still preempt.
+        redis = _FakeRedis()
+        _seed_pool_session(
+            redis, session_id=TEST_SESSION_ID,
+            media_id="8_2026-06-08-17-00",
+        )
+        redis.hset(
+            views._pool_key(TEST_SESSION_ID),
+            "last_activity",
+            str(views.time.time()),
+        )
+        user = MagicMock(id=5)
+        with patch.object(
+            views, "_session_has_active_timeshift_stream", return_value=True,
+        ):
+            self.assertTrue(
+                views._should_preempt_for_programme_change(
+                    redis, TEST_SESSION_ID,
+                    "8_2026-06-08-17-00",
+                    "8_2026-06-08-17-30",
+                    user=user,
+                ),
+            )
 
 
 class TimeshiftStatsClientTests(TestCase):
@@ -3991,13 +4596,10 @@ class TimeshiftScrubPreemptTests(TestCase):
                 request, "u", "p", "8", "2026-06-08:17-00", "8.ts",
             )
         self.assertIs(response, ok)
-        reacquire_mock.assert_called_once_with(
-            self.redis, existing, user_id=5, user=self.user,
-            wait_seconds=views._POOL_SCRUB_WAIT_SECONDS,
-        )
+        reacquire_mock.assert_called_once()
 
     def test_plain_reconnect_preempts_busy_pool_without_range(self):
-        """TiviMate FF reconnects with plain GET; match provider byte-0 restart."""
+        """Plain GET reconnect should match provider byte-0 restart."""
         _seed_pool_session(self.redis, session_id=TEST_SESSION_ID)
         request = self.factory.get(_proxy_url(TEST_SESSION_ID))
         streams = [_make_catchup_stream(account_id=1, stream_id="111", profile_id=31)]
@@ -4161,6 +4763,7 @@ class TimeshiftScrubPreemptTests(TestCase):
         attempt_mock.assert_not_called()
 
     def test_eof_probe_deferred_without_preempt(self):
+        """Near-EOF probes without a cached CDN URL still get 503 (no preempt)."""
         _seed_pool_session(self.redis, session_id=TEST_SESSION_ID)
         request = self.factory.get(
             _proxy_url(TEST_SESSION_ID),
@@ -4179,7 +4782,9 @@ class TimeshiftScrubPreemptTests(TestCase):
              patch.object(views, "release_profile_slot"), \
              patch.object(views, "get_transformed_credentials", side_effect=_fake_creds), \
              patch.object(views, "get_user_active_connections", return_value=[]), \
+             patch.object(views, "_try_reacquire_idle_pool") as reacquire_mock, \
              patch.object(views, "_preempt_playback_streams") as preempt_mock, \
+             patch.object(views, "_open_upstream") as open_mock, \
              patch.object(views, "_attempt_timeshift_stream") as attempt_mock:
             redis_cls.get_client.return_value = self.redis
             channel_cls.objects.get.return_value = MagicMock(
@@ -4189,8 +4794,221 @@ class TimeshiftScrubPreemptTests(TestCase):
                 request, "u", "p", "8", "2026-06-08:17-00", "8.ts",
             )
         self.assertEqual(response.status_code, 503)
+        reacquire_mock.assert_not_called()
+        preempt_mock.assert_not_called()
+        open_mock.assert_not_called()
+        attempt_mock.assert_not_called()
+
+    def test_eof_probe_busy_session_serves_cached_cdn_without_preempt(self):
+        """Busy near-EOF duration probes answer from cached CDN, no slot churn."""
+        presentation_base = 500_000_000
+        presentation_length = 615_251_824
+        client_start = 615_139_024
+        cdn_start = presentation_base + client_start
+        body = b"probe-tail"
+        cdn_end = cdn_start + len(body) - 1
+        archive_total = 2_527_702_896
+
+        _seed_pool_session(self.redis, session_id=TEST_SESSION_ID)
+        pool_key = TimeshiftRedisKeys.pool(TEST_SESSION_ID)
+        self.redis.hset(pool_key, mapping={
+            "final_url": "http://cdn.example.test/archive.ts",
+            "content_length": str(archive_total),
+            "presentation_byte_base": str(presentation_base),
+            "presentation_length": str(presentation_length),
+            "provider_user_agent": "provider-agent",
+            "busy": "1",
+        })
+
+        request = self.factory.get(
+            _proxy_url(TEST_SESSION_ID),
+            HTTP_RANGE=f"bytes={client_start}-",
+        )
+        streams = [_make_catchup_stream(account_id=1, stream_id="111", profile_id=31)]
+        upstream = _fake_upstream(206, body=body)
+        upstream.headers["Content-Range"] = (
+            f"bytes {cdn_start}-{cdn_end}/{archive_total}"
+        )
+        upstream.headers["Content-Length"] = str(len(body))
+        upstream.raw.read = MagicMock(side_effect=[body, b""])
+        with patch.object(views, "_authenticate_user", return_value=MagicMock(id=5)), \
+             patch.object(views, "network_access_allowed", return_value=True), \
+             patch.object(views, "Channel") as channel_cls, \
+             patch.object(views, "_user_can_access_channel", return_value=True), \
+             patch.object(views, "get_channel_catchup_streams", return_value=streams), \
+             patch.object(views, "get_programme_duration", return_value=40), \
+             patch.object(views, "check_user_stream_limits", return_value=True), \
+             patch.object(views, "RedisClient") as redis_cls, \
+             patch.object(views, "reserve_profile_slot") as reserve_mock, \
+             patch.object(views, "release_profile_slot") as release_mock, \
+             patch.object(views, "get_transformed_credentials", side_effect=_fake_creds), \
+             patch.object(views, "get_user_active_connections", return_value=[]), \
+             patch.object(views, "_try_reacquire_idle_pool") as reacquire_mock, \
+             patch.object(views, "_preempt_playback_streams") as preempt_mock, \
+             patch.object(views, "_register_stats_client") as stats_mock, \
+             patch.object(views, "_attempt_timeshift_stream") as attempt_mock, \
+             patch.object(views.M3UAccount.objects, "get") as account_get_mock, \
+             patch.object(views, "_open_upstream", return_value=upstream) as open_mock:
+            redis_cls.get_client.return_value = self.redis
+            channel_cls.objects.get.return_value = MagicMock(
+                id=8, name="Test", logo_id=None,
+            )
+            response = views.timeshift_proxy(
+                request, "u", "p", "8", "2026-06-08:17-00", "8.ts",
+            )
+
+        self.assertEqual(response.status_code, 206)
+        self.assertEqual(
+            response["Content-Range"],
+            f"bytes {client_start}-{client_start + len(body) - 1}/{presentation_length}",
+        )
+        self.assertEqual(response["Content-Length"], str(len(body)))
+        open_mock.assert_called_once()
+        open_args, open_kwargs = open_mock.call_args
+        self.assertEqual(open_args[0], "http://cdn.example.test/archive.ts")
+        self.assertEqual(open_args[1], "provider-agent")
+        self.assertEqual(
+            open_args[2],
+            f"bytes={cdn_start}-{cdn_start + views._EOF_PROBE_TAIL_BYTES - 1}",
+        )
+        self.assertFalse(open_kwargs.get("allow_redirects", True))
+        account_get_mock.assert_not_called()
+        reacquire_mock.assert_not_called()
         preempt_mock.assert_not_called()
         attempt_mock.assert_not_called()
+        stats_mock.assert_not_called()
+        reserve_mock.assert_not_called()
+        release_mock.assert_not_called()
+        self.assertEqual(self.redis.hget(pool_key, "busy"), "1")
+        # Drain the short probe body so the generator finishes cleanly.
+        self.assertEqual(b"".join(response.streaming_content), body)
+        upstream.close.assert_called()
+
+    def test_eof_probe_stale_presentation_base_uses_absolute_range(self):
+        """After return-to-start, archive-absolute EOF probes must not remap past EOF."""
+        stale_base = 348_248_380
+        archive_total = 870_621_184
+        client_start = archive_total - 112_800
+        body = b"probe-tail"
+
+        _seed_pool_session(self.redis, session_id=TEST_SESSION_ID)
+        pool_key = TimeshiftRedisKeys.pool(TEST_SESSION_ID)
+        self.redis.hset(pool_key, mapping={
+            "final_url": "http://cdn.example.test/archive.ts",
+            "content_length": str(archive_total),
+            # Stale scrub window left behind after return-to-start.
+            "presentation_byte_base": str(stale_base),
+            "presentation_length": str(archive_total),
+            "provider_user_agent": "provider-agent",
+            "busy": "1",
+        })
+
+        request = self.factory.get(
+            _proxy_url(TEST_SESSION_ID),
+            HTTP_RANGE=f"bytes={client_start}-",
+        )
+        streams = [_make_catchup_stream(account_id=1, stream_id="111", profile_id=31)]
+        upstream = _fake_upstream(206, body=body)
+        upstream.headers["Content-Range"] = (
+            f"bytes {client_start}-{client_start + len(body) - 1}/{archive_total}"
+        )
+        upstream.headers["Content-Length"] = str(len(body))
+        upstream.raw.read = MagicMock(side_effect=[body, b""])
+
+        with patch.object(views, "_authenticate_user", return_value=MagicMock(id=5)), \
+             patch.object(views, "network_access_allowed", return_value=True), \
+             patch.object(views, "Channel") as channel_cls, \
+             patch.object(views, "_user_can_access_channel", return_value=True), \
+             patch.object(views, "get_channel_catchup_streams", return_value=streams), \
+             patch.object(views, "get_programme_duration", return_value=40), \
+             patch.object(views, "check_user_stream_limits", return_value=True), \
+             patch.object(views, "RedisClient") as redis_cls, \
+             patch.object(views, "reserve_profile_slot"), \
+             patch.object(views, "release_profile_slot"), \
+             patch.object(views, "get_transformed_credentials", side_effect=_fake_creds), \
+             patch.object(views, "get_user_active_connections", return_value=[]), \
+             patch.object(views, "_try_reacquire_idle_pool") as reacquire_mock, \
+             patch.object(views, "_preempt_playback_streams") as preempt_mock, \
+             patch.object(views, "_attempt_timeshift_stream") as attempt_mock, \
+             patch.object(views.M3UAccount.objects, "get") as account_get_mock, \
+             patch.object(views, "_open_upstream", return_value=upstream) as open_mock:
+            redis_cls.get_client.return_value = self.redis
+            channel_cls.objects.get.return_value = MagicMock(
+                id=8, name="Test", logo_id=None,
+            )
+            response = views.timeshift_proxy(
+                request, "u", "p", "8", "2026-06-08:17-00", "8.ts",
+            )
+
+        self.assertEqual(response.status_code, 206)
+        open_args, _open_kwargs = open_mock.call_args
+        # Must NOT be stale_base + client_start (that is past archive EOF).
+        self.assertEqual(open_args[1], "provider-agent")
+        self.assertEqual(
+            open_args[2],
+            f"bytes={client_start}-{client_start + views._EOF_PROBE_TAIL_BYTES - 1}",
+        )
+        account_get_mock.assert_not_called()
+        reacquire_mock.assert_not_called()
+        preempt_mock.assert_not_called()
+        attempt_mock.assert_not_called()
+        self.assertEqual(b"".join(response.streaming_content), body)
+
+    def test_eof_probe_cdn_416_returns_416_not_503(self):
+        """Unsatisfiable EOF probes must not fall through to busy-slot 503."""
+        archive_total = 870_621_184
+        client_start = archive_total - 112_800
+
+        _seed_pool_session(self.redis, session_id=TEST_SESSION_ID)
+        pool_key = TimeshiftRedisKeys.pool(TEST_SESSION_ID)
+        self.redis.hset(pool_key, mapping={
+            "final_url": "http://cdn.example.test/archive.ts",
+            "content_length": str(archive_total),
+            "presentation_byte_base": "0",
+            "presentation_length": str(archive_total),
+            "provider_user_agent": "provider-agent",
+            "busy": "1",
+        })
+
+        request = self.factory.get(
+            _proxy_url(TEST_SESSION_ID),
+            HTTP_RANGE=f"bytes={client_start}-",
+        )
+        streams = [_make_catchup_stream(account_id=1, stream_id="111", profile_id=31)]
+        upstream = MagicMock()
+        upstream.status_code = 416
+        upstream.headers = {}
+        upstream.close = MagicMock()
+
+        with patch.object(views, "_authenticate_user", return_value=MagicMock(id=5)), \
+             patch.object(views, "network_access_allowed", return_value=True), \
+             patch.object(views, "Channel") as channel_cls, \
+             patch.object(views, "_user_can_access_channel", return_value=True), \
+             patch.object(views, "get_channel_catchup_streams", return_value=streams), \
+             patch.object(views, "get_programme_duration", return_value=40), \
+             patch.object(views, "check_user_stream_limits", return_value=True), \
+             patch.object(views, "RedisClient") as redis_cls, \
+             patch.object(views, "reserve_profile_slot"), \
+             patch.object(views, "release_profile_slot"), \
+             patch.object(views, "get_transformed_credentials", side_effect=_fake_creds), \
+             patch.object(views, "get_user_active_connections", return_value=[]), \
+             patch.object(views, "_attempt_timeshift_stream") as attempt_mock, \
+             patch.object(views.M3UAccount.objects, "get") as account_get_mock, \
+             patch.object(views, "_open_upstream", return_value=upstream) as open_mock:
+            redis_cls.get_client.return_value = self.redis
+            channel_cls.objects.get.return_value = MagicMock(
+                id=8, name="Test", logo_id=None,
+            )
+            response = views.timeshift_proxy(
+                request, "u", "p", "8", "2026-06-08:17-00", "8.ts",
+            )
+
+        self.assertEqual(response.status_code, 416)
+        self.assertEqual(response["Content-Range"], f"bytes */{archive_total}")
+        self.assertEqual(open_mock.call_args.args[1], "provider-agent")
+        account_get_mock.assert_not_called()
+        attempt_mock.assert_not_called()
+        upstream.close.assert_called()
 
     def test_scrub_opens_failover_when_pool_still_busy(self):
         _seed_pool_session(self.redis, session_id=TEST_SESSION_ID)
@@ -4440,7 +5258,7 @@ class CatchupProxyTests(TestCase):
 
 
 class TimeshiftProviderFaithfulPlainGetTests(_ProxyLoopTestMixin, TestCase):
-    """Contract tests for TiviMate-style plain GET reconnect (no Range header)."""
+    """Contract tests for plain GET reconnect (no Range header)."""
 
     def setUp(self):
         self.redis = _FakeRedis()
@@ -4463,7 +5281,7 @@ class TimeshiftProviderFaithfulPlainGetTests(_ProxyLoopTestMixin, TestCase):
             stats_channel_id=self.stats_channel_id,
             client_id=self.client_id,
             client_ip="1.2.3.4",
-            client_user_agent="tivimate",
+            client_user_agent="test-agent",
             user=self.user,
             channel_display_name="A&E",
             timestamp_utc="2026-06-08:17-00",
@@ -4499,7 +5317,7 @@ class TimeshiftProviderFaithfulPlainGetTests(_ProxyLoopTestMixin, TestCase):
             stats_channel_id=self.stats_channel_id,
             client_id=self.client_id,
             client_ip="1.2.3.4",
-            client_user_agent="tivimate",
+            client_user_agent="test-agent",
             user=self.user,
             channel_display_name="A&E",
             timestamp_utc="2026-06-08:17-00",
