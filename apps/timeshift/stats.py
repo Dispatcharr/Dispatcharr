@@ -15,6 +15,10 @@ from apps.timeshift.redis_keys import TimeshiftRedisKeys, parse_stats_channel_id
 from apps.timeshift.helpers import parse_catchup_timestamp
 
 logger = logging.getLogger(__name__)
+
+# Shared with views near-EOF classification (common ~1.88MB duration probes).
+EOF_PROBE_TAIL_BYTES = 2_097_152
+
 _STREAM_STATS_TO_METADATA = {
     "video_codec": ChannelMetadataField.VIDEO_CODEC,
     "resolution": ChannelMetadataField.RESOLUTION,
@@ -165,6 +169,32 @@ def resolve_stats_playback_fields(
         existing_programme_start is not None
         and existing_programme_start != timestamp_utc
     )
+
+    # Near-EOF duration probes must not reanchor stats to end-of-file.
+    if (
+        range_start is not None
+        and representation_length is not None
+        and not programme_changed
+    ):
+        try:
+            start = int(range_start)
+            total = int(representation_length)
+        except (TypeError, ValueError):
+            start = None
+            total = None
+        if start is not None and total is not None and total > 0:
+            if start >= max(0, total - EOF_PROBE_TAIL_BYTES):
+                try:
+                    keep_base = (
+                        float(existing_playback_base)
+                        if existing_playback_base is not None
+                        else None
+                    )
+                except (TypeError, ValueError):
+                    keep_base = None
+                keep_anchor = existing_position_anchor or now
+                return keep_base, keep_anchor
+
     byte_base = compute_playback_base_from_byte_range(
         range_start, representation_length, programme_duration_secs,
     )

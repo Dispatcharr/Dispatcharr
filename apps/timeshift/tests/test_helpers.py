@@ -21,7 +21,7 @@ from apps.timeshift.helpers import (
 
 def _make_creds():
     # The builders consume resolved per-profile credentials, never an account
-    # object — get_transformed_credentials() produces these in the view.
+    # object - get_transformed_credentials() produces these in the view.
     return TimeshiftCredentials("http://example.test", "user", "pass")
 
 
