@@ -114,6 +114,29 @@ def timeshift_proxy(request, username, password, stream_id, timestamp, duration)
         an in-flight or idle pool entry for the same viewer are served immediately
         (no redirect). Reuse ``session_id`` for all range/seek requests in a programme.
     """
+    return _timeshift_proxy_impl(request, username, password, timestamp, duration)
+
+
+def timeshift_proxy_query(request):
+    """Proxy an XC catch-up request submitted in QUERY layout.
+
+    URL shape (XC catch-up clients): ``/streaming/timeshift.php?username=...
+    &password=...&stream=<Channel.id>&start=<UTC programme start>&duration=...``
+    (``duration`` here is the EPG-minutes hint some clients send; unused, same
+    as ``stream_id`` in the PATH-layout ``timeshift_proxy`` above).
+    """
+    username = request.GET.get("username", "")
+    password = request.GET.get("password", "")
+    timestamp = request.GET.get("start", "")
+    duration = request.GET.get("stream", "")
+    if not (username and password and timestamp and duration):
+        return _finalize_timeshift_response(
+            HttpResponseBadRequest("Missing required parameters")
+        )
+    return _timeshift_proxy_impl(request, username, password, timestamp, duration)
+
+
+def _timeshift_proxy_impl(request, username, password, timestamp, duration):
     raw_id = duration[:-3] if duration.endswith(".ts") else duration
 
     user = _authenticate_user(username, password)
