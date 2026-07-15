@@ -863,12 +863,9 @@ class TimeshiftProxyTimestampWiringTests(TestCase):
 
 
 class TimeshiftProxyQueryRoutingTests(TestCase):
-    """Regression test for dispatcharr_timeshift#10: some clients (e.g.
-    Open-TV / Fred TV) build catch-up requests in QUERY layout
-    (``/streaming/timeshift.php?...``) rather than PATH layout. Before this
-    fix, no urlpattern matched that path, so the request silently fell
-    through to the frontend's ``<path:unused_path>`` catch-all and got served
-    ``index.html`` (200 OK, wrong content) instead of reaching the proxy."""
+    """QUERY-layout ``/streaming/timeshift.php`` must resolve to
+    ``timeshift_proxy_query``; PATH-layout ``/timeshift/...`` must still
+    resolve to ``timeshift_proxy``."""
 
     def test_query_style_path_resolves_to_timeshift_proxy_query(self):
         match = resolve("/streaming/timeshift.php")

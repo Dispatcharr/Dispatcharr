@@ -102,7 +102,7 @@ def _finalize_timeshift_response(response):
 def timeshift_proxy(request, username, password, stream_id, timestamp, duration):  # noqa: ARG001 stream_id
     """Proxy an XC catch-up request to the provider with multi-stream failover.
 
-    URL shape (iPlayTV / TiviMate — PATH layout):
+    URL shape (XC catch-up clients):
         ``stream_id``: EPG channel number (ignored here).
         ``duration``: Dispatcharr ``Channel.id`` (XC API exposes channel.id as stream_id).
         ``timestamp``: UTC programme start (``YYYY-MM-DD:HH-MM`` or XC colon form
@@ -120,14 +120,10 @@ def timeshift_proxy(request, username, password, stream_id, timestamp, duration)
 def timeshift_proxy_query(request):
     """Proxy an XC catch-up request submitted in QUERY layout.
 
-    URL shape (Open-TV / Fred TV): ``/streaming/timeshift.php?username=...
+    URL shape (XC catch-up clients): ``/streaming/timeshift.php?username=...
     &password=...&stream=<Channel.id>&start=<UTC programme start>&duration=...``
     (``duration`` here is the EPG-minutes hint some clients send; unused, same
     as ``stream_id`` in the PATH-layout ``timeshift_proxy`` above).
-
-    Mirrors ``timeshift_proxy`` so clients that construct catch-up requests in
-    QUERY style are routed to the proxy instead of falling through to the
-    frontend catch-all route (see upstream issue dispatcharr_timeshift#10).
     """
     username = request.GET.get("username", "")
     password = request.GET.get("password", "")
