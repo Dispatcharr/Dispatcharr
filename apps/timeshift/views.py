@@ -58,9 +58,9 @@ from .helpers import (
     TimeshiftCredentials,
     build_timeshift_candidate_urls,
     convert_timestamp_to_provider_tz,
-    get_programme_duration,
     order_catchup_streams_for_timestamp,
     parse_catchup_timestamp,
+    resolve_catchup_duration,
 )
 from .sessions import catchup_session_exists, delete_catchup_session, resolve_catchup_playback
 from .stats import (
@@ -100,14 +100,15 @@ def _finalize_timeshift_response(response):
     return response
 
 
-def timeshift_proxy(request, username, password, stream_id, timestamp, duration):  # noqa: ARG001 stream_id
+def timeshift_proxy(request, username, password, duration, timestamp, channel_id):
     """Proxy an XC catch-up request to the provider with multi-stream failover.
 
-    URL shape (XC catch-up clients):
-        ``stream_id``: EPG channel number (ignored here).
-        ``duration``: Dispatcharr ``Channel.id`` (XC API exposes channel.id as stream_id).
+    URL shape (XC catch-up clients, matches provider PATH form):
+        ``/timeshift/{user}/{pass}/{duration}/{start}/{channel_id}.ts``
+        ``duration``: programme length in minutes from the client's guide.
         ``timestamp``: UTC programme start (``YYYY-MM-DD:HH-MM`` or XC colon form
             ``YYYY-MM-DD:HH:MM:SS``).
+        ``channel_id``: Dispatcharr ``Channel.id`` (often with a ``.ts`` suffix).
 
     Session handling (``?session_id=``):
         First request with no ``session_id`` and no matching pool entry → ``301`` with a
@@ -115,30 +116,37 @@ def timeshift_proxy(request, username, password, stream_id, timestamp, duration)
         an in-flight or idle pool entry for the same viewer are served immediately
         (no redirect). Reuse ``session_id`` for all range/seek requests in a programme.
     """
-    return _timeshift_proxy_impl(request, username, password, timestamp, duration)
+    return _timeshift_proxy_impl(
+        request, username, password, timestamp, channel_id,
+        client_duration_hint=duration,
+    )
 
 
 def timeshift_proxy_query(request):
     """Proxy an XC catch-up request submitted in QUERY layout.
 
     URL shape (XC catch-up clients): ``/streaming/timeshift.php?username=...
-    &password=...&stream=<Channel.id>&start=<UTC programme start>&duration=...``
-    (``duration`` here is the EPG-minutes hint some clients send; unused, same
-    as ``stream_id`` in the PATH-layout ``timeshift_proxy`` above).
+    &password=...&stream=<Channel.id>&start=<UTC programme start>&duration=<minutes>``.
+    ``duration`` is preferred over EPG when present (same as the PATH form).
     """
     username = request.GET.get("username", "")
     password = request.GET.get("password", "")
     timestamp = request.GET.get("start", "")
-    duration = request.GET.get("stream", "")
-    if not (username and password and timestamp and duration):
+    channel_id = request.GET.get("stream", "")
+    if not (username and password and timestamp and channel_id):
         return _finalize_timeshift_response(
             HttpResponseBadRequest("Missing required parameters")
         )
-    return _timeshift_proxy_impl(request, username, password, timestamp, duration)
+    return _timeshift_proxy_impl(
+        request, username, password, timestamp, channel_id,
+        client_duration_hint=request.GET.get("duration"),
+    )
 
 
-def _timeshift_proxy_impl(request, username, password, timestamp, duration):
-    raw_id = duration[:-3] if duration.endswith(".ts") else duration
+def _timeshift_proxy_impl(
+    request, username, password, timestamp, channel_id, client_duration_hint=None,
+):
+    raw_id = channel_id[:-3] if channel_id.endswith(".ts") else channel_id
 
     user = _authenticate_user(username, password)
     if user is None:
@@ -156,7 +164,10 @@ def _timeshift_proxy_impl(request, username, password, timestamp, duration):
     if not _user_can_access_channel(user, channel):
         return _finalize_timeshift_response(HttpResponseForbidden("Access denied"))
 
-    return _serve_catchup(request, user, channel, timestamp)
+    return _serve_catchup(
+        request, user, channel, timestamp,
+        client_duration_hint=client_duration_hint,
+    )
 
 
 @extend_schema(
@@ -254,6 +265,8 @@ def catchup_proxy(request, channel_id):
     session_id = request.GET.get("session_id")
     timestamp = request.GET.get("start")
     user = auth_user
+    # Direct-auth clients may pass ?duration=; API sessions store their own.
+    client_duration_hint = request.GET.get("duration")
 
     if session_id:
         resolved = resolve_catchup_playback(session_id, channel_id)
@@ -264,11 +277,13 @@ def catchup_proxy(request, channel_id):
                     status=401,
                 )
         else:
-            session_user, bound_start = resolved
+            session_user, bound_start, bound_duration = resolved
             if auth_user is not None and auth_user.id != session_user.id:
                 return _finalize_timeshift_response(HttpResponseForbidden("Access denied"))
             user = session_user
             timestamp = bound_start
+            if bound_duration is not None:
+                client_duration_hint = bound_duration
 
     if user is None:
         return JsonResponse({"error": "Authentication required"}, status=401)
@@ -285,11 +300,21 @@ def catchup_proxy(request, channel_id):
     if not timestamp:
         return _finalize_timeshift_response(HttpResponseBadRequest("Missing start parameter"))
 
-    return _serve_catchup(request, user, channel, timestamp)
+    return _serve_catchup(
+        request, user, channel, timestamp,
+        client_duration_hint=client_duration_hint,
+    )
 
 
-def _serve_catchup(request, user, channel, timestamp):
-    """Shared catch-up proxy logic for XC and native API entry points."""
+def _serve_catchup(request, user, channel, timestamp, client_duration_hint=None):
+    """Shared catch-up proxy logic for XC and native API entry points.
+
+    ``client_duration_hint`` is a programme length in minutes supplied by the
+    client (XC PATH duration segment, QUERY ``duration=``, or a native
+    session's stored duration). When usable it is preferred over EPG;
+    otherwise EPG is used, falling back to ``DEFAULT_DURATION_MINUTES``.
+    A ``DURATION_BUFFER_MINUTES`` pad is applied either way for provider lag.
+    """
     if parse_catchup_timestamp(timestamp) is None:
         return _finalize_timeshift_response(HttpResponseBadRequest("Invalid timestamp"))
 
@@ -303,8 +328,11 @@ def _serve_catchup(request, user, channel, timestamp):
 
     debug = logger.isEnabledFor(logging.DEBUG)
 
-    # EPG duration lookup stays in UTC; provider TZ conversion is per-attempt below.
-    duration_minutes = get_programme_duration(channel, timestamp)
+    # Client hint preferred; else EPG (UTC); else DEFAULT_DURATION_MINUTES.
+    # Provider TZ conversion for the start timestamp is per-attempt below.
+    duration_minutes = resolve_catchup_duration(
+        channel, timestamp, client_hint=client_duration_hint,
+    )
 
     safe_ts = timestamp.replace(":", "-").replace("/", "-")
     client_ip = get_client_ip(request)

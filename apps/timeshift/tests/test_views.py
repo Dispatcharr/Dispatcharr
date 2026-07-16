@@ -20,7 +20,7 @@ TEST_MEDIA_ID = "8_2026-06-08-17-00"
 
 
 def _proxy_url(session_id=TEST_SESSION_ID):
-    base = "/timeshift/u/p/8/2026-06-08:17-00/8.ts"
+    base = "/timeshift/u/p/40/2026-06-08:17-00/8.ts"
     return f"{base}?session_id={session_id}" if session_id else base
 
 
@@ -787,7 +787,7 @@ class TimeshiftProxyTimestampWiringTests(TestCase):
         self.factory = RequestFactory()
 
     def _call(self, timestamp, provider_tz="Europe/Brussels"):
-        request = self.factory.get(f"/timeshift/u/p/8/{timestamp}/8.ts?session_id={TEST_SESSION_ID}")
+        request = self.factory.get(f"/timeshift/u/p/40/{timestamp}/8.ts?session_id={TEST_SESSION_ID}")
         sentinel = MagicMock(status_code=200)
         with patch.object(views, "_authenticate_user", return_value=MagicMock(id=5)), \
              patch.object(views, "network_access_allowed", return_value=True), \
@@ -795,7 +795,9 @@ class TimeshiftProxyTimestampWiringTests(TestCase):
              patch.object(views, "_user_can_access_channel", return_value=True), \
              patch.object(views, "get_channel_catchup_streams",
                           return_value=[_make_catchup_stream(provider_tz)]), \
-             patch.object(views, "get_programme_duration", return_value=40) as duration_mock, \
+             patch(
+                 "apps.timeshift.helpers.get_programme_duration", return_value=999,
+             ) as duration_mock, \
              patch.object(views, "build_timeshift_candidate_urls",
                           return_value=["http://example.test/x.ts"]) as build_mock, \
              patch.object(views, "check_user_stream_limits", return_value=True), \
@@ -807,7 +809,7 @@ class TimeshiftProxyTimestampWiringTests(TestCase):
              patch.object(views, "_stream_from_provider", return_value=sentinel) as stream_mock:
             redis_cls.get_client.return_value = _FakeRedis()
             channel_cls.objects.get.return_value = MagicMock(id=8, name="Test", logo_id=None)
-            response = views.timeshift_proxy(request, "u", "p", "8", timestamp, "8.ts")
+            response = views.timeshift_proxy(request, "u", "p", "40", timestamp, "8.ts")
         return response, sentinel, build_mock, duration_mock, stream_mock
 
     def test_candidates_get_provider_local_timestamp(self):
@@ -816,11 +818,14 @@ class TimeshiftProxyTimestampWiringTests(TestCase):
         self.assertIs(response, sentinel)
         self.assertEqual(build_mock.call_args[0][2], "2026-06-08:19-00")
 
-    def test_duration_lookup_keeps_original_utc_timestamp(self):
-        # The EPG is stored in UTC - the duration lookup must NOT receive the
-        # provider-converted value.
-        _, _, _, duration_mock, _ = self._call("2026-06-08:17-00")
-        self.assertEqual(duration_mock.call_args[0][1], "2026-06-08:17-00")
+    def test_path_duration_preferred_over_epg(self):
+        # PATH ``/timeshift/.../40/.../8.ts`` is programme minutes; +5 buffer
+        # becomes 45. EPG lookup must not run when the client supplied a
+        # usable duration.
+        _, _, build_mock, duration_mock, stream_mock = self._call("2026-06-08:17-00")
+        duration_mock.assert_not_called()
+        self.assertEqual(build_mock.call_args[0][3], 45)
+        self.assertEqual(stream_mock.call_args.kwargs["duration_minutes"], 45)
 
     def test_utc_provider_passes_timestamp_unchanged(self):
         _, _, build_mock, _, _ = self._call("2026-06-08:17-00", provider_tz="UTC")
@@ -831,10 +836,11 @@ class TimeshiftProxyTimestampWiringTests(TestCase):
             "2026-06-23:04:00:00"
         )
         self.assertIs(response, sentinel)
-        self.assertEqual(duration_mock.call_args[0][1], "2026-06-23:04:00:00")
+        duration_mock.assert_not_called()
+        self.assertEqual(build_mock.call_args[0][3], 45)
 
     def test_invalid_timestamp_rejected_before_upstream(self):
-        request = self.factory.get("/timeshift/u/p/8/garbage/8.ts")
+        request = self.factory.get("/timeshift/u/p/40/garbage/8.ts")
         with patch.object(views, "_authenticate_user", return_value=MagicMock(id=5)), \
              patch.object(views, "network_access_allowed", return_value=True), \
              patch.object(views, "Channel") as channel_cls, \
@@ -842,7 +848,7 @@ class TimeshiftProxyTimestampWiringTests(TestCase):
              patch.object(views, "get_channel_catchup_streams") as catchup_mock, \
              patch.object(views, "_stream_from_provider") as stream_mock:
             channel_cls.objects.get.return_value = MagicMock(id=8)
-            response = views.timeshift_proxy(request, "u", "p", "8", "garbage", "8.ts")
+            response = views.timeshift_proxy(request, "u", "p", "40", "garbage", "8.ts")
         self.assertEqual(response.status_code, 400)
         catchup_mock.assert_not_called()
         stream_mock.assert_not_called()
@@ -855,7 +861,7 @@ class TimeshiftProxyTimestampWiringTests(TestCase):
              patch.object(views, "Channel") as channel_cls, \
              patch.object(views, "_stream_from_provider") as stream_mock:
             response = views.timeshift_proxy(
-                request, "u", "p", "8", "2026-06-08:17-00", "8.ts"
+                request, "u", "p", "40", "2026-06-08:17-00", "8.ts"
             )
         self.assertEqual(response.status_code, 403)
         self.assertEqual(gate.call_args[0][1], "XC_API")
@@ -873,7 +879,7 @@ class TimeshiftProxyQueryRoutingTests(TestCase):
         self.assertIs(match.func, views.timeshift_proxy_query)
 
     def test_path_style_still_resolves_to_timeshift_proxy(self):
-        match = resolve("/timeshift/u/p/8/2026-06-08:17-00/8.ts")
+        match = resolve("/timeshift/u/p/40/2026-06-08:17-00/8.ts")
         self.assertIs(match.func, views.timeshift_proxy)
 
 
@@ -898,7 +904,10 @@ class TimeshiftProxyQueryParamMappingTests(TestCase):
         )
         with patch.object(views, "_timeshift_proxy_impl", return_value=HttpResponse()) as impl:
             views.timeshift_proxy_query(request)
-        impl.assert_called_once_with(request, "u", "p", "2026-06-08:17-00", "8")
+        impl.assert_called_once_with(
+            request, "u", "p", "2026-06-08:17-00", "8",
+            client_duration_hint="40",
+        )
 
     def test_missing_stream_param_returns_400_without_touching_impl(self):
         request = self.factory.get(
@@ -926,7 +935,7 @@ class TimeshiftProxyFailoverTests(TestCase):
              patch.object(views, "Channel") as channel_cls, \
              patch.object(views, "_user_can_access_channel", return_value=True), \
              patch.object(views, "get_channel_catchup_streams", return_value=streams), \
-             patch.object(views, "get_programme_duration", return_value=40), \
+             patch.object(views, "resolve_catchup_duration", return_value=40), \
              patch.object(views, "build_timeshift_candidate_urls",
                           return_value=["http://example.test/x.ts"]) as build_mock, \
              patch.object(views, "check_user_stream_limits", return_value=True) as limits_mock, \
@@ -941,7 +950,7 @@ class TimeshiftProxyFailoverTests(TestCase):
             redis_cls.get_client.return_value = _FakeRedis()
             channel_cls.objects.get.return_value = MagicMock(id=8, name="Test", logo_id=None)
             response = views.timeshift_proxy(
-                request, "u", "p", "8", "2026-06-08:17-00", "8.ts"
+                request, "u", "p", "40", "2026-06-08:17-00", "8.ts"
             )
         self.creds_mock = creds_mock
         return response, stream_mock, build_mock, limits_mock
@@ -1082,7 +1091,7 @@ class _ProxyLoopTestMixin:
              patch.object(views, "Channel") as channel_cls, \
              patch.object(views, "_user_can_access_channel", return_value=True), \
              patch.object(views, "get_channel_catchup_streams", return_value=streams), \
-             patch.object(views, "get_programme_duration", return_value=40), \
+             patch.object(views, "resolve_catchup_duration", return_value=40), \
              patch.object(views, "build_timeshift_candidate_urls",
                           **build_kwargs) as build_mock, \
              patch.object(views, "check_user_stream_limits", return_value=limits), \
@@ -1102,7 +1111,7 @@ class _ProxyLoopTestMixin:
             self.creds_mock = creds_mock
             self.stream_mock = stream_mock
             response = views.timeshift_proxy(
-                request, "u", "p", "8", "2026-06-08:17-00", "8.ts"
+                request, "u", "p", "40", "2026-06-08:17-00", "8.ts"
             )
         return response, stream_mock, build_mock
 
@@ -1730,7 +1739,7 @@ class TimeshiftTakeoverTests(TestCase):
              patch.object(views, "_user_can_access_channel", return_value=True), \
              patch.object(views, "get_channel_catchup_streams",
                           return_value=[_make_catchup_stream()]), \
-             patch.object(views, "get_programme_duration", return_value=40), \
+             patch.object(views, "resolve_catchup_duration", return_value=40), \
              patch.object(views, "RedisClient") as redis_cls, \
              patch.object(views, "_terminate_previous_timeshift_sessions",
                           side_effect=lambda *a: call_order.append("takeover")) as takeover_mock, \
@@ -1739,7 +1748,7 @@ class TimeshiftTakeoverTests(TestCase):
             redis_cls.get_client.return_value = self.redis
             channel_cls.objects.get.return_value = MagicMock(id=8, name="Test", logo_id=None)
             response = views.timeshift_proxy(
-                request, "u", "p", "8", "2026-06-08:17-00", "8.ts"
+                request, "u", "p", "40", "2026-06-08:17-00", "8.ts"
             )
         self.assertEqual(response.status_code, 403)
         self.assertEqual(call_order, ["takeover", "limits"])
@@ -1833,7 +1842,7 @@ class TimeshiftSessionReuseTests(TestCase):
              patch.object(views, "_user_can_access_channel", return_value=True), \
              patch.object(views, "get_channel_catchup_streams",
                           return_value=[_make_catchup_stream()]), \
-             patch.object(views, "get_programme_duration", return_value=40), \
+             patch.object(views, "resolve_catchup_duration", return_value=40), \
              patch.object(views, "parse_catchup_timestamp", return_value=True), \
              patch.object(views, "RedisClient") as redis_cls, \
              patch.object(views, "_acquire_idle_pool_session") as acquire_mock, \
@@ -1841,7 +1850,7 @@ class TimeshiftSessionReuseTests(TestCase):
             redis_cls.get_client.return_value = self.redis
             channel_cls.objects.get.return_value = MagicMock(id=8)
             response = views.timeshift_proxy(
-                request, "u", "p", "8", "2026-06-08:17-00", "8.ts",
+                request, "u", "p", "40", "2026-06-08:17-00", "8.ts",
             )
         self.assertEqual(response.status_code, 301)
         self.assertIn("session_id=", response["Location"])
@@ -1985,7 +1994,7 @@ class TimeshiftSessionReuseTests(TestCase):
              patch.object(views, "Channel") as channel_cls, \
              patch.object(views, "_user_can_access_channel", return_value=True), \
              patch.object(views, "get_channel_catchup_streams", return_value=streams), \
-             patch.object(views, "get_programme_duration", return_value=40), \
+             patch.object(views, "resolve_catchup_duration", return_value=40), \
              patch.object(views, "check_user_stream_limits", return_value=True), \
              patch.object(views, "RedisClient") as redis_cls, \
              patch.object(views, "reserve_profile_slot", return_value=(True, 1, None)), \
@@ -1999,7 +2008,7 @@ class TimeshiftSessionReuseTests(TestCase):
                 id=8, name="Test", logo_id=None,
             )
             response = views.timeshift_proxy(
-                request, "u", "p", "8", "2026-06-08:17-00", "8.ts",
+                request, "u", "p", "40", "2026-06-08:17-00", "8.ts",
             )
         self.assertIs(response, ok)
         acquire_mock.assert_not_called()
@@ -2065,7 +2074,7 @@ class TimeshiftSessionReuseTests(TestCase):
              patch.object(views, "_user_can_access_channel", return_value=True), \
              patch.object(views, "get_channel_catchup_streams",
                           return_value=[_make_catchup_stream()]), \
-             patch.object(views, "get_programme_duration", return_value=40), \
+             patch.object(views, "resolve_catchup_duration", return_value=40), \
              patch.object(views, "check_user_stream_limits", return_value=True), \
              patch.object(views, "_find_matching_pool_session", return_value=None), \
              patch.object(views, "_attempt_timeshift_stream",
@@ -2079,7 +2088,7 @@ class TimeshiftSessionReuseTests(TestCase):
             channel_cls.objects.get.return_value = MagicMock(id=8, name="Test", logo_id=None)
             with patch.object(redis, "hgetall", wraps=redis.hgetall) as hgetall_mock:
                 views.timeshift_proxy(
-                    request, "u", "p", "8", "2026-06-08:17-00", "8.ts",
+                    request, "u", "p", "40", "2026-06-08:17-00", "8.ts",
                 )
         pool_key = "timeshift:pool:newsession1"
         self.assertEqual(
@@ -2108,7 +2117,7 @@ class TimeshiftSessionReuseTests(TestCase):
              patch.object(views, "Channel") as channel_cls, \
              patch.object(views, "_user_can_access_channel", return_value=True), \
              patch.object(views, "get_channel_catchup_streams", return_value=streams), \
-             patch.object(views, "get_programme_duration", return_value=40), \
+             patch.object(views, "resolve_catchup_duration", return_value=40), \
              patch.object(views, "check_user_stream_limits", return_value=True), \
              patch.object(views, "RedisClient") as redis_cls, \
              patch.object(views, "reserve_profile_slot",
@@ -2128,7 +2137,7 @@ class TimeshiftSessionReuseTests(TestCase):
                 id=8, name="Test", logo_id=None,
             )
             response = views.timeshift_proxy(
-                request, "u", "p", "8", "2026-06-08:17-00", "8.ts",
+                request, "u", "p", "40", "2026-06-08:17-00", "8.ts",
             )
         self.assertIs(response, ok)
         self.assertEqual(stream_mock.call_count, 2)
@@ -2673,7 +2682,7 @@ class TimeshiftSessionReuseTests(TestCase):
             views._release_pool_session(self.redis, TEST_SESSION_ID, 31)
 
         request = self.factory.get(
-            f"/timeshift/u/p/8/2026-06-08:17-30/8.ts?session_id={TEST_SESSION_ID}"
+            f"/timeshift/u/p/40/2026-06-08:17-30/8.ts?session_id={TEST_SESSION_ID}"
         )
         profile = MagicMock(id=31, custom_properties={})
         tz_profile = MagicMock(
@@ -2689,7 +2698,7 @@ class TimeshiftSessionReuseTests(TestCase):
              patch.object(views, "get_channel_catchup_streams",
                           return_value=[_make_catchup_stream(
                               account_id=1, stream_id="111", profile_id=31)]), \
-             patch.object(views, "get_programme_duration", return_value=40), \
+             patch.object(views, "resolve_catchup_duration", return_value=40), \
              patch.object(views, "check_user_stream_limits", return_value=True), \
              patch.object(views, "RedisClient") as redis_cls, \
              patch.object(views, "reserve_profile_slot",
@@ -2706,7 +2715,7 @@ class TimeshiftSessionReuseTests(TestCase):
                 id=8, name="Test", logo_id=None,
             )
             response = views.timeshift_proxy(
-                request, "u", "p", "8", "2026-06-08:17-30", "8.ts",
+                request, "u", "p", "40", "2026-06-08:17-30", "8.ts",
             )
         self.assertIs(response, ok)
         attempt_mock.assert_called_once()
@@ -2734,13 +2743,13 @@ class TimeshiftSessionRedirectTests(TestCase):
              patch.object(views, "_user_can_access_channel", return_value=True), \
              patch.object(views, "get_channel_catchup_streams",
                           return_value=[_make_catchup_stream()]), \
-             patch.object(views, "get_programme_duration", return_value=40), \
+             patch.object(views, "resolve_catchup_duration", return_value=40), \
              patch.object(views, "parse_catchup_timestamp", return_value=True), \
              patch.object(views, "RedisClient") as redis_cls:
             redis_cls.get_client.return_value = _FakeRedis()
             channel_cls.objects.get.return_value = MagicMock(id=8)
             response = views.timeshift_proxy(
-                request, "u", "p", "8", "2026-06-08:17-00", "8.ts",
+                request, "u", "p", "40", "2026-06-08:17-00", "8.ts",
             )
         self.assertEqual(response.status_code, 301)
         self.assertIn("session_id=", response["Location"])
@@ -2770,7 +2779,7 @@ class TimeshiftSessionRedirectTests(TestCase):
              patch.object(views, "_user_can_access_channel", return_value=True), \
              patch.object(views, "get_channel_catchup_streams",
                           return_value=[_make_catchup_stream()]), \
-             patch.object(views, "get_programme_duration", return_value=40), \
+             patch.object(views, "resolve_catchup_duration", return_value=40), \
              patch.object(views, "parse_catchup_timestamp", return_value=True), \
              patch.object(views, "check_user_stream_limits", return_value=True), \
              patch.object(views, "RedisClient") as redis_cls, \
@@ -2782,7 +2791,7 @@ class TimeshiftSessionRedirectTests(TestCase):
             redis_cls.get_client.return_value = redis
             channel_cls.objects.get.return_value = MagicMock(id=8)
             response = views.timeshift_proxy(
-                request, "u", "p", "8", "2026-06-08:17-00", "8.ts",
+                request, "u", "p", "40", "2026-06-08:17-00", "8.ts",
             )
         self.assertIs(response, ok)
         reacquire_mock.assert_called_once()
@@ -2807,7 +2816,7 @@ class TimeshiftSessionRedirectTests(TestCase):
             str(time.time() - 10.0),
         )
         request = self.factory.get(
-            "/timeshift/u/p/8/2026-06-08:17-30/8.ts",
+            "/timeshift/u/p/40/2026-06-08:17-30/8.ts",
             HTTP_USER_AGENT="vlc-test",
             REMOTE_ADDR="127.0.0.1",
         )
@@ -2820,7 +2829,7 @@ class TimeshiftSessionRedirectTests(TestCase):
              patch.object(views, "_user_can_access_channel", return_value=True), \
              patch.object(views, "get_channel_catchup_streams",
                           return_value=[_make_catchup_stream()]), \
-             patch.object(views, "get_programme_duration", return_value=40), \
+             patch.object(views, "resolve_catchup_duration", return_value=40), \
              patch.object(views, "parse_catchup_timestamp", return_value=True), \
              patch.object(views, "check_user_stream_limits", return_value=True), \
              patch.object(views, "RedisClient") as redis_cls, \
@@ -2832,7 +2841,7 @@ class TimeshiftSessionRedirectTests(TestCase):
             redis_cls.get_client.return_value = redis
             channel_cls.objects.get.return_value = MagicMock(id=8)
             response = views.timeshift_proxy(
-                request, "u", "p", "8", "2026-06-08:17-30", "8.ts",
+                request, "u", "p", "40", "2026-06-08:17-30", "8.ts",
             )
         self.assertIs(response, ok)
         reacquire_mock.assert_called_once()
@@ -2840,7 +2849,7 @@ class TimeshiftSessionRedirectTests(TestCase):
 
     def test_redirect_preserves_existing_query_params(self):
         request = self.factory.get(
-            "/timeshift/u/p/8/2026-06-08:17-00/8.ts?foo=bar&baz=1",
+            "/timeshift/u/p/40/2026-06-08:17-00/8.ts?foo=bar&baz=1",
         )
         with patch.object(views, "_authenticate_user", return_value=MagicMock(id=1)), \
              patch.object(views, "network_access_allowed", return_value=True), \
@@ -2848,13 +2857,13 @@ class TimeshiftSessionRedirectTests(TestCase):
              patch.object(views, "_user_can_access_channel", return_value=True), \
              patch.object(views, "get_channel_catchup_streams",
                           return_value=[_make_catchup_stream()]), \
-             patch.object(views, "get_programme_duration", return_value=40), \
+             patch.object(views, "resolve_catchup_duration", return_value=40), \
              patch.object(views, "parse_catchup_timestamp", return_value=True), \
              patch.object(views, "RedisClient") as redis_cls:
             redis_cls.get_client.return_value = _FakeRedis()
             channel_cls.objects.get.return_value = MagicMock(id=8)
             response = views.timeshift_proxy(
-                request, "u", "p", "8", "2026-06-08:17-00", "8.ts",
+                request, "u", "p", "40", "2026-06-08:17-00", "8.ts",
             )
         self.assertEqual(response.status_code, 301)
         location = response["Location"]
@@ -2871,13 +2880,13 @@ class TimeshiftSessionRedirectTests(TestCase):
              patch.object(views, "_user_can_access_channel", return_value=True), \
              patch.object(views, "get_channel_catchup_streams",
                           return_value=[_make_catchup_stream()]), \
-             patch.object(views, "get_programme_duration", return_value=40), \
+             patch.object(views, "resolve_catchup_duration", return_value=40), \
              patch.object(views, "parse_catchup_timestamp", return_value=True), \
              patch.object(views, "RedisClient") as redis_cls:
             redis_cls.get_client.return_value = _FakeRedis()
             channel_cls.objects.get.return_value = MagicMock(id=8)
             response = views.timeshift_proxy(
-                request, "u", "p", "8", "2026-06-08:17-00", "8.ts",
+                request, "u", "p", "40", "2026-06-08:17-00", "8.ts",
             )
         self.assertEqual(response.status_code, 301)
         mock_close.assert_called_once()
@@ -4606,7 +4615,7 @@ class TimeshiftScrubPreemptTests(TestCase):
              patch.object(views, "Channel") as channel_cls, \
              patch.object(views, "_user_can_access_channel", return_value=True), \
              patch.object(views, "get_channel_catchup_streams", return_value=streams), \
-             patch.object(views, "get_programme_duration", return_value=40), \
+             patch.object(views, "resolve_catchup_duration", return_value=40), \
              patch.object(views, "check_user_stream_limits", return_value=True), \
              patch.object(views, "RedisClient") as redis_cls, \
              patch.object(views, "reserve_profile_slot", return_value=(True, 1, None)), \
@@ -4623,7 +4632,7 @@ class TimeshiftScrubPreemptTests(TestCase):
                 id=8, name="Test", logo_id=None,
             )
             response = views.timeshift_proxy(
-                request, "u", "p", "8", "2026-06-08:17-00", "8.ts",
+                request, "u", "p", "40", "2026-06-08:17-00", "8.ts",
             )
         self.assertIs(response, ok)
         reacquire_mock.assert_called_once()
@@ -4641,7 +4650,7 @@ class TimeshiftScrubPreemptTests(TestCase):
              patch.object(views, "Channel") as channel_cls, \
              patch.object(views, "_user_can_access_channel", return_value=True), \
              patch.object(views, "get_channel_catchup_streams", return_value=streams), \
-             patch.object(views, "get_programme_duration", return_value=40), \
+             patch.object(views, "resolve_catchup_duration", return_value=40), \
              patch.object(views, "check_user_stream_limits", return_value=True), \
              patch.object(views, "RedisClient") as redis_cls, \
              patch.object(views, "reserve_profile_slot", return_value=(True, 1, None)), \
@@ -4659,7 +4668,7 @@ class TimeshiftScrubPreemptTests(TestCase):
                 id=8, name="Test", logo_id=None,
             )
             response = views.timeshift_proxy(
-                request, "u", "p", "8", "2026-06-08:17-00", "8.ts",
+                request, "u", "p", "40", "2026-06-08:17-00", "8.ts",
             )
         self.assertIs(response, ok)
         reacquire_mock.assert_called_once()
@@ -4682,7 +4691,7 @@ class TimeshiftScrubPreemptTests(TestCase):
              patch.object(views, "Channel") as channel_cls, \
              patch.object(views, "_user_can_access_channel", return_value=True), \
              patch.object(views, "get_channel_catchup_streams", return_value=streams), \
-             patch.object(views, "get_programme_duration", return_value=40), \
+             patch.object(views, "resolve_catchup_duration", return_value=40), \
              patch.object(views, "check_user_stream_limits", return_value=True), \
              patch.object(views, "RedisClient") as redis_cls, \
              patch.object(views, "reserve_profile_slot", return_value=(True, 1, None)), \
@@ -4701,7 +4710,7 @@ class TimeshiftScrubPreemptTests(TestCase):
                 id=8, name="Test", logo_id=None,
             )
             response = views.timeshift_proxy(
-                request, "u", "p", "8", "2026-06-08:17-00", "8.ts",
+                request, "u", "p", "40", "2026-06-08:17-00", "8.ts",
             )
         self.assertIs(response, ok)
         reacquire_mock.assert_called_once()
@@ -4730,7 +4739,7 @@ class TimeshiftScrubPreemptTests(TestCase):
              patch.object(views, "Channel") as channel_cls, \
              patch.object(views, "_user_can_access_channel", return_value=True), \
              patch.object(views, "get_channel_catchup_streams", return_value=streams), \
-             patch.object(views, "get_programme_duration", return_value=40), \
+             patch.object(views, "resolve_catchup_duration", return_value=40), \
              patch.object(views, "check_user_stream_limits", return_value=True), \
              patch.object(views, "RedisClient") as redis_cls, \
              patch.object(views, "reserve_profile_slot", return_value=(True, 1, None)) as reserve_mock, \
@@ -4748,7 +4757,7 @@ class TimeshiftScrubPreemptTests(TestCase):
                 id=8, name="Test", logo_id=None,
             )
             response = views.timeshift_proxy(
-                request, "u", "p", "8", "2026-06-08:17-00", "8.ts",
+                request, "u", "p", "40", "2026-06-08:17-00", "8.ts",
             )
         self.assertIs(response, ok)
         reacquire_mock.assert_called_once()
@@ -4772,7 +4781,7 @@ class TimeshiftScrubPreemptTests(TestCase):
              patch.object(views, "Channel") as channel_cls, \
              patch.object(views, "_user_can_access_channel", return_value=True), \
              patch.object(views, "get_channel_catchup_streams", return_value=streams), \
-             patch.object(views, "get_programme_duration", return_value=40), \
+             patch.object(views, "resolve_catchup_duration", return_value=40), \
              patch.object(views, "check_user_stream_limits", return_value=True), \
              patch.object(views, "RedisClient") as redis_cls, \
              patch.object(views, "reserve_profile_slot", return_value=(True, 1, None)), \
@@ -4786,7 +4795,7 @@ class TimeshiftScrubPreemptTests(TestCase):
                 id=8, name="Test", logo_id=None,
             )
             response = views.timeshift_proxy(
-                request, "u", "p", "8", "2026-06-08:17-00", "8.ts",
+                request, "u", "p", "40", "2026-06-08:17-00", "8.ts",
             )
         self.assertEqual(response.status_code, 503)
         preempt_mock.assert_not_called()
@@ -4805,7 +4814,7 @@ class TimeshiftScrubPreemptTests(TestCase):
              patch.object(views, "Channel") as channel_cls, \
              patch.object(views, "_user_can_access_channel", return_value=True), \
              patch.object(views, "get_channel_catchup_streams", return_value=streams), \
-             patch.object(views, "get_programme_duration", return_value=40), \
+             patch.object(views, "resolve_catchup_duration", return_value=40), \
              patch.object(views, "check_user_stream_limits", return_value=True), \
              patch.object(views, "RedisClient") as redis_cls, \
              patch.object(views, "reserve_profile_slot", return_value=(True, 1, None)), \
@@ -4821,7 +4830,7 @@ class TimeshiftScrubPreemptTests(TestCase):
                 id=8, name="Test", logo_id=None,
             )
             response = views.timeshift_proxy(
-                request, "u", "p", "8", "2026-06-08:17-00", "8.ts",
+                request, "u", "p", "40", "2026-06-08:17-00", "8.ts",
             )
         self.assertEqual(response.status_code, 503)
         reacquire_mock.assert_not_called()
@@ -4866,7 +4875,7 @@ class TimeshiftScrubPreemptTests(TestCase):
              patch.object(views, "Channel") as channel_cls, \
              patch.object(views, "_user_can_access_channel", return_value=True), \
              patch.object(views, "get_channel_catchup_streams", return_value=streams), \
-             patch.object(views, "get_programme_duration", return_value=40), \
+             patch.object(views, "resolve_catchup_duration", return_value=40), \
              patch.object(views, "check_user_stream_limits", return_value=True), \
              patch.object(views, "RedisClient") as redis_cls, \
              patch.object(views, "reserve_profile_slot") as reserve_mock, \
@@ -4884,7 +4893,7 @@ class TimeshiftScrubPreemptTests(TestCase):
                 id=8, name="Test", logo_id=None,
             )
             response = views.timeshift_proxy(
-                request, "u", "p", "8", "2026-06-08:17-00", "8.ts",
+                request, "u", "p", "40", "2026-06-08:17-00", "8.ts",
             )
 
         self.assertEqual(response.status_code, 206)
@@ -4950,7 +4959,7 @@ class TimeshiftScrubPreemptTests(TestCase):
              patch.object(views, "Channel") as channel_cls, \
              patch.object(views, "_user_can_access_channel", return_value=True), \
              patch.object(views, "get_channel_catchup_streams", return_value=streams), \
-             patch.object(views, "get_programme_duration", return_value=40), \
+             patch.object(views, "resolve_catchup_duration", return_value=40), \
              patch.object(views, "check_user_stream_limits", return_value=True), \
              patch.object(views, "RedisClient") as redis_cls, \
              patch.object(views, "reserve_profile_slot"), \
@@ -4967,7 +4976,7 @@ class TimeshiftScrubPreemptTests(TestCase):
                 id=8, name="Test", logo_id=None,
             )
             response = views.timeshift_proxy(
-                request, "u", "p", "8", "2026-06-08:17-00", "8.ts",
+                request, "u", "p", "40", "2026-06-08:17-00", "8.ts",
             )
 
         self.assertEqual(response.status_code, 206)
@@ -5015,7 +5024,7 @@ class TimeshiftScrubPreemptTests(TestCase):
              patch.object(views, "Channel") as channel_cls, \
              patch.object(views, "_user_can_access_channel", return_value=True), \
              patch.object(views, "get_channel_catchup_streams", return_value=streams), \
-             patch.object(views, "get_programme_duration", return_value=40), \
+             patch.object(views, "resolve_catchup_duration", return_value=40), \
              patch.object(views, "check_user_stream_limits", return_value=True), \
              patch.object(views, "RedisClient") as redis_cls, \
              patch.object(views, "reserve_profile_slot"), \
@@ -5030,7 +5039,7 @@ class TimeshiftScrubPreemptTests(TestCase):
                 id=8, name="Test", logo_id=None,
             )
             response = views.timeshift_proxy(
-                request, "u", "p", "8", "2026-06-08:17-00", "8.ts",
+                request, "u", "p", "40", "2026-06-08:17-00", "8.ts",
             )
 
         self.assertEqual(response.status_code, 416)
@@ -5053,7 +5062,7 @@ class TimeshiftScrubPreemptTests(TestCase):
              patch.object(views, "Channel") as channel_cls, \
              patch.object(views, "_user_can_access_channel", return_value=True), \
              patch.object(views, "get_channel_catchup_streams", return_value=streams), \
-             patch.object(views, "get_programme_duration", return_value=40), \
+             patch.object(views, "resolve_catchup_duration", return_value=40), \
              patch.object(views, "check_user_stream_limits", return_value=True), \
              patch.object(views, "RedisClient") as redis_cls, \
              patch.object(views, "reserve_profile_slot", return_value=(True, 1, None)), \
@@ -5067,7 +5076,7 @@ class TimeshiftScrubPreemptTests(TestCase):
                 id=8, name="Test", logo_id=None,
             )
             response = views.timeshift_proxy(
-                request, "u", "p", "8", "2026-06-08:17-00", "8.ts",
+                request, "u", "p", "40", "2026-06-08:17-00", "8.ts",
             )
         self.assertIs(response, ok)
         reacquire_mock.assert_called_once()
@@ -5195,7 +5204,7 @@ class TimeshiftScrubPreemptTests(TestCase):
              patch.object(views, "Channel") as channel_cls, \
              patch.object(views, "_user_can_access_channel", return_value=True), \
              patch.object(views, "get_channel_catchup_streams", return_value=streams), \
-             patch.object(views, "get_programme_duration", return_value=40), \
+             patch.object(views, "resolve_catchup_duration", return_value=40), \
              patch.object(views, "check_user_stream_limits", return_value=True), \
              patch.object(views, "RedisClient") as redis_cls, \
              patch.object(views, "reserve_profile_slot",
@@ -5213,7 +5222,7 @@ class TimeshiftScrubPreemptTests(TestCase):
                 id=8, name="Test", logo_id=None,
             )
             response = views.timeshift_proxy(
-                request, "u", "p", "8", "2026-06-08:17-00", "8.ts",
+                request, "u", "p", "40", "2026-06-08:17-00", "8.ts",
             )
         self.assertIs(response, ok)
         preempt_mock.assert_not_called()
@@ -5262,7 +5271,7 @@ class CatchupProxyTests(TestCase):
              patch.object(views, "_user_can_access_channel", return_value=True), \
              patch.object(views, "get_channel_catchup_streams",
                           return_value=[_make_catchup_stream()]), \
-             patch.object(views, "get_programme_duration", return_value=40), \
+             patch.object(views, "resolve_catchup_duration", return_value=40), \
              patch.object(views, "parse_catchup_timestamp", return_value=True), \
              patch.object(views, "RedisClient") as redis_cls:
             redis_cls.get_client.return_value = _FakeRedis()
@@ -5281,10 +5290,11 @@ class CatchupProxyTests(TestCase):
              patch.object(views, "_serve_catchup", return_value=HttpResponse("ok")) as serve:
             channel_cls.objects.get.return_value = MagicMock(id=8)
             response = views.timeshift_proxy(
-                request, "u", "p", "8", "2026-06-08:17-00", "8.ts",
+                request, "u", "p", "40", "2026-06-08:17-00", "8.ts",
             )
         self.assertEqual(response.status_code, 200)
         serve.assert_called_once()
+        self.assertEqual(serve.call_args.kwargs.get("client_duration_hint"), "40")
 
 
 class TimeshiftProviderFaithfulPlainGetTests(_ProxyLoopTestMixin, TestCase):

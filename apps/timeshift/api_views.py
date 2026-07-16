@@ -11,7 +11,7 @@ from apps.channels.models import Channel
 from apps.channels.utils import get_channel_catchup_streams
 from dispatcharr.utils import network_access_allowed
 
-from .helpers import parse_catchup_timestamp
+from .helpers import MAX_DURATION_MINUTES, parse_catchup_timestamp
 from .sessions import (
     HANDSHAKE_TTL_SECONDS,
     SESSION_IDLE_TTL_SECONDS,
@@ -32,6 +32,16 @@ class CatchupSessionCreateSerializer(serializers.Serializer):
             "ISO-8601 (2026-07-09T14:00:00Z), Unix epoch, or XC wall-clock shapes."
         ),
     )
+    duration = serializers.IntegerField(
+        required=False,
+        min_value=1,
+        max_value=MAX_DURATION_MINUTES,
+        help_text=(
+            "Optional programme length in minutes. Preferred over EPG when "
+            "supplied. A short buffer is added for provider archive lag. "
+            "Omit to derive the length from EPG."
+        ),
+    )
 
 
 class CatchupSessionResponseSerializer(serializers.Serializer):
@@ -42,6 +52,11 @@ class CatchupSessionResponseSerializer(serializers.Serializer):
     )
     channel_uuid = serializers.UUIDField()
     start = serializers.CharField()
+    duration = serializers.IntegerField(
+        required=False,
+        allow_null=True,
+        help_text="Programme length in minutes if supplied at creation, else null.",
+    )
 
 
 class CatchupSessionCreateAPIView(APIView):
@@ -120,7 +135,12 @@ class CatchupSessionCreateAPIView(APIView):
             )
 
         try:
-            payload = create_catchup_session(user=user, channel=channel, start=start)
+            payload = create_catchup_session(
+                user=user,
+                channel=channel,
+                start=start,
+                duration=body.validated_data.get("duration"),
+            )
         except RuntimeError:
             return Response(
                 {"error": "Session service unavailable"},

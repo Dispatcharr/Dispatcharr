@@ -43,7 +43,7 @@ urlpatterns = [
         name="xc_stream_endpoint",
     ),
     path(
-        "timeshift/<str:username>/<str:password>/<str:stream_id>/<str:timestamp>/<str:duration>",
+        "timeshift/<str:username>/<str:password>/<str:duration>/<str:timestamp>/<str:channel_id>",
         timeshift_proxy,
         name="timeshift_proxy",
     ),

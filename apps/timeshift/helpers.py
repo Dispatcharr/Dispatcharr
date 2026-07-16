@@ -16,6 +16,9 @@ TimeshiftCredentials = namedtuple(
 )
 
 DEFAULT_DURATION_MINUTES = 120
+# Extra minutes added to client/EPG programme length when asking the provider.
+# IPTV archives commonly lag live by about 30 seconds to 2 minutes, so a bare
+# programme length tends to include the previous show's tail and clip the end.
 DURATION_BUFFER_MINUTES = 5
 MAX_DURATION_MINUTES = 480
 
@@ -159,8 +162,9 @@ def get_programme_duration(channel, timestamp_str):
         timestamp_str: Programme start in UTC (same shape as the client URL).
 
     Returns:
-        Programme length plus a small buffer, capped at ``MAX_DURATION_MINUTES``,
-        or ``DEFAULT_DURATION_MINUTES`` when EPG lookup fails.
+        Programme length plus ``DURATION_BUFFER_MINUTES`` (provider archive lag),
+        capped at ``MAX_DURATION_MINUTES``, or ``DEFAULT_DURATION_MINUTES`` when
+        EPG lookup fails.
     """
     try:
         dt = parse_catchup_timestamp(timestamp_str)
@@ -182,6 +186,45 @@ def get_programme_duration(channel, timestamp_str):
         return min(duration_minutes, MAX_DURATION_MINUTES)
     except Exception:
         return DEFAULT_DURATION_MINUTES
+
+
+def client_duration_to_window(value):
+    """Convert a client-supplied programme length (minutes) to an archive window.
+
+    Args:
+        value: Raw client hint (str/int). PATH XC duration segment, QUERY
+            ``duration=``, or the native session's stored ``duration``.
+
+    Returns:
+        Minutes to request from the provider (client length +
+        ``DURATION_BUFFER_MINUTES``, capped), or ``None`` when the hint is
+        missing or not a usable positive integer.
+
+    The buffer matches the EPG path: clients usually send exact guide length
+    (for example ``.../60/.../123.ts`` for a 60-minute show), but provider
+    archives lag live, so requesting that bare length clips the end.
+    """
+    if value is None:
+        return None
+    try:
+        minutes = int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+    if minutes <= 0:
+        return None
+    return min(minutes + DURATION_BUFFER_MINUTES, MAX_DURATION_MINUTES)
+
+
+def resolve_catchup_duration(channel, timestamp_str, client_hint=None):
+    """Pick the catch-up archive window in minutes.
+
+    Preference order: a sane client-supplied hint, then the EPG programme
+    length, then ``DEFAULT_DURATION_MINUTES``.
+    """
+    window = client_duration_to_window(client_hint)
+    if window is not None:
+        return window
+    return get_programme_duration(channel, timestamp_str)
 
 
 def get_programme_info(channel, timestamp_str):

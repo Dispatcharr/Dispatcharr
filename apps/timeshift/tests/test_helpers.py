@@ -339,6 +339,44 @@ class GetProgrammeDurationTests(TestCase):
         self.assertEqual(get_programme_duration(MagicMock(), "garbage"), 120)
 
 
+class ClientDurationTests(TestCase):
+    """Client-supplied programme length: sanitised, buffered for provider lag,
+    capped, and preferred over EPG when usable."""
+
+    def test_valid_hint_gets_buffer(self):
+        from apps.timeshift.helpers import client_duration_to_window
+        self.assertEqual(client_duration_to_window(30), 35)
+        self.assertEqual(client_duration_to_window("30"), 35)
+
+    def test_hint_capped_at_max(self):
+        from apps.timeshift.helpers import client_duration_to_window
+        self.assertEqual(client_duration_to_window(1000), 480)
+
+    def test_unusable_hint_returns_none(self):
+        from apps.timeshift.helpers import client_duration_to_window
+        for bad in (None, "", "abc", "0", "-5", 0, -10):
+            self.assertIsNone(client_duration_to_window(bad))
+
+    def test_resolve_prefers_client_hint(self):
+        from unittest.mock import MagicMock
+        from apps.timeshift.helpers import resolve_catchup_duration
+        # EPG would say 120 (no programme), but a valid hint wins.
+        channel = MagicMock(epg_data=None)
+        self.assertEqual(
+            resolve_catchup_duration(channel, "2026-06-08:17-00", client_hint="30"),
+            35,
+        )
+
+    def test_resolve_falls_back_to_epg_when_hint_missing(self):
+        from unittest.mock import MagicMock
+        from apps.timeshift.helpers import resolve_catchup_duration
+        channel = MagicMock(epg_data=None)
+        self.assertEqual(
+            resolve_catchup_duration(channel, "2026-06-08:17-00", client_hint=None),
+            120,
+        )
+
+
 class ProgrammeAgeAndStreamOrderTests(TestCase):
     """Archive-age helpers used to prefer deep catch-up providers first."""
 
