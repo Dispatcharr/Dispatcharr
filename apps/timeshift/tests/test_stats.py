@@ -56,6 +56,43 @@ class GetProgrammeInfoTests(TestCase):
         self.assertEqual(info["sub_title"], "Local Edition")
         self.assertEqual(info["duration_secs"], 45 * 60)
 
+    def test_get_programme_info_advances_past_end(self):
+        from datetime import datetime, timedelta, timezone as dt_timezone
+        from unittest.mock import MagicMock
+
+        start = datetime(2026, 6, 8, 17, 0, tzinfo=dt_timezone.utc)
+        first = MagicMock(
+            title="Show A",
+            sub_title="",
+            description="",
+            start_time=start,
+            end_time=start + timedelta(minutes=30),
+        )
+        second = MagicMock(
+            title="Show B",
+            sub_title="",
+            description="",
+            start_time=start + timedelta(minutes=30),
+            end_time=start + timedelta(minutes=60),
+        )
+        channel = MagicMock()
+
+        def _filter(**kwargs):
+            qs = MagicMock()
+            dt = kwargs["start_time__lte"]
+            chosen = None
+            for prog in (first, second):
+                if prog.start_time <= dt and prog.end_time > dt:
+                    chosen = prog
+                    break
+            qs.first.return_value = chosen
+            return qs
+
+        channel.epg_data.programs.filter.side_effect = _filter
+        info = get_programme_info(channel, "2026-06-08:17-00", position_secs=31 * 60)
+        self.assertEqual(info["title"], "Show B")
+        self.assertEqual(info["duration_secs"], 30 * 60)
+
 
 class ComputePlaybackPositionTests(TestCase):
     EPG_START = "2026-07-10T14:00:00+00:00"

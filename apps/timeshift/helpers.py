@@ -3,10 +3,13 @@
 import logging
 import math
 import re
+import time
 from collections import namedtuple
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from urllib.parse import quote
 from zoneinfo import ZoneInfo
+
+from apps.timeshift.redis_keys import TimeshiftRedisKeys
 
 logger = logging.getLogger(__name__)
 
@@ -227,8 +230,15 @@ def resolve_catchup_duration(channel, timestamp_str, client_hint=None):
     return get_programme_duration(channel, timestamp_str)
 
 
-def get_programme_info(channel, timestamp_str):
-    """Return EPG metadata for the programme airing at *timestamp_str*."""
+def get_programme_info(channel, timestamp_str, position_secs=None):
+    """Return EPG metadata for the programme airing at *timestamp_str*.
+
+    When ``position_secs`` is set (playhead within the archive, relative to the
+    programme that contains ``timestamp_str``), and that playhead is at or past
+    the programme's end, resolve the guide entry at the playhead instead. That
+    keeps catch-up stats cards on the show the viewer has actually reached when
+    they keep watching into the provider buffer / next programme.
+    """
     try:
         dt = parse_catchup_timestamp(timestamp_str)
         if dt is None:
@@ -242,6 +252,19 @@ def get_programme_info(channel, timestamp_str):
         ).first()
         if not programme:
             return None
+
+        if position_secs is not None:
+            try:
+                offset = max(0.0, float(position_secs))
+            except (TypeError, ValueError):
+                offset = 0.0
+            playhead = programme.start_time + timedelta(seconds=offset)
+            if playhead >= programme.end_time:
+                advanced = channel.epg_data.programs.filter(
+                    start_time__lte=playhead, end_time__gt=playhead
+                ).first()
+                if advanced is not None:
+                    programme = advanced
 
         duration_seconds = (programme.end_time - programme.start_time).total_seconds()
         return {
@@ -260,10 +283,19 @@ def get_catchup_programmes_for_sessions(sessions):
     """Resolve EPG metadata for catch-up stats cards (batch, on demand).
 
     Each session dict needs ``session_id``, ``channel_uuid``, and
-    ``programme_start``. Called by the frontend when active sessions or seek
-    position change, not on every stats poll.
+    ``programme_start``. Optional ``position_secs`` (playhead within the
+    archive, relative to the programme containing ``programme_start``)
+    advances the returned programme when past that show's end. When omitted,
+    an estimate is taken from the session's Redis stats metadata when present.
     """
     from apps.channels.models import Channel
+    from apps.timeshift.stats import (
+        _client_paused,
+        _decode_hash,
+        compute_playback_position_secs,
+        find_stats_channel_for_session,
+    )
+    from core.utils import RedisClient
 
     if not sessions:
         return []
@@ -282,12 +314,40 @@ def get_catchup_programmes_for_sessions(sessions):
         for ch in Channel.objects.filter(uuid__in=uuids).select_related("epg_data")
     }
 
+    redis_client = RedisClient.get_client()
     results = []
     for session in valid:
         channel_uuid = str(session["channel_uuid"])
         programme_start = session["programme_start"]
         channel = channels_by_uuid.get(channel_uuid)
+        position_secs = session.get("position_secs")
+        if position_secs is not None:
+            try:
+                position_secs = float(position_secs)
+            except (TypeError, ValueError):
+                position_secs = None
+
+        # Resolve the guide entry for the URL first so Redis playhead math has
+        # an EPG start; then re-resolve with position to advance past the end.
         info = get_programme_info(channel, programme_start) if channel else None
+        if position_secs is None and info is not None and redis_client is not None:
+            position_secs = _position_secs_from_stats(
+                redis_client,
+                session_id=session["session_id"],
+                programme_start=programme_start,
+                epg_start_iso=info["start_time"],
+                compute_playback_position_secs=compute_playback_position_secs,
+                find_stats_channel_for_session=find_stats_channel_for_session,
+                client_paused=_client_paused,
+                decode_hash=_decode_hash,
+            )
+        if channel is not None and position_secs is not None:
+            advanced = get_programme_info(
+                channel, programme_start, position_secs=position_secs,
+            )
+            if advanced is not None:
+                info = advanced
+
         entry = {
             "session_id": session["session_id"],
             "channel_uuid": channel_uuid,
@@ -304,6 +364,46 @@ def get_catchup_programmes_for_sessions(sessions):
             })
         results.append(entry)
     return results
+
+
+def _position_secs_from_stats(
+    redis_client,
+    *,
+    session_id,
+    programme_start,
+    epg_start_iso,
+    compute_playback_position_secs,
+    find_stats_channel_for_session,
+    client_paused,
+    decode_hash,
+):
+    """Best-effort uncapped playhead from timeshift stats Redis metadata."""
+    try:
+        stats_channel_id = find_stats_channel_for_session(redis_client, session_id)
+        if not stats_channel_id:
+            return None
+        client_key = TimeshiftRedisKeys.client_metadata(stats_channel_id, session_id)
+        client_data = decode_hash(redis_client.hgetall(client_key))
+        if not client_data:
+            return None
+        playback_base_raw = client_data.get("playback_base_secs")
+        playback_base_secs = None
+        if playback_base_raw not in (None, ""):
+            try:
+                playback_base_secs = float(playback_base_raw)
+            except (TypeError, ValueError):
+                playback_base_secs = None
+        return compute_playback_position_secs(
+            programme_start,
+            epg_start_iso,
+            client_data.get("position_anchor_at"),
+            time.time(),
+            duration_secs=None,
+            playback_base_secs=playback_base_secs,
+            paused=client_paused(client_data.get("paused")),
+        )
+    except Exception:
+        return None
 
 
 def build_timeshift_url_format_a(creds, stream_id, timestamp, duration_minutes):
