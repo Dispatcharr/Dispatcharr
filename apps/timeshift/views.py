@@ -59,6 +59,7 @@ from .helpers import (
     build_timeshift_candidate_urls,
     convert_timestamp_to_provider_tz,
     get_programme_duration,
+    order_catchup_streams_for_timestamp,
     parse_catchup_timestamp,
 )
 from .sessions import catchup_session_exists, delete_catchup_session, resolve_catchup_playback
@@ -297,6 +298,8 @@ def _serve_catchup(request, user, channel, timestamp):
         return _finalize_timeshift_response(
             HttpResponseBadRequest("Timeshift not supported for this channel")
         )
+
+    catchup_streams = order_catchup_streams_for_timestamp(catchup_streams, timestamp)
 
     debug = logger.isEnabledFor(logging.DEBUG)
 

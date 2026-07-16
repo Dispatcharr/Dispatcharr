@@ -531,12 +531,12 @@ class RedactUrlTests(TestCase):
 
 def _make_catchup_stream(provider_tz="Europe/Brussels", *, account_id=9,
                          stream_id="22372", account_type="XC", profile_id=31,
-                         extra_profiles=()):
+                         extra_profiles=(), catchup_days=0):
     """Build a mocked catch-up Stream with its own provider context.
 
     The default (tz-bearing) profile leads the active-profile list the view
     walks; ``extra_profiles`` appends alternate (non-default) profiles for
-    capacity-walk tests.
+    capacity-walk tests. ``catchup_days`` defaults to 0 (unknown archive depth).
     """
     profile = MagicMock()
     profile.id = profile_id
@@ -550,6 +550,7 @@ def _make_catchup_stream(provider_tz="Europe/Brussels", *, account_id=9,
     stream.m3u_account = m3u_account
     stream.m3u_account_id = account_id
     stream.custom_properties = {"stream_id": stream_id} if stream_id else {}
+    stream.catchup_days = catchup_days
     return stream
 
 
@@ -1021,6 +1022,38 @@ class TimeshiftProxyFailoverTests(TestCase):
         response, stream_mock, _, _ = self._call(streams, [passthrough])
         self.assertIs(response, passthrough)
         self.assertEqual(stream_mock.call_count, 1)
+
+    @patch("apps.timeshift.helpers.programme_age_days", return_value=4)
+    def test_prefers_stream_with_sufficient_catchup_days(self, _age):
+        """Deep archive is tried first when earlier streams are too short."""
+        streams = [
+            _make_catchup_stream(account_id=1, stream_id="111", catchup_days=2),
+            _make_catchup_stream(account_id=2, stream_id="222", catchup_days=1),
+            _make_catchup_stream(account_id=3, stream_id="333", catchup_days=5),
+        ]
+        ok = MagicMock(status_code=200)
+        response, stream_mock, build_mock, _ = self._call(streams, [ok])
+        self.assertIs(response, ok)
+        self.assertEqual(stream_mock.call_count, 1)
+        self.assertEqual(stream_mock.call_args.kwargs["account_id"], 3)
+        self.assertEqual(build_mock.call_args.args[1], "333")
+
+    @patch("apps.timeshift.helpers.programme_age_days", return_value=4)
+    def test_falls_back_to_shorter_archives_when_preferred_fail(self, _age):
+        streams = [
+            _make_catchup_stream(account_id=1, stream_id="111", catchup_days=2),
+            _make_catchup_stream(account_id=2, stream_id="222", catchup_days=1),
+            _make_catchup_stream(account_id=3, stream_id="333", catchup_days=5),
+        ]
+        ok = MagicMock(status_code=200)
+        response, stream_mock, _, _ = self._call(
+            streams, [MagicMock(status_code=404), ok]
+        )
+        self.assertIs(response, ok)
+        self.assertEqual(
+            [c.kwargs["account_id"] for c in stream_mock.call_args_list],
+            [3, 1],
+        )
 
 
 class _ProxyLoopTestMixin:

@@ -1,6 +1,7 @@
 """URL builders and timestamp helpers for XC catch-up."""
 
 import logging
+import math
 import re
 from collections import namedtuple
 from datetime import datetime, timezone
@@ -339,3 +340,51 @@ def format_timestamp_as_underscore(timestamp):
 def format_timestamp_as_sql_datetime(timestamp):
     """Reshape to ``YYYY-MM-DD HH:MM:SS`` without timezone conversion."""
     return _reshape_timestamp(timestamp, "%Y-%m-%d %H:%M:%S", "SQL")
+
+
+def programme_age_days(timestamp_str, *, now=None):
+    """Archive depth in whole days needed to cover a catch-up start timestamp.
+
+    Returns:
+        ``None`` if the timestamp cannot be parsed, ``0`` if start is at/after
+        *now*, otherwise ``ceil(elapsed / 86400)`` (at least 1).
+    """
+    dt = parse_catchup_timestamp(timestamp_str)
+    if dt is None:
+        return None
+    if now is None:
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+    elif getattr(now, "tzinfo", None) is not None:
+        now = now.astimezone(timezone.utc).replace(tzinfo=None)
+
+    elapsed = (now - dt).total_seconds()
+    if elapsed <= 0:
+        return 0
+    return max(1, math.ceil(elapsed / 86400.0))
+
+
+def order_catchup_streams_for_timestamp(streams, timestamp_str, *, now=None):
+    """Prefer streams whose ``catchup_days`` cover the programme age.
+
+    Relative channel order is preserved within the preferred and fallback
+    groups. Streams with unknown/zero ``catchup_days`` stay preferred so
+    incomplete provider metadata does not skip a possible server. Unparseable
+    timestamps leave the input order unchanged.
+    """
+    age = programme_age_days(timestamp_str, now=now)
+    if age is None:
+        return list(streams)
+
+    preferred = []
+    fallback = []
+    for stream in streams:
+        raw = getattr(stream, "catchup_days", None)
+        try:
+            days = int(raw) if raw is not None else 0
+        except (TypeError, ValueError):
+            days = 0
+        if days <= 0 or days >= age:
+            preferred.append(stream)
+        else:
+            fallback.append(stream)
+    return preferred + fallback

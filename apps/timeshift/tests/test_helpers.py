@@ -15,7 +15,9 @@ from apps.timeshift.helpers import (
     format_timestamp_as_sql_datetime,
     format_timestamp_as_underscore,
     normalize_catchup_timestamp_input,
+    order_catchup_streams_for_timestamp,
     parse_catchup_timestamp,
+    programme_age_days,
 )
 
 
@@ -335,3 +337,78 @@ class GetProgrammeDurationTests(TestCase):
         from unittest.mock import MagicMock
         from apps.timeshift.helpers import get_programme_duration
         self.assertEqual(get_programme_duration(MagicMock(), "garbage"), 120)
+
+
+class ProgrammeAgeAndStreamOrderTests(TestCase):
+    """Archive-age helpers used to prefer deep catch-up providers first."""
+
+    def test_programme_age_days_ceil(self):
+        now = datetime(2026, 7, 16, 12, 0, 0)
+        self.assertEqual(
+            programme_age_days("2026-07-12:12-00", now=now),
+            4,
+        )
+        self.assertEqual(
+            programme_age_days("2026-07-15:12-00", now=now),
+            1,
+        )
+        self.assertEqual(
+            programme_age_days("2026-07-16:12-00", now=now),
+            0,
+        )
+
+    def test_programme_age_days_unparseable(self):
+        self.assertIsNone(programme_age_days("garbage"))
+
+    def test_order_prefers_covering_streams_then_fallback(self):
+        from types import SimpleNamespace
+
+        now = datetime(2026, 7, 16, 12, 0, 0)
+        streams = [
+            SimpleNamespace(catchup_days=2, name="p1"),
+            SimpleNamespace(catchup_days=1, name="p2"),
+            SimpleNamespace(catchup_days=5, name="p3"),
+        ]
+        ordered = order_catchup_streams_for_timestamp(
+            streams, "2026-07-12:12-00", now=now
+        )
+        self.assertEqual([s.name for s in ordered], ["p3", "p1", "p2"])
+
+    def test_order_keeps_channel_order_within_groups(self):
+        from types import SimpleNamespace
+
+        now = datetime(2026, 7, 16, 12, 0, 0)
+        streams = [
+            SimpleNamespace(catchup_days=7, name="a"),
+            SimpleNamespace(catchup_days=2, name="b"),
+            SimpleNamespace(catchup_days=14, name="c"),
+            SimpleNamespace(catchup_days=1, name="d"),
+        ]
+        ordered = order_catchup_streams_for_timestamp(
+            streams, "2026-07-12:12-00", now=now
+        )
+        self.assertEqual([s.name for s in ordered], ["a", "c", "b", "d"])
+
+    def test_unknown_catchup_days_stay_preferred(self):
+        from types import SimpleNamespace
+
+        now = datetime(2026, 7, 16, 12, 0, 0)
+        streams = [
+            SimpleNamespace(catchup_days=2, name="short"),
+            SimpleNamespace(catchup_days=0, name="unknown"),
+            SimpleNamespace(catchup_days=5, name="deep"),
+        ]
+        ordered = order_catchup_streams_for_timestamp(
+            streams, "2026-07-12:12-00", now=now
+        )
+        self.assertEqual([s.name for s in ordered], ["unknown", "deep", "short"])
+
+    def test_unparseable_timestamp_preserves_order(self):
+        from types import SimpleNamespace
+
+        streams = [
+            SimpleNamespace(catchup_days=2, name="a"),
+            SimpleNamespace(catchup_days=5, name="b"),
+        ]
+        ordered = order_catchup_streams_for_timestamp(streams, "garbage")
+        self.assertEqual([s.name for s in ordered], ["a", "b"])
