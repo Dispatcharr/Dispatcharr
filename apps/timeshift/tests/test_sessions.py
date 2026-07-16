@@ -206,6 +206,139 @@ class CatchupSessionApiTests(TestCase):
         self.assertEqual(deleted.status_code, 404)
 
 
+@override_settings(
+    CACHES={
+        "default": {
+            "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+            "LOCATION": "catchup-session-position-tests",
+        }
+    },
+    REST_FRAMEWORK={
+        "DEFAULT_AUTHENTICATION_CLASSES": [
+            "rest_framework_simplejwt.authentication.JWTAuthentication",
+            "apps.accounts.authentication.ApiKeyAuthentication",
+        ],
+        "DEFAULT_PERMISSION_CLASSES": [
+            "apps.accounts.permissions.IsAdmin",
+        ],
+    },
+)
+class CatchupSessionPositionApiTests(TestCase):
+    @classmethod
+    def setUpTestData(cls):
+        cls.user = User.objects.create(
+            username="catchup-position-user",
+            user_level=User.UserLevel.STANDARD,
+        )
+        cls.account = M3UAccount.objects.create(
+            name="catchup-position-acct",
+            server_url="http://example.test",
+            account_type="XC",
+            is_active=True,
+        )
+        cls.channel = Channel.objects.create(
+            name="Catchup Position Channel",
+            is_catchup=True,
+            catchup_days=7,
+        )
+        cls.stream = Stream.objects.create(
+            name="catchup-position-stream",
+            url="http://example.test/live",
+            m3u_account=cls.account,
+            is_catchup=True,
+            catchup_days=7,
+            custom_properties={"stream_id": "111"},
+        )
+        ChannelStream.objects.create(
+            channel=cls.channel, stream=cls.stream, order=0,
+        )
+
+    def setUp(self):
+        from apps.timeshift.tests.test_views import _FakeRedis
+
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+        self.redis = _FakeRedis()
+
+    def _seed_active_playback(self, session_id):
+        stats_channel_id = f"{self.channel.id}_{session_id}"
+        self.redis.hset(
+            TimeshiftRedisKeys.channel_metadata(stats_channel_id),
+            mapping={"state": "active"},
+        )
+        self.redis.sadd(TimeshiftRedisKeys.clients(stats_channel_id), session_id)
+        self.redis.hset(
+            TimeshiftRedisKeys.client_metadata(stats_channel_id, session_id),
+            mapping={
+                "user_id": str(self.user.id),
+                "username": self.user.username,
+                "programme_start": "2026-06-08T17:00:00Z",
+                "position_anchor_at": "1000.0",
+            },
+        )
+        return stats_channel_id
+
+    @patch("apps.timeshift.api_views._trigger_timeshift_stats_update")
+    @patch("apps.timeshift.api_views.RedisClient.get_client")
+    @patch("apps.timeshift.stats.RedisClient.get_client")
+    @patch("apps.timeshift.sessions.RedisClient.get_client")
+    @patch("apps.timeshift.api_views.network_access_allowed", return_value=True)
+    def test_position_updates_active_session(
+        self, _net, sessions_redis, stats_redis, api_redis, trigger_mock,
+    ):
+        sessions_redis.return_value = self.redis
+        stats_redis.return_value = self.redis
+        api_redis.return_value = self.redis
+        created = self.client.post(
+            "/api/catchup/sessions/",
+            {
+                "channel_uuid": str(self.channel.uuid),
+                "start": "2026-06-08T17:00:00Z",
+            },
+            format="json",
+        )
+        session_id = created.json()["session_id"]
+        stats_channel_id = self._seed_active_playback(session_id)
+
+        response = self.client.post(
+            f"/api/catchup/sessions/{session_id}/position/",
+            {"position_secs": 842, "paused": True},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 204)
+        client_key = TimeshiftRedisKeys.client_metadata(stats_channel_id, session_id)
+        data = self.redis.hgetall(client_key)
+        self.assertEqual(data["playback_base_secs"], "842.0")
+        self.assertEqual(data["paused"], "1")
+        trigger_mock.assert_called_once()
+
+    @patch("apps.timeshift.api_views.RedisClient.get_client")
+    @patch("apps.timeshift.stats.RedisClient.get_client")
+    @patch("apps.timeshift.sessions.RedisClient.get_client")
+    @patch("apps.timeshift.api_views.network_access_allowed", return_value=True)
+    def test_position_without_playback_returns_404(
+        self, _net, sessions_redis, stats_redis, api_redis,
+    ):
+        sessions_redis.return_value = self.redis
+        stats_redis.return_value = self.redis
+        api_redis.return_value = self.redis
+        created = self.client.post(
+            "/api/catchup/sessions/",
+            {
+                "channel_uuid": str(self.channel.uuid),
+                "start": "2026-06-08T17:00:00Z",
+            },
+            format="json",
+        )
+        session_id = created.json()["session_id"]
+        response = self.client.post(
+            f"/api/catchup/sessions/{session_id}/position/",
+            {"position_secs": 10},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 404)
+
+
 class CatchupSessionResolveTests(TestCase):
     @classmethod
     def setUpTestData(cls):

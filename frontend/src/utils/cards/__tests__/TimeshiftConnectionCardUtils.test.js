@@ -35,4 +35,17 @@ describe('computeCatchupPlaybackSeconds', () => {
     });
     expect(position).toBeCloseTo(1830, 5);
   });
+
+  it('does not advance while paused', () => {
+    const position = computeCatchupPlaybackSeconds({
+      programmeStart: '2026-07-10:14-00',
+      programStartTime: '2026-07-10T14:00:00+00:00',
+      programDurationSecs: 3600,
+      positionAnchorAt: 1000,
+      playbackBaseSecs: 900,
+      paused: true,
+      nowMs: 1300 * 1000,
+    });
+    expect(position).toBeCloseTo(900, 5);
+  });
 });

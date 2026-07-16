@@ -13,6 +13,7 @@ from apps.m3u.models import M3UAccountProfile
 from apps.proxy.live_proxy.constants import ChannelMetadataField
 from apps.timeshift.redis_keys import TimeshiftRedisKeys, parse_stats_channel_id
 from apps.timeshift.helpers import parse_catchup_timestamp
+from core.utils import RedisClient
 
 logger = logging.getLogger(__name__)
 
@@ -222,6 +223,7 @@ def compute_playback_position_secs(
     current_time,
     duration_secs=None,
     playback_base_secs=None,
+    paused=False,
 ):
     """Best-effort catch-up play position in seconds within the programme.
 
@@ -233,9 +235,12 @@ def compute_playback_position_secs(
     Native players (VLC) often keep the programme URL fixed and seek via
     ``Range: bytes=…``; in that case ``playback_base_secs`` carries the mapped
     position at the anchor instead of the URL timestamp offset.
+
+    When ``paused`` is true, wall-clock since the anchor is ignored so admin
+    stats stay frozen at the last reported playhead.
     """
     elapsed_since_anchor = 0.0
-    if position_anchor_at:
+    if not paused and position_anchor_at:
         try:
             elapsed_since_anchor = max(0.0, current_time - float(position_anchor_at))
         except (TypeError, ValueError):
@@ -286,6 +291,81 @@ def find_stats_channel_for_session(redis_client, session_id):
         if cursor == 0:
             break
     return None
+
+
+def _client_paused(raw_value):
+    if raw_value is None or raw_value == "":
+        return False
+    value = _decode_value(raw_value).strip().lower()
+    return value in {"1", "true", "yes"}
+
+
+def update_catchup_session_position(
+    session_id,
+    *,
+    position_secs,
+    paused=None,
+    user_id=None,
+    redis_client=None,
+):
+    """Record a native client's playhead for catch-up stats.
+
+    Updates the active stats client hash for ``session_id`` and refreshes the
+    API session idle TTL. Does not seek the provider stream.
+
+    Returns:
+        ``True`` when metadata was updated, ``False`` when there is no active
+        playback stats entry (or Redis is unavailable).
+    """
+    from apps.timeshift.sessions import touch_catchup_session
+
+    if redis_client is None:
+        redis_client = RedisClient.get_client()
+    if redis_client is None or not session_id:
+        return False
+
+    stats_channel_id = find_stats_channel_for_session(redis_client, session_id)
+    if not stats_channel_id:
+        return False
+
+    client_key = TimeshiftRedisKeys.client_metadata(stats_channel_id, session_id)
+    client_set_key = TimeshiftRedisKeys.clients(stats_channel_id)
+    metadata_key = TimeshiftRedisKeys.channel_metadata(stats_channel_id)
+    try:
+        if not redis_client.exists(client_key):
+            return False
+        if user_id is not None:
+            stored_user = redis_client.hget(client_key, "user_id")
+            if stored_user is not None and str(_decode_value(stored_user)) != str(user_id):
+                return False
+    except Exception:
+        return False
+
+    now = str(time.time())
+    mapping = {
+        "playback_base_secs": str(float(position_secs)),
+        "position_anchor_at": now,
+        "last_active": now,
+    }
+    # Must match apps.timeshift.views.CLIENT_TTL_SECONDS (stats / fingerprint).
+    client_ttl_seconds = 60
+
+    try:
+        pipe = redis_client.pipeline(transaction=False)
+        pipe.hset(client_key, mapping=mapping)
+        if paused is True:
+            pipe.hset(client_key, "paused", "1")
+        elif paused is False:
+            pipe.hdel(client_key, "paused")
+        pipe.expire(client_key, client_ttl_seconds)
+        pipe.expire(client_set_key, client_ttl_seconds)
+        pipe.expire(metadata_key, client_ttl_seconds)
+        pipe.execute()
+    except Exception:
+        return False
+
+    touch_catchup_session(session_id, redis_client=redis_client)
+    return True
 
 
 def build_timeshift_stats_data(redis_client):
@@ -369,6 +449,8 @@ def build_timeshift_stats_data(redis_client):
                         except (TypeError, ValueError):
                             playback_base_secs = None
 
+                    paused = _client_paused(client_data.get("paused"))
+
                     connected_at = client_data.get("connected_at")
                     duration = 0
                     if connected_at:
@@ -388,6 +470,7 @@ def build_timeshift_stats_data(redis_client):
                         "programme_start": programme_start,
                         "position_anchor_at": client_data.get("position_anchor_at"),
                         "playback_base_secs": playback_base_secs,
+                        "paused": paused,
                         "m3u_profile_id": int(m3u_profile_id) if m3u_profile_id else None,
                         "ip_address": client_data.get("ip_address", "Unknown"),
                         "user_agent": client_data.get("user_agent", "unknown"),
@@ -467,6 +550,7 @@ def build_timeshift_stats_data(redis_client):
                     "programme_start": conn["programme_start"],
                     "position_anchor_at": position_anchor_at,
                     "playback_base_secs": playback_base_secs,
+                    "paused": bool(conn.get("paused")),
                     "resolution": conn.get("resolution"),
                     "source_fps": conn.get("source_fps"),
                     "video_codec": conn.get("video_codec"),

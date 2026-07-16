@@ -21,6 +21,7 @@ from apps.timeshift.stats import (
     resolve_stats_playback_fields,
     seed_stream_stats_metadata,
     stream_stats_to_metadata_fields,
+    update_catchup_session_position,
 )
 from apps.timeshift.tests.test_views import _FakeRedis
 
@@ -107,6 +108,18 @@ class ComputePlaybackPositionTests(TestCase):
             duration_secs=3600,
         )
         self.assertAlmostEqual(pos, 5 * 60)
+
+    def test_paused_freezes_wall_clock_advance(self):
+        pos = compute_playback_position_secs(
+            "2026-07-10:14-00",
+            self.EPG_START,
+            position_anchor_at=1000.0,
+            current_time=1300.0,
+            duration_secs=3600,
+            playback_base_secs=900.0,
+            paused=True,
+        )
+        self.assertAlmostEqual(pos, 900.0)
 
 
 class ByteRangePlaybackTests(TestCase):
@@ -264,11 +277,44 @@ class BuildTimeshiftStatsDataTests(TestCase):
         self.assertNotIn("playback_position_secs", session)
         self.assertEqual(session["channel_name"], "Catch-up Stats Channel")
         self.assertEqual(session["resolution"], "1920x1080")
+        self.assertFalse(session["paused"])
         self.assertEqual(session["connections"][0]["ip_address"], "10.0.0.5")
 
     def test_find_stats_channel_for_session(self):
         found = find_stats_channel_for_session(self.redis, self.session_id)
         self.assertEqual(found, self.stats_channel_id)
+
+    def test_update_catchup_session_position_sets_base_and_pause(self):
+        updated = update_catchup_session_position(
+            self.session_id,
+            position_secs=842.5,
+            paused=True,
+            user_id=1,
+            redis_client=self.redis,
+        )
+        self.assertTrue(updated)
+        client_key = RedisKeys.client_metadata(self.stats_channel_id, self.session_id)
+        data = self.redis.hgetall(client_key)
+        self.assertEqual(data["playback_base_secs"], "842.5")
+        self.assertEqual(data["paused"], "1")
+        self.assertIsNotNone(data.get("position_anchor_at"))
+
+    @patch("apps.timeshift.stats.Channel")
+    def test_build_includes_paused_flag(self, mock_channel_model):
+        channel = MagicMock()
+        channel.id = self.channel_id
+        channel.name = "Catch-up Stats Channel"
+        channel.uuid = "00000000-0000-0000-0000-000000000042"
+        channel.logo_id = None
+        channel.logo = None
+        mock_channel_model.objects.select_related.return_value.filter.return_value = [
+            channel,
+        ]
+        client_key = RedisKeys.client_metadata(self.stats_channel_id, self.session_id)
+        self.redis.hset(client_key, mapping={"paused": "1", "playback_base_secs": "100"})
+        session = build_timeshift_stats_data(self.redis)["timeshift_sessions"][0]
+        self.assertTrue(session["paused"])
+        self.assertEqual(session["playback_base_secs"], 100.0)
 
     @patch("apps.timeshift.stats.Channel")
     def test_skips_clients_missing_required_metadata(self, mock_channel_model):

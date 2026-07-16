@@ -2839,6 +2839,10 @@ def _register_stats_client(
         pipe.hset(client_key, mapping=client_payload)
         if playback_base_secs is None:
             pipe.hdel(client_key, "playback_base_secs")
+        # Fresh proxy reanchor clears client-reported pause; EOF probes keep
+        # the prior anchor and therefore leave ``paused`` alone.
+        if str(position_anchor_at) == str(now):
+            pipe.hdel(client_key, "paused")
         pipe.expire(client_key, CLIENT_TTL_SECONDS)
         pipe.sadd(client_set_key, client_id)
         pipe.expire(client_set_key, CLIENT_TTL_SECONDS)

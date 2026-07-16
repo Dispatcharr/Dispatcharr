@@ -9,6 +9,7 @@ from rest_framework.views import APIView
 from apps.accounts.permissions import IsStandardUser
 from apps.channels.models import Channel
 from apps.channels.utils import get_channel_catchup_streams
+from core.utils import RedisClient
 from dispatcharr.utils import network_access_allowed
 
 from .helpers import MAX_DURATION_MINUTES, parse_catchup_timestamp
@@ -19,7 +20,11 @@ from .sessions import (
     delete_catchup_session,
     user_owns_catchup_session,
 )
-from .views import _user_can_access_channel
+from .stats import update_catchup_session_position
+from .views import _trigger_timeshift_stats_update, _user_can_access_channel
+
+# Programme length cap expressed in seconds for position reports.
+_MAX_POSITION_SECS = MAX_DURATION_MINUTES * 60
 
 
 class CatchupSessionCreateSerializer(serializers.Serializer):
@@ -73,6 +78,11 @@ class CatchupSessionCreateAPIView(APIView):
             "**``start``** is the programme's broadcast start time in UTC "
             "(from EPG ``start_time``). It selects *which* archived show to "
             "fetch, not when the viewer pressed play.\n\n"
+            "**``duration``** is optional programme length in minutes. Native "
+            "clients should send it when their guide knows the programme "
+            "length. Dispatcharr uses it before local EPG duration, adds a "
+            "short provider-lag buffer, and falls back to EPG duration, then "
+            "the default archive window when omitted.\n\n"
             f"The player should open ``playback_url`` within "
             f"**{HANDSHAKE_TTL_SECONDS} seconds** (see ``expires_at``). After the "
             "first byte request, the session stays valid with a "
@@ -185,4 +195,80 @@ class CatchupSessionDestroyAPIView(APIView):
             return Response({"error": "Session not found"}, status=status.HTTP_404_NOT_FOUND)
 
         delete_catchup_session(session_id)
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class CatchupSessionPositionSerializer(serializers.Serializer):
+    position_secs = serializers.FloatField(
+        min_value=0,
+        max_value=_MAX_POSITION_SECS,
+        help_text=(
+            "Current playhead within the programme, in seconds from programme start."
+        ),
+    )
+    paused = serializers.BooleanField(
+        required=False,
+        help_text=(
+            "When true, admin stats freeze at ``position_secs`` (no wall-clock "
+            "advance). When false, clear pause. Omit to leave pause state unchanged."
+        ),
+    )
+
+
+class CatchupSessionPositionAPIView(APIView):
+    """Native clients report local playhead / pause for catch-up stats polish."""
+
+    permission_classes = [IsStandardUser]
+
+    @extend_schema(
+        description=(
+            "Update the reported playhead for an active catch-up session.\n\n"
+            "Native apps can call this while paused or after local scrubbing so "
+            "admin stats stay aligned with what the viewer sees. This does "
+            "**not** seek the provider stream; HTTP ``Range`` / a new archive "
+            "open still control bytes.\n\n"
+            "Requires an active playback connection for ``session_id``. Also "
+            "refreshes the session idle TTL."
+        ),
+        request=CatchupSessionPositionSerializer,
+        responses={
+            204: None,
+            400: inline_serializer(
+                name="CatchupSessionPositionError",
+                fields={"error": serializers.CharField()},
+            ),
+            403: inline_serializer(
+                name="CatchupSessionPositionForbidden",
+                fields={"error": serializers.CharField()},
+            ),
+            404: inline_serializer(
+                name="CatchupSessionPositionNotFound",
+                fields={"error": serializers.CharField()},
+            ),
+        },
+        tags=["catchup"],
+    )
+    def post(self, request, session_id):
+        if not network_access_allowed(request, "STREAMS", request.user):
+            return Response({"error": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
+
+        if not user_owns_catchup_session(session_id, request.user.id):
+            return Response({"error": "Session not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        body = CatchupSessionPositionSerializer(data=request.data)
+        body.is_valid(raise_exception=True)
+
+        updated = update_catchup_session_position(
+            session_id,
+            position_secs=body.validated_data["position_secs"],
+            paused=body.validated_data.get("paused"),
+            user_id=request.user.id,
+        )
+        if not updated:
+            return Response(
+                {"error": "No active playback for this session"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        _trigger_timeshift_stats_update(RedisClient.get_client())
         return Response(status=status.HTTP_204_NO_CONTENT)

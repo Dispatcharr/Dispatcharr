@@ -23,10 +23,11 @@ export const computeCatchupPlaybackSeconds = ({
   programDurationSecs,
   positionAnchorAt,
   playbackBaseSecs,
+  paused = false,
   nowMs = getNowMs(),
 }) => {
   let elapsedSinceAnchor = 0;
-  if (positionAnchorAt != null) {
+  if (!paused && positionAnchorAt != null) {
     const anchor = Number(positionAnchorAt);
     if (!Number.isNaN(anchor)) {
       elapsedSinceAnchor = Math.max(0, nowMs / 1000 - anchor);
