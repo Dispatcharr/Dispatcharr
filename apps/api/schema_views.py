@@ -6,10 +6,10 @@ interleave on that state and raise:
 
     AssertionError: Schema generation REQUIRES a view instance
 
-Only one schema build runs at a time per process (single-flight). The
-finished schema is stored in Django's cache (Redis) so all workers share it.
-Waiters block on an Event instead of holding a lock across DB I/O, which
-avoids gevent deadlocks with the connection pool.
+Cold builds also frequently hang the gevent hub when introspection runs in a
+greenlet. Generation therefore runs in a real OS thread (gevent ThreadPool),
+with per-process single-flight coordination and a Django/Redis cache shared
+by all workers.
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ from __future__ import annotations
 import copy
 import logging
 import threading
-from typing import Dict, Optional
+from typing import Callable, Dict, Optional
 
 from django.conf import settings
 from django.core.cache import cache
@@ -27,14 +27,32 @@ from drf_spectacular.views import SpectacularAPIView
 
 logger = logging.getLogger(__name__)
 
+try:
+    # Real OS threads; .get() waits without blocking the gevent hub.
+    from gevent import monkey
+    from gevent.threadpool import ThreadPool
+
+    _SCHEMA_POOL: Optional[ThreadPool] = ThreadPool(maxsize=1)
+    _GEVENT_PATCHED = monkey.is_module_patched("threading")
+except ImportError:  # pragma: no cover - non-gevent runtimes
+    _SCHEMA_POOL = None
+    _GEVENT_PATCHED = False
+
 # Greenlet-safe after gevent monkey-patching.
 _guard = threading.Lock()
 _in_progress: Dict[str, threading.Event] = {}
-# Same-process handoff when cache.set fails so waiters are not left empty-handed.
 _flight_results: Dict[str, dict] = {}
 
 _SCHEMA_CACHE_PREFIX = "openapi:schema:"
 _SCHEMA_CACHE_VER_KEY = f"{_SCHEMA_CACHE_PREFIX}cache_ver"
+_BUILD_TIMEOUT_SECONDS = 120
+
+
+def _run_schema_build(build: Callable[[], dict]) -> dict:
+    """Run schema introspection off the gevent hub when monkey-patched."""
+    if _SCHEMA_POOL is not None and _GEVENT_PATCHED:
+        return _SCHEMA_POOL.spawn(build).get(timeout=_BUILD_TIMEOUT_SECONDS)
+    return build()
 
 
 def _cache_supports_delete_pattern() -> bool:
@@ -105,6 +123,14 @@ class LockedSpectacularAPIView(SpectacularAPIView):
         except Exception:
             logger.warning("OpenAPI schema cache set failed", exc_info=True)
 
+    def _build_schema(self, request, version: Optional[str]) -> dict:
+        generator = self.generator_class(
+            urlconf=self.urlconf,
+            api_version=version,
+            patterns=self.patterns,
+        )
+        return generator.get_schema(request=request, public=self.serve_public)
+
     def _get_schema_response(self, request):
         version = self._resolve_version(request)
         cache_key = self._cache_key(request)
@@ -127,7 +153,7 @@ class LockedSpectacularAPIView(SpectacularAPIView):
                 is_builder = False
 
         if not is_builder:
-            if not event.wait(timeout=120):
+            if not event.wait(timeout=_BUILD_TIMEOUT_SECONDS):
                 return Response(
                     {"detail": "Timed out waiting for OpenAPI schema generation."},
                     status=503,
@@ -144,18 +170,19 @@ class LockedSpectacularAPIView(SpectacularAPIView):
             return self._schema_response(request, version, cached)
 
         try:
-            generator = self.generator_class(
-                urlconf=self.urlconf,
-                api_version=version,
-                patterns=self.patterns,
-            )
-            schema = generator.get_schema(
-                request=request, public=self.serve_public
+            schema = _run_schema_build(
+                lambda: self._build_schema(request, version)
             )
             with _guard:
                 _flight_results[cache_key] = schema
             self._cache_set(cache_key, schema)
             return self._schema_response(request, version, schema)
+        except Exception:
+            logger.exception("OpenAPI schema generation failed")
+            return Response(
+                {"detail": "OpenAPI schema generation failed."},
+                status=500,
+            )
         finally:
             with _guard:
                 _in_progress.pop(cache_key, None)
