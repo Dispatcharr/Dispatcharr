@@ -67,8 +67,7 @@ def resolve_xc_epg_prev_days(request, user, *, auto_detect_fallback=True):
     Resolution order:
         1. URL ``?prev_days=`` (explicit; 0 means no past programmes)
         2. ``user.custom_properties.epg_prev_days``
-        3. ``CoreSettings.epg_settings.xmltv_prev_days_override`` when > 0
-        4. Auto-detect (only when *auto_detect_fallback* is True)
+        3. Auto-detect (only when *auto_detect_fallback* is True)
     """
     user_custom = (user.custom_properties or {}) if user else {}
     url_prev = request.GET.get("prev_days")
@@ -85,14 +84,6 @@ def resolve_xc_epg_prev_days(request, user, *, auto_detect_fallback=True):
         except (ValueError, TypeError):
             return 0
 
-    from core.models import CoreSettings
-
-    try:
-        override = int(CoreSettings.get_xmltv_prev_days_override() or 0)
-    except (TypeError, ValueError):
-        override = 0
-    if override > 0:
-        return max(0, min(override, MAX_AUTO_PREV_DAYS))
     if auto_detect_fallback:
         return compute_provider_archive_days_capped()
     return 0

@@ -38,8 +38,12 @@ def mint_catchup_session_id():
     return mint_session_id()
 
 
-def create_catchup_session(*, user, channel, start):
-    """Persist a new playback session and return metadata for the API response."""
+def create_catchup_session(*, user, channel, start, duration=None):
+    """Persist a new playback session and return metadata for the API response.
+
+    ``duration`` is an optional programme length in minutes. When supplied it is
+    preferred over EPG at playback time (see ``resolve_catchup_duration``).
+    """
     redis_client = RedisClient.get_client()
     if redis_client is None:
         raise RuntimeError("Redis unavailable")
@@ -47,16 +51,16 @@ def create_catchup_session(*, user, channel, start):
     session_id = mint_session_id()
     now = int(time.time())
     key = TimeshiftRedisKeys.api_session(session_id)
-    redis_client.hset(
-        key,
-        mapping={
-            "user_id": str(user.id),
-            "channel_uuid": str(channel.uuid),
-            "channel_id": str(channel.id),
-            "start": str(start),
-            "created_at": str(now),
-        },
-    )
+    mapping = {
+        "user_id": str(user.id),
+        "channel_uuid": str(channel.uuid),
+        "channel_id": str(channel.id),
+        "start": str(start),
+        "created_at": str(now),
+    }
+    if duration is not None:
+        mapping["duration"] = str(duration)
+    redis_client.hset(key, mapping=mapping)
     redis_client.expire(key, HANDSHAKE_TTL_SECONDS)
 
     handshake_expires_at = now + HANDSHAKE_TTL_SECONDS
@@ -68,6 +72,7 @@ def create_catchup_session(*, user, channel, start):
         "expires_at": handshake_expires_at,
         "channel_uuid": str(channel.uuid),
         "start": str(start),
+        "duration": duration,
     }
 
 
@@ -157,8 +162,9 @@ def resolve_catchup_playback(session_id, channel_uuid):
     """Resolve user and programme start for a tokenless playback request.
 
     Returns:
-        ``(user, start)`` on success, or ``None`` if the session is invalid,
-        expired, or bound to a different channel.
+        ``(user, start, duration)`` on success, or ``None`` if the session is
+        invalid, expired, or bound to a different channel. ``duration`` is the
+        stored client programme length in minutes, or ``None`` when unset.
     """
     record = get_catchup_session(session_id)
     if not record:
@@ -184,7 +190,7 @@ def resolve_catchup_playback(session_id, channel_uuid):
     if not start:
         return None
 
-    return user, str(start)
+    return user, str(start), record.get("duration")
 
 
 def user_owns_catchup_session(session_id, user_id):

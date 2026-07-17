@@ -18,6 +18,14 @@ import { SquarePlus, Webhook, FileCode, Logs } from 'lucide-react';
 import ConnectionForm from '../components/forms/Connection';
 import { SUBSCRIPTION_EVENTS } from '../constants';
 
+const deleteConnectIntegration = (id) => {
+  return API.deleteConnectIntegration(id);
+};
+
+const updateConnectIntegration = (id, values) => {
+  return API.updateConnectIntegration(id, values);
+};
+
 export default function ConnectPage() {
   const { integrations, isLoading, fetchIntegrations } = useConnectStore();
   const theme = useMantineTheme();
@@ -40,7 +48,7 @@ export default function ConnectPage() {
 
   const deleteConnection = async (id) => {
     console.log('Deleting connection', id);
-    await API.deleteConnectIntegration(id);
+    await deleteConnectIntegration(id);
   };
 
   return (
@@ -99,15 +107,14 @@ function IntegrationRow({ integration, editConnection, deleteConnection }) {
 
   const toggleIntegration = async () => {
     try {
-      await API.updateConnectIntegration(integration.id, {
+      await updateConnectIntegration(integration.id, {
         ...integration,
         enabled: !enabled,
       });
       setEnabled(!enabled);
     } catch (error) {
       console.error('Failed to update integration', error);
-    } finally {
-    }
+    } 
   };
 
   return (

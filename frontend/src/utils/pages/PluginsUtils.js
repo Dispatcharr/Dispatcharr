@@ -25,3 +25,12 @@ export const deletePluginByKey = (key) => {
 export const getPluginDetailManifest = (repoId, manifestUrl) => {
   return API.getPluginDetailManifest(repoId, manifestUrl);
 };
+export const getPluginRepoSettings = () => {
+  return API.getPluginRepoSettings();
+};
+export const updatePluginRepoSettings = (values) => {
+  return API.updatePluginRepoSettings(values);
+};
+export const previewPluginRepo = (url, publicKey) => {
+  return API.previewPluginRepo(url, publicKey);
+};
