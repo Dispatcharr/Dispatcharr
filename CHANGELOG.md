@@ -33,6 +33,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Channel list API paginates when only `page_size` is provided.** `ChannelPagination` previously required an explicit `page` query parameter; sending `page_size` alone returned the full unpaginated queryset. Requests with `page_size` but no `page` now paginate normally (page 1). Omitting both `page` and `page_size` still returns the full queryset for legacy clients and plugins.
 - **VOD proxy now fails over across M3U accounts when the selected account is at capacity.** `stream_vod()` and `head_vod()` previously picked the highest-priority relation and returned HTTP 503 if that account's profile pool was full, without trying other accounts carrying the same title. The proxy now materialises active relations in a single query, walks them in priority order (preferred stream/account first), and streams from the first account with spare capacity—matching live-channel failover. (Closes #1385) — Thanks [@francescodg89-crypto](https://github.com/francescodg89-crypto)
+- **URL validation now accepts underscores in non-FQDN hostnames.** Stream, M3U server, and EPG source URLs with Docker-style host labels (e.g. `http://my_service/`, `http://dispatcharr_web:8000/`) were rejected because the flexible-URL fallback did not allow underscores in hostname characters. — Thanks [@recurst](https://github.com/recurst)
 
 ### Performance
 
