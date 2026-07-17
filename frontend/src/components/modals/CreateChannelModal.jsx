@@ -4,6 +4,7 @@ import {
   Stack,
   Text,
   Radio,
+  RadioGroup,
   NumberInput,
   Checkbox,
   Group,
@@ -101,11 +102,7 @@ const CreateChannelModal = ({
 
         <Divider label="Channel Number" labelPosition="left" />
 
-        <Radio.Group
-          value={mode}
-          onChange={onModeChange}
-          label={numberingLabel}
-        >
+        <RadioGroup value={mode} onChange={onModeChange} label={numberingLabel}>
           <Stack mt="xs" spacing="xs">
             <Radio
               value="provider"
@@ -148,7 +145,7 @@ const CreateChannelModal = ({
               }
             />
           </Stack>
-        </Radio.Group>
+        </RadioGroup>
 
         {mode === customModeValue && (
           <NumberInput
