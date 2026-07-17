@@ -353,7 +353,7 @@ describe('SeriesModalUtils', () => {
     it('should format valid air date', () => {
       const episode = { air_date: '2024-01-15' };
       const formatted = getEpisodeAirdate(episode);
-      expect(formatted).toMatch(/1\/1[4|5]\/2024/);
+      expect(formatted).toBe(new Date('2024-01-15').toLocaleDateString());
     });
 
     it('should return N/A for missing air date', () => {

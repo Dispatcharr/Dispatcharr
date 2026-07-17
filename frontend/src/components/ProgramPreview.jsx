@@ -84,6 +84,8 @@ const ProgramPreview = ({
   label = 'Now Playing:',
   timelineMode = 'live',
   playbackElapsedSeconds = 0,
+  accentColor = 'green.5',
+  accentIconColor = '#22c55e',
 }) => {
   const [isExpanded, setIsExpanded] = useState(false);
 
@@ -119,8 +121,8 @@ const ProgramPreview = ({
   return (
     <>
       <Group gap={5} wrap="nowrap">
-        <Radio size="14" style={{ color: '#22c55e', flexShrink: 0 }} />
-        <Text size="xs" fw={500} c="green.5" style={{ flexShrink: 0 }}>
+        <Radio size="14" style={{ color: accentIconColor, flexShrink: 0 }} />
+        <Text size="xs" fw={500} c={accentColor} style={{ flexShrink: 0 }}>
           {label}
         </Text>
         <Tooltip label={program.title}>

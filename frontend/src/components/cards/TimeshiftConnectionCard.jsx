@@ -164,7 +164,7 @@ const TimeshiftConnectionCard = ({
     null;
 
   // Play position from URL timestamp + EPG window + stream-open anchor.
-  const playbackBaseRef = useRef({ base: null, receivedAtMs: 0 });
+  const playbackBaseRef = useRef({ base: null, receivedAtMs: 0, paused: false });
   useEffect(() => {
     const computed = computeCatchupPlaybackSeconds({
       programmeStart: timeshiftSession.programme_start,
@@ -172,27 +172,35 @@ const TimeshiftConnectionCard = ({
       programDurationSecs: programmePreview?.duration_secs,
       positionAnchorAt: timeshiftSession.position_anchor_at,
       playbackBaseSecs: timeshiftSession.playback_base_secs,
+      paused: Boolean(timeshiftSession.paused),
       nowMs: Date.now(),
     });
     if (computed != null) {
       playbackBaseRef.current = {
         base: computed,
         receivedAtMs: Date.now(),
+        paused: Boolean(timeshiftSession.paused),
       };
     }
   }, [
     timeshiftSession.programme_start,
     timeshiftSession.position_anchor_at,
     timeshiftSession.playback_base_secs,
+    timeshiftSession.paused,
     programmePreview?.start_time,
     programmePreview?.duration_secs,
   ]);
 
-  const { base: playbackBase, receivedAtMs: playbackReceivedAtMs } =
-    playbackBaseRef.current;
+  const {
+    base: playbackBase,
+    receivedAtMs: playbackReceivedAtMs,
+    paused: playbackPaused,
+  } = playbackBaseRef.current;
   const playbackElapsedSeconds =
     playbackBase != null
-      ? playbackBase + (Date.now() - playbackReceivedAtMs) / 1000
+      ? playbackPaused
+        ? playbackBase
+        : playbackBase + (Date.now() - playbackReceivedAtMs) / 1000
       : getConnectionDurationSeconds(connection);
 
   const getConnectionStartTime = useCallback(
@@ -291,7 +299,9 @@ const TimeshiftConnectionCard = ({
             <ProgramPreview
               program={programmePreview}
               timelineMode="catchup"
-              label="Watching:"
+              label={timeshiftSession.paused ? 'Paused:' : 'Watching:'}
+              accentColor={timeshiftSession.paused ? 'yellow.5' : 'green.5'}
+              accentIconColor={timeshiftSession.paused ? '#eab308' : '#22c55e'}
               playbackElapsedSeconds={playbackElapsedSeconds}
             />
           </Box>

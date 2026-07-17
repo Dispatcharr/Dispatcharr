@@ -71,14 +71,6 @@ export const PROXY_SETTINGS_OPTIONS = {
   },
 };
 
-export const EPG_SETTINGS_OPTIONS = {
-  xmltv_prev_days_override: {
-    label: 'XMLTV prev_days Override (catch-up)',
-    description:
-      'Days of past programmes in the XC EPG output. 0 = auto-detect from the providers’ tv_archive_duration (capped at 30).',
-  },
-};
-
 export const USER_LIMITS_OPTIONS = {
   terminate_on_limit_exceeded: {
     label: 'Terminate on Limit Exceeded',
