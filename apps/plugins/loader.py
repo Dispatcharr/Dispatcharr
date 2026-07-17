@@ -70,6 +70,11 @@ class PluginManager:
         use_cache: bool = False,
         release_connections: bool = True,
     ) -> Dict[str, LoadedPlugin]:
+        # Only an explicit caller force_reload broadcasts via the shared token.
+        # Reacting to a newer token must reload locally without re-touching it;
+        # otherwise every consumer becomes a producer and multi-worker setups
+        # never converge.
+        caller_force_reload = force_reload
         token = self._get_reload_token()
         if use_cache and not force_reload:
             with self._lock:
@@ -77,7 +82,7 @@ class PluginManager:
                     return self._registry
         if token > self._last_reload_token:
             force_reload = True
-        if force_reload:
+        if caller_force_reload:
             self._touch_reload_token()
             token = self._get_reload_token()
 
