@@ -34,6 +34,11 @@ import {
   stopTimeshiftSession,
   stopVODClient,
 } from '../utils/pages/StatsUtils.js';
+import {
+  computeCatchupArchivePositionSecs,
+  computeCatchupPlaybackSeconds,
+  isCatchupPlayheadOutsideProgram,
+} from '../utils/cards/TimeshiftConnectionCardUtils.js';
 const VodConnectionCard = React.lazy(
   () => import('../components/cards/VodConnectionCard.jsx')
 );
@@ -342,8 +347,9 @@ const StatsPage = () => {
     };
   }, [activeChannelIds]); // Only re-run when active channel set changes
 
-  // Programme metadata for catch-up cards: fetch when sessions or seek
-  // position (programme_start) change, then reschedule at programme end.
+  // Catch-up programme metadata: fetch when missing or when the playhead has
+  // left the cached programme's window; otherwise keep that result and only
+  // do cheap local checks until the next boundary.
   const timeshiftProgrammeKey = useMemo(() => {
     return timeshiftSessions
       .map((session) => `${session.session_id}:${session.programme_start || ''}`)
@@ -352,9 +358,31 @@ const StatsPage = () => {
   }, [timeshiftSessions]);
 
   const timeshiftSessionsRef = useRef(timeshiftSessions);
+  const catchupProgramsRef = useRef(catchupPrograms);
+  const programmeCheckRef = useRef(() => {});
+  const playbackFingerprintRef = useRef('');
+
   useEffect(() => {
     timeshiftSessionsRef.current = timeshiftSessions;
+
+    const fingerprint = timeshiftSessions
+      .map(
+        (session) =>
+          `${session.session_id}:${session.playback_base_secs ?? ''}:${session.position_anchor_at ?? ''}:${session.paused ? 1 : 0}`
+      )
+      .sort()
+      .join(',');
+    if (
+      playbackFingerprintRef.current &&
+      fingerprint !== playbackFingerprintRef.current
+    ) {
+      programmeCheckRef.current();
+    }
+    playbackFingerprintRef.current = fingerprint;
   }, [timeshiftSessions]);
+  useEffect(() => {
+    catchupProgramsRef.current = catchupPrograms;
+  }, [catchupPrograms]);
 
   useEffect(() => {
     if (!timeshiftProgrammeKey) {
@@ -362,45 +390,151 @@ const StatsPage = () => {
       return;
     }
 
+    let cancelled = false;
     let timer = null;
+    let inFlight = false;
 
-    const fetchPrograms = async () => {
-      const sessions = timeshiftSessionsRef.current.map((session) => ({
-        session_id: session.session_id,
-        channel_uuid: session.channel_uuid,
-        programme_start: session.programme_start,
-      }));
-      const programs = await getCatchupPrograms(sessions);
-      setCatchupPrograms(programs);
-
-      if (programs && Object.keys(programs).length > 0) {
-        const now = new Date();
-        let nearestEndTime = null;
-
-        Object.values(programs).forEach((program) => {
-          if (program && program.end_time) {
-            const endTime = new Date(program.end_time);
-            if (
-              endTime > now &&
-              (!nearestEndTime || endTime < nearestEndTime)
-            ) {
-              nearestEndTime = endTime;
-            }
-          }
-        });
-
-        if (nearestEndTime) {
-          const timeUntilChange = nearestEndTime.getTime() - now.getTime();
-          const fetchDelay = Math.max(timeUntilChange + 5000, 0);
-          timer = setTimeout(fetchPrograms, fetchDelay);
-        }
+    const clearTimer = () => {
+      if (timer != null) {
+        clearTimeout(timer);
+        timer = null;
       }
     };
+
+    const sessionNeedsProgrammeFetch = (session, program) => {
+      if (!program?.start_time || program.duration_secs == null) {
+        return true;
+      }
+      return isCatchupPlayheadOutsideProgram({
+        programmeStart: session.programme_start,
+        programStartTime: program.start_time,
+        programDurationSecs: program.duration_secs,
+        positionAnchorAt: session.position_anchor_at,
+        playbackBaseSecs: session.playback_base_secs,
+        paused: Boolean(session.paused),
+      });
+    };
+
+    const msUntilNearestBoundary = () => {
+      let nearestMs = null;
+      timeshiftSessionsRef.current.forEach((session) => {
+        const program = catchupProgramsRef.current?.[session.session_id];
+        if (!program?.start_time || program.duration_secs == null) {
+          return;
+        }
+        const position = computeCatchupPlaybackSeconds({
+          programmeStart: session.programme_start,
+          programStartTime: program.start_time,
+          programDurationSecs: program.duration_secs,
+          positionAnchorAt: session.position_anchor_at,
+          playbackBaseSecs: session.playback_base_secs,
+          paused: Boolean(session.paused),
+          capToDuration: false,
+          allowNegative: true,
+        });
+        if (position == null) {
+          return;
+        }
+        if (position < 0) {
+          nearestMs = 0;
+          return;
+        }
+        const remainingMs = Math.max(
+          0,
+          (Number(program.duration_secs) - position) * 1000
+        );
+        if (nearestMs == null || remainingMs < nearestMs) {
+          nearestMs = remainingMs;
+        }
+      });
+      return nearestMs;
+    };
+
+    const scheduleCheck = () => {
+      clearTimer();
+      if (cancelled) {
+        return;
+      }
+
+      const sessions = timeshiftSessionsRef.current;
+      const programs = catchupProgramsRef.current || {};
+      if (
+        sessions.some((session) =>
+          sessionNeedsProgrammeFetch(session, programs[session.session_id])
+        )
+      ) {
+        fetchPrograms();
+        return;
+      }
+
+      // Wake near the programme end; also at least every 2s so a seek/heartbeat
+      // that jumps the playhead is noticed without hitting the API.
+      const remainingMs = msUntilNearestBoundary();
+      const delay =
+        remainingMs == null
+          ? 2000
+          : Math.min(Math.max(remainingMs + 250, 250), 2000);
+      timer = setTimeout(scheduleCheck, delay);
+    };
+
+    const fetchPrograms = async () => {
+      if (cancelled || inFlight) {
+        return;
+      }
+      inFlight = true;
+      clearTimer();
+      try {
+        const existingPrograms = catchupProgramsRef.current || {};
+        const sessions = timeshiftSessionsRef.current.map((session) => {
+          const existing = existingPrograms[session.session_id];
+          // Archive playhead relative to the URL programme (uncapped). When the
+          // card has already advanced and we only have URL math, omit position
+          // and let the API fall back to Redis.
+          const positionSecs = computeCatchupArchivePositionSecs({
+            programmeStart: session.programme_start,
+            programStartTime: existing?.start_time,
+            positionAnchorAt: session.position_anchor_at,
+            playbackBaseSecs: session.playback_base_secs,
+            paused: Boolean(session.paused),
+          });
+          const payload = {
+            session_id: session.session_id,
+            channel_uuid: session.channel_uuid,
+            programme_start: session.programme_start,
+          };
+          if (positionSecs != null) {
+            payload.position_secs = positionSecs;
+          }
+          return payload;
+        });
+        const programs = await getCatchupPrograms(sessions);
+        if (cancelled) {
+          return;
+        }
+        catchupProgramsRef.current = programs;
+        setCatchupPrograms(programs);
+
+        const stillOutside = timeshiftSessionsRef.current.some((session) =>
+          sessionNeedsProgrammeFetch(session, programs[session.session_id])
+        );
+        // No next guide entry (or unknown playhead): back off instead of spinning.
+        timer = setTimeout(
+          stillOutside ? fetchPrograms : scheduleCheck,
+          stillOutside ? 30_000 : 250
+        );
+      } finally {
+        inFlight = false;
+      }
+    };
+
+    programmeCheckRef.current = scheduleCheck;
 
     fetchPrograms();
 
     return () => {
-      if (timer) clearTimeout(timer);
+      cancelled = true;
+      clearTimer();
+      programmeCheckRef.current = () => {};
     };
   }, [timeshiftProgrammeKey]);
 

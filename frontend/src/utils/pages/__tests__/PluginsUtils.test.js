@@ -11,6 +11,9 @@ vi.mock('../../../api.js', () => ({
     reloadPlugins: vi.fn(),
     deletePlugin: vi.fn(),
     getPluginDetailManifest: vi.fn(),
+    getPluginRepoSettings: vi.fn(),
+    updatePluginRepoSettings: vi.fn(),
+    previewPluginRepo: vi.fn(),
   },
 }));
 
@@ -342,6 +345,88 @@ describe('PluginsUtils', () => {
       PluginsUtils.getPluginDetailManifest(repoId, manifestUrl);
 
       expect(API.getPluginDetailManifest).toHaveBeenCalledWith(null, null);
+    });
+  });
+
+  describe('getPluginRepoSettings', () => {
+    it('should call API getPluginRepoSettings', () => {
+      PluginsUtils.getPluginRepoSettings();
+
+      expect(API.getPluginRepoSettings).toHaveBeenCalledTimes(1);
+    });
+
+    it('should return API response', () => {
+      const mockResponse = { repos: [] };
+
+      API.getPluginRepoSettings.mockReturnValue(mockResponse);
+
+      const result = PluginsUtils.getPluginRepoSettings();
+
+      expect(result).toEqual(mockResponse);
+    });
+  });
+
+  describe('updatePluginRepoSettings', () => {
+    it('should call API updatePluginRepoSettings with values', () => {
+      const values = { repos: ['https://example.com/repo.json'] };
+
+      PluginsUtils.updatePluginRepoSettings(values);
+
+      expect(API.updatePluginRepoSettings).toHaveBeenCalledWith(values);
+      expect(API.updatePluginRepoSettings).toHaveBeenCalledTimes(1);
+    });
+
+    it('should return API response', () => {
+      const values = { repos: ['https://example.com/repo.json'] };
+      const mockResponse = { success: true };
+
+      API.updatePluginRepoSettings.mockReturnValue(mockResponse);
+
+      const result = PluginsUtils.updatePluginRepoSettings(values);
+
+      expect(result).toEqual(mockResponse);
+    });
+  });
+
+  describe('previewPluginRepo', () => {
+    it('should call API previewPluginRepo with url and publicKey', () => {
+      const url = 'https://example.com/repo.json';
+      const publicKey = 'public-key';
+
+      PluginsUtils.previewPluginRepo(url, publicKey);
+
+      expect(API.previewPluginRepo).toHaveBeenCalledWith(url, publicKey);
+      expect(API.previewPluginRepo).toHaveBeenCalledTimes(1);
+    });
+
+    it('should return API response', () => {
+      const url = 'https://example.com/repo.json';
+      const publicKey = 'public-key';
+      const mockResponse = { name: 'Test Repo', plugins: [] };
+
+      API.previewPluginRepo.mockReturnValue(mockResponse);
+
+      const result = PluginsUtils.previewPluginRepo(url, publicKey);
+
+      expect(result).toEqual(mockResponse);
+    });
+
+    it('should handle empty string url and publicKey', () => {
+      const url = '';
+      const publicKey = '';
+
+      PluginsUtils.previewPluginRepo(url, publicKey);
+
+      expect(API.previewPluginRepo).toHaveBeenCalledWith('', '');
+    });
+
+    it('should handle null url and publicKey', () => {
+      const url = null;
+      const publicKey = null;
+
+      PluginsUtils.previewPluginRepo(url, publicKey);
+
+      expect(API.previewPluginRepo).toHaveBeenCalledWith(null, null);
     });
   });
 });

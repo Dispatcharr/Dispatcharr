@@ -280,17 +280,7 @@ class CoreSettings(models.Model):
             "epg_match_ignore_prefixes": [],
             "epg_match_ignore_suffixes": [],
             "epg_match_ignore_custom": [],
-            # XC catch-up: forced XMLTV lookback (0 = auto-detect, capped at 30).
-            "xmltv_prev_days_override": 0,
         })
-
-    @classmethod
-    def get_xmltv_prev_days_override(cls):
-        """Global XC XMLTV prev_days default (0 = auto-detect from provider archives)."""
-        try:
-            return int(cls.get_epg_settings().get("xmltv_prev_days_override", 0) or 0)
-        except (TypeError, ValueError):
-            return 0
 
     @classmethod
     def _safe_string_list(cls, value):

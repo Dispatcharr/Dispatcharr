@@ -10,21 +10,21 @@ export default defineConfig({
 
   server: {
     port: 9191,
-
-    // proxy: {
-    //   "/api": {
-    //     target: "http://localhost:5656", // Backend server
-    //     changeOrigin: true,
-    //     secure: false, // Set to true if backend uses HTTPS
-    //     // rewrite: (path) => path.replace(/^\/api/, ""), // Optional path rewrite
-    //   },
-    //   "/ws": {
-    //     target: "http://localhost:8001", // Backend server
-    //     changeOrigin: true,
-    //     secure: false, // Set to true if backend uses HTTPS
-    //     // rewrite: (path) => path.replace(/^\/api/, ""), // Optional path rewrite
-    //   },
-    // },
+    // Without this, /api/* is served as the React SPA in debug mode and
+    // Swagger UI at /api/swagger/ never loads the OpenAPI schema.
+    proxy: {
+      "/api": {
+        target: "http://127.0.0.1:5656",
+        changeOrigin: true,
+        secure: false,
+      },
+      "/ws": {
+        target: "http://127.0.0.1:8001",
+        changeOrigin: true,
+        secure: false,
+        ws: true,
+      },
+    },
   },
 
   test: {

@@ -45,9 +45,6 @@ const DvrSettingsForm = React.lazy(
 const SystemSettingsForm = React.lazy(
   () => import('../components/forms/settings/SystemSettingsForm.jsx')
 );
-const EpgSettingsForm = React.lazy(
-  () => import('../components/forms/settings/EpgSettingsForm.jsx')
-);
 const NavOrderForm = React.lazy(
   () => import('../components/forms/settings/NavOrderForm.jsx')
 );
@@ -119,19 +116,6 @@ const SettingsPage = () => {
                     <Suspense fallback={<Loader />}>
                       <StreamSettingsForm
                         active={accordianValue === 'stream-settings'}
-                      />
-                    </Suspense>
-                  </ErrorBoundary>
-                </AccordionPanel>
-              </AccordionItem>
-
-              <AccordionItem value="epg-settings">
-                <AccordionControl>EPG</AccordionControl>
-                <AccordionPanel>
-                  <ErrorBoundary>
-                    <Suspense fallback={<Loader />}>
-                      <EpgSettingsForm
-                        active={accordianValue === 'epg-settings'}
                       />
                     </Suspense>
                   </ErrorBoundary>

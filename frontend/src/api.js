@@ -15,7 +15,7 @@ import useChannelsTableStore from './store/channelsTable';
 import useStreamsTableStore from './store/streamsTable';
 import useUsersStore from './store/users';
 import useConnectStore from './store/connect';
-import Limiter from './utils';
+import Limiter, { formatApiError } from './utils';
 
 // If needed, you can set a base host or keep it empty if relative requests
 const host = import.meta.env.DEV
@@ -23,22 +23,7 @@ const host = import.meta.env.DEV
   : '';
 
 const errorNotification = (message, error) => {
-  let errorMessage = '';
-
-  if (error.status) {
-    try {
-      // Try to format the error body if it's an object
-      if (typeof error.body === 'object') {
-        errorMessage = JSON.stringify(error.body, null, 2);
-      } else {
-        errorMessage = `${error.status} - ${error.body}`;
-      }
-    } catch (e) {
-      errorMessage = `${error.status} - ${String(error.body)}`;
-    }
-  } else {
-    errorMessage = error.message || 'Unknown error';
-  }
+  const errorMessage = formatApiError(error);
 
   notifications.show({
     title: 'Error',
