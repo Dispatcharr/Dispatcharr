@@ -111,7 +111,7 @@ describe('RecordingUtils', () => {
 
   describe('toDateString', () => {
     it('formats a Date to YYYY-MM-DD', () => {
-      const d = new Date('2024-06-15T12:00:00Z');
+      const d = new Date(2024, 5, 15, 12, 0, 0);
       const result = toDateString(d);
       expect(result).toBe('2024-06-15');
     });

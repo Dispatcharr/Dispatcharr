@@ -132,14 +132,14 @@ describe('dateTimeUtils', () => {
 
   describe('isSame', () => {
     it('should return true when dates are same day', () => {
-      const date1 = '2024-01-15T10:00:00Z';
-      const date2 = '2024-01-15T11:00:00Z';
+      const date1 = '2024-01-15 10:00:00';
+      const date2 = '2024-01-15 11:00:00';
       expect(dateTimeUtils.isSame(date1, date2)).toBe(true);
     });
 
     it('should return false when dates are different days', () => {
-      const date1 = '2024-01-15T10:00:00Z';
-      const date2 = '2024-01-16T10:00:00Z';
+      const date1 = '2024-01-15 10:00:00';
+      const date2 = '2024-01-16 10:00:00';
       expect(dateTimeUtils.isSame(date1, date2)).toBe(false);
     });
 
