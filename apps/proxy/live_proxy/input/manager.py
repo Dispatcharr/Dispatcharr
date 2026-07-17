@@ -1087,6 +1087,11 @@ class StreamManager:
                         f"Output Bitrate: {ffmpeg_output_bitrate_str} kbps")
             # If we have a valid speed, check for buffering
             if ffmpeg_speed is not None and ffmpeg_speed < self.buffering_speed:
+                # When a buffering-timeout failover clears the in-memory flag, also
+                # clear Redis and skip the BUFFERING write below. Otherwise the same
+                # stats sample re-writes buffering after self.buffering is False, and
+                # the speed-good recovery path can never clear the Redis label again.
+                switched_after_buffering_timeout = False
                 if self.buffering:
                     # Buffering is still ongoing, check for how long
                     if self.buffering_start_time is None:
@@ -1102,6 +1107,16 @@ class StreamManager:
                                 # Reset buffering state
                                 self.buffering = False
                                 self.buffering_start_time = None
+                                switched_after_buffering_timeout = True
+
+                                # Clear the Redis buffering label.
+                                if hasattr(self.buffer, 'redis_client') and self.buffer.redis_client:
+                                    metadata_key = RedisKeys.channel_metadata(self.channel_id)
+                                    self.buffer.redis_client.hset(
+                                        metadata_key,
+                                        ChannelMetadataField.STATE,
+                                        ChannelState.ACTIVE,
+                                    )
 
                                 # Log failover event
                                 try:
@@ -1133,12 +1148,13 @@ class StreamManager:
                     except Exception as e:
                         logger.error(f"Could not log buffering event: {e}")
 
-                # Log buffering warning
-                logger.debug(f"FFmpeg speed on channel {self.channel_id} is below {self.buffering_speed} ({ffmpeg_speed}x) - buffering detected")
-                # Set channel state to buffering
-                if hasattr(self.buffer, 'redis_client') and self.buffer.redis_client:
-                    metadata_key = RedisKeys.channel_metadata(self.channel_id)
-                    self.buffer.redis_client.hset(metadata_key, ChannelMetadataField.STATE, ChannelState.BUFFERING)
+                if not switched_after_buffering_timeout:
+                    # Log buffering warning
+                    logger.debug(f"FFmpeg speed on channel {self.channel_id} is below {self.buffering_speed} ({ffmpeg_speed}x) - buffering detected")
+                    # Set channel state to buffering
+                    if hasattr(self.buffer, 'redis_client') and self.buffer.redis_client:
+                        metadata_key = RedisKeys.channel_metadata(self.channel_id)
+                        self.buffer.redis_client.hset(metadata_key, ChannelMetadataField.STATE, ChannelState.BUFFERING)
             elif ffmpeg_speed is not None and ffmpeg_speed >= self.buffering_speed:
                 # Speed is good, check if we were buffering
                 if self.buffering:
