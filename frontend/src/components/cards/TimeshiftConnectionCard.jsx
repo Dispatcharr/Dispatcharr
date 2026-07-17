@@ -135,10 +135,7 @@ const TimeshiftConnectionCard = ({
     timeshiftSession.individual_connection ||
     (timeshiftSession.connections && timeshiftSession.connections[0]);
 
-  const logoUrl =
-    timeshiftSession.logo_url ||
-    getLogoUrl(timeshiftSession.logo_id, logos) ||
-    logo;
+  const logoUrl = getLogoUrl(timeshiftSession.logo_id, logos) || logo;
 
   const programmePreview = useMemo(() => {
     if (currentProgram?.title) {

@@ -300,7 +300,7 @@ class BuildTimeshiftStatsDataTests(TestCase):
         channel.uuid = "00000000-0000-0000-0000-000000000042"
         channel.logo_id = None
         channel.logo = None
-        mock_channel_model.objects.select_related.return_value.filter.return_value = [
+        mock_channel_model.objects.filter.return_value = [
             channel,
         ]
         payload = build_timeshift_stats_data(self.redis)
@@ -316,6 +316,18 @@ class BuildTimeshiftStatsDataTests(TestCase):
         self.assertEqual(session["resolution"], "1920x1080")
         self.assertFalse(session["paused"])
         self.assertEqual(session["connections"][0]["ip_address"], "10.0.0.5")
+
+    @patch("apps.timeshift.stats.Channel")
+    def test_build_timeshift_stats_exposes_logo_id_only(self, mock_channel_model):
+        channel = MagicMock()
+        channel.id = self.channel_id
+        channel.name = "Catch-up Stats Channel"
+        channel.uuid = "00000000-0000-0000-0000-000000000042"
+        channel.logo_id = 77
+        mock_channel_model.objects.filter.return_value = [channel]
+        session = build_timeshift_stats_data(self.redis)["timeshift_sessions"][0]
+        self.assertEqual(session["logo_id"], 77)
+        self.assertNotIn("logo_url", session)
 
     def test_find_stats_channel_for_session(self):
         found = find_stats_channel_for_session(self.redis, self.session_id)
@@ -344,7 +356,7 @@ class BuildTimeshiftStatsDataTests(TestCase):
         channel.uuid = "00000000-0000-0000-0000-000000000042"
         channel.logo_id = None
         channel.logo = None
-        mock_channel_model.objects.select_related.return_value.filter.return_value = [
+        mock_channel_model.objects.filter.return_value = [
             channel,
         ]
         client_key = RedisKeys.client_metadata(self.stats_channel_id, self.session_id)
@@ -355,7 +367,7 @@ class BuildTimeshiftStatsDataTests(TestCase):
 
     @patch("apps.timeshift.stats.Channel")
     def test_skips_clients_missing_required_metadata(self, mock_channel_model):
-        mock_channel_model.objects.select_related.return_value.filter.return_value = []
+        mock_channel_model.objects.filter.return_value = []
         orphan_key = RedisKeys.client_metadata(self.stats_channel_id, "orphan")
         self.redis.hset(orphan_key, mapping={"user_agent": "VLC"})
         self.redis.sadd(RedisKeys.clients(self.stats_channel_id), "orphan")

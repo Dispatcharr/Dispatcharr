@@ -490,9 +490,7 @@ def build_timeshift_stats_data(redis_client):
         channel_ids = {conn["channel_id"] for conn in connections if conn.get("channel_id")}
         channels_by_id = {}
         if channel_ids:
-            for channel in Channel.objects.select_related("logo", "epg_data").filter(
-                id__in=channel_ids,
-            ):
+            for channel in Channel.objects.filter(id__in=channel_ids):
                 channels_by_id[channel.id] = channel
 
         profile_ids = {
@@ -516,8 +514,6 @@ def build_timeshift_stats_data(redis_client):
                 conn["channel_name"] = channel.name
                 if channel.logo_id:
                     conn["logo_id"] = channel.logo_id
-                    if channel.logo:
-                        conn["logo_url"] = channel.logo.url
 
             profile = profiles_by_id.get(conn.get("m3u_profile_id"))
             if profile:
@@ -546,7 +542,6 @@ def build_timeshift_stats_data(redis_client):
                     "channel_uuid": conn.get("channel_uuid", ""),
                     "channel_name": conn["channel_name"],
                     "logo_id": conn.get("logo_id"),
-                    "logo_url": conn.get("logo_url"),
                     "programme_start": conn["programme_start"],
                     "position_anchor_at": position_anchor_at,
                     "playback_base_secs": playback_base_secs,
