@@ -1,6 +1,10 @@
 import { useEffect, useState } from 'react';
 import API from '../api';
 
+const getCurrentProgramForEpg = (epgId) => {
+  return API.getCurrentProgramForEpg(epgId);
+};
+
 export const useEpgPreview = (epgDataId) => {
   const [currentProgram, setCurrentProgram] = useState(null);
   const [isLoadingProgram, setIsLoadingProgram] = useState(false);
@@ -28,7 +32,7 @@ export const useEpgPreview = (epgDataId) => {
         if (cancelled || Date.now() - startTime > deadlineMs) break;
 
         try {
-          const program = await API.getCurrentProgramForEpg(epgDataId);
+          const program = await getCurrentProgramForEpg(epgDataId);
           if (cancelled) return;
 
           if (program && program.parsing && attempt < maxRetries) {
