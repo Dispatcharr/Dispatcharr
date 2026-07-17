@@ -26,6 +26,8 @@ DURATION_BUFFER_MINUTES = 5
 MAX_DURATION_MINUTES = 480
 
 # Wall-clock shapes seen from XC catch-up clients. Compiled once.
+# Hour/minute and minute/second separators may each be "-" or ":" so clients
+# that emit HH-MM-SS, HH:MM:SS, or mixed HH-MM:SS all parse.
 _CATCHUP_WALL_CLOCK_RE = re.compile(
     r"^"
     r"(?P<date>\d{4}-\d{2}-\d{2})"
@@ -34,7 +36,7 @@ _CATCHUP_WALL_CLOCK_RE = re.compile(
     r"(?P<hmsep>[-:])"
     r"(?P<minute>\d{2})"
     r"(?:"
-    r":"
+    r"[-:]"
     r"(?P<second>\d{2})"
     r")?"
     r"$"
@@ -46,6 +48,7 @@ def normalize_catchup_timestamp_input(timestamp_str):
 
     Supported inputs:
         - ``YYYY-MM-DD:HH-MM`` (XC colon-dash)
+        - ``YYYY-MM-DD:HH-MM-SS`` (XC colon-dash with seconds)
         - ``YYYY-MM-DD_HH-MM`` (XC underscore)
         - ``YYYY-MM-DD:HH:MM[:SS]`` (XC colon time in catch-up URLs)
         - ``YYYY-MM-DD HH:MM[:SS]`` (EPG / SQL datetime)

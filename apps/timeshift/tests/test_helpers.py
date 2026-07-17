@@ -100,6 +100,22 @@ class TimestampFormatTests(TestCase):
         dt = parse_catchup_timestamp("2026-06-23:04:00:00")
         self.assertEqual(dt, datetime(2026, 6, 23, 4, 0, 0))
 
+    def test_parse_colon_dash_with_dash_seconds(self):
+        # iMPlayer and similar XC clients use HH-MM-SS (dash throughout time).
+        dt = parse_catchup_timestamp("2026-07-13:00-00-00")
+        self.assertEqual(dt, datetime(2026, 7, 13, 0, 0, 0))
+
+    def test_parse_colon_dash_with_mixed_seconds_separator(self):
+        # Some clients emit dash between hour/minute and colon before seconds.
+        dt = parse_catchup_timestamp("2026-07-17:10-30:00")
+        self.assertEqual(dt, datetime(2026, 7, 17, 10, 30, 0))
+
+    def test_normalize_colon_dash_with_dash_seconds(self):
+        self.assertEqual(
+            normalize_catchup_timestamp_input("2026-07-13:00-00-00"),
+            "2026-07-13T00:00:00",
+        )
+
     def test_parse_epg_sql_format(self):
         dt = parse_catchup_timestamp("2026-06-23 04:00:00")
         self.assertEqual(dt, datetime(2026, 6, 23, 4, 0, 0))
