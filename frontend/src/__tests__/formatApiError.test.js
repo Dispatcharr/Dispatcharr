@@ -5,8 +5,6 @@ import { formatApiError } from '../utils';
 const djangoHtml500 =
   '<!doctype html> <html lang="en"> <head> <title>Server Error (500)</title> </head> <body> <h1>Server Error (500)</h1><p> </p> </body> </html>';
 
-// request() attaches the fetch Response to the error; formatApiError reads
-// the reason phrase and declared content type from it.
 const fakeResponse = (statusText, contentType) => ({
   statusText,
   headers: { get: (name) => (name === 'content-type' ? contentType : null) },
@@ -41,7 +39,6 @@ describe('formatApiError', () => {
   });
 
   it('trusts the declared content type over body sniffing', () => {
-    // Some proxies prepend text before the markup; the header still says html.
     const msg = formatApiError({
       status: 503,
       body: 'upstream connect error <html>...</html>',
@@ -51,21 +48,29 @@ describe('formatApiError', () => {
   });
 
   it('sniffs markup when no content type is available', () => {
-    // No response attached (older call sites); the leading '<' is the tell.
     expect(formatApiError({ status: 500, body: djangoHtml500 })).toBe(
-      '500 - Request failed'
+      '500 - Internal Server Error'
     );
   });
 
-  it('falls back to a generic label when the reason phrase is absent', () => {
-    // HTTP/2+ responses carry no reason phrase (statusText === '').
+  it('does not sniff markup when content type is explicitly non-html', () => {
+    expect(
+      formatApiError({
+        status: 400,
+        body: '<name> is invalid',
+        response: fakeResponse('Bad Request', 'text/plain'),
+      })
+    ).toBe('400 - <name> is invalid');
+  });
+
+  it('uses a status label when the reason phrase is absent (HTTP/2)', () => {
     expect(
       formatApiError({
         status: 502,
         body: '<html></html>',
         response: fakeResponse('', 'text/html'),
       })
-    ).toBe('502 - Request failed');
+    ).toBe('502 - Bad Gateway');
   });
 
   it('preserves the suppressed HTML body via console.debug', () => {
@@ -82,10 +87,63 @@ describe('formatApiError', () => {
     spy.mockRestore();
   });
 
-  it('keeps JSON object bodies pretty-printed (existing behaviour)', () => {
+  it('extracts detail from DRF-style JSON bodies', () => {
+    expect(
+      formatApiError({
+        status: 401,
+        body: {
+          detail: 'No active account found with the given credentials',
+        },
+      })
+    ).toBe('No active account found with the given credentials');
+  });
+
+  it('extracts error from custom API JSON bodies', () => {
     expect(
       formatApiError({ status: 500, body: { error: 'Redis not available' } })
-    ).toBe(JSON.stringify({ error: 'Redis not available' }, null, 2));
+    ).toBe('Redis not available');
+  });
+
+  it('extracts non_field_errors when detail/error are absent', () => {
+    expect(
+      formatApiError({
+        status: 400,
+        body: {
+          non_field_errors: ['Unable to log in with provided credentials.'],
+        },
+      })
+    ).toBe('Unable to log in with provided credentials.');
+  });
+
+  it('prefers detail over other JSON keys', () => {
+    expect(
+      formatApiError({
+        status: 400,
+        body: {
+          detail: 'Primary message',
+          error: 'Secondary',
+          name: ['ignored when detail is present'],
+        },
+      })
+    ).toBe('Primary message');
+  });
+
+  it('joins DRF field validation errors', () => {
+    expect(
+      formatApiError({
+        status: 400,
+        body: { name: ['This field is required.'] },
+      })
+    ).toBe('name: This field is required.');
+    expect(
+      formatApiError({
+        status: 400,
+        body: {
+          name: ['This field is required.'],
+          url: ['Enter a valid URL.'],
+        },
+      })
+    ).toBe('name: This field is required.; url: Enter a valid URL.');
   });
 
   it('passes through short plain-text bodies with the status', () => {

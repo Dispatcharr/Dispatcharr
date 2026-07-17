@@ -68,51 +68,108 @@ export function useDebounce(value, delay = 500, callback = null) {
   return debouncedValue;
 }
 
-// Human-readable message for a failed API response (#1261). Backends that
-// are down or timing out answer with whole HTML error pages (Django's
-// "Server Error (500)" page, nginx's 502/504 pages) - rendering those
-// verbatim in a toast is unreadable. JSON error bodies keep their existing
-// formatting; markup and empty bodies collapse to the response's own
-// status line (the full body goes to console.debug for troubleshooting);
-// long plain-text bodies are truncated.
+// Format a failed API response for toast display.
 const ERROR_BODY_MAX_CHARS = 200;
+
+const STATUS_LABELS = {
+  400: 'Bad Request',
+  401: 'Unauthorized',
+  403: 'Forbidden',
+  404: 'Not Found',
+  405: 'Method Not Allowed',
+  408: 'Request Timeout',
+  409: 'Conflict',
+  413: 'Payload Too Large',
+  429: 'Too Many Requests',
+  500: 'Internal Server Error',
+  502: 'Bad Gateway',
+  503: 'Service Unavailable',
+  504: 'Gateway Timeout',
+};
+
+const formatErrorValue = (value) => {
+  if (value == null) return '';
+  if (Array.isArray(value)) {
+    return value.map(formatErrorValue).filter(Boolean).join('; ');
+  }
+  if (typeof value === 'object') {
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return '';
+    }
+  }
+  return String(value);
+};
+
+const formatJsonErrorBody = (body) => {
+  if (Array.isArray(body)) {
+    return formatErrorValue(body) || null;
+  }
+  if (!body || typeof body !== 'object') {
+    return null;
+  }
+
+  for (const key of ['detail', 'error', 'non_field_errors']) {
+    if (body[key] != null && body[key] !== '') {
+      const msg = formatErrorValue(body[key]);
+      if (msg) return msg;
+    }
+  }
+
+  const fieldParts = Object.entries(body)
+    .map(([key, value]) => {
+      const msg = formatErrorValue(value);
+      return msg ? `${key}: ${msg}` : null;
+    })
+    .filter(Boolean);
+
+  if (fieldParts.length) {
+    return fieldParts.join('; ');
+  }
+
+  try {
+    return JSON.stringify(body, null, 2);
+  } catch {
+    return null;
+  }
+};
+
+const formatStatusLine = (status, response) => {
+  const reason = response?.statusText?.trim();
+  const label = reason || STATUS_LABELS[status] || 'Request failed';
+  return `${status} - ${label}`;
+};
 
 export const formatApiError = (error) => {
   if (!error || !error.status) {
     return (error && error.message) || 'Unknown error';
   }
 
-  // request() attaches the fetch Response as error.response; it carries the
-  // canonical reason phrase and the declared content type.
   const { status, body, response } = error;
 
   if (body && typeof body === 'object') {
-    try {
-      return JSON.stringify(body, null, 2);
-    } catch {
-      // Unserializable object; fall through to the string handling below.
-    }
+    const formatted = formatJsonErrorBody(body);
+    if (formatted) return formatted;
   }
 
   const text =
     typeof body === 'string' ? body.trim() : body == null ? '' : String(body);
 
-  // Trust the declared content type first; sniff only when it is absent
-  // (some proxies omit or mislabel it on error pages).
-  const contentType = response?.headers?.get?.('content-type') || '';
+  // Sniff leading '<' only when Content-Type is missing.
+  const contentType = (
+    response?.headers?.get?.('content-type') || ''
+  ).toLowerCase();
   const isMarkup =
     contentType.includes('html') ||
     contentType.includes('xml') ||
-    text.startsWith('<');
+    (!contentType && text.startsWith('<'));
 
   if (!text || isMarkup) {
     if (text) {
       console.debug(`API error ${status} response body:`, text);
     }
-    // statusText is the protocol's reason phrase ("Bad Gateway"), defined
-    // for every status code. HTTP/2+ does not transmit one, so fall back
-    // to a generic label rather than re-enumerating the HTTP spec here.
-    return `${status} - ${response?.statusText || 'Request failed'}`;
+    return formatStatusLine(status, response);
   }
 
   return text.length > ERROR_BODY_MAX_CHARS
