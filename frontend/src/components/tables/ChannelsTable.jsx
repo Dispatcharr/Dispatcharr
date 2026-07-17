@@ -1,6 +1,21 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState, } from 'react';
-import { closestCenter, DndContext, PointerSensor, useSensor, useSensors, } from '@dnd-kit/core';
-import { SortableContext, verticalListSortingStrategy, } from '@dnd-kit/sortable';
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
+import {
+  closestCenter,
+  DndContext,
+  PointerSensor,
+  useSensor,
+  useSensors,
+} from '@dnd-kit/core';
+import {
+  SortableContext,
+  verticalListSortingStrategy,
+} from '@dnd-kit/sortable';
 import useChannelsStore from '../../store/channels';
 import ChannelForm from '../forms/Channel';
 import ChannelBatchForm from '../forms/ChannelBatch';
@@ -25,7 +40,10 @@ import {
   SquarePen,
   Tv2,
 } from 'lucide-react';
-import { listOverriddenFields, requeryChannels, } from '../../utils/forms/ChannelUtils.js';
+import {
+  listOverriddenFields,
+  requeryChannels,
+} from '../../utils/forms/ChannelUtils.js';
 import { buildLiveStreamUrl } from '../../utils/components/FloatingVideoUtils.js';
 import {
   ActionIcon,
@@ -78,7 +96,6 @@ import useWarningsStore from '../../store/warnings';
 import ConfirmationDialog from '../ConfirmationDialog';
 import useAuthStore from '../../store/auth';
 import { USER_LEVELS } from '../../constants';
-import { getShowVideoUrl } from '../../utils/cards/RecordingCardUtils.js';
 import {
   buildEPGUrl,
   buildFetchParams,
@@ -110,11 +127,7 @@ const ChannelEnabledSwitch = React.memo(
 
     const handleToggle = () => {
       if (selectedTableIds.length > 1) {
-        updateProfileChannels(
-          selectedTableIds,
-          selectedProfileId,
-          !isEnabled
-        );
+        updateProfileChannels(selectedTableIds, selectedProfileId, !isEnabled);
       } else {
         updateProfileChannel(rowId, selectedProfileId, !isEnabled);
       }
@@ -333,8 +346,7 @@ const ChannelsTable = ({ onReady }) => {
   const [showOnlyStaleChannels, setShowOnlyStaleChannels] = useState(false);
   const [showOnlyOverriddenChannels, setShowOnlyOverriddenChannels] =
     useState(false);
-  const [showOnlyCatchupChannels, setShowOnlyCatchupChannels] =
-    useState(false);
+  const [showOnlyCatchupChannels, setShowOnlyCatchupChannels] = useState(false);
   const [visibilityFilter, setVisibilityFilter] = useState('active');
 
   const [paginationString, setPaginationString] = useState('');
@@ -424,25 +436,39 @@ const ChannelsTable = ({ onReady }) => {
   /**
    * Functions
    */
-  const handleFetchSuccess = useCallback((ids) => {
-    setTablePrefs((prev) => ({ ...prev, pageSize: pagination.pageSize }));
-    setAllRowIds(ids);
-    hasFetchedData.current = true;
-    if (!hasSignaledReady.current && onReady && tvgsLoaded) {
-      hasSignaledReady.current = true;
-      onReady();
-    }
-  }, [pagination.pageSize, setTablePrefs, setAllRowIds, onReady, tvgsLoaded]);
+  const handleFetchSuccess = useCallback(
+    (ids) => {
+      setTablePrefs((prev) => ({ ...prev, pageSize: pagination.pageSize }));
+      setAllRowIds(ids);
+      hasFetchedData.current = true;
+      if (!hasSignaledReady.current && onReady && tvgsLoaded) {
+        hasSignaledReady.current = true;
+        onReady();
+      }
+    },
+    [pagination.pageSize, setTablePrefs, setAllRowIds, onReady, tvgsLoaded]
+  );
 
   const fetchData = useCallback(async () => {
     const params = buildFetchParams({
-      pagination, sorting, debouncedFilters, selectedProfileId,
-      showDisabled, showOnlyStreamlessChannels, showOnlyStaleChannels,
-      showOnlyOverriddenChannels, visibilityFilter, showOnlyCatchupChannels,
+      pagination,
+      sorting,
+      debouncedFilters,
+      selectedProfileId,
+      showDisabled,
+      showOnlyStreamlessChannels,
+      showOnlyStaleChannels,
+      showOnlyOverriddenChannels,
+      visibilityFilter,
+      showOnlyCatchupChannels,
     });
     const paramsString = params.toString();
 
-    if (fetchInProgressRef.current && lastFetchParamsRef.current === paramsString) return;
+    if (
+      fetchInProgressRef.current &&
+      lastFetchParamsRef.current === paramsString
+    )
+      return;
 
     const currentFetchVersion = ++fetchVersionRef.current;
     lastFetchParamsRef.current = paramsString;
@@ -450,7 +476,10 @@ const ChannelsTable = ({ onReady }) => {
     setIsLoading(true);
 
     try {
-      const [, ids] = await Promise.all([queryChannels(params), getAllChannelIds(params)]);
+      const [, ids] = await Promise.all([
+        queryChannels(params),
+        getAllChannelIds(params),
+      ]);
       fetchInProgressRef.current = false;
       if (currentFetchVersion !== fetchVersionRef.current) return;
       setIsLoading(false);
@@ -462,9 +491,16 @@ const ChannelsTable = ({ onReady }) => {
       throw error;
     }
   }, [
-    pagination, sorting, debouncedFilters, selectedProfileId,
-    showDisabled, showOnlyStreamlessChannels, showOnlyStaleChannels,
-    showOnlyOverriddenChannels, visibilityFilter, showOnlyCatchupChannels,
+    pagination,
+    sorting,
+    debouncedFilters,
+    selectedProfileId,
+    showDisabled,
+    showOnlyStreamlessChannels,
+    showOnlyStaleChannels,
+    showOnlyOverriddenChannels,
+    visibilityFilter,
+    showOnlyCatchupChannels,
     handleFetchSuccess,
   ]);
 
@@ -609,9 +645,9 @@ const ChannelsTable = ({ onReady }) => {
         return '';
       }
 
-      const path = getShowVideoUrl(channel, env_mode);
+      const path = `/proxy/ts/stream/${channel.uuid}`;
       if (env_mode == 'dev') {
-        return path;
+        return `${window.location.protocol}//${window.location.hostname}:5656${path}`;
       }
       return `${window.location.protocol}//${window.location.host}${path}`;
     },

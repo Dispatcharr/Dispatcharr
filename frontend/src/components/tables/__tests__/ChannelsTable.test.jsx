@@ -57,9 +57,6 @@ vi.mock('../../../utils/forms/ChannelUtils.js', () => ({
 vi.mock('../../../utils/components/FloatingVideoUtils.js', () => ({
   buildLiveStreamUrl: vi.fn((path) => path),
 }));
-vi.mock('../../../utils/cards/RecordingCardUtils.js', () => ({
-  getShowVideoUrl: vi.fn(() => '/proxy/ts/stream/uuid-1'),
-}));
 vi.mock('../../../utils/tables/ChannelsTableUtils.js', () => ({
   buildEPGUrl: vi.fn(() => 'http://localhost/output/epg'),
   buildFetchParams: vi.fn(() => new URLSearchParams()),
@@ -1040,7 +1037,7 @@ describe('ChannelsTable', () => {
   // ── Copy URL ───────────────────────────────────────────────────────────────
 
   describe('"Copy URL" menu item', () => {
-    it('calls copyToClipboard when "Copy URL" is clicked', () => {
+    it('copies a plain channel proxy URL without web player params', () => {
       const channel = makeChannel({ uuid: 'uuid-1' });
       const { tableInstance } = setupMocks();
       render(<ChannelsTable />);
@@ -1053,7 +1050,12 @@ describe('ChannelsTable', () => {
         el.textContent.includes('Copy URL')
       );
       fireEvent.click(copyBtn);
-      expect(copyToClipboard).toHaveBeenCalled();
+      expect(copyToClipboard).toHaveBeenCalledWith(
+        expect.stringMatching(/\/proxy\/ts\/stream\/uuid-1$/)
+      );
+      const copiedUrl = copyToClipboard.mock.calls[0][0];
+      expect(copiedUrl).not.toContain('output_profile');
+      expect(copiedUrl).not.toContain('output_format');
     });
   });
 
