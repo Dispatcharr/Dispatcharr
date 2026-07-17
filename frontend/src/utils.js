@@ -68,6 +68,115 @@ export function useDebounce(value, delay = 500, callback = null) {
   return debouncedValue;
 }
 
+// Format a failed API response for toast display.
+const ERROR_BODY_MAX_CHARS = 200;
+
+const STATUS_LABELS = {
+  400: 'Bad Request',
+  401: 'Unauthorized',
+  403: 'Forbidden',
+  404: 'Not Found',
+  405: 'Method Not Allowed',
+  408: 'Request Timeout',
+  409: 'Conflict',
+  413: 'Payload Too Large',
+  429: 'Too Many Requests',
+  500: 'Internal Server Error',
+  502: 'Bad Gateway',
+  503: 'Service Unavailable',
+  504: 'Gateway Timeout',
+};
+
+const formatErrorValue = (value) => {
+  if (value == null) return '';
+  if (Array.isArray(value)) {
+    return value.map(formatErrorValue).filter(Boolean).join('; ');
+  }
+  if (typeof value === 'object') {
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return '';
+    }
+  }
+  return String(value);
+};
+
+const formatJsonErrorBody = (body) => {
+  if (Array.isArray(body)) {
+    return formatErrorValue(body) || null;
+  }
+  if (!body || typeof body !== 'object') {
+    return null;
+  }
+
+  for (const key of ['detail', 'error', 'non_field_errors']) {
+    if (body[key] != null && body[key] !== '') {
+      const msg = formatErrorValue(body[key]);
+      if (msg) return msg;
+    }
+  }
+
+  const fieldParts = Object.entries(body)
+    .map(([key, value]) => {
+      const msg = formatErrorValue(value);
+      return msg ? `${key}: ${msg}` : null;
+    })
+    .filter(Boolean);
+
+  if (fieldParts.length) {
+    return fieldParts.join('; ');
+  }
+
+  try {
+    return JSON.stringify(body, null, 2);
+  } catch {
+    return null;
+  }
+};
+
+const formatStatusLine = (status, response) => {
+  const reason = response?.statusText?.trim();
+  const label = reason || STATUS_LABELS[status] || 'Request failed';
+  return `${status} - ${label}`;
+};
+
+export const formatApiError = (error) => {
+  if (!error || !error.status) {
+    return (error && error.message) || 'Unknown error';
+  }
+
+  const { status, body, response } = error;
+
+  if (body && typeof body === 'object') {
+    const formatted = formatJsonErrorBody(body);
+    if (formatted) return formatted;
+  }
+
+  const text =
+    typeof body === 'string' ? body.trim() : body == null ? '' : String(body);
+
+  // Sniff leading '<' only when Content-Type is missing.
+  const contentType = (
+    response?.headers?.get?.('content-type') || ''
+  ).toLowerCase();
+  const isMarkup =
+    contentType.includes('html') ||
+    contentType.includes('xml') ||
+    (!contentType && text.startsWith('<'));
+
+  if (!text || isMarkup) {
+    if (text) {
+      console.debug(`API error ${status} response body:`, text);
+    }
+    return formatStatusLine(status, response);
+  }
+
+  return text.length > ERROR_BODY_MAX_CHARS
+    ? `${status} - ${text.slice(0, ERROR_BODY_MAX_CHARS)}...`
+    : `${status} - ${text}`;
+};
+
 export function sleep(ms) {
   return new Promise((resolve) => {
     setTimeout(resolve, ms);
