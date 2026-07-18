@@ -81,6 +81,8 @@ if __name__ == "__main__":
     redis_db = int(os.environ.get("REDIS_DB", 0))
     redis_password = os.environ.get("REDIS_PASSWORD", "")
     redis_user = os.environ.get("REDIS_USER", "")
+    redis_url = os.environ.get("REDIS_URL", "")
+
     ssl_kwargs = {}
     if os.environ.get("REDIS_SSL", "false").lower() == "true":
         import ssl as _ssl
@@ -107,6 +109,9 @@ if __name__ == "__main__":
         db=redis_db,
         password=redis_password if redis_password else None,
         username=redis_user if redis_user else None,
+        **ssl_kwargs
+    ) if not redis_url else redis.Redis.from_url(
+        redis_url,
         **ssl_kwargs
     )
     lock = PersistentLock(client, "lock:example_account", lock_timeout=120)

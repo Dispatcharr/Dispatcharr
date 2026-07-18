@@ -127,6 +127,7 @@ class RedisClient:
                 redis_db = int(os.environ.get("REDIS_DB", getattr(settings, 'REDIS_DB', 0)))
                 redis_password = os.environ.get("REDIS_PASSWORD", getattr(settings, 'REDIS_PASSWORD', ''))
                 redis_user = os.environ.get("REDIS_USER", getattr(settings, 'REDIS_USER', ''))
+                redis_url = getattr(settings, "REDIS_URL", "")
 
                 # Use standardized settings
                 socket_timeout = getattr(settings, 'REDIS_SOCKET_TIMEOUT', 5)
@@ -145,6 +146,15 @@ class RedisClient:
                     db=redis_db,
                     password=redis_password if redis_password else None,
                     username=redis_user if redis_user else None,
+                    socket_timeout=socket_timeout,
+                    socket_connect_timeout=socket_connect_timeout,
+                    socket_keepalive=socket_keepalive,
+                    health_check_interval=health_check_interval,
+                    retry_on_timeout=retry_on_timeout,
+                    decode_responses=decode_responses,
+                    **ssl_params
+                ) if not redis_url else redis.Redis.from_url(
+                    redis_url,
                     socket_timeout=socket_timeout,
                     socket_connect_timeout=socket_connect_timeout,
                     socket_keepalive=socket_keepalive,
@@ -236,6 +246,7 @@ class RedisClient:
                     redis_db = int(os.environ.get("REDIS_DB", getattr(settings, 'REDIS_DB', 0)))
                     redis_password = os.environ.get("REDIS_PASSWORD", getattr(settings, 'REDIS_PASSWORD', ''))
                     redis_user = os.environ.get("REDIS_USER", getattr(settings, 'REDIS_USER', ''))
+                    redis_url = getattr(settings, "REDIS_URL", "")
 
                     # Use standardized settings but without socket timeouts for PubSub
                     # Important: socket_timeout is None for PubSub operations
@@ -253,6 +264,15 @@ class RedisClient:
                         db=redis_db,
                         password=redis_password if redis_password else None,
                         username=redis_user if redis_user else None,
+                        socket_timeout=None,  # Critical: No timeout for PubSub operations
+                        socket_connect_timeout=socket_connect_timeout,
+                        socket_keepalive=socket_keepalive,
+                        health_check_interval=health_check_interval,
+                        retry_on_timeout=retry_on_timeout,
+                        decode_responses=True,
+                        **ssl_params
+                    ) if not redis_url else redis.Redis.from_url(
+                        redis_url,
                         socket_timeout=None,  # Critical: No timeout for PubSub operations
                         socket_connect_timeout=socket_connect_timeout,
                         socket_keepalive=socket_keepalive,

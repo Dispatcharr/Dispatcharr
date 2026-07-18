@@ -184,6 +184,7 @@ class ProxyServer:
                         redis_db = int(os.environ.get("REDIS_DB", getattr(settings, 'REDIS_DB', 0)))
                         redis_password = os.environ.get("REDIS_PASSWORD", getattr(settings, 'REDIS_PASSWORD', ''))
                         redis_user = os.environ.get("REDIS_USER", getattr(settings, 'REDIS_USER', ''))
+                        redis_url = getattr(settings, "REDIS_URL", "")
 
                         ssl_params = getattr(settings, 'REDIS_SSL_PARAMS', {})
                         pubsub_client = redis.Redis(
@@ -192,6 +193,14 @@ class ProxyServer:
                             db=redis_db,
                             password=redis_password if redis_password else None,
                             username=redis_user if redis_user else None,
+                            socket_timeout=60,
+                            socket_connect_timeout=10,
+                            socket_keepalive=True,
+                            health_check_interval=30,
+                            decode_responses=True,
+                            **ssl_params
+                        ) if not redis_url else redis.Redis.from_url(
+                            redis_url,
                             socket_timeout=60,
                             socket_connect_timeout=10,
                             socket_keepalive=True,
