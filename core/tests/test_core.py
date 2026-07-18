@@ -1,9 +1,128 @@
 from unittest.mock import patch, MagicMock
 
+from django.core.cache import cache
 from django.test import TestCase, SimpleTestCase
 
 from apps.epg.models import EPGSource, EPGSourceIndex
-from core.models import CoreSettings, DVR_SETTINGS_KEY, EPG_SETTINGS_KEY
+from core.models import (
+    CoreSettings,
+    DVR_SETTINGS_KEY,
+    EPG_SETTINGS_KEY,
+    SYSTEM_SETTINGS_KEY,
+    setting_flag_enabled,
+)
+
+
+class SettingFlagEnabledTests(SimpleTestCase):
+    def test_defaults_when_missing(self):
+        self.assertTrue(setting_flag_enabled(None, default=True))
+        self.assertFalse(setting_flag_enabled(None, default=False))
+
+    def test_bool_and_int(self):
+        self.assertFalse(setting_flag_enabled(False))
+        self.assertTrue(setting_flag_enabled(True))
+        self.assertFalse(setting_flag_enabled(0))
+        self.assertTrue(setting_flag_enabled(1))
+
+    def test_common_strings(self):
+        self.assertFalse(setting_flag_enabled("false"))
+        self.assertFalse(setting_flag_enabled("0"))
+        self.assertFalse(setting_flag_enabled("off"))
+        self.assertTrue(setting_flag_enabled("true"))
+        self.assertTrue(setting_flag_enabled("1"))
+        self.assertTrue(setting_flag_enabled("yes"))
+
+    def test_garbage_falls_back_to_default(self):
+        self.assertTrue(setting_flag_enabled("maybe", default=True))
+        self.assertFalse(setting_flag_enabled([], default=False))
+
+
+class CoreSettingsGroupCacheTests(TestCase):
+    """_get_group Redis cache: hit after first read, invalidate on save."""
+
+    def setUp(self):
+        cache.clear()
+        CoreSettings.objects.filter(key=SYSTEM_SETTINGS_KEY).delete()
+
+    def test_second_read_does_not_query_database(self):
+        CoreSettings.objects.create(
+            key=SYSTEM_SETTINGS_KEY,
+            name="System Settings",
+            value={"catchup_enabled": False},
+        )
+        self.assertFalse(CoreSettings.get_catchup_enabled())
+
+        with self.assertNumQueries(0):
+            self.assertFalse(CoreSettings.get_catchup_enabled())
+
+    def test_save_invalidates_cache(self):
+        obj = CoreSettings.objects.create(
+            key=SYSTEM_SETTINGS_KEY,
+            name="System Settings",
+            value={"catchup_enabled": True},
+        )
+        self.assertTrue(CoreSettings.get_catchup_enabled())
+
+        obj.value = {"catchup_enabled": False}
+        obj.save()
+        self.assertFalse(CoreSettings.get_catchup_enabled())
+
+    def test_delete_invalidates_cache(self):
+        obj = CoreSettings.objects.create(
+            key=SYSTEM_SETTINGS_KEY,
+            name="System Settings",
+            value={"catchup_enabled": False},
+        )
+        self.assertFalse(CoreSettings.get_catchup_enabled())
+
+        obj.delete()
+        # Row gone: defaults apply (catchup enabled)
+        self.assertTrue(CoreSettings.get_catchup_enabled())
+
+    def test_nested_mutation_does_not_poison_cache(self):
+        from core.models import DVR_SETTINGS_KEY
+
+        obj, _ = CoreSettings.objects.get_or_create(
+            key=DVR_SETTINGS_KEY,
+            defaults={"name": "DVR Settings", "value": {}},
+        )
+        obj.value = {**(obj.value if isinstance(obj.value, dict) else {}), "series_rules": [{"tvg_id": "a"}]}
+        obj.save()
+        CoreSettings.invalidate_group_cache(DVR_SETTINGS_KEY)
+
+        rules = CoreSettings.get_dvr_settings()["series_rules"]
+        rules.append({"tvg_id": "mutated"})
+
+        again = CoreSettings.get_dvr_settings()["series_rules"]
+        self.assertEqual(len(again), 1)
+        self.assertEqual(again[0]["tvg_id"], "a")
+
+    @patch("apps.proxy.config.BaseConfig.clear_proxy_settings_cache")
+    def test_invalidate_clears_proxy_process_cache(self, clear_mock):
+        from core.models import PROXY_SETTINGS_KEY
+
+        CoreSettings.invalidate_group_cache(PROXY_SETTINGS_KEY)
+        clear_mock.assert_called_once_with()
+
+    def test_network_access_allowed_uses_cached_settings(self):
+        from django.test import RequestFactory
+
+        from core.models import NETWORK_ACCESS_KEY
+        from dispatcharr.utils import network_access_allowed
+
+        CoreSettings.objects.update_or_create(
+            key=NETWORK_ACCESS_KEY,
+            defaults={
+                "name": "Network Access",
+                "value": {"STREAMS": "0.0.0.0/0,::/0"},
+            },
+        )
+        request = RequestFactory().get("/")
+        request.META["REMOTE_ADDR"] = "1.2.3.4"
+
+        self.assertTrue(network_access_allowed(request, "STREAMS"))
+        with self.assertNumQueries(0):
+            self.assertTrue(network_access_allowed(request, "STREAMS"))
 
 
 class DispatcharrUserAgentTests(TestCase):

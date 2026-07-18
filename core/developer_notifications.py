@@ -82,10 +82,10 @@ def check_network_access_is_default(user, endpoint: str = 'M3U_EPG') -> bool:
     Returns:
         True if the notification should show (insecure settings detected)
     """
-    from core.models import CoreSettings, NETWORK_ACCESS_KEY
+    from core.models import CoreSettings
 
     try:
-        network_settings = CoreSettings._get_group(NETWORK_ACCESS_KEY, {})
+        network_settings = CoreSettings.get_network_access_settings()
 
         # Empty settings are secure (defaults to local network only)
         if not network_settings:

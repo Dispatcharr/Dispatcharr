@@ -3,7 +3,7 @@ import json
 import ipaddress
 from django.http import JsonResponse
 from django.core.exceptions import ValidationError
-from core.models import CoreSettings, NETWORK_ACCESS_KEY
+from core.models import CoreSettings
 
 
 def json_error_response(message, status=400):
@@ -33,10 +33,7 @@ def get_client_ip(request):
 
 
 def network_access_allowed(request, settings_key, user=None):
-    try:
-        network_access = CoreSettings.objects.get(key=NETWORK_ACCESS_KEY).value
-    except CoreSettings.DoesNotExist:
-        network_access = {}
+    network_access = CoreSettings.get_network_access_settings()
     local_cidrs = ["127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "::1/128", "fc00::/7", "fe80::/10"]
     # Set defaults based on endpoint type
     if settings_key == "M3U_EPG":
