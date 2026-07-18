@@ -14,8 +14,10 @@ from core.utils import resolve_safe_local_data_path, safe_upload_path
 
 class ResolveSafeLocalDataPathTests(TestCase):
     def test_accepts_file_under_logos_root(self):
+        logos_root = Path("/data/logos")
+        logos_root.mkdir(parents=True, exist_ok=True)
         name = f"_jail_test_{uuid.uuid4().hex}.png"
-        target = Path("/data/logos") / name
+        target = logos_root / name
         target.write_bytes(b"x")
         try:
             resolved = resolve_safe_local_data_path(
@@ -63,8 +65,10 @@ class LogoCachePathJailTests(TestCase):
         self.assertEqual(response.status_code, 404)
 
     def test_valid_local_logo_is_served(self):
+        logos_root = Path("/data/logos")
+        logos_root.mkdir(parents=True, exist_ok=True)
         name = f"_jail_serve_{uuid.uuid4().hex}.png"
-        file_path = Path("/data/logos") / name
+        file_path = logos_root / name
         file_path.write_bytes(b"\x89PNG\r\n\x1a\n")
         logo = Logo.objects.create(name="Ok", url=str(file_path))
         try:
