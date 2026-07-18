@@ -21,12 +21,13 @@ from apps.accounts.permissions import (
     Authenticated,
     IsAdmin,
     IsOwnerOfObject,
+    IsStandardUser,
     permission_classes_by_action,
     permission_classes_by_method,
 )
 
 from core.models import UserAgent, CoreSettings
-from core.utils import RedisClient, safe_upload_path
+from core.utils import RedisClient, safe_upload_path, resolve_safe_local_data_path
 from apps.m3u.utils import convert_js_numbered_backreferences
 
 from .models import (
@@ -611,10 +612,12 @@ class ChannelGroupViewSet(viewsets.ModelViewSet):
     serializer_class = ChannelGroupSerializer
 
     def get_permissions(self):
+        if self.action == "cleanup_unused_groups":
+            return [IsAdmin()]
         try:
             return [perm() for perm in permission_classes_by_action[self.action]]
         except KeyError:
-            return [Authenticated()]
+            return [IsAdmin()]
 
     def get_queryset(self):
         # Annotate both counts at the SQL level so the serializer methods
@@ -899,13 +902,26 @@ class ChannelViewSet(viewsets.ModelViewSet):
             "match_epg",
             "set_epg",
             "batch_set_epg",
+            "bulk_regex_rename",
+            "set_names_from_epg",
+            "set_logos_from_epg",
+            "set_tvg_ids_from_epg",
+            "reorder",
         ]:
             return [IsAdmin()]
+
+        if self.action in (
+            "get_ids",
+            "summary",
+            "numbers_in_range",
+            "by_uuids",
+        ):
+            return [IsStandardUser()]
 
         try:
             return [perm() for perm in permission_classes_by_action[self.action]]
         except KeyError:
-            return [Authenticated()]
+            return [IsAdmin()]
 
     def get_queryset(self):
         # get_ids and summary only need the filter conditions, not the full
@@ -2765,23 +2781,26 @@ class LogoViewSet(viewsets.ModelViewSet):
         """Streams the logo file, whether it's local or remote."""
         logo = self.get_object()
         logo_url = logo.url
+        if not logo_url:
+            raise Http404("Image not found")
         if logo_url.startswith("/data"):  # Local file
-            if not os.path.exists(logo_url):
+            safe_path = resolve_safe_local_data_path(logo_url)
+            if safe_path is None or not os.path.exists(safe_path):
                 raise Http404("Image not found")
-            stat = os.stat(logo_url)
+            stat = os.stat(safe_path)
             # Get proper mime type (first item of the tuple)
-            content_type, _ = mimetypes.guess_type(logo_url)
+            content_type, _ = mimetypes.guess_type(safe_path)
             if not content_type:
                 content_type = "image/jpeg"  # Default to a common image type
 
-            # Use context manager and set Content-Disposition to inline
+            # StreamingHttpResponse closes the file when the response finishes.
             response = StreamingHttpResponse(
-                open(logo_url, "rb"), content_type=content_type
+                open(safe_path, "rb"), content_type=content_type
             )
             response["Cache-Control"] = "public, max-age=14400"  # Cache in browser for 4 hours
             response["Last-Modified"] = http_date(stat.st_mtime)
             response["Content-Disposition"] = 'inline; filename="{}"'.format(
-                os.path.basename(logo_url)
+                os.path.basename(safe_path)
             )
             return response
 
@@ -3298,10 +3317,18 @@ class RecordingViewSet(viewsets.ModelViewSet):
         # classes run; _user_can_play_recording enforces authenticated access.
         if self.action in ('file', 'hls'):
             return [AllowAny()]
+        if self.action in (
+            'stop',
+            'extend',
+            'comskip',
+            'refresh_artwork',
+            'update_metadata',
+        ):
+            return [IsAdmin()]
         try:
             return [perm() for perm in permission_classes_by_action[self.action]]
         except KeyError:
-            return [Authenticated()]
+            return [IsAdmin()]
 
     def _user_can_play_recording(self, request, recording):
         """Authorization gate for recording playback (file/hls actions).

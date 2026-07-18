@@ -189,6 +189,7 @@ class M3UAccountSerializer(serializers.ModelSerializer):
             "password": {
                 "required": False,
                 "allow_blank": True,
+                "write_only": True,
             },
         }
 
@@ -212,6 +213,13 @@ class M3UAccountSerializer(serializers.ModelSerializer):
             }
 
         data = super().to_representation(instance)
+
+        # write_only strips password for everyone; re-add only for admins so
+        # operator tooling / profile regex helpers still see credentials.
+        request = self.context.get("request")
+        user = getattr(request, "user", None) if request else None
+        if user is not None and getattr(user, "user_level", 0) >= 10:
+            data["password"] = instance.password or ""
 
         # Parse custom_properties to get VOD preference and auto_enable_new_groups settings
         custom_props = instance.custom_properties or {}

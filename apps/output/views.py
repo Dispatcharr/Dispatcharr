@@ -108,7 +108,7 @@ def epg_endpoint(request, profile_name=None, user=None):
 def generate_m3u(request, profile_name=None, user=None):
     """
     Dynamically generate an M3U file from channels.
-    The stream URL now points to the new stream_view that uses StreamProfile.
+    The stream URL points to the live TS proxy (``/proxy/ts/stream/``).
     Supports both GET and POST methods for compatibility with IPTVSmarters.
     """
     # Check if this is a POST request and the body is not empty (which we don't want to allow)

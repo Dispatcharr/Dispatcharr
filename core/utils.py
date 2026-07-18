@@ -660,6 +660,31 @@ def safe_upload_path(filename: str, base_dir) -> str:
     return str(file_path)
 
 
+def resolve_safe_local_data_path(path: str, allowed_roots=("/data/logos",)):
+    """Return a realpath under one of *allowed_roots*, or None if unsafe.
+
+    Rejects path traversal (``/data/../etc/passwd``), symlinks that escape
+    the allowlisted roots, and non-``/data`` paths. Used by logo cache
+    endpoints that must remain AllowAny for player clients.
+    """
+    if not path or not isinstance(path, str):
+        return None
+    if not path.startswith("/data"):
+        return None
+    try:
+        real = Path(path).resolve()
+    except (OSError, RuntimeError, ValueError):
+        return None
+    for root in allowed_roots:
+        try:
+            root_real = Path(root).resolve()
+        except (OSError, RuntimeError, ValueError):
+            continue
+        if real == root_real or real.is_relative_to(root_real):
+            return str(real)
+    return None
+
+
 def is_protected_path(file_path):
     """
     Determine if a file path is in a protected directory that shouldn't be deleted.

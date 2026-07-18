@@ -32,6 +32,7 @@ from apps.accounts.permissions import (
     permission_classes_by_action,
     permission_classes_by_method,
 )
+from core.utils import safe_upload_path
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +51,8 @@ class EPGSourceViewSet(viewsets.ModelViewSet):
     serializer_class = EPGSourceSerializer
 
     def get_permissions(self):
+        if self.action == "upload":
+            return [IsAdmin()]
         try:
             return [perm() for perm in permission_classes_by_action[self.action]]
         except KeyError:
@@ -57,7 +60,7 @@ class EPGSourceViewSet(viewsets.ModelViewSet):
                 if self.request.method == 'GET':
                     return [IsStandardUser()]
                 return [IsAdmin()]
-            return [Authenticated()]
+            return [IsAdmin()]
 
     def get_queryset(self):
         from django.db.models import Exists, OuterRef
@@ -82,8 +85,12 @@ class EPGSourceViewSet(viewsets.ModelViewSet):
             )
 
         file = request.FILES["file"]
-        file_name = file.name
-        file_path = os.path.join("/data/uploads/epgs", file_name)
+        try:
+            file_path = safe_upload_path(file.name, "/data/uploads/epgs")
+        except ValueError:
+            return Response(
+                {"error": "Invalid filename"}, status=status.HTTP_400_BAD_REQUEST
+            )
 
         os.makedirs(os.path.dirname(file_path), exist_ok=True)
         with open(file_path, "wb+") as destination:

@@ -584,7 +584,17 @@ class SystemNotificationViewSet(viewsets.ModelViewSet):
     Admins can create and manage notifications.
     """
     serializer_class = SystemNotificationSerializer
-    permission_classes = [IsAuthenticated]
+
+    def get_permissions(self):
+        if self.action in (
+            "create",
+            "update",
+            "partial_update",
+            "destroy",
+        ):
+            return [IsAdmin()]
+        # list, retrieve, dismiss, dismiss_all, unread_count
+        return [IsAuthenticated()]
 
     def get_queryset(self):
         """

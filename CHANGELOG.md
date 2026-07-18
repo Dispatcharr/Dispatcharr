@@ -45,6 +45,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **XC live refresh avoids redundant work during catalog filtering.** `collect_xc_streams` skips disabled categories before building entries and uses a shared URL prefix instead of formatting each stream URL separately. Auto-sync releases per-group logo/EPG caches after each group iteration.
 - **Celery workers return RSS after memory-intensive tasks.** `cleanup_memory()` accepts an optional `trim_heap` flag (glibc `malloc_trim`); Celery `task_postrun` enables it after `close_old_connections()` for M3U account/group refresh, EPG, VOD, and channel-matching tasks so worker memory drops back toward baseline instead of ratcheting across successive large jobs.
 
+### Security
+
+- **Authentication boundaries and local logo serving.**
+  - Logo and VOD logo `cache` endpoints no longer serve arbitrary filesystem paths: local URLs must resolve under `/data/logos` (blocks `/data/../…` traversal). Empty logo URLs return 404 instead of attempting a remote fetch.
+  - EPG source file upload API (`POST /api/epg/sources/upload/`) is admin-only and uses `safe_upload_path` so uploaded filenames cannot escape `/data/uploads/epgs`. The web UI does not expose this endpoint (EPG sources are added via URL, Schedules Direct, or dummy); the fix hardens the API-only path.
+  - M3U account passwords are omitted from API responses for non-admins; admins still receive them (the M3U edit form already blanks the password field on load).
+  - Channel bulk-regex rename, EPG name/logo/tvg-id apply, channel reorder, channel-group cleanup, recording stop/extend/comskip/metadata actions, and Connect integration APIs require admin. Guide-facing channel read helpers (`summary`, `ids`, etc.) remain available to standard users.
+  - System notifications: any authenticated user can still list and dismiss notifications visible to them; create/update/delete require admin (previously any authenticated user could create notifications).
+  - Django `auth.Group` CRUD (`/api/accounts/groups/`) and the permissions list endpoint require admin. Dispatcharr authorization uses `user_level`, not these groups; the React UI does not call these endpoints.
+  - Removed unused unauthenticated routes: `/proxy/hls/` (HLS proxy package retained for possible future use) and legacy `/output/stream/<uuid>/` (including the nginx location). Live playback continues via `/proxy/ts/stream/`.
+
 ### Fixed
 
 - **Live channel Redis `state` no longer stays latched at `buffering` after a buffering-timeout failover.** When FFmpeg speed dipped below the buffering threshold and the timeout triggered a stream switch, the in-memory buffering flag was cleared without rewriting Redis, and the same stats sample could re-write `buffering`. After the new stream recovered, the speed-good path only cleared Redis when that flag was still set, so a healthy session could report `buffering` until restart or retune. A successful buffering-timeout switch now writes `active` and skips the fallthrough `buffering` write. (Fixes #1449)

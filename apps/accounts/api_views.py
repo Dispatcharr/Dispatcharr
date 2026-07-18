@@ -268,13 +268,18 @@ class UserViewSet(viewsets.ModelViewSet):
         return Response(serializer.data)
 
 
-# 🔹 3) Group Management APIs
+# 🔹 3) Group Management APIs (Django auth.Group; unused by the React UI)
 class GroupViewSet(viewsets.ModelViewSet):
-    """Handles CRUD operations for Groups"""
+    """CRUD for Django auth groups and their permissions.
+
+    Dispatcharr authorization uses ``user_level``, not these groups. The
+    endpoint is kept for compatibility but restricted to admins so
+    non-admins cannot invent auth groups or attach Django permissions.
+    """
 
     queryset = Group.objects.all()
     serializer_class = GroupSerializer
-    permission_classes = [Authenticated]
+    permission_classes = [IsAdmin]
 
     @extend_schema(
         description="Retrieve a list of groups",
@@ -359,9 +364,9 @@ class APIKeyViewSet(viewsets.ViewSet):
     responses={200: PermissionSerializer(many=True)},
 )
 @api_view(["GET"])
-@permission_classes([Authenticated])
+@permission_classes([IsAdmin])
 def list_permissions(request):
-    """Returns a list of all available permissions"""
+    """Returns a list of all available Django permissions (admin only)."""
     permissions = Permission.objects.all()
     serializer = PermissionSerializer(permissions, many=True)
     return Response(serializer.data)

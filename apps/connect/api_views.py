@@ -12,8 +12,6 @@ from .serializers import (
     DeliveryLogSerializer,
 )
 from apps.accounts.permissions import (
-    Authenticated,
-    permission_classes_by_action,
     IsAdmin,
 )
 from .handlers.webhook import WebhookHandler
@@ -25,12 +23,8 @@ class IntegrationViewSet(viewsets.ModelViewSet):
     serializer_class = IntegrationSerializer
 
     def get_permissions(self):
-        try:
-            perms = permission_classes_by_action[self.action]
-        except KeyError:
-            # Respect view/action-specific permission_classes if provided; fallback to Authenticated
-            perms = getattr(self, "permission_classes", [Authenticated])
-        return [perm() for perm in perms]
+        # Integrations expose webhook URLs / script paths in config; admin only.
+        return [IsAdmin()]
 
     @action(detail=True, methods=["get"], url_path="subscriptions")
     def list_subscriptions(self, request, pk=None):
