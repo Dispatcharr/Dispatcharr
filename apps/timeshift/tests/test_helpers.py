@@ -101,7 +101,7 @@ class TimestampFormatTests(TestCase):
         self.assertEqual(dt, datetime(2026, 6, 23, 4, 0, 0))
 
     def test_parse_colon_dash_with_dash_seconds(self):
-        # iMPlayer and similar XC clients use HH-MM-SS (dash throughout time).
+        # Some XC clients use HH-MM-SS (dash throughout time).
         dt = parse_catchup_timestamp("2026-07-13:00-00-00")
         self.assertEqual(dt, datetime(2026, 7, 13, 0, 0, 0))
 

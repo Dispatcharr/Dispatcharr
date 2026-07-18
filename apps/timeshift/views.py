@@ -1309,16 +1309,31 @@ def _try_reacquire_idle_pool(
     )
 
 
+def _is_full_restart_range(range_header):
+    """True when the request means restart from byte 0 (provider-style reopen).
+
+    Matches plain GET (no Range) and open-ended ``bytes=0-``. Mid-file seeks
+    and near-EOF duration probes are not restarts.
+    """
+    if not range_header:
+        return True
+    parsed = _parse_client_range(range_header)
+    if parsed is None:
+        return False
+    start, end = parsed
+    return start == 0 and end is None
+
+
 def _should_preempt_plain_reconnect(
     range_header, *, pool_exists, pool_busy, pool_media_id, media_id,
 ):
-    """True when a plain GET should restart playback like the provider does.
+    """True when a full-file restart should reclaim a busy same-programme pool.
 
     IPTV clients often close the HTTP connection and reopen the same programme
-    URL without a Range header. Providers answer
-    that with a full 200 from byte 0, not an internal byte-range resume.
+    URL with no Range, or with ``Range: bytes=0-``. Providers answer that with
+    a full response from byte 0, not an internal resume.
     """
-    if range_header:
+    if not _is_full_restart_range(range_header):
         return False
     if not pool_exists or not pool_busy:
         return False

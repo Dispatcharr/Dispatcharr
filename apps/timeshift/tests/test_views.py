@@ -3045,13 +3045,44 @@ class TimeshiftRangeClassificationTests(TestCase):
         )
 
     def test_bytes_zero_does_not_displace_active_start_stream(self):
-        # Scrub rule still false; residual same-session path preempts at serve time.
+        # Scrub rule stays false; plain-reconnect preempts bytes=0- at serve time.
         self.assertFalse(
             views._should_displace_busy_playback("bytes=0-", busy_serving_range="start")
         )
 
     def test_bytes_zero_without_busy_context_is_not_displacing(self):
         self.assertFalse(views._should_displace_busy_playback("bytes=0-"))
+
+    def test_full_restart_range_accepts_plain_and_bytes_zero(self):
+        self.assertTrue(views._is_full_restart_range(None))
+        self.assertTrue(views._is_full_restart_range(""))
+        self.assertTrue(views._is_full_restart_range("bytes=0-"))
+        self.assertFalse(views._is_full_restart_range("bytes=0-100"))
+        self.assertFalse(views._is_full_restart_range("bytes=1000-"))
+        self.assertFalse(views._is_full_restart_range("bytes=3799416688-"))
+
+    def test_plain_reconnect_helper_accepts_bytes_zero(self):
+        kwargs = dict(
+            pool_exists=True,
+            pool_busy=True,
+            pool_media_id="92_2026-07-17-20-00",
+            media_id="92_2026-07-17-20-00",
+        )
+        self.assertTrue(views._should_preempt_plain_reconnect(None, **kwargs))
+        self.assertTrue(views._should_preempt_plain_reconnect("bytes=0-", **kwargs))
+        self.assertFalse(views._should_preempt_plain_reconnect("bytes=1000-", **kwargs))
+        self.assertFalse(
+            views._should_preempt_plain_reconnect("bytes=3799416688-", **kwargs)
+        )
+        self.assertFalse(
+            views._should_preempt_plain_reconnect(
+                "bytes=0-",
+                pool_exists=True,
+                pool_busy=True,
+                pool_media_id="other",
+                media_id="92_2026-07-17-20-00",
+            )
+        )
 
     def test_near_eof_probe_is_not_displacing(self):
         self.assertTrue(views._is_near_eof_probe("bytes=2527702896-"))
@@ -4767,7 +4798,8 @@ class TimeshiftScrubPreemptTests(TestCase):
     def _pool_entry_ids(self):
         return [k for k in self.redis.store if k.startswith("timeshift:pool:")]
 
-    def test_startup_bytes_zero_deferred_without_preempt(self):
+    def test_bytes_zero_reconnect_preempts_busy_pool(self):
+        """Open-ended bytes=0- is a full restart, same as plain GET."""
         _seed_pool_session(
             self.redis, session_id=TEST_SESSION_ID, serving_range="start",
         )
@@ -4776,6 +4808,9 @@ class TimeshiftScrubPreemptTests(TestCase):
             HTTP_RANGE="bytes=0-",
         )
         streams = [_make_catchup_stream(account_id=1, stream_id="111", profile_id=31)]
+        ok = MagicMock(status_code=206)
+        profile = MagicMock(id=31)
+        descriptor = {"account_id": "1", "stream_id": "111", "profile_id": "31"}
         with patch.object(views, "_authenticate_user", return_value=MagicMock(id=5)), \
              patch.object(views, "network_access_allowed", return_value=True), \
              patch.object(views, "Channel") as channel_cls, \
@@ -4788,7 +4823,11 @@ class TimeshiftScrubPreemptTests(TestCase):
              patch.object(views, "release_profile_slot"), \
              patch.object(views, "get_transformed_credentials", side_effect=_fake_creds), \
              patch.object(views, "get_user_active_connections", return_value=[]), \
-             patch.object(views, "_preempt_playback_streams") as preempt_mock, \
+             patch.object(
+                 views, "_try_reacquire_idle_pool",
+                 return_value=(descriptor, profile),
+             ) as reacquire_mock, \
+             patch.object(views, "_stream_reused_session", return_value=ok) as reuse_mock, \
              patch.object(views, "_attempt_timeshift_stream") as attempt_mock:
             redis_cls.get_client.return_value = self.redis
             channel_cls.objects.get.return_value = MagicMock(
@@ -4797,8 +4836,10 @@ class TimeshiftScrubPreemptTests(TestCase):
             response = views.timeshift_proxy(
                 request, "u", "p", "40", "2026-06-08:17-00", "8.ts",
             )
-        self.assertEqual(response.status_code, 503)
-        preempt_mock.assert_not_called()
+        self.assertIs(response, ok)
+        reacquire_mock.assert_called_once()
+        reuse_mock.assert_called_once()
+        self.assertEqual(reuse_mock.call_args.kwargs["range_header"], "bytes=0-")
         attempt_mock.assert_not_called()
 
     def test_eof_probe_deferred_without_preempt(self):
