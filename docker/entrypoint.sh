@@ -153,6 +153,12 @@ echo "Environment DISPATCHARR_LOG_LEVEL set to: '${DISPATCHARR_LOG_LEVEL}'"
 # Also make the log level available in /etc/environment for all login shells
 #grep -q "DISPATCHARR_LOG_LEVEL" /etc/environment || echo "DISPATCHARR_LOG_LEVEL=${DISPATCHARR_LOG_LEVEL}" >> /etc/environment
 
+export DISPATCHARR_TIME_ZONE
+# Normalize from the standard TZ env when not set explicitly
+DISPATCHARR_TIME_ZONE=${DISPATCHARR_TIME_ZONE:-${TZ:-UTC}}
+
+echo "Environment DISPATCHARR_TIME_ZONE set to: '${DISPATCHARR_TIME_ZONE}'"
+
 # Translate Dispatcharr POSTGRES_SSL_* env vars into libpq-recognized PGSSL*
 # env vars. Called once before any external PostgreSQL connection; all child
 # processes (psql, pg_dump, pg_isready, createdb, dropdb) inherit these
@@ -180,7 +186,7 @@ variables=(
     DISPATCHARR_ENV DISPATCHARR_DEBUG DISPATCHARR_LOG_LEVEL DISPATCHARR_ENABLE_IP_LOOKUP
     REDIS_HOST REDIS_PORT REDIS_DB REDIS_PASSWORD REDIS_USER POSTGRES_DIR DISPATCHARR_PORT
     DISPATCHARR_VERSION DISPATCHARR_TIMESTAMP LIBVA_DRIVERS_PATH LIBVA_DRIVER_NAME LD_LIBRARY_PATH
-    CELERY_NICE_LEVEL UWSGI_NICE_LEVEL DJANGO_SECRET_KEY
+    CELERY_NICE_LEVEL UWSGI_NICE_LEVEL DJANGO_SECRET_KEY DISPATCHARR_TIME_ZONE
 )
 
 # TLS variables are optional — only propagate when set to avoid noisy warnings
