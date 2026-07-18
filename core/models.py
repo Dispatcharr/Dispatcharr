@@ -198,31 +198,11 @@ USER_LIMITS_SETTINGS_KEY = "user_limit_settings"
 
 # Redis cache for CoreSettings JSON groups. Primary invalidation is post_save /
 # post_delete; TTL is a safety net if a writer bypasses signals.
+# A version key is bumped on invalidate so a concurrent miss cannot re-poison
+# Redis with a stale DB snapshot after delete.
 _GROUP_CACHE_PREFIX = "coresettings:group:"
+_GROUP_CACHE_VER_PREFIX = "coresettings:groupver:"
 _GROUP_CACHE_TTL_SECONDS = 300
-
-
-def setting_flag_enabled(value, *, default=True):
-    """Parse a settings/JSON flag that should default to *default* when unset.
-
-    Explicit ``False`` / ``0`` / common false strings disable. Explicit
-    ``True`` / ``1`` / common true strings enable. Other types fall back to
-    *default* so garbage payloads do not accidentally enable a kill-switch.
-    """
-    if value is None:
-        return default
-    if value is False or value == 0:
-        return False
-    if value is True or value == 1:
-        return True
-    if isinstance(value, str):
-        lowered = value.strip().lower()
-        if lowered in ("false", "0", "no", "off", ""):
-            return False
-        if lowered in ("true", "1", "yes", "on"):
-            return True
-        return default
-    return default
 
 
 class CoreSettings(models.Model):
@@ -246,11 +226,20 @@ class CoreSettings(models.Model):
         return f"{_GROUP_CACHE_PREFIX}{key}"
 
     @classmethod
+    def group_cache_ver_key(cls, key):
+        return f"{_GROUP_CACHE_VER_PREFIX}{key}"
+
+    @classmethod
     def invalidate_group_cache(cls, key):
         """Drop the cached JSON for a settings group (all workers share Redis)."""
+        import time
+
         from django.core.cache import cache
 
         cache.delete(cls.group_cache_key(key))
+        # Monotonic bump so in-flight _get_group fills skip cache.set.
+        # timeout=None: never expire (version must outlive group entries).
+        cache.set(cls.group_cache_ver_key(key), time.time_ns(), timeout=None)
         if key == PROXY_SETTINGS_KEY:
             # Proxy workers also keep a short process-local copy.
             try:
@@ -276,10 +265,12 @@ class CoreSettings(models.Model):
 
         defaults = defaults or {}
         cache_key = cls.group_cache_key(key)
+        ver_key = cls.group_cache_ver_key(key)
         cached = cache.get(cache_key)
         if isinstance(cached, dict):
             return copy.deepcopy(cached)
 
+        ver_before = cache.get(ver_key)
         try:
             value = cls.objects.get(key=key).value or defaults
             if not isinstance(value, dict):
@@ -288,7 +279,10 @@ class CoreSettings(models.Model):
             value = defaults
 
         value = copy.deepcopy(value)
-        cache.set(cache_key, value, timeout=_GROUP_CACHE_TTL_SECONDS)
+        # Skip fill if an invalidate landed during the DB read (avoids
+        # re-caching a stale snapshot for the full TTL).
+        if cache.get(ver_key) == ver_before:
+            cache.set(cache_key, value, timeout=_GROUP_CACHE_TTL_SECONDS)
         return copy.deepcopy(value)
 
     @classmethod
@@ -489,10 +483,8 @@ class CoreSettings(models.Model):
     @classmethod
     def get_catchup_enabled(cls):
         """Whether catch-up / timeshift is enabled system-wide (default True)."""
-        return setting_flag_enabled(
-            cls.get_system_settings().get("catchup_enabled"),
-            default=True,
-        )
+        # Stored as a JSON boolean by System Settings; default on when unset.
+        return cls.get_system_settings().get("catchup_enabled", True) is not False
 
     @classmethod
     def get_system_time_zone(cls):

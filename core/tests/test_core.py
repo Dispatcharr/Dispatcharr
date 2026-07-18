@@ -9,32 +9,7 @@ from core.models import (
     DVR_SETTINGS_KEY,
     EPG_SETTINGS_KEY,
     SYSTEM_SETTINGS_KEY,
-    setting_flag_enabled,
 )
-
-
-class SettingFlagEnabledTests(SimpleTestCase):
-    def test_defaults_when_missing(self):
-        self.assertTrue(setting_flag_enabled(None, default=True))
-        self.assertFalse(setting_flag_enabled(None, default=False))
-
-    def test_bool_and_int(self):
-        self.assertFalse(setting_flag_enabled(False))
-        self.assertTrue(setting_flag_enabled(True))
-        self.assertFalse(setting_flag_enabled(0))
-        self.assertTrue(setting_flag_enabled(1))
-
-    def test_common_strings(self):
-        self.assertFalse(setting_flag_enabled("false"))
-        self.assertFalse(setting_flag_enabled("0"))
-        self.assertFalse(setting_flag_enabled("off"))
-        self.assertTrue(setting_flag_enabled("true"))
-        self.assertTrue(setting_flag_enabled("1"))
-        self.assertTrue(setting_flag_enabled("yes"))
-
-    def test_garbage_falls_back_to_default(self):
-        self.assertTrue(setting_flag_enabled("maybe", default=True))
-        self.assertFalse(setting_flag_enabled([], default=False))
 
 
 class CoreSettingsGroupCacheTests(TestCase):
@@ -43,6 +18,10 @@ class CoreSettingsGroupCacheTests(TestCase):
     def setUp(self):
         cache.clear()
         CoreSettings.objects.filter(key=SYSTEM_SETTINGS_KEY).delete()
+
+    def tearDown(self):
+        # DB rollback does not undo Redis entries written during the test.
+        cache.clear()
 
     def test_second_read_does_not_query_database(self):
         CoreSettings.objects.create(
@@ -78,6 +57,43 @@ class CoreSettingsGroupCacheTests(TestCase):
         obj.delete()
         # Row gone: defaults apply (catchup enabled)
         self.assertTrue(CoreSettings.get_catchup_enabled())
+
+    def test_stale_fill_does_not_repoison_after_invalidate(self):
+        """A miss that read DB before invalidate must not rewrite Redis."""
+        CoreSettings.objects.create(
+            key=SYSTEM_SETTINGS_KEY,
+            name="System Settings",
+            value={"catchup_enabled": True},
+        )
+        cache_key = CoreSettings.group_cache_key(SYSTEM_SETTINGS_KEY)
+        cache.delete(cache_key)
+
+        real_get = CoreSettings.objects.get
+        cached_sets = []
+
+        def racing_get(*args, **kwargs):
+            row = real_get(*args, **kwargs)
+            # Concurrent writer: bump version after this miss read the row.
+            CoreSettings.invalidate_group_cache(SYSTEM_SETTINGS_KEY)
+            return row
+
+        real_set = cache.set
+
+        def tracking_set(key, value, timeout=None, **kwargs):
+            cached_sets.append(key)
+            return real_set(key, value, timeout=timeout, **kwargs)
+
+        with patch.object(CoreSettings.objects, "get", side_effect=racing_get), \
+             patch.object(cache, "set", side_effect=tracking_set):
+            CoreSettings.get_system_settings()
+
+        self.assertNotIn(cache_key, cached_sets)
+        # Writer left DB at True; a later read may refill, but not with a
+        # skipped stale set over a newer disable. Flip DB and confirm.
+        obj = CoreSettings.objects.get(key=SYSTEM_SETTINGS_KEY)
+        obj.value = {"catchup_enabled": False}
+        obj.save()
+        self.assertFalse(CoreSettings.get_catchup_enabled())
 
     def test_nested_mutation_does_not_poison_cache(self):
         from core.models import DVR_SETTINGS_KEY

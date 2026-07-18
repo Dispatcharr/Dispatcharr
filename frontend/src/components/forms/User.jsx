@@ -260,6 +260,14 @@ const User = ({ user = null, isOpen, onClose }) => {
                   })}
                   key={form.key('hide_adult_content')}
                 />
+                <Switch
+                  label="Enable Catchup"
+                  description="When disabled, this user cannot access timeshift or catchup endpoints, and their channels are not advertised as supporting catchup"
+                  {...form.getInputProps('catchup_enabled', {
+                    type: 'checkbox',
+                  })}
+                  key={form.key('catchup_enabled')}
+                />
               </Stack>
             </TabsPanel>
           )}

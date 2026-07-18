@@ -2,7 +2,7 @@ from django.http import HttpResponse, JsonResponse, Http404, HttpResponseForbidd
 import json
 from django.urls import reverse
 from apps.channels.models import Channel, ChannelProfile, ChannelGroup, Stream
-from apps.channels.utils import format_channel_number
+from apps.channels.utils import format_channel_number, is_catchup_enabled
 from django.db.models import Prefetch
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
@@ -691,7 +691,15 @@ def _xc_live_streams_setup(request, user, category_id):
     return channels, channel_num_map, _get_default_group_id, _logo_url_prefix, _logo_url_suffix
 
 
-def _xc_channel_entry(channel, channel_num_map, _get_default_group_id, _logo_url_prefix, _logo_url_suffix):
+def _xc_channel_entry(
+    channel,
+    channel_num_map,
+    _get_default_group_id,
+    _logo_url_prefix,
+    _logo_url_suffix,
+    *,
+    catchup_allowed=True,
+):
     channel_num_int = channel_num_map.get(channel.id)
     if channel_num_int is None:
         effective_num = channel.effective_channel_number
@@ -702,7 +710,7 @@ def _xc_channel_entry(channel, channel_num_map, _get_default_group_id, _logo_url
     effective_group = channel.effective_channel_group_obj
     group_id = effective_group.id if effective_group else _get_default_group_id()
 
-    if channel.is_catchup:
+    if catchup_allowed and channel.is_catchup:
         tv_archive = 1
         tv_archive_duration = channel.catchup_days
     else:
@@ -733,8 +741,12 @@ def _xc_channel_entry(channel, channel_num_map, _get_default_group_id, _logo_url
 def xc_get_live_streams(request, user, category_id=None):
     channels, channel_num_map, _get_default_group_id, _logo_url_prefix, _logo_url_suffix = \
         _xc_live_streams_setup(request, user, category_id)
+    catchup_allowed = is_catchup_enabled(user=user)
     return [
-        _xc_channel_entry(ch, channel_num_map, _get_default_group_id, _logo_url_prefix, _logo_url_suffix)
+        _xc_channel_entry(
+            ch, channel_num_map, _get_default_group_id, _logo_url_prefix, _logo_url_suffix,
+            catchup_allowed=catchup_allowed,
+        )
         for ch in channels
     ]
 
@@ -742,11 +754,15 @@ def xc_get_live_streams(request, user, category_id=None):
 def _xc_stream_live_streams(request, user, category_id=None):
     channels, channel_num_map, _get_default_group_id, _logo_url_prefix, _logo_url_suffix = \
         _xc_live_streams_setup(request, user, category_id)
+    catchup_allowed = is_catchup_enabled(user=user)
     yield "["
     sep = ""
     for channel in channels:
         yield sep + json.dumps(
-            _xc_channel_entry(channel, channel_num_map, _get_default_group_id, _logo_url_prefix, _logo_url_suffix)
+            _xc_channel_entry(
+                channel, channel_num_map, _get_default_group_id, _logo_url_prefix, _logo_url_suffix,
+                catchup_allowed=catchup_allowed,
+            )
         )
         sep = ","
     yield "]"
@@ -859,9 +875,12 @@ def xc_get_epg(request, user, short=False):
     now = django_timezone.now()
 
     # XC catch-up clients expect past programmes when prev_days was not set.
-    _channel_is_catchup = getattr(channel, "is_catchup", False)
+    # Only expand from channel.catchup_days while catch-up is allowed; when
+    # disabled, honor URL / user epg_prev_days alone (no forced lookback).
+    catchup_allowed = is_catchup_enabled(user=user)
+    channel_is_catchup = getattr(channel, "is_catchup", False)
     _channel_catchup_days = min(getattr(channel, "catchup_days", 0) or 0, 30)
-    if _channel_is_catchup and prev_days == 0:
+    if catchup_allowed and channel_is_catchup and prev_days == 0:
         prev_days = _channel_catchup_days
 
     lookback_cutoff = now - timedelta(days=prev_days)
@@ -909,7 +928,7 @@ def xc_get_epg(request, user, short=False):
 
     output = {"epg_listings": []}
 
-    if _channel_is_catchup:
+    if channel_is_catchup and catchup_allowed:
         archive_window = timedelta(days=_channel_catchup_days)
     else:
         archive_window = None

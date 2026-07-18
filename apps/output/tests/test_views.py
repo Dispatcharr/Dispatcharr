@@ -937,6 +937,168 @@ class XcLiveStreamsNullChannelNumberTests(TestCase):
         self.assertNotIn(by_id[unnumbered.id]["num"], {5})
 
 
+class XcLiveStreamsCatchupAdvertisingTests(TestCase):
+    """XC live streams omit tv_archive when catchup is disabled for the user."""
+
+    def setUp(self):
+        from django.core.cache import cache
+
+        cache.clear()
+        self.factory = RequestFactory()
+        self.user = User.objects.create_user(
+            username=f"xc-catchup-{uuid4().hex[:8]}",
+            password="pass",
+            user_level=10,
+            custom_properties={"xc_password": "xcpass"},
+        )
+        self.request = self.factory.get("/player_api.php")
+        self.group = ChannelGroup.objects.create(name=f"Group {uuid4().hex[:8]}")
+        self.channel = Channel.objects.create(
+            name="Catchup Ch",
+            channel_number=1,
+            channel_group=self.group,
+            user_level=0,
+            is_catchup=True,
+            catchup_days=7,
+        )
+
+    def tearDown(self):
+        # CoreSettings writes populate Redis; DB rollback does not clear it.
+        from django.core.cache import cache
+
+        cache.clear()
+
+    def test_tv_archive_advertised_when_catchup_enabled(self):
+        streams = xc_get_live_streams(self.request, self.user)
+        self.assertEqual(len(streams), 1)
+        self.assertEqual(streams[0]["tv_archive"], 1)
+        self.assertEqual(streams[0]["tv_archive_duration"], 7)
+
+    def test_tv_archive_cleared_when_user_disables_catchup(self):
+        self.user.custom_properties = {
+            **(self.user.custom_properties or {}),
+            "catchup_enabled": False,
+        }
+        self.user.save(update_fields=["custom_properties"])
+        streams = xc_get_live_streams(self.request, self.user)
+        self.assertEqual(len(streams), 1)
+        self.assertEqual(streams[0]["tv_archive"], 0)
+        self.assertEqual(streams[0]["tv_archive_duration"], 0)
+
+    def test_tv_archive_cleared_when_system_disables_catchup(self):
+        from core.models import SYSTEM_SETTINGS_KEY, CoreSettings
+
+        obj, _ = CoreSettings.objects.get_or_create(
+            key=SYSTEM_SETTINGS_KEY,
+            defaults={"name": "System Settings", "value": {}},
+        )
+        value = dict(obj.value or {})
+        value["catchup_enabled"] = False
+        obj.value = value
+        obj.save()
+        streams = xc_get_live_streams(self.request, self.user)
+        self.assertEqual(len(streams), 1)
+        self.assertEqual(streams[0]["tv_archive"], 0)
+        self.assertEqual(streams[0]["tv_archive_duration"], 0)
+
+
+class XcGetEpgCatchupGateTests(TestCase):
+    """Catch-up disable clears has_archive; lookback follows prev_days only."""
+
+    def setUp(self):
+        from django.core.cache import cache
+        from django.utils import timezone
+
+        from apps.epg.models import ProgramData
+
+        cache.clear()
+        self.factory = RequestFactory()
+        self.user = User.objects.create_user(
+            username=f"xc-epg-cu-{uuid4().hex[:8]}",
+            password="pass",
+            user_level=10,
+            custom_properties={"xc_password": "xcpass"},
+        )
+        self.group = ChannelGroup.objects.create(name=f"Group {uuid4().hex[:8]}")
+        self.epg = EPGData.objects.create(tvg_id=f"cu-{uuid4().hex[:8]}", name="CU EPG")
+        self.channel = Channel.objects.create(
+            name="Catchup EPG Ch",
+            channel_number=1,
+            channel_group=self.group,
+            user_level=0,
+            is_catchup=True,
+            catchup_days=7,
+            epg_data=self.epg,
+        )
+        now = timezone.now()
+        ProgramData.objects.create(
+            epg=self.epg,
+            start_time=now - timedelta(days=3),
+            end_time=now - timedelta(days=3) + timedelta(hours=1),
+            title="Past Show",
+        )
+        ProgramData.objects.create(
+            epg=self.epg,
+            start_time=now - timedelta(minutes=30),
+            end_time=now + timedelta(minutes=30),
+            title="Now Show",
+        )
+
+    def tearDown(self):
+        from django.core.cache import cache
+
+        cache.clear()
+
+    def _listings(self, *, extra_query=None):
+        import base64
+
+        from apps.output.views import xc_get_epg
+
+        params = {
+            "action": "get_simple_data_table",
+            "stream_id": str(self.channel.id),
+        }
+        if extra_query:
+            params.update(extra_query)
+        request = self.factory.get("/player_api.php", params)
+        listings = xc_get_epg(request, self.user)["epg_listings"]
+        for item in listings:
+            item["_title"] = base64.b64decode(item["title"]).decode()
+        return listings
+
+    def test_catchup_enabled_expands_lookback_from_catchup_days(self):
+        listings = self._listings()
+        titles = [item["_title"] for item in listings]
+        self.assertIn("Past Show", titles)
+        past = next(item for item in listings if item["_title"] == "Past Show")
+        self.assertEqual(past["has_archive"], 1)
+
+    def test_catchup_disabled_does_not_force_catchup_days_lookback(self):
+        """With no prev_days set, disable must not inject channel.catchup_days."""
+        self.user.custom_properties = {
+            **(self.user.custom_properties or {}),
+            "catchup_enabled": False,
+        }
+        self.user.save(update_fields=["custom_properties"])
+        listings = self._listings()
+        titles = [item["_title"] for item in listings]
+        self.assertNotIn("Past Show", titles)
+        self.assertIn("Now Show", titles)
+
+    def test_catchup_disabled_honors_explicit_prev_days(self):
+        self.user.custom_properties = {
+            **(self.user.custom_properties or {}),
+            "catchup_enabled": False,
+            "epg_prev_days": 7,
+        }
+        self.user.save(update_fields=["custom_properties"])
+        listings = self._listings()
+        titles = [item["_title"] for item in listings]
+        self.assertIn("Past Show", titles)
+        past = next(item for item in listings if item["_title"] == "Past Show")
+        self.assertEqual(past["has_archive"], 0)
+
+
 class XcXmltvNullChannelNumberTests(OutputEndpointTestMixin, TestCase):
     """XC XMLTV EPG must not crash when a visible channel has no channel number."""
 

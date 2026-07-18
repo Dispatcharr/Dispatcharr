@@ -16,10 +16,18 @@ class BaseConfig:
     BUFFERING_TIMEOUT = 15  # Seconds to wait for buffering before switching streams
     BUFFER_SPEED = 1 # What speed to condsider the stream buffering, 1x is normal speed, 2x is double speed, etc.
 
-    # Cache for proxy settings (class-level, shared across all instances)
+    # Cache for proxy settings (class-level, shared across all instances).
+    # Backed by CoreSettings Redis group cache; this local copy avoids Redis
+    # chatter inside the proxy hot path. Cleared when proxy_settings is saved.
     _proxy_settings_cache = None
     _proxy_settings_cache_time = 0
     _proxy_settings_cache_ttl = 10  # Cache for 10 seconds
+
+    @classmethod
+    def clear_proxy_settings_cache(cls):
+        """Drop process-local proxy settings (called on CoreSettings invalidate)."""
+        cls._proxy_settings_cache = None
+        cls._proxy_settings_cache_time = 0
 
     @classmethod
     def get_proxy_settings(cls):

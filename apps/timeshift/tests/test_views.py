@@ -5301,6 +5301,23 @@ class CatchupProxyTests(TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn(b"Missing start", response.content)
 
+    def test_catchup_disabled_returns_403(self):
+        request = self.factory.get(
+            f"/proxy/catchup/{self.channel_uuid}?start=2026-06-08T17:00:00Z",
+        )
+        force_authenticate(request, user=self.user)
+        channel = MagicMock(id=8, uuid=self.channel_uuid)
+        with patch.object(views, "network_access_allowed", return_value=True), \
+             patch.object(views, "Channel") as channel_cls, \
+             patch.object(views, "_user_can_access_channel", return_value=True), \
+             patch.object(views, "is_catchup_enabled", return_value=False), \
+             patch.object(views, "get_channel_catchup_streams") as catchup_mock:
+            channel_cls.objects.get.return_value = channel
+            response = views.catchup_proxy(request, self.channel_uuid)
+        self.assertEqual(response.status_code, 403)
+        self.assertIn(b"Catch-up is disabled", response.content)
+        catchup_mock.assert_not_called()
+
     def test_missing_session_id_redirects(self):
         request = self.factory.get(
             f"/proxy/catchup/{self.channel_uuid}?start=2026-06-08T17:00:00Z",

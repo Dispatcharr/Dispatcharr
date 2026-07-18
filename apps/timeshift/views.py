@@ -29,7 +29,7 @@ from drf_spectacular.utils import OpenApiParameter, extend_schema
 from apps.accounts.authentication import ApiKeyAuthentication, QueryParamJWTAuthentication
 from apps.accounts.models import User
 from apps.channels.models import Channel
-from apps.channels.utils import get_channel_catchup_streams
+from apps.channels.utils import get_channel_catchup_streams, is_catchup_enabled
 from apps.m3u.connection_pool import release_profile_slot, reserve_profile_slot
 from apps.m3u.models import M3UAccount, M3UAccountProfile
 from apps.m3u.tasks import get_transformed_credentials
@@ -254,7 +254,9 @@ def _timeshift_proxy_impl(
 def catchup_proxy(request, channel_id):
     """Native API catch-up playback for a channel."""
     if not network_access_allowed(request, "STREAMS"):
-        return JsonResponse({"error": "Forbidden"}, status=403)
+        return _finalize_timeshift_response(
+            JsonResponse({"error": "Forbidden"}, status=403)
+        )
 
     auth_user = (
         request.user
@@ -272,9 +274,11 @@ def catchup_proxy(request, channel_id):
         resolved = resolve_catchup_playback(session_id, channel_id)
         if resolved is None:
             if auth_user is None:
-                return JsonResponse(
-                    {"error": "Invalid or expired playback session"},
-                    status=401,
+                return _finalize_timeshift_response(
+                    JsonResponse(
+                        {"error": "Invalid or expired playback session"},
+                        status=401,
+                    )
                 )
         else:
             session_user, bound_start, bound_duration = resolved
@@ -286,7 +290,9 @@ def catchup_proxy(request, channel_id):
                 client_duration_hint = bound_duration
 
     if user is None:
-        return JsonResponse({"error": "Authentication required"}, status=401)
+        return _finalize_timeshift_response(
+            JsonResponse({"error": "Authentication required"}, status=401)
+        )
 
     try:
         channel = Channel.objects.get(uuid=channel_id)
@@ -315,6 +321,11 @@ def _serve_catchup(request, user, channel, timestamp, client_duration_hint=None)
     otherwise EPG is used, falling back to ``DEFAULT_DURATION_MINUTES``.
     A ``DURATION_BUFFER_MINUTES`` pad is applied either way for provider lag.
     """
+    if not is_catchup_enabled(user=user):
+        return _finalize_timeshift_response(
+            HttpResponseForbidden("Catch-up is disabled")
+        )
+
     if parse_catchup_timestamp(timestamp) is None:
         return _finalize_timeshift_response(HttpResponseBadRequest("Invalid timestamp"))
 

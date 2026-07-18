@@ -171,6 +171,20 @@ class CatchupSessionApiTests(TestCase):
         )
         self.assertEqual(response.status_code, 400)
 
+    @patch("apps.timeshift.api_views.is_catchup_enabled", return_value=False)
+    @patch("apps.timeshift.api_views.network_access_allowed", return_value=True)
+    def test_post_rejects_when_catchup_disabled(self, _net, _enabled):
+        response = self.client.post(
+            self._create_url(),
+            {
+                "channel_uuid": str(self.channel.uuid),
+                "start": "2026-06-08T17:00:00Z",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.json()["error"], "Catch-up is disabled")
+
     @patch.object(sessions.RedisClient, "get_client")
     @patch("apps.timeshift.api_views.network_access_allowed", return_value=True)
     def test_delete_revokes_own_session(self, _net, redis_mock):

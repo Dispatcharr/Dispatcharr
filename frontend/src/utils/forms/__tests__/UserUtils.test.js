@@ -189,6 +189,7 @@ describe('UserUtils', () => {
       expect(result.output_format).toBe('');
       expect(result.output_profile).toBe('');
       expect(result.hide_adult_content).toBe(false);
+      expect(result.catchup_enabled).toBe(true);
       expect(result.epg_days).toBe(0);
       expect(result.epg_prev_days).toBe(0);
     });
@@ -200,6 +201,7 @@ describe('UserUtils', () => {
           output_format: 'ts',
           output_profile: 5,
           hide_adult_content: true,
+          catchup_enabled: false,
           epg_days: 7,
           epg_prev_days: 2,
           allowed_networks: {
@@ -213,6 +215,7 @@ describe('UserUtils', () => {
       expect(result.output_format).toBe('ts');
       expect(result.output_profile).toBe('5');
       expect(result.hide_adult_content).toBe(true);
+      expect(result.catchup_enabled).toBe(false);
       expect(result.epg_days).toBe(7);
       expect(result.epg_prev_days).toBe(2);
     });
@@ -246,6 +249,7 @@ describe('UserUtils', () => {
       output_format: 'ts',
       output_profile: '3',
       hide_adult_content: true,
+      catchup_enabled: false,
       epg_days: 7,
       epg_prev_days: 2,
       allowed_ips: ['192.168.1.0/24'],
@@ -283,6 +287,20 @@ describe('UserUtils', () => {
       const result = formValuesToPayload(makeValues(), null);
       expect(result.hide_adult_content).toBeUndefined();
       expect(result.custom_properties.hide_adult_content).toBe(true);
+    });
+
+    it('moves catchup_enabled into custom_properties', () => {
+      const result = formValuesToPayload(makeValues(), null);
+      expect(result.catchup_enabled).toBeUndefined();
+      expect(result.custom_properties.catchup_enabled).toBe(false);
+    });
+
+    it('defaults catchup_enabled to true when omitted', () => {
+      const result = formValuesToPayload(
+        makeValues({ catchup_enabled: undefined }),
+        null
+      );
+      expect(result.custom_properties.catchup_enabled).toBe(true);
     });
 
     it('moves epg_days and epg_prev_days into custom_properties', () => {
@@ -362,6 +380,7 @@ describe('UserUtils', () => {
         output_profile: '',
         channel_profiles: [],
         hide_adult_content: false,
+        catchup_enabled: true,
         epg_days: 0,
         epg_prev_days: 0,
         allowed_ips: [],

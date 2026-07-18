@@ -119,6 +119,56 @@ describe('SettingsUtils', () => {
       });
     });
 
+    it('should persist catchup_enabled false in system_settings', async () => {
+      const settings = {
+        system_settings: {
+          id: 3,
+          key: 'system_settings',
+          value: { catchup_enabled: true },
+        },
+      };
+      const changedSettings = {
+        catchup_enabled: false,
+      };
+
+      API.updateSetting.mockResolvedValue({});
+
+      await SettingsUtils.saveChangedSettings(settings, changedSettings);
+
+      expect(API.updateSetting).toHaveBeenCalledWith({
+        id: 3,
+        key: 'system_settings',
+        value: {
+          catchup_enabled: false,
+        },
+      });
+    });
+
+    it('should coerce string false for boolean settings without enabling', async () => {
+      const settings = {
+        system_settings: {
+          id: 3,
+          key: 'system_settings',
+          value: {},
+        },
+      };
+      const changedSettings = {
+        catchup_enabled: 'false',
+      };
+
+      API.updateSetting.mockResolvedValue({});
+
+      await SettingsUtils.saveChangedSettings(settings, changedSettings);
+
+      expect(API.updateSetting).toHaveBeenCalledWith({
+        id: 3,
+        key: 'system_settings',
+        value: {
+          catchup_enabled: false,
+        },
+      });
+    });
+
     it('should convert ID fields to integers', async () => {
       const settings = {
         stream_settings: {
@@ -299,6 +349,7 @@ describe('SettingsUtils', () => {
       expect(result.m3u_hash_key).toEqual(['channel_name', 'channel_number']);
       expect(result.preferred_region).toBe('US');
       expect(result.auto_import_mapped_files).toBe(true);
+      expect(result.catchup_enabled).toBe(true);
 
       // Check DVR settings
       expect(result.tv_template).toBe('/media/tv/{show}/{season}/');

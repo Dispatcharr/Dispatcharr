@@ -89,6 +89,24 @@ def resolve_xc_epg_prev_days(request, user, *, auto_detect_fallback=True):
     return 0
 
 
+def is_catchup_enabled(*, user=None):
+    """Return whether catch-up / timeshift is allowed.
+
+    When a *user* is supplied, their ``custom_properties.catchup_enabled``
+    (default True) is checked first (no DB). System
+    ``system_settings.catchup_enabled`` (default True, Redis-cached) can
+    disable catch-up for everyone. Both flags are JSON booleans.
+    """
+    from core.models import CoreSettings
+
+    if user is not None:
+        props = getattr(user, "custom_properties", None) or {}
+        if props.get("catchup_enabled") is False:
+            return False
+
+    return CoreSettings.get_catchup_enabled()
+
+
 def get_channel_catchup_streams(channel):
     """Active catch-up streams for a channel, in ``channelstream`` order.
 

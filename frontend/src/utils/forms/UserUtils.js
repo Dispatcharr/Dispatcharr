@@ -50,6 +50,7 @@ export const userToFormValues = (user) => {
       ? `${customProps.output_profile}`
       : '',
     hide_adult_content: customProps.hide_adult_content || false,
+    catchup_enabled: customProps.catchup_enabled !== false,
     epg_days: customProps.epg_days || 0,
     epg_prev_days: customProps.epg_prev_days || 0,
     allowed_ips: [
@@ -79,6 +80,9 @@ export const formValuesToPayload = (values, existingUser) => {
 
   customProps.hide_adult_content = payload.hide_adult_content || false;
   delete payload.hide_adult_content;
+
+  customProps.catchup_enabled = payload.catchup_enabled !== false;
+  delete payload.catchup_enabled;
 
   customProps.epg_days = payload.epg_days || 0;
   delete payload.epg_days;
@@ -119,6 +123,7 @@ export const getFormInitialValues = () => {
     output_profile: '',
     channel_profiles: [],
     hide_adult_content: false,
+    catchup_enabled: true,
     epg_days: 0,
     epg_prev_days: 0,
     allowed_ips: [],

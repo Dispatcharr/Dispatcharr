@@ -8,7 +8,7 @@ from rest_framework.views import APIView
 
 from apps.accounts.permissions import IsStandardUser
 from apps.channels.models import Channel
-from apps.channels.utils import get_channel_catchup_streams
+from apps.channels.utils import get_channel_catchup_streams, is_catchup_enabled
 from core.utils import RedisClient
 from dispatcharr.utils import network_access_allowed
 
@@ -112,6 +112,12 @@ class CatchupSessionCreateAPIView(APIView):
         user = request.user
         if not network_access_allowed(request, "STREAMS", user):
             return Response({"error": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
+
+        if not is_catchup_enabled(user=user):
+            return Response(
+                {"error": "Catch-up is disabled"},
+                status=status.HTTP_403_FORBIDDEN,
+            )
 
         body = CatchupSessionCreateSerializer(data=request.data)
         body.is_valid(raise_exception=True)

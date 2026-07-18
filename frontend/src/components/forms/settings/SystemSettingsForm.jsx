@@ -10,12 +10,10 @@ import {
   Button,
   Divider,
   Flex,
-  Group,
   NumberInput,
   Select,
   Stack,
   Switch,
-  Text,
 } from '@mantine/core';
 import ConnectionSecurityPanel from './ConnectionSecurityPanel.jsx';
 import { useForm } from '@mantine/form';
@@ -95,39 +93,28 @@ const SystemSettingsForm = React.memo(({ active }) => {
           value: `${r.value}`,
         }))}
       />
-      <Group justify="space-between" pt={5}>
-        <div>
-          <Text size="sm" fw={500}>
-            Auto-Import Mapped Files
-          </Text>
-          <Text size="xs" c="dimmed">
-            Automatically import media files when they are mapped to a channel.
-          </Text>
-        </div>
-        <Switch
-          {...form.getInputProps('auto_import_mapped_files', {
-            type: 'checkbox',
-          })}
-          id="auto_import_mapped_files"
-        />
-      </Group>
+      <Switch
+        label="Auto-Import Mapped Files"
+        description="Automatically import media files when they are mapped to a channel."
+        {...form.getInputProps('auto_import_mapped_files', {
+          type: 'checkbox',
+        })}
+        id="auto_import_mapped_files"
+      />
       {!ipLookupEnvDisabled && (
-        <Group justify="space-between" pt={5}>
-          <div>
-            <Text size="sm" fw={500}>
-              Enable IP Lookup
-            </Text>
-            <Text size="xs" c="dimmed">
-              Fetch and display the instance's public IP and country flag in the
-              sidebar.
-            </Text>
-          </div>
-          <Switch
-            {...form.getInputProps('enable_ip_lookup', { type: 'checkbox' })}
-            id="enable_ip_lookup"
-          />
-        </Group>
+        <Switch
+          label="Enable IP Lookup"
+          description="Fetch and display the instance's public IP and country flag in the sidebar."
+          {...form.getInputProps('enable_ip_lookup', { type: 'checkbox' })}
+          id="enable_ip_lookup"
+        />
       )}
+      <Switch
+        label="Enable Catchup"
+        description="When disabled, timeshift and catchup endpoints are blocked for all users, and channels are not advertised as supporting catchup to clients. Catchup capability is still shown in the web UI."
+        {...form.getInputProps('catchup_enabled', { type: 'checkbox' })}
+        id="catchup_enabled"
+      />
       {isModular && (
         <>
           <Divider my="md" label="Connection Security" labelPosition="left" />

@@ -1,11 +1,68 @@
 from unittest.mock import patch
 
+from django.core.cache import cache
 from django.test import RequestFactory, TestCase
 
 from apps.accounts.models import User
 from apps.channels.models import Channel, ChannelStream, Stream
-from apps.channels.utils import resolve_xc_epg_prev_days
+from apps.channels.utils import is_catchup_enabled, resolve_xc_epg_prev_days
 from apps.m3u.models import M3UAccount
+from core.models import SYSTEM_SETTINGS_KEY, CoreSettings
+
+
+class IsCatchupEnabledTests(TestCase):
+    def setUp(self):
+        cache.clear()
+        self.user = User(username="catchup-gate", custom_properties={})
+        # Drop any leftover catchup_enabled so default-on tests see a clean slate.
+        obj = CoreSettings.objects.filter(key=SYSTEM_SETTINGS_KEY).first()
+        if obj is not None:
+            value = dict(obj.value or {})
+            if "catchup_enabled" in value:
+                value.pop("catchup_enabled", None)
+                obj.value = value
+                obj.save()
+
+    def tearDown(self):
+        # CoreSettings writes populate Redis; DB rollback does not clear it.
+        cache.clear()
+
+    def _set_system_catchup(self, enabled):
+        obj, _ = CoreSettings.objects.get_or_create(
+            key=SYSTEM_SETTINGS_KEY,
+            defaults={"name": "System Settings", "value": {}},
+        )
+        value = dict(obj.value or {})
+        value["catchup_enabled"] = enabled
+        obj.value = value
+        obj.save()
+
+    def test_defaults_to_enabled(self):
+        self.assertTrue(is_catchup_enabled())
+        self.assertTrue(is_catchup_enabled(user=self.user))
+
+    def test_system_disable_blocks_everyone(self):
+        self._set_system_catchup(False)
+        self.assertFalse(is_catchup_enabled())
+        self.assertFalse(is_catchup_enabled(user=self.user))
+
+    def test_user_disable_only_affects_that_user(self):
+        self._set_system_catchup(True)
+        self.user.custom_properties = {"catchup_enabled": False}
+        other = User(username="other", custom_properties={})
+        self.assertFalse(is_catchup_enabled(user=self.user))
+        self.assertTrue(is_catchup_enabled(user=other))
+
+    def test_user_disable_skips_system_settings_lookup(self):
+        self.user.custom_properties = {"catchup_enabled": False}
+        with patch.object(CoreSettings, "get_catchup_enabled") as system_mock:
+            self.assertFalse(is_catchup_enabled(user=self.user))
+            system_mock.assert_not_called()
+
+    def test_system_disable_overrides_user_enable(self):
+        self._set_system_catchup(False)
+        self.user.custom_properties = {"catchup_enabled": True}
+        self.assertFalse(is_catchup_enabled(user=self.user))
 
 
 class ResolveXcEpgPrevDaysTests(TestCase):
@@ -43,6 +100,14 @@ class ResolveXcEpgPrevDaysTests(TestCase):
         request = self.factory.get("/xmltv.php")
         self.assertEqual(resolve_xc_epg_prev_days(request, self.user), 3)
         mock_compute.assert_not_called()
+
+    @patch("apps.channels.utils.compute_provider_archive_days_capped", return_value=14)
+    def test_auto_detect_still_runs_when_catchup_disabled(self, mock_compute):
+        """Catchup disable must not suppress historical EPG lookback."""
+        self.user.custom_properties = {"catchup_enabled": False}
+        request = self.factory.get("/xmltv.php")
+        self.assertEqual(resolve_xc_epg_prev_days(request, self.user), 14)
+        mock_compute.assert_called_once()
 
 
 class CatchupRollupActiveAccountTests(TestCase):
