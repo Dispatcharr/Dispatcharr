@@ -102,7 +102,19 @@ vi.mock('../Logo.jsx', () => ({
 
 // ── Utility mocks ─────────────────────────────────────────────────────────────
 vi.mock('../../../utils/forms/LiveGroupFilterUtils.js', () => ({
-  abortTimers: vi.fn(),
+  // Real cleanup so debounced regex-preview timers do not leak across tests.
+  abortTimers: (timerRef, abortRef) => {
+    Object.values(timerRef.current).forEach((t) => clearTimeout(t));
+    timerRef.current = {};
+    Object.values(abortRef.current).forEach((c) => {
+      try {
+        c.abort();
+      } catch {
+        // ignore
+      }
+    });
+    abortRef.current = {};
+  },
   computeAutoSyncStart: vi.fn(() => 101),
   getChannelsInRange: vi.fn().mockResolvedValue({ occupants: [] }),
   getEPGs: vi.fn().mockResolvedValue([]),
