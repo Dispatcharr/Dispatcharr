@@ -26,7 +26,9 @@ logger = get_logger()
 PROFILE_STATE_ACTIVE = "active"
 PROFILE_STATE_STOPPED = "stopped"
 
+# Orphan backstop TTL; refreshed while the transcode is alive, deleted on stop.
 PROFILE_KEY_TTL = 3600
+PROFILE_TTL_REFRESH_INTERVAL = 60
 
 
 class OutputProfileManager:
@@ -56,6 +58,7 @@ class OutputProfileManager:
         self._stderr_thread = None
         self._redis = RedisClient.get_client()
         self.output_buffer = None  # assigned in start()
+        self._last_ttl_refresh = 0.0
 
     # ------------------------------------------------------------------
     # Public API
@@ -232,6 +235,7 @@ class OutputProfileManager:
 
         try:
             while self.running:
+                self._refresh_redis_ttls()
                 ready, _, _ = select.select([self._process.stdout], [], [], 1.0)
                 if not ready:
                     if self._process.poll() is not None:
@@ -328,6 +332,29 @@ class OutputProfileManager:
                 RedisKeys.output_state(self.channel_id, f"mpegts:p{self.profile_id}"),
                 PROFILE_KEY_TTL,
                 state,
+            )
+
+    def _refresh_redis_ttls(self):
+        """Extend orphan-backstop TTLs while this transcode is alive.
+
+        Rate-limited so long sessions keep owner/state without per-chunk Redis chatter.
+        """
+        now = time.time()
+        if now - self._last_ttl_refresh < PROFILE_TTL_REFRESH_INTERVAL:
+            return
+        self._last_ttl_refresh = now
+        if not self._redis:
+            return
+        try:
+            fmt = f"mpegts:p{self.profile_id}"
+            pipe = self._redis.pipeline()
+            pipe.expire(RedisKeys.output_owner(self.channel_id, fmt), PROFILE_KEY_TTL)
+            pipe.expire(RedisKeys.output_state(self.channel_id, fmt), PROFILE_KEY_TTL)
+            pipe.execute()
+        except Exception as e:
+            logger.debug(
+                f"[Profile:{self.profile_id}:{self.channel_id[:8]}] "
+                f"TTL refresh failed: {e}"
             )
 
     def _cleanup_redis(self):
