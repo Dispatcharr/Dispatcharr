@@ -59,6 +59,48 @@ def _channel_stopping_response():
     return response
 
 
+def _channel_setup_needed(proxy_server, channel_id):
+    """
+    Decide whether this worker still needs to run full channel setup.
+
+    Returns (needs_setup, state, wait_for_init).
+    """
+    state = None
+    if proxy_server.redis_client:
+        metadata = proxy_server.redis_client.hgetall(RedisKeys.channel_metadata(channel_id))
+        if metadata:
+            state = metadata.get(ChannelMetadataField.STATE)
+            if state in (
+                ChannelState.ACTIVE,
+                ChannelState.WAITING_FOR_CLIENTS,
+                ChannelState.BUFFERING,
+                ChannelState.INITIALIZING,
+                ChannelState.CONNECTING,
+            ):
+                wait_for_init = state in (
+                    ChannelState.INITIALIZING,
+                    ChannelState.CONNECTING,
+                )
+                return False, state, wait_for_init
+            if state == ChannelState.STOPPING:
+                return False, state, False
+            if state in (ChannelState.ERROR, ChannelState.STOPPED):
+                return True, state, False
+
+            # Unknown/empty state: trust a live owner worker, otherwise re-setup
+            owner = metadata.get(ChannelMetadataField.OWNER)
+            if owner:
+                owner_heartbeat_key = f"live:worker:{owner}:heartbeat"
+                if proxy_server.redis_client.exists(owner_heartbeat_key):
+                    return False, state, False
+                return True, state, False
+
+    if proxy_server.check_if_channel_exists(channel_id):
+        return False, state, False
+
+    return True, state, False
+
+
 def _drop_pre_registered_client(proxy_server, channel_id, client_id):
     """Undo an early add_client() when setup aborts before streaming starts."""
     mgr = proxy_server.client_managers.get(channel_id)
@@ -165,80 +207,33 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
             return _channel_stopping_response()
 
         # Check if we need to reinitialize the channel
-        needs_initialization = True
-        channel_state = None
-        channel_initializing = False
-
-        # Get current channel state from Redis if available
-        if proxy_server.redis_client:
-            metadata_key = RedisKeys.channel_metadata(channel_id)
-            if proxy_server.redis_client.exists(metadata_key):
-                metadata = proxy_server.redis_client.hgetall(metadata_key)
-                state_field = ChannelMetadataField.STATE
-                if state_field in metadata:
-                    channel_state = metadata[state_field]
-
-                    # Active/running states - channel is operational, don't reinitialize
-                    if channel_state in [
-                        ChannelState.ACTIVE,
-                        ChannelState.WAITING_FOR_CLIENTS,
-                        ChannelState.BUFFERING,
-                        ChannelState.INITIALIZING,
-                        ChannelState.CONNECTING,
-                    ]:
-                        needs_initialization = False
-                        logger.debug(
-                            f"[{client_id}] Channel {channel_id} in state {channel_state}, skipping initialization"
-                        )
-
-                        # Special handling for initializing/connecting states
-                        if channel_state in [
-                            ChannelState.INITIALIZING,
-                            ChannelState.CONNECTING,
-                        ]:
-                            channel_initializing = True
-                            logger.debug(
-                                f"[{client_id}] Channel {channel_id} is still initializing, client will wait"
-                            )
-                    elif channel_state == ChannelState.STOPPING:
-                        logger.info(
-                            f"[{client_id}] Channel {channel_id} is stopping, rejecting request"
-                        )
-                        return _channel_stopping_response()
-                    # Terminal states - channel needs cleanup before reinitialization
-                    elif channel_state in [
-                        ChannelState.ERROR,
-                        ChannelState.STOPPED,
-                    ]:
-                        needs_initialization = True
-                        logger.info(
-                            f"[{client_id}] Channel {channel_id} in terminal state {channel_state}, will reinitialize"
-                        )
-                    # Unknown/empty state - check if owner is alive
-                    else:
-                        owner_field = ChannelMetadataField.OWNER
-                        if owner_field in metadata:
-                            owner = metadata[owner_field]
-                            owner_heartbeat_key = f"live:worker:{owner}:heartbeat"
-                            if proxy_server.redis_client.exists(owner_heartbeat_key):
-                                # Owner is still active with unknown state - don't reinitialize
-                                needs_initialization = False
-                                logger.debug(
-                                    f"[{client_id}] Channel {channel_id} has active owner {owner}, skipping init"
-                                )
-                            else:
-                                # Owner dead - needs reinitialization
-                                needs_initialization = True
-                                logger.warning(
-                                    f"[{client_id}] Channel {channel_id} owner {owner} is dead, will reinitialize"
-                                )
+        needs_initialization, channel_state, channel_initializing = _channel_setup_needed(
+            proxy_server, channel_id
+        )
+        if channel_state == ChannelState.STOPPING:
+            logger.info(
+                f"[{client_id}] Channel {channel_id} is stopping, rejecting request"
+            )
+            return _channel_stopping_response()
+        if channel_initializing:
+            logger.debug(
+                f"[{client_id}] Channel {channel_id} is still initializing, client will wait"
+            )
+        elif not needs_initialization:
+            logger.debug(
+                f"[{client_id}] Channel {channel_id} in state {channel_state}, skipping initialization"
+            )
+        elif channel_state in (ChannelState.ERROR, ChannelState.STOPPED):
+            logger.info(
+                f"[{client_id}] Channel {channel_id} in terminal state {channel_state}, will reinitialize"
+            )
 
         resolved_output_profile = None
         resolved_output_format = None
         output_options_resolved = False
 
         # Start initialization if needed
-        if needs_initialization or not proxy_server.check_if_channel_exists(channel_id):
+        if needs_initialization:
             if ChannelService.is_channel_unavailable_for_new_clients(channel_id):
                 logger.info(
                     f"[{client_id}] Channel {channel_id} became unavailable before init, rejecting"
@@ -257,281 +252,330 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
                 )
                 ChannelService.stop_channel(channel_id)
 
-            # Use fixed retry interval and timeout
-            retry_timeout = 3  # 3 seconds total timeout
-            retry_interval = 0.1  # 100ms between attempts
-            wait_start_time = time.time()
-
-            stream_url = None
-            stream_user_agent = None
-            transcode = False
-            profile_value = None
-            slot_reserved = False
-            error_reason = None
-            attempt = 0
-            should_retry = True
-
-            # Try to get a stream with fixed interval retries
-            while should_retry and time.time() - wait_start_time < retry_timeout:
-                attempt += 1
-                (
-                    stream_url,
-                    stream_user_agent,
-                    transcode,
-                    profile_value,
-                    slot_reserved,
-                    error_reason,
-                ) = generate_stream_url(channel_id)
-
-                if stream_url is not None:
+            perform_setup = False
+            owned_for_init = False
+            init_lock = proxy_server._get_channel_init_lock(channel_id)
+            init_lock.acquire()
+            try:
+                needs_setup, channel_state, wait_for_init = _channel_setup_needed(
+                    proxy_server, channel_id
+                )
+                if channel_state == ChannelState.STOPPING or (
+                    ChannelService.is_channel_unavailable_for_new_clients(channel_id)
+                ):
                     logger.info(
-                        f"[{client_id}] Successfully obtained stream for channel {channel_id} after {attempt} attempts"
+                        f"[{client_id}] Channel {channel_id} unavailable after init lock, rejecting"
                     )
-                    break
+                    return _channel_stopping_response()
 
-                # On first failure, check if the error is retryable
-                if attempt == 1:
-                    if error_reason and "maximum connection limits" not in error_reason:
-                        logger.warning(
-                            f"[{client_id}] Can't retry - error not related to connection limits: {error_reason}"
-                        )
-                        should_retry = False
-                        break
-
-                # Check if we have time remaining for another sleep cycle
-                elapsed_time = time.time() - wait_start_time
-                remaining_time = retry_timeout - elapsed_time
-
-                # If we don't have enough time for the next sleep interval, break
-                # but only after we've already made an attempt (the while condition will try one more time)
-                if remaining_time <= retry_interval:
+                if not needs_setup:
+                    if wait_for_init:
+                        channel_initializing = True
                     logger.info(
-                        f"[{client_id}] Insufficient time ({remaining_time:.1f}s) for another sleep cycle, will make one final attempt"
+                        f"[{client_id}] Channel {channel_id} already set up after init lock "
+                        f"(state={channel_state}), attaching as follower"
                     )
-                    break
-
-                # Wait before retrying
-                logger.info(
-                    f"[{client_id}] Waiting {retry_interval*1000:.0f}ms for a connection to become available (attempt {attempt}, {remaining_time:.1f}s remaining)"
-                )
-                gevent.sleep(retry_interval)
-                retry_interval += 0.025  # Increase wait time by 25ms for next attempt
-
-            # Make one final attempt if we still don't have a stream, should retry, and haven't exceeded timeout
-            if stream_url is None and should_retry and time.time() - wait_start_time < retry_timeout:
-                attempt += 1
-                logger.info(
-                    f"[{client_id}] Making final attempt {attempt} at timeout boundary"
-                )
-                (
-                    stream_url,
-                    stream_user_agent,
-                    transcode,
-                    profile_value,
-                    slot_reserved,
-                    error_reason,
-                ) = generate_stream_url(channel_id)
-                if stream_url is not None:
+                elif channel_id in proxy_server._channels_setting_up:
+                    channel_initializing = True
                     logger.info(
-                        f"[{client_id}] Successfully obtained stream on final attempt for channel {channel_id}"
+                        f"[{client_id}] Channel {channel_id} setup already in progress on this "
+                        f"worker, skipping stream reservation and attaching as follower"
                     )
-
-            if stream_url is None:
-                if slot_reserved and not channel.release_stream():
-                    logger.debug(f"[{client_id}] release_stream found no keys during failed init cleanup")
-
-                # Get the specific error message if available
-                wait_duration = f"{int(time.time() - wait_start_time)}s"
-                error_msg = (
-                    error_reason
-                    if error_reason
-                    else "No available streams for this channel"
-                )
-                logger.info(
-                    f"[{client_id}] Failed to obtain stream after {attempt} attempts over {wait_duration}: {error_msg}"
-                )
-                return JsonResponse(
-                    {"error": error_msg, "waited": wait_duration}, status=503
-                )  # 503 Service Unavailable is appropriate here
-
-            # generate_stream_url() called get_stream() which allocated a connection
-            # slot (INCR'd profile_connections) - track this for cleanup on error
-            if needs_initialization and slot_reserved:
-                connection_allocated = True
-
-            # Read stream assignment from Redis (already set by generate_stream_url → get_stream).
-            # Avoid calling get_stream() again — (INCR profile counter)
-            # It could double-allocate if the keys were cleared by a concurrent release.
-            stream_id = None
-            m3u_profile_id = None
-            if proxy_server.redis_client:
-                stream_id_bytes = proxy_server.redis_client.get(f"channel_stream:{channel.id}")
-                if stream_id_bytes:
-                    stream_id = int(stream_id_bytes)
-                    profile_id_bytes = proxy_server.redis_client.get(f"stream_profile:{stream_id}")
-                    if profile_id_bytes:
-                        m3u_profile_id = int(profile_id_bytes)
-            logger.info(
-                f"Channel {channel_id} using stream ID {stream_id}, m3u account profile ID {m3u_profile_id}"
-            )
-
-            # Generate transcode command if needed
-            stream_profile = channel.get_stream_profile()
-            if stream_profile.is_redirect():
-                # Validate the stream URL before redirecting
-                from .url_utils import (
-                    validate_stream_url,
-                    get_alternate_streams,
-                    get_stream_info_for_switch,
-                )
-
-                # Try initial URL
-                logger.info(f"[{client_id}] Validating redirect URL: {stream_url}")
-                is_valid, final_url, status_code, message = validate_stream_url(
-                    stream_url, user_agent=stream_user_agent, timeout=(5, 5)
-                )
-
-                # If first URL doesn't validate, try alternates
-                if not is_valid:
-                    logger.warning(
-                        f"[{client_id}] Primary stream URL failed validation: {message}"
+                elif not proxy_server.try_acquire_ownership(channel_id):
+                    channel_initializing = True
+                    logger.info(
+                        f"[{client_id}] Channel {channel_id} owned by another worker, "
+                        f"skipping stream reservation and attaching as follower"
                     )
+                else:
+                    owned_for_init = True
+                    proxy_server._channels_setting_up.add(channel_id)
+                    perform_setup = True
+            finally:
+                proxy_server._finish_channel_init_lock(channel_id, init_lock)
 
-                    # Track tried streams to avoid loops
-                    tried_streams = {stream_id}
+            if perform_setup:
+                try:
+                    # Use fixed retry interval and timeout
+                    retry_timeout = 3  # 3 seconds total timeout
+                    retry_interval = 0.1  # 100ms between attempts
+                    wait_start_time = time.time()
 
-                    # Get alternate streams
-                    alternates = get_alternate_streams(channel_id, stream_id)
+                    stream_url = None
+                    stream_user_agent = None
+                    transcode = False
+                    profile_value = None
+                    slot_reserved = False
+                    error_reason = None
+                    attempt = 0
+                    should_retry = True
 
-                    # Try each alternate until one works
-                    for alt in alternates:
-                        if alt["stream_id"] in tried_streams:
-                            continue
+                    # Try to get a stream with fixed interval retries
+                    while should_retry and time.time() - wait_start_time < retry_timeout:
+                        attempt += 1
+                        (
+                            stream_url,
+                            stream_user_agent,
+                            transcode,
+                            profile_value,
+                            slot_reserved,
+                            error_reason,
+                        ) = generate_stream_url(channel_id)
 
-                        tried_streams.add(alt["stream_id"])
-
-                        # Get stream info
-                        alt_info = get_stream_info_for_switch(
-                            channel_id, alt["stream_id"]
-                        )
-                        if "error" in alt_info:
-                            logger.warning(
-                                f"[{client_id}] Error getting alternate stream info: {alt_info['error']}"
-                            )
-                            continue
-
-                        # Validate the alternate URL
-                        logger.info(
-                            f"[{client_id}] Trying alternate stream #{alt['stream_id']}: {alt_info['url']}"
-                        )
-                        is_valid, final_url, status_code, message = validate_stream_url(
-                            alt_info["url"],
-                            user_agent=alt_info["user_agent"],
-                            timeout=(5, 5),
-                        )
-
-                        if is_valid:
+                        if stream_url is not None:
                             logger.info(
-                                f"[{client_id}] Alternate stream #{alt['stream_id']} validated successfully"
+                                f"[{client_id}] Successfully obtained stream for channel {channel_id} after {attempt} attempts"
                             )
                             break
-                        else:
-                            logger.warning(
-                                f"[{client_id}] Alternate stream #{alt['stream_id']} failed validation: {message}"
+
+                        # On first failure, check if the error is retryable
+                        if attempt == 1:
+                            if error_reason and "maximum connection limits" not in error_reason:
+                                logger.warning(
+                                    f"[{client_id}] Can't retry - error not related to connection limits: {error_reason}"
+                                )
+                                should_retry = False
+                                break
+
+                        # Check if we have time remaining for another sleep cycle
+                        elapsed_time = time.time() - wait_start_time
+                        remaining_time = retry_timeout - elapsed_time
+
+                        # If we don't have enough time for the next sleep interval, break
+                        # but only after we've already made an attempt (the while condition will try one more time)
+                        if remaining_time <= retry_interval:
+                            logger.info(
+                                f"[{client_id}] Insufficient time ({remaining_time:.1f}s) for another sleep cycle, will make one final attempt"
                             )
-                # Release stream lock before redirecting only if we reserved a slot
-                if connection_allocated and not channel.release_stream():
-                    logger.warning(f"[{client_id}] Failed to release stream before redirect")
-                connection_allocated = False
-                # Final decision based on validation results
-                if is_valid:
+                            break
+
+                        # Wait before retrying
+                        logger.info(
+                            f"[{client_id}] Waiting {retry_interval*1000:.0f}ms for a connection to become available (attempt {attempt}, {remaining_time:.1f}s remaining)"
+                        )
+                        gevent.sleep(retry_interval)
+                        retry_interval += 0.025  # Increase wait time by 25ms for next attempt
+
+                    # Make one final attempt if we still don't have a stream, should retry, and haven't exceeded timeout
+                    if stream_url is None and should_retry and time.time() - wait_start_time < retry_timeout:
+                        attempt += 1
+                        logger.info(
+                            f"[{client_id}] Making final attempt {attempt} at timeout boundary"
+                        )
+                        (
+                            stream_url,
+                            stream_user_agent,
+                            transcode,
+                            profile_value,
+                            slot_reserved,
+                            error_reason,
+                        ) = generate_stream_url(channel_id)
+                        if stream_url is not None:
+                            logger.info(
+                                f"[{client_id}] Successfully obtained stream on final attempt for channel {channel_id}"
+                            )
+
+                    if stream_url is None:
+                        if slot_reserved and not channel.release_stream():
+                            logger.debug(f"[{client_id}] release_stream found no keys during failed init cleanup")
+
+                        # Get the specific error message if available
+                        wait_duration = f"{int(time.time() - wait_start_time)}s"
+                        error_msg = (
+                            error_reason
+                            if error_reason
+                            else "No available streams for this channel"
+                        )
+                        logger.info(
+                            f"[{client_id}] Failed to obtain stream after {attempt} attempts over {wait_duration}: {error_msg}"
+                        )
+                        return JsonResponse(
+                            {"error": error_msg, "waited": wait_duration}, status=503
+                        )  # 503 Service Unavailable is appropriate here
+
+                    # generate_stream_url() called get_stream() which allocated a connection
+                    # slot (INCR'd profile_connections) - track this for cleanup on error
+                    if needs_initialization and slot_reserved:
+                        connection_allocated = True
+
+                    # Read stream assignment from Redis (already set by generate_stream_url → get_stream).
+                    # Avoid calling get_stream() again (INCR profile counter)
+                    # It could double-allocate if the keys were cleared by a concurrent release.
+                    stream_id = None
+                    m3u_profile_id = None
+                    if proxy_server.redis_client:
+                        stream_id_bytes = proxy_server.redis_client.get(f"channel_stream:{channel.id}")
+                        if stream_id_bytes:
+                            stream_id = int(stream_id_bytes)
+                            profile_id_bytes = proxy_server.redis_client.get(f"stream_profile:{stream_id}")
+                            if profile_id_bytes:
+                                m3u_profile_id = int(profile_id_bytes)
                     logger.info(
-                        f"[{client_id}] Redirecting to validated URL: {final_url} ({message})"
+                        f"Channel {channel_id} using stream ID {stream_id}, m3u account profile ID {m3u_profile_id}"
                     )
 
-                    # For non-HTTP protocols (RTSP/RTP/UDP), we need to manually create the redirect
-                    # because Django's HttpResponseRedirect blocks them for security
-                    if final_url.startswith(('rtsp://', 'rtp://', 'udp://')):
-                        logger.info(f"[{client_id}] Using manual redirect for non-HTTP protocol")
-                        response = HttpResponse(status=301)
-                        response['Location'] = final_url
-                        return response
+                    # Generate transcode command if needed
+                    stream_profile = channel.get_stream_profile()
+                    if stream_profile.is_redirect():
+                        # Validate the stream URL before redirecting
+                        from .url_utils import (
+                            validate_stream_url,
+                            get_alternate_streams,
+                            get_stream_info_for_switch,
+                        )
 
-                    return HttpResponseRedirect(final_url)
-                else:
-                    logger.error(
-                        f"[{client_id}] All available redirect URLs failed validation"
+                        # Try initial URL
+                        logger.info(f"[{client_id}] Validating redirect URL: {stream_url}")
+                        is_valid, final_url, status_code, message = validate_stream_url(
+                            stream_url, user_agent=stream_user_agent, timeout=(5, 5)
+                        )
+
+                        # If first URL doesn't validate, try alternates
+                        if not is_valid:
+                            logger.warning(
+                                f"[{client_id}] Primary stream URL failed validation: {message}"
+                            )
+
+                            # Track tried streams to avoid loops
+                            tried_streams = {stream_id}
+
+                            # Get alternate streams
+                            alternates = get_alternate_streams(channel_id, stream_id)
+
+                            # Try each alternate until one works
+                            for alt in alternates:
+                                if alt["stream_id"] in tried_streams:
+                                    continue
+
+                                tried_streams.add(alt["stream_id"])
+
+                                # Get stream info
+                                alt_info = get_stream_info_for_switch(
+                                    channel_id, alt["stream_id"]
+                                )
+                                if "error" in alt_info:
+                                    logger.warning(
+                                        f"[{client_id}] Error getting alternate stream info: {alt_info['error']}"
+                                    )
+                                    continue
+
+                                # Validate the alternate URL
+                                logger.info(
+                                    f"[{client_id}] Trying alternate stream #{alt['stream_id']}: {alt_info['url']}"
+                                )
+                                is_valid, final_url, status_code, message = validate_stream_url(
+                                    alt_info["url"],
+                                    user_agent=alt_info["user_agent"],
+                                    timeout=(5, 5),
+                                )
+
+                                if is_valid:
+                                    logger.info(
+                                        f"[{client_id}] Alternate stream #{alt['stream_id']} validated successfully"
+                                    )
+                                    break
+                                else:
+                                    logger.warning(
+                                        f"[{client_id}] Alternate stream #{alt['stream_id']} failed validation: {message}"
+                                    )
+                        # Release stream lock before redirecting only if we reserved a slot
+                        if connection_allocated and not channel.release_stream():
+                            logger.warning(f"[{client_id}] Failed to release stream before redirect")
+                        connection_allocated = False
+                        # Final decision based on validation results
+                        if is_valid:
+                            logger.info(
+                                f"[{client_id}] Redirecting to validated URL: {final_url} ({message})"
+                            )
+
+                            # For non-HTTP protocols (RTSP/RTP/UDP), we need to manually create the redirect
+                            # because Django's HttpResponseRedirect blocks them for security
+                            if final_url.startswith(('rtsp://', 'rtp://', 'udp://')):
+                                logger.info(f"[{client_id}] Using manual redirect for non-HTTP protocol")
+                                response = HttpResponse(status=301)
+                                response['Location'] = final_url
+                                return response
+
+                            return HttpResponseRedirect(final_url)
+                        else:
+                            logger.error(
+                                f"[{client_id}] All available redirect URLs failed validation"
+                            )
+                            return JsonResponse(
+                                {"error": "All available streams failed validation"}, status=502
+                            )  # 502 Bad Gateway
+
+                    # Initialize channel with the stream's user agent (not the client's)
+                    if ChannelService.is_channel_unavailable_for_new_clients(channel_id):
+                        if connection_allocated:
+                            if not channel.release_stream():
+                                logger.warning(f"[{client_id}] Failed to release stream before teardown reject")
+                            connection_allocated = False
+                        logger.info(
+                            f"[{client_id}] Channel {channel_id} unavailable before init call, rejecting"
+                        )
+                        return _channel_stopping_response()
+
+                    success = ChannelService.initialize_channel(
+                        channel_id,
+                        stream_url,
+                        stream_user_agent,
+                        transcode,
+                        profile_value,
+                        stream_id,
+                        m3u_profile_id,
+                        channel_name=channel.name,
                     )
-                    return JsonResponse(
-                        {"error": "All available streams failed validation"}, status=502
-                    )  # 502 Bad Gateway
 
-            # Initialize channel with the stream's user agent (not the client's)
-            if ChannelService.is_channel_unavailable_for_new_clients(channel_id):
-                if connection_allocated:
-                    if not channel.release_stream():
-                        logger.warning(f"[{client_id}] Failed to release stream before teardown reject")
+                    if not success:
+                        if connection_allocated:
+                            if not channel.release_stream():
+                                logger.warning(f"[{client_id}] Failed to release stream after init failure")
+                            connection_allocated = False
+                        return JsonResponse(
+                            {"error": "Failed to initialize channel"}, status=500
+                        )
+
+                    # Channel initialized: lifecycle owns the connection and ownership lock
                     connection_allocated = False
-                logger.info(
-                    f"[{client_id}] Channel {channel_id} unavailable before init call, rejecting"
-                )
-                return _channel_stopping_response()
+                    owned_for_init = False
 
-            success = ChannelService.initialize_channel(
-                channel_id,
-                stream_url,
-                stream_user_agent,
-                transcode,
-                profile_value,
-                stream_id,
-                m3u_profile_id,
-                channel_name=channel.name,
-            )
+                    # If we're the owner, register the client now so the watchdog
+                    # doesn't stop the channel during connection (which can take
+                    # longer than the grace period). The generator handles waiting
+                    # with keepalive packets via _wait_for_initialization().
+                    if proxy_server.am_i_owner(channel_id):
+                        resolved_output_profile = _resolve_output_profile(request, user)
+                        resolved_output_format = _resolve_output_format(user, force_output_format, request)
+                        output_options_resolved = True
+                        resolved_format = (
+                            f'{resolved_output_format}:p{resolved_output_profile.id}'
+                            if resolved_output_profile else resolved_output_format
+                        )
+                        client_manager = proxy_server.client_managers[channel_id]
+                        if not client_manager.add_client(
+                            client_id, client_ip, client_user_agent, user,
+                            output_format=resolved_output_format,
+                            output_profile_id=resolved_output_profile.id if resolved_output_profile else None,
+                        ):
+                            logger.error(
+                                f"[{client_id}] Failed to register client with channel {channel_id} during init"
+                            )
+                            return JsonResponse(
+                                {"error": "Failed to register client"}, status=503
+                            )
+                        logger.info(
+                            f"[{client_id}] Client registered with channel {channel_id} "
+                            f"(output: {resolved_format}, profile: {resolved_output_profile.id if resolved_output_profile else None})"
+                        )
+                        _client_pre_registered = True
 
-            if not success:
-                if connection_allocated:
-                    if not channel.release_stream():
-                        logger.warning(f"[{client_id}] Failed to release stream after init failure")
-                    connection_allocated = False
-                return JsonResponse(
-                    {"error": "Failed to initialize channel"}, status=500
-                )
-
-            # Channel initialized - cleanup lifecycle now owns the connection release
-            connection_allocated = False
-
-            # If we're the owner, register the client now so the watchdog
-            # doesn't stop the channel during connection (which can take
-            # longer than the grace period). The generator handles waiting
-            # with keepalive packets via _wait_for_initialization().
-            if proxy_server.am_i_owner(channel_id):
-                resolved_output_profile = _resolve_output_profile(request, user)
-                resolved_output_format = _resolve_output_format(user, force_output_format, request)
-                output_options_resolved = True
-                resolved_format = (
-                    f'{resolved_output_format}:p{resolved_output_profile.id}'
-                    if resolved_output_profile else resolved_output_format
-                )
-                client_manager = proxy_server.client_managers[channel_id]
-                if not client_manager.add_client(
-                    client_id, client_ip, client_user_agent, user,
-                    output_format=resolved_output_format,
-                    output_profile_id=resolved_output_profile.id if resolved_output_profile else None,
-                ):
-                    logger.error(
-                        f"[{client_id}] Failed to register client with channel {channel_id} during init"
-                    )
-                    return JsonResponse(
-                        {"error": "Failed to register client"}, status=503
-                    )
-                logger.info(
-                    f"[{client_id}] Client registered with channel {channel_id} "
-                    f"(output: {resolved_format}, profile: {resolved_output_profile.id if resolved_output_profile else None})"
-                )
-                _client_pre_registered = True
-
-            logger.info(f"[{client_id}] Successfully initialized channel {channel_id}")
-            channel_initializing = True
+                    logger.info(f"[{client_id}] Successfully initialized channel {channel_id}")
+                    channel_initializing = True
+                finally:
+                    proxy_server._clear_channel_setting_up(channel_id)
+                    if owned_for_init:
+                        proxy_server.release_ownership(channel_id, signal_stopping=False)
 
         # Register client - can do this regardless of initialization state
         # Create local resources if needed

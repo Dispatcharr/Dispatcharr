@@ -33,6 +33,7 @@ class StreamTsClientRegistrationTests(SimpleTestCase):
         proxy_server.get_buffer.return_value = MagicMock()
         proxy_server.am_i_owner.return_value = am_i_owner
         proxy_server.ensure_output_profile.return_value = True
+        proxy_server._channels_setting_up = set()
         return proxy_server, client_manager
 
     def _request(self):
@@ -304,6 +305,16 @@ class StreamTsClientRegistrationTests(SimpleTestCase):
         proxy_server.redis_client.get.return_value = None
         proxy_server.check_if_channel_exists.return_value = False
         proxy_server.redis_client.hgetall.return_value = {}
+        proxy_server.try_acquire_ownership.return_value = True
+        import gevent.lock
+        lock = gevent.lock.RLock()
+        proxy_server._get_channel_init_lock.return_value = lock
+        proxy_server._finish_channel_init_lock.side_effect = (
+            lambda _cid, held: held.release()
+        )
+        proxy_server._clear_channel_setting_up.side_effect = (
+            lambda cid: proxy_server._channels_setting_up.discard(cid)
+        )
         mock_proxy_cls.get_instance.return_value = proxy_server
         mock_get_stream_object.return_value = self._channel()
         mock_create_generator.return_value = lambda: iter([b"chunk"])

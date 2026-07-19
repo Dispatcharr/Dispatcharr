@@ -25,7 +25,7 @@ from .client_manager import ClientManager
 from .output.fmp4.manager import FMP4RemuxManager
 from .output.profile.manager import OutputProfileManager, PROFILE_STATE_ACTIVE
 from .redis_keys import RedisKeys
-from .constants import ChannelState, EventType, StreamType, ChannelMetadataField
+from .constants import ChannelState, EventType, StreamType, ChannelMetadataField, REDIS_TTL_DEFAULT
 from .config_helper import ConfigHelper
 from .utils import get_logger
 
@@ -73,6 +73,8 @@ class ProxyServer:
         self._stopping_channels = set()  # channels with an active stop_channel call in progress
         self._stopping_since = {}  # channel_id -> time.time() when stop_channel began
         self._local_stop_locks = {}
+        self._channel_init_locks = {}  # short critical sections for setup claims
+        self._channels_setting_up = set()  # same-worker in-progress setup claims
         # Managers kept until the stream OS thread exits (may outlive stream_managers dict)
         self._live_stream_managers = {}
 
@@ -499,8 +501,12 @@ class ProxyServer:
             logger.error(f"Error acquiring channel ownership: {e}")
             return False
 
-    def release_ownership(self, channel_id):
-        """Release ownership of this channel safely"""
+    def release_ownership(self, channel_id, signal_stopping=True):
+        """Release ownership of this channel safely.
+
+        When signal_stopping is False (failed init), drop the lock only so the
+        next play request can retry immediately without hitting the stopping gate.
+        """
         if not self.redis_client:
             return
 
@@ -513,10 +519,11 @@ class ProxyServer:
                 self.redis_client.delete(lock_key)
                 logger.info(f"Released ownership of channel {channel_id}")
 
-                # Also ensure channel stopping key is set to signal clients
-                stop_key = RedisKeys.channel_stopping(channel_id)
-                self.redis_client.setex(stop_key, 30, "true")
-                logger.info(f"Set stopping signal for channel {channel_id} clients")
+                if signal_stopping:
+                    # Also ensure channel stopping key is set to signal clients
+                    stop_key = RedisKeys.channel_stopping(channel_id)
+                    self.redis_client.setex(stop_key, 30, "true")
+                    logger.info(f"Set stopping signal for channel {channel_id} clients")
 
         except Exception as e:
             logger.error(f"Error releasing channel ownership: {e}")
@@ -619,20 +626,9 @@ class ProxyServer:
                 )
                 self.client_managers[channel_id] = client_manager
 
-            if self.redis_client:
-                # Set early initialization state to prevent race conditions
-                metadata_key = RedisKeys.channel_metadata(channel_id)
-                initial_metadata = {
-                    "state": ChannelState.INITIALIZING,
-                    "init_time": str(time.time()),
-                    "owner": self.worker_id
-                }
-                if stream_id:
-                    initial_metadata["stream_id"] = str(stream_id)
-                self.redis_client.hset(metadata_key, mapping=initial_metadata)
-                logger.info(f"Set early initializing state for channel {channel_id}")
-
-            # Get channel URL from Redis if available
+            # Get channel URL from Redis if available. Do not write initializing
+            # metadata yet: that must wait until ownership is acquired so a failed
+            # init cannot leave immortal ownerless sessions behind.
             channel_url = url
             channel_user_agent = user_agent
             channel_stream_id = stream_id  # Store the stream ID
@@ -655,7 +651,7 @@ class ProxyServer:
                         channel_user_agent = ua_bytes
 
                 # Get stream ID from metadata if not provided
-                if not channel_stream_id and 'stream_id' in existing_metadata:
+                if not channel_stream_id and existing_metadata and 'stream_id' in existing_metadata:
                     try:
                         channel_stream_id = int(existing_metadata['stream_id'])
                         logger.debug(f"Found stream_id {channel_stream_id} in metadata for channel {channel_id}")
@@ -686,6 +682,9 @@ class ProxyServer:
             # or we can get it from Redis
             if not channel_url:
                 logger.error(f"No URL available for channel {channel_id}")
+                self._cleanup_failed_init(
+                    channel_id, "No URL available during initialization"
+                )
                 return False
 
             # Try to acquire ownership with Redis locking
@@ -705,7 +704,7 @@ class ProxyServer:
 
                 return True
 
-            # We now own the channel - ONLY NOW should we set metadata with initializing state
+            # Ownership acquired: only now write initializing metadata
             logger.info(f"Worker {self.worker_id} is now the owner of channel {channel_id}")
 
             # Prefer caller-supplied names (no ORM). Fall back to Redis, then UUID string.
@@ -736,7 +735,7 @@ class ProxyServer:
                     pass
 
             if self.redis_client:
-                # NOW create or update metadata with initializing state
+                # Write initializing metadata only after ownership is held
                 metadata = {
                     "url": channel_url,
                     "init_time": str(time.time()),
@@ -762,7 +761,9 @@ class ProxyServer:
 
                 # Set channel metadata BEFORE creating the StreamManager
                 self.redis_client.hset(metadata_key, mapping=metadata)
-                self.redis_client.expire(metadata_key, 3600)  # Increased TTL from 30 seconds to 1 hour
+                # Always set a TTL so a missed failure path cannot leave immortal
+                # metadata. Active channels keep refreshing this via the registry.
+                self.redis_client.expire(metadata_key, REDIS_TTL_DEFAULT)
 
                 # Verify the stream_id was set correctly in Redis
                 stream_id_value = self.redis_client.hget(metadata_key, "stream_id")
@@ -834,8 +835,9 @@ class ProxyServer:
 
         except Exception as e:
             logger.error(f"Error initializing channel {channel_id}: {e}", exc_info=True)
-            # Release ownership on failure
-            self.release_ownership(channel_id)
+            # Drop ownership and Redis/local leftovers immediately so the next
+            # play request starts clean (no dead error tombstone left behind).
+            self._cleanup_failed_init(channel_id, f"Initialization failed: {e}")
             return False
         finally:
             # StreamManager.__init__ and channel_start logging check out ORM on this
@@ -931,6 +933,57 @@ class ProxyServer:
                     return False
 
         return False
+
+    def _cleanup_failed_init(self, channel_id, reason=None):
+        """
+        Tear down a failed initialization immediately.
+
+        Releases our ownership lock (without the stopping gate), stops any local
+        upstream started during the attempt, and deletes Redis channel keys
+        (including the M3U profile slot). Does nothing if another worker owns
+        the channel, or if metadata shows a healthy non-pre-active state.
+        """
+        if reason:
+            logger.info(
+                f"Cleaning up failed initialization for channel {channel_id}: {reason}"
+            )
+
+        try:
+            owner = self.get_channel_owner(channel_id)
+            if owner and owner != self.worker_id:
+                return
+
+            if self.redis_client:
+                metadata_key = RedisKeys.channel_metadata(channel_id)
+                state = self.redis_client.hget(metadata_key, "state")
+                if isinstance(state, bytes):
+                    state = state.decode()
+                if (
+                    isinstance(state, str)
+                    and state not in ChannelState.PRE_ACTIVE
+                    and state != ChannelState.ERROR
+                ):
+                    return
+
+            self._stop_local_stream_activity(channel_id)
+            self.release_ownership(channel_id, signal_stopping=False)
+
+            # Drop local setup leftovers from the failed attempt
+            self.stream_managers.pop(channel_id, None)
+            self._live_stream_managers.pop(channel_id, None)
+            self.stream_buffers.pop(channel_id, None)
+            self.client_managers.pop(channel_id, None)
+            self._channel_names.pop(channel_id, None)
+            setting_up = getattr(self, "_channels_setting_up", None)
+            if setting_up is not None:
+                setting_up.discard(channel_id)
+
+            self._clean_redis_keys(channel_id)
+        except Exception as e:
+            logger.error(
+                f"Error cleaning up failed init for channel {channel_id}: {e}",
+                exc_info=True,
+            )
 
     def _clean_zombie_channel(self, channel_id, metadata=None):
         """Clean up a zombie channel (channel with Redis keys but no active owner)"""
@@ -1600,6 +1653,32 @@ class ProxyServer:
             lock = threading.Lock()
             self._local_stop_locks[channel_id] = lock
         return lock
+
+    def _get_channel_init_lock(self, channel_id):
+        """Per-channel gevent lock for short setup-claim critical sections."""
+        lock = self._channel_init_locks.get(channel_id)
+        if lock is None:
+            lock = gevent.lock.RLock()
+            self._channel_init_locks[channel_id] = lock
+        return lock
+
+    def _finish_channel_init_lock(self, channel_id, lock):
+        """Release the init lock and drop the map entry when idle."""
+        lock.release()
+        try:
+            if not lock.locked() and self._channel_init_locks.get(channel_id) is lock:
+                self._channel_init_locks.pop(channel_id, None)
+        except Exception:
+            pass
+
+    def _clear_channel_setting_up(self, channel_id):
+        """Clear same-worker setup claim after URL fetch / initialize finishes."""
+        lock = self._get_channel_init_lock(channel_id)
+        lock.acquire()
+        try:
+            self._channels_setting_up.discard(channel_id)
+        finally:
+            self._finish_channel_init_lock(channel_id, lock)
 
     def _stop_local_stream_activity(self, channel_id):
         """Stop local ffmpeg/stream threads regardless of registry state."""
