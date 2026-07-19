@@ -1702,7 +1702,7 @@ This action cannot be undone.`}
         actionKey={isBulkDelete ? 'delete-channels' : 'delete-channel'}
         onSuppressChange={suppressWarning}
         showStopStreamOption
-        stopStreamLabel="Also stop active stream if playing"
+        stopStreamLabel="Also stop active channel if playing"
         size="md"
       />
     </>

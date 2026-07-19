@@ -2286,25 +2286,114 @@ class ProxyServer:
         except Exception as e:
             logger.error(f"Error checking orphaned metadata: {e}", exc_info=True)
 
+    @staticmethod
+    def _redis_field_to_str(value):
+        if value is None:
+            return None
+        if isinstance(value, bytes):
+            return value.decode("utf-8", errors="replace")
+        return str(value)
+
+    def _release_profile_slot_from_redis_metadata(self, channel_id):
+        """Release M3U profile slot using only Redis metadata for this UUID.
+
+        Needed when the Channel row was deleted while a stream was still
+        playing (manual delete without stop_stream). Stats stop / client
+        disconnect must still DECR profile_connections.
+        """
+        if not self.redis_client:
+            return False
+
+        from apps.m3u.connection_pool import release_profile_slot
+
+        metadata_key = RedisKeys.channel_metadata(channel_id)
+        meta_stream_id = self._redis_field_to_str(
+            self.redis_client.hget(metadata_key, ChannelMetadataField.STREAM_ID)
+        )
+        meta_profile_id = self._redis_field_to_str(
+            self.redis_client.hget(metadata_key, ChannelMetadataField.M3U_PROFILE)
+        )
+        meta_channel_id = self._redis_field_to_str(
+            self.redis_client.hget(metadata_key, ChannelMetadataField.CHANNEL_ID)
+        )
+
+        if not meta_profile_id:
+            logger.debug(
+                f"Channel {channel_id}: no m3u_profile in metadata for orphan release"
+            )
+            return False
+
+        try:
+            profile_id = int(meta_profile_id)
+        except (TypeError, ValueError):
+            logger.warning(
+                f"Channel {channel_id}: invalid m3u_profile in metadata: {meta_profile_id!r}"
+            )
+            return False
+
+        if meta_channel_id:
+            self.redis_client.delete(f"channel_stream:{meta_channel_id}")
+        if meta_stream_id:
+            try:
+                stream_id = int(meta_stream_id)
+            except (TypeError, ValueError):
+                stream_id = None
+            if stream_id is not None:
+                self.redis_client.delete(f"stream_profile:{stream_id}")
+
+        self.redis_client.hdel(
+            metadata_key,
+            ChannelMetadataField.STREAM_ID,
+            ChannelMetadataField.M3U_PROFILE,
+        )
+        release_profile_slot(profile_id, self.redis_client)
+        logger.info(
+            f"Released profile slot {profile_id} for deleted channel {channel_id} "
+            f"via Redis metadata"
+        )
+        return True
+
+    def _release_stream_resources(self, channel_id):
+        """Release profile slot before wiping live Redis keys.
+
+        Prefer Channel/Stream ORM helpers while rows exist; fall back to
+        metadata-only release when the channel was deleted mid-playback.
+        """
+        try:
+            channel = Channel.objects.get(uuid=channel_id)
+            if channel.release_stream():
+                return True
+            logger.debug(f"Channel {channel_id}: release_stream found no keys to clean")
+        except Channel.DoesNotExist:
+            pass
+        except Exception as e:
+            logger.debug(f"Channel {channel_id}: release_stream via ORM failed: {e}")
+
+        try:
+            stream = Stream.objects.get(stream_hash=channel_id)
+            if stream.release_stream():
+                return True
+            logger.debug(f"Stream {channel_id}: release_stream found no keys to clean")
+        except Stream.DoesNotExist:
+            pass
+        except Exception as e:
+            logger.debug(f"Stream {channel_id}: release_stream via ORM failed: {e}")
+
+        if self._release_profile_slot_from_redis_metadata(channel_id):
+            return True
+
+        logger.debug(f"No Channel, Stream, or Redis metadata release for {channel_id}")
+        return False
+
     def _clean_redis_keys(self, channel_id):
         """Clean up all Redis keys for a channel more efficiently"""
         total_deleted = 0
 
         try:
             # Release the M3U profile slot while channel_stream / metadata still exist.
-            # Scanning live:channel keys first deletes metadata and breaks release_stream()
-            # fallback, leaving profile_connections counters stuck (e.g. profile_connections:70 = 1).
-            try:
-                channel = Channel.objects.get(uuid=channel_id)
-                if not channel.release_stream():
-                    logger.debug(f"Channel {channel_id}: release_stream found no keys to clean")
-            except (Channel.DoesNotExist, Exception):
-                try:
-                    stream = Stream.objects.get(stream_hash=channel_id)
-                    if not stream.release_stream():
-                        logger.debug(f"Stream {channel_id}: release_stream found no keys to clean")
-                except (Stream.DoesNotExist, Exception):
-                    logger.debug(f"No Channel or Stream found for {channel_id}")
+            # Scanning live:channel keys first deletes metadata and breaks release
+            # fallbacks, leaving profile_connections counters stuck.
+            self._release_stream_resources(channel_id)
 
             if self.redis_client:
                 try:

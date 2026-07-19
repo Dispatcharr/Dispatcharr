@@ -592,6 +592,25 @@ class ChannelService:
         }
 
     @staticmethod
+    def stop_channels(channel_uuids):
+        """Best-effort stop for each channel UUID. Never raises.
+
+        Used before optional/manual deletes and automated M3U cleanup so proxy
+        teardown runs outside Django's delete atomic block.
+        """
+        for channel_uuid in channel_uuids:
+            if not channel_uuid:
+                continue
+            try:
+                ChannelService.stop_channel(str(channel_uuid))
+            except Exception as e:
+                logger.warning(
+                    "Failed to stop proxy session for channel %s: %s",
+                    channel_uuid,
+                    e,
+                )
+
+    @staticmethod
     def stop_client(channel_id, client_id):
         """
         Stop a specific client connection.
@@ -830,8 +849,6 @@ class ChannelService:
     @staticmethod
     def _update_stream_stats_in_db(stream_id, **stats):
         """Update stream stats in database"""
-        from django.db import connection
-
         try:
             from apps.channels.models import Stream
             from django.utils import timezone
@@ -859,11 +876,8 @@ class ChannelService:
             return False
 
         finally:
-            # Always close database connection after update
-            try:
-                connection.close()
-            except Exception:
-                pass
+            # Release geventpool checkout after ORM.
+            close_old_connections()
 
     # Helper methods for Redis operations
 

@@ -40,6 +40,32 @@ _NON_TERMINAL_REFRESH_STATUSES = frozenset({
 })
 
 
+def _delete_channels_stopping_streams(channels):
+    """Delete channels after stopping any active live proxy sessions.
+
+    Automated sync deletes must tear down proxy sessions before the DB row
+    goes away so streams do not hang with no channel left to stop from Stats.
+    Manual UI deletes leave this optional via the stop_stream API flag.
+    """
+    from apps.channels.models import Channel
+    from apps.proxy.live_proxy.services.channel_service import ChannelService
+
+    channel_list = list(channels)
+    if not channel_list:
+        return 0
+    try:
+        ChannelService.stop_channels(
+            getattr(channel, "uuid", None) for channel in channel_list
+        )
+    except Exception as e:
+        # stop_channels is best-effort and normally never raises; never block
+        # the DB delete on proxy teardown failure.
+        logger.warning("Failed stopping proxy sessions before channel delete: %s", e)
+    channel_ids = [channel.id for channel in channel_list]
+    Channel.objects.filter(id__in=channel_ids).delete()
+    return len(channel_ids)
+
+
 def _release_task_db_connection():
     """Return the Celery worker's DB connection to a clean state after ORM errors."""
     from django.db import close_old_connections
@@ -2434,10 +2460,7 @@ def sync_auto_channels(account_id, scan_start_time=None):
                     if not ch.hidden_from_output
                 ]
                 if channels_to_delete:
-                    deleted_count = len(channels_to_delete)
-                    Channel.objects.filter(
-                        id__in=[ch.id for ch in channels_to_delete]
-                    ).delete()
+                    deleted_count = _delete_channels_stopping_streams(channels_to_delete)
                     channels_deleted += deleted_count
                     logger.debug(
                         f"Deleted {deleted_count} auto channels (no streams remaining)"
@@ -2556,13 +2579,11 @@ def sync_auto_channels(account_id, scan_start_time=None):
                         existing_channel_map.pop(stream_id, None)
                         used_numbers.discard(num)
                 if overflow_delete_ids:
-                    deleted = Channel.objects.filter(
-                        id__in=overflow_delete_ids
-                    ).delete()
-                    removed_count = (
-                        deleted[1].get("dispatcharr_channels.Channel", 0)
-                        if isinstance(deleted, tuple) and len(deleted) > 1
-                        else len(overflow_delete_ids)
+                    overflow_channels = list(
+                        Channel.objects.filter(id__in=overflow_delete_ids)
+                    )
+                    removed_count = _delete_channels_stopping_streams(
+                        overflow_channels
                     )
                     channels_deleted += removed_count
                     logger.info(
@@ -2941,10 +2962,7 @@ def sync_auto_channels(account_id, scan_start_time=None):
                     channels_to_delete.append(channel)
 
             if channels_to_delete:
-                deleted_count = len(channels_to_delete)
-                Channel.objects.filter(
-                    id__in=[ch.id for ch in channels_to_delete]
-                ).delete()
+                deleted_count = _delete_channels_stopping_streams(channels_to_delete)
                 channels_deleted += deleted_count
                 logger.debug(
                     f"Deleted {deleted_count} auto channels for removed streams"
@@ -3020,8 +3038,8 @@ def sync_auto_channels(account_id, scan_start_time=None):
             if cleanup_mode == "preserve_customized":
                 orphaned_channels = orphaned_channels.filter(override__isnull=True)
 
-            _, per_model = orphaned_channels.delete()
-            deleted_channels = per_model.get("dispatcharr_channels.Channel", 0)
+            orphan_list = list(orphaned_channels)
+            deleted_channels = _delete_channels_stopping_streams(orphan_list)
             if deleted_channels:
                 channels_deleted += deleted_channels
                 logger.info(

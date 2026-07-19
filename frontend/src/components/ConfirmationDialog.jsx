@@ -19,8 +19,8 @@ import useWarningsStore from '../store/warnings';
  * @param {boolean} [props.loading=false] - Whether the confirm button should show loading state
  * @param {boolean} [props.showDeleteFileOption=false] - Show "also delete files" checkbox
  * @param {string} [props.deleteFileLabel] - Label for delete-files checkbox
- * @param {boolean} [props.showStopStreamOption=false] - Show "also stop stream" checkbox
- * @param {string} [props.stopStreamLabel] - Label for stop-stream checkbox
+ * @param {boolean} [props.showStopStreamOption=false] - Show "also stop channel" checkbox
+ * @param {string} [props.stopStreamLabel] - Label for stop-channel checkbox
  */
 const ConfirmationDialog = ({
   opened,
@@ -37,7 +37,7 @@ const ConfirmationDialog = ({
   showDeleteFileOption = false,
   deleteFileLabel = 'Also delete files from disk',
   showStopStreamOption = false,
-  stopStreamLabel = 'Also stop active stream if playing',
+  stopStreamLabel = 'Also stop active channel if playing',
   loading = false,
 }) => {
   const suppressWarning = useWarningsStore((s) => s.suppressWarning);

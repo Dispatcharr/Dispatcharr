@@ -274,15 +274,36 @@ class AccountDeleteCleanupTests(TestCase):
 
 class ChannelDeleteStopsProxyTests(TestCase):
     """
-    Issue #870: When an auto-sync refresh deletes a channel that has an
-    active proxy session, the session's Redis state survives, making the UI
-    "Stop" button fail with 'Channel not found'. Fix is a pre_delete signal
-    on Channel that calls ChannelService.stop_channel first, covering
-    manual, bulk, and sync-triggered deletes uniformly.
+    Issue #870: sync-driven channel deletes must stop active proxy sessions
+    before the DB row is removed. Manual deletes leave this optional via the
+    stop_stream API flag (plain model.delete() does not stop).
     """
 
-    def test_pre_delete_signal_calls_stop_channel(self):
+    def test_model_delete_does_not_auto_stop_proxy(self):
         from unittest.mock import patch
+
+        account = _make_account()
+        group = _make_group(name="Sports")
+        channel = Channel.objects.create(
+            name="ESPN",
+            channel_number=1,
+            channel_group=group,
+            auto_created=True,
+            auto_created_by=account,
+        )
+
+        with patch(
+            "apps.proxy.live_proxy.services.channel_service.ChannelService.stop_channel"
+        ) as mock_stop:
+            channel.delete()
+
+        mock_stop.assert_not_called()
+        self.assertFalse(Channel.objects.filter(id=channel.id).exists())
+
+    def test_sync_helper_stops_proxy_before_delete(self):
+        from unittest.mock import patch
+
+        from apps.m3u.tasks import _delete_channels_stopping_streams
 
         account = _make_account()
         group = _make_group(name="Sports")
@@ -296,15 +317,21 @@ class ChannelDeleteStopsProxyTests(TestCase):
         channel_uuid = str(channel.uuid)
 
         with patch(
-            "apps.proxy.live_proxy.services.channel_service.ChannelService.stop_channel"
+            "apps.proxy.live_proxy.services.channel_service.ChannelService.stop_channels"
         ) as mock_stop:
-            channel.delete()
+            deleted = _delete_channels_stopping_streams([channel])
 
-        mock_stop.assert_called_once_with(channel_uuid)
+        self.assertEqual(deleted, 1)
+        mock_stop.assert_called_once()
+        stopped = [str(u) for u in mock_stop.call_args[0][0] if u]
+        self.assertEqual(stopped, [channel_uuid])
+        self.assertFalse(Channel.objects.filter(id=channel.id).exists())
 
-    def test_pre_delete_signal_swallows_stop_errors(self):
-        """Proxy failure must not block the DB delete."""
+    def test_sync_helper_continues_delete_when_stop_channel_fails(self):
+        """Per-channel proxy failures must not block the DB delete."""
         from unittest.mock import patch
+
+        from apps.m3u.tasks import _delete_channels_stopping_streams
 
         account = _make_account()
         group = _make_group(name="Sports")
@@ -315,14 +342,16 @@ class ChannelDeleteStopsProxyTests(TestCase):
             auto_created=True,
             auto_created_by=account,
         )
+        channel_id = channel.id
 
         with patch(
             "apps.proxy.live_proxy.services.channel_service.ChannelService.stop_channel",
             side_effect=Exception("proxy is down"),
         ):
-            channel.delete()
+            deleted = _delete_channels_stopping_streams([channel])
 
-        self.assertFalse(Channel.objects.filter(id=channel.id).exists())
+        self.assertEqual(deleted, 1)
+        self.assertFalse(Channel.objects.filter(id=channel_id).exists())
 
 
 class RangeEnforcementTests(TestCase):

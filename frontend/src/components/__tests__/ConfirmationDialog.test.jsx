@@ -227,7 +227,7 @@ describe('ConfirmationDialog', () => {
     );
 
     expect(
-      screen.getByLabelText('Also stop active stream if playing')
+      screen.getByLabelText('Also stop active channel if playing')
     ).toBeInTheDocument();
   });
 
@@ -257,7 +257,9 @@ describe('ConfirmationDialog', () => {
       />
     );
 
-    fireEvent.click(screen.getByLabelText('Also stop active stream if playing'));
+    fireEvent.click(
+      screen.getByLabelText('Also stop active channel if playing')
+    );
     fireEvent.click(screen.getByText('Confirm'));
 
     expect(mockOnConfirm).toHaveBeenCalledWith(true);
@@ -280,7 +282,7 @@ describe('ConfirmationDialog', () => {
     const checkboxes = screen.getAllByRole('checkbox');
     expect(checkboxes).toHaveLength(2);
     expect(checkboxes[0]).toHaveAccessibleName(
-      'Also stop active stream if playing'
+      'Also stop active channel if playing'
     );
     expect(checkboxes[1]).toHaveAccessibleName("Don't ask me again");
   });
@@ -299,7 +301,7 @@ describe('ConfirmationDialog', () => {
     );
 
     expect(
-      screen.getByLabelText('Also stop active stream if playing')
+      screen.getByLabelText('Also stop active channel if playing')
     ).toBeChecked();
   });
 

@@ -76,6 +76,33 @@ from rest_framework.pagination import PageNumberPagination
 from dispatcharr.utils import network_access_allowed
 
 
+def _parse_request_bool(value, default=False):
+    """Parse a query/body boolean. Missing values use *default*."""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return str(value).strip().lower() in ("1", "true", "yes", "on")
+
+
+def _stop_proxy_sessions_for_channel_ids(channel_ids):
+    """Stop live proxy sessions for channels before deleting their DB rows.
+
+    Runs outside Django's delete atomic so geventpool connection release during
+    teardown cannot poison the delete transaction.
+    """
+    if not channel_ids:
+        return
+    from apps.proxy.live_proxy.services.channel_service import ChannelService
+
+    uuids = list(
+        Channel.objects.filter(id__in=channel_ids).values_list("uuid", flat=True)
+    )
+    ChannelService.stop_channels(uuids)
+
+
 logger = logging.getLogger(__name__)
 
 # Negative cache for remote logo URLs that failed to fetch.
@@ -892,6 +919,22 @@ class ChannelViewSet(viewsets.ModelViewSet):
 
         headers = self.get_success_headers(serializer.data)
         return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
+
+    def destroy(self, request, *args, **kwargs):
+        """Delete a channel. Optionally stop an active proxy session first.
+
+        Query param ``stop_stream`` (default false): when true, stop the live
+        proxy session *before* the DB delete (outside the delete atomic) so
+        playback ends with the channel row. When false, an in-progress stream
+        keeps playing until stopped from Stats or the client disconnects.
+        """
+        instance = self.get_object()
+        stop_stream = _parse_request_bool(request.query_params.get("stop_stream"))
+        if stop_stream:
+            # Stop before super().destroy() so teardown is not inside the
+            # collector's transaction.atomic.
+            _stop_proxy_sessions_for_channel_ids([instance.id])
+        return super().destroy(request, *args, **kwargs)
 
     def get_permissions(self):
         if self.action in [
@@ -2448,19 +2491,34 @@ class BulkDeleteChannelsAPIView(APIView):
             return [Authenticated()]
 
     @extend_schema(
-        description="Bulk delete channels by ID",
+        description=(
+            "Bulk delete channels by ID. Optional ``stop_stream`` (default false) "
+            "stops active proxy sessions for those channels before deleting."
+        ),
         request=inline_serializer(
             name="BulkDeleteChannelsRequest",
             fields={
                 "channel_ids": serializers.ListField(
                     child=serializers.IntegerField(),
                     help_text="Channel IDs to delete",
-                )
+                ),
+                "stop_stream": serializers.BooleanField(
+                    required=False,
+                    default=False,
+                    help_text=(
+                        "When true, stop active live proxy sessions for these "
+                        "channels before deleting. Default false leaves streams "
+                        "playing until stopped separately."
+                    ),
+                ),
             },
         ),
     )
     def delete(self, request):
         channel_ids = request.data.get("channel_ids", [])
+        stop_stream = _parse_request_bool(request.data.get("stop_stream"), default=False)
+        if stop_stream:
+            _stop_proxy_sessions_for_channel_ids(channel_ids)
         Channel.objects.filter(id__in=channel_ids).delete()
         return Response(
             {"message": "Channels deleted"}, status=status.HTTP_204_NO_CONTENT
