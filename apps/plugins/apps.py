@@ -87,6 +87,8 @@ class PluginsConfig(AppConfig):
             )
 
     def _setup_repo_refresh_schedule(self):
+        from django.db import close_old_connections
+
         from dispatcharr.app_initialization import should_skip_initialization
         if should_skip_initialization():
             return
@@ -116,3 +118,6 @@ class PluginsConfig(AppConfig):
             logging.getLogger(__name__).debug(
                 "Could not set up plugin repo refresh schedule (migrations may not have run yet)"
             )
+        finally:
+            # Boot ORM runs outside a request cycle; return geventpool checkouts.
+            close_old_connections()

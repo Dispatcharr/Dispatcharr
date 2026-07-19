@@ -34,15 +34,17 @@ class CoreConfig(AppConfig):
 
     def _sync_developer_notifications(self):
         """Sync developer notifications from JSON file to database."""
-        from django.db import connection
+        from django.db import close_old_connections
         import logging
 
         logger = logging.getLogger(__name__)
-
 
         try:
             from core.developer_notifications import sync_developer_notifications
             sync_developer_notifications()
         except Exception as e:
             logger.warning(f"Failed to sync developer notifications on startup: {e}")
+        finally:
+            # Boot ORM runs outside a request cycle; return geventpool checkouts.
+            close_old_connections()
 

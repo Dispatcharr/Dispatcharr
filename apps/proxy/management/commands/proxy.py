@@ -36,26 +36,37 @@ class Command(BaseCommand):
         url = options.get('url')
 
         try:
+            hls_proxy = getattr(proxy_app, 'hls_proxy', None)
+            live_proxy = getattr(proxy_app, 'live_proxy', None)
+
             if action == 'start':
                 if not url:
                     raise ValueError("URL is required for start action")
-                if proxy_type in ('hls', 'all'):
-                    proxy_app.hls_proxy.initialize_channel(url, channel or 'default')
+                if proxy_type == 'hls' or (proxy_type == 'all' and hls_proxy is not None):
+                    if hls_proxy is None:
+                        raise ValueError("HLS proxy is not enabled")
+                    hls_proxy.initialize_channel(url, channel or 'default')
                 if proxy_type in ('ts', 'all'):
-                    proxy_app.live_proxy.initialize_channel(url, channel or 'default')
+                    if live_proxy is None:
+                        raise ValueError("Live proxy is not initialized")
+                    live_proxy.initialize_channel(url, channel or 'default')
                 self.stdout.write(self.style.SUCCESS('Started proxy servers'))
 
             elif action == 'stop':
-                if proxy_type in ('hls', 'all'):
+                if proxy_type == 'hls' or (proxy_type == 'all' and hls_proxy is not None):
+                    if hls_proxy is None:
+                        raise ValueError("HLS proxy is not enabled")
                     if channel:
-                        proxy_app.hls_proxy.stop_channel(channel)
+                        hls_proxy.stop_channel(channel)
                     else:
-                        proxy_app.hls_proxy.shutdown()
+                        hls_proxy.shutdown()
                 if proxy_type in ('ts', 'all'):
+                    if live_proxy is None:
+                        raise ValueError("Live proxy is not initialized")
                     if channel:
-                        proxy_app.live_proxy.stop_channel(channel)
+                        live_proxy.stop_channel(channel)
                     else:
-                        proxy_app.live_proxy.shutdown()
+                        live_proxy.shutdown()
                 self.stdout.write(self.style.SUCCESS('Stopped proxy servers'))
 
             elif action == 'restart':
