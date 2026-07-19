@@ -200,7 +200,11 @@ vi.mock('../../ConfirmationDialog', () => ({
     opened ? (
       <div data-testid="confirm-dialog">
         <span data-testid="confirm-title">{title}</span>
-        <button data-testid="confirm-ok" onClick={onConfirm} disabled={loading}>
+        <button
+          data-testid="confirm-ok"
+          onClick={() => onConfirm()}
+          disabled={loading}
+        >
           {confirmLabel}
         </button>
         <button data-testid="confirm-cancel" onClick={onClose}>
@@ -474,6 +478,7 @@ const setupMocks = ({
   authUser = makeAdminUser(),
   isWarningSuppressed = vi.fn(() => false),
   suppressWarning = vi.fn(),
+  getActionPreference = vi.fn(() => false),
   selectedProfileId = '0',
   profiles = { 0: { name: 'Default', channels: new Set() } },
   pageCount = 1,
@@ -532,7 +537,7 @@ const setupMocks = ({
   );
 
   vi.mocked(useWarningsStore).mockImplementation((sel) =>
-    sel({ isWarningSuppressed, suppressWarning })
+    sel({ isWarningSuppressed, suppressWarning, getActionPreference })
   );
 
   vi.mocked(useLocalStorage).mockReturnValue([{}, vi.fn()]);
@@ -820,8 +825,24 @@ describe('ChannelsTable', () => {
       render(<ChannelsTable />);
       const { getByTestId } = renderActionCell(channel, tableInstance);
       fireEvent.click(getByTestId('icon-square-minus').closest('button'));
-      await waitFor(() => expect(deleteChannel).toHaveBeenCalledWith(7));
+      await waitFor(() =>
+        expect(deleteChannel).toHaveBeenCalledWith(7, { stopStream: false })
+      );
       expect(screen.queryByTestId('confirm-dialog')).not.toBeInTheDocument();
+    });
+
+    it('uses saved stopStream preference when warning is suppressed', async () => {
+      const channel = makeChannel({ id: 8 });
+      const { tableInstance } = setupMocks({
+        isWarningSuppressed: vi.fn(() => true),
+        getActionPreference: vi.fn(() => true),
+      });
+      render(<ChannelsTable />);
+      const { getByTestId } = renderActionCell(channel, tableInstance);
+      fireEvent.click(getByTestId('icon-square-minus').closest('button'));
+      await waitFor(() =>
+        expect(deleteChannel).toHaveBeenCalledWith(8, { stopStream: true })
+      );
     });
 
     it('calls deleteChannel when confirm dialog is confirmed', async () => {
@@ -833,7 +854,9 @@ describe('ChannelsTable', () => {
       const { getByTestId } = renderActionCell(channel, tableInstance);
       fireEvent.click(getByTestId('icon-square-minus').closest('button'));
       fireEvent.click(screen.getByTestId('confirm-ok'));
-      await waitFor(() => expect(deleteChannel).toHaveBeenCalledWith(5));
+      await waitFor(() =>
+        expect(deleteChannel).toHaveBeenCalledWith(5, { stopStream: false })
+      );
     });
 
     it('calls requeryChannels after deleteChannel succeeds', async () => {
@@ -913,7 +936,9 @@ describe('ChannelsTable', () => {
       render(<ChannelsTable />);
       fireEvent.click(screen.getByTestId('header-delete-channels'));
       fireEvent.click(screen.getByTestId('confirm-ok'));
-      await waitFor(() => expect(deleteChannels).toHaveBeenCalledWith([1, 2]));
+      await waitFor(() =>
+        expect(deleteChannels).toHaveBeenCalledWith([1, 2], { stopStream: false })
+      );
     });
 
     it('awaits requeryChannels before clearing bulk selection', async () => {
@@ -939,7 +964,9 @@ describe('ChannelsTable', () => {
       fireEvent.click(screen.getByTestId('header-delete-channels'));
       fireEvent.click(screen.getByTestId('confirm-ok'));
 
-      await waitFor(() => expect(deleteChannels).toHaveBeenCalledWith([1, 2]));
+      await waitFor(() =>
+        expect(deleteChannels).toHaveBeenCalledWith([1, 2], { stopStream: false })
+      );
       expect(requeryChannels).toHaveBeenCalled();
       expect(setSelectedTableIds).not.toHaveBeenCalled();
 
@@ -961,7 +988,9 @@ describe('ChannelsTable', () => {
       });
       render(<ChannelsTable />);
       fireEvent.click(screen.getByTestId('header-delete-channels'));
-      await waitFor(() => expect(deleteChannels).toHaveBeenCalledWith([1, 2]));
+      await waitFor(() =>
+        expect(deleteChannels).toHaveBeenCalledWith([1, 2], { stopStream: false })
+      );
       expect(screen.queryByTestId('confirm-dialog')).not.toBeInTheDocument();
     });
   });

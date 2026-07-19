@@ -332,6 +332,7 @@ const ChannelsTable = ({ onReady }) => {
   // store/warnings
   const isWarningSuppressed = useWarningsStore((s) => s.isWarningSuppressed);
   const suppressWarning = useWarningsStore((s) => s.suppressWarning);
+  const getActionPreference = useWarningsStore((s) => s.getActionPreference);
 
   /**
    * useState
@@ -575,8 +576,9 @@ const ChannelsTable = ({ onReady }) => {
       setChannelToDelete(null);
 
       if (isWarningSuppressed('delete-channels')) {
-        // Skip warning if suppressed
-        return executeDeleteChannels();
+        return executeDeleteChannels(
+          getActionPreference('delete-channels', 'stopStream', false)
+        );
       }
 
       setConfirmDeleteOpen(true);
@@ -589,17 +591,19 @@ const ChannelsTable = ({ onReady }) => {
     setChannelToDelete(knownChannel); // Store the channel object for displaying details
 
     if (isWarningSuppressed('delete-channel')) {
-      // Skip warning if suppressed
-      return executeDeleteChannel(id);
+      return executeDeleteChannel(
+        id,
+        getActionPreference('delete-channel', 'stopStream', false)
+      );
     }
 
     setConfirmDeleteOpen(true);
   };
 
-  const executeDeleteChannel = async (id) => {
+  const executeDeleteChannel = async (id, stopStream = false) => {
     setDeleting(true);
     try {
-      await deleteChannel(id);
+      await deleteChannel(id, { stopStream });
       requeryChannels();
     } finally {
       setDeleting(false);
@@ -609,19 +613,20 @@ const ChannelsTable = ({ onReady }) => {
 
   const handleDeleteChannels = async () => {
     if (isWarningSuppressed('delete-channels')) {
-      // Skip warning if suppressed
-      return executeDeleteChannels();
+      return executeDeleteChannels(
+        getActionPreference('delete-channels', 'stopStream', false)
+      );
     }
 
     setIsBulkDelete(true);
     setConfirmDeleteOpen(true);
   };
 
-  const executeDeleteChannels = async () => {
+  const executeDeleteChannels = async (stopStream = false) => {
     setIsLoading(true);
     setDeleting(true);
     try {
-      await deleteChannels(table.selectedTableIds);
+      await deleteChannels(table.selectedTableIds, { stopStream });
       await requeryChannels();
       setSelectedChannelIds([]);
       table.setSelectedTableIds([]);
@@ -1668,11 +1673,12 @@ const ChannelsTable = ({ onReady }) => {
       <ConfirmationDialog
         opened={confirmDeleteOpen}
         onClose={() => setConfirmDeleteOpen(false)}
-        onConfirm={() =>
-          isBulkDelete
-            ? executeDeleteChannels()
-            : executeDeleteChannel(deleteTarget)
-        }
+        onConfirm={(stopStream) => {
+          const shouldStop = stopStream === true;
+          return isBulkDelete
+            ? executeDeleteChannels(shouldStop)
+            : executeDeleteChannel(deleteTarget, shouldStop);
+        }}
         loading={deleting}
         title={`Confirm ${isBulkDelete ? 'Bulk ' : ''}Channel Deletion`}
         message={
@@ -1695,6 +1701,8 @@ This action cannot be undone.`}
         cancelLabel="Cancel"
         actionKey={isBulkDelete ? 'delete-channels' : 'delete-channel'}
         onSuppressChange={suppressWarning}
+        showStopStreamOption
+        stopStreamLabel="Also stop active stream if playing"
         size="md"
       />
     </>

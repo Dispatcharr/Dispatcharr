@@ -107,11 +107,11 @@ export const hdhrUrlBase = `${window.location.protocol}//${window.location.host}
 export const reorderChannel = (channelId, insertAfterId) => {
   return API.reorderChannel(channelId, insertAfterId);
 };
-export const deleteChannel = (id) => {
-  return API.deleteChannel(id);
+export const deleteChannel = (id, options = {}) => {
+  return API.deleteChannel(id, options);
 };
-export const deleteChannels = (channelIds) => {
-  return API.deleteChannels(channelIds);
+export const deleteChannels = (channelIds, options = {}) => {
+  return API.deleteChannels(channelIds, options);
 };
 export const queryChannels = (params) => {
   return API.queryChannels(params);

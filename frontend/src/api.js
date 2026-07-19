@@ -610,11 +610,19 @@ export default class API {
     }
   }
 
-  static async deleteChannel(id) {
+  static async deleteChannel(id, { stopStream = false } = {}) {
     try {
-      await request(`${host}/api/channels/channels/${id}/`, {
-        method: 'DELETE',
-      });
+      const params = new URLSearchParams();
+      if (stopStream) {
+        params.set('stop_stream', 'true');
+      }
+      const query = params.toString();
+      await request(
+        `${host}/api/channels/channels/${id}/${query ? `?${query}` : ''}`,
+        {
+          method: 'DELETE',
+        }
+      );
 
       useChannelsStore.getState().removeChannels([id]);
       await API.requeryStreams();
@@ -624,11 +632,11 @@ export default class API {
   }
 
   // @TODO: the bulk delete endpoint is currently broken
-  static async deleteChannels(channel_ids) {
+  static async deleteChannels(channel_ids, { stopStream = false } = {}) {
     try {
       await request(`${host}/api/channels/channels/bulk-delete/`, {
         method: 'DELETE',
-        body: { channel_ids },
+        body: { channel_ids, stop_stream: Boolean(stopStream) },
       });
 
       useChannelsStore.getState().removeChannels(channel_ids);

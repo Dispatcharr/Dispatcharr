@@ -576,12 +576,24 @@ describe('ChannelsTableUtils', () => {
 
     it('deleteChannel calls API.deleteChannel', () => {
       ChannelsTableUtils.deleteChannel(5);
-      expect(API.deleteChannel).toHaveBeenCalledWith(5);
+      expect(API.deleteChannel).toHaveBeenCalledWith(5, {});
+    });
+
+    it('deleteChannel forwards stopStream option', () => {
+      ChannelsTableUtils.deleteChannel(5, { stopStream: true });
+      expect(API.deleteChannel).toHaveBeenCalledWith(5, { stopStream: true });
     });
 
     it('deleteChannels calls API.deleteChannels', () => {
       ChannelsTableUtils.deleteChannels([1, 2, 3]);
-      expect(API.deleteChannels).toHaveBeenCalledWith([1, 2, 3]);
+      expect(API.deleteChannels).toHaveBeenCalledWith([1, 2, 3], {});
+    });
+
+    it('deleteChannels forwards stopStream option', () => {
+      ChannelsTableUtils.deleteChannels([1, 2], { stopStream: true });
+      expect(API.deleteChannels).toHaveBeenCalledWith([1, 2], {
+        stopStream: true,
+      });
     });
 
     it('queryChannels calls API.queryChannels', () => {

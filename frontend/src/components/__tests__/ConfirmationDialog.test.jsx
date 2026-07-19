@@ -38,13 +38,18 @@ describe('ConfirmationDialog', () => {
   const mockOnSuppressChange = vi.fn();
   const mockSuppressWarning = vi.fn();
   const mockIsWarningSuppressed = vi.fn();
+  const mockSetActionPreference = vi.fn();
+  const mockGetActionPreference = vi.fn(() => false);
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockGetActionPreference.mockReturnValue(false);
     useWarningsStore.mockImplementation((selector) => {
       const state = {
         suppressWarning: mockSuppressWarning,
         isWarningSuppressed: mockIsWarningSuppressed,
+        setActionPreference: mockSetActionPreference,
+        getActionPreference: mockGetActionPreference,
       };
       return selector ? selector(state) : state;
     });
@@ -209,6 +214,93 @@ describe('ConfirmationDialog', () => {
     fireEvent.click(screen.getByText('Confirm'));
 
     expect(mockOnConfirm).toHaveBeenCalledWith(true);
+  });
+
+  it('should show stop stream option when enabled', () => {
+    render(
+      <ConfirmationDialog
+        opened={true}
+        onClose={mockOnClose}
+        onConfirm={mockOnConfirm}
+        showStopStreamOption={true}
+      />
+    );
+
+    expect(
+      screen.getByLabelText('Also stop active stream if playing')
+    ).toBeInTheDocument();
+  });
+
+  it('should pass stopStream false by default when stop option enabled', () => {
+    render(
+      <ConfirmationDialog
+        opened={true}
+        onClose={mockOnClose}
+        onConfirm={mockOnConfirm}
+        showStopStreamOption={true}
+      />
+    );
+
+    fireEvent.click(screen.getByText('Confirm'));
+
+    expect(mockOnConfirm).toHaveBeenCalledWith(false);
+  });
+
+  it('should pass stopStream true when stop option is checked', () => {
+    render(
+      <ConfirmationDialog
+        opened={true}
+        onClose={mockOnClose}
+        onConfirm={mockOnConfirm}
+        showStopStreamOption={true}
+        actionKey="delete-channel"
+      />
+    );
+
+    fireEvent.click(screen.getByLabelText('Also stop active stream if playing'));
+    fireEvent.click(screen.getByText('Confirm'));
+
+    expect(mockOnConfirm).toHaveBeenCalledWith(true);
+    expect(mockSetActionPreference).toHaveBeenCalledWith('delete-channel', {
+      stopStream: true,
+    });
+  });
+
+  it('should render stop stream checkbox before do not ask again', () => {
+    render(
+      <ConfirmationDialog
+        opened={true}
+        onClose={mockOnClose}
+        onConfirm={mockOnConfirm}
+        showStopStreamOption={true}
+        actionKey="delete-channel"
+      />
+    );
+
+    const checkboxes = screen.getAllByRole('checkbox');
+    expect(checkboxes).toHaveLength(2);
+    expect(checkboxes[0]).toHaveAccessibleName(
+      'Also stop active stream if playing'
+    );
+    expect(checkboxes[1]).toHaveAccessibleName("Don't ask me again");
+  });
+
+  it('should restore saved stopStream preference when dialog opens', () => {
+    mockGetActionPreference.mockReturnValue(true);
+
+    render(
+      <ConfirmationDialog
+        opened={true}
+        onClose={mockOnClose}
+        onConfirm={mockOnConfirm}
+        showStopStreamOption={true}
+        actionKey="delete-channel"
+      />
+    );
+
+    expect(
+      screen.getByLabelText('Also stop active stream if playing')
+    ).toBeChecked();
   });
 
   it('should reset deleteFiles state after confirmation', () => {
