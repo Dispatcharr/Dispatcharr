@@ -11,7 +11,7 @@ from django.db import close_old_connections
 from apps.channels.models import Channel, Stream
 from ..server import ProxyServer
 from ..redis_keys import RedisKeys
-from ..constants import EventType, ChannelState, ChannelMetadataField
+from ..constants import EventType, ChannelState, ChannelMetadataField, REDIS_TTL_MEDIUM
 from ..config_helper import ConfigHelper
 from ..url_utils import get_stream_info_for_switch
 from core.utils import log_system_event
@@ -303,6 +303,7 @@ class ChannelService:
                         "temp_init": str(time.time())
                     }
                     proxy_server.redis_client.hset(metadata_key, mapping=initial_metadata)
+                    proxy_server.redis_client.expire(metadata_key, REDIS_TTL_MEDIUM)
                     logger.info(f"Created initial metadata with stream_id {stream_id} for channel {channel_id}")
 
                 # Verify the stream_id was set

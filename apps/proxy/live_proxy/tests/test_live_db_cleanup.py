@@ -258,6 +258,7 @@ class InitializeChannelDbCleanupTests(SimpleTestCase):
         proxy.redis_client = MagicMock()
         proxy.redis_client.exists.return_value = False
         proxy.redis_client.hgetall.return_value = {}
+        proxy.redis_client.hget.return_value = "initializing"
         proxy.stream_buffers = {}
         proxy.client_managers = {}
         proxy.stream_managers = {}
@@ -271,6 +272,12 @@ class InitializeChannelDbCleanupTests(SimpleTestCase):
         proxy.release_ownership = MagicMock()
         proxy.am_i_owner = MagicMock(return_value=True)
         proxy.update_channel_state = MagicMock()
+        proxy._stop_local_stream_activity = MagicMock()
+        proxy._clean_redis_keys = MagicMock()
+        proxy._local_stop_locks = {}
+        proxy._channel_init_locks = {}
+        proxy._channels_setting_up = set()
+        proxy._stopping_channels = set()
 
         with patch("apps.proxy.live_proxy.server.StreamBuffer"), patch(
             "apps.proxy.live_proxy.server.RedisClient"
@@ -283,7 +290,10 @@ class InitializeChannelDbCleanupTests(SimpleTestCase):
             )
 
         self.assertFalse(result)
-        proxy.release_ownership.assert_called_once_with("channel-uuid")
+        proxy.release_ownership.assert_called_once_with(
+            "channel-uuid", signal_stopping=False
+        )
+        proxy._clean_redis_keys.assert_called_once_with("channel-uuid")
         self.assertGreaterEqual(mock_close.call_count, 1)
 
 
