@@ -9,7 +9,7 @@ vi.mock('../../store/warnings');
 // Mock Mantine components
 vi.mock('@mantine/core', async () => {
   return {
-    Modal: ({ children, opened, onClose, title }) =>
+    Modal: ({ children, opened, title }) =>
       opened ? (
         <div data-testid="modal">
           <div data-testid="modal-title">{title}</div>
