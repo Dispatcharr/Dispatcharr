@@ -5327,6 +5327,7 @@ class CatchupProxyTests(TestCase):
         with patch.object(views, "network_access_allowed", return_value=True), \
              patch.object(views, "Channel") as channel_cls, \
              patch.object(views, "_user_can_access_channel", return_value=True), \
+             patch.object(views, "is_catchup_enabled", return_value=True), \
              patch.object(views, "get_channel_catchup_streams",
                           return_value=[_make_catchup_stream()]), \
              patch.object(views, "resolve_catchup_duration", return_value=40), \
