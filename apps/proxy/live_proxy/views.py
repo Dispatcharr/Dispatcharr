@@ -4,7 +4,13 @@ import random
 import re
 import pathlib
 from django.db import close_old_connections
-from django.http import StreamingHttpResponse, JsonResponse, HttpResponseRedirect, HttpResponse
+from django.http import (
+    StreamingHttpResponse,
+    JsonResponse,
+    HttpResponseRedirect,
+    HttpResponse,
+    Http404,
+)
 from django.views.decorators.csrf import csrf_exempt
 from django.shortcuts import get_object_or_404
 from .server import ProxyServer
@@ -117,16 +123,20 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
     if user is None and hasattr(request, 'user') and request.user.is_authenticated:
         user = request.user
 
-    channel = get_stream_object(channel_id)
-
     client_user_agent = None
     proxy_server = ProxyServer.get_instance()
     connection_allocated = False  # Track if connection slot was allocated via get_stream()
     # Initialized before the try so the exception handler can always safely
     # check/clean it up, regardless of where in the setup a failure occurs.
     _client_pre_registered = False
+    channel = None
+    client_id = None
+    channel_display_name = None
 
     try:
+        channel = get_stream_object(channel_id)
+        channel_display_name = getattr(channel, "name", None)
+
         # Generate a unique client ID
         client_id = f"client_{int(time.time() * 1000)}_{random.randint(1000, 9999)}"
         client_ip = get_client_ip(request)
@@ -571,7 +581,11 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
 
             # Use client_user_agent as fallback if stream_user_agent is None
             success = proxy_server.initialize_channel(
-                url, channel_id, stream_user_agent or client_user_agent, use_transcode
+                url,
+                channel_id,
+                stream_user_agent or client_user_agent,
+                use_transcode,
+                channel_name=channel_display_name,
             )
             if not success:
                 logger.error(
@@ -668,16 +682,21 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
             generate = create_fmp4_stream_generator(
                 channel_id, client_id, client_ip, client_user_agent, channel_initializing, user=user,
                 fmt=resolved_format,
+                channel_name=channel_display_name,
             )
             content_type = "video/mp4"
         else:
             generate = create_stream_generator(
-                channel_id, client_id, client_ip, client_user_agent, channel_initializing, user=user, buffer=source_buffer
+                channel_id,
+                client_id,
+                client_ip,
+                client_user_agent,
+                channel_initializing,
+                user=user,
+                buffer=source_buffer,
+                channel_name=channel_display_name,
             )
             content_type = "video/mp2t"
-
-        # Release ORM checkout before returning a long-lived StreamingHttpResponse.
-        close_old_connections()
 
         response = StreamingHttpResponse(
             streaming_content=generate(), content_type=content_type
@@ -685,9 +704,11 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
         response["Cache-Control"] = "no-cache"
         return response
 
+    except Http404:
+        raise
     except Exception as e:
         logger.error(f"Error in stream_ts: {e}", exc_info=True)
-        if connection_allocated:
+        if connection_allocated and channel is not None:
             try:
                 if not channel.release_stream():
                     logger.warning(f"[{client_id}] Failed to release stream in exception handler")
@@ -703,60 +724,71 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
             except Exception:
                 logger.warning(f"[{client_id}] Failed to remove client during exception cleanup")
         return JsonResponse({"error": str(e)}, status=500)
+    finally:
+        # Runs before StreamingHttpResponse is handed to the WSGI server, so the
+        # request greenlet does not hold a pool slot for the life of the stream.
+        # Also covers Http404 from get_stream_object (re-raised above).
+        close_old_connections()
 
 
 @api_view(["GET"])
 @permission_classes([AllowAny])
 def stream_xc(request, username, password, channel_id):
-    user = get_object_or_404(User, username=username)
+    try:
+        user = get_object_or_404(User, username=username)
 
-    extension = pathlib.Path(channel_id).suffix
-    channel_id = pathlib.Path(channel_id).stem
+        extension = pathlib.Path(channel_id).suffix
+        channel_id = pathlib.Path(channel_id).stem
 
-    if not network_access_allowed(request, 'STREAMS', user):
-        return Response({"error": "Forbidden"}, status=403)
+        if not network_access_allowed(request, 'STREAMS', user):
+            return Response({"error": "Forbidden"}, status=403)
 
-    custom_properties = user.custom_properties or {}
+        custom_properties = user.custom_properties or {}
 
-    if "xc_password" not in custom_properties:
-        return Response({"error": "Invalid credentials"}, status=401)
+        if "xc_password" not in custom_properties:
+            return Response({"error": "Invalid credentials"}, status=401)
 
-    if custom_properties["xc_password"] != password:
-        return Response({"error": "Invalid credentials"}, status=401)
+        if custom_properties["xc_password"] != password:
+            return Response({"error": "Invalid credentials"}, status=401)
 
-    if user.user_level < 10:
-        user_profile_count = user.channel_profiles.count()
+        if user.user_level < 10:
+            user_profile_count = user.channel_profiles.count()
 
-        # If user has ALL profiles or NO profiles, give unrestricted access
-        if user_profile_count == 0:
-            # No profile filtering - user sees all channels based on user_level
-            filters = {
-                "id": int(channel_id),
-                "user_level__lte": user.user_level
-            }
-            channel = Channel.objects.filter(**filters).first()
+            # If user has ALL profiles or NO profiles, give unrestricted access
+            if user_profile_count == 0:
+                # No profile filtering - user sees all channels based on user_level
+                filters = {
+                    "id": int(channel_id),
+                    "user_level__lte": user.user_level
+                }
+                channel = Channel.objects.filter(**filters).first()
+            else:
+                # User has specific limited profiles assigned
+                filters = {
+                    "id": int(channel_id),
+                    "channelprofilemembership__enabled": True,
+                    "user_level__lte": user.user_level,
+                    "channelprofilemembership__channel_profile__in": user.channel_profiles.all()
+                }
+                channel = Channel.objects.filter(**filters).distinct().first()
+
+            if not channel:
+                return JsonResponse({"error": "Not found"}, status=404)
         else:
-            # User has specific limited profiles assigned
-            filters = {
-                "id": int(channel_id),
-                "channelprofilemembership__enabled": True,
-                "user_level__lte": user.user_level,
-                "channelprofilemembership__channel_profile__in": user.channel_profiles.all()
-            }
-            channel = Channel.objects.filter(**filters).distinct().first()
+            channel = get_object_or_404(Channel, id=channel_id)
 
-        if not channel:
-            return JsonResponse({"error": "Not found"}, status=404)
-    else:
-        channel = get_object_or_404(Channel, id=channel_id)
-
-    if extension.lower() == '.mp4':
-        force_format = 'fmp4'
-    elif extension.lower() == '.ts':
-        force_format = 'mpegts'
-    else:
-        force_format = None
-    return stream_ts(request._request, str(channel.uuid), user, force_output_format=force_format)
+        if extension.lower() == '.mp4':
+            force_format = 'fmp4'
+        elif extension.lower() == '.ts':
+            force_format = 'mpegts'
+        else:
+            force_format = None
+        return stream_ts(request._request, str(channel.uuid), user, force_output_format=force_format)
+    except Http404:
+        raise
+    finally:
+        # Auth/channel lookup ORM above; stream_ts also releases on its own paths.
+        close_old_connections()
 
 
 @csrf_exempt
@@ -907,6 +939,8 @@ def channel_status(request, channel_id=None):
     except Exception as e:
         logger.error(f"Error in channel_status: {e}", exc_info=True)
         return JsonResponse({"error": str(e)}, status=500)
+    finally:
+        close_old_connections()
 
 
 @csrf_exempt
@@ -1123,6 +1157,10 @@ def next_stream(request, channel_id):
 
         return JsonResponse(response_data)
 
+    except Http404:
+        raise
     except Exception as e:
         logger.error(f"Failed to switch to next stream: {e}", exc_info=True)
         return JsonResponse({"error": str(e)}, status=500)
+    finally:
+        close_old_connections()

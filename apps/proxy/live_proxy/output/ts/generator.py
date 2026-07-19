@@ -10,7 +10,7 @@ from apps.channels.models import Channel, Stream
 from django.db import close_old_connections
 from core.utils import log_system_event
 from ...server import ProxyServer
-from ...utils import create_ts_packet, get_logger
+from ...utils import create_ts_packet, get_logger, resolve_channel_display_name
 from ...redis_keys import RedisKeys
 from ...constants import ChannelMetadataField
 from ...config_helper import ConfigHelper
@@ -23,7 +23,17 @@ class StreamGenerator:
     data delivery, and cleanup.
     """
 
-    def __init__(self, channel_id, client_id, client_ip, client_user_agent, channel_initializing=False, user=None, buffer=None):
+    def __init__(
+        self,
+        channel_id,
+        client_id,
+        client_ip,
+        client_user_agent,
+        channel_initializing=False,
+        user=None,
+        buffer=None,
+        channel_name=None,
+    ):
         """
         Initialize the stream generator with client and channel details.
 
@@ -36,6 +46,7 @@ class StreamGenerator:
             user: Authenticated user making the request
             buffer: Source StreamBuffer to read from. Resolved via ProxyServer.get_buffer()
                     before construction; passed in so the generator is buffer-agnostic.
+            channel_name: Optional display name (avoids ORM during construction)
         """
         self.channel_id = channel_id
         self.client_id = client_id
@@ -44,12 +55,7 @@ class StreamGenerator:
         self.channel_initializing = channel_initializing
         self.user = user
         self._source_buffer = buffer
-        # Cache channel name once to avoid repeated DB queries for logging
-        try:
-            _name = Channel.objects.filter(uuid=channel_id).values_list('name', flat=True).first()
-            self.channel_name = _name if _name else str(channel_id)
-        except Exception:
-            self.channel_name = str(channel_id)
+        self.channel_name = resolve_channel_display_name(channel_id, channel_name=channel_name)
 
         # Performance and state tracking
         self.stream_start_time = time.time()
@@ -650,10 +656,28 @@ class StreamGenerator:
             close_old_connections()
 
 
-def create_stream_generator(channel_id, client_id, client_ip, client_user_agent, channel_initializing=False, user=None, buffer=None):
+def create_stream_generator(
+    channel_id,
+    client_id,
+    client_ip,
+    client_user_agent,
+    channel_initializing=False,
+    user=None,
+    buffer=None,
+    channel_name=None,
+):
     """
     Factory function to create a new stream generator.
     Returns a function that can be passed to StreamingHttpResponse.
     """
-    generator = StreamGenerator(channel_id, client_id, client_ip, client_user_agent, channel_initializing, user=user, buffer=buffer)
+    generator = StreamGenerator(
+        channel_id,
+        client_id,
+        client_ip,
+        client_user_agent,
+        channel_initializing,
+        user=user,
+        buffer=buffer,
+        channel_name=channel_name,
+    )
     return generator.generate

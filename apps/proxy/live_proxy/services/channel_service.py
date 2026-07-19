@@ -7,6 +7,7 @@ import logging
 import time
 import json
 import gevent
+from django.db import close_old_connections
 from apps.channels.models import Channel, Stream
 from ..server import ProxyServer
 from ..redis_keys import RedisKeys
@@ -113,8 +114,6 @@ class ChannelService:
         markers mid-stop would leave clients attached to upstream that is
         about to be torn down.
         """
-        from django.db import close_old_connections
-
         proxy_server = ProxyServer.get_instance()
         if not proxy_server.redis_client:
             return False
@@ -289,35 +288,58 @@ class ChannelService:
         """
         proxy_server = ProxyServer.get_instance()
 
-        if stream_id and proxy_server.redis_client:
-            metadata_key = RedisKeys.channel_metadata(channel_id)
-            # Check if metadata already exists
-            if proxy_server.redis_client.exists(metadata_key):
-                # Just update the existing metadata with stream_id
-                proxy_server.redis_client.hset(metadata_key, ChannelMetadataField.STREAM_ID, str(stream_id))
-                logger.info(f"Pre-set stream ID {stream_id} in Redis for channel {channel_id}")
-            else:
-                # Create initial metadata with essential values
-                initial_metadata = {
-                    ChannelMetadataField.STREAM_ID: str(stream_id),
-                    "temp_init": str(time.time())
-                }
-                proxy_server.redis_client.hset(metadata_key, mapping=initial_metadata)
-                logger.info(f"Created initial metadata with stream_id {stream_id} for channel {channel_id}")
+        try:
+            if stream_id and proxy_server.redis_client:
+                metadata_key = RedisKeys.channel_metadata(channel_id)
+                # Check if metadata already exists
+                if proxy_server.redis_client.exists(metadata_key):
+                    # Just update the existing metadata with stream_id
+                    proxy_server.redis_client.hset(metadata_key, ChannelMetadataField.STREAM_ID, str(stream_id))
+                    logger.info(f"Pre-set stream ID {stream_id} in Redis for channel {channel_id}")
+                else:
+                    # Create initial metadata with essential values
+                    initial_metadata = {
+                        ChannelMetadataField.STREAM_ID: str(stream_id),
+                        "temp_init": str(time.time())
+                    }
+                    proxy_server.redis_client.hset(metadata_key, mapping=initial_metadata)
+                    logger.info(f"Created initial metadata with stream_id {stream_id} for channel {channel_id}")
 
-            # Verify the stream_id was set
-            stream_id_value = proxy_server.redis_client.hget(metadata_key, ChannelMetadataField.STREAM_ID)
-            if stream_id_value:
-                logger.debug(f"Verified stream_id {stream_id_value} is now set in Redis")
-            else:
-                logger.error(f"Failed to set stream_id {stream_id} in Redis before initialization")
+                # Verify the stream_id was set
+                stream_id_value = proxy_server.redis_client.hget(metadata_key, ChannelMetadataField.STREAM_ID)
+                if stream_id_value:
+                    logger.debug(f"Verified stream_id {stream_id_value} is now set in Redis")
+                else:
+                    logger.error(f"Failed to set stream_id {stream_id} in Redis before initialization")
 
-        # Now proceed with channel initialization
-        success = proxy_server.initialize_channel(stream_url, channel_id, user_agent, transcode, stream_id)
+            if not channel_name:
+                try:
+                    channel_name = Channel.objects.filter(uuid=channel_id).values_list(
+                        'name', flat=True
+                    ).first()
+                except Exception as e:
+                    logger.warning(f"Failed to load channel name for {channel_id}: {e}")
+            if not stream_name and stream_id:
+                try:
+                    stream_name = Stream.objects.filter(id=stream_id).values_list(
+                        'name', flat=True
+                    ).first()
+                except Exception as e:
+                    logger.warning(f"Failed to load stream name for {stream_id}: {e}")
 
-        # Store additional metadata if initialization was successful
-        if success and proxy_server.redis_client:
-            try:
+            # Now proceed with channel initialization
+            success = proxy_server.initialize_channel(
+                stream_url,
+                channel_id,
+                user_agent,
+                transcode,
+                stream_id,
+                channel_name=channel_name,
+                stream_name=stream_name,
+            )
+
+            # Store additional metadata if initialization was successful
+            if success and proxy_server.redis_client:
                 metadata_key = RedisKeys.channel_metadata(channel_id)
                 update_data = {}
                 if stream_profile_value:
@@ -326,31 +348,17 @@ class ChannelService:
                     update_data[ChannelMetadataField.STREAM_ID] = str(stream_id)
                 if m3u_profile_id:
                     update_data[ChannelMetadataField.M3U_PROFILE] = str(m3u_profile_id)
-
-                # Store channel name and stream name so stats workers don't need DB calls
-                try:
-                    if not channel_name:
-                        from apps.channels.models import Channel
-                        channel_name = Channel.objects.filter(uuid=channel_id).values_list('name', flat=True).first()
-                    if channel_name:
-                        update_data[ChannelMetadataField.CHANNEL_NAME] = channel_name
-                    else:
-                        # No channel name means stream preview mode, use stream name as display fallback
-                        if stream_id and not stream_name:
-                            from apps.channels.models import Stream
-                            stream_name = Stream.objects.filter(id=stream_id).values_list('name', flat=True).first()
-                        if stream_name:
-                            update_data[ChannelMetadataField.STREAM_NAME] = stream_name
-                except Exception as e:
-                    logger.warning(f"Failed to store channel/stream names in Redis for {channel_id}: {e}")
+                if channel_name:
+                    update_data[ChannelMetadataField.CHANNEL_NAME] = channel_name
+                if stream_name:
+                    update_data[ChannelMetadataField.STREAM_NAME] = stream_name
 
                 if update_data:
                     proxy_server.redis_client.hset(metadata_key, mapping=update_data)
-            finally:
-                from django.db import close_old_connections
-                close_old_connections()
 
-        return success
+            return success
+        finally:
+            close_old_connections()
 
     @staticmethod
     def change_stream_url(channel_id, new_url=None, user_agent=None, target_stream_id=None, m3u_profile_id=None, stream_name=None):
@@ -910,7 +918,6 @@ class ChannelService:
             logger.debug(f"Updated metadata for channel {channel_id} in Redis")
             return True
         finally:
-            from django.db import close_old_connections
             close_old_connections()
 
     @staticmethod

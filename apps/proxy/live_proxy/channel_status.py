@@ -6,7 +6,7 @@ from .constants import TS_PACKET_SIZE, ChannelMetadataField
 from redis.exceptions import ConnectionError, TimeoutError
 from .utils import get_logger
 from .client_manager import ClientManager
-from django.db import DatabaseError
+from django.db import DatabaseError, close_old_connections
 
 logger = get_logger()
 
@@ -46,41 +46,64 @@ class ChannelStatus:
             'buffer_index': int(buffer_index_value) if buffer_index_value else 0,
         }
 
-        # Add stream ID and name information
-        stream_id_bytes = metadata.get(ChannelMetadataField.STREAM_ID)
-        if stream_id_bytes:
-            try:
-                stream_id = int(stream_id_bytes)
-                info['stream_id'] = stream_id
+        channel_name = metadata.get(ChannelMetadataField.CHANNEL_NAME)
+        if channel_name:
+            info['channel_name'] = (
+                channel_name.decode() if isinstance(channel_name, bytes) else channel_name
+            )
 
-                # Look up stream name from database
+        # Prefer Redis names (written at channel init). ORM is a fallback only and
+        # always released in finally so admin status cannot leak pool slots.
+        try:
+            stream_id_bytes = metadata.get(ChannelMetadataField.STREAM_ID)
+            if stream_id_bytes:
                 try:
-                    from apps.channels.models import Stream
-                    stream = Stream.objects.filter(id=stream_id).first()
-                    if stream:
-                        info['stream_name'] = stream.name
-                except (ImportError, DatabaseError) as e:
-                    logger.warning(f"Failed to get stream name for ID {stream_id}: {e}")
-            except ValueError:
-                logger.warning(f"Invalid stream_id format in Redis: {stream_id_bytes}")
+                    stream_id = int(stream_id_bytes)
+                    info['stream_id'] = stream_id
 
-        # Add M3U profile information
-        m3u_profile_id_bytes = metadata.get(ChannelMetadataField.M3U_PROFILE)
-        if m3u_profile_id_bytes:
-            try:
-                m3u_profile_id = int(m3u_profile_id_bytes)
-                info['m3u_profile_id'] = m3u_profile_id
+                    stream_name = metadata.get(ChannelMetadataField.STREAM_NAME)
+                    if stream_name:
+                        info['stream_name'] = (
+                            stream_name.decode()
+                            if isinstance(stream_name, bytes)
+                            else stream_name
+                        )
+                    else:
+                        try:
+                            from apps.channels.models import Stream
+                            stream = Stream.objects.filter(id=stream_id).first()
+                            if stream:
+                                info['stream_name'] = stream.name
+                        except (ImportError, DatabaseError) as e:
+                            logger.warning(
+                                f"Failed to get stream name for ID {stream_id}: {e}"
+                            )
+                except ValueError:
+                    logger.warning(f"Invalid stream_id format in Redis: {stream_id_bytes}")
 
-                # Look up M3U profile name from database
+            m3u_profile_id_bytes = metadata.get(ChannelMetadataField.M3U_PROFILE)
+            if m3u_profile_id_bytes:
                 try:
-                    from apps.m3u.models import M3UAccountProfile
-                    m3u_profile = M3UAccountProfile.objects.filter(id=m3u_profile_id).first()
-                    if m3u_profile:
-                        info['m3u_profile_name'] = m3u_profile.name
-                except (ImportError, DatabaseError) as e:
-                    logger.warning(f"Failed to get M3U profile name for ID {m3u_profile_id}: {e}")
-            except ValueError:
-                logger.warning(f"Invalid m3u_profile_id format in Redis: {m3u_profile_id_bytes}")
+                    m3u_profile_id = int(m3u_profile_id_bytes)
+                    info['m3u_profile_id'] = m3u_profile_id
+
+                    try:
+                        from apps.m3u.models import M3UAccountProfile
+                        m3u_profile = M3UAccountProfile.objects.filter(
+                            id=m3u_profile_id
+                        ).first()
+                        if m3u_profile:
+                            info['m3u_profile_name'] = m3u_profile.name
+                    except (ImportError, DatabaseError) as e:
+                        logger.warning(
+                            f"Failed to get M3U profile name for ID {m3u_profile_id}: {e}"
+                        )
+                except ValueError:
+                    logger.warning(
+                        f"Invalid m3u_profile_id format in Redis: {m3u_profile_id_bytes}"
+                    )
+        finally:
+            close_old_connections()
 
         # Add timing information
         state_changed_field = ChannelMetadataField.STATE_CHANGED_AT

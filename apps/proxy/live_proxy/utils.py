@@ -5,6 +5,29 @@ import inspect
 
 logger = logging.getLogger("live_proxy")
 
+
+def resolve_channel_display_name(channel_id, channel_name=None, redis_client=None):
+    """Resolve a display name without ORM: explicit arg, then Redis, then UUID string."""
+    if channel_name:
+        return channel_name
+    try:
+        client = redis_client
+        if client is None:
+            from .server import ProxyServer
+            client = ProxyServer.get_instance().redis_client
+        if client:
+            from .redis_keys import RedisKeys
+            from .constants import ChannelMetadataField
+            raw = client.hget(
+                RedisKeys.channel_metadata(channel_id),
+                ChannelMetadataField.CHANNEL_NAME,
+            )
+            if raw:
+                return raw.decode() if isinstance(raw, bytes) else raw
+    except Exception:
+        pass
+    return str(channel_id)
+
 def detect_stream_type(url):
     """
     Detect if stream URL is HLS, RTSP/RTP, UDP, or TS format.

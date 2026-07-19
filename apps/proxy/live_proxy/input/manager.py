@@ -17,21 +17,31 @@ from ..redis_keys import RedisKeys
 from ..constants import ChannelState, EventType, StreamType, ChannelMetadataField, TS_PACKET_SIZE
 from ..config_helper import ConfigHelper
 from ..url_utils import get_alternate_streams, get_stream_info_for_switch, get_stream_object
+from ..utils import resolve_channel_display_name
 
 logger = get_logger()
 
 class StreamManager:
     """Manages a connection to a TS stream without using raw sockets"""
 
-    def __init__(self, channel_id, url, buffer, user_agent=None, transcode=False, stream_id=None, worker_id=None):
+    def __init__(
+        self,
+        channel_id,
+        url,
+        buffer,
+        user_agent=None,
+        transcode=False,
+        stream_id=None,
+        worker_id=None,
+        channel_name=None,
+    ):
         # Basic properties
         self.channel_id = channel_id
-        # Cache channel name once to avoid repeated DB queries in hot retry/reconnect loops
-        try:
-            _name = Channel.objects.filter(uuid=channel_id).values_list('name', flat=True).first()
-            self.channel_name = _name if _name else str(channel_id)
-        except Exception:
-            self.channel_name = str(channel_id)
+        # Prefer caller/Redis name so construction never checks out a geventpool slot.
+        redis_client = getattr(buffer, "redis_client", None)
+        self.channel_name = resolve_channel_display_name(
+            channel_id, channel_name=channel_name, redis_client=redis_client
+        )
         self.url = url
         self.buffer = buffer
         self.running = True
@@ -950,6 +960,8 @@ class StreamManager:
                 logger.error(f"Error in stderr reader thread for channel {self.channel_id}: {e}")
             except:
                 pass
+        finally:
+            close_old_connections()
 
     def _log_stderr_content(self, content):
         """Log stderr content from FFmpeg with appropriate log levels"""

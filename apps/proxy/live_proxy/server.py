@@ -25,7 +25,7 @@ from .client_manager import ClientManager
 from .output.fmp4.manager import FMP4RemuxManager
 from .output.profile.manager import OutputProfileManager, PROFILE_STATE_ACTIVE
 from .redis_keys import RedisKeys
-from .constants import ChannelState, EventType, StreamType
+from .constants import ChannelState, EventType, StreamType, ChannelMetadataField
 from .config_helper import ConfigHelper
 from .utils import get_logger
 
@@ -560,7 +560,16 @@ class ProxyServer:
             logger.error(f"Error extending ownership: {e}")
             return False
 
-    def initialize_channel(self, url, channel_id, user_agent=None, transcode=False, stream_id=None):
+    def initialize_channel(
+        self,
+        url,
+        channel_id,
+        user_agent=None,
+        transcode=False,
+        stream_id=None,
+        channel_name=None,
+        stream_name=None,
+    ):
         """Initialize a channel without redundant active key"""
         try:
             if self._channel_unavailable_for_new_clients(channel_id):
@@ -699,6 +708,33 @@ class ProxyServer:
             # We now own the channel - ONLY NOW should we set metadata with initializing state
             logger.info(f"Worker {self.worker_id} is now the owner of channel {channel_id}")
 
+            # Prefer caller-supplied names (no ORM). Fall back to Redis, then UUID string.
+            if not channel_name and self.redis_client:
+                try:
+                    raw_name = self.redis_client.hget(
+                        metadata_key, ChannelMetadataField.CHANNEL_NAME
+                    )
+                    if raw_name:
+                        channel_name = (
+                            raw_name.decode() if isinstance(raw_name, bytes) else raw_name
+                        )
+                except Exception:
+                    pass
+            channel_name = channel_name or str(channel_id)
+            self._channel_names[channel_id] = channel_name
+
+            if not stream_name and self.redis_client:
+                try:
+                    raw_stream = self.redis_client.hget(
+                        metadata_key, ChannelMetadataField.STREAM_NAME
+                    )
+                    if raw_stream:
+                        stream_name = (
+                            raw_stream.decode() if isinstance(raw_stream, bytes) else raw_stream
+                        )
+                except Exception:
+                    pass
+
             if self.redis_client:
                 # NOW create or update metadata with initializing state
                 metadata = {
@@ -717,6 +753,12 @@ class ProxyServer:
                     logger.info(f"Storing stream_id {channel_stream_id} in metadata for channel {channel_id}")
                 else:
                     logger.warning(f"No stream_id provided for channel {channel_id} during initialization")
+
+                # Persist display names early so other workers/stats skip ORM
+                if channel_name and channel_name != str(channel_id):
+                    metadata[ChannelMetadataField.CHANNEL_NAME] = channel_name
+                if stream_name:
+                    metadata[ChannelMetadataField.STREAM_NAME] = stream_name
 
                 # Set channel metadata BEFORE creating the StreamManager
                 self.redis_client.hset(metadata_key, mapping=metadata)
@@ -742,26 +784,14 @@ class ProxyServer:
                 user_agent=channel_user_agent,
                 transcode=transcode,
                 stream_id=channel_stream_id,  # Pass stream ID to the manager
-                worker_id=self.worker_id  # Pass worker_id explicitly to eliminate circular dependency
+                worker_id=self.worker_id,  # Pass worker_id explicitly to eliminate circular dependency
+                channel_name=channel_name,
             )
             logger.info(f"Created StreamManager for channel {channel_id} with stream ID {channel_stream_id}")
             self.stream_managers[channel_id] = stream_manager
 
-            # Log channel start event
+            # Log channel start event (names already resolved without ORM)
             try:
-                _name = Channel.objects.filter(uuid=channel_id).values_list('name', flat=True).first()
-                channel_name = _name if _name else str(channel_id)
-                self._channel_names[channel_id] = channel_name
-
-                # Get stream name if stream_id is available
-                stream_name = None
-                if channel_stream_id:
-                    try:
-                        stream_obj = Stream.objects.get(id=channel_stream_id)
-                        stream_name = stream_obj.name
-                    except Exception:
-                        pass
-
                 log_system_event(
                     'channel_start',
                     channel_id=channel_id,
@@ -771,7 +801,6 @@ class ProxyServer:
                 )
             except Exception as e:
                 logger.error(f"Could not log channel start event: {e}")
-                close_old_connections()
 
             # Create client manager with channel_id, redis_client AND worker_id (only if not already exists)
             if channel_id not in self.client_managers:
@@ -808,6 +837,10 @@ class ProxyServer:
             # Release ownership on failure
             self.release_ownership(channel_id)
             return False
+        finally:
+            # StreamManager.__init__ and channel_start logging check out ORM on this
+            # greenlet; return the slot on every exit (success, early return, error).
+            close_old_connections()
 
     def check_if_channel_exists(self, channel_id):
         """
