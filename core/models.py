@@ -196,6 +196,14 @@ SYSTEM_SETTINGS_KEY = "system_settings"
 EPG_SETTINGS_KEY = "epg_settings"
 USER_LIMITS_SETTINGS_KEY = "user_limit_settings"
 
+# Redis cache for CoreSettings JSON groups. Primary invalidation is post_save /
+# post_delete; TTL is a safety net if a writer bypasses signals.
+# A version key is bumped on invalidate so a concurrent miss cannot re-poison
+# Redis with a stale DB snapshot after delete.
+_GROUP_CACHE_PREFIX = "coresettings:group:"
+_GROUP_CACHE_VER_PREFIX = "coresettings:groupver:"
+_GROUP_CACHE_TTL_SECONDS = 300
+
 
 class CoreSettings(models.Model):
     key = models.CharField(
@@ -213,14 +221,69 @@ class CoreSettings(models.Model):
     def __str__(self):
         return "Core Settings"
 
+    @classmethod
+    def group_cache_key(cls, key):
+        return f"{_GROUP_CACHE_PREFIX}{key}"
+
+    @classmethod
+    def group_cache_ver_key(cls, key):
+        return f"{_GROUP_CACHE_VER_PREFIX}{key}"
+
+    @classmethod
+    def invalidate_group_cache(cls, key):
+        """Drop the cached JSON for a settings group (all workers share Redis)."""
+        import time
+
+        from django.core.cache import cache
+
+        cache.delete(cls.group_cache_key(key))
+        # Monotonic bump so in-flight _get_group fills skip cache.set.
+        # timeout=None: never expire (version must outlive group entries).
+        cache.set(cls.group_cache_ver_key(key), time.time_ns(), timeout=None)
+        if key == PROXY_SETTINGS_KEY:
+            # Proxy workers also keep a short process-local copy.
+            try:
+                from apps.proxy.config import BaseConfig
+
+                BaseConfig.clear_proxy_settings_cache()
+            except Exception:
+                pass
+
     # Helper methods to get/set grouped settings
     @classmethod
     def _get_group(cls, key, defaults=None):
-        """Get a settings group, returning defaults if not found."""
+        """Get a settings group, returning defaults if not found.
+
+        Results are cached in Redis so hot paths (proxy, XC, catchup) do not
+        hit Postgres on every client request. Mutations go through ``save`` /
+        ``_update_group``, which invalidate via CoreSettings post_save /
+        post_delete signals.
+        """
+        import copy
+
+        from django.core.cache import cache
+
+        defaults = defaults or {}
+        cache_key = cls.group_cache_key(key)
+        ver_key = cls.group_cache_ver_key(key)
+        cached = cache.get(cache_key)
+        if isinstance(cached, dict):
+            return copy.deepcopy(cached)
+
+        ver_before = cache.get(ver_key)
         try:
-            return cls.objects.get(key=key).value or (defaults or {})
+            value = cls.objects.get(key=key).value or defaults
+            if not isinstance(value, dict):
+                value = defaults
         except cls.DoesNotExist:
-            return defaults or {}
+            value = defaults
+
+        value = copy.deepcopy(value)
+        # Skip fill if an invalidate landed during the DB read (avoids
+        # re-caching a stale snapshot for the full TTL).
+        if cache.get(ver_key) == ver_before:
+            cache.set(cache_key, value, timeout=_GROUP_CACHE_TTL_SECONDS)
+        return copy.deepcopy(value)
 
     @classmethod
     def _update_group(cls, key, name, updates):
@@ -399,6 +462,11 @@ class CoreSettings(models.Model):
             "new_client_behind_seconds": 5,
         })
 
+    @classmethod
+    def get_network_access_settings(cls):
+        """CIDR allowlists per endpoint type (UI, STREAMS, XC_API, M3U_EPG, ...)."""
+        return cls._get_group(NETWORK_ACCESS_KEY, {})
+
     # System Settings
     @classmethod
     def get_system_settings(cls):
@@ -409,7 +477,14 @@ class CoreSettings(models.Model):
             "preferred_region": None,
             "auto_import_mapped_files": True,
             "enable_ip_lookup": True,
+            "catchup_enabled": True,
         })
+
+    @classmethod
+    def get_catchup_enabled(cls):
+        """Whether catch-up / timeshift is enabled system-wide (default True)."""
+        # Stored as a JSON boolean by System Settings; default on when unset.
+        return cls.get_system_settings().get("catchup_enabled", True) is not False
 
     @classmethod
     def get_system_time_zone(cls):

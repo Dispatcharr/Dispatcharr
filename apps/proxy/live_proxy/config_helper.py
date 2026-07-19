@@ -76,6 +76,16 @@ class ConfigHelper:
         return ConfigHelper.get('MAX_RETRIES', 3)
 
     @staticmethod
+    def retry_window_seconds():
+        """Reset the retry counter after this many seconds without a failure."""
+        return ConfigHelper.get('RETRY_WINDOW_SECONDS', 1800)
+
+    @staticmethod
+    def stable_connection_threshold():
+        """Seconds of stable playback before switch rotation state resets."""
+        return ConfigHelper.get('STABLE_CONNECTION_THRESHOLD', 30)
+
+    @staticmethod
     def max_stream_switches():
         """Get maximum number of stream switch attempts"""
         return ConfigHelper.get('MAX_STREAM_SWITCHES', 10)

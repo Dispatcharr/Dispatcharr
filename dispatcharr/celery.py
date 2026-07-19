@@ -2,7 +2,7 @@
 import os
 from celery import Celery
 import logging
-from celery.signals import task_postrun, task_prerun, worker_ready
+from celery.signals import task_postrun, task_prerun, worker_process_init, worker_ready
 
 logger = logging.getLogger(__name__)
 
@@ -42,13 +42,26 @@ app.autodiscover_tasks()
 # Plugins live outside INSTALLED_APPS, so autodiscover_tasks() never imports
 # them. Without an eager import, workers reject plugin @shared_tasks with
 # "Received unregistered task" until a lazy event import warms the module.
-@worker_ready.connect(weak=False)
-def discover_plugins_on_worker_ready(**_kwargs):
+# Discovery runs in worker_process_init (each prefork child / thread worker)
+# rather than worker_ready (the long-lived arbiter) so the parent process
+# never opens DB connections that autoscale children would inherit via fork().
+@worker_process_init.connect(weak=False)
+def init_worker_process(**_kwargs):
+    from django.db import connections
+
+    # Standard Celery + Django guidance for prefork pools: discard any
+    # connection state inherited from the parent across fork().
+    try:
+        connections.close_all()
+    except Exception:
+        logger.warning("Failed to close inherited DB connections after fork", exc_info=True)
+
     try:
         from apps.plugins.loader import PluginManager
         PluginManager.get().discover_plugins(sync_db=False)
     except Exception:
-        logger.exception("plugin discovery on worker_ready failed")
+        logger.exception("plugin discovery on worker_process_init failed")
+
 
 # Use environment variable for log level with fallback to INFO
 CELERY_LOG_LEVEL = os.environ.get('DISPATCHARR_LOG_LEVEL', 'INFO').upper()
@@ -99,6 +112,7 @@ def cleanup_task_memory(**kwargs):
     memory_intensive_tasks = [
         'apps.m3u.tasks.refresh_single_m3u_account',
         'apps.m3u.tasks.refresh_m3u_accounts',
+        'apps.m3u.tasks.refresh_m3u_groups',
         'apps.m3u.tasks.process_m3u_batch',
         'apps.m3u.tasks.process_xc_category',
         'apps.m3u.tasks.sync_auto_channels',
@@ -121,7 +135,7 @@ def cleanup_task_memory(**kwargs):
         from core.utils import cleanup_memory
 
         # Use the comprehensive cleanup function
-        cleanup_memory(log_usage=True, force_collection=True)
+        cleanup_memory(log_usage=True, force_collection=True, trim_heap=True)
 
         # Log memory usage if psutil is installed
         try:

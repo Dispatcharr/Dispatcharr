@@ -16,6 +16,7 @@ import {
 } from '@mantine/core';
 import {
   convertToSec,
+  formatDuration,
   fromNow,
   toFriendlyDuration,
   useDateTimeFormat,
@@ -31,8 +32,6 @@ import {
   calculateConnectionDuration,
   calculateConnectionStartTime,
   calculateProgress,
-  formatDuration,
-  formatTime,
   getEpisodeDisplayTitle,
   getEpisodeSubtitle,
   getMovieDisplayTitle,
@@ -154,7 +153,7 @@ const ConnectionProgress = ({ connection, durationSecs }) => {
           Progress
         </Text>
         <Text size="xs" c="dimmed">
-          {formatTime(currentTime)} / {formatTime(totalTime)}
+          {formatDuration(currentTime)} / {formatDuration(totalTime)}
         </Text>
       </Group>
       <Progress
@@ -370,11 +369,13 @@ const VodConnectionCard = ({ vodContent, stopVODClient }) => {
               </Badge>
             </Tooltip>
           )}
-
           {metadata.duration_secs && (
             <Tooltip label="Content Duration">
               <Badge size="sm" variant="light" color="blue">
-                {formatDuration(metadata.duration_secs)}
+                {formatDuration(metadata.duration_secs, {
+                  zeroValue: 'Unknown',
+                  precision: 'human',
+                })}
               </Badge>
             </Tooltip>
           )}

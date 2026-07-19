@@ -21,6 +21,8 @@ import os
 
 from dispatcharr.settings import *  # noqa: F401,F403
 
+TEST_RUNNER = "dispatcharr.test_runner.DispatcharrDiscoverRunner"
+
 # Fast password hashing for tests.
 PASSWORD_HASHERS = ["django.contrib.auth.hashers.MD5PasswordHasher"]
 
@@ -53,6 +55,10 @@ else:
             "PORT": int(os.environ.get("POSTGRES_PORT", 5432)),
             "TEST": {
                 "NAME": "test_" + _pg_name,
+                # Match production UTF-8 so JSON programme indexes and EPG text
+                # with non-ASCII characters can be stored in tests.
+                "CHARSET": "UTF8",
+                "TEMPLATE": "template0",
             },
         }
     }

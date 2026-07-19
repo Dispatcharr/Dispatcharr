@@ -25,7 +25,7 @@ from .client_manager import ClientManager
 from .output.fmp4.manager import FMP4RemuxManager
 from .output.profile.manager import OutputProfileManager, PROFILE_STATE_ACTIVE
 from .redis_keys import RedisKeys
-from .constants import ChannelState, EventType, StreamType
+from .constants import ChannelState, EventType, StreamType, ChannelMetadataField, REDIS_TTL_DEFAULT
 from .config_helper import ConfigHelper
 from .utils import get_logger
 
@@ -73,6 +73,8 @@ class ProxyServer:
         self._stopping_channels = set()  # channels with an active stop_channel call in progress
         self._stopping_since = {}  # channel_id -> time.time() when stop_channel began
         self._local_stop_locks = {}
+        self._channel_init_locks = {}  # short critical sections for setup claims
+        self._channels_setting_up = set()  # same-worker in-progress setup claims
         # Managers kept until the stream OS thread exits (may outlive stream_managers dict)
         self._live_stream_managers = {}
 
@@ -249,26 +251,35 @@ class ProxyServer:
                                         user_agent = data.get("user_agent")
                                         event_stream_id = data.get("stream_id")
                                         event_m3u_profile_id = data.get("m3u_profile_id")
+                                        event_stream_name = data.get("stream_name")
 
                                         if new_url and channel_id in self.stream_managers:
                                             # Mark the switch as in-progress in Redis so other workers know to wait
+                                            status_key = RedisKeys.switch_status(channel_id)
                                             if self.redis_client:
-                                                status_key = RedisKeys.switch_status(channel_id)
-                                                self.redis_client.set(status_key, "switching")
+                                                self.redis_client.setex(status_key, 60, "switching")
 
-                                            # Perform the stream switch, forwarding stream_id and m3u_profile_id
                                             stream_manager = self.stream_managers[channel_id]
-                                            success = stream_manager.update_url(new_url, event_stream_id, event_m3u_profile_id)
+                                            if new_url == stream_manager.url:
+                                                # update_url() returns False for same URL; still success so metadata refreshes
+                                                logger.info(f"Channel {channel_id} already using requested URL, refreshing metadata only")
+                                                success = True
+                                            else:
+                                                success = stream_manager.update_url(new_url, event_stream_id, event_m3u_profile_id)
 
                                             if success:
                                                 logger.info(f"Stream switch initiated for channel {channel_id}")
 
-                                                # Confirm the URL in metadata now that the switch happened
                                                 if self.redis_client:
-                                                    metadata_key = RedisKeys.channel_metadata(channel_id)
-                                                    self.redis_client.hset(metadata_key, "url", new_url)
-                                                    if user_agent:
-                                                        self.redis_client.hset(metadata_key, "user_agent", user_agent)
+                                                    try:
+                                                        from .services.channel_service import ChannelService
+                                                        ChannelService._update_channel_metadata(
+                                                            channel_id, new_url, user_agent,
+                                                            event_stream_id, event_m3u_profile_id,
+                                                            event_stream_name,
+                                                        )
+                                                    except Exception as e:
+                                                        logger.error(f"Error updating switch metadata for channel {channel_id}: {e}", exc_info=True)
 
                                                 # Publish confirmation
                                                 switch_result = {
@@ -283,9 +294,8 @@ class ProxyServer:
                                                     json.dumps(switch_result)
                                                 )
 
-                                                # Update status
                                                 if self.redis_client:
-                                                    self.redis_client.set(status_key, "switched")
+                                                    self.redis_client.setex(status_key, 60, "switched")
                                             else:
                                                 logger.error(f"Failed to switch stream for channel {channel_id}")
 
@@ -309,6 +319,9 @@ class ProxyServer:
                                                     f"live:events:{channel_id}",
                                                     json.dumps(switch_result)
                                                 )
+
+                                                if self.redis_client:
+                                                    self.redis_client.setex(status_key, 60, "failed")
                                     elif event_type == EventType.CHANNEL_STOP:
                                         requester_worker_id = data.get("requester_worker_id")
                                         logger.info(
@@ -488,8 +501,12 @@ class ProxyServer:
             logger.error(f"Error acquiring channel ownership: {e}")
             return False
 
-    def release_ownership(self, channel_id):
-        """Release ownership of this channel safely"""
+    def release_ownership(self, channel_id, signal_stopping=True):
+        """Release ownership of this channel safely.
+
+        When signal_stopping is False (failed init), drop the lock only so the
+        next play request can retry immediately without hitting the stopping gate.
+        """
         if not self.redis_client:
             return
 
@@ -502,10 +519,11 @@ class ProxyServer:
                 self.redis_client.delete(lock_key)
                 logger.info(f"Released ownership of channel {channel_id}")
 
-                # Also ensure channel stopping key is set to signal clients
-                stop_key = RedisKeys.channel_stopping(channel_id)
-                self.redis_client.setex(stop_key, 30, "true")
-                logger.info(f"Set stopping signal for channel {channel_id} clients")
+                if signal_stopping:
+                    # Also ensure channel stopping key is set to signal clients
+                    stop_key = RedisKeys.channel_stopping(channel_id)
+                    self.redis_client.setex(stop_key, 30, "true")
+                    logger.info(f"Set stopping signal for channel {channel_id} clients")
 
         except Exception as e:
             logger.error(f"Error releasing channel ownership: {e}")
@@ -549,7 +567,16 @@ class ProxyServer:
             logger.error(f"Error extending ownership: {e}")
             return False
 
-    def initialize_channel(self, url, channel_id, user_agent=None, transcode=False, stream_id=None):
+    def initialize_channel(
+        self,
+        url,
+        channel_id,
+        user_agent=None,
+        transcode=False,
+        stream_id=None,
+        channel_name=None,
+        stream_name=None,
+    ):
         """Initialize a channel without redundant active key"""
         try:
             if self._channel_unavailable_for_new_clients(channel_id):
@@ -599,20 +626,9 @@ class ProxyServer:
                 )
                 self.client_managers[channel_id] = client_manager
 
-            if self.redis_client:
-                # Set early initialization state to prevent race conditions
-                metadata_key = RedisKeys.channel_metadata(channel_id)
-                initial_metadata = {
-                    "state": ChannelState.INITIALIZING,
-                    "init_time": str(time.time()),
-                    "owner": self.worker_id
-                }
-                if stream_id:
-                    initial_metadata["stream_id"] = str(stream_id)
-                self.redis_client.hset(metadata_key, mapping=initial_metadata)
-                logger.info(f"Set early initializing state for channel {channel_id}")
-
-            # Get channel URL from Redis if available
+            # Get channel URL from Redis if available. Do not write initializing
+            # metadata yet: that must wait until ownership is acquired so a failed
+            # init cannot leave immortal ownerless sessions behind.
             channel_url = url
             channel_user_agent = user_agent
             channel_stream_id = stream_id  # Store the stream ID
@@ -635,7 +651,7 @@ class ProxyServer:
                         channel_user_agent = ua_bytes
 
                 # Get stream ID from metadata if not provided
-                if not channel_stream_id and 'stream_id' in existing_metadata:
+                if not channel_stream_id and existing_metadata and 'stream_id' in existing_metadata:
                     try:
                         channel_stream_id = int(existing_metadata['stream_id'])
                         logger.debug(f"Found stream_id {channel_stream_id} in metadata for channel {channel_id}")
@@ -666,6 +682,9 @@ class ProxyServer:
             # or we can get it from Redis
             if not channel_url:
                 logger.error(f"No URL available for channel {channel_id}")
+                self._cleanup_failed_init(
+                    channel_id, "No URL available during initialization"
+                )
                 return False
 
             # Try to acquire ownership with Redis locking
@@ -685,11 +704,38 @@ class ProxyServer:
 
                 return True
 
-            # We now own the channel - ONLY NOW should we set metadata with initializing state
+            # Ownership acquired: only now write initializing metadata
             logger.info(f"Worker {self.worker_id} is now the owner of channel {channel_id}")
 
+            # Prefer caller-supplied names (no ORM). Fall back to Redis, then UUID string.
+            if not channel_name and self.redis_client:
+                try:
+                    raw_name = self.redis_client.hget(
+                        metadata_key, ChannelMetadataField.CHANNEL_NAME
+                    )
+                    if raw_name:
+                        channel_name = (
+                            raw_name.decode() if isinstance(raw_name, bytes) else raw_name
+                        )
+                except Exception:
+                    pass
+            channel_name = channel_name or str(channel_id)
+            self._channel_names[channel_id] = channel_name
+
+            if not stream_name and self.redis_client:
+                try:
+                    raw_stream = self.redis_client.hget(
+                        metadata_key, ChannelMetadataField.STREAM_NAME
+                    )
+                    if raw_stream:
+                        stream_name = (
+                            raw_stream.decode() if isinstance(raw_stream, bytes) else raw_stream
+                        )
+                except Exception:
+                    pass
+
             if self.redis_client:
-                # NOW create or update metadata with initializing state
+                # Write initializing metadata only after ownership is held
                 metadata = {
                     "url": channel_url,
                     "init_time": str(time.time()),
@@ -707,9 +753,17 @@ class ProxyServer:
                 else:
                     logger.warning(f"No stream_id provided for channel {channel_id} during initialization")
 
+                # Persist display names early so other workers/stats skip ORM
+                if channel_name and channel_name != str(channel_id):
+                    metadata[ChannelMetadataField.CHANNEL_NAME] = channel_name
+                if stream_name:
+                    metadata[ChannelMetadataField.STREAM_NAME] = stream_name
+
                 # Set channel metadata BEFORE creating the StreamManager
                 self.redis_client.hset(metadata_key, mapping=metadata)
-                self.redis_client.expire(metadata_key, 3600)  # Increased TTL from 30 seconds to 1 hour
+                # Always set a TTL so a missed failure path cannot leave immortal
+                # metadata. Active channels keep refreshing this via the registry.
+                self.redis_client.expire(metadata_key, REDIS_TTL_DEFAULT)
 
                 # Verify the stream_id was set correctly in Redis
                 stream_id_value = self.redis_client.hget(metadata_key, "stream_id")
@@ -731,26 +785,14 @@ class ProxyServer:
                 user_agent=channel_user_agent,
                 transcode=transcode,
                 stream_id=channel_stream_id,  # Pass stream ID to the manager
-                worker_id=self.worker_id  # Pass worker_id explicitly to eliminate circular dependency
+                worker_id=self.worker_id,  # Pass worker_id explicitly to eliminate circular dependency
+                channel_name=channel_name,
             )
             logger.info(f"Created StreamManager for channel {channel_id} with stream ID {channel_stream_id}")
             self.stream_managers[channel_id] = stream_manager
 
-            # Log channel start event
+            # Log channel start event (names already resolved without ORM)
             try:
-                _name = Channel.objects.filter(uuid=channel_id).values_list('name', flat=True).first()
-                channel_name = _name if _name else str(channel_id)
-                self._channel_names[channel_id] = channel_name
-
-                # Get stream name if stream_id is available
-                stream_name = None
-                if channel_stream_id:
-                    try:
-                        stream_obj = Stream.objects.get(id=channel_stream_id)
-                        stream_name = stream_obj.name
-                    except Exception:
-                        pass
-
                 log_system_event(
                     'channel_start',
                     channel_id=channel_id,
@@ -760,7 +802,6 @@ class ProxyServer:
                 )
             except Exception as e:
                 logger.error(f"Could not log channel start event: {e}")
-                close_old_connections()
 
             # Create client manager with channel_id, redis_client AND worker_id (only if not already exists)
             if channel_id not in self.client_managers:
@@ -794,9 +835,14 @@ class ProxyServer:
 
         except Exception as e:
             logger.error(f"Error initializing channel {channel_id}: {e}", exc_info=True)
-            # Release ownership on failure
-            self.release_ownership(channel_id)
+            # Drop ownership and Redis/local leftovers immediately so the next
+            # play request starts clean (no dead error tombstone left behind).
+            self._cleanup_failed_init(channel_id, f"Initialization failed: {e}")
             return False
+        finally:
+            # StreamManager.__init__ and channel_start logging check out ORM on this
+            # greenlet; return the slot on every exit (success, early return, error).
+            close_old_connections()
 
     def check_if_channel_exists(self, channel_id):
         """
@@ -887,6 +933,57 @@ class ProxyServer:
                     return False
 
         return False
+
+    def _cleanup_failed_init(self, channel_id, reason=None):
+        """
+        Tear down a failed initialization immediately.
+
+        Releases our ownership lock (without the stopping gate), stops any local
+        upstream started during the attempt, and deletes Redis channel keys
+        (including the M3U profile slot). Does nothing if another worker owns
+        the channel, or if metadata shows a healthy non-pre-active state.
+        """
+        if reason:
+            logger.info(
+                f"Cleaning up failed initialization for channel {channel_id}: {reason}"
+            )
+
+        try:
+            owner = self.get_channel_owner(channel_id)
+            if owner and owner != self.worker_id:
+                return
+
+            if self.redis_client:
+                metadata_key = RedisKeys.channel_metadata(channel_id)
+                state = self.redis_client.hget(metadata_key, "state")
+                if isinstance(state, bytes):
+                    state = state.decode()
+                if (
+                    isinstance(state, str)
+                    and state not in ChannelState.PRE_ACTIVE
+                    and state != ChannelState.ERROR
+                ):
+                    return
+
+            self._stop_local_stream_activity(channel_id)
+            self.release_ownership(channel_id, signal_stopping=False)
+
+            # Drop local setup leftovers from the failed attempt
+            self.stream_managers.pop(channel_id, None)
+            self._live_stream_managers.pop(channel_id, None)
+            self.stream_buffers.pop(channel_id, None)
+            self.client_managers.pop(channel_id, None)
+            self._channel_names.pop(channel_id, None)
+            setting_up = getattr(self, "_channels_setting_up", None)
+            if setting_up is not None:
+                setting_up.discard(channel_id)
+
+            self._clean_redis_keys(channel_id)
+        except Exception as e:
+            logger.error(
+                f"Error cleaning up failed init for channel {channel_id}: {e}",
+                exc_info=True,
+            )
 
     def _clean_zombie_channel(self, channel_id, metadata=None):
         """Clean up a zombie channel (channel with Redis keys but no active owner)"""
@@ -1557,6 +1654,32 @@ class ProxyServer:
             self._local_stop_locks[channel_id] = lock
         return lock
 
+    def _get_channel_init_lock(self, channel_id):
+        """Per-channel gevent lock for short setup-claim critical sections."""
+        lock = self._channel_init_locks.get(channel_id)
+        if lock is None:
+            lock = gevent.lock.RLock()
+            self._channel_init_locks[channel_id] = lock
+        return lock
+
+    def _finish_channel_init_lock(self, channel_id, lock):
+        """Release the init lock and drop the map entry when idle."""
+        lock.release()
+        try:
+            if not lock.locked() and self._channel_init_locks.get(channel_id) is lock:
+                self._channel_init_locks.pop(channel_id, None)
+        except Exception:
+            pass
+
+    def _clear_channel_setting_up(self, channel_id):
+        """Clear same-worker setup claim after URL fetch / initialize finishes."""
+        lock = self._get_channel_init_lock(channel_id)
+        lock.acquire()
+        try:
+            self._channels_setting_up.discard(channel_id)
+        finally:
+            self._finish_channel_init_lock(channel_id, lock)
+
     def _stop_local_stream_activity(self, channel_id):
         """Stop local ffmpeg/stream threads regardless of registry state."""
         lock = self._get_local_stop_lock(channel_id)
@@ -2163,25 +2286,114 @@ class ProxyServer:
         except Exception as e:
             logger.error(f"Error checking orphaned metadata: {e}", exc_info=True)
 
+    @staticmethod
+    def _redis_field_to_str(value):
+        if value is None:
+            return None
+        if isinstance(value, bytes):
+            return value.decode("utf-8", errors="replace")
+        return str(value)
+
+    def _release_profile_slot_from_redis_metadata(self, channel_id):
+        """Release M3U profile slot using only Redis metadata for this UUID.
+
+        Needed when the Channel row was deleted while a stream was still
+        playing (manual delete without stop_stream). Stats stop / client
+        disconnect must still DECR profile_connections.
+        """
+        if not self.redis_client:
+            return False
+
+        from apps.m3u.connection_pool import release_profile_slot
+
+        metadata_key = RedisKeys.channel_metadata(channel_id)
+        meta_stream_id = self._redis_field_to_str(
+            self.redis_client.hget(metadata_key, ChannelMetadataField.STREAM_ID)
+        )
+        meta_profile_id = self._redis_field_to_str(
+            self.redis_client.hget(metadata_key, ChannelMetadataField.M3U_PROFILE)
+        )
+        meta_channel_id = self._redis_field_to_str(
+            self.redis_client.hget(metadata_key, ChannelMetadataField.CHANNEL_ID)
+        )
+
+        if not meta_profile_id:
+            logger.debug(
+                f"Channel {channel_id}: no m3u_profile in metadata for orphan release"
+            )
+            return False
+
+        try:
+            profile_id = int(meta_profile_id)
+        except (TypeError, ValueError):
+            logger.warning(
+                f"Channel {channel_id}: invalid m3u_profile in metadata: {meta_profile_id!r}"
+            )
+            return False
+
+        if meta_channel_id:
+            self.redis_client.delete(f"channel_stream:{meta_channel_id}")
+        if meta_stream_id:
+            try:
+                stream_id = int(meta_stream_id)
+            except (TypeError, ValueError):
+                stream_id = None
+            if stream_id is not None:
+                self.redis_client.delete(f"stream_profile:{stream_id}")
+
+        self.redis_client.hdel(
+            metadata_key,
+            ChannelMetadataField.STREAM_ID,
+            ChannelMetadataField.M3U_PROFILE,
+        )
+        release_profile_slot(profile_id, self.redis_client)
+        logger.info(
+            f"Released profile slot {profile_id} for deleted channel {channel_id} "
+            f"via Redis metadata"
+        )
+        return True
+
+    def _release_stream_resources(self, channel_id):
+        """Release profile slot before wiping live Redis keys.
+
+        Prefer Channel/Stream ORM helpers while rows exist; fall back to
+        metadata-only release when the channel was deleted mid-playback.
+        """
+        try:
+            channel = Channel.objects.get(uuid=channel_id)
+            if channel.release_stream():
+                return True
+            logger.debug(f"Channel {channel_id}: release_stream found no keys to clean")
+        except Channel.DoesNotExist:
+            pass
+        except Exception as e:
+            logger.debug(f"Channel {channel_id}: release_stream via ORM failed: {e}")
+
+        try:
+            stream = Stream.objects.get(stream_hash=channel_id)
+            if stream.release_stream():
+                return True
+            logger.debug(f"Stream {channel_id}: release_stream found no keys to clean")
+        except Stream.DoesNotExist:
+            pass
+        except Exception as e:
+            logger.debug(f"Stream {channel_id}: release_stream via ORM failed: {e}")
+
+        if self._release_profile_slot_from_redis_metadata(channel_id):
+            return True
+
+        logger.debug(f"No Channel, Stream, or Redis metadata release for {channel_id}")
+        return False
+
     def _clean_redis_keys(self, channel_id):
         """Clean up all Redis keys for a channel more efficiently"""
         total_deleted = 0
 
         try:
             # Release the M3U profile slot while channel_stream / metadata still exist.
-            # Scanning live:channel keys first deletes metadata and breaks release_stream()
-            # fallback, leaving profile_connections counters stuck (e.g. profile_connections:70 = 1).
-            try:
-                channel = Channel.objects.get(uuid=channel_id)
-                if not channel.release_stream():
-                    logger.debug(f"Channel {channel_id}: release_stream found no keys to clean")
-            except (Channel.DoesNotExist, Exception):
-                try:
-                    stream = Stream.objects.get(stream_hash=channel_id)
-                    if not stream.release_stream():
-                        logger.debug(f"Stream {channel_id}: release_stream found no keys to clean")
-                except (Stream.DoesNotExist, Exception):
-                    logger.debug(f"No Channel or Stream found for {channel_id}")
+            # Scanning live:channel keys first deletes metadata and breaks release
+            # fallbacks, leaving profile_connections counters stuck.
+            self._release_stream_resources(channel_id)
 
             if self.redis_client:
                 try:

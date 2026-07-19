@@ -6,6 +6,7 @@ describe('useWarningsStore', () => {
   beforeEach(() => {
     useWarningsStore.setState({
       suppressedWarnings: {},
+      actionPreferences: {},
     });
   });
 
@@ -13,6 +14,7 @@ describe('useWarningsStore', () => {
     const { result } = renderHook(() => useWarningsStore());
 
     expect(result.current.suppressedWarnings).toEqual({});
+    expect(result.current.actionPreferences).toEqual({});
   });
 
   it('should suppress a warning', () => {
@@ -191,5 +193,37 @@ describe('useWarningsStore', () => {
     expect(result.current.isWarningSuppressed('action1')).toBe(true);
     expect(result.current.isWarningSuppressed('action2')).toBe(false);
     expect(result.current.isWarningSuppressed('action3')).toBe(false);
+  });
+
+  it('should store and read action preferences', () => {
+    const { result } = renderHook(() => useWarningsStore());
+
+    expect(result.current.getActionPreference('delete-channel', 'stopStream')).toBe(
+      false
+    );
+
+    act(() => {
+      result.current.setActionPreference('delete-channel', { stopStream: true });
+    });
+
+    expect(
+      result.current.getActionPreference('delete-channel', 'stopStream')
+    ).toBe(true);
+    expect(
+      result.current.getActionPreference('delete-channels', 'stopStream', false)
+    ).toBe(false);
+  });
+
+  it('should clear action preferences when resetSuppressions is called', () => {
+    const { result } = renderHook(() => useWarningsStore());
+
+    act(() => {
+      result.current.suppressWarning('delete-channel');
+      result.current.setActionPreference('delete-channel', { stopStream: true });
+      result.current.resetSuppressions();
+    });
+
+    expect(result.current.suppressedWarnings).toEqual({});
+    expect(result.current.actionPreferences).toEqual({});
   });
 });

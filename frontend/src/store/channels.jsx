@@ -119,6 +119,7 @@ const useChannelsStore = create((set, get) => ({
   activeChannels: {},
   activeClients: {},
   activeVodConnections: [],
+  activeTimeshiftSessions: [],
   recordings: [],
   recurringRules: [],
   isLoading: false,
@@ -505,6 +506,71 @@ const useChannelsStore = create((set, get) => ({
 
   setVodStats: (stats) => {
     set({ activeVodConnections: stats.vod_connections || [] });
+  },
+
+  setTimeshiftStats: (stats) => {
+    return set((state) => {
+      const sessions = stats.timeshift_sessions || [];
+      const oldSessions = state.activeTimeshiftSessions.reduce((acc, session) => {
+        acc[session.session_id] = session;
+        return acc;
+      }, {});
+      const newSessions = sessions.reduce((acc, session) => {
+        acc[session.session_id] = session;
+        return acc;
+      }, {});
+
+      sessions.forEach((session) => {
+        const isNewSession = oldSessions[session.session_id] === undefined;
+        const primaryClient = session.connections?.[0];
+        if (!primaryClient) {
+          return;
+        }
+
+        if (isNewSession && isClientNewSincePageLoad(primaryClient)) {
+          showNotification({
+            title: 'Catch-up started',
+            message: clientMessage(session.channel_name, primaryClient),
+            color: 'blue.5',
+          });
+          return;
+        }
+
+        const oldConnIds = new Set(
+          (oldSessions[session.session_id]?.connections || []).map(
+            (client) => client.client_id
+          )
+        );
+        session.connections.forEach((client) => {
+          if (
+            !oldConnIds.has(client.client_id) &&
+            isClientNewSincePageLoad(client)
+          ) {
+            showNotification({
+              title: 'Catch-up started',
+              message: clientMessage(session.channel_name, client),
+              color: 'blue.5',
+            });
+          }
+        });
+      });
+
+      for (const sessionId in oldSessions) {
+        if (newSessions[sessionId] === undefined) {
+          const session = oldSessions[sessionId];
+          const client = session.connections?.[0];
+          showNotification({
+            title: 'Catch-up ended',
+            message: client
+              ? clientMessage(session.channel_name, client)
+              : session.channel_name,
+            color: 'blue.5',
+          });
+        }
+      }
+
+      return { activeTimeshiftSessions: sessions };
+    });
   },
 
   fetchRecordings: async () => {

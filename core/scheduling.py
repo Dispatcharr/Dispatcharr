@@ -109,7 +109,7 @@ def create_or_update_periodic_task(
             name=task_name, defaults=defaults
         )
 
-        # Clean up old interval if we switched from interval → cron
+        # Clean up old interval if we switched from interval to cron
         if old_interval:
             _cleanup_orphaned_interval(old_interval)
         # Clean up old crontab if it changed
@@ -135,7 +135,7 @@ def create_or_update_periodic_task(
             name=task_name, defaults=defaults
         )
 
-        # Clean up old crontab if we switched from cron → interval
+        # Clean up old crontab if we switched from cron to interval
         if old_crontab:
             _cleanup_orphaned_crontab(old_crontab)
         # Clean up old interval if it changed

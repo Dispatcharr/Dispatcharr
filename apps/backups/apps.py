@@ -23,6 +23,8 @@ class BackupsConfig(AppConfig):
 
     def _sync_backup_scheduler(self):
         """Sync backup scheduler task to database."""
+        from django.db import close_old_connections
+
         from core.models import CoreSettings
         from .scheduler import _sync_periodic_task, DEFAULTS
         try:
@@ -38,3 +40,6 @@ class BackupsConfig(AppConfig):
         except Exception as e:
             # Log but don't fail startup if there's an issue
             logger.warning(f"Failed to initialize backup scheduler: {e}")
+        finally:
+            # Cron sync reads system_settings for timezone; return geventpool checkouts.
+            close_old_connections()

@@ -203,10 +203,9 @@ class InitialConnectionRetryTests(TestCase):
         source = inspect.getsource(run_recording)
 
         self.assertGreater(_dvr_ffmpeg_retry_window_seconds(), 0)
-        self.assertIn("reconnect", source.lower(),
-                       "run_recording must contain input reconnection flags")
         self.assertIn("_ffmpeg_outage_started", source)
         self.assertIn("_ffmpeg_retry_window", source)
+        self.assertIn("_dvr_build_ffmpeg_cmd", source)
 
 
 # ---------------------------------------------------------------------------

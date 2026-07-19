@@ -1088,7 +1088,7 @@ def generate_dummy_epg(
     return xml_lines
 
 
-def generate_epg(request, profile_name=None, user=None):
+def generate_epg(request, profile_name=None, user=None, *, xc_catchup_prev_days=False):
     """
     Dynamically generate an XMLTV (EPG) file using a streaming response.
     Since the EPG data is stored independently of Channels, we group programmes
@@ -1100,11 +1100,16 @@ def generate_epg(request, profile_name=None, user=None):
         num_days = max(0, min(num_days, 365))
     except (ValueError, TypeError):
         num_days = 0
-    try:
-        prev_days = int(request.GET.get('prev_days', user_custom.get('epg_prev_days', 0)))
-        prev_days = max(0, min(prev_days, 30))
-    except (ValueError, TypeError):
-        prev_days = 0
+    if xc_catchup_prev_days:
+        from apps.channels.utils import resolve_xc_epg_prev_days
+
+        prev_days = resolve_xc_epg_prev_days(request, user)
+    else:
+        try:
+            prev_days = int(request.GET.get('prev_days', user_custom.get('epg_prev_days', 0)))
+            prev_days = max(0, min(prev_days, 30))
+        except (ValueError, TypeError):
+            prev_days = 0
     use_cached_logos = request.GET.get('cachedlogos', 'true').lower() != 'false'
     tvg_id_source = request.GET.get('tvg_id_source', 'channel_number').lower()
     cache_params = (
@@ -1187,26 +1192,26 @@ def generate_epg(request, profile_name=None, user=None):
         # XC clients require integer channel numbers, so we need to ensure no conflicts
         channel_num_map = {}
         if user is not None:
-            # This is an XC client - build collision-free mapping
             used_numbers = set()
+            deferred_channels = []
 
-            # First pass: assign integers for channels that already have integer numbers
             for channel in channels:
                 effective_num = channel.effective_channel_number
-                if effective_num is not None and effective_num == int(effective_num):
+                if effective_num is None:
+                    deferred_channels.append((channel.id, None))
+                elif effective_num == int(effective_num):
                     num = int(effective_num)
                     channel_num_map[channel.id] = num
                     used_numbers.add(num)
+                else:
+                    deferred_channels.append((channel.id, effective_num))
 
-            # Second pass: assign integers for channels with float numbers
-            for channel in channels:
-                effective_num = channel.effective_channel_number
-                if effective_num is not None and effective_num != int(effective_num):
-                    candidate = int(effective_num)
-                    while candidate in used_numbers:
-                        candidate += 1
-                    channel_num_map[channel.id] = candidate
-                    used_numbers.add(candidate)
+            for channel_id, effective_num in deferred_channels:
+                candidate = 1 if effective_num is None else int(effective_num)
+                while candidate in used_numbers:
+                    candidate += 1
+                channel_num_map[channel_id] = candidate
+                used_numbers.add(candidate)
 
         # Host/port/scheme are constant per request; precompute logo URL prefix once.
         _base_url = build_absolute_uri_with_port(request, "")

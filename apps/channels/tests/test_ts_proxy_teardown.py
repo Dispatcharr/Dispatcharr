@@ -469,6 +469,41 @@ class CleanRedisKeysOrderTests(TestCase):
         channel.release_stream.assert_called_once()
         server.redis_client.delete.assert_called_once_with(channel_key)
 
+    @patch("apps.m3u.connection_pool.release_profile_slot")
+    @patch("apps.proxy.live_proxy.server.Stream.objects.get")
+    @patch("apps.proxy.live_proxy.server.Channel.objects.get")
+    def test_clean_redis_keys_releases_profile_from_metadata_when_channel_gone(
+        self, mock_channel_get, mock_stream_get, mock_release_slot
+    ):
+        """Delete-without-stop leaves Redis session; later stop must free the slot."""
+        from apps.channels.models import Channel, Stream
+
+        with patch(
+            "apps.proxy.live_proxy.server.RedisClient.get_client",
+            return_value=MagicMock(),
+        ):
+            server = ProxyServer()
+        server.redis_client = MagicMock()
+        mock_channel_get.side_effect = Channel.DoesNotExist
+        mock_stream_get.side_effect = Stream.DoesNotExist
+
+        def hget(key, field):
+            mapping = {
+                ChannelMetadataField.STREAM_ID: b"2243070",
+                ChannelMetadataField.M3U_PROFILE: b"50",
+                ChannelMetadataField.CHANNEL_ID: b"224",
+            }
+            return mapping.get(field)
+
+        server.redis_client.hget.side_effect = hget
+        server.redis_client.scan.return_value = (0, [])
+
+        server._clean_redis_keys(CHANNEL_ID)
+
+        mock_release_slot.assert_called_once_with(50, server.redis_client)
+        server.redis_client.delete.assert_any_call("channel_stream:224")
+        server.redis_client.delete.assert_any_call("stream_profile:2243070")
+
 
 class LocalUpstreamActivityTests(TestCase):
     def _make_server(self):
@@ -671,6 +706,16 @@ class ShutdownDelayWaitTests(TestCase):
 
 
 class InitWaitAbortTests(TestCase):
+    def setUp(self):
+        self._teardown_patch = patch(
+            "apps.proxy.live_proxy.services.channel_service.ChannelService.is_channel_teardown_active",
+            return_value=False,
+        )
+        self._teardown_patch.start()
+
+    def tearDown(self):
+        self._teardown_patch.stop()
+
     def _make_generator(self):
         from apps.proxy.live_proxy.output.ts.generator import StreamGenerator
 

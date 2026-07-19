@@ -1,11 +1,11 @@
 # apps/channels/signals.py
 
-from django.db.models.signals import m2m_changed, pre_save, post_save, post_delete, pre_delete
+from django.db.models.signals import m2m_changed, pre_save, post_save, post_delete
 from django.dispatch import receiver
 from django.utils.timezone import now, is_aware, make_aware
 from celery.result import AsyncResult
 from django_celery_beat.models import ClockedSchedule, PeriodicTask
-from .models import Channel, Stream, ChannelProfile, ChannelProfileMembership, Recording
+from .models import Channel, Stream, ChannelStream, ChannelProfile, ChannelProfileMembership, Recording
 from apps.m3u.models import M3UAccount
 from apps.epg.tasks import parse_programs_for_tvg_id
 import json
@@ -59,38 +59,6 @@ def generate_custom_stream_hash(sender, instance, created, **kwargs):
         instance.stream_hash = hashlib.sha256(unique_string.encode()).hexdigest()
         # Use update to avoid triggering signals again
         Stream.objects.filter(id=instance.id).update(stream_hash=instance.stream_hash)
-
-@receiver(pre_delete, sender=Channel)
-def stop_proxy_session_before_channel_delete(sender, instance, **kwargs):
-    """
-    When a Channel is deleted, stop any active TS proxy session for it first.
-
-    Without this, the proxy's Redis state (live:channel:{uuid}:*) survives
-    the Channel row and the connected clients' "Stop" button hits
-    `ChannelService.stop_channel(uuid)`, which calls `Channel.objects.get(uuid=...)`
-    and crashes with DoesNotExist (reported as 'Channel not found' in the UI).
-    Users then cannot close the stream; source-side connection limits stay
-    consumed. Covers manual deletes, bulk deletes, and sync-driven deletes
-    via the same signal path.
-    """
-    try:
-        from apps.proxy.live_proxy.services.channel_service import ChannelService
-
-        channel_uuid = str(instance.uuid) if instance.uuid else None
-        if not channel_uuid:
-            return
-        # Best-effort: if the channel has no active session the service
-        # returns a benign 'Channel not found' result, which is ignored.
-        ChannelService.stop_channel(channel_uuid)
-    except Exception as e:
-        # Never block a channel delete on proxy cleanup failure. Log and
-        # continue so at least the DB row is removed.
-        logger.warning(
-            "Failed to stop proxy session before deleting channel %s: %s",
-            getattr(instance, "id", "<unknown>"),
-            e,
-        )
-
 
 @receiver(post_save, sender=Channel)
 def assign_compact_number_on_unhide(sender, instance, created, **kwargs):
@@ -369,3 +337,20 @@ def schedule_task_on_save(sender, instance, created, **kwargs):
 @receiver(post_delete, sender=Recording)
 def revoke_task_on_delete(sender, instance, **kwargs):
     revoke_task(instance.task_id)
+
+
+@receiver([post_save, post_delete], sender=ChannelStream)
+def update_channel_catchup_fields(sender, instance, **kwargs):
+    """Roll up catch-up flags from active streams (UI path; import uses SQL rollup)."""
+    from django.db.models import Max
+
+    channel = instance.channel
+    catchup_qs = channel.streams.filter(
+        is_catchup=True,
+        m3u_account__is_active=True,
+    )
+    max_days = catchup_qs.aggregate(max_days=Max("catchup_days"))["max_days"]
+    Channel.objects.filter(pk=channel.pk).update(
+        is_catchup=catchup_qs.exists(),
+        catchup_days=max_days or 0,
+    )

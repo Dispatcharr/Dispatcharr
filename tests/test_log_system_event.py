@@ -18,7 +18,8 @@ class LogSystemEventDispatchTests(SimpleTestCase):
 
         from core.utils import log_system_event
 
-        log_system_event("channel_start", channel_id="abc", channel_name="Test")
+        with patch("core.utils._is_gevent_monkey_patched", return_value=True):
+            log_system_event("channel_start", channel_id="abc", channel_name="Test")
 
         mock_dispatch.assert_called_once_with(
             "channel_start",

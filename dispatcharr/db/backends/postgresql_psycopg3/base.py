@@ -41,6 +41,9 @@ class DatabaseWrapper(DatabaseWrapperMixin, OriginalDatabaseWrapper):
 
         conn_params = super().get_connection_params()
         conn_params["application_name"] = db_application_name()
+        # Force UTC on every new DB connection.
+        existing_options = conn_params.get("options", "")
+        conn_params["options"] = f"{existing_options} -c TimeZone=UTC".strip()
         for attr in ("MAX_CONNS", "REUSE_CONNS", "CONN_MAX_LIFETIME"):
             if attr in self.settings_dict["OPTIONS"]:
                 conn_params[attr] = self.settings_dict["OPTIONS"][attr]

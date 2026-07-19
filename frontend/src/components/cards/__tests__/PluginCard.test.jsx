@@ -178,7 +178,9 @@ describe('PluginCard', () => {
       render(<PluginCard {...defaultProps} plugin={missingPlugin} />);
 
       expect(
-        screen.getByText('Missing plugin files. Re-import or delete this entry.')
+        screen.getByText(
+          'Missing plugin files. Re-import or delete this entry.'
+        )
       ).toBeInTheDocument();
     });
 
@@ -187,7 +189,9 @@ describe('PluginCard', () => {
       render(<PluginCard {...defaultProps} plugin={legacyPlugin} />);
 
       expect(
-        screen.getByText('Please update or ask the developer to add plugin.json.')
+        screen.getByText(
+          'Please update or ask the developer to add plugin.json.'
+        )
       ).toBeInTheDocument();
     });
   });
@@ -226,12 +230,19 @@ describe('PluginCard', () => {
       fireEvent.click(switchElement);
 
       await waitFor(() => {
-        expect(defaultProps.onToggleEnabled).toHaveBeenCalledWith('test-plugin', false);
+        expect(defaultProps.onToggleEnabled).toHaveBeenCalledWith(
+          'test-plugin',
+          false
+        );
       });
     });
 
     it('should require trust for first-time enable', async () => {
-      const firstTimePlugin = { ...mockPlugin, enabled: false, ever_enabled: false };
+      const firstTimePlugin = {
+        ...mockPlugin,
+        enabled: false,
+        ever_enabled: false,
+      };
       defaultProps.onRequireTrust.mockResolvedValue(true);
       defaultProps.onToggleEnabled.mockResolvedValue({ success: true });
 
@@ -241,13 +252,22 @@ describe('PluginCard', () => {
       fireEvent.click(switchElement);
 
       await waitFor(() => {
-        expect(defaultProps.onRequireTrust).toHaveBeenCalledWith(firstTimePlugin);
-        expect(defaultProps.onToggleEnabled).toHaveBeenCalledWith('test-plugin', true);
+        expect(defaultProps.onRequireTrust).toHaveBeenCalledWith(
+          firstTimePlugin
+        );
+        expect(defaultProps.onToggleEnabled).toHaveBeenCalledWith(
+          'test-plugin',
+          true
+        );
       });
     });
 
     it('should not enable if trust is denied', async () => {
-      const firstTimePlugin = { ...mockPlugin, enabled: false, ever_enabled: false };
+      const firstTimePlugin = {
+        ...mockPlugin,
+        enabled: false,
+        ever_enabled: false,
+      };
       defaultProps.onRequireTrust.mockResolvedValue(false);
 
       render(<PluginCard {...defaultProps} plugin={firstTimePlugin} />);
@@ -354,7 +374,7 @@ describe('PluginCard', () => {
       defaultProps.onSaveSettings.mockResolvedValue(true);
       defaultProps.onRunAction.mockResolvedValue({
         success: true,
-        result: { message: 'Action completed' }
+        result: { message: 'Action completed' },
       });
 
       render(<PluginCard {...defaultProps} />);
@@ -364,7 +384,10 @@ describe('PluginCard', () => {
       fireEvent.click(actionButton);
 
       await waitFor(() => {
-        expect(defaultProps.onRunAction).toHaveBeenCalledWith('test-plugin', 'action1');
+        expect(defaultProps.onRunAction).toHaveBeenCalledWith(
+          'test-plugin',
+          'action1'
+        );
         expect(notificationUtils.showNotification).toHaveBeenCalledWith({
           title: 'Test Plugin',
           message: 'Action completed',
@@ -442,7 +465,6 @@ describe('PluginCard', () => {
         });
       });
     });
-
 
     it('should render event triggers badges', () => {
       const pluginWithEvents = {

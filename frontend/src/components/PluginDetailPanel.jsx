@@ -9,6 +9,9 @@ import {
   Select,
   Stack,
   Table,
+  TableTbody,
+  TableTd,
+  TableTr,
   Text,
   Tooltip,
 } from '@mantine/core';
@@ -21,7 +24,11 @@ import {
   ShieldCheck,
   Trash2,
 } from 'lucide-react';
-import { compareVersions } from './pluginUtils.js';
+import {
+  buildCompatibilityTooltip,
+  buildVersionSelectItems,
+  compareVersions,
+} from '../utils/components/pluginUtils.js';
 import { formatKB } from '../utils/networkUtils.js';
 import { DiscordIcon, GitHubIcon } from './icons.jsx';
 
@@ -294,42 +301,12 @@ const PluginDetailPanel = ({
 
       {manifest.versions?.length > 0 &&
         (() => {
-          const installedMissing =
-            installedVersion &&
-            !manifest.versions.some(
-              (v) => compareVersions(v.version, installedVersion) === 0
-            );
-          const buildLabel = (v) =>
-            `v${v.version}${v.prerelease ? ' (prerelease)' : ''}${v.version === manifest.latest?.version ? ' (latest)' : ''}${installedVersion && compareVersions(v.version, installedVersion) === 0 ? ' (installed)' : ''}`;
-
-          let versions = [...manifest.versions];
-          if (installedVersionIsPrerelease) {
-            const prereleases = versions.filter((v) => v.prerelease);
-            const stable = versions.filter((v) => !v.prerelease);
-            versions = [...prereleases, ...stable];
-          }
-
-          const versionItems = versions.map((v) => ({
-            value: v.version,
-            label: buildLabel(v),
-            disabled: false,
-          }));
-          if (installedMissing) {
-            const ghostItem = {
-              value: installedVersion,
-              label: `v${installedVersion} (installed)`,
-              disabled: true,
-            };
-            // Insert in sorted position (newest first, matching manifest order convention)
-            const idx = versionItems.findIndex(
-              (item) => compareVersions(installedVersion, item.value) > 0
-            );
-            if (idx === -1) {
-              versionItems.push(ghostItem);
-            } else {
-              versionItems.splice(idx, 0, ghostItem);
-            }
-          }
+          const versionItems = buildVersionSelectItems(
+            manifest.versions,
+            manifest.latest?.version,
+            installedVersion,
+            installedVersionIsPrerelease
+          );
           return (
             <>
               <Group gap="xs" align="flex-end">
@@ -372,21 +349,17 @@ const PluginDetailPanel = ({
                     selectedVersionData &&
                     !isSelSame &&
                     (() => {
-                      const parts = [];
-                      if (!selMeetsMin)
-                        parts.push(
-                          `${selectedVersionData.min_dispatcharr_version} or newer`
-                        );
-                      if (!selMeetsMax)
-                        parts.push(
-                          `${selectedVersionData.max_dispatcharr_version} or older`
-                        );
+                      const tooltip = buildCompatibilityTooltip(
+                        selMeetsMin,
+                        selectedVersionData,
+                        selMeetsMax
+                      );
                       const label = !selMeetsMin
                         ? `Min ${selectedVersionData.min_dispatcharr_version}`
                         : `Max ${selectedVersionData.max_dispatcharr_version}`;
                       return (
                         <Tooltip
-                          label={`Incompatible: requires Dispatcharr ${parts.join(' and ')} (you have v${appVersion})`}
+                          label={`Incompatible: requires Dispatcharr ${tooltip} (you have v${appVersion})`}
                         >
                           <Group gap={4} align="center" wrap="nowrap">
                             <AlertTriangle
@@ -409,56 +382,56 @@ const PluginDetailPanel = ({
                   highlightOnHover
                   style={{ tableLayout: 'auto' }}
                 >
-                  <Table.Tbody>
+                  <TableTbody>
                     {selectedVersionData.build_timestamp && (
-                      <Table.Tr>
-                        <Table.Td fw={500} style={{ whiteSpace: 'nowrap' }}>
+                      <TableTr>
+                        <TableTd fw={500} style={{ whiteSpace: 'nowrap' }}>
                           Built
-                        </Table.Td>
-                        <Table.Td>
+                        </TableTd>
+                        <TableTd>
                           {new Date(
                             selectedVersionData.build_timestamp
                           ).toLocaleString()}
-                        </Table.Td>
-                      </Table.Tr>
+                        </TableTd>
+                      </TableTr>
                     )}
                     {Number.isFinite(selectedVersionData.size) &&
                       selectedVersionData.size > 0 && (
-                        <Table.Tr>
-                          <Table.Td fw={500} style={{ whiteSpace: 'nowrap' }}>
+                        <TableTr>
+                          <TableTd fw={500} style={{ whiteSpace: 'nowrap' }}>
                             File Size
-                          </Table.Td>
-                          <Table.Td>
+                          </TableTd>
+                          <TableTd>
                             {formatKB(selectedVersionData.size)}
-                          </Table.Td>
-                        </Table.Tr>
+                          </TableTd>
+                        </TableTr>
                       )}
                     {selectedVersionData.min_dispatcharr_version && (
-                      <Table.Tr>
-                        <Table.Td fw={500} style={{ whiteSpace: 'nowrap' }}>
+                      <TableTr>
+                        <TableTd fw={500} style={{ whiteSpace: 'nowrap' }}>
                           Min Version
-                        </Table.Td>
-                        <Table.Td>
+                        </TableTd>
+                        <TableTd>
                           {selectedVersionData.min_dispatcharr_version}
-                        </Table.Td>
-                      </Table.Tr>
+                        </TableTd>
+                      </TableTr>
                     )}
                     {selectedVersionData.max_dispatcharr_version && (
-                      <Table.Tr>
-                        <Table.Td fw={500} style={{ whiteSpace: 'nowrap' }}>
+                      <TableTr>
+                        <TableTd fw={500} style={{ whiteSpace: 'nowrap' }}>
                           Max Version
-                        </Table.Td>
-                        <Table.Td>
+                        </TableTd>
+                        <TableTd>
                           {selectedVersionData.max_dispatcharr_version}
-                        </Table.Td>
-                      </Table.Tr>
+                        </TableTd>
+                      </TableTr>
                     )}
                     {selectedVersionData.commit_sha_short && (
-                      <Table.Tr>
-                        <Table.Td fw={500} style={{ whiteSpace: 'nowrap' }}>
+                      <TableTr>
+                        <TableTd fw={500} style={{ whiteSpace: 'nowrap' }}>
                           Commit
-                        </Table.Td>
-                        <Table.Td>
+                        </TableTd>
+                        <TableTd>
                           {manifest.registry_url ? (
                             <Text
                               size="xs"
@@ -473,15 +446,15 @@ const PluginDetailPanel = ({
                           ) : (
                             selectedVersionData.commit_sha_short
                           )}
-                        </Table.Td>
-                      </Table.Tr>
+                        </TableTd>
+                      </TableTr>
                     )}
                     {selectedVersionData.url && (
-                      <Table.Tr>
-                        <Table.Td fw={500} style={{ whiteSpace: 'nowrap' }}>
+                      <TableTr>
+                        <TableTd fw={500} style={{ whiteSpace: 'nowrap' }}>
                           Download
-                        </Table.Td>
-                        <Table.Td>
+                        </TableTd>
+                        <TableTd>
                           <Text
                             size="xs"
                             component="a"
@@ -492,10 +465,10 @@ const PluginDetailPanel = ({
                           >
                             {selectedVersionData.url.split('/').pop()}
                           </Text>
-                        </Table.Td>
-                      </Table.Tr>
+                        </TableTd>
+                      </TableTr>
                     )}
-                  </Table.Tbody>
+                  </TableTbody>
                 </Table>
               )}
             </>

@@ -1,12 +1,16 @@
 import { create } from 'zustand';
 
-const useWarningsStore = create((set) => ({
+const useWarningsStore = create((set, get) => ({
   // Map of action keys to whether they're suppressed
   suppressedWarnings: {},
 
+  // Optional per-action preferences remembered with confirmations
+  // e.g. { 'delete-channel': { stopStream: true } }
+  actionPreferences: {},
+
   // Function to check if a warning is suppressed
   isWarningSuppressed: (actionKey) => {
-    const state = useWarningsStore.getState();
+    const state = get();
     return state.suppressedWarnings[actionKey] === true;
   },
 
@@ -20,9 +24,32 @@ const useWarningsStore = create((set) => ({
     }));
   },
 
+  setActionPreference: (actionKey, preference) => {
+    if (!actionKey || !preference || typeof preference !== 'object') {
+      return;
+    }
+    set((state) => ({
+      actionPreferences: {
+        ...state.actionPreferences,
+        [actionKey]: {
+          ...(state.actionPreferences[actionKey] || {}),
+          ...preference,
+        },
+      },
+    }));
+  },
+
+  getActionPreference: (actionKey, key, defaultValue = false) => {
+    const prefs = get().actionPreferences[actionKey];
+    if (!prefs || !(key in prefs)) {
+      return defaultValue;
+    }
+    return prefs[key];
+  },
+
   // Function to reset all suppressions
   resetSuppressions: () => {
-    set({ suppressedWarnings: {} });
+    set({ suppressedWarnings: {}, actionPreferences: {} });
   },
 }));
 

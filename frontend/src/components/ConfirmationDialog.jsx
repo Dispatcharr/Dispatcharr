@@ -1,5 +1,5 @@
 import { Modal, Group, Button, Checkbox, Box } from '@mantine/core';
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import useWarningsStore from '../store/warnings';
 
 /**
@@ -17,6 +17,10 @@ import useWarningsStore from '../store/warnings';
  * @param {Function} props.onSuppressChange - Called when "don't show again" option changes
  * @param {string} [props.size='md'] - Size of the modal
  * @param {boolean} [props.loading=false] - Whether the confirm button should show loading state
+ * @param {boolean} [props.showDeleteFileOption=false] - Show "also delete files" checkbox
+ * @param {string} [props.deleteFileLabel] - Label for delete-files checkbox
+ * @param {boolean} [props.showStopStreamOption=false] - Show "also stop channel" checkbox
+ * @param {string} [props.stopStreamLabel] - Label for stop-channel checkbox
  */
 const ConfirmationDialog = ({
   opened,
@@ -32,14 +36,38 @@ const ConfirmationDialog = ({
   zIndex = 1000,
   showDeleteFileOption = false,
   deleteFileLabel = 'Also delete files from disk',
+  showStopStreamOption = false,
+  stopStreamLabel = 'Also stop active channel if playing',
   loading = false,
 }) => {
   const suppressWarning = useWarningsStore((s) => s.suppressWarning);
   const isWarningSuppressed = useWarningsStore((s) => s.isWarningSuppressed);
+  const setActionPreference = useWarningsStore((s) => s.setActionPreference);
+  const getActionPreference = useWarningsStore((s) => s.getActionPreference);
   const [suppressChecked, setSuppressChecked] = useState(
     isWarningSuppressed(actionKey)
   );
   const [deleteFiles, setDeleteFiles] = useState(false);
+  const [stopStream, setStopStream] = useState(false);
+
+  useEffect(() => {
+    if (!opened) {
+      return;
+    }
+    setSuppressChecked(isWarningSuppressed(actionKey));
+    setDeleteFiles(false);
+    if (showStopStreamOption && actionKey) {
+      setStopStream(getActionPreference(actionKey, 'stopStream', false));
+    } else {
+      setStopStream(false);
+    }
+  }, [
+    opened,
+    actionKey,
+    showStopStreamOption,
+    isWarningSuppressed,
+    getActionPreference,
+  ]);
 
   const handleToggleSuppress = (e) => {
     setSuppressChecked(e.currentTarget.checked);
@@ -49,19 +77,25 @@ const ConfirmationDialog = ({
   };
 
   const handleConfirm = () => {
+    if (showStopStreamOption && actionKey) {
+      setActionPreference(actionKey, { stopStream });
+    }
     if (suppressChecked) {
       suppressWarning(actionKey);
     }
-    if (showDeleteFileOption) {
+    if (showStopStreamOption) {
+      onConfirm(stopStream);
+    } else if (showDeleteFileOption) {
       onConfirm(deleteFiles);
     } else {
       onConfirm();
     }
-    setDeleteFiles(false); // Reset for next time
+    setDeleteFiles(false);
   };
 
   const handleClose = () => {
-    setDeleteFiles(false); // Reset for next time
+    setDeleteFiles(false);
+    setStopStream(false);
     onClose();
   };
 
@@ -76,21 +110,30 @@ const ConfirmationDialog = ({
     >
       <Box mb={20}>{message}</Box>
 
-      {actionKey && (
-        <Checkbox
-          label="Don't ask me again"
-          checked={suppressChecked}
-          onChange={handleToggleSuppress}
-          mb={20}
-        />
-      )}
-
       {showDeleteFileOption && (
         <Checkbox
           checked={deleteFiles}
           onChange={(event) => setDeleteFiles(event.currentTarget.checked)}
           label={deleteFileLabel}
           mb="md"
+        />
+      )}
+
+      {showStopStreamOption && (
+        <Checkbox
+          checked={stopStream}
+          onChange={(event) => setStopStream(event.currentTarget.checked)}
+          label={stopStreamLabel}
+          mb="md"
+        />
+      )}
+
+      {actionKey && (
+        <Checkbox
+          label="Don't ask me again"
+          checked={suppressChecked}
+          onChange={handleToggleSuppress}
+          mb={20}
         />
       )}
 

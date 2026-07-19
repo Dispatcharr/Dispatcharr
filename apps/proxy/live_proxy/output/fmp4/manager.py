@@ -62,8 +62,10 @@ INIT_SEGMENT_TIMEOUT = 15
 # MP4 box type for the first media fragment
 MOOF_BOX_TYPE = b"moof"
 
-# Redis TTL for init segment and buffer state keys
+# Redis TTL for init segment and buffer state keys (orphan backstop).
+# Refreshed while the remux is alive; deleted on graceful stop.
 FMP4_KEY_TTL = 3600
+FMP4_TTL_REFRESH_INTERVAL = 60
 
 
 def _find_moof_offset(data: bytes, start: int = 0) -> int:
@@ -108,6 +110,7 @@ class FMP4RemuxManager:
             channel_id, redis_client=RedisClient.get_buffer(), fmt=fmt
         )
         self._redis = RedisClient.get_client()
+        self._last_ttl_refresh = 0.0
 
     # ------------------------------------------------------------------
     # Public API
@@ -294,6 +297,7 @@ class FMP4RemuxManager:
 
         try:
             while self.running:
+                self._refresh_redis_ttls()
                 ready, _, _ = select.select([self._process.stdout], [], [], 1.0)
                 if not ready:
                     if self._process.poll() is not None:
@@ -448,6 +452,35 @@ class FMP4RemuxManager:
         redis_buf = RedisClient.get_buffer()
         if redis_buf:
             redis_buf.setex(RedisKeys.output_init(self.channel_id, self.fmt), FMP4_KEY_TTL, data)
+
+    def _refresh_redis_ttls(self):
+        """Extend orphan-backstop TTLs while this remux is alive.
+
+        Rate-limited so long sessions keep owner/state/init without per-fragment
+        Redis chatter. EXPIRE is a no-op if a key was already deleted.
+        """
+        now = time.time()
+        if now - self._last_ttl_refresh < FMP4_TTL_REFRESH_INTERVAL:
+            return
+        self._last_ttl_refresh = now
+        if not self._redis:
+            return
+        try:
+            owner_key = RedisKeys.output_owner(self.channel_id, self.fmt)
+            state_key = RedisKeys.output_state(self.channel_id, self.fmt)
+            pipe = self._redis.pipeline()
+            pipe.expire(owner_key, FMP4_KEY_TTL)
+            pipe.expire(state_key, FMP4_KEY_TTL)
+            pipe.execute()
+            redis_buf = RedisClient.get_buffer()
+            if redis_buf is not None:
+                redis_buf.expire(
+                    RedisKeys.output_init(self.channel_id, self.fmt), FMP4_KEY_TTL
+                )
+        except Exception as e:
+            logger.debug(
+                f"[fMP4Remux:{self.channel_id}] TTL refresh failed: {e}"
+            )
 
     def _cleanup_redis(self):
         """Delete all output buffer Redis keys for this channel."""

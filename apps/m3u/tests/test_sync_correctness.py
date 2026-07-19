@@ -7,6 +7,7 @@ the correct post-fix behavior. Comments call out the failure mode and the
 fix location.
 """
 from unittest import skipUnless
+from unittest.mock import MagicMock
 
 from django.db import connection
 from django.test import TestCase, TransactionTestCase
@@ -273,15 +274,36 @@ class AccountDeleteCleanupTests(TestCase):
 
 class ChannelDeleteStopsProxyTests(TestCase):
     """
-    Issue #870: When an auto-sync refresh deletes a channel that has an
-    active proxy session, the session's Redis state survives, making the UI
-    "Stop" button fail with 'Channel not found'. Fix is a pre_delete signal
-    on Channel that calls ChannelService.stop_channel first, covering
-    manual, bulk, and sync-triggered deletes uniformly.
+    Issue #870: sync-driven channel deletes must stop active proxy sessions
+    before the DB row is removed. Manual deletes leave this optional via the
+    stop_stream API flag (plain model.delete() does not stop).
     """
 
-    def test_pre_delete_signal_calls_stop_channel(self):
+    def test_model_delete_does_not_auto_stop_proxy(self):
         from unittest.mock import patch
+
+        account = _make_account()
+        group = _make_group(name="Sports")
+        channel = Channel.objects.create(
+            name="ESPN",
+            channel_number=1,
+            channel_group=group,
+            auto_created=True,
+            auto_created_by=account,
+        )
+
+        with patch(
+            "apps.proxy.live_proxy.services.channel_service.ChannelService.stop_channel"
+        ) as mock_stop:
+            channel.delete()
+
+        mock_stop.assert_not_called()
+        self.assertFalse(Channel.objects.filter(id=channel.id).exists())
+
+    def test_sync_helper_stops_proxy_before_delete(self):
+        from unittest.mock import patch
+
+        from apps.m3u.tasks import _delete_channels_stopping_streams
 
         account = _make_account()
         group = _make_group(name="Sports")
@@ -295,15 +317,21 @@ class ChannelDeleteStopsProxyTests(TestCase):
         channel_uuid = str(channel.uuid)
 
         with patch(
-            "apps.proxy.live_proxy.services.channel_service.ChannelService.stop_channel"
+            "apps.proxy.live_proxy.services.channel_service.ChannelService.stop_channels"
         ) as mock_stop:
-            channel.delete()
+            deleted = _delete_channels_stopping_streams([channel])
 
-        mock_stop.assert_called_once_with(channel_uuid)
+        self.assertEqual(deleted, 1)
+        mock_stop.assert_called_once()
+        stopped = [str(u) for u in mock_stop.call_args[0][0] if u]
+        self.assertEqual(stopped, [channel_uuid])
+        self.assertFalse(Channel.objects.filter(id=channel.id).exists())
 
-    def test_pre_delete_signal_swallows_stop_errors(self):
-        """Proxy failure must not block the DB delete."""
+    def test_sync_helper_continues_delete_when_stop_channel_fails(self):
+        """Per-channel proxy failures must not block the DB delete."""
         from unittest.mock import patch
+
+        from apps.m3u.tasks import _delete_channels_stopping_streams
 
         account = _make_account()
         group = _make_group(name="Sports")
@@ -314,14 +342,16 @@ class ChannelDeleteStopsProxyTests(TestCase):
             auto_created=True,
             auto_created_by=account,
         )
+        channel_id = channel.id
 
         with patch(
             "apps.proxy.live_proxy.services.channel_service.ChannelService.stop_channel",
             side_effect=Exception("proxy is down"),
         ):
-            channel.delete()
+            deleted = _delete_channels_stopping_streams([channel])
 
-        self.assertFalse(Channel.objects.filter(id=channel.id).exists())
+        self.assertEqual(deleted, 1)
+        self.assertFalse(Channel.objects.filter(id=channel_id).exists())
 
 
 class RangeEnforcementTests(TestCase):
@@ -762,6 +792,128 @@ class RegexPreviewTests(TestCase):
         self.assertEqual(response.data["total_in_group"], 3)
         self.assertEqual(response.data["total_scanned"], 3)
         self.assertFalse(response.data["scan_limit_hit"])
+
+    def test_find_replace_applies_numbered_capture_group(self):
+        # The replace field accepts JS-style $1 backreferences, but the regex
+        # engine expects \1. Without the conversion the preview echoes the
+        # literal "$1", so the previewed "after" disagrees with the name the
+        # live rename produces.
+        account = self._make_account()
+        group = _make_group(name="Sports")
+        Stream.objects.create(
+            name="High Limit Racing at Eagle @ Jun 9 7:00 PM",
+            url="http://example.com/hlr.m3u8",
+            m3u_account=account,
+            channel_group=group,
+            last_seen=timezone.now(),
+        )
+        client = self._client()
+
+        response = client.get(
+            "/api/channels/streams/regex-preview/",
+            {"channel_group": "Sports", "find": r"(.+) @.*", "replace": "$1"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["find_match_count"], 1)
+        after = response.data["find_matches"][0]["after"]
+        self.assertEqual(after, "High Limit Racing at Eagle")
+        self.assertNotIn("$1", after)
+
+    def test_preview_after_matches_live_sync_rename(self):
+        # Guards the defect class: the preview and the live rename are
+        # separate code paths that must convert the replacement identically,
+        # so the preview can never promise an output the sync would not yield.
+        name = "High Limit Racing at Eagle @ Jun 9 7:00 PM"
+        account = self._make_account()
+        group = _make_group(name="Racing")
+        _attach_group_to_account(
+            account,
+            group,
+            custom_properties={
+                "name_regex_pattern": r"(.+) @.*",
+                "name_replace_pattern": "$1",
+            },
+        )
+        _make_stream(account, group, name=name, tvg_id="hlr")
+
+        result = _sync(account)
+        self.assertEqual(result.get("status"), "ok")
+        channel = Channel.objects.get(auto_created=True, auto_created_by=account)
+        live_name = channel.name
+
+        client = self._client()
+        response = client.get(
+            "/api/channels/streams/regex-preview/",
+            {"channel_group": "Racing", "find": r"(.+) @.*", "replace": "$1"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        preview_after = response.data["find_matches"][0]["after"]
+        self.assertEqual(preview_after, live_name)
+        self.assertEqual(preview_after, "High Limit Racing at Eagle")
+
+    def test_regex_engine_pattern_transforms_in_preview(self):
+        # Both the preview and the live rename use the regex module, which is
+        # more permissive than stdlib re and matches the JS-style syntax the UI
+        # authors. A quantified anchor like "^*" (which stdlib re rejects)
+        # compiles and transforms rather than reporting an error.
+        account = self._make_account()
+        group = _make_group(name="Sports")
+        Stream.objects.create(
+            name="Doc95",
+            url="http://example.com/doc95.m3u8",
+            m3u_account=account,
+            channel_group=group,
+            last_seen=timezone.now(),
+        )
+        client = self._client()
+
+        response = client.get(
+            "/api/channels/streams/regex-preview/",
+            {"channel_group": "Sports", "find": "^*", "replace": "$"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("find_error", response.data)
+        self.assertEqual(response.data["find_match_count"], 1)
+        # ^* matches the empty string at every position, so the literal $
+        # replacement is inserted between characters.
+        self.assertEqual(
+            response.data["find_matches"][0]["after"], "$D$o$c$9$5$"
+        )
+
+    def test_preview_and_sync_agree_on_regex_only_pattern(self):
+        # Parity guard for the engine alignment: a pattern valid in regex but
+        # not stdlib re must transform identically in the sync and the preview,
+        # rather than diverging (the sync no longer silently keeps the
+        # original name for these patterns).
+        name = "Doc95"
+        account = self._make_account()
+        group = _make_group(name="Docs")
+        _attach_group_to_account(
+            account,
+            group,
+            custom_properties={
+                "name_regex_pattern": "^*",
+                "name_replace_pattern": "$",
+            },
+        )
+        _make_stream(account, group, name=name, tvg_id="doc95")
+
+        result = _sync(account)
+        self.assertEqual(result.get("status"), "ok")
+        channel = Channel.objects.get(auto_created=True, auto_created_by=account)
+        live_name = channel.name
+        self.assertNotEqual(live_name, name)
+
+        client = self._client()
+        response = client.get(
+            "/api/channels/streams/regex-preview/",
+            {"channel_group": "Docs", "find": "^*", "replace": "$"},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["find_matches"][0]["after"], live_name)
 
     def test_filter_returns_matched_names_with_count(self):
         account = self._make_account()
@@ -2068,10 +2220,13 @@ class Migration0037DemoteOrphansTests(TestCase):
             "apps.channels.migrations.0037_auto_sync_overhaul"
         )
 
-        # The migration function takes (apps, schema_editor); apps is
-        # the historical app registry. For this unit test we call with
-        # the live registry.
-        module.backfill_auto_created_by_null(django_apps, None)
+        connection = MagicMock()
+        cursor = MagicMock()
+        connection.cursor.return_value.__enter__.return_value = cursor
+        connection.cursor.return_value.__exit__.return_value = False
+        schema_editor = MagicMock(connection=connection)
+
+        module.backfill_auto_created_by_null(django_apps, schema_editor)
 
         ch.refresh_from_db()
         self.assertFalse(

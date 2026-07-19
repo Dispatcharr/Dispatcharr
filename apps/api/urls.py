@@ -1,5 +1,7 @@
 from django.urls import path, include, re_path
-from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView, SpectacularRedocView
+from drf_spectacular.views import SpectacularSwaggerView, SpectacularRedocView
+
+from apps.api.schema_views import LockedSpectacularAPIView
 
 app_name = 'api'
 
@@ -12,6 +14,7 @@ urlpatterns = [
     path('core/', include(('core.api_urls', 'core'), namespace='core')),
     path('plugins/', include(('apps.plugins.api_urls', 'plugins'), namespace='plugins')),
     path('vod/', include(('apps.vod.api_urls', 'vod'), namespace='vod')),
+    path('catchup/', include(('apps.timeshift.api_urls', 'catchup'), namespace='catchup')),
     path('backups/', include(('apps.backups.api_urls', 'backups'), namespace='backups')),
     path('connect/', include(('apps.connect.api_urls', 'connect'), namespace='connect')),
     # path('output/', include(('apps.output.api_urls', 'output'), namespace='output')),
@@ -21,9 +24,9 @@ urlpatterns = [
 
 
 
-    # OpenAPI Schema and Documentation (drf-spectacular)
-    path('schema/', SpectacularAPIView.as_view(), name='schema'),
+    # OpenAPI schema (single-flight + Django cache; see apps.api.schema_views)
+    path('schema/', LockedSpectacularAPIView.as_view(), name='schema'),
     re_path(r'^swagger/?$', SpectacularSwaggerView.as_view(url_name='api:schema'), name='swagger-ui'),
     path('redoc/', SpectacularRedocView.as_view(url_name='api:schema'), name='redoc'),
-    path('swagger.json', SpectacularAPIView.as_view(), name='schema-json'),
+    path('swagger.json', LockedSpectacularAPIView.as_view(), name='schema-json'),
 ]

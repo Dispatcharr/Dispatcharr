@@ -15,7 +15,7 @@ import useChannelsTableStore from './store/channelsTable';
 import useStreamsTableStore from './store/streamsTable';
 import useUsersStore from './store/users';
 import useConnectStore from './store/connect';
-import Limiter from './utils';
+import Limiter, { formatApiError } from './utils';
 
 // If needed, you can set a base host or keep it empty if relative requests
 const host = import.meta.env.DEV
@@ -23,22 +23,7 @@ const host = import.meta.env.DEV
   : '';
 
 const errorNotification = (message, error) => {
-  let errorMessage = '';
-
-  if (error.status) {
-    try {
-      // Try to format the error body if it's an object
-      if (typeof error.body === 'object') {
-        errorMessage = JSON.stringify(error.body, null, 2);
-      } else {
-        errorMessage = `${error.status} - ${error.body}`;
-      }
-    } catch (e) {
-      errorMessage = `${error.status} - ${String(error.body)}`;
-    }
-  } else {
-    errorMessage = error.message || 'Unknown error';
-  }
+  const errorMessage = formatApiError(error);
 
   notifications.show({
     title: 'Error',
@@ -625,11 +610,19 @@ export default class API {
     }
   }
 
-  static async deleteChannel(id) {
+  static async deleteChannel(id, { stopStream = false } = {}) {
     try {
-      await request(`${host}/api/channels/channels/${id}/`, {
-        method: 'DELETE',
-      });
+      const params = new URLSearchParams();
+      if (stopStream) {
+        params.set('stop_stream', 'true');
+      }
+      const query = params.toString();
+      await request(
+        `${host}/api/channels/channels/${id}/${query ? `?${query}` : ''}`,
+        {
+          method: 'DELETE',
+        }
+      );
 
       useChannelsStore.getState().removeChannels([id]);
       await API.requeryStreams();
@@ -639,11 +632,11 @@ export default class API {
   }
 
   // @TODO: the bulk delete endpoint is currently broken
-  static async deleteChannels(channel_ids) {
+  static async deleteChannels(channel_ids, { stopStream = false } = {}) {
     try {
       await request(`${host}/api/channels/channels/bulk-delete/`, {
         method: 'DELETE',
-        body: { channel_ids },
+        body: { channel_ids, stop_stream: Boolean(stopStream) },
       });
 
       useChannelsStore.getState().removeChannels(channel_ids);
@@ -2480,6 +2473,56 @@ export default class API {
       return response;
     } catch (e) {
       errorNotification('Failed to retrieve VOD stats', e);
+    }
+  }
+
+  static async getTimeshiftStats() {
+    try {
+      const response = await request(`${host}/proxy/catchup/stats/`);
+
+      return response;
+    } catch (e) {
+      errorNotification('Failed to retrieve catch-up stats', e);
+    }
+  }
+
+  static async getAllConnectionStats() {
+    try {
+      const response = await request(`${host}/proxy/stats/`);
+
+      return response;
+    } catch (e) {
+      errorNotification('Failed to retrieve connection stats', e);
+      throw e;
+    }
+  }
+
+  static async getCatchupPrograms(sessions) {
+    try {
+      const response = await request(`${host}/proxy/catchup/programs/`, {
+        method: 'POST',
+        body: { sessions },
+      });
+
+      return response;
+    } catch (e) {
+      console.error('Failed to retrieve catch-up programmes', e);
+      return { sessions: [] };
+    }
+  }
+
+  static async stopTimeshiftSession(sessionId) {
+    try {
+      const response = await request(`${host}/proxy/catchup/stop_client/`, {
+        method: 'POST',
+        body: {
+          session_id: sessionId,
+        },
+      });
+
+      return response;
+    } catch (e) {
+      errorNotification('Failed to stop catch-up session', e);
     }
   }
 

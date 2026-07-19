@@ -114,6 +114,8 @@ const setupMocks = ({
     max_system_events: settings?.max_system_events ?? 100,
     preferred_region: '',
     auto_import_mapped_files: true,
+    enable_ip_lookup: true,
+    catchup_enabled: true,
   };
 
   const formMock = {
@@ -207,6 +209,12 @@ describe('SystemSettingsForm', () => {
       ).toBeInTheDocument();
     });
 
+    it('renders the Enable Catchup switch', () => {
+      setupMocks();
+      render(<SystemSettingsForm active={true} />);
+      expect(screen.getByTestId('catchup_enabled')).toBeInTheDocument();
+    });
+
     it('does not show success alert on initial render', () => {
       setupMocks();
       render(<SystemSettingsForm active={true} />);
@@ -286,6 +294,8 @@ describe('SystemSettingsForm', () => {
         max_system_events: 100,
         preferred_region: '',
         auto_import_mapped_files: true,
+        enable_ip_lookup: true,
+        catchup_enabled: true,
       });
     });
 

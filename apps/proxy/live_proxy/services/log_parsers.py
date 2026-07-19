@@ -164,6 +164,9 @@ class VLCLogParser(BaseLogParser):
         """Check if this is a VLC line we can parse"""
         lower = line.lower()
         
+        if 'unable to open the mrl' in lower:
+            return 'vlc_input_failed'
+        
         # VLC TS demux codec detection
         if 'ts demux debug' in lower and 'type=' in lower:
             if 'video' in lower:

@@ -6,7 +6,6 @@ import {
   Button,
   Center,
   Checkbox,
-  Flex,
   Group,
   Image,
   LoadingOverlay,
@@ -20,12 +19,12 @@ import {
   Tooltip,
   useMantineTheme,
 } from '@mantine/core';
-import { ExternalLink, Search, Trash2, Trash, SquareMinus } from 'lucide-react';
+import { ExternalLink, Trash, SquareMinus } from 'lucide-react';
 import useVODLogosStore from '../../store/vodLogos';
 import useLocalStorage from '../../hooks/useLocalStorage';
 import { CustomTable, useTable } from './CustomTable';
 import ConfirmationDialog from '../ConfirmationDialog';
-import { notifications } from '@mantine/notifications';
+import { showNotification } from '../../utils/notificationUtils.js';
 
 const VODLogoRowActions = ({ theme, row, deleteLogo }) => {
   const [tableSize] = useLocalStorage('table-size', 'default');
@@ -79,8 +78,8 @@ export default function VODLogosTable() {
   const [paginationString, setPaginationString] = useState('');
   const [isCleaningUp, setIsCleaningUp] = useState(false);
   const [unusedLogosCount, setUnusedLogosCount] = useState(0);
-  const [loadingUnusedCount, setLoadingUnusedCount] = useState(false);
   const tableRef = React.useRef(null);
+
   useEffect(() => {
     fetchVODLogos({
       page: currentPage,
@@ -93,14 +92,11 @@ export default function VODLogosTable() {
   // Fetch the total count of unused logos
   useEffect(() => {
     const fetchUnusedCount = async () => {
-      setLoadingUnusedCount(true);
       try {
         const count = await getUnusedLogosCount();
         setUnusedLogosCount(count);
       } catch (error) {
         console.error('Failed to fetch unused logos count:', error);
-      } finally {
-        setLoadingUnusedCount(false);
       }
     };
 
@@ -157,21 +153,21 @@ export default function VODLogosTable() {
     try {
       if (deleteTarget.length === 1) {
         await deleteVODLogo(deleteTarget[0]);
-        notifications.show({
+        showNotification({
           title: 'Success',
           message: 'VOD logo deleted successfully',
           color: 'green',
         });
       } else {
         await deleteVODLogos(deleteTarget);
-        notifications.show({
+        showNotification({
           title: 'Success',
           message: `${deleteTarget.length} VOD logos deleted successfully`,
           color: 'green',
         });
       }
     } catch (error) {
-      notifications.show({
+      showNotification({
         title: 'Error',
         message: error.message || 'Failed to delete VOD logos',
         color: 'red',
@@ -193,7 +189,7 @@ export default function VODLogosTable() {
     setIsCleaningUp(true);
     try {
       const result = await cleanupUnusedVODLogos();
-      notifications.show({
+      showNotification({
         title: 'Success',
         message: `Cleaned up ${result.deleted_count} unused VOD logos`,
         color: 'green',
@@ -202,7 +198,7 @@ export default function VODLogosTable() {
       const newCount = await getUnusedLogosCount();
       setUnusedLogosCount(newCount);
     } catch (error) {
-      notifications.show({
+      showNotification({
         title: 'Error',
         message: error.message || 'Failed to cleanup unused VOD logos',
         color: 'red',
@@ -315,7 +311,7 @@ export default function VODLogosTable() {
           const usageParts = [];
           if (movie_count > 0) {
             usageParts.push(
-              `${movie_count} movie${movie_count !== 1 ? 's' : ''}`
+              `${movie_count} ${movie_count !== 1 ? 'movies' : 'movie'}`
             );
           }
           if (series_count > 0) {
@@ -325,7 +321,7 @@ export default function VODLogosTable() {
           const label =
             usageParts.length === 1
               ? usageParts[0]
-              : `${totalUsage} item${totalUsage !== 1 ? 's' : ''}`;
+              : `${totalUsage} ${totalUsage !== 1 ? 'items' : 'item'}`;
 
           return (
             <Tooltip

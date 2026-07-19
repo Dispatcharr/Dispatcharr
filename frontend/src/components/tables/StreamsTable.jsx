@@ -1,63 +1,55 @@
-import React, {
-  useEffect,
-  useMemo,
-  useCallback,
-  useState,
-  useRef,
-} from 'react';
-import API from '../../api';
+import React, { useCallback, useEffect, useMemo, useRef, useState, } from 'react';
 import StreamForm from '../forms/Stream';
+import CatchupIndicator from '../CatchupIndicator';
 import usePlaylistsStore from '../../store/playlists';
 import useChannelsStore from '../../store/channels';
 import { copyToClipboard, useDebounce } from '../../utils';
 import { buildLiveStreamUrl } from '../../utils/components/FloatingVideoUtils.js';
 import {
-  SquarePlus,
-  ListPlus,
-  SquareMinus,
-  EllipsisVertical,
-  Copy,
+  ArrowDownWideNarrow,
   ArrowUpDown,
   ArrowUpNarrowWide,
-  ArrowDownWideNarrow,
-  Search,
-  Filter,
-  Square,
-  SquareCheck,
+  Copy,
+  EllipsisVertical,
   Eye,
   EyeOff,
+  Filter,
+  ListPlus,
   RotateCcw,
+  Search,
+  Square,
+  SquareCheck,
+  SquareMinus,
+  SquarePlus,
 } from 'lucide-react';
 import {
-  TextInput,
   ActionIcon,
-  Select,
-  Tooltip,
-  Menu,
-  Flex,
   Box,
-  Text,
-  Paper,
   Button,
   Card,
-  Stack,
-  Title,
-  Divider,
   Center,
-  Pagination,
+  Divider,
+  Flex,
   Group,
-  NativeSelect,
-  MultiSelect,
-  useMantineTheme,
-  UnstyledButton,
-  Skeleton,
-  Modal,
-  NumberInput,
-  Radio,
   LoadingOverlay,
-  Pill,
+  Menu,
+  MenuDivider,
+  MenuDropdown,
+  MenuItem,
+  MenuLabel,
+  MenuTarget,
+  MultiSelect,
+  NativeSelect,
+  Pagination,
+  Paper,
+  Stack,
+  Text,
+  TextInput,
+  Title,
+  Tooltip,
+  UnstyledButton,
+  useMantineTheme,
 } from '@mantine/core';
-import { notifications } from '@mantine/notifications';
 import { useNavigate } from 'react-router-dom';
 import useSettingsStore from '../../store/settings';
 import useVideoStore from '../../store/useVideoStore';
@@ -68,14 +60,33 @@ import useLocalStorage from '../../hooks/useLocalStorage';
 import ConfirmationDialog from '../ConfirmationDialog';
 import CreateChannelModal from '../modals/CreateChannelModal';
 import useStreamsTableStore from '../../store/streamsTable';
+import { showNotification } from '../../utils/notificationUtils.js';
+import { requeryChannels } from '../../utils/forms/ChannelUtils.js';
+import {
+  addStreamsToChannel,
+  appendFetchPageParams,
+  createChannelFromStream,
+  createChannelsFromStreamsAsync,
+  deleteStream,
+  deleteStreams,
+  getAllStreamIds,
+  getChannelNumberValue,
+  getChannelProfileIds,
+  getFilterParams,
+  getStatsTooltip,
+  getStreamFilterOptions,
+  getStreams,
+  queryStreamsTable,
+  requeryStreams,
+} from '../../utils/tables/StreamsTableUtils.js';
 
 const StreamRowActions = ({
   theme,
   row,
   editStream,
-  deleteStream,
+  handleDeleteStream,
   handleWatchStream,
-  createChannelFromStream,
+  handleCreateChannelFromStream,
   table,
 }) => {
   const tableSize = table?.tableSize ?? 'default';
@@ -90,7 +101,7 @@ const StreamRowActions = ({
   );
 
   const addStreamToChannel = async () => {
-    await API.addStreamsToChannel(targetChannelId, channelSelectionStreams, [
+    await addStreamsToChannel(targetChannelId, channelSelectionStreams, [
       row.original,
     ]);
   };
@@ -100,8 +111,8 @@ const StreamRowActions = ({
   }, [row.original, editStream]);
 
   const onDelete = useCallback(() => {
-    deleteStream(row.original.id);
-  }, [row.original.id, deleteStream]);
+    handleDeleteStream(row.original.id);
+  }, [row.original.id, handleDeleteStream]);
 
   const onPreview = useCallback(() => {
     console.log(
@@ -144,21 +155,21 @@ const StreamRowActions = ({
           size={iconSize}
           color={theme.tailwind.green[5]}
           variant="transparent"
-          onClick={() => createChannelFromStream(row.original)}
+          onClick={() => handleCreateChannelFromStream(row.original)}
         >
           <SquarePlus size="18" fontSize="small" />
         </ActionIcon>
       </Tooltip>
 
       <Menu>
-        <Menu.Target>
+        <MenuTarget>
           <ActionIcon variant="transparent" size={iconSize}>
             <EllipsisVertical size="18" />
           </ActionIcon>
-        </Menu.Target>
+        </MenuTarget>
 
-        <Menu.Dropdown>
-          <Menu.Item leftSection={<Copy size="14" />}>
+        <MenuDropdown>
+          <MenuItem leftSection={<Copy size="14" />}>
             <UnstyledButton
               variant="unstyled"
               size="xs"
@@ -166,17 +177,17 @@ const StreamRowActions = ({
             >
               <Text size="xs">Copy URL</Text>
             </UnstyledButton>
-          </Menu.Item>
-          <Menu.Item onClick={onEdit} disabled={!row.original.is_custom}>
+          </MenuItem>
+          <MenuItem onClick={onEdit} disabled={!row.original.is_custom}>
             <Text size="xs">Edit</Text>
-          </Menu.Item>
-          <Menu.Item onClick={onDelete} disabled={!row.original.is_custom}>
+          </MenuItem>
+          <MenuItem onClick={onDelete} disabled={!row.original.is_custom}>
             <Text size="xs">Delete Stream</Text>
-          </Menu.Item>
-          <Menu.Item onClick={onPreview}>
+          </MenuItem>
+          <MenuItem onClick={onPreview}>
             <Text size="xs">Preview Stream</Text>
-          </Menu.Item>
-        </Menu.Dropdown>
+          </MenuItem>
+        </MenuDropdown>
       </Menu>
     </>
   );
@@ -230,19 +241,13 @@ const StreamsTable = ({ onReady }) => {
   const [isBulkDelete, setIsBulkDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
-  // const [allRowsSelected, setAllRowsSelected] = useState(false);
-
-  // Add local storage for page size
-  const [storedPageSize, setStoredPageSize] = useLocalStorage(
-    'streams-page-size',
-    50
-  );
   const [filters, setFilters] = useState({
     name: '',
     channel_group: '',
     m3u_account: '',
     unassigned: false,
     hide_stale: false,
+    is_catchup: false,
   });
   const [columnSizing, setColumnSizing] = useLocalStorage(
     'streams-table-column-sizing',
@@ -392,18 +397,26 @@ const StreamsTable = ({ onReady }) => {
         grow: true,
         size: columnSizing.name || 200,
         minSize: 100,
-        cell: ({ getValue }) => (
-          <Tooltip label={getValue()} openDelay={500}>
-            <Box
-              style={{
-                whiteSpace: 'pre',
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-              }}
-            >
-              {getValue()}
-            </Box>
-          </Tooltip>
+        cell: ({ getValue, row }) => (
+          <Flex align="center" gap={6} style={{ minWidth: 0 }}>
+            <Tooltip label={getValue()} openDelay={500}>
+              <Box
+                style={{
+                  whiteSpace: 'pre',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  minWidth: 0,
+                  flex: 1,
+                }}
+              >
+                {getValue()}
+              </Box>
+            </Tooltip>
+            <CatchupIndicator
+              isCatchup={row.original.is_catchup}
+              catchupDays={row.original.catchup_days}
+            />
+          </Flex>
         ),
       },
       {
@@ -485,43 +498,7 @@ const StreamsTable = ({ onReady }) => {
               </Text>
             );
 
-          // Build compact display (resolution + video codec)
-          const parts = [];
-          if (stats.resolution) {
-            // Convert "1920x1080" to "1080p" format
-            const height = stats.resolution.split('x')[1];
-            if (height) parts.push(`${height}p`);
-          }
-          if (stats.video_codec) {
-            parts.push(stats.video_codec.toUpperCase());
-          }
-          const compactDisplay = parts.length > 0 ? parts.join(' ') : '-';
-
-          // Build tooltip content with friendly labels
-          const tooltipLines = [];
-          if (stats.resolution)
-            tooltipLines.push(`Resolution: ${stats.resolution}`);
-          if (stats.video_codec)
-            tooltipLines.push(
-              `Video Codec: ${stats.video_codec.toUpperCase()}`
-            );
-          if (stats.video_bitrate)
-            tooltipLines.push(`Video Bitrate: ${stats.video_bitrate} kbps`);
-          if (stats.source_fps)
-            tooltipLines.push(`Frame Rate: ${stats.source_fps} FPS`);
-          if (stats.audio_codec)
-            tooltipLines.push(
-              `Audio Codec: ${stats.audio_codec.toUpperCase()}`
-            );
-          if (stats.audio_channels)
-            tooltipLines.push(`Audio Channels: ${stats.audio_channels}`);
-          if (stats.audio_bitrate)
-            tooltipLines.push(`Audio Bitrate: ${stats.audio_bitrate} kbps`);
-
-          const tooltipContent =
-            tooltipLines.length > 0
-              ? tooltipLines.join('\n')
-              : 'No source info available';
+          const { compactDisplay, tooltipContent } = getStatsTooltip(stats);
 
           return (
             <Tooltip
@@ -590,18 +567,17 @@ const StreamsTable = ({ onReady }) => {
     }));
   };
 
+  const toggleCatchupOnly = () => {
+    setFilters((prev) => ({
+      ...prev,
+      is_catchup: !prev.is_catchup,
+    }));
+  };
+
   // Build a URLSearchParams object containing only the filter portion of the
   // query. Page-rows fetches add page/page_size/ordering on top of this.
   const buildFilterParams = useCallback(() => {
-    const params = new URLSearchParams();
-    Object.entries(debouncedFilters).forEach(([key, value]) => {
-      if (typeof value === 'boolean') {
-        if (value) params.append(key, 'true');
-      } else if (value !== null && value !== undefined && value !== '') {
-        params.append(key, String(value));
-      }
-    });
-    return params;
+    return getFilterParams(debouncedFilters);
   }, [debouncedFilters]);
 
   // Fetch the visible page of stream rows. Depends on pagination, sorting,
@@ -609,21 +585,7 @@ const StreamsTable = ({ onReady }) => {
   const fetchPageData = useCallback(
     async ({ showLoader = true } = {}) => {
       const params = buildFilterParams();
-      params.append('page', pagination.pageIndex + 1);
-      params.append('page_size', pagination.pageSize);
-
-      if (sorting.length > 0) {
-        const columnId = sorting[0].id;
-        const fieldMapping = {
-          name: 'name',
-          group: 'channel_group__name',
-          m3u: 'm3u_account__name',
-          tvg_id: 'tvg_id',
-        };
-        const sortField = fieldMapping[columnId] || columnId;
-        const sortDirection = sorting[0].desc ? '-' : '';
-        params.append('ordering', `${sortDirection}${sortField}`);
-      }
+      appendFetchPageParams(params, pagination, sorting);
 
       const paramsString = params.toString();
 
@@ -644,7 +606,7 @@ const StreamsTable = ({ onReady }) => {
       }
 
       try {
-        const result = await API.queryStreamsTable(params);
+        const result = await queryStreamsTable(params);
 
         fetchInProgressRef.current = false;
 
@@ -700,16 +662,8 @@ const StreamsTable = ({ onReady }) => {
       const savedStartNumber =
         localStorage.getItem('channel-numbering-start') || '1';
 
-      let startingChannelNumberValue;
-      if (savedMode === 'provider') {
-        startingChannelNumberValue = null;
-      } else if (savedMode === 'auto') {
-        startingChannelNumberValue = 0;
-      } else if (savedMode === 'highest') {
-        startingChannelNumberValue = -1;
-      } else {
-        startingChannelNumberValue = Number(savedStartNumber);
-      }
+      const startingChannelNumberValue =
+        getChannelNumberValue(savedMode, savedStartNumber);
 
       await executeChannelCreation(
         startingChannelNumberValue,
@@ -728,7 +682,7 @@ const StreamsTable = ({ onReady }) => {
       return streamFromCurrentPage;
     }
 
-    const response = await API.getStreams([streamId]);
+    const response = await getStreams([streamId]);
     return (
       response?.find(
         (candidate) => Number(candidate.id) === Number(streamId)
@@ -740,9 +694,9 @@ const StreamsTable = ({ onReady }) => {
     if (selectedStreamIds.length === 1) {
       const selectedStream = await resolveSelectedStream(selectedStreamIds[0]);
       if (selectedStream) {
-        await createChannelFromStream(selectedStream);
+        await handleCreateChannelFromStream(selectedStream);
       } else {
-        notifications.show({
+        showNotification({
           color: 'red',
           title: 'Stream not found',
           message:
@@ -761,25 +715,13 @@ const StreamsTable = ({ onReady }) => {
     profileIds = null
   ) => {
     try {
-      // Convert profile selection: 'all' means all profiles (null), 'none' means no profiles ([]), specific IDs otherwise
-      let channelProfileIds;
-      if (profileIds) {
-        if (profileIds.includes('none')) {
-          channelProfileIds = [];
-        } else if (profileIds.includes('all')) {
-          channelProfileIds = null;
-        } else {
-          channelProfileIds = profileIds
-            .filter((id) => id !== 'all' && id !== 'none')
-            .map((id) => parseInt(id));
-        }
-      } else {
-        channelProfileIds =
-          selectedProfileId !== '0' ? [parseInt(selectedProfileId)] : null;
-      }
+      const channelProfileIds = getChannelProfileIds(
+        profileIds,
+        selectedProfileId
+      );
 
       // Use the async API for all bulk operations
-      const response = await API.createChannelsFromStreamsAsync(
+      const response = await createChannelsFromStreamsAsync(
         selectedStreamIds,
         channelProfileIds,
         startingChannelNumberValue
@@ -814,14 +756,7 @@ const StreamsTable = ({ onReady }) => {
     }
 
     // Convert mode to API value
-    const startingChannelNumberValue =
-      numberingMode === 'provider'
-        ? null
-        : numberingMode === 'auto'
-          ? 0
-          : numberingMode === 'highest'
-            ? -1
-            : Number(customStartNumber);
+    const startingChannelNumberValue = getChannelNumberValue(numberingMode, customStartNumber);
 
     setChannelNumberingModalOpen(false);
     await executeChannelCreation(
@@ -839,7 +774,7 @@ const StreamsTable = ({ onReady }) => {
     setModalOpen(true);
   };
 
-  const deleteStream = async (id) => {
+  const handleDeleteStream = async (id) => {
     // Get stream details for the confirmation dialog
     const streamObj = data.find((s) => s.id === id);
     setStreamToDelete(streamObj);
@@ -858,7 +793,7 @@ const StreamsTable = ({ onReady }) => {
     setDeleting(true);
     setIsLoading(true);
     try {
-      await API.deleteStream(id);
+      await deleteStream(id);
       // Clear the selection for the deleted stream
       setSelectedStreamIds([]);
       table.setSelectedTableIds([]);
@@ -869,7 +804,7 @@ const StreamsTable = ({ onReady }) => {
     }
   };
 
-  const deleteStreams = async () => {
+  const handleDeleteStreams = async () => {
     setIsBulkDelete(true);
     setStreamToDelete(null);
 
@@ -885,7 +820,7 @@ const StreamsTable = ({ onReady }) => {
     setDeleting(true);
     setIsLoading(true);
     try {
-      await API.deleteStreams(selectedStreamIds);
+      await deleteStreams(selectedStreamIds);
       setSelectedStreamIds([]);
       table.setSelectedTableIds([]);
     } finally {
@@ -900,14 +835,14 @@ const StreamsTable = ({ onReady }) => {
     setModalOpen(false);
     setIsLoading(true);
     try {
-      await API.requeryStreams();
+      await requeryStreams();
     } finally {
       setIsLoading(false);
     }
   };
 
   // Single channel creation functions
-  const createChannelFromStream = async (stream) => {
+  const handleCreateChannelFromStream = async (stream) => {
     // Set default profile selection based on current profile filter
     const defaultProfileIds =
       selectedProfileId === '0' ? ['all'] : [selectedProfileId];
@@ -922,16 +857,7 @@ const StreamsTable = ({ onReady }) => {
       const savedChannelNumber =
         localStorage.getItem('single-channel-numbering-specific') || '1';
 
-      let channelNumberValue;
-      if (savedMode === 'provider') {
-        channelNumberValue = null;
-      } else if (savedMode === 'auto') {
-        channelNumberValue = 0;
-      } else if (savedMode === 'highest') {
-        channelNumberValue = -1;
-      } else {
-        channelNumberValue = Number(savedChannelNumber);
-      }
+      const channelNumberValue = getChannelNumberValue(savedMode, savedChannelNumber);
 
       await executeSingleChannelCreation(
         stream,
@@ -951,30 +877,14 @@ const StreamsTable = ({ onReady }) => {
     channelNumber = null,
     profileIds = null
   ) => {
-    // Convert profile selection: 'all' means all profiles (null), 'none' means no profiles ([]), specific IDs otherwise
-    let channelProfileIds;
-    if (profileIds) {
-      if (profileIds.includes('none')) {
-        channelProfileIds = [];
-      } else if (profileIds.includes('all')) {
-        channelProfileIds = null;
-      } else {
-        channelProfileIds = profileIds
-          .filter((id) => id !== 'all' && id !== 'none')
-          .map((id) => parseInt(id));
-      }
-    } else {
-      channelProfileIds =
-        selectedProfileId !== '0' ? [parseInt(selectedProfileId)] : null;
-    }
-
-    await API.createChannelFromStream({
+    const channelProfileIds = getChannelProfileIds(profileIds, selectedProfileId);
+    await createChannelFromStream({
       name: stream.name,
       channel_number: channelNumber,
       stream_id: stream.id,
       channel_profile_ids: channelProfileIds,
     });
-    await API.requeryChannels();
+    await requeryChannels();
   };
 
   // Handle confirming the single channel numbering modal
@@ -992,14 +902,7 @@ const StreamsTable = ({ onReady }) => {
     }
 
     // Convert mode to API value
-    const channelNumberValue =
-      singleChannelMode === 'provider'
-        ? null
-        : singleChannelMode === 'auto'
-          ? 0
-          : singleChannelMode === 'highest'
-            ? -1
-            : Number(specificChannelNumber);
+    const channelNumberValue = getChannelNumberValue(singleChannelMode, specificChannelNumber);
 
     setSingleChannelModalOpen(false);
     await executeSingleChannelCreation(
@@ -1013,11 +916,11 @@ const StreamsTable = ({ onReady }) => {
     setSingleChannelMode(nextMode);
   };
 
-  const addStreamsToChannel = async () => {
+  const handleAddStreamsToChannel = async () => {
     // Look up full stream objects from the current page data
     const selectedIdSet = new Set(selectedStreamIds);
     const newStreams = data.filter((s) => selectedIdSet.has(s.id));
-    await API.addStreamsToChannel(
+    await addStreamsToChannel(
       targetChannelId,
       channelSelectionStreams,
       newStreams
@@ -1030,7 +933,6 @@ const StreamsTable = ({ onReady }) => {
 
   const onPageSizeChange = (e) => {
     const newPageSize = parseInt(e.target.value);
-    setStoredPageSize(newPageSize);
     setPagination({
       ...pagination,
       pageSize: newPageSize,
@@ -1246,14 +1148,14 @@ const StreamsTable = ({ onReady }) => {
               theme={theme}
               row={row}
               editStream={editStream}
-              deleteStream={deleteStream}
+              handleDeleteStream={handleDeleteStream}
               handleWatchStream={handleWatchStream}
-              createChannelFromStream={createChannelFromStream}
+              handleCreateChannelFromStream={handleCreateChannelFromStream}
             />
           );
       }
     },
-    [theme, editStream, deleteStream, handleWatchStream]
+    [theme, editStream, handleDeleteStream, handleWatchStream]
   );
 
   const table = useTable({
@@ -1316,7 +1218,7 @@ const StreamsTable = ({ onReady }) => {
     lastIdsParamsRef.current = paramsString;
     let cancelled = false;
     (async () => {
-      const ids = await API.getAllStreamIds(params);
+      const ids = await getAllStreamIds(params);
       if (!cancelled && ids) {
         setAllRowIds(ids);
       }
@@ -1335,7 +1237,7 @@ const StreamsTable = ({ onReady }) => {
     lastFilterOptionsParamsRef.current = paramsString;
     let cancelled = false;
     (async () => {
-      const filterOptions = await API.getStreamFilterOptions(params);
+      const filterOptions = await getStreamFilterOptions(params);
       if (cancelled || !filterOptions || typeof filterOptions !== 'object') {
         return;
       }
@@ -1377,16 +1279,14 @@ const StreamsTable = ({ onReady }) => {
       return;
     }
 
-    const loadGroups = async () => {
+    (async () => {
       hasFetchedChannelGroups.current = true;
       try {
         await fetchChannelGroups();
       } catch (error) {
         console.error('Error fetching channel groups:', error);
       }
-    };
-
-    loadGroups();
+    })();
   }, [channelGroups, fetchChannelGroups]);
 
   useEffect(() => {
@@ -1466,7 +1366,6 @@ const StreamsTable = ({ onReady }) => {
             fontSize: '20px',
             lineHeight: 1,
             letterSpacing: '-0.3px',
-            // color: 'gray.6', // Adjust this to match MUI's theme.palette.text.secondary
             marginBottom: 0,
           }}
         >
@@ -1501,7 +1400,7 @@ const StreamsTable = ({ onReady }) => {
                     : 'default'
                 }
                 size="xs"
-                onClick={addStreamsToChannel}
+                onClick={handleAddStreamsToChannel}
                 p={5}
                 color={
                   selectedStreamIds.length > 0 && targetChannelId
@@ -1544,16 +1443,16 @@ const StreamsTable = ({ onReady }) => {
 
           <Flex gap={6} wrap="nowrap" style={{ flexShrink: 0 }}>
             <Menu shadow="md" width={200}>
-              <Menu.Target>
+              <MenuTarget>
                 <Tooltip label="Filters" openDelay={500}>
                   <Button size="xs" variant="default">
                     <Filter size={18} />
                   </Button>
                 </Tooltip>
-              </Menu.Target>
+              </MenuTarget>
 
-              <Menu.Dropdown>
-                <Menu.Item
+              <MenuDropdown>
+                <MenuItem
                   onClick={toggleUnassignedOnly}
                   leftSection={
                     filters.unassigned === true ? (
@@ -1564,8 +1463,8 @@ const StreamsTable = ({ onReady }) => {
                   }
                 >
                   <Text size="xs">Only Unassociated</Text>
-                </Menu.Item>
-                <Menu.Item
+                </MenuItem>
+                <MenuItem
                   onClick={toggleHideStale}
                   leftSection={
                     filters.hide_stale === true ? (
@@ -1576,8 +1475,20 @@ const StreamsTable = ({ onReady }) => {
                   }
                 >
                   <Text size="xs">Hide Stale</Text>
-                </Menu.Item>
-              </Menu.Dropdown>
+                </MenuItem>
+                <MenuItem
+                  onClick={toggleCatchupOnly}
+                  leftSection={
+                    filters.is_catchup === true ? (
+                      <SquareCheck size={18} />
+                    ) : (
+                      <Square size={18} />
+                    )
+                  }
+                >
+                  <Text size="xs">Only Catch-up</Text>
+                </MenuItem>
+              </MenuDropdown>
             </Menu>
 
             <Tooltip label="Create a new custom stream" openDelay={500}>
@@ -1603,7 +1514,7 @@ const StreamsTable = ({ onReady }) => {
                 leftSection={<SquareMinus size={18} />}
                 variant="default"
                 size="xs"
-                onClick={deleteStreams}
+                onClick={handleDeleteStreams}
                 disabled={selectedStreamIds.length == 0}
               >
                 Delete
@@ -1611,17 +1522,17 @@ const StreamsTable = ({ onReady }) => {
             </Tooltip>
 
             <Menu shadow="md" width={200}>
-              <Menu.Target>
+              <MenuTarget>
                 <Tooltip label="Table Settings" openDelay={500}>
                   <ActionIcon variant="default" size={30}>
                     <EllipsisVertical size={18} />
                   </ActionIcon>
                 </Tooltip>
-              </Menu.Target>
+              </MenuTarget>
 
-              <Menu.Dropdown>
-                <Menu.Label>Toggle Columns</Menu.Label>
-                <Menu.Item
+              <MenuDropdown>
+                <MenuLabel>Toggle Columns</MenuLabel>
+                <MenuItem
                   onClick={() => toggleColumnVisibility('name')}
                   leftSection={
                     columnVisibility.name !== false ? (
@@ -1632,8 +1543,8 @@ const StreamsTable = ({ onReady }) => {
                   }
                 >
                   <Text size="xs">Name</Text>
-                </Menu.Item>
-                <Menu.Item
+                </MenuItem>
+                <MenuItem
                   onClick={() => toggleColumnVisibility('group')}
                   leftSection={
                     columnVisibility.group !== false ? (
@@ -1644,8 +1555,8 @@ const StreamsTable = ({ onReady }) => {
                   }
                 >
                   <Text size="xs">Group</Text>
-                </Menu.Item>
-                <Menu.Item
+                </MenuItem>
+                <MenuItem
                   onClick={() => toggleColumnVisibility('m3u')}
                   leftSection={
                     columnVisibility.m3u !== false ? (
@@ -1656,8 +1567,8 @@ const StreamsTable = ({ onReady }) => {
                   }
                 >
                   <Text size="xs">M3U</Text>
-                </Menu.Item>
-                <Menu.Item
+                </MenuItem>
+                <MenuItem
                   onClick={() => toggleColumnVisibility('tvg_id')}
                   leftSection={
                     columnVisibility.tvg_id !== false ? (
@@ -1668,8 +1579,8 @@ const StreamsTable = ({ onReady }) => {
                   }
                 >
                   <Text size="xs">TVG-ID</Text>
-                </Menu.Item>
-                <Menu.Item
+                </MenuItem>
+                <MenuItem
                   onClick={() => toggleColumnVisibility('stats')}
                   leftSection={
                     columnVisibility.stats !== false ? (
@@ -1680,15 +1591,15 @@ const StreamsTable = ({ onReady }) => {
                   }
                 >
                   <Text size="xs">Stats</Text>
-                </Menu.Item>
-                <Menu.Divider />
-                <Menu.Item
+                </MenuItem>
+                <MenuDivider />
+                <MenuItem
                   onClick={resetColumnVisibility}
                   leftSection={<RotateCcw size={18} />}
                 >
                   <Text size="xs">Reset to Default</Text>
-                </Menu.Item>
-              </Menu.Dropdown>
+                </MenuItem>
+              </MenuDropdown>
             </Menu>
           </Flex>
         </Flex>

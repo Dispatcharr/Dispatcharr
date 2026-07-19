@@ -140,3 +140,20 @@ class UserPreferencesAPITests(TestCase):
         self.assertEqual(self.user.user_level, original_level)
         self.assertFalse(self.user.is_staff)
         self.assertFalse(self.user.is_superuser)
+
+    def test_patch_me_cannot_set_catchup_enabled(self):
+        """catchup_enabled is admin-managed; /me must not change it."""
+        self.user.custom_properties = {"catchup_enabled": False, "theme": "dark"}
+        self.user.save(update_fields=["custom_properties"])
+
+        response = self.client.patch(
+            self.me_url,
+            {"custom_properties": {"catchup_enabled": True, "theme": "light"}},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.user.refresh_from_db()
+        # Stripped from input; existing False preserved. Other props still update.
+        self.assertFalse(self.user.custom_properties.get("catchup_enabled"))
+        self.assertEqual(self.user.custom_properties.get("theme"), "light")

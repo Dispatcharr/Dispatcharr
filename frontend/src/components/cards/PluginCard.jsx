@@ -17,14 +17,24 @@ import {
   Text,
   Tooltip,
 } from '@mantine/core';
-import { Ban, Check, Download, FlaskConical, Info, RefreshCw, Settings, Trash2, Zap } from 'lucide-react';
+import {
+  Ban,
+  Check,
+  Download,
+  FlaskConical,
+  Info,
+  RefreshCw,
+  Settings,
+  Trash2,
+  Zap,
+} from 'lucide-react';
 import { getConfirmationDetails } from '../../utils/cards/PluginCardUtils.js';
 import { SUBSCRIPTION_EVENTS } from '../../constants.js';
 import useSettingsStore from '../../store/settings.jsx';
 import { usePluginStore } from '../../store/plugins.jsx';
 import API from '../../api';
 import PluginDetailPanel from '../PluginDetailPanel.jsx';
-import { compareVersions } from '../pluginUtils.js';
+import { compareVersions } from '../../utils/components/pluginUtils.js';
 import {
   PluginDowngradeWarning,
   PluginSecurityWarning,
@@ -65,7 +75,12 @@ const PluginActionList = ({
                 Event Triggers
               </Text>
               {events.map((event) => (
-                <Badge key={`${action.id}:${event}`} size="xs" variant="light" color="green">
+                <Badge
+                  key={`${action.id}:${event}`}
+                  size="xs"
+                  variant="light"
+                  color="green"
+                >
                   {SUBSCRIPTION_EVENTS[event] || event}
                 </Badge>
               ))}
@@ -154,19 +169,28 @@ const PluginCard = ({
   const fetchDetail = async () => {
     if (detailLoading || !isManaged) return;
     // Find the available plugin entry for manifest_url
-    let avail = usePluginStore.getState().availablePlugins.find(
-      (ap) => ap.slug === plugin.slug && ap.repo_id === plugin.source_repo
-    );
+    let avail = usePluginStore
+      .getState()
+      .availablePlugins.find(
+        (ap) => ap.slug === plugin.slug && ap.repo_id === plugin.source_repo
+      );
     if (!avail) {
       setDetailLoading(true);
       try {
         await usePluginStore.getState().fetchAvailablePlugins();
-        avail = usePluginStore.getState().availablePlugins.find(
-          (ap) => ap.slug === plugin.slug && ap.repo_id === plugin.source_repo
-        );
-      } catch { /* ignore */ }
+        avail = usePluginStore
+          .getState()
+          .availablePlugins.find(
+            (ap) => ap.slug === plugin.slug && ap.repo_id === plugin.source_repo
+          );
+      } catch {
+        /* ignore */
+      }
     }
-    if (!avail) { setDetailLoading(false); return; }
+    if (!avail) {
+      setDetailLoading(false);
+      return;
+    }
     if (!avail.manifest_url) {
       // Synthesize from top-level entry
       setDetail({
@@ -177,16 +201,22 @@ const PluginCard = ({
           repo_url: avail.repo_url,
           discord_thread: avail.discord_thread,
           registry_url: avail.registry_url,
-          versions: avail.latest_version ? [{
-            version: avail.latest_version,
-            url: avail.latest_url,
-            checksum_sha256: avail.latest_sha256,
-            min_dispatcharr_version: avail.min_dispatcharr_version,
-            max_dispatcharr_version: avail.max_dispatcharr_version,
-            build_timestamp: avail.last_updated,
-            size: avail.latest_size,
-          }] : [],
-          latest: avail.latest_version ? { version: avail.latest_version } : null,
+          versions: avail.latest_version
+            ? [
+                {
+                  version: avail.latest_version,
+                  url: avail.latest_url,
+                  checksum_sha256: avail.latest_sha256,
+                  min_dispatcharr_version: avail.min_dispatcharr_version,
+                  max_dispatcharr_version: avail.max_dispatcharr_version,
+                  build_timestamp: avail.last_updated,
+                  size: avail.latest_size,
+                },
+              ]
+            : [],
+          latest: avail.latest_version
+            ? { version: avail.latest_version }
+            : null,
         },
         signature_verified: avail.signature_verified ?? null,
         _avail: avail,
@@ -197,7 +227,10 @@ const PluginCard = ({
     }
     setDetailLoading(true);
     try {
-      const result = await API.getPluginDetailManifest(avail.repo_id, avail.manifest_url);
+      const result = await API.getPluginDetailManifest(
+        avail.repo_id,
+        avail.manifest_url
+      );
       if (result) {
         setDetail({ ...result, _avail: avail });
         if (result.manifest?.versions?.length) {
@@ -326,7 +359,8 @@ const PluginCard = ({
     if (!pendingInstallParams) return;
     const params = pendingInstallParams;
     const selVer = params.version;
-    const isDown = plugin.version && compareVersions(selVer, plugin.version) < 0;
+    const isDown =
+      plugin.version && compareVersions(selVer, plugin.version) < 0;
     const action = isDown ? 'downgrade' : 'update';
     setInstallConfirmOpen(false);
     setPendingInstallParams(null);
@@ -367,7 +401,12 @@ const PluginCard = ({
       >
         {/* Header: avatar, name/author, badges, toggle */}
         <Group justify="space-between" mb="xs" align="flex-start" wrap="nowrap">
-          <Group gap="sm" align="flex-start" wrap="nowrap" style={{ minWidth: 0, flex: 1 }}>
+          <Group
+            gap="sm"
+            align="flex-start"
+            wrap="nowrap"
+            style={{ minWidth: 0, flex: 1 }}
+          >
             <Avatar
               src={plugin.logo_url}
               radius="sm"
@@ -395,7 +434,11 @@ const PluginCard = ({
                     c="dimmed"
                     truncate
                     onClick={isManaged ? () => openModal('details') : undefined}
-                    style={{ minWidth: 0, maxWidth: '100%', ...(isManaged ? { cursor: 'pointer' } : {}) }}
+                    style={{
+                      minWidth: 0,
+                      maxWidth: '100%',
+                      ...(isManaged ? { cursor: 'pointer' } : {}),
+                    }}
                   >
                     {plugin.author}
                   </Text>
@@ -415,12 +458,26 @@ const PluginCard = ({
           </Group>
           <Group gap={6} wrap="nowrap" align="center" style={{ flexShrink: 0 }}>
             {plugin.is_managed && plugin.installed_version_is_prerelease ? (
-              <Tooltip label={plugin.deprecated ? 'Prerelease installed (deprecated), click for details' : 'Prerelease installed, click for details'}>
+              <Tooltip
+                label={
+                  plugin.deprecated
+                    ? 'Prerelease installed (deprecated), click for details'
+                    : 'Prerelease installed, click for details'
+                }
+              >
                 <Badge
                   size="xs"
                   variant="light"
                   color={plugin.deprecated ? 'red' : 'violet'}
-                  leftSection={detailLoading ? <Loader size={8} /> : plugin.deprecated ? <Ban size={8} /> : <FlaskConical size={8} />}
+                  leftSection={
+                    detailLoading ? (
+                      <Loader size={8} />
+                    ) : plugin.deprecated ? (
+                      <Ban size={8} />
+                    ) : (
+                      <FlaskConical size={8} />
+                    )
+                  }
                   style={{ cursor: 'pointer' }}
                   onClick={() => openModal('details')}
                 >
@@ -428,12 +485,26 @@ const PluginCard = ({
                 </Badge>
               </Tooltip>
             ) : plugin.update_available ? (
-              <Tooltip label={plugin.deprecated ? `Update available: v${plugin.latest_version} (deprecated)` : `Update available: v${plugin.latest_version}`}>
+              <Tooltip
+                label={
+                  plugin.deprecated
+                    ? `Update available: v${plugin.latest_version} (deprecated)`
+                    : `Update available: v${plugin.latest_version}`
+                }
+              >
                 <Badge
                   size="xs"
                   variant="light"
                   color={plugin.deprecated ? 'red' : 'yellow'}
-                  leftSection={detailLoading ? <Loader size={8} /> : plugin.deprecated ? <Ban size={8} /> : <RefreshCw size={8} />}
+                  leftSection={
+                    detailLoading ? (
+                      <Loader size={8} />
+                    ) : plugin.deprecated ? (
+                      <Ban size={8} />
+                    ) : (
+                      <RefreshCw size={8} />
+                    )
+                  }
                   style={{ cursor: 'pointer' }}
                   onClick={() => openModal('details')}
                 >
@@ -441,12 +512,26 @@ const PluginCard = ({
                 </Badge>
               </Tooltip>
             ) : plugin.is_managed ? (
-              <Tooltip label={plugin.deprecated ? 'Installed (deprecated), click for details' : 'View plugin details'}>
+              <Tooltip
+                label={
+                  plugin.deprecated
+                    ? 'Installed (deprecated), click for details'
+                    : 'View plugin details'
+                }
+              >
                 <Badge
                   size="xs"
                   variant="light"
                   color={plugin.deprecated ? 'orange' : 'green'}
-                  leftSection={detailLoading ? <Loader size={8} /> : plugin.deprecated ? <Ban size={8} /> : <Check size={8} />}
+                  leftSection={
+                    detailLoading ? (
+                      <Loader size={8} />
+                    ) : plugin.deprecated ? (
+                      <Ban size={8} />
+                    ) : (
+                      <Check size={8} />
+                    )
+                  }
                   style={{ cursor: 'pointer' }}
                   onClick={() => openModal('details')}
                 >
@@ -489,8 +574,8 @@ const PluginCard = ({
         <Stack gap={2} mt="auto" pt={4} style={{ flexShrink: 0 }}>
           <Group gap="xs" wrap="wrap">
             <Badge size="xs" variant="default">
-              <span style={{ opacity: 0.5, marginRight: 4 }}>VERSION</span>
-              v{plugin.version || '1.0.0'}
+              <span style={{ opacity: 0.5, marginRight: 4 }}>VERSION</span>v
+              {plugin.version || '1.0.0'}
             </Badge>
             {plugin.is_managed && plugin.source_repo_name && (
               <Badge size="xs" variant="default">
@@ -542,7 +627,13 @@ const PluginCard = ({
         onClose={() => setModalOpen(false)}
         title={
           <Group gap="xs" align="center">
-            <Avatar src={plugin.logo_url} radius="sm" size={28} alt={`${plugin.name} logo`} imageProps={{ draggable: false }}>
+            <Avatar
+              src={plugin.logo_url}
+              radius="sm"
+              size={28}
+              alt={`${plugin.name} logo`}
+              imageProps={{ draggable: false }}
+            >
               {plugin.name?.[0]?.toUpperCase()}
             </Avatar>
             <Text fw={600}>{plugin.name}</Text>
@@ -550,11 +641,29 @@ const PluginCard = ({
         }
         size="lg"
       >
-        <Tabs value={modalTab} onChange={(tab) => { setModalTab(tab); if (tab === 'details') fetchDetail(); }}>
+        <Tabs
+          value={modalTab}
+          onChange={(tab) => {
+            setModalTab(tab);
+            if (tab === 'details') fetchDetail();
+          }}
+        >
           <Tabs.List>
-            {isManaged && <Tabs.Tab value="details" leftSection={<Info size={14} />}>Details</Tabs.Tab>}
-            {hasFields && <Tabs.Tab value="settings" leftSection={<Settings size={14} />}>Settings</Tabs.Tab>}
-            {hasActions && <Tabs.Tab value="actions" leftSection={<Zap size={14} />}>Actions</Tabs.Tab>}
+            {isManaged && (
+              <Tabs.Tab value="details" leftSection={<Info size={14} />}>
+                Details
+              </Tabs.Tab>
+            )}
+            {hasFields && (
+              <Tabs.Tab value="settings" leftSection={<Settings size={14} />}>
+                Settings
+              </Tabs.Tab>
+            )}
+            {hasActions && (
+              <Tabs.Tab value="actions" leftSection={<Zap size={14} />}>
+                Actions
+              </Tabs.Tab>
+            )}
           </Tabs.List>
 
           {isManaged && (
@@ -565,7 +674,9 @@ const PluginCard = ({
                 selectedVersion={selectedVersion}
                 onVersionChange={setSelectedVersion}
                 installedVersion={plugin.version}
-                installedVersionIsPrerelease={!!plugin.installed_version_is_prerelease}
+                installedVersionIsPrerelease={
+                  !!plugin.installed_version_is_prerelease
+                }
                 appVersion={appVersion}
                 installing={installing}
                 uninstalling={uninstalling}
@@ -631,7 +742,10 @@ const PluginCard = ({
       {/* Install confirmation modal */}
       {(() => {
         const selVer = pendingInstallParams?.version;
-        const isDown = plugin.version && selVer && compareVersions(selVer, plugin.version) < 0;
+        const isDown =
+          plugin.version &&
+          selVer &&
+          compareVersions(selVer, plugin.version) < 0;
         const actionLabel = isDown ? 'Downgrade' : 'Update';
         return (
           <Modal
@@ -643,9 +757,11 @@ const PluginCard = ({
             zIndex={300}
             title={
               <Group gap="xs" align="center">
-                {isDown
-                  ? <Download size={18} color="var(--mantine-color-orange-6)" />
-                  : <Download size={18} />}
+                {isDown ? (
+                  <Download size={18} color="var(--mantine-color-orange-6)" />
+                ) : (
+                  <Download size={18} />
+                )}
                 <Text fw={600}>Confirm {actionLabel}</Text>
               </Group>
             }
@@ -653,14 +769,15 @@ const PluginCard = ({
           >
             <Stack gap="md">
               <Text size="sm">
-                You are about to {actionLabel.toLowerCase()} <b>{plugin.name}</b>{' '}
-                from <b>v{plugin.version}</b> to <b>v{selVer}</b>.
+                You are about to {actionLabel.toLowerCase()}{' '}
+                <b>{plugin.name}</b> from <b>v{plugin.version}</b> to{' '}
+                <b>v{selVer}</b>.
               </Text>
               <PluginSecurityWarning>
-                Plugins run server-side code with full access to your Dispatcharr
-                instance and its data. Only install plugins from developers you
-                trust. Malicious plugins could read or modify data, call internal
-                APIs, or perform unwanted actions.
+                Plugins run server-side code with full access to your
+                Dispatcharr instance and its data. Only install plugins from
+                developers you trust. Malicious plugins could read or modify
+                data, call internal APIs, or perform unwanted actions.
               </PluginSecurityWarning>
               <PluginSupportDisclaimer />
               {isDown && (
@@ -668,7 +785,9 @@ const PluginCard = ({
                   Downgrading may cause issues with saved settings or data.
                 </PluginDowngradeWarning>
               )}
-              <Text size="sm" fw={500}>Are you sure you want to proceed?</Text>
+              <Text size="sm" fw={500}>
+                Are you sure you want to proceed?
+              </Text>
               <Group justify="flex-end" gap="xs">
                 <Button
                   size="xs"

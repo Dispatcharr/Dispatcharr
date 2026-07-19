@@ -8,6 +8,7 @@ Covers:
   5. Recovery skip-list: "recording" status NOT in terminal skip list
 """
 import os
+import datetime as dt
 from datetime import timedelta
 from unittest.mock import MagicMock, patch
 
@@ -16,6 +17,15 @@ from django.utils import timezone
 from rest_framework.test import APIRequestFactory, force_authenticate
 
 from apps.channels.models import Channel, Recording
+
+# Fixed wall time for collision tests: 10:30 avoids _2 appearing inside
+# %Y%m%d_%H%M%S timestamps (e.g. hour 20 produces ..._205331 which contains "_2").
+COLLISION_TEST_START = timezone.make_aware(dt.datetime(2026, 1, 15, 10, 30, 0))
+
+
+def _path_has_collision_suffix(path, counter):
+    """True when the MKV basename ends with _<counter>.mkv (not timestamp digits)."""
+    return path.endswith(f"_{counter}.mkv")
 
 
 # ---------------------------------------------------------------------------
@@ -58,9 +68,9 @@ class CollisionAvoidanceTests(TestCase):
     """_build_output_paths must increment the filename counter when
     EITHER the .mkv OR the .ts file already exists with size > 0."""
 
-    def _call(self, channel, program, start, end):
+    def _call(self, channel, program, start, end, recording_id=1):
         from apps.channels.tasks import _build_output_paths
-        return _build_output_paths(channel, program, start, end)
+        return _build_output_paths(channel, program, start, end, recording_id)
 
     @patch("apps.channels.tasks.CoreSettings.get_dvr_tv_fallback_template",
            return_value="TV/{show}/{start}.mkv")
@@ -71,7 +81,7 @@ class CollisionAvoidanceTests(TestCase):
         ch = MagicMock(name="TestCh")
         ch.name = "TestCh"
         program = {"title": "My Show"}
-        now = timezone.now()
+        now = COLLISION_TEST_START
 
         def mock_stat(path):
             raise OSError("No such file")
@@ -80,8 +90,7 @@ class CollisionAvoidanceTests(TestCase):
              patch("os.makedirs"):
             final, ts, fname = self._call(ch, program, now, now + timedelta(hours=1))
 
-        # Should NOT have a _2 suffix
-        self.assertNotIn("_2", final)
+        self.assertFalse(_path_has_collision_suffix(final, 2))
         self.assertTrue(final.endswith(".mkv"))
 
     @patch("apps.channels.tasks.CoreSettings.get_dvr_tv_fallback_template",
@@ -89,32 +98,31 @@ class CollisionAvoidanceTests(TestCase):
     @patch("apps.channels.tasks.CoreSettings.get_dvr_tv_template",
            return_value="TV/{show}/S{season:02d}E{episode:02d}.mkv")
     def test_collision_when_ts_exists_but_mkv_is_zero_bytes(self, _tv, _fb):
-        """Pre-restart scenario: MKV is 0-byte placeholder, TS has real data.
-        The old code only checked MKV size, so it would reuse the path.
-        The fix also checks TS, so it must increment."""
+        """With the HLS pipeline, collision avoidance keys off the final MKV only.
+        A 0-byte MKV placeholder is treated as unoccupied even if legacy TS
+        segments exist elsewhere on disk."""
         ch = MagicMock(name="TestCh")
         ch.name = "TestCh"
         program = {"title": "My Show"}
-        now = timezone.now()
+        now = COLLISION_TEST_START
 
         def mock_stat(path):
-            if "_2" in path:
+            if _path_has_collision_suffix(path, 2):
                 raise OSError("No such file")
             result = MagicMock()
             if path.endswith('.mkv'):
                 result.st_size = 0       # MKV is 0-byte placeholder
             elif path.endswith('.ts'):
-                result.st_size = 5000000  # TS has real data from pre-restart
+                result.st_size = 5000000  # legacy TS data is ignored for collision
             else:
                 result.st_size = 0
             return result
 
         with patch("os.stat", side_effect=mock_stat), \
              patch("os.makedirs"):
-            final, ts, fname = self._call(ch, program, now, now + timedelta(hours=1))
+            final, hls_dir, fname = self._call(ch, program, now, now + timedelta(hours=1))
 
-        # Must have incremented to _2
-        self.assertIn("_2", final, "Should increment counter when TS file has data")
+        self.assertFalse(_path_has_collision_suffix(final, 2), "HLS path builder ignores legacy TS when MKV is empty")
 
     @patch("apps.channels.tasks.CoreSettings.get_dvr_tv_fallback_template",
            return_value="TV/{show}/{start}.mkv")
@@ -125,10 +133,10 @@ class CollisionAvoidanceTests(TestCase):
         ch = MagicMock(name="TestCh")
         ch.name = "TestCh"
         program = {"title": "My Show"}
-        now = timezone.now()
+        now = COLLISION_TEST_START
 
         def mock_stat(path):
-            if "_2" in path:
+            if _path_has_collision_suffix(path, 2):
                 raise OSError("No such file")
             result = MagicMock()
             if path.endswith('.mkv'):
@@ -141,7 +149,7 @@ class CollisionAvoidanceTests(TestCase):
              patch("os.makedirs"):
             final, ts, fname = self._call(ch, program, now, now + timedelta(hours=1))
 
-        self.assertIn("_2", final, "Should increment counter when MKV file has data")
+        self.assertTrue(_path_has_collision_suffix(final, 2), "Should increment counter when MKV file has data")
 
     @patch("apps.channels.tasks.CoreSettings.get_dvr_tv_fallback_template",
            return_value="TV/{show}/{start}.mkv")
@@ -152,7 +160,7 @@ class CollisionAvoidanceTests(TestCase):
         ch = MagicMock(name="TestCh")
         ch.name = "TestCh"
         program = {"title": "My Show"}
-        now = timezone.now()
+        now = COLLISION_TEST_START
 
         def mock_stat(path):
             result = MagicMock()
@@ -163,7 +171,7 @@ class CollisionAvoidanceTests(TestCase):
              patch("os.makedirs"):
             final, ts, fname = self._call(ch, program, now, now + timedelta(hours=1))
 
-        self.assertNotIn("_2", final, "Should NOT increment when all files are empty")
+        self.assertFalse(_path_has_collision_suffix(final, 2), "Should NOT increment when all files are empty")
 
     @patch("apps.channels.tasks.CoreSettings.get_dvr_tv_fallback_template",
            return_value="TV/{show}/{start}.mkv")
@@ -174,23 +182,23 @@ class CollisionAvoidanceTests(TestCase):
         ch = MagicMock(name="TestCh")
         ch.name = "TestCh"
         program = {"title": "My Show"}
-        now = timezone.now()
+        now = COLLISION_TEST_START
 
         def mock_stat(path):
-            if "_3" in path:
+            if _path_has_collision_suffix(path, 3):
                 raise OSError("No such file")
             result = MagicMock()
-            if path.endswith('.ts'):
-                result.st_size = 5000000
+            if path.endswith('.mkv'):
+                result.st_size = 1000000  # occupied MKV at base and _2
             else:
                 result.st_size = 0
             return result
 
         with patch("os.stat", side_effect=mock_stat), \
              patch("os.makedirs"):
-            final, ts, fname = self._call(ch, program, now, now + timedelta(hours=1))
+            final, hls_dir, fname = self._call(ch, program, now, now + timedelta(hours=1))
 
-        self.assertIn("_3", final, "Should increment to _3 when base and _2 are occupied")
+        self.assertTrue(_path_has_collision_suffix(final, 3), "Should increment to _3 when base and _2 MKVs are occupied")
 
 
 # =========================================================================
@@ -442,6 +450,7 @@ class RecoverySkipListTests(TestCase):
         """A recording with status='recording' should be recovered, not skipped."""
         mock_redis_conn = MagicMock()
         mock_redis_conn.set.return_value = True  # Acquire lock
+        mock_redis_conn.exists.return_value = False  # No active-recording lock
         mock_redis_cls.get_client.return_value = mock_redis_conn
 
         channel = _make_channel("Recovery Test", 300)

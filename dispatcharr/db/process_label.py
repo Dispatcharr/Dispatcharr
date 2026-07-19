@@ -39,5 +39,16 @@ def get_process_role(argv: list[str] | None = None) -> str:
     return "django"
 
 
+def uses_geventpool_database_backend(argv: list[str] | None = None) -> bool:
+    """
+    True for uWSGI/Daphne/manage (gevent or request-scoped pooling).
+
+    Celery prefork/thread workers must use Django's standard PostgreSQL backend:
+    django-db-geventpool keeps a process-wide warm-connection pool that fork()
+    duplicates across autoscale children, which corrupts Postgres session state.
+    """
+    return get_process_role(argv) not in ("celery-worker", "celery-dvr", "celery-beat")
+
+
 def db_application_name() -> str:
     return f"Dispatcharr-{get_process_role()}-{os.getpid()}"

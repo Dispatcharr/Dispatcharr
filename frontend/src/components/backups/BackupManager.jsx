@@ -14,7 +14,6 @@ import {
   Stack,
   Switch,
   Text,
-  TextInput,
   Tooltip,
 } from '@mantine/core';
 import {
@@ -25,16 +24,32 @@ import {
   SquarePlus,
   UploadCloud,
 } from 'lucide-react';
-import { notifications } from '@mantine/notifications';
-import dayjs from 'dayjs';
-
-import API from '../../api';
 import ConfirmationDialog from '../ConfirmationDialog';
 import useLocalStorage from '../../hooks/useLocalStorage';
 import useWarningsStore from '../../store/warnings';
 import { CustomTable, useTable } from '../tables/CustomTable';
 import { validateCronExpression } from '../../utils/cronUtils';
 import ScheduleInput from '../forms/ScheduleInput';
+import { showNotification } from '../../utils/notificationUtils.js';
+import { formatBytes } from '../../utils/networkUtils.js';
+import {
+  format,
+  getDefaultTimeZone,
+  useDateTimeFormat,
+} from '../../utils/dateTimeUtils.js';
+import {
+  createBackup,
+  DAYS_OF_WEEK,
+  deleteBackup,
+  downloadBackup,
+  getBackupSchedule,
+  listBackups,
+  restoreBackup,
+  to12Hour,
+  to24Hour,
+  updateBackupSchedule,
+  uploadBackup,
+} from '../../utils/components/backups/BackupManagerUtils.js';
 
 const RowActions = ({
   row,
@@ -81,58 +96,6 @@ const RowActions = ({
   );
 };
 
-// Convert 24h time string to 12h format with period
-function to12Hour(time24) {
-  if (!time24) return { time: '12:00', period: 'AM' };
-  const [hours, minutes] = time24.split(':').map(Number);
-  const period = hours >= 12 ? 'PM' : 'AM';
-  const hours12 = hours % 12 || 12;
-  return {
-    time: `${hours12}:${String(minutes).padStart(2, '0')}`,
-    period,
-  };
-}
-
-// Convert 12h time + period to 24h format
-function to24Hour(time12, period) {
-  if (!time12) return '00:00';
-  const [hours, minutes] = time12.split(':').map(Number);
-  let hours24 = hours;
-  if (period === 'PM' && hours !== 12) {
-    hours24 = hours + 12;
-  } else if (period === 'AM' && hours === 12) {
-    hours24 = 0;
-  }
-  return `${String(hours24).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
-}
-
-// Get default timezone (same as Settings page)
-function getDefaultTimeZone() {
-  try {
-    return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
-  } catch {
-    return 'UTC';
-  }
-}
-
-const DAYS_OF_WEEK = [
-  { value: '0', label: 'Sunday' },
-  { value: '1', label: 'Monday' },
-  { value: '2', label: 'Tuesday' },
-  { value: '3', label: 'Wednesday' },
-  { value: '4', label: 'Thursday' },
-  { value: '5', label: 'Friday' },
-  { value: '6', label: 'Saturday' },
-];
-
-function formatBytes(bytes) {
-  if (bytes === 0) return '0 B';
-  const k = 1024;
-  const sizes = ['B', 'KB', 'MB', 'GB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return `${(bytes / Math.pow(k, i)).toFixed(2)} ${sizes[i]}`;
-}
-
 export default function BackupManager() {
   const [backups, setBackups] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -147,18 +110,9 @@ export default function BackupManager() {
   const [deleting, setDeleting] = useState(false);
 
   // Read user's preferences from settings
-  const [timeFormat] = useLocalStorage('time-format', '12h');
-  const [dateFormatSetting] = useLocalStorage('date-format', 'mdy');
+  const { fullDateTimeFormat, timeFormatSetting } = useDateTimeFormat();
   const [userTimezone] = useLocalStorage('time-zone', getDefaultTimeZone());
-  const is12Hour = timeFormat === '12h';
-
-  // Format date according to user preferences
-  const formatDate = (dateString) => {
-    const date = dayjs(dateString);
-    const datePart = dateFormatSetting === 'mdy' ? 'MM/DD/YYYY' : 'DD/MM/YYYY';
-    const timePart = is12Hour ? 'h:mm:ss A' : 'HH:mm:ss';
-    return date.format(`${datePart}, ${timePart}`);
-  };
+  const is12Hour = timeFormatSetting === '12h';
 
   // Warning suppression for confirmation dialogs
   const suppressWarning = useWarningsStore((s) => s.suppressWarning);
@@ -213,7 +167,7 @@ export default function BackupManager() {
         minSize: 180,
         cell: ({ cell }) => (
           <Text size="sm" style={{ whiteSpace: 'nowrap' }}>
-            {formatDate(cell.getValue())}
+            {format(cell.getValue(), fullDateTimeFormat)}
           </Text>
         ),
       },
@@ -223,7 +177,7 @@ export default function BackupManager() {
         size: 100,
       },
     ],
-    []
+    [fullDateTimeFormat]
   );
 
   const renderHeaderCell = (header) => {
@@ -267,10 +221,10 @@ export default function BackupManager() {
   const loadBackups = async () => {
     setLoading(true);
     try {
-      const backupList = await API.listBackups();
+      const backupList = await listBackups();
       setBackups(backupList);
     } catch (error) {
-      notifications.show({
+      showNotification({
         title: 'Error',
         message: error?.message || 'Failed to load backups',
         color: 'red',
@@ -283,7 +237,7 @@ export default function BackupManager() {
   const loadSchedule = async () => {
     setScheduleLoading(true);
     try {
-      const settings = await API.getBackupSchedule();
+      const settings = await getBackupSchedule();
 
       setSchedule(settings);
       setScheduleType(settings.cron_expression ? 'cron' : 'interval');
@@ -294,7 +248,7 @@ export default function BackupManager() {
       setTimePeriod(period);
 
       setScheduleChanged(false);
-    } catch (error) {
+    } catch {
       // Ignore errors on initial load - settings may not exist yet
     } finally {
       setScheduleLoading(false);
@@ -340,17 +294,17 @@ export default function BackupManager() {
           ? schedule
           : { ...schedule, cron_expression: '' };
 
-      const updated = await API.updateBackupSchedule(scheduleToSave);
+      const updated = await updateBackupSchedule(scheduleToSave);
       setSchedule(updated);
       setScheduleChanged(false);
 
-      notifications.show({
+      showNotification({
         title: 'Success',
         message: 'Backup schedule saved',
         color: 'green',
       });
     } catch (error) {
-      notifications.show({
+      showNotification({
         title: 'Error',
         message: error?.message || 'Failed to save schedule',
         color: 'red',
@@ -363,15 +317,15 @@ export default function BackupManager() {
   const handleCreateBackup = async () => {
     setCreating(true);
     try {
-      await API.createBackup();
-      notifications.show({
+      await createBackup();
+      showNotification({
         title: 'Success',
         message: 'Backup created successfully',
         color: 'green',
       });
       await loadBackups();
     } catch (error) {
-      notifications.show({
+      showNotification({
         title: 'Error',
         message: error?.message || 'Failed to create backup',
         color: 'red',
@@ -384,14 +338,14 @@ export default function BackupManager() {
   const handleDownload = async (filename) => {
     setDownloading(filename);
     try {
-      await API.downloadBackup(filename);
-      notifications.show({
+      await downloadBackup(filename);
+      showNotification({
         title: 'Download Started',
         message: `Downloading ${filename}...`,
         color: 'blue',
       });
     } catch (error) {
-      notifications.show({
+      showNotification({
         title: 'Error',
         message: error?.message || 'Failed to download backup',
         color: 'red',
@@ -409,15 +363,15 @@ export default function BackupManager() {
   const handleDeleteConfirm = async () => {
     setDeleting(true);
     try {
-      await API.deleteBackup(selectedBackup.name);
-      notifications.show({
+      await deleteBackup(selectedBackup.name);
+      showNotification({
         title: 'Success',
         message: 'Backup deleted successfully',
         color: 'green',
       });
       await loadBackups();
     } catch (error) {
-      notifications.show({
+      showNotification({
         title: 'Error',
         message: error?.message || 'Failed to delete backup',
         color: 'red',
@@ -437,8 +391,8 @@ export default function BackupManager() {
   const handleRestoreConfirm = async () => {
     setRestoring(true);
     try {
-      await API.restoreBackup(selectedBackup.name);
-      notifications.show({
+      await restoreBackup(selectedBackup.name);
+      showNotification({
         title: 'Restore Complete',
         message:
           'Backup restored successfully. A restart is recommended to ensure all services are running against the restored data.',
@@ -446,7 +400,7 @@ export default function BackupManager() {
       });
       setTimeout(() => window.location.reload(), 4000);
     } catch (error) {
-      notifications.show({
+      showNotification({
         title: 'Error',
         message: error?.message || 'Failed to restore backup',
         color: 'red',
@@ -462,8 +416,8 @@ export default function BackupManager() {
     if (!uploadFile) return;
 
     try {
-      await API.uploadBackup(uploadFile);
-      notifications.show({
+      await uploadBackup(uploadFile);
+      showNotification({
         title: 'Success',
         message: 'Backup uploaded successfully',
         color: 'green',
@@ -472,7 +426,7 @@ export default function BackupManager() {
       setUploadFile(null);
       await loadBackups();
     } catch (error) {
-      notifications.show({
+      showNotification({
         title: 'Error',
         message: error?.message || 'Failed to upload backup',
         color: 'red',

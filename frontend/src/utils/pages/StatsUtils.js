@@ -12,12 +12,45 @@ export const stopVODClient = async (clientId) => {
   await API.stopVODClient(clientId);
 };
 
+export const stopTimeshiftSession = async (sessionId) => {
+  await API.stopTimeshiftSession(sessionId);
+};
+
 export const fetchActiveChannelStats = async () => {
   return await API.fetchActiveChannelStats();
 };
 
+export const fetchAllConnectionStats = async () => {
+  return await API.getAllConnectionStats();
+};
+
 export const getVODStats = async () => {
   return await API.getVODStats();
+};
+
+export const getTimeshiftStats = async () => {
+  return await API.getTimeshiftStats();
+};
+
+export const getCatchupPrograms = async (sessions) => {
+  try {
+    if (!sessions || sessions.length === 0) {
+      return {};
+    }
+
+    const response = await API.getCatchupPrograms(sessions);
+    const programmes = response?.sessions || [];
+    const programmesMap = {};
+    programmes.forEach((program) => {
+      if (program.session_id) {
+        programmesMap[program.session_id] = program;
+      }
+    });
+    return programmesMap;
+  } catch (error) {
+    console.error('Error fetching catch-up programmes:', error);
+    return {};
+  }
 };
 
 export const getCurrentPrograms = async (activeChannelUUIDs) => {
@@ -45,7 +78,11 @@ export const getCurrentPrograms = async (activeChannelUUIDs) => {
   }
 };
 
-export const getCombinedConnections = (channelHistory, vodConnections) => {
+export const getCombinedConnections = (
+  channelHistory,
+  vodConnections,
+  timeshiftSessions = []
+) => {
   const activeStreams = Object.values(channelHistory).map((channel) => ({
     type: 'stream',
     data: channel,
@@ -70,8 +107,24 @@ export const getCombinedConnections = (channelHistory, vodConnections) => {
     }));
   });
 
+  const timeshiftItems = timeshiftSessions.flatMap((session) => {
+    return (session.connections || []).map((connection, index) => ({
+      type: 'timeshift',
+      data: {
+        ...session,
+        connections: [connection],
+        connection_count: 1,
+        individual_connection: connection,
+      },
+      id: `timeshift-${session.session_id}-${connection.client_id}-${index}`,
+      sortKey: connection.connected_at || Date.now() / 1000,
+    }));
+  });
+
   // Combine and sort by newest connections first (higher sortKey = more recent)
-  return [...activeStreams, ...vodItems].sort((a, b) => b.sortKey - a.sortKey);
+  return [...activeStreams, ...vodItems, ...timeshiftItems].sort(
+    (a, b) => b.sortKey - a.sortKey
+  );
 };
 
 const getChannelWithMetadata = (

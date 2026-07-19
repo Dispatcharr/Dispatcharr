@@ -283,36 +283,21 @@ class M3UAccountViewSet(viewsets.ModelViewSet):
         )
 
         # Snapshot channels so proxy sessions can be stopped outside
-        # the DB transaction. The pre_delete signal would otherwise
-        # fire ChannelService.stop_channel (Redis pub / hgetall /
-        # setex) per channel inside the atomic, holding the DB
-        # connection across thousands of blocking RPCs and gumming up
-        # the connection pool.
+        # the DB transaction. Teardown must not run inside the atomic
+        # delete (geventpool connection release would poison the TX).
         channels_to_delete = list(
             Channel.objects.filter(
                 auto_created=True,
                 auto_created_by=instance,
             ).values_list("id", "uuid")
         )
-        for _, channel_uuid in channels_to_delete:
-            if not channel_uuid:
-                continue
-            try:
-                ChannelService.stop_channel(str(channel_uuid))
-            except Exception as e:
-                logger.warning(
-                    "Failed to stop proxy session for channel %s "
-                    "during account cleanup: %s",
-                    channel_uuid,
-                    e,
-                )
+        ChannelService.stop_channels(
+            channel_uuid for _, channel_uuid in channels_to_delete
+        )
 
         channel_ids = [cid for cid, _ in channels_to_delete]
         # Channel + account writes share an atomic so an account
-        # delete failure rolls back the channel deletes too. The
-        # pre_delete signal will fire again here but its proxy stop
-        # is fast on already-stopped channels (a single Redis check
-        # returns "not found" immediately).
+        # delete failure rolls back the channel deletes too.
         with transaction.atomic():
             if channel_ids:
                 _, per_model = Channel.objects.filter(

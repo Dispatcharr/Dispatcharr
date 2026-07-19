@@ -1,10 +1,9 @@
 """
 Tests for VOD proxy profile connection counter fixes.
 
-Covers three race conditions in multi_worker_connection_manager:
-  1. decrement_active_streams() return value was ignored — counter stuck on lock contention
-  2. Non-atomic GET-then-DECR in _decrement_profile_connections() — counter could go negative
-  3. has_active_streams() read without lock — race between decrement and check
+Covers:
+  1. Atomic active_streams DECR+check via Redis Lua (no session-lock gating)
+  2. Non-atomic GET-then-DECR in _decrement_profile_connections() (counter could go negative)
 """
 
 from unittest.mock import MagicMock, patch, call
@@ -130,124 +129,72 @@ class TestDecrementProfileConnectionsAtomic(TestCase):
 
 
 class TestDecrementActiveStreamsAndCheck(TestCase):
-    """Bug 1 & 3: decrement_active_streams_and_check() must be atomic."""
-
-    def _make_connection(self, redis, session_id='test-session'):
-        from apps.proxy.vod_proxy.multi_worker_connection_manager import RedisBackedVODConnection
-        conn = RedisBackedVODConnection.__new__(RedisBackedVODConnection)
-        conn.session_id = session_id
-        conn.redis_client = redis
-        conn.connection_key = f'vod_connection:{session_id}'
-        conn.lock_key = f'vod_lock:{session_id}'
-        conn.local_session = None
-        conn._lock_acquired = False
-        return conn
-
-    def _make_state(self, active_streams=1, profile_id=7):
-        from apps.proxy.vod_proxy.multi_worker_connection_manager import SerializableConnectionState
-        state = SerializableConnectionState.__new__(SerializableConnectionState)
-        state.session_id = 'test-session'
-        state.stream_url = 'http://example.com/stream.mkv'
-        state.headers = {}
-        state.m3u_profile_id = profile_id
-        state.active_streams = active_streams
-        state.last_activity = 0
-        state.worker_id = 'test-worker'
-        state.content_type = None
-        state.content_length = None
-        state.final_url = None
-        state.request_count = 0
-        state.bytes_sent = 0
-        state.content_obj_type = None
-        state.content_uuid = None
-        state.content_name = None
-        state.client_ip = None
-        state.client_user_agent = None
-        state.utc_start = None
-        state.utc_end = None
-        state.offset = None
-        state.connection_type = 'redis'
-        state.created_at = 0
-        return state
+    """Atomic DECR+check via Redis Lua (no session lock)."""
 
     def test_returns_success_and_no_remaining_when_last_stream(self):
-        """When active_streams goes 1->0, should return (True, False)."""
-        from apps.proxy.vod_proxy.multi_worker_connection_manager import RedisBackedVODConnection
-        conn = MagicMock(spec=RedisBackedVODConnection)
-        conn.session_id = 'test'
+        from apps.proxy.vod_proxy.tests.test_vod_lock_contention import (
+            LockAwareFakeRedis,
+            _seed_session,
+            _import_vod,
+            _clear_script_cache,
+        )
 
-        state = MagicMock()
-        state.active_streams = 1
+        RedisBackedVODConnection, _ = _import_vod()
+        redis = LockAwareFakeRedis()
+        _seed_session(redis, "prof-last", active_streams=1)
+        conn = RedisBackedVODConnection("prof-last", redis)
 
-        conn._acquire_lock.return_value = True
-        conn._get_connection_state.return_value = state
-        conn._save_connection_state.return_value = True
-        conn._release_lock.return_value = None
-
-        # Call the real method on the mock instance
-        result = RedisBackedVODConnection.decrement_active_streams_and_check(conn)
+        result = conn.decrement_active_streams_and_check()
 
         self.assertEqual(result, (True, False))
-        self.assertEqual(state.active_streams, 0)
+        self.assertEqual(conn.get_active_streams_count(), 0)
 
     def test_returns_success_and_remaining_when_other_streams_active(self):
-        """When active_streams goes 2->1, should return (True, True)."""
-        from apps.proxy.vod_proxy.multi_worker_connection_manager import RedisBackedVODConnection
-        conn = MagicMock(spec=RedisBackedVODConnection)
-        conn.session_id = 'test'
+        from apps.proxy.vod_proxy.tests.test_vod_lock_contention import (
+            LockAwareFakeRedis,
+            _seed_session,
+            _import_vod,
+        )
 
-        state = MagicMock()
-        state.active_streams = 2
+        RedisBackedVODConnection, _ = _import_vod()
+        redis = LockAwareFakeRedis()
+        _seed_session(redis, "prof-rem", active_streams=2)
+        conn = RedisBackedVODConnection("prof-rem", redis)
 
-        conn._acquire_lock.return_value = True
-        conn._get_connection_state.return_value = state
-        conn._save_connection_state.return_value = True
-        conn._release_lock.return_value = None
-
-        result = RedisBackedVODConnection.decrement_active_streams_and_check(conn)
+        result = conn.decrement_active_streams_and_check()
 
         self.assertEqual(result, (True, True))
-        self.assertEqual(state.active_streams, 1)
-
-    def test_returns_failure_and_assumes_remaining_on_lock_contention(self):
-        """Lock contention must return (False, True) — assume streams remain to be safe."""
-        from apps.proxy.vod_proxy.multi_worker_connection_manager import RedisBackedVODConnection
-        conn = MagicMock(spec=RedisBackedVODConnection)
-        conn.session_id = 'test'
-        conn._acquire_lock.return_value = False
-
-        result = RedisBackedVODConnection.decrement_active_streams_and_check(conn)
-
-        self.assertEqual(result, (False, True))
-        conn._get_connection_state.assert_not_called()
+        self.assertEqual(conn.get_active_streams_count(), 1)
 
     def test_returns_failure_when_already_at_zero(self):
-        """When active_streams is already 0, should return (False, False)."""
-        from apps.proxy.vod_proxy.multi_worker_connection_manager import RedisBackedVODConnection
-        conn = MagicMock(spec=RedisBackedVODConnection)
-        conn.session_id = 'test'
+        from apps.proxy.vod_proxy.tests.test_vod_lock_contention import (
+            LockAwareFakeRedis,
+            _seed_session,
+            _import_vod,
+        )
 
-        state = MagicMock()
-        state.active_streams = 0
+        RedisBackedVODConnection, _ = _import_vod()
+        redis = LockAwareFakeRedis()
+        _seed_session(redis, "prof-zero", active_streams=0)
+        conn = RedisBackedVODConnection("prof-zero", redis)
 
-        conn._acquire_lock.return_value = True
-        conn._get_connection_state.return_value = state
-        conn._release_lock.return_value = None
-
-        result = RedisBackedVODConnection.decrement_active_streams_and_check(conn)
+        result = conn.decrement_active_streams_and_check()
 
         self.assertEqual(result, (False, False))
-        conn._save_connection_state.assert_not_called()
+        self.assertEqual(conn.get_active_streams_count(), 0)
 
-    def test_lock_always_released_even_on_exception(self):
-        """Lock must be released even if an exception occurs inside."""
-        from apps.proxy.vod_proxy.multi_worker_connection_manager import RedisBackedVODConnection
-        conn = MagicMock(spec=RedisBackedVODConnection)
-        conn.session_id = 'test'
-        conn._acquire_lock.return_value = True
-        conn._get_connection_state.side_effect = RuntimeError("Redis exploded")
+    def test_returns_failure_when_no_session(self):
+        from apps.proxy.vod_proxy.tests.test_vod_lock_contention import (
+            LockAwareFakeRedis,
+            _import_vod,
+            _clear_script_cache,
+        )
 
-        with self.assertRaises(RuntimeError):
-            RedisBackedVODConnection.decrement_active_streams_and_check(conn)
+        RedisBackedVODConnection, _ = _import_vod()
+        _clear_script_cache()
+        redis = LockAwareFakeRedis()
+        conn = RedisBackedVODConnection("missing", redis)
 
-        conn._release_lock.assert_called_once()
+        result = conn.decrement_active_streams_and_check()
+
+        self.assertEqual(result, (False, False))

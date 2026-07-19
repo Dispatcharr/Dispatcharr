@@ -2,13 +2,8 @@ import { Center, Checkbox } from '@mantine/core';
 import CustomTable from './CustomTable';
 import CustomTableHeader from './CustomTableHeader';
 import useTablePreferences from '../../../hooks/useTablePreferences';
-
-import {
-  useReactTable,
-  getCoreRowModel,
-  flexRender,
-} from '@tanstack/react-table';
-import { useCallback, useMemo, useRef, useState, useEffect } from 'react';
+import { flexRender, getCoreRowModel, useReactTable, } from '@tanstack/react-table';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ChevronDown, ChevronRight } from 'lucide-react';
 
 const useTable = ({
@@ -83,8 +78,6 @@ const useTable = ({
       window.removeEventListener('blur', handleBlur);
     };
   }, [handleKeyDown, handleKeyUp]);
-
-  const rowCount = allRowIds.length;
 
   const table = useReactTable({
     defaultColumn: {
@@ -172,7 +165,7 @@ const useTable = ({
     return true; // Return true to indicate we've handled it
   };
 
-  const handleRowClick = (rowId, e) => {
+  handleRowClickRef.current = (rowId, e) => {
     if (
       e.target.closest(
         'button, a, input, select, textarea, [role="menuitem"], [role="option"], [role="button"]'
@@ -193,7 +186,6 @@ const useTable = ({
       updateSelectedTableIds([...newSet]);
     }
   };
-  handleRowClickRef.current = handleRowClick;
 
   const renderBodyCell = ({ row, cell }) => {
     if (bodyCellRenderFns[cell.column.id]) {

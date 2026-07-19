@@ -396,6 +396,17 @@ def _is_gevent_monkey_patched():
         return False
 
 
+def _cooperative_yield():
+    """Yield to the gevent hub during CPU-bound loops (no-op otherwise)."""
+    if not _is_gevent_monkey_patched():
+        return
+    try:
+        import gevent
+        gevent.sleep(0)
+    except ImportError:
+        pass
+
+
 def _is_celery_worker_context():
     """True when executing inside an active Celery task (prefork worker)."""
     try:
@@ -565,13 +576,15 @@ def trim_c_allocator_heap():
         return False
 
 
-def cleanup_memory(log_usage=False, force_collection=True):
+def cleanup_memory(log_usage=False, force_collection=True, trim_heap=False):
     """
     Comprehensive memory cleanup function to reduce memory footprint
 
     Args:
         log_usage: Whether to log memory usage before and after cleanup
         force_collection: Whether to force garbage collection
+        trim_heap: Return freed C heap pages to the OS. Only use after DB
+            connections are closed (e.g. Celery task_postrun).
     """
     logger.trace("Starting memory cleanup django memory cleanup")
     # Skip logging if log level is not set to debug or more verbose (like trace)
@@ -606,6 +619,8 @@ def cleanup_memory(log_usage=False, force_collection=True):
             logger.debug(f"Memory after cleanup: {after_mem:.2f} MB (change: {after_mem-before_mem:.2f} MB)")
         except (ImportError, Exception):
             pass
+    if trim_heap:
+        trim_c_allocator_heap()
     logger.trace("Memory cleanup complete for django")
 
 
@@ -618,8 +633,7 @@ def spawn_memory_trim(close_connections=False):
     so the pooled DB connection is released first.
     """
     def _run():
-        cleanup_memory(force_collection=True)
-        trim_c_allocator_heap()
+        cleanup_memory(force_collection=True, trim_heap=True)
 
     if close_connections:
         from django.db import close_old_connections
@@ -644,6 +658,31 @@ def safe_upload_path(filename: str, base_dir) -> str:
     if not file_path.is_relative_to(base):
         raise ValueError("Invalid filename.")
     return str(file_path)
+
+
+def resolve_safe_local_data_path(path: str, allowed_roots=("/data/logos",)):
+    """Return a realpath under one of *allowed_roots*, or None if unsafe.
+
+    Rejects path traversal (``/data/../etc/passwd``), symlinks that escape
+    the allowlisted roots, and non-``/data`` paths. Used by logo cache
+    endpoints that must remain AllowAny for player clients.
+    """
+    if not path or not isinstance(path, str):
+        return None
+    if not path.startswith("/data"):
+        return None
+    try:
+        real = Path(path).resolve()
+    except (OSError, RuntimeError, ValueError):
+        return None
+    for root in allowed_roots:
+        try:
+            root_real = Path(root).resolve()
+        except (OSError, RuntimeError, ValueError):
+            continue
+        if real == root_real or real.is_relative_to(root_real):
+            return str(real)
+    return None
 
 
 def is_protected_path(file_path):
@@ -696,7 +735,7 @@ def validate_flexible_url(value):
         # Matches: http://hostname, https://hostname/, http://hostname:port/path/to/file.xml, rtp://192.168.2.1,  rtsp://192.168.178.1, udp://239.0.0.1:1234
         # Also matches FQDNs for rtsp/rtp/udp protocols: rtsp://FQDN/path?query=value
         # Also supports authentication: rtsp://user:pass@hostname/path
-        non_fqdn_pattern = r'^(rts?p|https?|udp)://([a-zA-Z0-9_\-\.]+:[^\s@]+@)?([a-zA-Z0-9]([a-zA-Z0-9\-\.]{0,61}[a-zA-Z0-9])?|[0-9.]+)?(\:[0-9]+)?(/[^\s]*)?$'
+        non_fqdn_pattern = r'^(rts?p|https?|udp)://([a-zA-Z0-9_\-\.]+:[^\s@]+@)?([a-zA-Z0-9]([a-zA-Z0-9_\-\.]{0,61}[a-zA-Z0-9])?|[0-9.]+)?(\:[0-9]+)?(/[^\s]*)?$'
         non_fqdn_match = re.match(non_fqdn_pattern, value)
 
         if non_fqdn_match:
@@ -785,7 +824,8 @@ def dispatch_event_system(event_type, channel_id=None, channel_name=None, **deta
         # Don't fail main path if connect dispatch fails
         pass
     finally:
-        close_old_connections()
+        if _should_use_sync_websocket_send() or _is_gevent_monkey_patched():
+            close_old_connections()
 
 
 def _dispatch_system_event_integrations(
@@ -861,11 +901,9 @@ def log_system_event(event_type, channel_id=None, channel_name=None, **details):
         # Get max events from settings (default 100)
         try:
             from .models import CoreSettings
-            system_settings = CoreSettings.objects.filter(key='system_settings').first()
-            if system_settings and isinstance(system_settings.value, dict):
-                max_events = int(system_settings.value.get('max_system_events', 100))
-            else:
-                max_events = 100
+            max_events = int(
+                CoreSettings.get_system_settings().get("max_system_events", 100) or 100
+            )
         except Exception:
             max_events = 100
 
@@ -883,7 +921,8 @@ def log_system_event(event_type, channel_id=None, channel_name=None, **details):
     finally:
         # geventpool keeps checked-out connections until close(); release promptly
         # when logging from proxy greenlets/threads outside a normal request cycle.
-        close_old_connections()
+        if _is_gevent_monkey_patched():
+            close_old_connections()
 
 
 def _send_async(channel_layer, group, message):

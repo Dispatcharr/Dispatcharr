@@ -21,7 +21,7 @@ def add_vlc_profile(apps, schema_editor):
         StreamProfile.objects.create(
             name="VLC",
             command="cvlc",
-            parameters="-vv -I dummy --no-video-title-show --http-user-agent {userAgent} {streamUrl} --sout #standard{access=file,mux=ts,dst=-}",
+            parameters="-vv -I dummy --no-video-title-show --play-and-exit --http-user-agent {userAgent} {streamUrl} --sout #standard{access=file,mux=ts,dst=-}",
             is_active=True,
             user_agent=tivimate_ua,
             locked=True,  # Make it read-only like ffmpeg/streamlink

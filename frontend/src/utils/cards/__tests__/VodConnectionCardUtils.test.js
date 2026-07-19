@@ -2,85 +2,15 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import * as VodConnectionCardUtils from '../VodConnectionCardUtils';
 import * as dateTimeUtils from '../../dateTimeUtils.js';
 
-vi.mock('../../dateTimeUtils.js');
+vi.mock('../../dateTimeUtils.js', () => ({
+  getNowMs: vi.fn(),
+  format: vi.fn(),
+  toFriendlyDuration: vi.fn(),
+}));
 
 describe('VodConnectionCardUtils', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-  });
-
-  describe('formatDuration', () => {
-    it('should format duration with hours and minutes when hours > 0', () => {
-      const result = VodConnectionCardUtils.formatDuration(3661); // 1h 1m 1s
-      expect(result).toBe('1h 1m');
-    });
-
-    it('should format duration with only minutes when less than an hour', () => {
-      const result = VodConnectionCardUtils.formatDuration(125); // 2m 5s
-      expect(result).toBe('2m');
-    });
-
-    it('should format duration with 0 minutes when less than 60 seconds', () => {
-      const result = VodConnectionCardUtils.formatDuration(45);
-      expect(result).toBe('0m');
-    });
-
-    it('should handle multiple hours correctly', () => {
-      const result = VodConnectionCardUtils.formatDuration(7325); // 2h 2m 5s
-      expect(result).toBe('2h 2m');
-    });
-
-    it('should return Unknown for zero seconds', () => {
-      const result = VodConnectionCardUtils.formatDuration(0);
-      expect(result).toBe('Unknown');
-    });
-
-    it('should return Unknown for null', () => {
-      const result = VodConnectionCardUtils.formatDuration(null);
-      expect(result).toBe('Unknown');
-    });
-
-    it('should return Unknown for undefined', () => {
-      const result = VodConnectionCardUtils.formatDuration(undefined);
-      expect(result).toBe('Unknown');
-    });
-  });
-
-  describe('formatTime', () => {
-    it('should format time with hours when hours > 0', () => {
-      const result = VodConnectionCardUtils.formatTime(3665); // 1:01:05
-      expect(result).toBe('1:01:05');
-    });
-
-    it('should format time without hours when less than an hour', () => {
-      const result = VodConnectionCardUtils.formatTime(125); // 2:05
-      expect(result).toBe('2:05');
-    });
-
-    it('should pad minutes and seconds with zeros', () => {
-      const result = VodConnectionCardUtils.formatTime(3605); // 1:00:05
-      expect(result).toBe('1:00:05');
-    });
-
-    it('should handle only seconds', () => {
-      const result = VodConnectionCardUtils.formatTime(45); // 0:45
-      expect(result).toBe('0:45');
-    });
-
-    it('should return 0:00 for zero seconds', () => {
-      const result = VodConnectionCardUtils.formatTime(0);
-      expect(result).toBe('0:00');
-    });
-
-    it('should return 0:00 for null', () => {
-      const result = VodConnectionCardUtils.formatTime(null);
-      expect(result).toBe('0:00');
-    });
-
-    it('should return 0:00 for undefined', () => {
-      const result = VodConnectionCardUtils.formatTime(undefined);
-      expect(result).toBe('0:00');
-    });
   });
 
   describe('getMovieDisplayTitle', () => {

@@ -21,12 +21,14 @@ from apps.accounts.permissions import (
     Authenticated,
     IsAdmin,
     IsOwnerOfObject,
+    IsStandardUser,
     permission_classes_by_action,
     permission_classes_by_method,
 )
 
 from core.models import UserAgent, CoreSettings
-from core.utils import RedisClient, safe_upload_path
+from core.utils import RedisClient, safe_upload_path, resolve_safe_local_data_path
+from apps.m3u.utils import convert_js_numbered_backreferences
 
 from .models import (
     Stream,
@@ -72,6 +74,33 @@ from django.conf import settings
 from rest_framework.pagination import PageNumberPagination
 
 from dispatcharr.utils import network_access_allowed
+
+
+def _parse_request_bool(value, default=False):
+    """Parse a query/body boolean. Missing values use *default*."""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return str(value).strip().lower() in ("1", "true", "yes", "on")
+
+
+def _stop_proxy_sessions_for_channel_ids(channel_ids):
+    """Stop live proxy sessions for channels before deleting their DB rows.
+
+    Runs outside Django's delete atomic so geventpool connection release during
+    teardown cannot poison the delete transaction.
+    """
+    if not channel_ids:
+        return
+    from apps.proxy.live_proxy.services.channel_service import ChannelService
+
+    uuids = list(
+        Channel.objects.filter(id__in=channel_ids).values_list("uuid", flat=True)
+    )
+    ChannelService.stop_channels(uuids)
 
 
 logger = logging.getLogger(__name__)
@@ -175,6 +204,10 @@ class StreamViewSet(viewsets.ModelViewSet):
         hide_stale = self.request.query_params.get("hide_stale")
         if hide_stale and str(hide_stale).lower() in ("1", "true", "yes", "on"):
             qs = qs.filter(is_stale=False)
+
+        is_catchup = self.request.query_params.get("is_catchup")
+        if is_catchup and str(is_catchup).lower() in ("1", "true", "yes", "on"):
+            qs = qs.filter(is_catchup=True)
 
         return qs
 
@@ -368,6 +401,17 @@ class StreamViewSet(viewsets.ModelViewSet):
             except re.error as e:
                 exclude_error = str(e)
 
+        # The replace field accepts JS-style $1 backreferences, but the regex
+        # engine honors \1. Convert once so the preview's "after" matches the
+        # name the live rename produces (apps/m3u/tasks.py sync_auto_channels
+        # applies the same conversion on the same engine).
+        replace_repl = convert_js_numbered_backreferences(replace_pat)
+
+        # The live rename caps the result at Channel.name's column length
+        # before bulk_create; mirror that cap so the preview never shows a
+        # name the sync would truncate.
+        name_max_len = Channel._meta.get_field("name").max_length
+
         # Capped at SCAN_CAP to bound memory on huge groups; the
         # separate COUNT lets the client surface scan_limit_hit when
         # the preview covers only a sample.
@@ -390,11 +434,12 @@ class StreamViewSet(viewsets.ModelViewSet):
             total_scanned += 1
             if find_re is not None:
                 try:
-                    new_name = find_re.sub(replace_pat, name, timeout=REGEX_TIMEOUT)
+                    new_name = find_re.sub(replace_repl, name, timeout=REGEX_TIMEOUT)
                 except (TimeoutError, re.error) as e:
                     find_error = find_error or f"Pattern timed out: {e}"
                     find_re = None
                     continue
+                new_name = new_name[:name_max_len]
                 if new_name != name:
                     find_match_count += 1
                     if len(find_matches) < limit:
@@ -594,10 +639,12 @@ class ChannelGroupViewSet(viewsets.ModelViewSet):
     serializer_class = ChannelGroupSerializer
 
     def get_permissions(self):
+        if self.action == "cleanup_unused_groups":
+            return [IsAdmin()]
         try:
             return [perm() for perm in permission_classes_by_action[self.action]]
         except KeyError:
-            return [Authenticated()]
+            return [IsAdmin()]
 
     def get_queryset(self):
         # Annotate both counts at the SQL level so the serializer methods
@@ -742,7 +789,9 @@ class ChannelPagination(PageNumberPagination):
     max_page_size = 10000  # Prevent excessive page sizes
 
     def paginate_queryset(self, queryset, request, view=None):
-        if not request.query_params.get(self.page_query_param):
+        if not request.query_params.get(self.page_query_param) and not request.query_params.get(
+            self.page_size_query_param
+        ):
             return None  # disables pagination, returns full queryset
 
         return super().paginate_queryset(queryset, request, view)
@@ -871,6 +920,22 @@ class ChannelViewSet(viewsets.ModelViewSet):
         headers = self.get_success_headers(serializer.data)
         return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
 
+    def destroy(self, request, *args, **kwargs):
+        """Delete a channel. Optionally stop an active proxy session first.
+
+        Query param ``stop_stream`` (default false): when true, stop the live
+        proxy session *before* the DB delete (outside the delete atomic) so
+        playback ends with the channel row. When false, an in-progress stream
+        keeps playing until stopped from Stats or the client disconnects.
+        """
+        instance = self.get_object()
+        stop_stream = _parse_request_bool(request.query_params.get("stop_stream"))
+        if stop_stream:
+            # Stop before super().destroy() so teardown is not inside the
+            # collector's transaction.atomic.
+            _stop_proxy_sessions_for_channel_ids([instance.id])
+        return super().destroy(request, *args, **kwargs)
+
     def get_permissions(self):
         if self.action in [
             "edit_bulk",
@@ -880,13 +945,26 @@ class ChannelViewSet(viewsets.ModelViewSet):
             "match_epg",
             "set_epg",
             "batch_set_epg",
+            "bulk_regex_rename",
+            "set_names_from_epg",
+            "set_logos_from_epg",
+            "set_tvg_ids_from_epg",
+            "reorder",
         ]:
             return [IsAdmin()]
+
+        if self.action in (
+            "get_ids",
+            "summary",
+            "numbers_in_range",
+            "by_uuids",
+        ):
+            return [IsStandardUser()]
 
         try:
             return [perm() for perm in permission_classes_by_action[self.action]]
         except KeyError:
-            return [Authenticated()]
+            return [IsAdmin()]
 
     def get_queryset(self):
         # get_ids and summary only need the filter conditions, not the full
@@ -928,6 +1006,7 @@ class ChannelViewSet(viewsets.ModelViewSet):
         only_streamless = self.request.query_params.get("only_streamless", None)
         only_stale = self.request.query_params.get("only_stale", None)
         only_has_overrides = self.request.query_params.get("only_has_overrides", None)
+        only_catchup = self.request.query_params.get("only_catchup", None)
         visibility_filter = self.request.query_params.get("visibility_filter", "active")
 
         if channel_profile_id:
@@ -953,6 +1032,8 @@ class ChannelViewSet(viewsets.ModelViewSet):
             q_filters &= Q(streams__is_stale=True)
         if only_has_overrides:
             q_filters &= Q(override__isnull=False)
+        if only_catchup:
+            q_filters &= Q(is_catchup=True)
 
         # Visibility filter applies to list-style reads only; retrieve /
         # update / delete must still reach a hidden channel by id so the
@@ -2410,19 +2491,34 @@ class BulkDeleteChannelsAPIView(APIView):
             return [Authenticated()]
 
     @extend_schema(
-        description="Bulk delete channels by ID",
+        description=(
+            "Bulk delete channels by ID. Optional ``stop_stream`` (default false) "
+            "stops active proxy sessions for those channels before deleting."
+        ),
         request=inline_serializer(
             name="BulkDeleteChannelsRequest",
             fields={
                 "channel_ids": serializers.ListField(
                     child=serializers.IntegerField(),
                     help_text="Channel IDs to delete",
-                )
+                ),
+                "stop_stream": serializers.BooleanField(
+                    required=False,
+                    default=False,
+                    help_text=(
+                        "When true, stop active live proxy sessions for these "
+                        "channels before deleting. Default false leaves streams "
+                        "playing until stopped separately."
+                    ),
+                ),
             },
         ),
     )
     def delete(self, request):
         channel_ids = request.data.get("channel_ids", [])
+        stop_stream = _parse_request_bool(request.data.get("stop_stream"), default=False)
+        if stop_stream:
+            _stop_proxy_sessions_for_channel_ids(channel_ids)
         Channel.objects.filter(id__in=channel_ids).delete()
         return Response(
             {"message": "Channels deleted"}, status=status.HTTP_204_NO_CONTENT
@@ -2743,23 +2839,26 @@ class LogoViewSet(viewsets.ModelViewSet):
         """Streams the logo file, whether it's local or remote."""
         logo = self.get_object()
         logo_url = logo.url
+        if not logo_url:
+            raise Http404("Image not found")
         if logo_url.startswith("/data"):  # Local file
-            if not os.path.exists(logo_url):
+            safe_path = resolve_safe_local_data_path(logo_url)
+            if safe_path is None or not os.path.exists(safe_path):
                 raise Http404("Image not found")
-            stat = os.stat(logo_url)
+            stat = os.stat(safe_path)
             # Get proper mime type (first item of the tuple)
-            content_type, _ = mimetypes.guess_type(logo_url)
+            content_type, _ = mimetypes.guess_type(safe_path)
             if not content_type:
                 content_type = "image/jpeg"  # Default to a common image type
 
-            # Use context manager and set Content-Disposition to inline
+            # StreamingHttpResponse closes the file when the response finishes.
             response = StreamingHttpResponse(
-                open(logo_url, "rb"), content_type=content_type
+                open(safe_path, "rb"), content_type=content_type
             )
             response["Cache-Control"] = "public, max-age=14400"  # Cache in browser for 4 hours
             response["Last-Modified"] = http_date(stat.st_mtime)
             response["Content-Disposition"] = 'inline; filename="{}"'.format(
-                os.path.basename(logo_url)
+                os.path.basename(safe_path)
             )
             return response
 
@@ -3276,10 +3375,18 @@ class RecordingViewSet(viewsets.ModelViewSet):
         # classes run; _user_can_play_recording enforces authenticated access.
         if self.action in ('file', 'hls'):
             return [AllowAny()]
+        if self.action in (
+            'stop',
+            'extend',
+            'comskip',
+            'refresh_artwork',
+            'update_metadata',
+        ):
+            return [IsAdmin()]
         try:
             return [perm() for perm in permission_classes_by_action[self.action]]
         except KeyError:
-            return [Authenticated()]
+            return [IsAdmin()]
 
     def _user_can_play_recording(self, request, recording):
         """Authorization gate for recording playback (file/hls actions).

@@ -13,9 +13,17 @@ import {
 } from '@mantine/core';
 import { Copy, SquareMinus, SquarePen } from 'lucide-react';
 import API from '../../api';
-import { notifications } from '@mantine/notifications';
+import { showNotification } from '../../utils/notificationUtils';
 import useChannelsStore from '../../store/channels';
 import { USER_LEVELS } from '../../constants';
+
+const updateChannelProfile = (values) => {
+  return API.updateChannelProfile(values);
+}
+
+const duplicateChannelProfile = (profileId, newName) => {
+  return API.duplicateChannelProfile(profileId, newName);
+}
 
 const ProfileModal = ({ opened, onClose, mode, profile }) => {
   const [profileNameInput, setProfileNameInput] = useState('');
@@ -40,7 +48,7 @@ const ProfileModal = ({ opened, onClose, mode, profile }) => {
     if (!mode || !profile) return;
 
     if (!trimmedName) {
-      notifications.show({
+      showNotification({
         title: 'Profile name is required',
         color: 'red.5',
       });
@@ -53,13 +61,13 @@ const ProfileModal = ({ opened, onClose, mode, profile }) => {
         return;
       }
 
-      const updatedProfile = await API.updateChannelProfile({
+      const updatedProfile = await updateChannelProfile({
         id: profile.id,
         name: trimmedName,
       });
 
       if (updatedProfile) {
-        notifications.show({
+        showNotification({
           title: 'Profile renamed',
           message: `${profile.name} → ${trimmedName}`,
           color: 'green.5',
@@ -69,13 +77,13 @@ const ProfileModal = ({ opened, onClose, mode, profile }) => {
     }
 
     if (mode === 'duplicate') {
-      const duplicatedProfile = await API.duplicateChannelProfile(
+      const duplicatedProfile = await duplicateChannelProfile(
         profile.id,
         trimmedName
       );
 
       if (duplicatedProfile) {
-        notifications.show({
+        showNotification({
           title: 'Profile duplicated',
           message: `${profile.name} copied to ${duplicatedProfile.name}`,
           color: 'green.5',

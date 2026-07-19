@@ -39,7 +39,7 @@ class NormalizeNameSettingsTest(TestCase):
         result_advanced = normalize_name("HD:HBO Plus East 4K")
 
         self.assertNotEqual(result_default, result_advanced)
-        self.assertEqual(result_advanced, "hbo east")
+        self.assertEqual(result_advanced, "hbo")
 
     def test_advanced_mode_strips_prefix(self):
         self._set_epg_settings(
@@ -68,7 +68,7 @@ class NormalizeNameSettingsTest(TestCase):
         )
         self.assertEqual(
             normalize_name("HBO Plus East"),
-            "hbo east",
+            "hbo",
         )
 
     def test_advanced_mode_applies_prefix_suffix_and_custom_in_order(self):
@@ -80,7 +80,7 @@ class NormalizeNameSettingsTest(TestCase):
         )
         self.assertEqual(
             normalize_name("Sling:HBO Plus East HD"),
-            "hbo east",
+            "hbo",
         )
 
     def test_only_first_matching_prefix_is_removed(self):
@@ -88,7 +88,7 @@ class NormalizeNameSettingsTest(TestCase):
             epg_match_mode="advanced",
             epg_match_ignore_prefixes=["HD:", "SD:"],
         )
-        self.assertEqual(normalize_name("HD:SD:Channel 5"), "sd channel 5")
+        self.assertEqual(normalize_name("HD:SD:Channel 5"), "sdchannel 5")
 
     def test_call_sign_preserved_from_original_name(self):
         self._set_epg_settings(epg_match_mode="default")

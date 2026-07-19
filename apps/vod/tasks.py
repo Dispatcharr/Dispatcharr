@@ -16,6 +16,16 @@ import re
 logger = logging.getLogger(__name__)
 
 
+def _empty_categories_should_abort(categories_data, account, category_type):
+    """True when an empty provider response would wipe existing group selections."""
+    if categories_data:
+        return False
+    return M3UVODCategoryRelation.objects.filter(
+        m3u_account=account,
+        category__category_type=category_type,
+    ).exclude(category__name='Uncategorized').exists()
+
+
 def lookup_by_name_year(model, name_year_pairs):
     """Return {(name, year): row} for rows without TMDB/IMDB IDs.
 
@@ -63,7 +73,18 @@ def refresh_vod_content(account_id):
             account.get_user_agent().user_agent
         ) as client:
 
-            movie_categories, series_categories = refresh_categories(account.id, client)
+            category_maps = refresh_categories(account.id, client)
+            if category_maps is None:
+                message = (
+                    f"Provider returned no VOD categories for account {account.name}; "
+                    "aborting VOD refresh to preserve existing category selections"
+                )
+                logger.warning(message)
+                send_m3u_update(account_id, "vod_refresh", 100, status="error",
+                               message=f"VOD refresh failed: {message}")
+                return f"VOD refresh failed: {message}"
+
+            movie_categories, series_categories = category_maps
 
             logger.debug("Fetching relations for filtering category filtering")
             relations = { rel.category_id: rel for rel in M3UVODCategoryRelation.objects
@@ -119,6 +140,12 @@ def refresh_categories(account_id, client=None):
     # First, get the category list to properly map category IDs and names
     logger.info("Fetching movie categories from provider...")
     categories_data = client.get_vod_categories()
+    if _empty_categories_should_abort(categories_data, account, 'movie'):
+        logger.warning(
+            f"Provider returned no movie categories for account {account.id} "
+            f"({account.name}); aborting VOD refresh to preserve existing category selections"
+        )
+        return None
     category_map = batch_create_categories(categories_data, 'movie', account)
 
     # Create a mapping from provider category IDs to our category objects
@@ -133,6 +160,12 @@ def refresh_categories(account_id, client=None):
     # Get the category list to properly map category IDs and names
     logger.info("Fetching series categories from provider...")
     categories_data = client.get_series_categories()
+    if _empty_categories_should_abort(categories_data, account, 'series'):
+        logger.warning(
+            f"Provider returned no series categories for account {account.id} "
+            f"({account.name}); aborting VOD refresh to preserve existing category selections"
+        )
+        return None
     category_map = batch_create_categories(categories_data, 'series', account)
 
     # Create a mapping from provider category IDs to our category objects

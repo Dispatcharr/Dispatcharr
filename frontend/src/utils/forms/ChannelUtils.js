@@ -34,15 +34,13 @@ export const createLogo = (newLogoData) => {
 const setChannelEPG = (channel, values) => {
   return API.setChannelEPG(channel.id, values.epg_data_id);
 };
-const updateChannel = (values) => {
+export const updateChannel = (values) => {
   return API.updateChannel(values);
 };
 export const addChannel = (channel) => {
   return API.addChannel(channel);
 };
-export const requeryChannels = () => {
-  API.requeryChannels();
-};
+export const requeryChannels = () => API.requeryChannels();
 
 // PATCH semantic: `override: null` deletes the override row; per-field
 // nulls only clear the matching field.

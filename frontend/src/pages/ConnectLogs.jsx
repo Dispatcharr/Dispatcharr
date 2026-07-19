@@ -18,6 +18,10 @@ import { SUBSCRIPTION_EVENTS } from '../constants';
 import { CustomTable, useTable } from '../components/tables/CustomTable';
 import { copyToClipboard } from '../utils';
 
+const getConnectLogs = (params) => {
+  return API.getConnectLogs(params);
+};
+
 export default function ConnectLogsPage() {
   const { integrations, fetchIntegrations } = useConnectStore();
 
@@ -51,7 +55,7 @@ export default function ConnectLogsPage() {
       if (filters.type) params.type = filters.type;
       if (filters.integration) params.integration = filters.integration;
 
-      const data = await API.getConnectLogs(params);
+      const data = await getConnectLogs(params);
       const results = Array.isArray(data) ? data : data?.results || [];
       setLogs(results);
       setCount(data?.count || results.length || 0);

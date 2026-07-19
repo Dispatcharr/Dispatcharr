@@ -68,6 +68,7 @@ export const saveChangedSettings = async (settings, changedSettings) => {
     'preferred_region',
     'auto_import_mapped_files',
     'enable_ip_lookup',
+    'catchup_enabled',
   ];
 
   for (const formKey in changedSettings) {
@@ -135,9 +136,17 @@ export const saveChangedSettings = async (settings, changedSettings) => {
       'schedule_enabled',
       'auto_import_mapped_files',
       'enable_ip_lookup',
+      'catchup_enabled',
     ];
     if (booleanFields.includes(formKey) && value != null) {
-      value = typeof value === 'boolean' ? value : Boolean(value);
+      if (typeof value === 'boolean') {
+        // keep as-is
+      } else if (typeof value === 'string') {
+        const lowered = value.trim().toLowerCase();
+        value = ['true', '1', 'yes', 'on'].includes(lowered);
+      } else {
+        value = value === 1;
+      }
     }
 
     // Route to appropriate group
@@ -363,6 +372,10 @@ export const parseSettings = (settings) => {
     parsed.enable_ip_lookup =
       typeof systemSettings.enable_ip_lookup === 'boolean'
         ? systemSettings.enable_ip_lookup
+        : true;
+    parsed.catchup_enabled =
+      typeof systemSettings.catchup_enabled === 'boolean'
+        ? systemSettings.catchup_enabled
         : true;
   }
 

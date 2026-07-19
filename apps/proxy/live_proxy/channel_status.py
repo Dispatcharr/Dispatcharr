@@ -1,3 +1,4 @@
+import re
 import time
 from .server import ProxyServer
 from .redis_keys import RedisKeys
@@ -5,7 +6,7 @@ from .constants import TS_PACKET_SIZE, ChannelMetadataField
 from redis.exceptions import ConnectionError, TimeoutError
 from .utils import get_logger
 from .client_manager import ClientManager
-from django.db import DatabaseError
+from django.db import DatabaseError, close_old_connections
 
 logger = get_logger()
 
@@ -45,41 +46,64 @@ class ChannelStatus:
             'buffer_index': int(buffer_index_value) if buffer_index_value else 0,
         }
 
-        # Add stream ID and name information
-        stream_id_bytes = metadata.get(ChannelMetadataField.STREAM_ID)
-        if stream_id_bytes:
-            try:
-                stream_id = int(stream_id_bytes)
-                info['stream_id'] = stream_id
+        channel_name = metadata.get(ChannelMetadataField.CHANNEL_NAME)
+        if channel_name:
+            info['channel_name'] = (
+                channel_name.decode() if isinstance(channel_name, bytes) else channel_name
+            )
 
-                # Look up stream name from database
+        # Prefer Redis names (written at channel init). ORM is a fallback only and
+        # always released in finally so admin status cannot leak pool slots.
+        try:
+            stream_id_bytes = metadata.get(ChannelMetadataField.STREAM_ID)
+            if stream_id_bytes:
                 try:
-                    from apps.channels.models import Stream
-                    stream = Stream.objects.filter(id=stream_id).first()
-                    if stream:
-                        info['stream_name'] = stream.name
-                except (ImportError, DatabaseError) as e:
-                    logger.warning(f"Failed to get stream name for ID {stream_id}: {e}")
-            except ValueError:
-                logger.warning(f"Invalid stream_id format in Redis: {stream_id_bytes}")
+                    stream_id = int(stream_id_bytes)
+                    info['stream_id'] = stream_id
 
-        # Add M3U profile information
-        m3u_profile_id_bytes = metadata.get(ChannelMetadataField.M3U_PROFILE)
-        if m3u_profile_id_bytes:
-            try:
-                m3u_profile_id = int(m3u_profile_id_bytes)
-                info['m3u_profile_id'] = m3u_profile_id
+                    stream_name = metadata.get(ChannelMetadataField.STREAM_NAME)
+                    if stream_name:
+                        info['stream_name'] = (
+                            stream_name.decode()
+                            if isinstance(stream_name, bytes)
+                            else stream_name
+                        )
+                    else:
+                        try:
+                            from apps.channels.models import Stream
+                            stream = Stream.objects.filter(id=stream_id).first()
+                            if stream:
+                                info['stream_name'] = stream.name
+                        except (ImportError, DatabaseError) as e:
+                            logger.warning(
+                                f"Failed to get stream name for ID {stream_id}: {e}"
+                            )
+                except ValueError:
+                    logger.warning(f"Invalid stream_id format in Redis: {stream_id_bytes}")
 
-                # Look up M3U profile name from database
+            m3u_profile_id_bytes = metadata.get(ChannelMetadataField.M3U_PROFILE)
+            if m3u_profile_id_bytes:
                 try:
-                    from apps.m3u.models import M3UAccountProfile
-                    m3u_profile = M3UAccountProfile.objects.filter(id=m3u_profile_id).first()
-                    if m3u_profile:
-                        info['m3u_profile_name'] = m3u_profile.name
-                except (ImportError, DatabaseError) as e:
-                    logger.warning(f"Failed to get M3U profile name for ID {m3u_profile_id}: {e}")
-            except ValueError:
-                logger.warning(f"Invalid m3u_profile_id format in Redis: {m3u_profile_id_bytes}")
+                    m3u_profile_id = int(m3u_profile_id_bytes)
+                    info['m3u_profile_id'] = m3u_profile_id
+
+                    try:
+                        from apps.m3u.models import M3UAccountProfile
+                        m3u_profile = M3UAccountProfile.objects.filter(
+                            id=m3u_profile_id
+                        ).first()
+                        if m3u_profile:
+                            info['m3u_profile_name'] = m3u_profile.name
+                    except (ImportError, DatabaseError) as e:
+                        logger.warning(
+                            f"Failed to get M3U profile name for ID {m3u_profile_id}: {e}"
+                        )
+                except ValueError:
+                    logger.warning(
+                        f"Invalid m3u_profile_id format in Redis: {m3u_profile_id_bytes}"
+                    )
+        finally:
+            close_old_connections()
 
         # Add timing information
         state_changed_field = ChannelMetadataField.STATE_CHANGED_AT
@@ -407,6 +431,18 @@ class ChannelStatus:
             if channel_name:
                 info['channel_name'] = channel_name
 
+            for key, field in (
+                ('logo_id', ChannelMetadataField.LOGO_ID),
+                ('m3u_profile_id', ChannelMetadataField.M3U_PROFILE),
+            ):
+                raw = metadata.get(field)
+                if not raw:
+                    continue
+                try:
+                    info[key] = int(raw)
+                except (TypeError, ValueError):
+                    pass
+
             stream_id_bytes = metadata.get(ChannelMetadataField.STREAM_ID)
             if stream_id_bytes:
                 try:
@@ -419,7 +455,7 @@ class ChannelStatus:
                 info['stream_name'] = stream_name
 
             # Add data throughput information to basic info
-            # TOTAL_BYTES is already present in the hgetall result — avoid a redundant round-trip
+            # TOTAL_BYTES is already in the hgetall result; skip a redundant round-trip.
             total_bytes_bytes = metadata.get(ChannelMetadataField.TOTAL_BYTES)
             if total_bytes_bytes:
                 total_bytes = int(total_bytes_bytes)
@@ -538,3 +574,34 @@ class ChannelStatus:
         except Exception as e:
             logger.error(f"Error getting channel info: {e}", exc_info=True)
             return None
+
+
+def build_live_channel_stats_data(redis_client):
+    """Scan Redis for live channel metadata and build the stats payload."""
+    empty = {"channels": [], "count": 0}
+    if not redis_client:
+        return empty
+
+    try:
+        all_channels = []
+        channel_pattern = "live:channel:*:metadata"
+        cursor = 0
+        while True:
+            cursor, keys = redis_client.scan(cursor, match=channel_pattern)
+            for key in keys:
+                key_str = key.decode() if isinstance(key, bytes) else key
+                channel_id_match = re.search(r"live:channel:(.*):metadata", key_str)
+                if not channel_id_match:
+                    continue
+                ch_id = channel_id_match.group(1)
+                channel_info = ChannelStatus.get_basic_channel_info(ch_id)
+                if channel_info:
+                    all_channels.append(channel_info)
+
+            if cursor == 0:
+                break
+
+        return {"channels": all_channels, "count": len(all_channels)}
+    except Exception as e:
+        logger.error(f"Error building live channel stats: {e}", exc_info=True)
+        return empty

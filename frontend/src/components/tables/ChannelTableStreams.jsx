@@ -1,64 +1,50 @@
-import React, {
-  useMemo,
-  useState,
-  useEffect,
-  useCallback,
-  useRef,
-} from 'react';
-import API from '../../api';
+import React, { useCallback, useEffect, useMemo, useRef, useState, } from 'react';
 import { copyToClipboard } from '../../utils';
 import { buildLiveStreamUrl } from '../../utils/components/FloatingVideoUtils.js';
+import { ChevronDown, ChevronRight, Eye, GripHorizontal, SquareMinus, } from 'lucide-react';
 import {
-  GripHorizontal,
-  SquareMinus,
-  ChevronDown,
-  ChevronRight,
-  Eye,
-} from 'lucide-react';
-import {
-  Box,
   ActionIcon,
-  Flex,
-  Text,
-  useMantineTheme,
-  Center,
   Badge,
-  Group,
-  Tooltip,
-  Collapse,
+  Box,
   Button,
+  Center,
+  Collapse,
+  Flex,
+  Group,
+  Text,
+  Tooltip,
+  useMantineTheme,
 } from '@mantine/core';
-import {
-  useReactTable,
-  getCoreRowModel,
-  flexRender,
-} from '@tanstack/react-table';
+import { flexRender, getCoreRowModel, useReactTable, } from '@tanstack/react-table';
 import './table.css';
 import useChannelsTableStore from '../../store/channelsTable';
 import usePlaylistsStore from '../../store/playlists';
 import useVideoStore from '../../store/useVideoStore';
 import useSettingsStore from '../../store/settings';
+import CatchupIndicator from '../CatchupIndicator';
 import {
+  closestCenter,
   DndContext,
   KeyboardSensor,
   MouseSensor,
   TouchSensor,
-  closestCenter,
   useDraggable,
   useSensor,
   useSensors,
 } from '@dnd-kit/core';
 import { restrictToVerticalAxis } from '@dnd-kit/modifiers';
-import {
-  arrayMove,
-  SortableContext,
-  verticalListSortingStrategy,
-} from '@dnd-kit/sortable';
-import { useSortable } from '@dnd-kit/sortable';
+import { arrayMove, SortableContext, useSortable, verticalListSortingStrategy, } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import { shallow } from 'zustand/shallow';
 import useAuthStore from '../../store/auth';
 import { USER_LEVELS } from '../../constants';
+import {
+  categorizeStreamStats,
+  formatStatKey,
+  formatStatValue,
+  getChannelStreamStats,
+  reorderChannelStreams,
+} from '../../utils/tables/ChannelTableStreamsUtils.js';
 
 // ── Static values (created once, shared across all instances) ────────────────
 
@@ -67,103 +53,6 @@ const coreRowModel = getCoreRowModel();
 const defaultColumnConfig = {
   size: undefined,
   minSize: 0,
-};
-
-const categoryMapping = {
-  basic: [
-    'resolution',
-    'video_codec',
-    'source_fps',
-    'audio_codec',
-    'audio_channels',
-  ],
-  video: [
-    'video_bitrate',
-    'pixel_format',
-    'width',
-    'height',
-    'aspect_ratio',
-    'frame_rate',
-  ],
-  audio: [
-    'audio_bitrate',
-    'sample_rate',
-    'audio_format',
-    'audio_channels_layout',
-  ],
-  technical: [
-    'stream_type',
-    'container_format',
-    'duration',
-    'file_size',
-    'ffmpeg_output_bitrate',
-    'input_bitrate',
-  ],
-  other: [],
-};
-
-const categorizeStreamStats = (stats) => {
-  if (!stats)
-    return { basic: {}, video: {}, audio: {}, technical: {}, other: {} };
-
-  const categories = {
-    basic: {},
-    video: {},
-    audio: {},
-    technical: {},
-    other: {},
-  };
-
-  Object.entries(stats).forEach(([key, value]) => {
-    let categorized = false;
-    for (const [category, keys] of Object.entries(categoryMapping)) {
-      if (keys.includes(key)) {
-        categories[category][key] = value;
-        categorized = true;
-        break;
-      }
-    }
-    if (!categorized) {
-      categories.other[key] = value;
-    }
-  });
-
-  return categories;
-};
-
-const formatStatValue = (key, value) => {
-  if (value === null || value === undefined) return 'N/A';
-
-  switch (key) {
-    case 'video_bitrate':
-    case 'audio_bitrate':
-    case 'ffmpeg_output_bitrate':
-      return `${value} kbps`;
-    case 'source_fps':
-    case 'frame_rate':
-      return `${value} fps`;
-    case 'sample_rate':
-      return `${value} Hz`;
-    case 'file_size':
-      if (typeof value === 'number') {
-        if (value < 1024) return `${value} B`;
-        if (value < 1024 * 1024) return `${(value / 1024).toFixed(2)} KB`;
-        if (value < 1024 * 1024 * 1024)
-          return `${(value / (1024 * 1024)).toFixed(2)} MB`;
-        return `${(value / (1024 * 1024 * 1024)).toFixed(2)} GB`;
-      }
-      return value;
-    case 'duration':
-      if (typeof value === 'number') {
-        const hours = Math.floor(value / 3600);
-        const minutes = Math.floor((value % 3600) / 60);
-        const seconds = Math.floor(value % 60);
-        return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
-      }
-      return value;
-    default:
-      return value.toString();
-  }
 };
 
 // ── Sub-components ───────────────────────────────────────────────────────────
@@ -219,27 +108,25 @@ const DraggableRow = React.memo(
           }),
         }}
       >
-        {row.getVisibleCells().map((cell) => {
-          return (
-            <Box
-              className="td"
-              key={cell.id}
-              style={{
-                flex: cell.column.columnDef.size ? '0 0 auto' : '1 1 0',
-                width: cell.column.columnDef.size
-                  ? cell.column.getSize()
-                  : undefined,
-                minWidth: 0,
-              }}
-            >
-              <Flex align="center" style={{ height: '100%' }}>
-                <Text component="div" size="xs">
-                  {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                </Text>
-              </Flex>
-            </Box>
-          );
-        })}
+        {row.getVisibleCells().map((cell) => (
+          <Box
+            className="td"
+            key={cell.id}
+            style={{
+              flex: cell.column.columnDef.size ? '0 0 auto' : '1 1 0',
+              width: cell.column.columnDef.size
+                ? cell.column.getSize()
+                : undefined,
+              minWidth: 0,
+            }}
+          >
+            <Flex align="center" style={{ height: '100%' }}>
+              <Text component="div" size="xs">
+                {flexRender(cell.column.columnDef.cell, cell.getContext())}
+              </Text>
+            </Flex>
+          </Box>
+        ))}
       </Box>
     );
   },
@@ -260,7 +147,7 @@ const StatsCategory = ({ categoryName, stats }) => {
         {Object.entries(stats).map(([key, value]) => (
           <Tooltip key={key} label={`${key}: ${formatStatValue(key, value)}`}>
             <Badge size="xs" variant="light" color="gray">
-              {key.replace(/_/g, ' ').replace(/\b\w/g, (l) => l.toUpperCase())}:{' '}
+              {formatStatKey(key)}:{' '}
               {formatStatValue(key, value)}
             </Badge>
           </Tooltip>
@@ -309,6 +196,11 @@ const StreamInfoCell = React.memo(
           <Badge size="xs" variant="light" color="teal">
             {accountName}
           </Badge>
+          <CatchupIndicator
+            isCatchup={stream.is_catchup}
+            catchupDays={stream.catchup_days}
+            variant="badge"
+          />
           {stream.quality && (
             <Badge size="xs" variant="light" color="gray">
               {stream.quality}
@@ -549,7 +441,7 @@ const ChannelStreams = ({ channel }) => {
         if (t && (since === null || t > since)) since = t;
       }
       const ids = opts && opts.ids;
-      API.getChannelStreamStats(channelId, since, ids).then((updates) => {
+      getChannelStreamStats(channelId, since, ids).then((updates) => {
         if (!updates || updates.length === 0) return;
         patchChannelStreamStats(channelId, updates);
       });
@@ -596,7 +488,7 @@ const ChannelStreams = ({ channel }) => {
   const removeStream = useCallback(async (stream) => {
     const newStreamList = dataRef.current.filter((s) => s.id !== stream.id);
     setData(newStreamList);
-    await API.reorderChannelStreams(
+    await reorderChannelStreams(
       channelRef.current.id,
       newStreamList.map((s) => s.id)
     );
@@ -709,7 +601,7 @@ const ChannelStreams = ({ channel }) => {
           const newIndex = currentIds.indexOf(over.id);
           const retval = arrayMove(prevData, oldIndex, newIndex);
 
-          API.reorderChannelStreams(
+          reorderChannelStreams(
             channel.id,
             retval.map((row) => row.id)
           );

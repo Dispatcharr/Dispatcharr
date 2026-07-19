@@ -26,6 +26,9 @@ import ConfirmationDialog from '../ConfirmationDialog';
 import useLocalStorage from '../../hooks/useLocalStorage';
 import { useDateTimeFormat, format } from '../../utils/dateTimeUtils.js';
 
+const deleteUser = (id) => {
+  return API.deleteUser(id);
+};
 const XCPasswordCell = ({ getValue }) => {
   const [isVisible, setIsVisible] = useState(false);
   const customProps = getValue() || {};
@@ -67,7 +70,7 @@ const XCPasswordCell = ({ getValue }) => {
   );
 };
 
-const UserRowActions = ({ theme, row, editUser, deleteUser }) => {
+const UserRowActions = ({ theme, row, editUser, handleDeleteUser }) => {
   const [tableSize, _] = useLocalStorage('table-size', 'default');
   const authUser = useAuthStore((s) => s.user);
 
@@ -76,8 +79,8 @@ const UserRowActions = ({ theme, row, editUser, deleteUser }) => {
   }, [row.original, editUser]);
 
   const onDelete = useCallback(() => {
-    deleteUser(row.original.id);
-  }, [row.original.id, deleteUser]);
+    handleDeleteUser(row.original.id);
+  }, [row.original.id, handleDeleteUser]);
 
   const iconSize =
     tableSize == 'default' ? 'sm' : tableSize == 'compact' ? 'xs' : 'md';
@@ -138,7 +141,7 @@ const UsersTable = () => {
     setIsLoading(true);
     setDeleting(true);
     try {
-      await API.deleteUser(id);
+      await deleteUser(id);
     } finally {
       setDeleting(false);
       setIsLoading(false);
@@ -151,7 +154,7 @@ const UsersTable = () => {
     setUserModalOpen(true);
   }, []);
 
-  const deleteUser = useCallback(
+  const handleDeleteUser = useCallback(
     async (id) => {
       const user = users.find((u) => u.id === id);
       setUserToDelete(user);
@@ -317,12 +320,12 @@ const UsersTable = () => {
             theme={theme}
             row={row}
             editUser={editUser}
-            deleteUser={deleteUser}
+            handleDeleteUser={handleDeleteUser}
           />
         ),
       },
     ],
-    [theme, editUser, deleteUser, fullDateFormat, fullDateTimeFormat]
+    [theme, editUser, handleDeleteUser, fullDateFormat, fullDateTimeFormat]
   );
 
   const closeUserForm = () => {

@@ -2,10 +2,12 @@ import { describe, it, expect } from 'vitest';
 import {
   buildCron,
   parseCronPreset,
+  isHourlyHourPattern,
   updateCronPart,
   PRESETS,
   DAYS_OF_WEEK,
   FREQUENCY_OPTIONS,
+  HOURLY_INTERVAL_OPTIONS,
   CRON_FIELDS,
 } from '../CronBuilderUtils.js';
 
@@ -29,6 +31,22 @@ describe('CronBuilderUtils', () => {
     it('every preset value is a valid 5-part cron string', () => {
       PRESETS.forEach((preset) => {
         expect(preset.value.split(' ')).toHaveLength(5);
+      });
+    });
+
+    it('round-trips every preset through parse and build', () => {
+      PRESETS.forEach((preset) => {
+        const parsed = parseCronPreset(preset.value);
+        expect(
+          buildCron(
+            parsed.frequency,
+            parsed.minute,
+            parsed.hour,
+            parsed.dayOfWeek,
+            parsed.dayOfMonth,
+            parsed.hours
+          )
+        ).toBe(preset.value);
       });
     });
   });
@@ -105,11 +123,58 @@ describe('CronBuilderUtils', () => {
     });
   });
 
+  // ── HOURLY_INTERVAL_OPTIONS ────────────────────────────────────────────────────
+
+  describe('HOURLY_INTERVAL_OPTIONS', () => {
+    it('includes every-hour wildcard and common step intervals', () => {
+      expect(HOURLY_INTERVAL_OPTIONS.map((o) => o.value)).toEqual([
+        '*',
+        '*/2',
+        '*/3',
+        '*/4',
+        '*/6',
+        '*/8',
+        '*/12',
+      ]);
+    });
+
+    it('every option has value and label', () => {
+      HOURLY_INTERVAL_OPTIONS.forEach((opt) => {
+        expect(opt).toHaveProperty('value');
+        expect(opt).toHaveProperty('label');
+      });
+    });
+  });
+
+  // ── isHourlyHourPattern ────────────────────────────────────────────────────────
+
+  describe('isHourlyHourPattern', () => {
+    it('returns true for wildcard', () => {
+      expect(isHourlyHourPattern('*')).toBe(true);
+    });
+
+    it('returns true for step values', () => {
+      expect(isHourlyHourPattern('*/6')).toBe(true);
+      expect(isHourlyHourPattern('*/12')).toBe(true);
+    });
+
+    it('returns true for lists and ranges', () => {
+      expect(isHourlyHourPattern('0,6,12')).toBe(true);
+      expect(isHourlyHourPattern('9-17')).toBe(true);
+    });
+
+    it('returns false for a single numeric hour', () => {
+      expect(isHourlyHourPattern('0')).toBe(false);
+      expect(isHourlyHourPattern('6')).toBe(false);
+      expect(isHourlyHourPattern('23')).toBe(false);
+    });
+  });
+
   // ── buildCron ──────────────────────────────────────────────────────────────────
 
   describe('buildCron', () => {
     describe('hourly', () => {
-      it('returns minute-only expression', () => {
+      it('defaults hours pattern to wildcard', () => {
         expect(buildCron('hourly', 0, 0, '*', 1)).toBe('0 * * * *');
       });
 
@@ -117,7 +182,20 @@ describe('CronBuilderUtils', () => {
         expect(buildCron('hourly', 30, 12, '*', 1)).toBe('30 * * * *');
       });
 
-      it('ignores hour, dayOfWeek, and dayOfMonth', () => {
+      it('uses the hours pattern when provided', () => {
+        expect(buildCron('hourly', 0, 0, '*', 1, '*/6')).toBe('0 */6 * * *');
+      });
+
+      it('supports list and range hour patterns', () => {
+        expect(buildCron('hourly', 0, 0, '*', 1, '0,6,12,18')).toBe(
+          '0 0,6,12,18 * * *'
+        );
+        expect(buildCron('hourly', 15, 0, '*', 1, '9-17')).toBe(
+          '15 9-17 * * *'
+        );
+      });
+
+      it('ignores numeric hour, dayOfWeek, and dayOfMonth', () => {
         expect(buildCron('hourly', 15, 9, '1', 5)).toBe('15 * * * *');
       });
     });
@@ -186,6 +264,7 @@ describe('CronBuilderUtils', () => {
       it('detects hourly when hour is wildcard', () => {
         const result = parseCronPreset('0 * * * *');
         expect(result.frequency).toBe('hourly');
+        expect(result.hours).toBe('*');
       });
 
       it('returns correct minute for hourly', () => {
@@ -200,10 +279,23 @@ describe('CronBuilderUtils', () => {
         expect(parseCronPreset('0 * * * *').dayOfMonth).toBe(1);
       });
 
-      it('parses step-based hourly (*/6)', () => {
+      it('parses step-based hour as hourly with hours pattern', () => {
         const result = parseCronPreset('0 */6 * * *');
-        expect(result.frequency).toBe('daily');
-        expect(result.hour).toBe(6);
+        expect(result.frequency).toBe('hourly');
+        expect(result.hours).toBe('*/6');
+        expect(result.minute).toBe(0);
+      });
+
+      it('parses step-based hour (*/12) as hourly with hours pattern', () => {
+        const result = parseCronPreset('0 */12 * * *');
+        expect(result.frequency).toBe('hourly');
+        expect(result.hours).toBe('*/12');
+      });
+
+      it('parses list hour patterns as hourly', () => {
+        const result = parseCronPreset('0 0,6,12,18 * * *');
+        expect(result.frequency).toBe('hourly');
+        expect(result.hours).toBe('0,6,12,18');
       });
     });
 
@@ -275,8 +367,10 @@ describe('CronBuilderUtils', () => {
         expect(parseCronPreset('* 3 * * *').minute).toBe(0);
       });
 
-      it('defaults hour to 0 for wildcard hour in non-hourly cron', () => {
-        expect(parseCronPreset('0 0 * * *').hour).toBe(0);
+      it('parses midnight daily with numeric hour 0', () => {
+        const result = parseCronPreset('0 0 * * *');
+        expect(result.frequency).toBe('daily');
+        expect(result.hour).toBe(0);
       });
 
       it('round-trips all PRESETS without throwing', () => {
