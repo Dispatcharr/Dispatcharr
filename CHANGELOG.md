@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.28.0] - 2026-07-19
+
 ### Added
 
 - **Catch-up enable/disable controls.** System Settings includes an **Enable Catchup** toggle (default on) that blocks timeshift and catch-up playback for everyone and clears XC `tv_archive` / `tv_archive_duration` advertising when off. Per-user **Enable Catchup** on the user Permissions tab does the same for that user only (admin-managed; not writable via `PATCH /me/`). Channel/stream catch-up indicators remain visible in the web UI.
