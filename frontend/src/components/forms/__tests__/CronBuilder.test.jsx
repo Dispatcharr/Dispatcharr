@@ -24,8 +24,19 @@ vi.mock('../../../utils/forms/CronBuilderUtils.js', () => ({
     { value: 'weekly', label: 'Weekly' },
     { value: 'monthly', label: 'Monthly' },
   ],
+  HOURLY_INTERVAL_OPTIONS: [
+    { value: '*', label: 'Every hour' },
+    { value: '*/2', label: 'Every 2 hours' },
+    { value: '*/6', label: 'Every 6 hours' },
+    { value: '*/12', label: 'Every 12 hours' },
+  ],
   PRESETS: [
     { label: 'Every Hour', description: 'Runs every hour', value: '0 * * * *' },
+    {
+      label: 'Every 6 Hours',
+      description: 'Every 6 hours starting at midnight',
+      value: '0 */6 * * *',
+    },
     {
       label: 'Every Day 3am',
       description: 'Runs every day at 3 AM',
@@ -162,6 +173,7 @@ describe('CronBuilder', () => {
       frequency: 'daily',
       minute: 0,
       hour: 3,
+      hours: '*',
       dayOfWeek: '*',
       dayOfMonth: 1,
     });
@@ -239,6 +251,7 @@ describe('CronBuilder', () => {
     it('renders all preset buttons', () => {
       renderBuilder();
       expect(screen.getByText('Every Hour')).toBeInTheDocument();
+      expect(screen.getByText('Every 6 Hours')).toBeInTheDocument();
       expect(screen.getByText('Every Day 3am')).toBeInTheDocument();
       expect(screen.getByText('Every Sunday')).toBeInTheDocument();
     });
@@ -266,18 +279,80 @@ describe('CronBuilder', () => {
         frequency: 'hourly',
         minute: 0,
         hour: 0,
+        hours: '*',
         dayOfWeek: '*',
         dayOfMonth: 1,
       });
       renderBuilder();
       fireEvent.click(screen.getByText('Every Hour'));
-      // buildCron should be called with the updated frequency
       expect(CronBuilderUtils.buildCron).toHaveBeenCalledWith(
         'hourly',
         0,
         0,
         '*',
-        1
+        1,
+        '*'
+      );
+    });
+
+    it('loads step-based presets into hourly Interval field', () => {
+      vi.mocked(CronBuilderUtils.parseCronPreset).mockReturnValue({
+        frequency: 'hourly',
+        minute: 0,
+        hour: 0,
+        hours: '*/6',
+        dayOfWeek: '*',
+        dayOfMonth: 1,
+      });
+      vi.mocked(CronBuilderUtils.buildCron).mockReturnValue('0 */6 * * *');
+
+      const onApply = vi.fn();
+      renderBuilder({ onApply });
+      fireEvent.click(screen.getByText('Every 6 Hours'));
+
+      expect(
+        within(screen.getByTestId('panel-simple')).getByLabelText('Interval')
+      ).toHaveValue('*/6');
+      expect(CronBuilderUtils.buildCron).toHaveBeenCalledWith(
+        'hourly',
+        0,
+        0,
+        '*',
+        1,
+        '*/6'
+      );
+
+      fireEvent.click(screen.getByText('Apply Expression'));
+      expect(onApply).toHaveBeenCalledWith('0 */6 * * *');
+    });
+
+    it('keeps step pattern when Interval is changed', () => {
+      vi.mocked(CronBuilderUtils.parseCronPreset).mockReturnValue({
+        frequency: 'hourly',
+        minute: 0,
+        hour: 0,
+        hours: '*/6',
+        dayOfWeek: '*',
+        dayOfMonth: 1,
+      });
+      vi.mocked(CronBuilderUtils.buildCron).mockReturnValue('0 */6 * * *');
+
+      renderBuilder();
+      fireEvent.click(screen.getByText('Every 6 Hours'));
+
+      vi.mocked(CronBuilderUtils.buildCron).mockReturnValue('0 */12 * * *');
+      fireEvent.change(
+        within(screen.getByTestId('panel-simple')).getByLabelText('Interval'),
+        { target: { value: '*/12' } }
+      );
+
+      expect(CronBuilderUtils.buildCron).toHaveBeenCalledWith(
+        'hourly',
+        0,
+        0,
+        '*',
+        1,
+        '*/12'
       );
     });
   });
@@ -308,13 +383,33 @@ describe('CronBuilder', () => {
       ).toBeInTheDocument();
     });
 
-    it('does not render Hour input when frequency is hourly', () => {
+    it('renders Interval select instead of Hour when frequency is hourly', () => {
       renderBuilder();
       const freqSelect = within(getSimplePanel()).getByLabelText('Frequency');
       fireEvent.change(freqSelect, { target: { value: 'hourly' } });
       expect(
         within(getSimplePanel()).queryByLabelText('Hour (0-23)')
       ).not.toBeInTheDocument();
+      expect(
+        within(getSimplePanel()).getByLabelText('Interval')
+      ).toBeInTheDocument();
+    });
+
+    it('calls buildCron with hours pattern when Interval changes', () => {
+      renderBuilder();
+      const freqSelect = within(getSimplePanel()).getByLabelText('Frequency');
+      fireEvent.change(freqSelect, { target: { value: 'hourly' } });
+      fireEvent.change(within(getSimplePanel()).getByLabelText('Interval'), {
+        target: { value: '*/6' },
+      });
+      expect(CronBuilderUtils.buildCron).toHaveBeenCalledWith(
+        'hourly',
+        0,
+        3,
+        '*',
+        1,
+        '*/6'
+      );
     });
 
     it('renders Day of Week select when frequency is weekly', () => {
@@ -362,7 +457,8 @@ describe('CronBuilder', () => {
         30,
         3,
         '*',
-        1
+        1,
+        '*'
       );
     });
 
@@ -376,7 +472,8 @@ describe('CronBuilder', () => {
         0,
         8,
         '*',
-        1
+        1,
+        '*'
       );
     });
   });

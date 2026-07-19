@@ -32,6 +32,7 @@ import {
   CRON_FIELDS,
   DAYS_OF_WEEK,
   FREQUENCY_OPTIONS,
+  HOURLY_INTERVAL_OPTIONS,
   parseCronPreset,
   PRESETS,
   updateCronPart,
@@ -115,6 +116,7 @@ export default function CronBuilder({
   const [mode, setMode] = useState('simple'); // 'simple' or 'advanced'
   const [frequency, setFrequency] = useState('daily');
   const [hour, setHour] = useState(3);
+  const [hours, setHours] = useState('*');
   const [minute, setMinute] = useState(0);
   const [dayOfWeek, setDayOfWeek] = useState('*');
   const [dayOfMonth, setDayOfMonth] = useState(1);
@@ -127,10 +129,9 @@ export default function CronBuilder({
     }
   }, [opened, currentValue]);
 
-  // Update generated cron when inputs change
   const generatedCron = useMemo(
-    () => buildCron(frequency, minute, hour, dayOfWeek, dayOfMonth),
-    [frequency, minute, hour, dayOfWeek, dayOfMonth]
+    () => buildCron(frequency, minute, hour, dayOfWeek, dayOfMonth, hours),
+    [frequency, minute, hour, dayOfWeek, dayOfMonth, hours]
   );
 
   const handlePresetClick = (cron) => {
@@ -138,6 +139,7 @@ export default function CronBuilder({
     setFrequency(parsed.frequency);
     setMinute(parsed.minute);
     setHour(parsed.hour);
+    setHours(parsed.hours);
     setDayOfWeek(parsed.dayOfWeek);
     setDayOfMonth(parsed.dayOfMonth);
     setManualCron(cron);
@@ -197,7 +199,16 @@ export default function CronBuilder({
                     leftSection={<Calendar size={16} />}
                   />
 
-                  {frequency !== 'hourly' && (
+                  {frequency === 'hourly' ? (
+                    <Select
+                      label="Interval"
+                      data={HOURLY_INTERVAL_OPTIONS}
+                      value={hours}
+                      onChange={(value) => setHours(value || '*')}
+                      leftSection={<Clock size={16} />}
+                      allowDeselect={false}
+                    />
+                  ) : (
                     <NumberInput
                       label="Hour (0-23)"
                       value={hour}

@@ -64,10 +64,31 @@ export const FREQUENCY_OPTIONS = [
   { value: 'monthly', label: 'Monthly' },
 ];
 
-export const buildCron = (frequency, minute, hour, dayOfWeek, dayOfMonth) => {
+/** Simple-mode choices for hourly schedules (maps to the cron hour field). */
+export const HOURLY_INTERVAL_OPTIONS = [
+  { value: '*', label: 'Every hour' },
+  { value: '*/2', label: 'Every 2 hours' },
+  { value: '*/3', label: 'Every 3 hours' },
+  { value: '*/4', label: 'Every 4 hours' },
+  { value: '*/6', label: 'Every 6 hours' },
+  { value: '*/8', label: 'Every 8 hours' },
+  { value: '*/12', label: 'Every 12 hours' },
+];
+
+/** Hour field uses steps, lists, ranges, or wildcard (not a single 0-23 value). */
+export const isHourlyHourPattern = (hr) => hr === '*' || /[^0-9]/.test(hr);
+
+export const buildCron = (
+  frequency,
+  minute,
+  hour,
+  dayOfWeek,
+  dayOfMonth,
+  hours = '*'
+) => {
   switch (frequency) {
     case 'hourly':
-      return `${minute} * * * *`;
+      return `${minute} ${hours || '*'} * * *`;
     case 'daily':
       return `${minute} ${hour} * * *`;
     case 'weekly':
@@ -79,20 +100,18 @@ export const buildCron = (frequency, minute, hour, dayOfWeek, dayOfMonth) => {
   }
 };
 
-const parseHour = (hr) => parseInt(hr.replace('*/', '').replace('*', '0')) || 0;
-
 export const parseCronPreset = (cron) => {
   const [min, hr, day, _month, weekday] = cron.split(' ');
-  const minute = parseInt(min) || 0;
-  const hour = parseHour(hr);
+  const minute = parseInt(min, 10) || 0;
+  const parsedHour = parseInt(hr, 10);
+  const hour = Number.isNaN(parsedHour) ? 0 : parsedHour;
 
-  if (hr === '*')
-    return { frequency: 'hourly', minute, hour, dayOfWeek: '*', dayOfMonth: 1 };
   if (weekday !== '*')
     return {
       frequency: 'weekly',
       minute,
       hour,
+      hours: '*',
       dayOfWeek: weekday,
       dayOfMonth: 1,
     };
@@ -101,10 +120,27 @@ export const parseCronPreset = (cron) => {
       frequency: 'monthly',
       minute,
       hour,
+      hours: '*',
       dayOfWeek: '*',
-      dayOfMonth: parseInt(day) || 1,
+      dayOfMonth: parseInt(day, 10) || 1,
     };
-  return { frequency: 'daily', minute, hour, dayOfWeek: '*', dayOfMonth: 1 };
+  if (isHourlyHourPattern(hr))
+    return {
+      frequency: 'hourly',
+      minute,
+      hour: 0,
+      hours: hr,
+      dayOfWeek: '*',
+      dayOfMonth: 1,
+    };
+  return {
+    frequency: 'daily',
+    minute,
+    hour,
+    hours: '*',
+    dayOfWeek: '*',
+    dayOfMonth: 1,
+  };
 };
 
 export const CRON_FIELDS = [
