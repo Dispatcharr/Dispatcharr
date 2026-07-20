@@ -4,11 +4,14 @@ from django.core.cache import cache
 from django.test import TestCase, SimpleTestCase
 
 from apps.epg.models import EPGSource, EPGSourceIndex
+import core.models as core_models
 from core.models import (
     CoreSettings,
     DVR_SETTINGS_KEY,
     EPG_SETTINGS_KEY,
+    STREAM_SETTINGS_KEY,
     SYSTEM_SETTINGS_KEY,
+    _CACHE_BACKEND_ERROR,
 )
 
 
@@ -18,6 +21,8 @@ class CoreSettingsGroupCacheTests(TestCase):
     def setUp(self):
         cache.clear()
         CoreSettings.objects.filter(key=SYSTEM_SETTINGS_KEY).delete()
+        # Allow fallback warnings to emit in each test.
+        core_models._last_group_cache_error_log_at = 0.0
 
     def tearDown(self):
         # DB rollback does not undo Redis entries written during the test.
@@ -139,6 +144,115 @@ class CoreSettingsGroupCacheTests(TestCase):
         self.assertTrue(network_access_allowed(request, "STREAMS"))
         with self.assertNumQueries(0):
             self.assertTrue(network_access_allowed(request, "STREAMS"))
+
+    def test_get_group_falls_back_to_db_when_redis_unavailable(self):
+        """AIO migrate runs before Redis; settings reads must use Postgres.
+
+        Fresh AIO installs run ``manage.py migrate`` before uWSGI starts
+        Redis. Data migrations such as m3u.0003 call
+        ``CoreSettings.get_default_user_agent_id()``, which must not raise
+        when the cache backend is unreachable.
+        """
+        from redis.exceptions import ConnectionError as RedisConnectionError
+
+        CoreSettings.objects.update_or_create(
+            key=STREAM_SETTINGS_KEY,
+            defaults={
+                "name": "Stream Settings",
+                "value": {"default_user_agent": "ua-from-db"},
+            },
+        )
+        redis_down = RedisConnectionError(
+            "Error 111 connecting to localhost:6379"
+        )
+        with patch.object(cache, "get", side_effect=redis_down), \
+             patch.object(cache, "set", side_effect=redis_down):
+            with self.assertLogs("core.models", level="WARNING") as logs:
+                self.assertEqual(
+                    CoreSettings.get_default_user_agent_id(),
+                    "ua-from-db",
+                )
+        self.assertTrue(
+            any("falling back to Postgres" in line for line in logs.output)
+        )
+
+    def test_invalidate_tolerates_redis_unavailable(self):
+        """CoreSettings saves during migrate must not require Redis."""
+        from redis.exceptions import ConnectionError as RedisConnectionError
+
+        redis_down = RedisConnectionError(
+            "Error 111 connecting to localhost:6379"
+        )
+        with patch.object(cache, "get", side_effect=redis_down), \
+             patch.object(cache, "set", side_effect=redis_down), \
+             patch.object(cache, "delete", side_effect=redis_down):
+            with self.assertLogs("core.models", level="WARNING") as logs:
+                CoreSettings.invalidate_group_cache(SYSTEM_SETTINGS_KEY)
+        self.assertTrue(
+            any("falling back to Postgres" in line for line in logs.output)
+        )
+
+    def test_cache_helpers_do_not_swallow_non_redis_errors(self):
+        """Programming errors and non-connectivity Redis errors still surface."""
+        from redis.exceptions import AuthenticationError, ResponseError
+
+        with patch.object(cache, "get", side_effect=TypeError("boom")):
+            with self.assertRaises(TypeError):
+                CoreSettings._cache_get("any-key")
+        with patch.object(cache, "set", side_effect=TypeError("boom")):
+            with self.assertRaises(TypeError):
+                CoreSettings._cache_set("any-key", {"a": 1})
+        with patch.object(cache, "delete", side_effect=ValueError("boom")):
+            with self.assertRaises(ValueError):
+                CoreSettings._cache_delete("any-key")
+        with patch.object(cache, "get", side_effect=ResponseError("WRONGTYPE")):
+            with self.assertRaises(ResponseError):
+                CoreSettings._cache_get("any-key")
+        with patch.object(
+            cache, "get", side_effect=AuthenticationError("NOAUTH")
+        ):
+            with self.assertRaises(AuthenticationError):
+                CoreSettings._cache_get("any-key")
+
+    def test_cache_backend_error_skips_fill(self):
+        """Failed ver/get must not collapse the version guard to None == None."""
+        from redis.exceptions import ConnectionError as RedisConnectionError
+
+        CoreSettings.objects.create(
+            key=SYSTEM_SETTINGS_KEY,
+            name="System Settings",
+            value={"catchup_enabled": True},
+        )
+        cache_key = CoreSettings.group_cache_key(SYSTEM_SETTINGS_KEY)
+        cache.delete(cache_key)
+
+        def flaky_get(key, default=None, **kwargs):
+            if key == cache_key:
+                return None
+            raise RedisConnectionError("flapping redis")
+
+        cached_sets = []
+        real_set = cache.set
+
+        def tracking_set(key, value, timeout=None, **kwargs):
+            cached_sets.append(key)
+            return real_set(key, value, timeout=timeout, **kwargs)
+
+        with patch.object(cache, "get", side_effect=flaky_get), \
+             patch.object(cache, "set", side_effect=tracking_set):
+            self.assertTrue(CoreSettings.get_catchup_enabled())
+
+        self.assertNotIn(cache_key, cached_sets)
+
+        with patch.object(
+            cache,
+            "get",
+            side_effect=RedisConnectionError("down"),
+        ):
+            self.assertIs(
+                CoreSettings._cache_get("any-key"),
+                _CACHE_BACKEND_ERROR,
+            )
 
 
 class DispatcharrUserAgentTests(TestCase):
