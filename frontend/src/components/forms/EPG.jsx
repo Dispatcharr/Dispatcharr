@@ -273,7 +273,7 @@ const SDSettings = ({ sourceId, customProperties }) => {
 
       <Switch
         label="Fetch Program Posters"
-        description="WARNING: USES ADDITIONAL API REQUESTS. Poster artwork is fetched during EPG refresh; image bytes are cached by nginx on first view (24h). Initial fetch and viewing new programs consume API requests against your Schedules Direct rate limit."
+        description="Refresh saves poster links, not images. Images download on first view (cached ~24h) and count against your daily SD image limit, including when XMLTV clients load them."
         checked={fetchPosters}
         onChange={(e) => handlePosterToggle(e.currentTarget.checked)}
         disabled={saving}
@@ -298,7 +298,7 @@ const SDSettings = ({ sourceId, customProperties }) => {
 
       <Switch
         label="Extra Schedules Direct Debugging"
-        description="Only turn this on if Schedules Direct support asks you to. Adds a RouteTo: debug header so SD can steer requests to their debug server. If SD returns code 2055, this setting is turned off automatically."
+        description="Only enable if Schedules Direct support asks you to. Turns off automatically if debug access is not allowed for your account."
         checked={extraDebugging}
         onChange={(e) => handleExtraDebuggingToggle(e.currentTarget.checked)}
         disabled={saving}
