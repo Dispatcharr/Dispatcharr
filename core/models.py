@@ -1,11 +1,20 @@
 # core/models.py
 
+import logging
+import time
 from shlex import split as shlex_split
 
 from django.conf import settings
 from django.db import models
 from django.utils.text import slugify
 from django.core.exceptions import ValidationError
+from django_redis.exceptions import ConnectionInterrupted
+from redis.exceptions import AuthenticationError as RedisAuthenticationError
+from redis.exceptions import AuthorizationError as RedisAuthorizationError
+from redis.exceptions import ConnectionError as RedisConnectionError
+from redis.exceptions import TimeoutError as RedisTimeoutError
+
+logger = logging.getLogger(__name__)
 
 
 class UserAgent(models.Model):
@@ -204,6 +213,42 @@ _GROUP_CACHE_PREFIX = "coresettings:group:"
 _GROUP_CACHE_VER_PREFIX = "coresettings:groupver:"
 _GROUP_CACHE_TTL_SECONDS = 300
 
+# Connectivity / timeout only. ResponseError (WRONGTYPE) and similar must still
+# propagate. Note: redis-py's AuthenticationError / AuthorizationError subclass
+# ConnectionError, so helpers re-raise those after the catch.
+_GROUP_CACHE_BACKEND_ERRORS = (
+    RedisConnectionError,
+    RedisTimeoutError,
+    ConnectionInterrupted,
+    OSError,
+    TimeoutError,
+)
+_GROUP_CACHE_RERAISE_ERRORS = (RedisAuthenticationError, RedisAuthorizationError)
+
+# Distinct from a normal cache miss (None) so version-guard compares never
+# collapse to None == None after a backend failure.
+_CACHE_BACKEND_ERROR = object()
+
+_GROUP_CACHE_ERROR_LOG_INTERVAL_SECONDS = 60
+_last_group_cache_error_log_at = 0.0
+
+
+def _log_group_cache_backend_error(operation, key, exc):
+    """Warn when settings cache degrades to Postgres (throttled)."""
+    global _last_group_cache_error_log_at
+
+    now = time.time()
+    if now - _last_group_cache_error_log_at < _GROUP_CACHE_ERROR_LOG_INTERVAL_SECONDS:
+        return
+    _last_group_cache_error_log_at = now
+    logger.warning(
+        "CoreSettings group cache %s failed for %s (%s: %s); falling back to Postgres",
+        operation,
+        key,
+        type(exc).__name__,
+        exc,
+    )
+
 
 class CoreSettings(models.Model):
     key = models.CharField(
@@ -230,16 +275,60 @@ class CoreSettings(models.Model):
         return f"{_GROUP_CACHE_VER_PREFIX}{key}"
 
     @classmethod
+    def _cache_get(cls, key, default=None):
+        """Read from Django cache.
+
+        Returns ``_CACHE_BACKEND_ERROR`` if Redis is unreachable so callers can
+        distinguish that from a normal miss. AIO starts Redis via uWSGI after
+        ``migrate``, so settings reads during data migrations must not
+        hard-require Redis. Local connection refused fails immediately (no
+        connect-timeout wait).
+        """
+        try:
+            from django.core.cache import cache
+
+            return cache.get(key, default)
+        except _GROUP_CACHE_RERAISE_ERRORS:
+            raise
+        except _GROUP_CACHE_BACKEND_ERRORS as exc:
+            _log_group_cache_backend_error("get", key, exc)
+            return _CACHE_BACKEND_ERROR
+
+    @classmethod
+    def _cache_set(cls, key, value, timeout=None):
+        """Write to Django cache; no-op if Redis is unreachable."""
+        try:
+            from django.core.cache import cache
+
+            cache.set(key, value, timeout=timeout)
+            return True
+        except _GROUP_CACHE_RERAISE_ERRORS:
+            raise
+        except _GROUP_CACHE_BACKEND_ERRORS as exc:
+            _log_group_cache_backend_error("set", key, exc)
+            return False
+
+    @classmethod
+    def _cache_delete(cls, key):
+        """Delete from Django cache; no-op if Redis is unreachable."""
+        try:
+            from django.core.cache import cache
+
+            cache.delete(key)
+            return True
+        except _GROUP_CACHE_RERAISE_ERRORS:
+            raise
+        except _GROUP_CACHE_BACKEND_ERRORS as exc:
+            _log_group_cache_backend_error("delete", key, exc)
+            return False
+
+    @classmethod
     def invalidate_group_cache(cls, key):
         """Drop the cached JSON for a settings group (all workers share Redis)."""
-        import time
-
-        from django.core.cache import cache
-
-        cache.delete(cls.group_cache_key(key))
+        cls._cache_delete(cls.group_cache_key(key))
         # Monotonic bump so in-flight _get_group fills skip cache.set.
         # timeout=None: never expire (version must outlive group entries).
-        cache.set(cls.group_cache_ver_key(key), time.time_ns(), timeout=None)
+        cls._cache_set(cls.group_cache_ver_key(key), time.time_ns(), timeout=None)
         if key == PROXY_SETTINGS_KEY:
             # Proxy workers also keep a short process-local copy.
             try:
@@ -249,40 +338,56 @@ class CoreSettings(models.Model):
             except Exception:
                 pass
 
-    # Helper methods to get/set grouped settings
     @classmethod
-    def _get_group(cls, key, defaults=None):
-        """Get a settings group, returning defaults if not found.
-
-        Results are cached in Redis so hot paths (proxy, XC, catchup) do not
-        hit Postgres on every client request. Mutations go through ``save`` /
-        ``_update_group``, which invalidate via CoreSettings post_save /
-        post_delete signals.
-        """
-        import copy
-
-        from django.core.cache import cache
-
-        defaults = defaults or {}
-        cache_key = cls.group_cache_key(key)
-        ver_key = cls.group_cache_ver_key(key)
-        cached = cache.get(cache_key)
-        if isinstance(cached, dict):
-            return copy.deepcopy(cached)
-
-        ver_before = cache.get(ver_key)
+    def _load_group_value(cls, key, defaults):
+        """Read a settings group from Postgres (no cache)."""
         try:
             value = cls.objects.get(key=key).value or defaults
             if not isinstance(value, dict):
                 value = defaults
         except cls.DoesNotExist:
             value = defaults
+        return value
 
-        value = copy.deepcopy(value)
+    # Helper methods to get/set grouped settings
+    @classmethod
+    def _get_group(cls, key, defaults=None):
+        """Get a settings group, returning defaults if not found.
+
+        Results are cached in Redis so hot paths (proxy, XC, catchup) do not
+        hit Postgres on every client request. If Redis is down (for example
+        during AIO first-boot migrate), reads fall through to Postgres and
+        skip cache fill so a flapping backend cannot re-poison Redis after
+        invalidate. Mutations go through ``save`` / ``_update_group``, which
+        invalidate via CoreSettings post_save / post_delete signals.
+        """
+        import copy
+
+        defaults = defaults or {}
+        cache_key = cls.group_cache_key(key)
+        ver_key = cls.group_cache_ver_key(key)
+        cached = cls._cache_get(cache_key)
+        if isinstance(cached, dict):
+            return copy.deepcopy(cached)
+
+        # Backend errors are not normal misses: read DB and skip fill so a
+        # flapping backend cannot collapse the version guard to None == None.
+        if cached is _CACHE_BACKEND_ERROR:
+            return copy.deepcopy(cls._load_group_value(key, defaults))
+
+        ver_before = cls._cache_get(ver_key)
+        if ver_before is _CACHE_BACKEND_ERROR:
+            return copy.deepcopy(cls._load_group_value(key, defaults))
+
+        value = copy.deepcopy(cls._load_group_value(key, defaults))
+
         # Skip fill if an invalidate landed during the DB read (avoids
         # re-caching a stale snapshot for the full TTL).
-        if cache.get(ver_key) == ver_before:
-            cache.set(cache_key, value, timeout=_GROUP_CACHE_TTL_SECONDS)
+        ver_after = cls._cache_get(ver_key)
+        if ver_after is _CACHE_BACKEND_ERROR or ver_after != ver_before:
+            return value
+
+        cls._cache_set(cache_key, value, timeout=_GROUP_CACHE_TTL_SECONDS)
         return copy.deepcopy(value)
 
     @classmethod
