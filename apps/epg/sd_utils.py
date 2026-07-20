@@ -8,8 +8,10 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from datetime import timedelta, timezone as dt_timezone
 
+from django.core.cache import cache
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
@@ -27,6 +29,94 @@ SD_IMAGE_LIMIT_CODES = frozenset({
     SD_CODE_MAX_IMAGE_DOWNLOADS,
     SD_CODE_MAX_IMAGE_DOWNLOADS_TRIAL,
 })
+
+# Shared across uWSGI workers via Django's Redis cache.
+_SD_TOKEN_CACHE_PREFIX = 'sd:token:v1:'
+# Expire a bit early so we re-auth before SD rejects an almost-expired token.
+_SD_TOKEN_CACHE_SKEW_SECONDS = 60
+_SD_TOKEN_DEFAULT_TTL_SECONDS = 86400
+
+
+def sd_token_cache_key(source_id):
+    return f'{_SD_TOKEN_CACHE_PREFIX}{source_id}'
+
+
+def sd_get_cached_token(source_id):
+    """
+    Return a cached SD token string for this source, or None.
+
+    On Redis failure, returns None so the caller re-authenticates.
+    """
+    if source_id is None:
+        return None
+    try:
+        payload = cache.get(sd_token_cache_key(source_id))
+    except Exception as exc:
+        logger.warning(
+            "SD token cache get failed for source %s (%s); re-authenticating",
+            source_id,
+            type(exc).__name__,
+        )
+        return None
+    if not isinstance(payload, dict):
+        return None
+    token = payload.get('token')
+    expires = payload.get('expires')
+    if not token or not isinstance(expires, (int, float)):
+        return None
+    if time.time() >= float(expires) - _SD_TOKEN_CACHE_SKEW_SECONDS:
+        return None
+    return token
+
+
+def sd_set_cached_token(source_id, token, expires=None):
+    """
+    Cache an SD token for this source until near tokenExpires.
+
+    ``expires`` is a UNIX epoch seconds value from SD's tokenExpires field.
+    """
+    if source_id is None or not token:
+        return False
+    now = time.time()
+    if expires is None:
+        expires = now + _SD_TOKEN_DEFAULT_TTL_SECONDS
+    try:
+        expires = float(expires)
+    except (TypeError, ValueError):
+        expires = now + _SD_TOKEN_DEFAULT_TTL_SECONDS
+    ttl = int(expires - now - _SD_TOKEN_CACHE_SKEW_SECONDS)
+    if ttl < 1:
+        return False
+    try:
+        cache.set(
+            sd_token_cache_key(source_id),
+            {'token': token, 'expires': expires},
+            timeout=ttl,
+        )
+        return True
+    except Exception as exc:
+        logger.warning(
+            "SD token cache set failed for source %s (%s)",
+            source_id,
+            type(exc).__name__,
+        )
+        return False
+
+
+def sd_clear_cached_token(source_id):
+    """Drop a cached SD token (e.g. after 401/403 from an image request)."""
+    if source_id is None:
+        return False
+    try:
+        cache.delete(sd_token_cache_key(source_id))
+        return True
+    except Exception as exc:
+        logger.warning(
+            "SD token cache delete failed for source %s (%s)",
+            source_id,
+            type(exc).__name__,
+        )
+        return False
 
 
 def sd_next_midnight_utc():

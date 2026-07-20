@@ -558,8 +558,8 @@ class ProgramViewSet(viewsets.ModelViewSet):
     queryset = ProgramData.objects.select_related("epg").all()
     serializer_class = ProgramDataSerializer
 
-    # Per-source in-memory caches (token and error state)
-    _sd_poster_token_cache: dict = {}
+    # Short process-local cooldown for transient poster errors (auth/network).
+    # Image download limits are persisted on the EPG source (shared across workers).
     _sd_poster_error_cache: dict = {}
 
     def get_permissions(self):
@@ -588,12 +588,15 @@ class ProgramViewSet(viewsets.ModelViewSet):
         from apps.epg.sd_utils import (
             SD_CODE_IMAGE_NOT_FOUND,
             SD_IMAGE_LIMIT_CODES,
+            sd_clear_cached_token,
+            sd_get_cached_token,
             sd_handle_2055,
             sd_headers_for_source,
             sd_image_limit_active,
             sd_mark_icon_missing,
             sd_parse_response_payload,
             sd_save_image_limit_lockout,
+            sd_set_cached_token,
         )
 
         program = self.get_object()
@@ -627,8 +630,7 @@ class ProgramViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
 
-        cached = ProgramViewSet._sd_poster_token_cache.get(source.id)
-        token = cached['token'] if cached and time.time() < cached['expires'] else None
+        token = sd_get_cached_token(source.id)
 
         if not token:
             sha1_password = hashlib.sha1(source.password.encode('utf-8')).hexdigest()
@@ -661,11 +663,10 @@ class ProgramViewSet(viewsets.ModelViewSet):
                         'reason': auth_data.get('message', 'Authentication failed'),
                     }
                     return Response(status=status.HTTP_502_BAD_GATEWAY)
-                token_expires = auth_data.get('tokenExpires', time.time() + 86400)
-                ProgramViewSet._sd_poster_token_cache[source.id] = {
-                    'token': token,
-                    'expires': token_expires,
-                }
+                token_expires = auth_data.get(
+                    'tokenExpires', time.time() + 86400
+                )
+                sd_set_cached_token(source.id, token, token_expires)
             except http_requests.exceptions.RequestException:
                 ProgramViewSet._sd_poster_error_cache[source.id] = {
                     'until': time.time() + 300,
@@ -715,7 +716,7 @@ class ProgramViewSet(viewsets.ModelViewSet):
                 return Response(status=status.HTTP_404_NOT_FOUND)
 
             if img_resp.status_code in (401, 403):
-                ProgramViewSet._sd_poster_token_cache.pop(source.id, None)
+                sd_clear_cached_token(source.id)
                 ProgramViewSet._sd_poster_error_cache[source.id] = {
                     'until': time.time() + 3600,
                     'reason': f'SD returned {img_resp.status_code}',

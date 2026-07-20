@@ -1551,17 +1551,44 @@ class SDUtilsTests(TestCase):
             sd_next_midnight_utc().isoformat(),
         )
 
+    def test_token_cache_round_trip(self):
+        from apps.epg.sd_utils import (
+            sd_clear_cached_token,
+            sd_get_cached_token,
+            sd_set_cached_token,
+        )
+
+        source_id = 4242
+        sd_clear_cached_token(source_id)
+        self.assertIsNone(sd_get_cached_token(source_id))
+        self.assertTrue(sd_set_cached_token(source_id, 'tok-abc', time.time() + 3600))
+        self.assertEqual(sd_get_cached_token(source_id), 'tok-abc')
+        sd_clear_cached_token(source_id)
+        self.assertIsNone(sd_get_cached_token(source_id))
+
+    def test_token_cache_ignores_near_expiry(self):
+        from apps.epg.sd_utils import (
+            sd_clear_cached_token,
+            sd_get_cached_token,
+            sd_set_cached_token,
+        )
+
+        source_id = 4243
+        sd_clear_cached_token(source_id)
+        # Within skew window: set should refuse or get should miss.
+        self.assertFalse(sd_set_cached_token(source_id, 'tok-soon', time.time() + 30))
+        self.assertIsNone(sd_get_cached_token(source_id))
+
 
 class SDPosterProxyErrorHandlingTests(TestCase):
     """Poster proxy must honor SD image error codes so accounts are not blocked."""
 
     def setUp(self):
         from apps.epg.api_views import ProgramViewSet
+        from apps.epg.sd_utils import sd_clear_cached_token
         from rest_framework.test import APIClient
 
-        ProgramViewSet._sd_poster_token_cache.clear()
         ProgramViewSet._sd_poster_error_cache.clear()
-
         self.client = APIClient()
         self.source = EPGSource.objects.create(
             name='SD Poster Source',
@@ -1569,6 +1596,7 @@ class SDPosterProxyErrorHandlingTests(TestCase):
             username='sduser',
             password='sdpass',
         )
+        sd_clear_cached_token(self.source.id)
         self.epg = EPGData.objects.create(
             tvg_id='station1',
             name='Station 1',
@@ -1588,8 +1616,10 @@ class SDPosterProxyErrorHandlingTests(TestCase):
 
     def tearDown(self):
         from apps.epg.api_views import ProgramViewSet
-        ProgramViewSet._sd_poster_token_cache.clear()
+        from apps.epg.sd_utils import sd_clear_cached_token
+
         ProgramViewSet._sd_poster_error_cache.clear()
+        sd_clear_cached_token(self.source.id)
 
     def _auth_ok(self):
         return MagicMock(
@@ -1728,4 +1758,21 @@ class SDPosterProxyErrorHandlingTests(TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp['Content-Type'], 'image/jpeg')
         self.assertEqual(resp.content, b'\xff\xd8\xffjpeg-bytes')
+
+    @patch('requests.get')
+    @patch('requests.post')
+    def test_second_poster_request_reuses_cached_token(self, mock_post, mock_get):
+        mock_post.return_value = self._auth_ok()
+        img = MagicMock()
+        img.status_code = 200
+        img.headers = {'Content-Type': 'image/jpeg'}
+        img.content = b'\xff\xd8\xffjpeg-bytes'
+        img.json = MagicMock(side_effect=ValueError('not json'))
+        mock_get.return_value = img
+
+        self.assertEqual(self.client.get(self.url).status_code, 200)
+        mock_post.reset_mock()
+        self.assertEqual(self.client.get(self.url).status_code, 200)
+        mock_post.assert_not_called()
+        self.assertEqual(mock_get.call_count, 2)
 

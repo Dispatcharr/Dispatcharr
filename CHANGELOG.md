@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **EPG source form places Auto-Apply EPG Logos in the shared middle column for XMLTV and Schedules Direct.** The toggle previously lived in the SD-only right panel when editing a Schedules Direct source; it now uses the same middle-column control as XMLTV so SD-specific options (logo style, posters, debug) stay in the right panel.
+- **Schedules Direct poster proxy shares auth tokens across uWSGI workers via Redis.** Tokens are stored in Django's cache until near `tokenExpires` (24h fallback), so concurrent `/poster/` requests on different workers reuse one SD session instead of each process hitting `/token` separately. Redis failures fall back to re-authentication.
 
 ### Fixed
 
