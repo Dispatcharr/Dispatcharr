@@ -133,7 +133,7 @@ class EPGSourceViewSet(viewsets.ModelViewSet):
         import hashlib
         import requests as http_requests
         from apps.epg.tasks import SD_BASE_URL
-        from core.utils import dispatcharr_http_headers
+        from apps.epg.sd_utils import sd_handle_2055, sd_headers_for_source
 
         username = (source.username or '').strip()
         password = (source.password or '').strip()
@@ -148,11 +148,27 @@ class EPGSourceViewSet(viewsets.ModelViewSet):
             auth_response = http_requests.post(
                 f"{SD_BASE_URL}/token",
                 json={'username': username, 'password': sha1_password},
-                headers=dispatcharr_http_headers(),
+                headers=sd_headers_for_source(source),
                 timeout=15,
             )
+            try:
+                auth_data = auth_response.json()
+            except ValueError:
+                auth_data = {}
+            if sd_handle_2055(source, auth_data):
+                return None, Response(
+                    {
+                        "error": (
+                            "Schedules Direct rejected the debug routing header "
+                            "(code 2055). Extra Schedules Direct Debugging has "
+                            "been turned off. Retry without it unless SD support "
+                            "asked you to enable it."
+                        ),
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
             auth_response.raise_for_status()
-            token = auth_response.json().get('token')
+            token = auth_data.get('token')
             if not token:
                 return None, Response(
                     {"error": "Authentication failed. Check your credentials."},
@@ -259,7 +275,7 @@ class EPGSourceViewSet(viewsets.ModelViewSet):
         """
         import requests as http_requests
         from apps.epg.tasks import SD_BASE_URL
-        from core.utils import dispatcharr_http_headers
+        from apps.epg.sd_utils import sd_handle_2055, sd_headers_for_source
 
         source = self.get_object()
         if source.source_type != 'schedules_direct':
@@ -272,7 +288,7 @@ class EPGSourceViewSet(viewsets.ModelViewSet):
         if error:
             return error
 
-        headers = dispatcharr_http_headers(token=token)
+        headers = sd_headers_for_source(source, token=token)
 
         if request.method == "GET":
             countries = self._fetch_sd_countries()
@@ -421,7 +437,7 @@ class EPGSourceViewSet(viewsets.ModelViewSet):
         """
         import requests as http_requests
         from apps.epg.tasks import SD_BASE_URL
-        from core.utils import dispatcharr_http_headers
+        from apps.epg.sd_utils import sd_handle_2055, sd_headers_for_source
 
         source = self.get_object()
         if source.source_type != 'schedules_direct':
@@ -442,7 +458,7 @@ class EPGSourceViewSet(viewsets.ModelViewSet):
         if error:
             return error
 
-        headers = dispatcharr_http_headers(token=token)
+        headers = sd_headers_for_source(source, token=token)
 
         try:
             resp = http_requests.get(
@@ -451,8 +467,24 @@ class EPGSourceViewSet(viewsets.ModelViewSet):
                 headers=headers,
                 timeout=15,
             )
+            try:
+                headends = resp.json()
+            except ValueError:
+                headends = None
+            if isinstance(headends, dict) and sd_handle_2055(source, headends):
+                return Response(
+                    {
+                        "error": (
+                            "Schedules Direct rejected the debug routing header "
+                            "(code 2055). Extra Schedules Direct Debugging has "
+                            "been turned off."
+                        ),
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
             resp.raise_for_status()
-            headends = resp.json()
+            if not isinstance(headends, list):
+                headends = []
             lineups = []
             for headend in headends:
                 for lineup in headend.get('lineups', []):
@@ -511,16 +543,40 @@ class ProgramViewSet(viewsets.ModelViewSet):
         """Proxy endpoint for SD program poster images. Nginx caches the response."""
         import requests as http_requests
         from apps.epg.tasks import SD_BASE_URL
-        from core.utils import dispatcharr_http_headers
+        from apps.epg.sd_utils import (
+            SD_CODE_IMAGE_NOT_FOUND,
+            SD_IMAGE_LIMIT_CODES,
+            sd_handle_2055,
+            sd_headers_for_source,
+            sd_image_limit_active,
+            sd_mark_icon_missing,
+            sd_parse_response_payload,
+            sd_save_image_limit_lockout,
+        )
 
         program = self.get_object()
-        poster_sd_url = (program.custom_properties or {}).get('sd_icon')
+        cp = program.custom_properties or {}
+        if cp.get('sd_icon_missing'):
+            return Response(status=status.HTTP_404_NOT_FOUND)
+        poster_sd_url = cp.get('sd_icon')
         if not poster_sd_url:
             return Response(status=status.HTTP_404_NOT_FOUND)
 
         source = program.epg.epg_source if program.epg else None
         if not source or source.source_type != 'schedules_direct':
             return Response(status=status.HTTP_404_NOT_FOUND)
+
+        # Persisted lockout (shared across workers) until next midnight UTC.
+        limit_active, limit_reason = sd_image_limit_active(source)
+        if limit_active:
+            ProgramViewSet._sd_poster_error_cache[source.id] = {
+                'until': time.time() + 300,
+                'reason': limit_reason,
+            }
+            return Response(
+                {'error': f"SD temporarily unavailable: {limit_reason}"},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
 
         error_cache = ProgramViewSet._sd_poster_error_cache.get(source.id)
         if error_cache and time.time() < error_cache['until']:
@@ -538,10 +594,24 @@ class ProgramViewSet(viewsets.ModelViewSet):
                 auth_resp = http_requests.post(
                     f"{SD_BASE_URL}/token",
                     json={'username': source.username, 'password': sha1_password},
-                    headers=dispatcharr_http_headers(),
+                    headers=sd_headers_for_source(source),
                     timeout=10,
                 )
-                auth_data = auth_resp.json()
+                try:
+                    auth_data = auth_resp.json()
+                except ValueError:
+                    auth_data = {}
+                if sd_handle_2055(source, auth_data):
+                    return Response(
+                        {
+                            'error': (
+                                'Schedules Direct rejected the debug routing header '
+                                '(code 2055). Extra Schedules Direct Debugging has '
+                                'been turned off.'
+                            ),
+                        },
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
                 token = auth_data.get('token')
                 if not token:
                     ProgramViewSet._sd_poster_error_cache[source.id] = {
@@ -564,10 +634,44 @@ class ProgramViewSet(viewsets.ModelViewSet):
         try:
             img_resp = http_requests.get(
                 poster_sd_url,
-                headers=dispatcharr_http_headers(token=token, content_type=None),
+                headers=sd_headers_for_source(source, token=token, content_type=None),
                 timeout=15,
                 allow_redirects=True,
             )
+            err_code, err_data = sd_parse_response_payload(img_resp)
+            if err_data is not None and sd_handle_2055(source, err_data):
+                return Response(
+                    {
+                        'error': (
+                            'Schedules Direct rejected the debug routing header '
+                            '(code 2055). Extra Schedules Direct Debugging has '
+                            'been turned off.'
+                        ),
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            # SD documents 5002/5003 as HTTP 200 + JSON. Also accept 4xx.
+            if err_code in SD_IMAGE_LIMIT_CODES:
+                sd_save_image_limit_lockout(source, err_code)
+                ProgramViewSet._sd_poster_error_cache[source.id] = {
+                    'until': time.time() + 300,
+                    'reason': (
+                        f'Daily image download limit reached (SD error {err_code})'
+                    ),
+                }
+                return Response(status=status.HTTP_429_TOO_MANY_REQUESTS)
+
+            # Only blacklist on explicit IMAGE_NOT_FOUND (5000). Bare HTTP 404 can
+            # be a transient CDN/S3 miss for ephemeral URIs and must not permanently
+            # clear sd_icon (SD docs: code 5000 + HTTP 404).
+            if err_code == SD_CODE_IMAGE_NOT_FOUND:
+                sd_mark_icon_missing(program)
+                return Response(status=status.HTTP_404_NOT_FOUND)
+
+            if img_resp.status_code == 404:
+                return Response(status=status.HTTP_404_NOT_FOUND)
+
             if img_resp.status_code in (401, 403):
                 ProgramViewSet._sd_poster_token_cache.pop(source.id, None)
                 ProgramViewSet._sd_poster_error_cache[source.id] = {
@@ -575,22 +679,23 @@ class ProgramViewSet(viewsets.ModelViewSet):
                     'reason': f'SD returned {img_resp.status_code}',
                 }
                 return Response(status=status.HTTP_502_BAD_GATEWAY)
-            if img_resp.status_code == 400:
-                try:
-                    err_code = img_resp.json().get('code')
-                except Exception:
-                    err_code = None
-                if err_code == 5002:
-                    ProgramViewSet._sd_poster_error_cache[source.id] = {
-                        'until': time.time() + 3600,
-                        'reason': 'Daily image download limit reached (SD error 5002)',
-                    }
-                return Response(status=status.HTTP_429_TOO_MANY_REQUESTS)
+
+            # JSON error body (even on HTTP 200) is never a valid image.
+            if err_data is not None and err_code not in (None, 0):
+                logger.warning(
+                    "SD poster proxy: unexpected JSON error code %s for program %s",
+                    err_code,
+                    program.id,
+                )
+                return Response(status=status.HTTP_502_BAD_GATEWAY)
+
             if img_resp.status_code != 200:
                 return Response(status=status.HTTP_502_BAD_GATEWAY)
 
             from django.http import HttpResponse
             content_type = img_resp.headers.get('Content-Type', 'image/jpeg')
+            if 'json' in (content_type or '').lower():
+                return Response(status=status.HTTP_502_BAD_GATEWAY)
             response = HttpResponse(img_resp.content, content_type=content_type)
             response['Cache-Control'] = 'public, max-age=86400'
             return response

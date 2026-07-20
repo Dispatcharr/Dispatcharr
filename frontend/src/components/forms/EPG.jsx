@@ -170,6 +170,9 @@ const SDSettings = ({ sourceId, customProperties }) => {
   const [posterStyle, setPosterStyle] = useState(
     resolvedCp.poster_style || 'sd_recommended'
   );
+  const [extraDebugging, setExtraDebugging] = useState(
+    !!resolvedCp.sd_extra_debugging
+  );
   const [saving, setSaving] = useState(false);
 
   // Sync from store (preferred) or parent props when the form opens or settings save
@@ -178,6 +181,7 @@ const SDSettings = ({ sourceId, customProperties }) => {
     setLogoStyle(newCp.logo_style || 'dark');
     setFetchPosters(!!newCp.fetch_posters);
     setPosterStyle(newCp.poster_style || 'sd_recommended');
+    setExtraDebugging(!!newCp.sd_extra_debugging);
   }, [storeCustomProps, customProperties]);
 
   const saveSetting = async (key, value) => {
@@ -203,6 +207,11 @@ const SDSettings = ({ sourceId, customProperties }) => {
     if (!style) return;
     setPosterStyle(style);
     saveSetting('poster_style', style);
+  };
+
+  const handleExtraDebuggingToggle = (checked) => {
+    setExtraDebugging(checked);
+    saveSetting('sd_extra_debugging', checked);
   };
 
   return (
@@ -290,6 +299,17 @@ const SDSettings = ({ sourceId, customProperties }) => {
           allowDeselect={false}
         />
       )}
+
+      <Divider my="sm" />
+
+      <Switch
+        label="Extra Schedules Direct Debugging"
+        description="Only turn this on if Schedules Direct support asks you to. Adds a RouteTo: debug header so SD can steer requests to their debug server. If SD returns code 2055, this setting is turned off automatically."
+        checked={extraDebugging}
+        onChange={(e) => handleExtraDebuggingToggle(e.currentTarget.checked)}
+        disabled={saving}
+        size="sm"
+      />
     </Box>
   );
 };

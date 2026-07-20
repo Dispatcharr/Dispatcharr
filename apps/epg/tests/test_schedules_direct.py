@@ -14,6 +14,7 @@ Covers:
 """
 
 import hashlib
+import time
 from datetime import date, datetime, timedelta, timezone as dt_timezone
 from unittest.mock import MagicMock, patch
 
@@ -1355,3 +1356,258 @@ class SDPosterSelectionTests(TestCase):
             _sd_pick_poster_url(images, 'square_iconic'),
             'assets/landscape_primary.jpg',
         )
+
+
+# ---------------------------------------------------------------------------
+# SD helpers and poster proxy error handling
+# ---------------------------------------------------------------------------
+
+class SDUtilsTests(TestCase):
+    """Unit tests for apps.epg.sd_utils helpers."""
+
+    def test_headers_include_routeto_when_extra_debugging_enabled(self):
+        from apps.epg.sd_utils import sd_headers_for_source
+
+        source = EPGSource.objects.create(
+            name='SD Debug Headers',
+            source_type='schedules_direct',
+            username='u',
+            password='p',
+            custom_properties={'sd_extra_debugging': True},
+        )
+        headers = sd_headers_for_source(source, token='tok', content_type=None)
+        self.assertEqual(headers.get('RouteTo'), 'debug')
+        self.assertEqual(headers.get('token'), 'tok')
+        self.assertNotIn('Content-Type', headers)
+
+    def test_headers_omit_routeto_by_default(self):
+        from apps.epg.sd_utils import sd_headers_for_source
+
+        source = EPGSource.objects.create(
+            name='SD No Debug',
+            source_type='schedules_direct',
+            username='u',
+            password='p',
+        )
+        headers = sd_headers_for_source(source)
+        self.assertNotIn('RouteTo', headers)
+
+    def test_2055_disables_extra_debugging(self):
+        from apps.epg.sd_utils import sd_handle_2055
+
+        source = EPGSource.objects.create(
+            name='SD 2055',
+            source_type='schedules_direct',
+            username='u',
+            password='p',
+            custom_properties={'sd_extra_debugging': True},
+        )
+        self.assertTrue(sd_handle_2055(source, {
+            'response': 'INVALID_PARAMETER:DEBUG',
+            'code': 2055,
+            'message': 'Unexpected debug connection from client.',
+        }))
+        source.refresh_from_db()
+        self.assertFalse(source.custom_properties.get('sd_extra_debugging'))
+
+    def test_image_limit_lockout_persists_until_midnight_utc(self):
+        from apps.epg.sd_utils import (
+            sd_image_limit_active,
+            sd_next_midnight_utc,
+            sd_save_image_limit_lockout,
+        )
+
+        source = EPGSource.objects.create(
+            name='SD Limit',
+            source_type='schedules_direct',
+            username='u',
+            password='p',
+        )
+        sd_save_image_limit_lockout(source, 5002)
+        source.refresh_from_db()
+        active, reason = sd_image_limit_active(source)
+        self.assertTrue(active)
+        self.assertIn('5002', reason)
+        self.assertEqual(
+            source.custom_properties.get('sd_image_limit_reset_at'),
+            sd_next_midnight_utc().isoformat(),
+        )
+
+
+class SDPosterProxyErrorHandlingTests(TestCase):
+    """Poster proxy must honor SD image error codes so accounts are not blocked."""
+
+    def setUp(self):
+        from apps.epg.api_views import ProgramViewSet
+        from rest_framework.test import APIClient
+
+        ProgramViewSet._sd_poster_token_cache.clear()
+        ProgramViewSet._sd_poster_error_cache.clear()
+
+        self.client = APIClient()
+        self.source = EPGSource.objects.create(
+            name='SD Poster Source',
+            source_type='schedules_direct',
+            username='sduser',
+            password='sdpass',
+        )
+        self.epg = EPGData.objects.create(
+            tvg_id='station1',
+            name='Station 1',
+            epg_source=self.source,
+        )
+        self.program = ProgramData.objects.create(
+            epg=self.epg,
+            title='Show',
+            start_time=timezone.now(),
+            end_time=timezone.now() + timedelta(hours=1),
+            program_id='EP123456789012',
+            custom_properties={
+                'sd_icon': 'https://json.schedulesdirect.org/20141201/image/assets/test.jpg',
+            },
+        )
+        self.url = f'/api/epg/programs/{self.program.id}/poster/'
+
+    def tearDown(self):
+        from apps.epg.api_views import ProgramViewSet
+        ProgramViewSet._sd_poster_token_cache.clear()
+        ProgramViewSet._sd_poster_error_cache.clear()
+
+    def _auth_ok(self):
+        return MagicMock(
+            status_code=200,
+            json=MagicMock(return_value={
+                'code': 0,
+                'token': 'poster-tok',
+                'tokenExpires': time.time() + 86400,
+            }),
+        )
+
+    def _json_response(self, status_code, payload, content_type='application/json'):
+        import json as json_mod
+        body = json_mod.dumps(payload).encode('utf-8')
+        resp = MagicMock()
+        resp.status_code = status_code
+        resp.headers = {'Content-Type': content_type}
+        resp.content = body
+        resp.json = MagicMock(return_value=payload)
+        return resp
+
+    @patch('requests.get')
+    @patch('requests.post')
+    def test_http_200_json_5002_locks_until_midnight_and_blocks_retry(
+        self, mock_post, mock_get
+    ):
+        mock_post.return_value = self._auth_ok()
+        mock_get.return_value = self._json_response(200, {
+            'response': 'MAX_IMAGE_DOWNLOADS',
+            'code': 5002,
+            'message': 'Maximum image downloads reached.',
+        })
+
+        first = self.client.get(self.url)
+        self.assertEqual(first.status_code, 429)
+
+        self.source.refresh_from_db()
+        self.assertTrue(self.source.custom_properties.get('sd_image_limit_hit'))
+
+        mock_get.reset_mock()
+        second = self.client.get(self.url)
+        self.assertEqual(second.status_code, 503)
+        mock_get.assert_not_called()
+
+    @patch('requests.get')
+    @patch('requests.post')
+    def test_http_200_json_5003_locks_out(self, mock_post, mock_get):
+        mock_post.return_value = self._auth_ok()
+        mock_get.return_value = self._json_response(200, {
+            'response': 'MAX_IMAGE_DOWNLOADS_TRIAL',
+            'code': 5003,
+            'message': 'Maximum image downloads for trial user reached.',
+        })
+
+        resp = self.client.get(self.url)
+        self.assertEqual(resp.status_code, 429)
+        self.source.refresh_from_db()
+        self.assertTrue(self.source.custom_properties.get('sd_image_limit_hit'))
+        self.assertIn('5003', self.source.custom_properties.get('sd_image_limit_reason', ''))
+
+    @patch('requests.get')
+    @patch('requests.post')
+    def test_http_404_json_5000_clears_sd_icon(self, mock_post, mock_get):
+        mock_post.return_value = self._auth_ok()
+        mock_get.return_value = self._json_response(404, {
+            'response': 'IMAGE_NOT_FOUND',
+            'code': 5000,
+            'message': 'Could not find requested image.',
+        })
+
+        resp = self.client.get(self.url)
+        self.assertEqual(resp.status_code, 404)
+
+        self.program.refresh_from_db()
+        cp = self.program.custom_properties or {}
+        self.assertNotIn('sd_icon', cp)
+        self.assertTrue(cp.get('sd_icon_missing'))
+
+        mock_get.reset_mock()
+        again = self.client.get(self.url)
+        self.assertEqual(again.status_code, 404)
+        mock_get.assert_not_called()
+
+    @patch('requests.get')
+    @patch('requests.post')
+    def test_bare_http_404_does_not_clear_sd_icon(self, mock_post, mock_get):
+        """Transient CDN/S3 404 without SD code 5000 must not blacklist the URI."""
+        mock_post.return_value = self._auth_ok()
+        bare_404 = MagicMock()
+        bare_404.status_code = 404
+        bare_404.headers = {'Content-Type': 'text/plain'}
+        bare_404.content = b'Not Found'
+        bare_404.json = MagicMock(side_effect=ValueError('not json'))
+        mock_get.return_value = bare_404
+
+        resp = self.client.get(self.url)
+        self.assertEqual(resp.status_code, 404)
+
+        self.program.refresh_from_db()
+        cp = self.program.custom_properties or {}
+        self.assertIn('sd_icon', cp)
+        self.assertFalse(cp.get('sd_icon_missing'))
+
+    @patch('requests.get')
+    @patch('requests.post')
+    def test_2055_disables_extra_debugging_on_auth(self, mock_post, mock_get):
+        self.source.custom_properties = {'sd_extra_debugging': True}
+        self.source.save(update_fields=['custom_properties'])
+
+        mock_post.return_value = self._json_response(200, {
+            'response': 'INVALID_PARAMETER:DEBUG',
+            'code': 2055,
+            'message': 'Unexpected debug connection from client.',
+        })
+
+        resp = self.client.get(self.url)
+        self.assertEqual(resp.status_code, 400)
+        self.source.refresh_from_db()
+        self.assertFalse(self.source.custom_properties.get('sd_extra_debugging'))
+        mock_get.assert_not_called()
+        auth_headers = mock_post.call_args.kwargs.get('headers') or mock_post.call_args[1].get('headers')
+        self.assertEqual(auth_headers.get('RouteTo'), 'debug')
+
+    @patch('requests.get')
+    @patch('requests.post')
+    def test_successful_image_pass_through(self, mock_post, mock_get):
+        mock_post.return_value = self._auth_ok()
+        img = MagicMock()
+        img.status_code = 200
+        img.headers = {'Content-Type': 'image/jpeg'}
+        img.content = b'\xff\xd8\xffjpeg-bytes'
+        img.json = MagicMock(side_effect=ValueError('not json'))
+        mock_get.return_value = img
+
+        resp = self.client.get(self.url)
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp['Content-Type'], 'image/jpeg')
+        self.assertEqual(resp.content, b'\xff\xd8\xffjpeg-bytes')
+

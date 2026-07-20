@@ -3038,10 +3038,10 @@ def fetch_schedules_direct(
     # SD API spec requires the User-Agent to identify the application and version.
     # SergeantPanda confirmed Dispatcharr should identify itself properly.
     # -------------------------------------------------------------------------
-    from core.utils import dispatcharr_http_headers
+    from apps.epg.sd_utils import sd_handle_2055, sd_headers_for_source
 
-    def _sd_headers(token=None):
-        return dispatcharr_http_headers(token=token)
+    def _sd_headers(token=None, content_type='application/json'):
+        return sd_headers_for_source(source, token=token, content_type=content_type)
 
     def _sd_post_refresh_tasks(mapped_epg_ids, program_metadata, today):
         """Poster fetch, logo auto-apply, and pruning — runs even when schedules are unchanged."""
@@ -3055,6 +3055,12 @@ def fetch_schedules_direct(
                 Q(custom_properties__isnull=True)
                 | ~Q(custom_properties__has_key='sd_icon')
                 | ~Q(custom_properties__sd_poster_style=poster_style)
+            )
+            # Do not re-request artwork for URIs that SD already reported missing
+            # (code 5000), unless the user changed poster_style (explicit retry).
+            needs_poster_q = needs_poster_q & ~(
+                Q(custom_properties__sd_icon_missing=True)
+                & Q(custom_properties__sd_poster_style=poster_style)
             )
             poster_program_ids = set(
                 ProgramData.objects.filter(
@@ -3138,6 +3144,7 @@ def fetch_schedules_direct(
                             cp = prog.custom_properties or {}
                             cp['sd_icon'] = poster
                             cp['sd_poster_style'] = poster_style
+                            cp.pop('sd_icon_missing', None)
                             prog.custom_properties = cp
                             programs_to_update.append(prog)
                     if programs_to_update:
@@ -3216,8 +3223,25 @@ def fetch_schedules_direct(
             headers=_sd_headers(),
             timeout=30,
         )
+        try:
+            token_data = token_response.json()
+        except ValueError:
+            token_data = {}
+
+        if sd_handle_2055(source, token_data):
+            msg = (
+                "Schedules Direct rejected the debug routing header (code 2055). "
+                "Extra Schedules Direct Debugging has been turned off. Retry the "
+                "refresh unless Schedules Direct support asked you to enable it."
+            )
+            logger.error(msg)
+            source.status = EPGSource.STATUS_ERROR
+            source.last_message = msg
+            source.save(update_fields=['status', 'last_message'])
+            send_epg_update(source.id, "refresh", 100, status="error", error=msg)
+            return
+
         token_response.raise_for_status()
-        token_data = token_response.json()
 
         auth_code = token_data.get('code', 0)
         if auth_code != 0:
