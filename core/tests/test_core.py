@@ -155,10 +155,12 @@ class CoreSettingsGroupCacheTests(TestCase):
         """
         from redis.exceptions import ConnectionError as RedisConnectionError
 
-        CoreSettings.objects.create(
+        CoreSettings.objects.update_or_create(
             key=STREAM_SETTINGS_KEY,
-            name="Stream Settings",
-            value={"default_user_agent": "ua-from-db"},
+            defaults={
+                "name": "Stream Settings",
+                "value": {"default_user_agent": "ua-from-db"},
+            },
         )
         redis_down = RedisConnectionError(
             "Error 111 connecting to localhost:6379"
