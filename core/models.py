@@ -5,9 +5,10 @@ import time
 from shlex import split as shlex_split
 
 from django.conf import settings
+from django.core.cache import cache
+from django.core.exceptions import ValidationError
 from django.db import models
 from django.utils.text import slugify
-from django.core.exceptions import ValidationError
 from django_redis.exceptions import ConnectionInterrupted
 from redis.exceptions import AuthenticationError as RedisAuthenticationError
 from redis.exceptions import AuthorizationError as RedisAuthorizationError
@@ -285,8 +286,6 @@ class CoreSettings(models.Model):
         connect-timeout wait).
         """
         try:
-            from django.core.cache import cache
-
             return cache.get(key, default)
         except _GROUP_CACHE_RERAISE_ERRORS:
             raise
@@ -298,8 +297,6 @@ class CoreSettings(models.Model):
     def _cache_set(cls, key, value, timeout=None):
         """Write to Django cache; no-op if Redis is unreachable."""
         try:
-            from django.core.cache import cache
-
             cache.set(key, value, timeout=timeout)
             return True
         except _GROUP_CACHE_RERAISE_ERRORS:
@@ -312,8 +309,6 @@ class CoreSettings(models.Model):
     def _cache_delete(cls, key):
         """Delete from Django cache; no-op if Redis is unreachable."""
         try:
-            from django.core.cache import cache
-
             cache.delete(key)
             return True
         except _GROUP_CACHE_RERAISE_ERRORS:
