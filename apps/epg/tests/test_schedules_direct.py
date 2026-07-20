@@ -164,14 +164,105 @@ class FetchSchedulesDirectAuthTests(TestCase):
         self.assertEqual(posted_json.get('password'), expected_hash)
         self.assertEqual(posted_json.get('username'), 'sduser')
 
+
+class SDLineupChangesRemainingTests(TestCase):
+    """Persisting changesRemaining=0 must include a midnight-UTC reset timestamp."""
+
+    def test_save_zero_remaining_sets_reset_at(self):
+        from apps.epg.api_views import EPGSourceViewSet
+        from apps.epg.sd_utils import sd_next_midnight_utc
+
+        source = EPGSource.objects.create(
+            name='SD Changes Remaining',
+            source_type='schedules_direct',
+            username='u',
+            password='p',
+        )
+        view = EPGSourceViewSet()
+        view._save_sd_changes_remaining(source, 0)
+        source.refresh_from_db()
+        self.assertEqual(source.custom_properties.get('sd_changes_remaining'), 0)
+        self.assertEqual(
+            source.custom_properties.get('sd_changes_reset_at'),
+            sd_next_midnight_utc().isoformat(),
+        )
+
+    def test_save_positive_remaining_clears_reset_at(self):
+        from apps.epg.api_views import EPGSourceViewSet
+
+        source = EPGSource.objects.create(
+            name='SD Changes Unlock',
+            source_type='schedules_direct',
+            username='u',
+            password='p',
+            custom_properties={
+                'sd_changes_remaining': 0,
+                'sd_changes_reset_at': '2099-01-01T00:00:00+00:00',
+            },
+        )
+        view = EPGSourceViewSet()
+        view._save_sd_changes_remaining(source, 3)
+        source.refresh_from_db()
+        self.assertEqual(source.custom_properties.get('sd_changes_remaining'), 3)
+        self.assertNotIn('sd_changes_reset_at', source.custom_properties or {})
+
+    def test_lockout_uses_shared_save_path(self):
+        from apps.epg.api_views import EPGSourceViewSet
+        from apps.epg.sd_utils import sd_next_midnight_utc
+
+        source = EPGSource.objects.create(
+            name='SD Lockout',
+            source_type='schedules_direct',
+            username='u',
+            password='p',
+        )
+        view = EPGSourceViewSet()
+        view._save_sd_lockout(source)
+        source.refresh_from_db()
+        self.assertEqual(source.custom_properties.get('sd_changes_remaining'), 0)
+        self.assertEqual(
+            source.custom_properties.get('sd_changes_reset_at'),
+            sd_next_midnight_utc().isoformat(),
+        )
+
+
+class FetchSchedulesDirectAuthCodeTests(TestCase):
+    """Token response codes must map to idle vs error correctly."""
+
     @patch('apps.epg.tasks.requests.post')
-    def test_auth_failure_sets_error_status(self, mock_post):
-        """A non-zero SD response code must set STATUS_ERROR on the source."""
+    def test_auth_service_offline_sets_idle_status(self, mock_post):
+        """Token code 3000 (SERVICE_OFFLINE) must stop as idle, not a credential error."""
         mock_post.return_value = MagicMock(
             status_code=200,
             json=MagicMock(return_value={
                 'code': 3000,
-                'message': 'Invalid credentials',
+                'message': 'Server offline for maintenance.',
+            }),
+        )
+
+        from apps.epg.tasks import fetch_schedules_direct
+        source = EPGSource.objects.create(
+            name='SD Auth Offline',
+            source_type='schedules_direct',
+            username='user',
+            password='pass',
+        )
+
+        with patch('apps.epg.tasks.send_epg_update'):
+            fetch_schedules_direct(source)
+
+        source.refresh_from_db()
+        self.assertEqual(source.status, EPGSource.STATUS_IDLE)
+        self.assertIn('offline', source.last_message.lower())
+
+    @patch('apps.epg.tasks.requests.post')
+    def test_auth_failure_sets_error_status(self, mock_post):
+        """A non-zero credential error code must set STATUS_ERROR on the source."""
+        mock_post.return_value = MagicMock(
+            status_code=200,
+            json=MagicMock(return_value={
+                'code': 4003,
+                'message': 'Invalid username or password.',
             }),
         )
 
@@ -188,6 +279,33 @@ class FetchSchedulesDirectAuthTests(TestCase):
 
         source.refresh_from_db()
         self.assertEqual(source.status, EPGSource.STATUS_ERROR)
+        self.assertIn('invalid username or password', source.last_message.lower())
+
+    @patch('apps.epg.tasks.requests.post')
+    def test_auth_too_many_ips_sets_error_status(self, mock_post):
+        """Code 4010 must surface a clear multi-IP message and stop."""
+        mock_post.return_value = MagicMock(
+            status_code=200,
+            json=MagicMock(return_value={
+                'code': 4010,
+                'message': 'Exceeded maximum number of unique IP addresses in 24 hours.',
+            }),
+        )
+
+        from apps.epg.tasks import fetch_schedules_direct
+        source = EPGSource.objects.create(
+            name='SD Too Many IPs',
+            source_type='schedules_direct',
+            username='user',
+            password='pass',
+        )
+
+        with patch('apps.epg.tasks.send_epg_update'):
+            fetch_schedules_direct(source)
+
+        source.refresh_from_db()
+        self.assertEqual(source.status, EPGSource.STATUS_ERROR)
+        self.assertIn('unique IP', source.last_message)
 
     @patch('apps.epg.tasks.requests.post')
     def test_network_error_sets_error_status(self, mock_post):

@@ -213,39 +213,36 @@ class EPGSourceViewSet(viewsets.ModelViewSet):
         return changes_remaining
 
     def _save_sd_changes_remaining(self, source, changes_remaining):
-        """Persist changesRemaining to EPGSource model field."""
-        cp = source.custom_properties or {}
+        """
+        Persist changesRemaining on the EPG source.
+
+        When remaining hits 0, also store sd_changes_reset_at (next midnight UTC)
+        so the lockout can clear automatically. A positive remaining clears any
+        prior reset timestamp.
+        """
+        from apps.epg.sd_utils import sd_next_midnight_utc
+
+        cp = dict(source.custom_properties or {})
         cp['sd_changes_remaining'] = changes_remaining
+        if changes_remaining == 0:
+            cp['sd_changes_reset_at'] = sd_next_midnight_utc().isoformat()
+        else:
+            cp.pop('sd_changes_reset_at', None)
         source.custom_properties = cp
         source.save(update_fields=['custom_properties'])
 
     def _save_sd_lockout(self, source):
         """
-        Persist a hard lockout to EPGSource custom_properties when SD returns
-        4100 MAX_LINEUP_CHANGES_REACHED. SD lineup change counters reset at
-        00:00Z (midnight UTC) per SD's documented behavior — error 4100 states
-        "lineup changes for today" and all SD rate counters reset at midnight UTC.
-        Lockout clears automatically when the next midnight UTC passes.
+        Persist a hard lockout when SD returns 4100 MAX_LINEUP_CHANGES_REACHED.
+
+        SD lineup change counters reset at 00:00Z (midnight UTC). Lockout clears
+        automatically when that reset time passes.
         """
-        from django.utils import timezone
-        from datetime import datetime, timedelta, timezone as dt_timezone
-
-        now = timezone.now()
-        # Calculate next midnight UTC — SD resets at 00:00Z not on a rolling window
-        tomorrow = (now + timedelta(days=1)).replace(
-            hour=0, minute=0, second=0, microsecond=0,
-            tzinfo=dt_timezone.utc
-        )
-        reset_at = tomorrow
-
-        cp = source.custom_properties or {}
-        cp['sd_changes_remaining'] = 0
-        cp['sd_changes_reset_at'] = reset_at.isoformat()
-        source.custom_properties = cp
-        source.save(update_fields=['custom_properties'])
+        self._save_sd_changes_remaining(source, 0)
+        reset_at = (source.custom_properties or {}).get('sd_changes_reset_at')
         logger.warning(
-            f"SD source {source.id}: daily add limit reached (4100). "
-            f"Lockout set until {reset_at.isoformat()}."
+            f"SD source {source.id}: daily lineup change limit reached (4100). "
+            f"Lockout set until {reset_at}."
         )
 
     def _fetch_sd_countries(self):
@@ -330,6 +327,21 @@ class EPGSourceViewSet(viewsets.ModelViewSet):
             lineup_id = request.data.get('lineup')
             if not lineup_id:
                 return Response({"error": "lineup field is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+            # Honor a known daily change lockout without calling SD again.
+            if self._get_sd_changes_remaining(source) == 0:
+                return Response({
+                    "error": "daily_limit_reached",
+                    "message": (
+                        "You have reached your daily Schedules Direct lineup "
+                        "change limit (6 add/delete operations per 24 hours). "
+                        "Resets at midnight UTC."
+                    ),
+                    "changes_remaining": 0,
+                    "changes_reset_at": self._get_sd_reset_at(source),
+                    "docs_url": "https://github.com/SchedulesDirect/JSON-Service/wiki/API-20141201#tasks-your-client-must-perform",
+                }, status=status.HTTP_200_OK)
+
             try:
                 resp = http_requests.put(
                     f"{SD_BASE_URL}/lineups/{lineup_id}",
@@ -344,7 +356,11 @@ class EPGSourceViewSet(viewsets.ModelViewSet):
                         self._save_sd_lockout(source)
                         return Response({
                             "error": "daily_limit_reached",
-                            "message": "You have reached your daily Schedules Direct lineup addition limit. SD allows 6 adds per 24-hour period. Resets at midnight UTC.",
+                            "message": (
+                                "You have reached your daily Schedules Direct lineup "
+                                "change limit (6 add/delete operations per 24 hours). "
+                                "Resets at midnight UTC."
+                            ),
                             "changes_remaining": 0,
                             "docs_url": "https://github.com/SchedulesDirect/JSON-Service/wiki/API-20141201#tasks-your-client-must-perform",
                         }, status=status.HTTP_200_OK)
@@ -395,6 +411,20 @@ class EPGSourceViewSet(viewsets.ModelViewSet):
             lineup_id = request.data.get('lineup')
             if not lineup_id:
                 return Response({"error": "lineup field is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+            if self._get_sd_changes_remaining(source) == 0:
+                return Response({
+                    "error": "daily_limit_reached",
+                    "message": (
+                        "You have reached your daily Schedules Direct lineup "
+                        "change limit (6 add/delete operations per 24 hours). "
+                        "Resets at midnight UTC."
+                    ),
+                    "changes_remaining": 0,
+                    "changes_reset_at": self._get_sd_reset_at(source),
+                    "docs_url": "https://github.com/SchedulesDirect/JSON-Service/wiki/API-20141201#tasks-your-client-must-perform",
+                }, status=status.HTTP_200_OK)
+
             try:
                 resp = http_requests.delete(
                     f"{SD_BASE_URL}/lineups/{lineup_id}",
@@ -411,6 +441,18 @@ class EPGSourceViewSet(viewsets.ModelViewSet):
                             "message": "Lineup not found on account — already removed.",
                             "changes_remaining": self._get_sd_changes_remaining(source),
                         })
+                    if sd_code == 4100:
+                        self._save_sd_lockout(source)
+                        return Response({
+                            "error": "daily_limit_reached",
+                            "message": (
+                                "You have reached your daily Schedules Direct lineup "
+                                "change limit (6 add/delete operations per 24 hours). "
+                                "Resets at midnight UTC."
+                            ),
+                            "changes_remaining": 0,
+                            "docs_url": "https://github.com/SchedulesDirect/JSON-Service/wiki/API-20141201#tasks-your-client-must-perform",
+                        }, status=status.HTTP_200_OK)
                 resp.raise_for_status()
                 sd_data = resp.json()
                 # SD returns changesRemaining on deletes — persist it

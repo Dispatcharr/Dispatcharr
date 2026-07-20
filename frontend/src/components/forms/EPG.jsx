@@ -436,18 +436,27 @@ const SDLineupManager = ({ sourceId }) => {
     setRemovingLineup(lineup.lineup);
     try {
       const result = await API.deleteSDLineup(sourceId, lineup.lineup);
-      if (result && result.code === 0) {
+      if (!result) return;
+
+      if (
+        result.changes_remaining !== undefined &&
+        result.changes_remaining !== null
+      ) {
+        setChangesRemaining(result.changes_remaining);
+      }
+
+      if (result.error === 'daily_limit_reached') {
+        setChangesRemaining(0);
+        await fetchActiveLineups();
+        return;
+      }
+
+      if (result.code === 0) {
         showNotification({
           title: 'Lineup removed',
           message: lineup.name,
           color: 'blue',
         });
-        if (
-          result.changes_remaining !== undefined &&
-          result.changes_remaining !== null
-        ) {
-          setChangesRemaining(result.changes_remaining);
-        }
         await fetchActiveLineups();
         setSearchResults([]);
       }
@@ -509,6 +518,7 @@ const SDLineupManager = ({ sourceId }) => {
                 variant="subtle"
                 leftSection={<Trash2 size={12} />}
                 loading={removingLineup === lineup.lineup}
+                disabled={changesRemaining === 0}
                 onClick={() => handleRemove(lineup)}
               >
                 Remove
@@ -541,8 +551,9 @@ const SDLineupManager = ({ sourceId }) => {
           mb="xs"
           icon={<TriangleAlert size={14} />}
         >
-          You have reached your daily Schedules Direct lineup addition limit. SD
-          allows 6 adds per 24-hour period.{' '}
+          You have reached your daily Schedules Direct lineup change limit. SD
+          allows 6 add or delete operations per 24-hour period. Adds and removes
+          are both blocked until the limit resets.{' '}
           {changesResetAt && (
             <span>
               Limit resets at{' '}
@@ -550,7 +561,7 @@ const SDLineupManager = ({ sourceId }) => {
             </span>
           )}
           {!changesResetAt && (
-            <span>Limit resets 24 hours after the first add of the day. </span>
+            <span>Limit resets at midnight UTC. </span>
           )}
           <a href={SD_DOCS_URL} target="_blank" rel="noopener noreferrer">
             Learn more
@@ -565,8 +576,9 @@ const SDLineupManager = ({ sourceId }) => {
           mb="xs"
           icon={<TriangleAlert size={14} />}
         >
-          You have <strong>1 lineup addition remaining</strong> today. Use it
-          carefully — Schedules Direct limits adds to 6 per 24-hour period.{' '}
+          You have <strong>1 lineup change remaining</strong> today. Use it
+          carefully. Schedules Direct limits adds and deletes to 6 per 24-hour
+          period.{' '}
           <a href={SD_DOCS_URL} target="_blank" rel="noopener noreferrer">
             Learn more
           </a>
@@ -580,8 +592,8 @@ const SDLineupManager = ({ sourceId }) => {
           mb="xs"
           icon={<TriangleAlert size={14} />}
         >
-          You have <strong>2 lineup additions remaining</strong> today.
-          Schedules Direct limits adds to 6 per 24-hour period.{' '}
+          You have <strong>2 lineup changes remaining</strong> today. Schedules
+          Direct limits adds and deletes to 6 per 24-hour period.{' '}
           <a href={SD_DOCS_URL} target="_blank" rel="noopener noreferrer">
             Learn more
           </a>

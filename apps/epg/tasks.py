@@ -3245,6 +3245,24 @@ def fetch_schedules_direct(
 
         auth_code = token_data.get('code', 0)
         if auth_code != 0:
+            # Soft offline/busy: stop without treating as a credential error.
+            if auth_code in (3000, 3001):
+                if auth_code == 3000:
+                    msg = (
+                        "Schedules Direct is offline for maintenance. "
+                        "Do not retry for at least 1 hour."
+                    )
+                else:
+                    msg = (
+                        "Schedules Direct is busy. Stop requesting and retry later."
+                    )
+                logger.warning(msg)
+                source.status = EPGSource.STATUS_IDLE
+                source.last_message = msg
+                source.save(update_fields=['status', 'last_message'])
+                send_epg_update(source.id, "refresh", 100, status="idle", message=msg)
+                return
+
             if auth_code == 4007:
                 msg = "Schedules Direct: this application is not authorized. Please contact the Dispatcharr maintainers."
             elif auth_code == 4004:
@@ -3255,6 +3273,20 @@ def fetch_schedules_direct(
                 msg = "Schedules Direct: account has expired. Please renew your subscription at schedulesdirect.org."
             elif auth_code == 4008:
                 msg = "Schedules Direct: account is inactive. Please log in to schedulesdirect.org to reactivate."
+            elif auth_code == 4002:
+                msg = "Schedules Direct: invalid password hash. Check that credentials are stored correctly."
+            elif auth_code == 4003:
+                msg = "Schedules Direct: invalid username or password."
+            elif auth_code == 4005:
+                msg = (
+                    "Schedules Direct: JSON API access is disabled for this account. "
+                    "Contact Schedules Direct support."
+                )
+            elif auth_code == 4010:
+                msg = (
+                    "Schedules Direct: too many unique IP addresses in 24 hours. "
+                    "Avoid VPNs or multiple locations, or contact SD support to raise the limit."
+                )
             else:
                 msg = f"Schedules Direct authentication failed (code {auth_code}): {token_data.get('message', 'Unknown error')}"
             logger.error(msg)
@@ -3299,9 +3331,11 @@ def fetch_schedules_direct(
         system_status = status_data.get('systemStatus', [{}])[0].get('status', 'Online')
         if system_status == 'Offline':
             # Per SD API spec: if system is offline, disconnect and do not
-            # retry for 1 hour. We set idle status rather than error since
-            # this is a temporary SD-side condition.
-            msg = "Schedules Direct system is currently offline. Per SD guidelines, retrying in 1 hour."
+            # retry for 1 hour. Next attempt is the next scheduled/manual refresh.
+            msg = (
+                "Schedules Direct system is currently offline. "
+                "Do not retry for at least 1 hour."
+            )
             logger.warning(msg)
             source.status = EPGSource.STATUS_IDLE
             source.last_message = msg
