@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Schedules Direct Extra Debugging option.** EPG source settings include an **Extra Schedules Direct Debugging** toggle that adds a `RouteTo: debug` header so Schedules Direct support can steer traffic to their debug server. The tooltip states it should only be enabled when SD support asks. If SD returns code 2055 (unexpected debug connection), the toggle is turned off automatically.
 
+### Changed
+
+- **EPG source form places Auto-Apply EPG Logos in the shared middle column for XMLTV and Schedules Direct.** The toggle previously lived in the SD-only right panel when editing a Schedules Direct source; it now uses the same middle-column control as XMLTV so SD-specific options (logo style, posters, debug) stay in the right panel.
+
 ### Fixed
 
 - **Schedules Direct poster proxy no longer ignores daily image download limits or missing-image errors.** SD returns codes 5002/5003 as HTTP 200 with a JSON body; the proxy previously only inspected HTTP 400 and kept requesting images after the limit, which can get accounts blocked. It now detects 5002/5003 (subscriber and trial), stops further image fetches for that source until the next midnight UTC (persisted on the EPG source so all workers honor it), and on explicit IMAGE_NOT_FOUND (code 5000) clears that program's `sd_icon` so the same dead URI is not retried. Transient bare HTTP 404s do not blacklist the URI.

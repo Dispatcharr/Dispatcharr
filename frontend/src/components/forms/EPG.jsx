@@ -269,12 +269,6 @@ const SDSettings = ({ sourceId, customProperties }) => {
         ))}
       </Group>
 
-      <AutoApplyEpgLogosSwitch
-        sourceId={sourceId}
-        customProperties={customProperties}
-        description="When enabled, matched channels are updated to use the SD logo on each refresh. When disabled, logos are still fetched into EPG data and can be applied manually via Set Logo from EPG."
-      />
-
       <Divider my="sm" />
 
       <Switch
@@ -955,7 +949,7 @@ const EPG = ({ epg = null, isOpen, onClose }) => {
                 key={form.key('priority')}
               />
 
-              {sourceType === 'xmltv' && savedEpgId && (
+              {savedEpgId && (
                 <AutoApplyEpgLogosSwitch
                   sourceId={savedEpgId}
                   customProperties={sdCustomProps}
