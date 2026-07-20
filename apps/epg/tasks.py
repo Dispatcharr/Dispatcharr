@@ -3216,12 +3216,20 @@ def fetch_schedules_direct(
             headers=_sd_headers(),
             timeout=30,
         )
-        token_response.raise_for_status()
-        token_data = token_response.json()
+        # Parse the response body first so we can surface SD's own error message
+        # regardless of HTTP status code (SD sometimes returns 400 for app-level
+        # errors like SERVICE_OFFLINE that carry a meaningful JSON body).
+        try:
+            token_data = token_response.json()
+        except Exception:
+            token_response.raise_for_status()
+            raise
 
         auth_code = token_data.get('code', 0)
-        if auth_code != 0:
-            if auth_code == 4007:
+        if not token_response.ok or auth_code != 0:
+            if auth_code == 3000:
+                msg = "Schedules Direct is offline for maintenance. Try again later."
+            elif auth_code == 4007:
                 msg = "Schedules Direct: this application is not authorized. Please contact the Dispatcharr maintainers."
             elif auth_code == 4004:
                 msg = "Schedules Direct: account locked due to too many failed login attempts. Try again in 15 minutes."
@@ -3231,8 +3239,13 @@ def fetch_schedules_direct(
                 msg = "Schedules Direct: account has expired. Please renew your subscription at schedulesdirect.org."
             elif auth_code == 4008:
                 msg = "Schedules Direct: account is inactive. Please log in to schedulesdirect.org to reactivate."
-            else:
+            elif auth_code == 4003:
+                msg = "Schedules Direct: invalid username or password."
+            elif auth_code != 0:
                 msg = f"Schedules Direct authentication failed (code {auth_code}): {token_data.get('message', 'Unknown error')}"
+            else:
+                token_response.raise_for_status()
+                raise RuntimeError(f"Unexpected SD token response: {token_response.text}")
             logger.error(msg)
             source.status = EPGSource.STATUS_ERROR
             source.last_message = msg
@@ -3363,6 +3376,7 @@ def fetch_schedules_direct(
             lineup_id = lineup.get('lineupID') or lineup.get('lineup')
             if not lineup_id:
                 continue
+            lineup_name = lineup.get('name') or lineup_id
             try:
                 detail_response = requests.get(
                     f"{SD_BASE_URL}/lineups/{lineup_id}",
@@ -3388,6 +3402,8 @@ def fetch_schedules_direct(
                         'name': station.get('name', sid),
                         'callsign': station.get('callsign', ''),
                         'logo_url': logo_url,
+                        # Preserve lineup from first encounter if station appears in multiple lineups
+                        'lineup': station_map.get(sid, {}).get('lineup') or lineup_name,
                     }
                 logger.debug(f"Fetched {len(detail_data.get('stations', []))} stations from lineup {lineup_id}")
             except requests.exceptions.RequestException as e:
@@ -3427,6 +3443,7 @@ def fetch_schedules_direct(
             logo = info['logo_url']
             if logo and len(logo) > icon_max_length:
                 logo = None
+            lineup_val = info.get('lineup')
 
             if sid in existing_epg_map:
                 epg_obj = existing_epg_map[sid]
@@ -3437,6 +3454,9 @@ def fetch_schedules_direct(
                 if epg_obj.icon_url != logo:
                     epg_obj.icon_url = logo
                     needs_update = True
+                if epg_obj.lineup != lineup_val:
+                    epg_obj.lineup = lineup_val
+                    needs_update = True
                 if needs_update:
                     epgs_to_update.append(epg_obj)
             else:
@@ -3444,6 +3464,7 @@ def fetch_schedules_direct(
                     tvg_id=sid,
                     name=display_name,
                     icon_url=logo,
+                    lineup=lineup_val,
                     epg_source=source,
                 ))
 
@@ -3451,7 +3472,7 @@ def fetch_schedules_direct(
             EPGData.objects.bulk_create(epgs_to_create, ignore_conflicts=True)
             logger.info(f"Created {len(epgs_to_create)} new EPGData entries.")
         if epgs_to_update:
-            EPGData.objects.bulk_update(epgs_to_update, ['name', 'icon_url'])
+            EPGData.objects.bulk_update(epgs_to_update, ['name', 'icon_url', 'lineup'])
             logger.info(f"Updated {len(epgs_to_update)} existing EPGData entries.")
 
         gc.collect()

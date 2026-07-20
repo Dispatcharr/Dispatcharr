@@ -1179,11 +1179,13 @@ const ChannelForm = ({ channel: channelProp = null, isOpen, onClose }) => {
                               setEpgPopoverOpened(false);
                             }}
                           >
-                            {filteredTvgs[index].name &&
-                            filteredTvgs[index].tvg_id
-                              ? `${filteredTvgs[index].name} (${filteredTvgs[index].tvg_id})`
-                              : filteredTvgs[index].name ||
-                                filteredTvgs[index].tvg_id}
+                            {(() => {
+                              const tvg = filteredTvgs[index];
+                              const base = tvg.name && tvg.tvg_id
+                                ? `${tvg.name} (${tvg.tvg_id})`
+                                : tvg.name || tvg.tvg_id;
+                              return tvg.lineup ? `${base} [${tvg.lineup}]` : base;
+                            })()}
                           </Button>
                         </div>
                       )}
