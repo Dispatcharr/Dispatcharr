@@ -18,6 +18,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **Schedules Direct poster proxy no longer ignores daily image download limits or missing-image errors.** SD returns codes 5002/5003 as HTTP 200 with a JSON body; the proxy previously only inspected HTTP 400 and kept requesting images after the limit, which can get accounts blocked. It now detects 5002/5003 (subscriber and trial), stops further image fetches for that source until the next midnight UTC (persisted on the EPG source so all workers honor it), and on explicit IMAGE_NOT_FOUND (code 5000) clears that program's `sd_icon` so the same dead URI is not retried. Transient bare HTTP 404s do not blacklist the URI.
+
+## [0.28.1] - 2026-07-20
+
+### Fixed
+
 - **Fresh AIO installs no longer crash during first-boot migrate when Redis is not up yet.** In AIO, `manage.py migrate` runs in the entrypoint before uWSGI starts Redis via `attach-daemon`. After CoreSettings group caching landed in 0.28.0, data migrations such as `m3u.0003` called live `CoreSettings.get_default_user_agent_id()` → Redis and failed with connection refused, leaving a partially migrated DB and a boot loop. Settings group cache reads/writes now fall back to Postgres on connectivity/timeout errors (with a throttled warning), skip cache fill on backend failure so a flapping Redis cannot re-poison entries after invalidate, and leave auth/protocol Redis errors loud. A regression test migrates a throwaway empty database with Redis unreachable. (Fixes #1459)
 
 ## [0.28.0] - 2026-07-19
