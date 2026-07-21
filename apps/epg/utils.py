@@ -1,11 +1,13 @@
 """
 Shared EPG utilities.
 
-Season/episode extraction and WebSocket progress updates live here so serializers,
-XMLTV tasks, and Schedules Direct tasks can import without circular dependencies.
+Season/episode extraction, WebSocket progress updates, and SD poster proxy URL
+helpers live here so serializers, XMLTV output, and tasks can import without
+circular dependencies.
 """
 
 import gc
+import hashlib
 import re
 
 from core.utils import send_websocket_update
@@ -23,6 +25,34 @@ _DESC_SE_PATTERNS = [
     # 1x01 format (requires 2+ digit episode to avoid false positives)
     re.compile(r'^[\s\-:]*(\d+)x(\d{2,})[\s\-:.]*'),
 ]
+
+_SD_POSTER_CACHE_BUST_LEN = 12
+
+
+def sd_poster_cache_bust(sd_icon_url):
+    """
+    Short content hash of an SD poster URI for nginx cache busting.
+
+    Same URI keeps the same ``v`` (long-lived nginx cache). A new artwork URI
+    after refresh gets a new ``v`` so clients do not keep stale bytes.
+    """
+    if not sd_icon_url:
+        return ''
+    return hashlib.sha256(sd_icon_url.encode('utf-8')).hexdigest()[:_SD_POSTER_CACHE_BUST_LEN]
+
+
+def sd_poster_proxy_path(program_id, sd_icon_url):
+    """
+    Relative proxy path for a program poster.
+
+    Includes ``?v=`` when ``sd_icon_url`` is set so nginx cache keys change with
+    the upstream SD URI. The poster endpoint ignores ``v``; nginx keys on full URI.
+    """
+    path = f'/api/epg/programs/{program_id}/poster/'
+    bust = sd_poster_cache_bust(sd_icon_url)
+    if not bust:
+        return path
+    return f'{path}?v={bust}'
 
 
 def extract_season_episode_from_description(desc):

@@ -1,11 +1,12 @@
-from core.utils import validate_flexible_url, build_absolute_uri_with_port
-from rest_framework import serializers
-from .models import EPGSource, EPGData, ProgramData
-from apps.channels.models import Channel, Stream
 from apps.epg.sd_utils import (
     sd_clear_cached_token,
     sd_credential_fingerprint,
 )
+from apps.epg.utils import sd_poster_proxy_path
+from core.utils import validate_flexible_url, build_absolute_uri_with_port
+from rest_framework import serializers
+from .models import EPGSource, EPGData, ProgramData
+from apps.channels.models import Channel, Stream
 
 class EPGSourceSerializer(serializers.ModelSerializer):
     epg_data_count = serializers.SerializerMethodField()
@@ -178,9 +179,11 @@ class ProgramDetailSerializer(ProgramDataSerializer):
         data['icon'] = cp.get('icon')
         data['images'] = cp.get('images') or []
 
-        # SD poster: expose as absolute proxy URL so frontend/img tags never need SD auth
-        if cp.get('sd_icon'):
-            poster_path = f"/api/epg/programs/{obj.id}/poster/"
+        # SD poster: expose as absolute proxy URL so frontend/img tags never need SD auth.
+        # ``?v=`` tracks the sd_icon URI so nginx/browser caches bust when artwork changes.
+        sd_icon = cp.get('sd_icon')
+        if sd_icon:
+            poster_path = sd_poster_proxy_path(obj.id, sd_icon)
             request = self.context.get('request')
             if request:
                 data['poster_url'] = build_absolute_uri_with_port(request, poster_path)

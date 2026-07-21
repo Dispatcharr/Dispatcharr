@@ -273,7 +273,7 @@ const SDSettings = ({ sourceId, customProperties }) => {
 
       <Switch
         label="Fetch Program Posters"
-        description="Refresh saves poster links, not images. Images download on first view (cached ~24h) and count against your daily SD image limit, including when XMLTV clients load them."
+        description="Stores poster links on refresh. Images download on first view (nginx caches ~14 days) and count toward your daily SD image limit."
         checked={fetchPosters}
         onChange={(e) => handlePosterToggle(e.currentTarget.checked)}
         disabled={saving}

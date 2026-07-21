@@ -2062,6 +2062,7 @@ class SDPosterProxyErrorHandlingTests(TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp['Content-Type'], 'image/jpeg')
         self.assertEqual(resp.content, b'\xff\xd8\xffjpeg-bytes')
+        self.assertEqual(resp['Cache-Control'], 'public, max-age=86400')
 
     @patch('requests.get')
     @patch('requests.post')
