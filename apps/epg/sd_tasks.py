@@ -263,6 +263,34 @@ def _sd_pick_poster_url(images, poster_style=SD_POSTER_STYLE_DEFAULT):
     return None
 
 
+def _sd_program_ids_needing_posters(mapped_epg_ids, poster_style):
+    """
+    Return program_id values that still need SD artwork for this style.
+
+    Skips programs marked sd_icon_missing for the same poster_style (SD code 5000).
+    """
+    needs_poster_q = (
+        Q(custom_properties__isnull=True)
+        | ~Q(custom_properties__has_key='sd_icon')
+        | ~Q(custom_properties__sd_poster_style=poster_style)
+    )
+    poster_qs = ProgramData.objects.filter(
+        epg_id__in=mapped_epg_ids,
+        program_id__isnull=False,
+    ).filter(needs_poster_q)
+    skip_missing_ids = ProgramData.objects.filter(
+        epg_id__in=mapped_epg_ids,
+        program_id__isnull=False,
+        custom_properties__sd_icon_missing=True,
+        custom_properties__sd_poster_style=poster_style,
+    ).values_list('id', flat=True)
+    return set(
+        poster_qs.exclude(id__in=skip_missing_ids).values_list(
+            'program_id', flat=True
+        )
+    )
+
+
 def _sd_fetch_lineup_country(token, sd_headers_fn):
     """Return country code prefix from the first subscribed lineup (poster metadata)."""
     try:
@@ -587,29 +615,21 @@ def fetch_schedules_direct(
         return sd_headers_for_source(source, token=token, content_type=content_type)
 
     def _sd_post_refresh_tasks(mapped_epg_ids, program_metadata, today):
-        """Poster fetch, logo auto-apply, and pruning — runs even when schedules are unchanged."""
+        """Poster fetch, logo auto-apply, and pruning. Runs even when schedules are unchanged.
+
+        Returns the number of ProgramData rows updated with poster artwork.
+        """
         from apps.epg.models import SDProgramMD5
 
+        posters_updated = 0
         fetch_posters = (source.custom_properties or {}).get('fetch_posters', False)
         poster_style = (source.custom_properties or {}).get('poster_style', SD_POSTER_STYLE_DEFAULT)
         poster_program_ids = set()
         if fetch_posters:
-            needs_poster_q = (
-                Q(custom_properties__isnull=True)
-                | ~Q(custom_properties__has_key='sd_icon')
-                | ~Q(custom_properties__sd_poster_style=poster_style)
-            )
             # Do not re-request artwork for URIs that SD already reported missing
             # (code 5000), unless the user changed poster_style (explicit retry).
-            needs_poster_q = needs_poster_q & ~(
-                Q(custom_properties__sd_icon_missing=True)
-                & Q(custom_properties__sd_poster_style=poster_style)
-            )
-            poster_program_ids = set(
-                ProgramData.objects.filter(
-                    epg_id__in=mapped_epg_ids,
-                    program_id__isnull=False,
-                ).filter(needs_poster_q).values_list('program_id', flat=True)
+            poster_program_ids = _sd_program_ids_needing_posters(
+                mapped_epg_ids, poster_style
             )
             if poster_program_ids:
                 logger.info(
@@ -694,7 +714,8 @@ def fetch_schedules_direct(
                         ProgramData.objects.bulk_update(
                             programs_to_update, ['custom_properties'], batch_size=1000
                         )
-                        logger.info(f"Updated {len(programs_to_update)} programs with poster artwork.")
+                        posters_updated = len(programs_to_update)
+                        logger.info(f"Updated {posters_updated} programs with poster artwork.")
                     else:
                         logger.info("No poster artwork matched committed programs.")
                 else:
@@ -745,6 +766,8 @@ def fetch_schedules_direct(
                 logger.info(f"Pruned {pruned_prog_md5_count} stale SDProgramMD5 records no longer referenced by live ProgramData.")
         except Exception as prune_err:
             logger.warning(f"Failed to prune stale SDProgramMD5 records: {prune_err}")
+
+        return posters_updated
 
     # -------------------------------------------------------------------------
     # Step 1: Authenticate and obtain session token
@@ -1183,17 +1206,22 @@ def fetch_schedules_direct(
 
     if not changed_by_station:
         logger.info("No schedule changes detected, skipping schedule and program downloads.")
-        _sd_post_refresh_tasks(mapped_epg_ids, {}, today)
+        posters_updated = _sd_post_refresh_tasks(mapped_epg_ids, {}, today)
+        if posters_updated:
+            msg = (
+                f"No schedule changes detected. Updated poster artwork for "
+                f"{posters_updated} program{'s' if posters_updated != 1 else ''}."
+            )
+        else:
+            msg = "No schedule changes detected. Guide data is up to date."
         if lightweight_sd_fetch:
-            msg = "No schedule updates needed; guide data is up to date."
             source.last_message = msg
             source.save(update_fields=['last_message'])
             send_epg_update(source.id, "parsing_programs", 100, status="success", message=msg)
             return
-        send_epg_update(source.id, "parsing_programs", 100, status="success",
-                        message="No schedule changes detected since last refresh. Guide data is up to date.")
+        send_epg_update(source.id, "parsing_programs", 100, status="success", message=msg)
         source.status = EPGSource.STATUS_SUCCESS
-        source.last_message = "No schedule changes detected. Guide data is up to date."
+        source.last_message = msg
         source.updated_at = timezone.now()
         source.save(update_fields=['status', 'last_message', 'updated_at'])
         return

@@ -1539,6 +1539,65 @@ class SDSourceSignalTests(TestCase):
 # Poster selection tests
 # ---------------------------------------------------------------------------
 
+class SDPosterNeedsQueryTests(TestCase):
+    """Programs needing artwork must not be dropped by JSON NULL NOT quirks."""
+
+    def setUp(self):
+        self.source = EPGSource.objects.create(
+            name='SD Poster Needs',
+            source_type='schedules_direct',
+            username='u',
+            password='p',
+        )
+        self.epg = EPGData.objects.create(
+            tvg_id='station-needs',
+            name='Needs Station',
+            epg_source=self.source,
+        )
+        self.now = timezone.now()
+
+    def _prog(self, program_id, **cp):
+        return ProgramData.objects.create(
+            epg=self.epg,
+            title='Show',
+            start_time=self.now,
+            end_time=self.now + timedelta(hours=1),
+            program_id=program_id,
+            custom_properties=cp or {},
+        )
+
+    def test_programs_without_sd_icon_are_selected(self):
+        from apps.epg.sd_tasks import _sd_program_ids_needing_posters
+
+        self._prog('EP000000010001', date='2020', categories=['Drama'])
+        self._prog('EP000000010002', season=1, episode=2)
+        needed = _sd_program_ids_needing_posters({self.epg.id}, 'sd_recommended')
+        self.assertEqual(needed, {'EP000000010001', 'EP000000010002'})
+
+    def test_sd_icon_missing_for_same_style_is_skipped(self):
+        from apps.epg.sd_tasks import _sd_program_ids_needing_posters
+
+        self._prog(
+            'EP000000010003',
+            sd_icon_missing=True,
+            sd_poster_style='sd_recommended',
+        )
+        self._prog('EP000000010004', categories=['News'])
+        needed = _sd_program_ids_needing_posters({self.epg.id}, 'sd_recommended')
+        self.assertEqual(needed, {'EP000000010004'})
+
+    def test_sd_icon_missing_retries_after_style_change(self):
+        from apps.epg.sd_tasks import _sd_program_ids_needing_posters
+
+        self._prog(
+            'EP000000010005',
+            sd_icon_missing=True,
+            sd_poster_style='portrait_iconic',
+        )
+        needed = _sd_program_ids_needing_posters({self.epg.id}, 'sd_recommended')
+        self.assertEqual(needed, {'EP000000010005'})
+
+
 class SDPosterSelectionTests(TestCase):
     """_sd_pick_poster_url must honour style preference with sensible fallbacks."""
 
