@@ -6,11 +6,14 @@ See https://github.com/SchedulesDirect/JSON-Service/wiki/API-20141201
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import time
+from dataclasses import dataclass
 from datetime import timedelta, timezone as dt_timezone
 
+import requests
 from django.core.cache import cache
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
@@ -19,8 +22,21 @@ from core.utils import dispatcharr_http_headers
 
 logger = logging.getLogger(__name__)
 
+SD_BASE_URL = 'https://json.schedulesdirect.org/20141201'
+
 # SD JSON error codes we must honor to avoid account blocks.
 SD_CODE_INVALID_DEBUG = 2055
+SD_CODE_SERVICE_OFFLINE = 3000
+SD_CODE_SERVICE_BUSY = 3001
+SD_CODE_ACCOUNT_EXPIRED = 4001
+SD_CODE_INVALID_PASSWORD_HASH = 4002
+SD_CODE_INVALID_USER_OR_PASSWORD = 4003
+SD_CODE_ACCOUNT_LOCKED = 4004
+SD_CODE_JSON_DISABLED = 4005
+SD_CODE_APP_NOT_AUTHORIZED = 4007
+SD_CODE_ACCOUNT_INACTIVE = 4008
+SD_CODE_TOO_MANY_LOGINS = 4009
+SD_CODE_TOO_MANY_UNIQUE_IPS = 4010
 SD_CODE_IMAGE_NOT_FOUND = 5000
 SD_CODE_MAX_IMAGE_DOWNLOADS = 5002
 SD_CODE_MAX_IMAGE_DOWNLOADS_TRIAL = 5003
@@ -29,6 +45,55 @@ SD_IMAGE_LIMIT_CODES = frozenset({
     SD_CODE_MAX_IMAGE_DOWNLOADS,
     SD_CODE_MAX_IMAGE_DOWNLOADS_TRIAL,
 })
+
+# Soft /token failures: stop and retry later (idle), not a hard account error.
+SD_AUTH_SOFT_CODES = frozenset({
+    SD_CODE_SERVICE_OFFLINE,
+    SD_CODE_SERVICE_BUSY,
+})
+
+# Wrong username/password (or hash): clear early when credentials change.
+SD_AUTH_CREDENTIAL_LOCKOUT_CODES = frozenset({
+    SD_CODE_INVALID_PASSWORD_HASH,
+    SD_CODE_INVALID_USER_OR_PASSWORD,
+})
+
+# All /token codes we must not hammer. Includes soft codes (shorter cooldown).
+SD_AUTH_LOCKOUT_CODES = frozenset({
+    SD_CODE_SERVICE_OFFLINE,
+    SD_CODE_SERVICE_BUSY,
+    SD_CODE_ACCOUNT_EXPIRED,
+    SD_CODE_INVALID_PASSWORD_HASH,
+    SD_CODE_INVALID_USER_OR_PASSWORD,
+    SD_CODE_ACCOUNT_LOCKED,
+    SD_CODE_JSON_DISABLED,
+    SD_CODE_APP_NOT_AUTHORIZED,
+    SD_CODE_ACCOUNT_INACTIVE,
+    SD_CODE_TOO_MANY_LOGINS,
+    SD_CODE_TOO_MANY_UNIQUE_IPS,
+})
+
+SD_AUTH_LOCKOUT_SECONDS = 24 * 3600
+SD_AUTH_LOCKOUT_SECONDS_SOFT = 3600
+SD_AUTH_LOCKOUT_SECONDS_ACCOUNT_LOCK = 15 * 60
+
+
+def sd_auth_lockout_seconds_for_code(code):
+    """Cooldown length for a /token error code."""
+    if code == SD_CODE_ACCOUNT_LOCKED:
+        return SD_AUTH_LOCKOUT_SECONDS_ACCOUNT_LOCK
+    if code in SD_AUTH_SOFT_CODES:
+        return SD_AUTH_LOCKOUT_SECONDS_SOFT
+    return SD_AUTH_LOCKOUT_SECONDS
+
+
+def sd_auth_lockout_retry_message():
+    """Suffix explaining how to clear an auth lockout."""
+    return (
+        "Not retrying Schedules Direct authentication until the username or "
+        "password is updated, or the cooldown expires."
+    )
+
 
 # Shared across uWSGI workers via Django's Redis cache.
 _SD_TOKEN_CACHE_PREFIX = 'sd:token:v1:'
@@ -117,6 +182,324 @@ def sd_clear_cached_token(source_id):
             type(exc).__name__,
         )
         return False
+
+
+def sd_credential_fingerprint(username, password):
+    """
+    Stable fingerprint of SD credentials for lockout matching.
+
+    Used so a persisted auth lockout clears automatically when the user
+    changes username or password, without requiring a separate clear hook.
+    """
+    raw = f'{(username or "").strip()}\0{(password or "").strip()}'
+    return hashlib.sha256(raw.encode('utf-8')).hexdigest()
+
+
+def sd_auth_failure_message(code, sd_message=None):
+    """Human-readable message for a Schedules Direct /token error code."""
+    if code == SD_CODE_SERVICE_OFFLINE:
+        return (
+            "Schedules Direct is offline for maintenance. "
+            "Do not retry for at least 1 hour."
+        )
+    if code == SD_CODE_SERVICE_BUSY:
+        return "Schedules Direct is busy. Stop requesting and retry later."
+    if code == SD_CODE_ACCOUNT_EXPIRED:
+        return (
+            "Schedules Direct: account has expired. Please renew your "
+            "subscription at schedulesdirect.org."
+        )
+    if code == SD_CODE_INVALID_PASSWORD_HASH:
+        return (
+            "Schedules Direct: invalid password hash. Check that credentials "
+            "are stored correctly."
+        )
+    if code == SD_CODE_INVALID_USER_OR_PASSWORD:
+        return "Schedules Direct: invalid username or password."
+    if code == SD_CODE_ACCOUNT_LOCKED:
+        return (
+            "Schedules Direct: account locked due to too many failed login "
+            "attempts. Try again in 15 minutes."
+        )
+    if code == SD_CODE_JSON_DISABLED:
+        return (
+            "Schedules Direct: JSON API access is disabled for this account. "
+            "Contact Schedules Direct support."
+        )
+    if code == SD_CODE_APP_NOT_AUTHORIZED:
+        return (
+            "Schedules Direct: this application is not authorized. Please "
+            "contact the Dispatcharr maintainers."
+        )
+    if code == SD_CODE_ACCOUNT_INACTIVE:
+        return (
+            "Schedules Direct: account is inactive. Please log in to "
+            "schedulesdirect.org to reactivate."
+        )
+    if code == SD_CODE_TOO_MANY_LOGINS:
+        return (
+            "Schedules Direct: too many login attempts in 24 hours. Token is "
+            "valid for 24 hours. Check for misconfiguration."
+        )
+    if code == SD_CODE_TOO_MANY_UNIQUE_IPS:
+        return (
+            "Schedules Direct: too many unique IP addresses in 24 hours. "
+            "Avoid VPNs or multiple locations, or contact SD support to raise "
+            "the limit."
+        )
+    if sd_message:
+        return f"Schedules Direct authentication failed (code {code}): {sd_message}"
+    return f"Schedules Direct authentication failed (code {code})."
+
+
+def sd_token_response_code(auth_data):
+    """Return integer SD ``code`` from a /token JSON body, or 0."""
+    if not isinstance(auth_data, dict):
+        return 0
+    code = auth_data.get('code', 0)
+    return code if isinstance(code, int) else 0
+
+
+def sd_auth_lockout_active(source, username=None, password=None):
+    """
+    Return (active, reason, code) for a persisted auth lockout.
+
+    Cleared when username/password changed, or sd_auth_lockout_until has passed.
+    """
+    if source is None:
+        return False, None, None
+
+    cp = source.custom_properties or {}
+    if not cp.get('sd_auth_lockout'):
+        return False, None, None
+
+    until_str = cp.get('sd_auth_lockout_until')
+    until = parse_datetime(until_str) if until_str else None
+    if until is None or timezone.now() >= until:
+        sd_clear_auth_lockout(source)
+        return False, None, None
+
+    if username is None:
+        username = source.username
+    if password is None:
+        password = source.password
+
+    stored_fp = cp.get('sd_auth_lockout_credential_fp')
+    current_fp = sd_credential_fingerprint(username, password)
+    if not stored_fp or stored_fp != current_fp:
+        sd_clear_auth_lockout(source)
+        return False, None, None
+
+    code = cp.get('sd_auth_lockout_code')
+    reason = cp.get('sd_auth_lockout_reason') or (
+        'Schedules Direct authentication is temporarily blocked.'
+    )
+    return True, reason, code if isinstance(code, int) else None
+
+
+def sd_save_auth_lockout(source, code, username=None, password=None, reason=None):
+    """
+    Persist an auth lockout so we stop calling /token for a cooldown period.
+
+    Duration depends on the code (15m for 4004, 1h for offline/busy, else 24h).
+    Cleared early if username/password change.
+    """
+    if source is None:
+        return
+    if code not in SD_AUTH_LOCKOUT_CODES:
+        return
+
+    if username is None:
+        username = source.username
+    if password is None:
+        password = source.password
+
+    if reason is None:
+        reason = sd_auth_failure_message(code)
+
+    seconds = sd_auth_lockout_seconds_for_code(code)
+    until = timezone.now() + timedelta(seconds=seconds)
+    cp = dict(source.custom_properties or {})
+    cp['sd_auth_lockout'] = True
+    cp['sd_auth_lockout_code'] = code
+    cp['sd_auth_lockout_reason'] = reason
+    cp['sd_auth_lockout_until'] = until.isoformat()
+    cp['sd_auth_lockout_credential_fp'] = sd_credential_fingerprint(
+        username, password
+    )
+    source.custom_properties = cp
+    source.save(update_fields=['custom_properties'])
+    sd_clear_cached_token(source.id)
+    logger.warning(
+        "SD source %s: auth lockout (code %s). Not calling /token until "
+        "username or password changes, or after %s.",
+        source.id,
+        code,
+        until.isoformat(),
+    )
+
+
+def sd_clear_auth_lockout(source):
+    """Clear a persisted auth lockout (success, credentials changed, or expired)."""
+    if source is None:
+        return
+    cp = dict(source.custom_properties or {})
+    changed = False
+    for key in (
+        'sd_auth_lockout',
+        'sd_auth_lockout_code',
+        'sd_auth_lockout_reason',
+        'sd_auth_lockout_until',
+        'sd_auth_lockout_credential_fp',
+    ):
+        if key in cp:
+            cp.pop(key, None)
+            changed = True
+    if changed:
+        source.custom_properties = cp
+        source.save(update_fields=['custom_properties'])
+
+
+@dataclass(frozen=True)
+class SDTokenAuthResult:
+    """Outcome of POST /token (or a short-circuit from a persisted lockout)."""
+
+    ok: bool
+    token: str | None = None
+    token_expires: float | None = None
+    code: int | None = None
+    message: str = ''
+    soft: bool = False
+    debug_rejected: bool = False
+    lockout: bool = False
+
+
+_DEBUG_REJECTED_MESSAGE = (
+    "Schedules Direct rejected the debug routing header (code 2055). "
+    "Extra Schedules Direct Debugging has been turned off. Retry without it "
+    "unless Schedules Direct support asked you to enable it."
+)
+
+
+def sd_obtain_token(source, username=None, password=None, *, timeout=30):
+    """
+    Authenticate with Schedules Direct and return a session token.
+
+    Shared by refresh, lineup/form auth, and the poster proxy. Honors persisted
+    lockouts, reads JSON ``code`` before HTTP status, and persists cooldowns for
+    codes that must not be retried until the user or cooldown clears them.
+    """
+    if source is None:
+        return SDTokenAuthResult(
+            ok=False,
+            message='Schedules Direct source is required.',
+        )
+
+    if username is None:
+        username = (source.username or '').strip()
+    else:
+        username = (username or '').strip()
+    if password is None:
+        password = (source.password or '').strip()
+    else:
+        password = (password or '').strip()
+
+    if not username or not password:
+        return SDTokenAuthResult(
+            ok=False,
+            message='Username and password are required.',
+        )
+
+    active, reason, lockout_code = sd_auth_lockout_active(
+        source, username, password
+    )
+    if active:
+        msg = f"{reason} {sd_auth_lockout_retry_message()}"
+        return SDTokenAuthResult(
+            ok=False,
+            code=lockout_code,
+            message=msg,
+            soft=lockout_code in SD_AUTH_SOFT_CODES if lockout_code else False,
+            lockout=True,
+        )
+
+    sha1_password = hashlib.sha1(password.encode('utf-8')).hexdigest()
+    try:
+        response = requests.post(
+            f"{SD_BASE_URL}/token",
+            json={'username': username, 'password': sha1_password},
+            headers=sd_headers_for_source(source),
+            timeout=timeout,
+        )
+    except requests.exceptions.RequestException as exc:
+        return SDTokenAuthResult(
+            ok=False,
+            message=f'Network error authenticating with Schedules Direct: {exc}',
+        )
+
+    try:
+        auth_data = response.json()
+    except ValueError:
+        auth_data = {}
+
+    if sd_handle_2055(source, auth_data):
+        return SDTokenAuthResult(
+            ok=False,
+            code=SD_CODE_INVALID_DEBUG,
+            message=_DEBUG_REJECTED_MESSAGE,
+            debug_rejected=True,
+        )
+
+    # Honor JSON ``code`` before raise_for_status. SD error semantics are in
+    # the body; HTTP status alone is not reliable for auth failures.
+    auth_code = sd_token_response_code(auth_data)
+    if auth_code != 0:
+        msg = sd_auth_failure_message(
+            auth_code, auth_data.get('message', 'Unknown error')
+        )
+        soft = auth_code in SD_AUTH_SOFT_CODES
+        locked = False
+        if auth_code in SD_AUTH_LOCKOUT_CODES:
+            sd_save_auth_lockout(
+                source, auth_code, username, password, reason=msg
+            )
+            msg = f"{msg} {sd_auth_lockout_retry_message()}"
+            locked = True
+        return SDTokenAuthResult(
+            ok=False,
+            code=auth_code,
+            message=msg,
+            soft=soft,
+            lockout=locked,
+        )
+
+    try:
+        response.raise_for_status()
+    except requests.exceptions.RequestException as exc:
+        return SDTokenAuthResult(
+            ok=False,
+            message=f'Network error authenticating with Schedules Direct: {exc}',
+        )
+
+    token = auth_data.get('token') if isinstance(auth_data, dict) else None
+    if not token:
+        return SDTokenAuthResult(
+            ok=False,
+            message='Schedules Direct returned no token.',
+        )
+
+    sd_clear_auth_lockout(source)
+    expires = None
+    if isinstance(auth_data, dict):
+        expires = auth_data.get('tokenExpires')
+    if not isinstance(expires, (int, float)):
+        expires = time.time() + _SD_TOKEN_DEFAULT_TTL_SECONDS
+    return SDTokenAuthResult(
+        ok=True,
+        token=token,
+        token_expires=float(expires),
+        code=0,
+    )
 
 
 def sd_next_midnight_utc():

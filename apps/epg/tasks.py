@@ -195,7 +195,8 @@ def _ensure_epg_refresh_terminal_status(source_id):
         )
 
 
-SD_BASE_URL = 'https://json.schedulesdirect.org/20141201'
+from apps.epg.sd_utils import SD_BASE_URL
+
 SD_DAYS_TO_FETCH = 20
 SD_PROGRAM_BATCH_SIZE = 5000
 SD_BULK_GUIDE_FETCH_THRESHOLD = 3
@@ -3038,7 +3039,7 @@ def fetch_schedules_direct(
     # SD API spec requires the User-Agent to identify the application and version.
     # SergeantPanda confirmed Dispatcharr should identify itself properly.
     # -------------------------------------------------------------------------
-    from apps.epg.sd_utils import sd_handle_2055, sd_headers_for_source
+    from apps.epg.sd_utils import sd_headers_for_source, sd_obtain_token
 
     def _sd_headers(token=None, content_type='application/json'):
         return sd_headers_for_source(source, token=token, content_type=content_type)
@@ -3215,107 +3216,38 @@ def fetch_schedules_direct(
         source.save(update_fields=['status', 'last_message'])
     send_epg_update(source.id, "parsing_programs", 2, message="Authenticating with Schedules Direct...")
 
-    try:
-        sha1_password = hashlib.sha1(password.encode('utf-8')).hexdigest()
-        token_response = requests.post(
-            f"{SD_BASE_URL}/token",
-            json={'username': username, 'password': sha1_password},
-            headers=_sd_headers(),
-            timeout=30,
-        )
-        try:
-            token_data = token_response.json()
-        except ValueError:
-            token_data = {}
-
-        if sd_handle_2055(source, token_data):
-            msg = (
-                "Schedules Direct rejected the debug routing header (code 2055). "
-                "Extra Schedules Direct Debugging has been turned off. Retry the "
-                "refresh unless Schedules Direct support asked you to enable it."
-            )
-            logger.error(msg)
-            source.status = EPGSource.STATUS_ERROR
-            source.last_message = msg
-            source.save(update_fields=['status', 'last_message'])
-            send_epg_update(source.id, "refresh", 100, status="error", error=msg)
-            return
-
-        token_response.raise_for_status()
-
-        auth_code = token_data.get('code', 0)
-        if auth_code != 0:
-            # Soft offline/busy: stop without treating as a credential error.
-            if auth_code in (3000, 3001):
-                if auth_code == 3000:
-                    msg = (
-                        "Schedules Direct is offline for maintenance. "
-                        "Do not retry for at least 1 hour."
-                    )
-                else:
-                    msg = (
-                        "Schedules Direct is busy. Stop requesting and retry later."
-                    )
-                logger.warning(msg)
-                source.status = EPGSource.STATUS_IDLE
-                source.last_message = msg
-                source.save(update_fields=['status', 'last_message'])
-                send_epg_update(source.id, "refresh", 100, status="idle", message=msg)
-                return
-
-            if auth_code == 4007:
-                msg = "Schedules Direct: this application is not authorized. Please contact the Dispatcharr maintainers."
-            elif auth_code == 4004:
-                msg = "Schedules Direct: account locked due to too many failed login attempts. Try again in 15 minutes."
-            elif auth_code == 4009:
-                msg = "Schedules Direct: too many login attempts in 24 hours. Token is valid for 24 hours. Check for misconfiguration."
-            elif auth_code == 4001:
-                msg = "Schedules Direct: account has expired. Please renew your subscription at schedulesdirect.org."
-            elif auth_code == 4008:
-                msg = "Schedules Direct: account is inactive. Please log in to schedulesdirect.org to reactivate."
-            elif auth_code == 4002:
-                msg = "Schedules Direct: invalid password hash. Check that credentials are stored correctly."
-            elif auth_code == 4003:
-                msg = "Schedules Direct: invalid username or password."
-            elif auth_code == 4005:
-                msg = (
-                    "Schedules Direct: JSON API access is disabled for this account. "
-                    "Contact Schedules Direct support."
-                )
-            elif auth_code == 4010:
-                msg = (
-                    "Schedules Direct: too many unique IP addresses in 24 hours. "
-                    "Avoid VPNs or multiple locations, or contact SD support to raise the limit."
-                )
-            else:
-                msg = f"Schedules Direct authentication failed (code {auth_code}): {token_data.get('message', 'Unknown error')}"
-            logger.error(msg)
-            source.status = EPGSource.STATUS_ERROR
-            source.last_message = msg
-            source.save(update_fields=['status', 'last_message'])
-            send_epg_update(source.id, "refresh", 100, status="error", error=msg)
-            return
-
-        token = token_data.get('token')
-        if not token:
-            msg = "Schedules Direct returned no token."
-            logger.error(msg)
-            source.status = EPGSource.STATUS_ERROR
-            source.last_message = msg
-            source.save(update_fields=['status', 'last_message'])
-            send_epg_update(source.id, "refresh", 100, status="error", error=msg)
-            return
-
-        logger.info("Schedules Direct authentication successful.")
-
-    except requests.exceptions.RequestException as e:
-        msg = f"Network error authenticating with Schedules Direct: {e}"
-        logger.error(msg, exc_info=True)
+    auth = sd_obtain_token(source, username, password, timeout=30)
+    if auth.debug_rejected:
+        logger.error(auth.message)
         source.status = EPGSource.STATUS_ERROR
-        source.last_message = msg
+        source.last_message = auth.message
         source.save(update_fields=['status', 'last_message'])
-        send_epg_update(source.id, "refresh", 100, status="error", error=msg)
+        send_epg_update(
+            source.id, "refresh", 100, status="error", error=auth.message
+        )
         return
+
+    if not auth.ok:
+        if auth.soft:
+            logger.warning(auth.message)
+            source.status = EPGSource.STATUS_IDLE
+            source.last_message = auth.message
+            source.save(update_fields=['status', 'last_message'])
+            send_epg_update(
+                source.id, "refresh", 100, status="idle", message=auth.message
+            )
+            return
+        logger.error(auth.message)
+        source.status = EPGSource.STATUS_ERROR
+        source.last_message = auth.message
+        source.save(update_fields=['status', 'last_message'])
+        send_epg_update(
+            source.id, "refresh", 100, status="error", error=auth.message
+        )
+        return
+
+    token = auth.token
+    logger.info("Schedules Direct authentication successful.")
 
     # -------------------------------------------------------------------------
     # Step 2: Check account status (respect OFFLINE system status)

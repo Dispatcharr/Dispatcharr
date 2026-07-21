@@ -226,6 +226,152 @@ class SDLineupChangesRemainingTests(TestCase):
         )
 
 
+class SDAuthCredentialLockoutTests(TestCase):
+    """4002/4003 lockouts must stop /token until credentials change or 24h."""
+
+    def test_lockout_active_until_password_changes(self):
+        from apps.epg.sd_utils import (
+            sd_auth_lockout_active,
+            sd_save_auth_lockout,
+        )
+
+        source = EPGSource.objects.create(
+            name='SD Cred Lockout Utils',
+            source_type='schedules_direct',
+            username='u',
+            password='old',
+        )
+        sd_save_auth_lockout(source, 4003, 'u', 'old')
+        active, reason, code = sd_auth_lockout_active(source, 'u', 'old')
+        self.assertTrue(active)
+        self.assertEqual(code, 4003)
+        self.assertIn('invalid username or password', reason.lower())
+
+        active, reason, code = sd_auth_lockout_active(source, 'u', 'new')
+        self.assertFalse(active)
+        source.refresh_from_db()
+        self.assertFalse((source.custom_properties or {}).get('sd_auth_lockout'))
+
+    def test_lockout_clears_when_username_changes(self):
+        """4003 is username or password; either field change must allow retry."""
+        from apps.epg.sd_utils import (
+            sd_auth_lockout_active,
+            sd_save_auth_lockout,
+        )
+
+        source = EPGSource.objects.create(
+            name='SD Cred Lockout Username',
+            source_type='schedules_direct',
+            username='olduser',
+            password='samepass',
+        )
+        sd_save_auth_lockout(source, 4003, 'olduser', 'samepass')
+        self.assertTrue(sd_auth_lockout_active(source, 'olduser', 'samepass')[0])
+
+        active, _, _ = sd_auth_lockout_active(source, 'newuser', 'samepass')
+        self.assertFalse(active)
+        source.refresh_from_db()
+        self.assertFalse((source.custom_properties or {}).get('sd_auth_lockout'))
+
+    def test_lockout_expires_after_24_hours(self):
+        """Auto-clear after 24h so a transient SD-side failure can retry."""
+        from apps.epg.sd_utils import (
+            sd_auth_lockout_active,
+            sd_save_auth_lockout,
+        )
+
+        source = EPGSource.objects.create(
+            name='SD Cred Lockout Expiry',
+            source_type='schedules_direct',
+            username='u',
+            password='p',
+        )
+        frozen_now = timezone.now()
+        with patch('apps.epg.sd_utils.timezone.now', return_value=frozen_now):
+            sd_save_auth_lockout(source, 4003, 'u', 'p')
+            self.assertTrue(sd_auth_lockout_active(source, 'u', 'p')[0])
+            source.refresh_from_db()
+            self.assertTrue(
+                (source.custom_properties or {}).get('sd_auth_lockout_until')
+            )
+
+        later = frozen_now + timedelta(hours=24, seconds=1)
+        with patch('apps.epg.sd_utils.timezone.now', return_value=later):
+            active, _, _ = sd_auth_lockout_active(source, 'u', 'p')
+        self.assertFalse(active)
+        source.refresh_from_db()
+        self.assertFalse((source.custom_properties or {}).get('sd_auth_lockout'))
+
+    def test_account_expired_4001_locks_for_24_hours(self):
+        from django.utils.dateparse import parse_datetime
+
+        from apps.epg.sd_utils import (
+            SD_AUTH_LOCKOUT_SECONDS,
+            sd_auth_lockout_seconds_for_code,
+            sd_save_auth_lockout,
+        )
+
+        self.assertEqual(sd_auth_lockout_seconds_for_code(4001), SD_AUTH_LOCKOUT_SECONDS)
+        self.assertEqual(sd_auth_lockout_seconds_for_code(4004), 15 * 60)
+        self.assertEqual(sd_auth_lockout_seconds_for_code(3000), 3600)
+
+        source = EPGSource.objects.create(
+            name='SD Expired Lockout',
+            source_type='schedules_direct',
+            username='u',
+            password='p',
+        )
+        frozen_now = timezone.now()
+        with patch('apps.epg.sd_utils.timezone.now', return_value=frozen_now):
+            sd_save_auth_lockout(source, 4001, 'u', 'p')
+        source.refresh_from_db()
+        self.assertEqual(source.custom_properties.get('sd_auth_lockout_code'), 4001)
+        until = parse_datetime(source.custom_properties['sd_auth_lockout_until'])
+        self.assertAlmostEqual(
+            (until - frozen_now).total_seconds(),
+            24 * 3600,
+            delta=2,
+        )
+
+    @patch('requests.post')
+    def test_sd_authenticate_http_400_with_4003_locks_out(self, mock_post):
+        """Lineup/form auth must persist lockout on HTTP 400 + code 4003."""
+        import requests
+        from apps.epg.api_views import EPGSourceViewSet
+
+        mock_resp = MagicMock(
+            status_code=400,
+            json=MagicMock(return_value={
+                'code': 4003,
+                'message': 'Invalid user or password',
+            }),
+        )
+        mock_resp.raise_for_status.side_effect = requests.exceptions.HTTPError(
+            '400 Client Error', response=mock_resp
+        )
+        mock_post.return_value = mock_resp
+
+        source = EPGSource.objects.create(
+            name='SD Form Auth Fail',
+            source_type='schedules_direct',
+            username='baduser',
+            password='badpass',
+        )
+        view = EPGSourceViewSet()
+        token, error = view._sd_authenticate(source)
+        self.assertIsNone(token)
+        self.assertEqual(error.status_code, 401)
+        self.assertIn('invalid username or password', error.data['error'].lower())
+        source.refresh_from_db()
+        self.assertTrue((source.custom_properties or {}).get('sd_auth_lockout'))
+
+        # Second call must not hit /token.
+        mock_post.reset_mock()
+        token, error = view._sd_authenticate(source)
+        self.assertIsNone(token)
+        mock_post.assert_not_called()
+
+
 class FetchSchedulesDirectAuthCodeTests(TestCase):
     """Token response codes must map to idle vs error correctly."""
 
@@ -280,6 +426,90 @@ class FetchSchedulesDirectAuthCodeTests(TestCase):
         source.refresh_from_db()
         self.assertEqual(source.status, EPGSource.STATUS_ERROR)
         self.assertIn('invalid username or password', source.last_message.lower())
+        self.assertTrue((source.custom_properties or {}).get('sd_auth_lockout'))
+
+    @patch('apps.epg.tasks.requests.post')
+    def test_auth_4003_http_400_persists_lockout_without_raise(self, mock_post):
+        """HTTP 400 + JSON code 4003 must hard-stop before raise_for_status."""
+        import requests
+
+        mock_resp = MagicMock(
+            status_code=400,
+            json=MagicMock(return_value={
+                'code': 4003,
+                'message': 'Invalid user or password',
+            }),
+        )
+        mock_resp.raise_for_status.side_effect = requests.exceptions.HTTPError(
+            '400 Client Error', response=mock_resp
+        )
+        mock_post.return_value = mock_resp
+
+        from apps.epg.tasks import fetch_schedules_direct
+        source = EPGSource.objects.create(
+            name='SD Auth HTTP 400',
+            source_type='schedules_direct',
+            username='baduser',
+            password='badpass',
+        )
+
+        with patch('apps.epg.tasks.send_epg_update'):
+            fetch_schedules_direct(source)
+
+        source.refresh_from_db()
+        self.assertEqual(source.status, EPGSource.STATUS_ERROR)
+        self.assertIn('invalid username or password', source.last_message.lower())
+        self.assertTrue((source.custom_properties or {}).get('sd_auth_lockout'))
+        mock_resp.raise_for_status.assert_not_called()
+
+    @patch('apps.epg.tasks.requests.post')
+    def test_auth_lockout_skips_token_until_credentials_change(self, mock_post):
+        """Persisted 4003 lockout must not call /token again until credentials change."""
+        from apps.epg.sd_utils import sd_save_auth_lockout
+        from apps.epg.tasks import fetch_schedules_direct
+
+        source = EPGSource.objects.create(
+            name='SD Auth Lockout',
+            source_type='schedules_direct',
+            username='baduser',
+            password='badpass',
+        )
+        sd_save_auth_lockout(source, 4003, 'baduser', 'badpass')
+
+        with patch('apps.epg.tasks.send_epg_update'):
+            fetch_schedules_direct(source)
+
+        mock_post.assert_not_called()
+        source.refresh_from_db()
+        self.assertEqual(source.status, EPGSource.STATUS_ERROR)
+        self.assertIn('not retrying', source.last_message.lower())
+
+        # Changing credentials clears the fingerprint lockout and allows /token.
+        source.password = 'newpass'
+        source.save(update_fields=['password'])
+        mock_post.return_value = MagicMock(
+            status_code=200,
+            json=MagicMock(return_value={
+                'code': 0,
+                'token': 'new-token',
+                'tokenExpires': time.time() + 86400,
+            }),
+            raise_for_status=MagicMock(),
+        )
+        with patch('apps.epg.tasks.send_epg_update'), \
+             patch('apps.epg.tasks.requests.get') as mock_get:
+            mock_get.return_value = MagicMock(
+                status_code=200,
+                json=MagicMock(return_value={
+                    'systemStatus': [{'status': 'Offline'}],
+                }),
+                raise_for_status=MagicMock(),
+            )
+            fetch_schedules_direct(source)
+
+        mock_post.assert_called_once()
+        source.refresh_from_db()
+        self.assertFalse((source.custom_properties or {}).get('sd_auth_lockout'))
 
     @patch('apps.epg.tasks.requests.post')
     def test_auth_too_many_ips_sets_error_status(self, mock_post):

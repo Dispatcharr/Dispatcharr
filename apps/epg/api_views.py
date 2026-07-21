@@ -1,4 +1,3 @@
-import hashlib
 import logging
 import os
 import re
@@ -130,56 +129,31 @@ class EPGSourceViewSet(viewsets.ModelViewSet):
         Authenticate with Schedules Direct using stored credentials.
         Returns (token, None) on success or (None, Response) on failure.
         """
-        import hashlib
-        import requests as http_requests
-        from apps.epg.tasks import SD_BASE_URL
-        from apps.epg.sd_utils import sd_handle_2055, sd_headers_for_source
+        from apps.epg.sd_utils import (
+            SD_AUTH_CREDENTIAL_LOCKOUT_CODES,
+            sd_obtain_token,
+        )
 
-        username = (source.username or '').strip()
-        password = (source.password or '').strip()
-        if not username or not password:
+        result = sd_obtain_token(source, timeout=15)
+        if result.ok:
+            return result.token, None
+
+        if result.debug_rejected:
             return None, Response(
-                {"error": "Username and password are required."},
-                status=status.HTTP_400_BAD_REQUEST
+                {"error": result.message},
+                status=status.HTTP_400_BAD_REQUEST,
             )
 
-        sha1_password = hashlib.sha1(password.encode('utf-8')).hexdigest()
-        try:
-            auth_response = http_requests.post(
-                f"{SD_BASE_URL}/token",
-                json={'username': username, 'password': sha1_password},
-                headers=sd_headers_for_source(source),
-                timeout=15,
-            )
-            try:
-                auth_data = auth_response.json()
-            except ValueError:
-                auth_data = {}
-            if sd_handle_2055(source, auth_data):
-                return None, Response(
-                    {
-                        "error": (
-                            "Schedules Direct rejected the debug routing header "
-                            "(code 2055). Extra Schedules Direct Debugging has "
-                            "been turned off. Retry without it unless SD support "
-                            "asked you to enable it."
-                        ),
-                    },
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-            auth_response.raise_for_status()
-            token = auth_data.get('token')
-            if not token:
-                return None, Response(
-                    {"error": "Authentication failed. Check your credentials."},
-                    status=status.HTTP_401_UNAUTHORIZED
-                )
-            return token, None
-        except http_requests.exceptions.RequestException as e:
-            return None, Response(
-                {"error": f"Authentication failed: {str(e)}"},
-                status=status.HTTP_502_BAD_GATEWAY
-            )
+        if result.message == 'Username and password are required.':
+            http_status = status.HTTP_400_BAD_REQUEST
+        elif result.code in SD_AUTH_CREDENTIAL_LOCKOUT_CODES:
+            http_status = status.HTTP_401_UNAUTHORIZED
+        elif result.lockout or result.soft or result.code:
+            http_status = status.HTTP_503_SERVICE_UNAVAILABLE
+        else:
+            http_status = status.HTTP_502_BAD_GATEWAY
+
+        return None, Response({"error": result.message}, status=http_status)
 
     def _get_sd_reset_at(self, source):
         """Retrieve stored reset timestamp from EPGSource model field."""
@@ -584,16 +558,17 @@ class ProgramViewSet(viewsets.ModelViewSet):
     def poster(self, request, pk=None):
         """Proxy endpoint for SD program poster images. Nginx caches the response."""
         import requests as http_requests
-        from apps.epg.tasks import SD_BASE_URL
         from apps.epg.sd_utils import (
             SD_CODE_IMAGE_NOT_FOUND,
             SD_IMAGE_LIMIT_CODES,
+            sd_auth_lockout_active,
             sd_clear_cached_token,
             sd_get_cached_token,
             sd_handle_2055,
             sd_headers_for_source,
             sd_image_limit_active,
             sd_mark_icon_missing,
+            sd_obtain_token,
             sd_parse_response_payload,
             sd_save_image_limit_lockout,
             sd_set_cached_token,
@@ -623,6 +598,18 @@ class ProgramViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
 
+        auth_lockout_active, auth_lockout_reason, _lockout_code = (
+            sd_auth_lockout_active(source)
+        )
+        if auth_lockout_active:
+            # Rely on the persisted lockout only. Do not seed the process-local
+            # poster error cache here: that cache outlives credential changes and
+            # cooldown expiry and would keep returning 503 afterward.
+            return Response(
+                {'error': auth_lockout_reason},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
         error_cache = ProgramViewSet._sd_poster_error_cache.get(source.id)
         if error_cache and time.time() < error_cache['until']:
             return Response(
@@ -633,46 +620,27 @@ class ProgramViewSet(viewsets.ModelViewSet):
         token = sd_get_cached_token(source.id)
 
         if not token:
-            sha1_password = hashlib.sha1(source.password.encode('utf-8')).hexdigest()
-            try:
-                auth_resp = http_requests.post(
-                    f"{SD_BASE_URL}/token",
-                    json={'username': source.username, 'password': sha1_password},
-                    headers=sd_headers_for_source(source),
-                    timeout=10,
+            auth = sd_obtain_token(source, timeout=10)
+            if auth.debug_rejected:
+                return Response(
+                    {'error': auth.message},
+                    status=status.HTTP_400_BAD_REQUEST,
                 )
-                try:
-                    auth_data = auth_resp.json()
-                except ValueError:
-                    auth_data = {}
-                if sd_handle_2055(source, auth_data):
-                    return Response(
-                        {
-                            'error': (
-                                'Schedules Direct rejected the debug routing header '
-                                '(code 2055). Extra Schedules Direct Debugging has '
-                                'been turned off.'
-                            ),
-                        },
-                        status=status.HTTP_400_BAD_REQUEST,
-                    )
-                token = auth_data.get('token')
-                if not token:
+            if not auth.ok:
+                # Lockout codes are persisted by sd_obtain_token. Other failures
+                # use a short process-local cache so workers do not hammer /token.
+                if not auth.lockout:
                     ProgramViewSet._sd_poster_error_cache[source.id] = {
-                        'until': time.time() + 3600,
-                        'reason': auth_data.get('message', 'Authentication failed'),
+                        'until': time.time() + (3600 if auth.code else 300),
+                        'reason': auth.message or 'Authentication failed',
                     }
-                    return Response(status=status.HTTP_502_BAD_GATEWAY)
-                token_expires = auth_data.get(
-                    'tokenExpires', time.time() + 86400
+                return Response(
+                    {'error': auth.message},
+                    status=status.HTTP_502_BAD_GATEWAY,
                 )
-                sd_set_cached_token(source.id, token, token_expires)
-            except http_requests.exceptions.RequestException:
-                ProgramViewSet._sd_poster_error_cache[source.id] = {
-                    'until': time.time() + 300,
-                    'reason': 'Network error reaching Schedules Direct',
-                }
-                return Response(status=status.HTTP_502_BAD_GATEWAY)
+            token = auth.token
+            ProgramViewSet._sd_poster_error_cache.pop(source.id, None)
+            sd_set_cached_token(source.id, token, auth.token_expires)
 
         try:
             img_resp = http_requests.get(
