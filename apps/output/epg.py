@@ -20,6 +20,7 @@ from django.utils import timezone as django_timezone
 from apps.channels.models import Channel, ChannelProfile, Stream
 from apps.channels.utils import format_channel_number
 from apps.epg.models import ProgramData
+from apps.epg.utils import sd_poster_proxy_path
 from apps.output.streaming_chunk_cache import stream_cached_response
 from core.utils import build_absolute_uri_with_port, log_system_event
 
@@ -1379,7 +1380,7 @@ def generate_epg(request, profile_name=None, user=None, *, xc_catchup_prev_days=
             chunk_size = _EPG_PROGRAM_DB_CHUNK_SIZE
             last_epg_id = 0
             last_id = 0
-            _poster_url_base = build_absolute_uri_with_port(request, "/api/epg/programs/")
+            _poster_site_origin = build_absolute_uri_with_port(request, '')
 
             def flush_pending():
                 nonlocal program_batch, pending
@@ -1592,7 +1593,13 @@ def generate_epg(request, profile_name=None, user=None, *, xc_catchup_prev_days=
                         if "icon" in custom_data:
                             program_xml.append(f'    <icon src="{html.escape(custom_data["icon"])}" />')
                         elif "sd_icon" in custom_data:
-                            program_xml.append(f'    <icon src="{html.escape(_poster_url_base)}{prog["id"]}/poster/" />')
+                            poster_src = (
+                                f'{_poster_site_origin}'
+                                f'{sd_poster_proxy_path(prog["id"], custom_data["sd_icon"])}'
+                            )
+                            program_xml.append(
+                                f'    <icon src="{html.escape(poster_src)}" />'
+                            )
 
                         # Add special flags as proper tags with enhanced handling
                         if custom_data.get("previously_shown", False):

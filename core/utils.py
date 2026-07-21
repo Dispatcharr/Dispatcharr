@@ -33,18 +33,22 @@ def dispatcharr_dvr_user_agent(recording_id):
     return f'Dispatcharr-DVR/recording-{recording_id}'
 
 
-def dispatcharr_http_headers(*, token=None, content_type='application/json'):
+def dispatcharr_http_headers(*, token=None, content_type='application/json', route_to=None):
     """
     Build HTTP headers for outbound Dispatcharr requests.
 
     content_type=None omits Content-Type (e.g. simple GET proxies).
     token is included when authenticating with Schedules Direct.
+    route_to is an optional Schedules Direct load-balancer steer value
+    (e.g. "debug"); only set when coordinated with Schedules Direct support.
     """
     headers = {'User-Agent': dispatcharr_user_agent()}
     if content_type:
         headers['Content-Type'] = content_type
     if token:
         headers['token'] = token
+    if route_to:
+        headers['RouteTo'] = route_to
     return headers
 
 

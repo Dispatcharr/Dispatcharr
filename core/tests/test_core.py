@@ -283,6 +283,15 @@ class DispatcharrUserAgentTests(TestCase):
             {'User-Agent': 'Dispatcharr/1.2.3'},
         )
 
+    @patch('version.__version__', '1.2.3')
+    def test_dispatcharr_http_headers_with_route_to(self):
+        from core.utils import dispatcharr_http_headers
+        headers = dispatcharr_http_headers(content_type=None, route_to='debug')
+        self.assertEqual(headers, {
+            'User-Agent': 'Dispatcharr/1.2.3',
+            'RouteTo': 'debug',
+        })
+
 
 class ProgrammeIndexRebuildTests(TestCase):
     def test_startup_rebuild_does_not_lock_out_queued_build_task(self):

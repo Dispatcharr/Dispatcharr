@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Schedules Direct Extra Debugging option.** EPG source settings include an **Extra Schedules Direct Debugging** toggle that adds a `RouteTo: debug` header so Schedules Direct support can steer traffic to their debug server. The tooltip states it should only be enabled when SD support asks. If SD returns code 2055 (unexpected debug connection), the toggle is turned off automatically.
+
+### Changed
+
+- **EPG source form places Auto-Apply EPG Logos in the shared middle column for XMLTV and Schedules Direct.** The toggle previously lived in the SD-only right panel when editing a Schedules Direct source; it now uses the same middle-column control as XMLTV so SD-specific options (logo style, posters, debug) stay in the right panel.
+- **Schedules Direct poster proxy shares auth tokens across uWSGI workers via Redis.** Tokens are stored in Django's cache until near `tokenExpires` (24h fallback), so concurrent `/poster/` requests on different workers reuse one SD session instead of each process hitting `/token` separately. Redis failures fall back to re-authentication.
+
+### Fixed
+
+- **Schedules Direct poster proxy no longer ignores daily image download limits or missing-image errors.** SD returns codes 5002/5003 as HTTP 200 with a JSON body; the proxy previously only inspected HTTP 400 and kept requesting images after the limit, which can get accounts blocked. It now detects 5002/5003 (subscriber and trial), stops further image fetches for that source until the next midnight UTC (persisted on the EPG source so all workers honor it), and on explicit IMAGE_NOT_FOUND (code 5000) clears that program's `sd_icon` so the same dead URI is not retried. Transient bare HTTP 404s do not blacklist the URI. Successful SD posters use a dedicated nginx cache under `/data/cache/sd_posters` (14 days); channel/VOD logos remain at `/data/cache/logos` (24 hours). On startup, an existing `/data/logo_cache` directory is moved to `/data/cache/logos` once so warm logo entries are kept. API and XMLTV icon URLs include a `?v=` hash of the stored SD image URI so a new artwork link after refresh uses a new cache key without waiting for TTL expiry.
+- **Schedules Direct auth and lineup change handling better match SD guidelines.** Token codes 3000/3001 (offline/busy) stop as idle with clear "do not retry" messaging instead of looking like credential failures; 4010 (too many unique IPs) and related account codes get explicit messages. Lineup add/delete respects a known daily change lockout before calling SD, handles 4100 on deletes, and the UI blocks remove when no changes remain (adds and deletes both count toward the 6/day limit).
+- **Schedules Direct stops retrying `/token` on auth failures that will not clear by themselves.** Codes 4002/4003 (bad credentials), 4001/4005/4007/4008 (account state), 4009/4010 (login/IP limits), and 4004 (15-minute account lock) persist a cooldown on the EPG source. Soft codes 3000/3001 use a 1-hour idle cooldown. Lockouts clear when username/password change or the cooldown expires. Token auth is centralized in `sd_obtain_token` for refresh, lineup/form, and poster paths. Redis-cached SD tokens are bound to a credential fingerprint (and cleared when the EPG source username/password change) so switching accounts cannot reuse another session.
+- **Schedules Direct code split out of general EPG modules.** Refresh pipeline and Celery tasks live in `apps/epg/sd_tasks.py`; lineup/poster API mixins in `apps/epg/sd_api.py`; shared protocol helpers remain in `sd_utils.py`. Progress WebSocket updates (`send_epg_update`) live in `apps/epg/utils.py` so XMLTV and SD tasks can import cleanly. `tasks.py` / `api_views.py` re-export or inherit so existing imports and Celery task names are unchanged.
+
 ## [0.28.1] - 2026-07-20
 
 ### Fixed

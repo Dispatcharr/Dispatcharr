@@ -170,6 +170,9 @@ const SDSettings = ({ sourceId, customProperties }) => {
   const [posterStyle, setPosterStyle] = useState(
     resolvedCp.poster_style || 'sd_recommended'
   );
+  const [extraDebugging, setExtraDebugging] = useState(
+    !!resolvedCp.sd_extra_debugging
+  );
   const [saving, setSaving] = useState(false);
 
   // Sync from store (preferred) or parent props when the form opens or settings save
@@ -178,6 +181,7 @@ const SDSettings = ({ sourceId, customProperties }) => {
     setLogoStyle(newCp.logo_style || 'dark');
     setFetchPosters(!!newCp.fetch_posters);
     setPosterStyle(newCp.poster_style || 'sd_recommended');
+    setExtraDebugging(!!newCp.sd_extra_debugging);
   }, [storeCustomProps, customProperties]);
 
   const saveSetting = async (key, value) => {
@@ -203,6 +207,11 @@ const SDSettings = ({ sourceId, customProperties }) => {
     if (!style) return;
     setPosterStyle(style);
     saveSetting('poster_style', style);
+  };
+
+  const handleExtraDebuggingToggle = (checked) => {
+    setExtraDebugging(checked);
+    saveSetting('sd_extra_debugging', checked);
   };
 
   return (
@@ -260,17 +269,11 @@ const SDSettings = ({ sourceId, customProperties }) => {
         ))}
       </Group>
 
-      <AutoApplyEpgLogosSwitch
-        sourceId={sourceId}
-        customProperties={customProperties}
-        description="When enabled, matched channels are updated to use the SD logo on each refresh. When disabled, logos are still fetched into EPG data and can be applied manually via Set Logo from EPG."
-      />
-
       <Divider my="sm" />
 
       <Switch
         label="Fetch Program Posters"
-        description="WARNING: USES ADDITIONAL API REQUESTS. Poster artwork is fetched during EPG refresh; image bytes are cached by nginx on first view (24h). Initial fetch and viewing new programs consume API requests against your Schedules Direct rate limit."
+        description="Stores poster links on refresh. Images download on first view (nginx caches ~14 days) and count toward your daily SD image limit."
         checked={fetchPosters}
         onChange={(e) => handlePosterToggle(e.currentTarget.checked)}
         disabled={saving}
@@ -290,6 +293,17 @@ const SDSettings = ({ sourceId, customProperties }) => {
           allowDeselect={false}
         />
       )}
+
+      <Divider my="sm" />
+
+      <Switch
+        label="Extra Schedules Direct Debugging"
+        description="Only enable if Schedules Direct support asks you to. Turns off automatically if debug access is not allowed for your account."
+        checked={extraDebugging}
+        onChange={(e) => handleExtraDebuggingToggle(e.currentTarget.checked)}
+        disabled={saving}
+        size="sm"
+      />
     </Box>
   );
 };
@@ -422,18 +436,27 @@ const SDLineupManager = ({ sourceId }) => {
     setRemovingLineup(lineup.lineup);
     try {
       const result = await API.deleteSDLineup(sourceId, lineup.lineup);
-      if (result && result.code === 0) {
+      if (!result) return;
+
+      if (
+        result.changes_remaining !== undefined &&
+        result.changes_remaining !== null
+      ) {
+        setChangesRemaining(result.changes_remaining);
+      }
+
+      if (result.error === 'daily_limit_reached') {
+        setChangesRemaining(0);
+        await fetchActiveLineups();
+        return;
+      }
+
+      if (result.code === 0) {
         showNotification({
           title: 'Lineup removed',
           message: lineup.name,
           color: 'blue',
         });
-        if (
-          result.changes_remaining !== undefined &&
-          result.changes_remaining !== null
-        ) {
-          setChangesRemaining(result.changes_remaining);
-        }
         await fetchActiveLineups();
         setSearchResults([]);
       }
@@ -495,6 +518,7 @@ const SDLineupManager = ({ sourceId }) => {
                 variant="subtle"
                 leftSection={<Trash2 size={12} />}
                 loading={removingLineup === lineup.lineup}
+                disabled={changesRemaining === 0}
                 onClick={() => handleRemove(lineup)}
               >
                 Remove
@@ -527,8 +551,9 @@ const SDLineupManager = ({ sourceId }) => {
           mb="xs"
           icon={<TriangleAlert size={14} />}
         >
-          You have reached your daily Schedules Direct lineup addition limit. SD
-          allows 6 adds per 24-hour period.{' '}
+          You have reached your daily Schedules Direct lineup change limit. SD
+          allows 6 add or delete operations per 24-hour period. Adds and removes
+          are both blocked until the limit resets.{' '}
           {changesResetAt && (
             <span>
               Limit resets at{' '}
@@ -536,7 +561,7 @@ const SDLineupManager = ({ sourceId }) => {
             </span>
           )}
           {!changesResetAt && (
-            <span>Limit resets 24 hours after the first add of the day. </span>
+            <span>Limit resets at midnight UTC. </span>
           )}
           <a href={SD_DOCS_URL} target="_blank" rel="noopener noreferrer">
             Learn more
@@ -551,8 +576,9 @@ const SDLineupManager = ({ sourceId }) => {
           mb="xs"
           icon={<TriangleAlert size={14} />}
         >
-          You have <strong>1 lineup addition remaining</strong> today. Use it
-          carefully — Schedules Direct limits adds to 6 per 24-hour period.{' '}
+          You have <strong>1 lineup change remaining</strong> today. Use it
+          carefully. Schedules Direct limits adds and deletes to 6 per 24-hour
+          period.{' '}
           <a href={SD_DOCS_URL} target="_blank" rel="noopener noreferrer">
             Learn more
           </a>
@@ -566,8 +592,8 @@ const SDLineupManager = ({ sourceId }) => {
           mb="xs"
           icon={<TriangleAlert size={14} />}
         >
-          You have <strong>2 lineup additions remaining</strong> today.
-          Schedules Direct limits adds to 6 per 24-hour period.{' '}
+          You have <strong>2 lineup changes remaining</strong> today. Schedules
+          Direct limits adds and deletes to 6 per 24-hour period.{' '}
           <a href={SD_DOCS_URL} target="_blank" rel="noopener noreferrer">
             Learn more
           </a>
@@ -935,7 +961,7 @@ const EPG = ({ epg = null, isOpen, onClose }) => {
                 key={form.key('priority')}
               />
 
-              {sourceType === 'xmltv' && savedEpgId && (
+              {savedEpgId && (
                 <AutoApplyEpgLogosSwitch
                   sourceId={savedEpgId}
                   customProperties={sdCustomProps}
