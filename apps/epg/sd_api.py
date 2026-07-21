@@ -35,7 +35,6 @@ from apps.epg.sd_utils import (
     sd_obtain_token,
     sd_parse_response_payload,
     sd_save_image_limit_lockout,
-    sd_set_cached_token,
 )
 from core.utils import dispatcharr_http_headers
 
@@ -472,7 +471,9 @@ class SchedulesDirectPosterMixin:
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
 
-        token = sd_get_cached_token(source.id)
+        token = sd_get_cached_token(
+            source.id, username=source.username, password=source.password
+        )
 
         if not token:
             auth = sd_obtain_token(source, timeout=10)
@@ -495,7 +496,6 @@ class SchedulesDirectPosterMixin:
                 )
             token = auth.token
             self._sd_poster_error_cache.pop(source.id, None)
-            sd_set_cached_token(source.id, token, auth.token_expires)
 
         try:
             img_resp = http_requests.get(

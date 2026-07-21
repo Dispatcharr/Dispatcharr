@@ -1789,12 +1789,18 @@ class SDUtilsTests(TestCase):
         )
 
         source_id = 4242
+        user, password = 'sduser', 'sdpass'
         sd_clear_cached_token(source_id)
-        self.assertIsNone(sd_get_cached_token(source_id))
-        self.assertTrue(sd_set_cached_token(source_id, 'tok-abc', time.time() + 3600))
-        self.assertEqual(sd_get_cached_token(source_id), 'tok-abc')
+        self.assertIsNone(sd_get_cached_token(source_id, user, password))
+        self.assertTrue(
+            sd_set_cached_token(
+                source_id, 'tok-abc', time.time() + 3600,
+                username=user, password=password,
+            )
+        )
+        self.assertEqual(sd_get_cached_token(source_id, user, password), 'tok-abc')
         sd_clear_cached_token(source_id)
-        self.assertIsNone(sd_get_cached_token(source_id))
+        self.assertIsNone(sd_get_cached_token(source_id, user, password))
 
     def test_token_cache_ignores_near_expiry(self):
         from apps.epg.sd_utils import (
@@ -1804,10 +1810,78 @@ class SDUtilsTests(TestCase):
         )
 
         source_id = 4243
+        user, password = 'sduser', 'sdpass'
         sd_clear_cached_token(source_id)
         # Within skew window: set should refuse or get should miss.
-        self.assertFalse(sd_set_cached_token(source_id, 'tok-soon', time.time() + 30))
-        self.assertIsNone(sd_get_cached_token(source_id))
+        self.assertFalse(
+            sd_set_cached_token(
+                source_id, 'tok-soon', time.time() + 30,
+                username=user, password=password,
+            )
+        )
+        self.assertIsNone(sd_get_cached_token(source_id, user, password))
+
+    def test_token_cache_misses_after_username_change(self):
+        """Cached token must not be reused after switching SD accounts."""
+        from apps.epg.sd_utils import (
+            sd_clear_cached_token,
+            sd_get_cached_token,
+            sd_set_cached_token,
+        )
+
+        source_id = 4244
+        sd_clear_cached_token(source_id)
+        self.assertTrue(
+            sd_set_cached_token(
+                source_id, 'tok-account-a', time.time() + 3600,
+                username='account-a', password='pass-a',
+            )
+        )
+        self.assertEqual(
+            sd_get_cached_token(source_id, 'account-a', 'pass-a'),
+            'tok-account-a',
+        )
+        self.assertIsNone(
+            sd_get_cached_token(source_id, 'account-b', 'pass-a')
+        )
+        # Mismatch clears the stale entry so account B cannot resurrect it.
+        self.assertIsNone(
+            sd_get_cached_token(source_id, 'account-a', 'pass-a')
+        )
+
+    def test_serializer_username_change_clears_token_cache(self):
+        """Updating an EPG source username must drop the Redis SD token."""
+        from apps.epg.serializers import EPGSourceSerializer
+        from apps.epg.sd_utils import (
+            sd_clear_cached_token,
+            sd_get_cached_token,
+            sd_set_cached_token,
+        )
+
+        source = EPGSource.objects.create(
+            name='SD Token Clear',
+            source_type='schedules_direct',
+            username='account-a',
+            password='pass-a',
+        )
+        sd_clear_cached_token(source.id)
+        self.assertTrue(
+            sd_set_cached_token(
+                source.id, 'tok-a', time.time() + 3600,
+                username='account-a', password='pass-a',
+            )
+        )
+        serializer = EPGSourceSerializer(
+            source, data={'username': 'account-b'}, partial=True
+        )
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        serializer.save()
+        self.assertIsNone(
+            sd_get_cached_token(source.id, 'account-a', 'pass-a')
+        )
+        self.assertIsNone(
+            sd_get_cached_token(source.id, 'account-b', 'pass-a')
+        )
 
 
 class SDPosterProxyErrorHandlingTests(TestCase):

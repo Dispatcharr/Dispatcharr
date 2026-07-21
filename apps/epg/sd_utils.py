@@ -96,7 +96,7 @@ def sd_auth_lockout_retry_message():
 
 
 # Shared across uWSGI workers via Django's Redis cache.
-_SD_TOKEN_CACHE_PREFIX = 'sd:token:v1:'
+_SD_TOKEN_CACHE_PREFIX = 'sd:token:'
 # Expire a bit early so we re-auth before SD rejects an almost-expired token.
 _SD_TOKEN_CACHE_SKEW_SECONDS = 60
 _SD_TOKEN_DEFAULT_TTL_SECONDS = 86400
@@ -106,14 +106,28 @@ def sd_token_cache_key(source_id):
     return f'{_SD_TOKEN_CACHE_PREFIX}{source_id}'
 
 
-def sd_get_cached_token(source_id):
+def sd_credential_fingerprint(username, password):
+    """
+    Stable fingerprint of SD credentials for lockout and token-cache matching.
+
+    Used so a persisted auth lockout or cached token clears automatically when
+    the user changes username or password.
+    """
+    raw = f'{(username or "").strip()}\0{(password or "").strip()}'
+    return hashlib.sha256(raw.encode('utf-8')).hexdigest()
+
+
+def sd_get_cached_token(source_id, username=None, password=None):
     """
     Return a cached SD token string for this source, or None.
 
+    Requires ``username`` / ``password`` so a cached session is only reused when
+    credentials still match (avoids using account A's token after switching to B).
     On Redis failure, returns None so the caller re-authenticates.
     """
     if source_id is None:
         return None
+    current_fp = sd_credential_fingerprint(username, password)
     try:
         payload = cache.get(sd_token_cache_key(source_id))
     except Exception as exc:
@@ -129,16 +143,20 @@ def sd_get_cached_token(source_id):
     expires = payload.get('expires')
     if not token or not isinstance(expires, (int, float)):
         return None
+    if payload.get('fp') != current_fp:
+        sd_clear_cached_token(source_id)
+        return None
     if time.time() >= float(expires) - _SD_TOKEN_CACHE_SKEW_SECONDS:
         return None
     return token
 
 
-def sd_set_cached_token(source_id, token, expires=None):
+def sd_set_cached_token(source_id, token, expires=None, username=None, password=None):
     """
     Cache an SD token for this source until near tokenExpires.
 
     ``expires`` is a UNIX epoch seconds value from SD's tokenExpires field.
+    Stores a credential fingerprint so callers must still match to reuse it.
     """
     if source_id is None or not token:
         return False
@@ -155,7 +173,11 @@ def sd_set_cached_token(source_id, token, expires=None):
     try:
         cache.set(
             sd_token_cache_key(source_id),
-            {'token': token, 'expires': expires},
+            {
+                'token': token,
+                'expires': expires,
+                'fp': sd_credential_fingerprint(username, password),
+            },
             timeout=ttl,
         )
         return True
@@ -182,17 +204,6 @@ def sd_clear_cached_token(source_id):
             type(exc).__name__,
         )
         return False
-
-
-def sd_credential_fingerprint(username, password):
-    """
-    Stable fingerprint of SD credentials for lockout matching.
-
-    Used so a persisted auth lockout clears automatically when the user
-    changes username or password, without requiring a separate clear hook.
-    """
-    raw = f'{(username or "").strip()}\0{(password or "").strip()}'
-    return hashlib.sha256(raw.encode('utf-8')).hexdigest()
 
 
 def sd_auth_failure_message(code, sd_message=None):
@@ -494,10 +505,14 @@ def sd_obtain_token(source, username=None, password=None, *, timeout=30):
         expires = auth_data.get('tokenExpires')
     if not isinstance(expires, (int, float)):
         expires = time.time() + _SD_TOKEN_DEFAULT_TTL_SECONDS
+    expires = float(expires)
+    sd_set_cached_token(
+        source.id, token, expires, username=username, password=password
+    )
     return SDTokenAuthResult(
         ok=True,
         token=token,
-        token_expires=float(expires),
+        token_expires=expires,
         code=0,
     )
 

@@ -2,6 +2,10 @@ from core.utils import validate_flexible_url, build_absolute_uri_with_port
 from rest_framework import serializers
 from .models import EPGSource, EPGData, ProgramData
 from apps.channels.models import Channel, Stream
+from apps.epg.sd_utils import (
+    sd_clear_cached_token,
+    sd_credential_fingerprint,
+)
 
 class EPGSourceSerializer(serializers.ModelSerializer):
     epg_data_count = serializers.SerializerMethodField()
@@ -67,11 +71,16 @@ class EPGSourceSerializer(serializers.ModelSerializer):
                 ct = instance.refresh_task.crontab
                 cron_expr = f'{ct.minute} {ct.hour} {ct.day_of_month} {ct.month_of_year} {ct.day_of_week}'
         instance._cron_expression = cron_expr
+        prior_fp = sd_credential_fingerprint(instance.username, instance.password)
         for attr, value in validated_data.items():
             if attr == 'password' and not value:
                 continue
             setattr(instance, attr, value)
         instance.save()
+        # Drop any Redis SD session tied to the previous username/password so
+        # poster traffic cannot keep using another account's token.
+        if prior_fp != sd_credential_fingerprint(instance.username, instance.password):
+            sd_clear_cached_token(instance.id)
         return instance
 
     def create(self, validated_data):
