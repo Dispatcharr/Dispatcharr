@@ -129,8 +129,8 @@ class FetchSchedulesDirectCredentialTests(TestCase):
 class FetchSchedulesDirectAuthTests(TestCase):
     """fetch_schedules_direct must SHA1-hash the password before sending."""
 
-    @patch('apps.epg.tasks.requests.post')
-    @patch('apps.epg.tasks.requests.get')
+    @patch('apps.epg.sd_tasks.requests.post')
+    @patch('apps.epg.sd_tasks.requests.get')
     def test_password_sha1_hashed_in_token_request(self, mock_get, mock_post):
         """The token POST body must contain the SHA1 hash of the plaintext password."""
         plaintext = 'mysecretpassword'
@@ -375,7 +375,7 @@ class SDAuthCredentialLockoutTests(TestCase):
 class FetchSchedulesDirectAuthCodeTests(TestCase):
     """Token response codes must map to idle vs error correctly."""
 
-    @patch('apps.epg.tasks.requests.post')
+    @patch('apps.epg.sd_tasks.requests.post')
     def test_auth_service_offline_sets_idle_status(self, mock_post):
         """Token code 3000 (SERVICE_OFFLINE) must stop as idle, not a credential error."""
         mock_post.return_value = MagicMock(
@@ -401,7 +401,7 @@ class FetchSchedulesDirectAuthCodeTests(TestCase):
         self.assertEqual(source.status, EPGSource.STATUS_IDLE)
         self.assertIn('offline', source.last_message.lower())
 
-    @patch('apps.epg.tasks.requests.post')
+    @patch('apps.epg.sd_tasks.requests.post')
     def test_auth_failure_sets_error_status(self, mock_post):
         """A non-zero credential error code must set STATUS_ERROR on the source."""
         mock_post.return_value = MagicMock(
@@ -428,7 +428,7 @@ class FetchSchedulesDirectAuthCodeTests(TestCase):
         self.assertIn('invalid username or password', source.last_message.lower())
         self.assertTrue((source.custom_properties or {}).get('sd_auth_lockout'))
 
-    @patch('apps.epg.tasks.requests.post')
+    @patch('apps.epg.sd_tasks.requests.post')
     def test_auth_4003_http_400_persists_lockout_without_raise(self, mock_post):
         """HTTP 400 + JSON code 4003 must hard-stop before raise_for_status."""
         import requests
@@ -462,7 +462,7 @@ class FetchSchedulesDirectAuthCodeTests(TestCase):
         self.assertTrue((source.custom_properties or {}).get('sd_auth_lockout'))
         mock_resp.raise_for_status.assert_not_called()
 
-    @patch('apps.epg.tasks.requests.post')
+    @patch('apps.epg.sd_tasks.requests.post')
     def test_auth_lockout_skips_token_until_credentials_change(self, mock_post):
         """Persisted 4003 lockout must not call /token again until credentials change."""
         from apps.epg.sd_utils import sd_save_auth_lockout
@@ -497,7 +497,7 @@ class FetchSchedulesDirectAuthCodeTests(TestCase):
             raise_for_status=MagicMock(),
         )
         with patch('apps.epg.tasks.send_epg_update'), \
-             patch('apps.epg.tasks.requests.get') as mock_get:
+             patch('apps.epg.sd_tasks.requests.get') as mock_get:
             mock_get.return_value = MagicMock(
                 status_code=200,
                 json=MagicMock(return_value={
@@ -511,7 +511,7 @@ class FetchSchedulesDirectAuthCodeTests(TestCase):
         source.refresh_from_db()
         self.assertFalse((source.custom_properties or {}).get('sd_auth_lockout'))
 
-    @patch('apps.epg.tasks.requests.post')
+    @patch('apps.epg.sd_tasks.requests.post')
     def test_auth_too_many_ips_sets_error_status(self, mock_post):
         """Code 4010 must surface a clear multi-IP message and stop."""
         mock_post.return_value = MagicMock(
@@ -537,7 +537,7 @@ class FetchSchedulesDirectAuthCodeTests(TestCase):
         self.assertEqual(source.status, EPGSource.STATUS_ERROR)
         self.assertIn('unique IP', source.last_message)
 
-    @patch('apps.epg.tasks.requests.post')
+    @patch('apps.epg.sd_tasks.requests.post')
     def test_network_error_sets_error_status(self, mock_post):
         """A network-level exception must set STATUS_ERROR and not crash."""
         import requests as req_lib
@@ -562,8 +562,8 @@ class FetchSchedulesDirectStationsOnlyTests(TestCase):
     """stations_only fetch must signal channel parsing completion to the frontend."""
 
     @patch('apps.epg.tasks.send_epg_update')
-    @patch('apps.epg.tasks.requests.get')
-    @patch('apps.epg.tasks.requests.post')
+    @patch('apps.epg.sd_tasks.requests.get')
+    @patch('apps.epg.sd_tasks.requests.post')
     def test_stations_only_sends_parsing_channels_complete(
         self, mock_post, mock_get, mock_send_epg_update
     ):
@@ -842,8 +842,8 @@ class SDScheduleDeltaIntegrationTests(TestCase):
 
     @patch('apps.epg.tasks.SD_DAYS_TO_FETCH', 3)
     @patch('apps.epg.tasks.send_epg_update')
-    @patch('apps.epg.tasks.requests.get')
-    @patch('apps.epg.tasks.requests.post')
+    @patch('apps.epg.sd_tasks.requests.get')
+    @patch('apps.epg.sd_tasks.requests.post')
     def test_md5_api_only_requests_mapped_stations(
         self, mock_post, mock_get, mock_send_epg_update,
     ):
@@ -924,8 +924,8 @@ class SDScheduleDeltaIntegrationTests(TestCase):
 
     @patch('apps.epg.tasks.SD_DAYS_TO_FETCH', 3)
     @patch('apps.epg.tasks.send_epg_update')
-    @patch('apps.epg.tasks.requests.get')
-    @patch('apps.epg.tasks.requests.post')
+    @patch('apps.epg.sd_tasks.requests.get')
+    @patch('apps.epg.sd_tasks.requests.post')
     def test_newly_mapped_station_fetches_despite_stale_cache(
         self, mock_post, mock_get, mock_send_epg_update,
     ):
@@ -1002,8 +1002,8 @@ class SDScheduleDeltaIntegrationTests(TestCase):
 
     @patch('apps.epg.tasks.SD_DAYS_TO_FETCH', 3)
     @patch('apps.epg.tasks.send_epg_update')
-    @patch('apps.epg.tasks.requests.get')
-    @patch('apps.epg.tasks.requests.post')
+    @patch('apps.epg.sd_tasks.requests.get')
+    @patch('apps.epg.sd_tasks.requests.post')
     def test_orphan_program_data_removed_on_post_refresh(
         self, mock_post, mock_get, mock_send_epg_update,
     ):
@@ -1142,7 +1142,7 @@ class SDDispatchProgramRefreshTests(TestCase):
             url='http://example.com/epg.xml',
         )
 
-    @patch('apps.epg.tasks.fetch_sd_mapped_guide_batch.delay')
+    @patch('apps.epg.sd_tasks.fetch_sd_mapped_guide_batch.delay')
     @patch('apps.epg.tasks.parse_programs_for_tvg_id.delay')
     def test_xmltv_still_uses_parse_programs_per_id(
         self, mock_parse_delay, mock_batch_delay,
@@ -1162,7 +1162,7 @@ class SDDispatchProgramRefreshTests(TestCase):
         mock_parse_delay.assert_called_once_with(epg.id)
         mock_batch_delay.assert_not_called()
 
-    @patch('apps.epg.tasks.fetch_sd_mapped_guide_batch.delay')
+    @patch('apps.epg.sd_tasks.fetch_sd_mapped_guide_batch.delay')
     @patch('apps.epg.tasks.parse_programs_for_tvg_id.delay')
     def test_sd_below_threshold_uses_per_epg_tasks(
         self, mock_parse_delay, mock_batch_delay,
@@ -1185,7 +1185,7 @@ class SDDispatchProgramRefreshTests(TestCase):
         self.assertEqual(mock_parse_delay.call_count, 2)
         mock_batch_delay.assert_not_called()
 
-    @patch('apps.epg.tasks.fetch_sd_mapped_guide_batch.delay')
+    @patch('apps.epg.sd_tasks.fetch_sd_mapped_guide_batch.delay')
     @patch('apps.epg.tasks.parse_programs_for_tvg_id.delay')
     def test_sd_at_threshold_uses_batched_fetch(
         self, mock_parse_delay, mock_batch_delay,
@@ -1208,7 +1208,7 @@ class SDDispatchProgramRefreshTests(TestCase):
         mock_batch_delay.assert_called_once_with(source.id)
         mock_parse_delay.assert_not_called()
 
-    @patch('apps.epg.tasks.fetch_sd_mapped_guide_batch.delay')
+    @patch('apps.epg.sd_tasks.fetch_sd_mapped_guide_batch.delay')
     @patch('apps.epg.tasks.parse_programs_for_tvg_id.delay')
     def test_sd_skips_when_program_data_exists(
         self, mock_parse_delay, mock_batch_delay,
@@ -1250,9 +1250,9 @@ class SDGuideFetchCoordinationTests(TestCase):
             password='sdpass',
         )
 
-    @patch('apps.epg.tasks.fetch_schedules_direct')
-    @patch('apps.epg.tasks.acquire_task_lock', return_value=False)
-    @patch('apps.epg.tasks.fetch_sd_mapped_guide_batch.apply_async')
+    @patch('apps.epg.sd_tasks.fetch_schedules_direct')
+    @patch('apps.epg.sd_tasks.acquire_task_lock', return_value=False)
+    @patch('apps.epg.sd_tasks.fetch_sd_mapped_guide_batch.apply_async')
     def test_batch_fetch_defers_when_lock_held(
         self, mock_apply_async, mock_acquire, mock_fetch,
     ):
@@ -1272,9 +1272,9 @@ class SDGuideFetchCoordinationTests(TestCase):
         )
         mock_fetch.assert_not_called()
 
-    @patch('apps.epg.tasks.fetch_schedules_direct')
-    @patch('apps.epg.tasks.acquire_task_lock', return_value=False)
-    @patch('apps.epg.tasks.fetch_sd_mapped_guide_batch.apply_async')
+    @patch('apps.epg.sd_tasks.fetch_schedules_direct')
+    @patch('apps.epg.sd_tasks.acquire_task_lock', return_value=False)
+    @patch('apps.epg.sd_tasks.fetch_sd_mapped_guide_batch.apply_async')
     def test_batch_fetch_stops_after_max_defer_retries(
         self, mock_apply_async, mock_acquire, mock_fetch,
     ):
@@ -1287,12 +1287,12 @@ class SDGuideFetchCoordinationTests(TestCase):
         mock_apply_async.assert_not_called()
         mock_fetch.assert_not_called()
 
-    @patch('apps.epg.tasks.fetch_schedules_direct')
-    @patch('apps.epg.tasks.acquire_task_lock', return_value=True)
-    @patch('apps.epg.tasks.release_task_lock')
-    @patch('apps.epg.tasks.TaskLockRenewer')
-    @patch('apps.epg.tasks.is_task_lock_held', return_value=True)
-    @patch('apps.epg.tasks.fetch_sd_guide_for_epg.apply_async')
+    @patch('apps.epg.sd_tasks.fetch_schedules_direct')
+    @patch('apps.epg.sd_tasks.acquire_task_lock', return_value=True)
+    @patch('apps.epg.sd_tasks.release_task_lock')
+    @patch('apps.epg.sd_tasks.TaskLockRenewer')
+    @patch('apps.epg.sd_tasks.is_task_lock_held', return_value=True)
+    @patch('apps.epg.sd_tasks.fetch_sd_guide_for_epg.apply_async')
     def test_single_epg_defers_while_batch_running(
         self, mock_apply_async, mock_batch_held, mock_renewer,
         mock_release, mock_acquire, mock_fetch,
@@ -1320,12 +1320,12 @@ class SDGuideFetchCoordinationTests(TestCase):
         mock_fetch.assert_not_called()
         mock_acquire.assert_not_called()
 
-    @patch('apps.epg.tasks.fetch_schedules_direct')
-    @patch('apps.epg.tasks.acquire_task_lock', return_value=True)
-    @patch('apps.epg.tasks.release_task_lock')
-    @patch('apps.epg.tasks.TaskLockRenewer')
-    @patch('apps.epg.tasks.is_task_lock_held', return_value=True)
-    @patch('apps.epg.tasks.fetch_sd_guide_for_epg.apply_async')
+    @patch('apps.epg.sd_tasks.fetch_schedules_direct')
+    @patch('apps.epg.sd_tasks.acquire_task_lock', return_value=True)
+    @patch('apps.epg.sd_tasks.release_task_lock')
+    @patch('apps.epg.sd_tasks.TaskLockRenewer')
+    @patch('apps.epg.sd_tasks.is_task_lock_held', return_value=True)
+    @patch('apps.epg.sd_tasks.fetch_sd_guide_for_epg.apply_async')
     def test_single_epg_proceeds_after_max_batch_deferrals(
         self, mock_apply_async, mock_batch_held, mock_renewer,
         mock_release, mock_acquire, mock_fetch,
@@ -1381,9 +1381,9 @@ class SDSingleEpgFetchTests(TestCase):
             )
         raise AssertionError(f'Unexpected GET URL: {url}')
 
-    @patch('apps.epg.tasks.acquire_task_lock', return_value=True)
-    @patch('apps.epg.tasks.release_task_lock')
-    @patch('apps.epg.tasks.TaskLockRenewer')
+    @patch('apps.epg.sd_tasks.acquire_task_lock', return_value=True)
+    @patch('apps.epg.sd_tasks.release_task_lock')
+    @patch('apps.epg.sd_tasks.TaskLockRenewer')
     def test_fetch_sd_guide_skips_when_program_data_exists(
         self, mock_renewer, mock_release, mock_acquire,
     ):
@@ -1404,15 +1404,15 @@ class SDSingleEpgFetchTests(TestCase):
             tvg_id=epg.tvg_id,
         )
 
-        with patch('apps.epg.tasks.fetch_schedules_direct') as mock_fetch:
+        with patch('apps.epg.sd_tasks.fetch_schedules_direct') as mock_fetch:
             result = fetch_sd_guide_for_epg(epg.id)
 
         self.assertEqual(result, 'Guide data already present')
         mock_fetch.assert_not_called()
 
-    @patch('apps.epg.tasks.acquire_task_lock', return_value=True)
-    @patch('apps.epg.tasks.release_task_lock')
-    @patch('apps.epg.tasks.TaskLockRenewer')
+    @patch('apps.epg.sd_tasks.acquire_task_lock', return_value=True)
+    @patch('apps.epg.sd_tasks.release_task_lock')
+    @patch('apps.epg.sd_tasks.TaskLockRenewer')
     def test_parse_programs_for_tvg_id_delegates_to_sd_fetch(
         self, mock_renewer, mock_release, mock_acquire,
     ):
@@ -1433,8 +1433,8 @@ class SDSingleEpgFetchTests(TestCase):
 
     @patch('apps.epg.tasks.SD_DAYS_TO_FETCH', 3)
     @patch('apps.epg.tasks.send_epg_update')
-    @patch('apps.epg.tasks.requests.get')
-    @patch('apps.epg.tasks.requests.post')
+    @patch('apps.epg.sd_tasks.requests.get')
+    @patch('apps.epg.sd_tasks.requests.post')
     def test_single_epg_fetch_skips_lineup_sync_and_updated_at(
         self, mock_post, mock_get, mock_send_epg_update,
     ):
