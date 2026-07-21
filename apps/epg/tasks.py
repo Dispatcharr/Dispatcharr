@@ -28,13 +28,35 @@ from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 
 from .models import EPGSource, EPGSourceIndex, EPGData, ProgramData, SDScheduleMD5, SDProgramMD5
+from apps.epg.utils import (
+    _ONSCREEN_RE,
+    extract_season_episode_from_description,
+    send_epg_update,
+)
+from apps.epg.sd_utils import SD_BASE_URL
+from apps.epg.sd_tasks import (
+    SD_BULK_GUIDE_FETCH_THRESHOLD,
+    SD_DAYS_TO_FETCH,
+    SD_MAPPED_GUIDE_BATCH_DEFER_SECONDS,
+    SD_MAPPED_GUIDE_FETCH_DEFER_MAX_RETRIES,
+    SD_POSTER_STYLE_DEFAULT,
+    SD_PROGRAM_BATCH_SIZE,
+    _sd_backfill_schedule_dates_without_data,
+    _sd_compute_schedule_changes_from_md5,
+    _sd_pick_poster_url,
+    _sd_programs_needing_metadata,
+    fetch_schedules_direct,
+    fetch_schedules_direct_stations,
+    fetch_sd_guide_for_epg,
+    fetch_sd_mapped_guide_batch,
+    parse_schedules_direct_time,
+)
 from core.utils import (
     RedisClient,
     acquire_task_lock,
     is_task_lock_held,
     release_task_lock,
     TaskLockRenewer,
-    send_websocket_update,
     cleanup_memory,
     log_system_event,
     _is_celery_worker_context,
@@ -318,55 +340,6 @@ def validate_icon_url_fast(icon_url, max_length=None):
 
 MAX_EXTRACT_CHUNK_SIZE = 65536 # 64kb (base2)
 
-
-def send_epg_update(source_id, action, progress, **kwargs):
-    """Send WebSocket update about EPG download/parsing progress"""
-    # Start with the base data dictionary
-    data = {
-        "progress": progress,
-        "type": "epg_refresh",
-        "source": source_id,
-        "action": action,
-    }
-
-    # Add the additional key-value pairs from kwargs
-    data.update(kwargs)
-
-    # Use the standardized update function with garbage collection for program parsing
-    # This is a high-frequency operation that needs more aggressive memory management
-    collect_garbage = action == "parsing_programs" and progress % 10 == 0
-    send_websocket_update('updates', 'update', data, collect_garbage=collect_garbage)
-
-    # Explicitly clear references
-    data = None
-
-    # For high-frequency parsing, occasionally force additional garbage collection
-    # to prevent memory buildup
-    if action == "parsing_programs" and progress % 50 == 0:
-        gc.collect()
-
-
-
-# Schedules Direct pipeline (implementation in sd_tasks). Re-exported so existing
-# imports and Celery task names under apps.epg.tasks.* keep working.
-from apps.epg.sd_tasks import (  # noqa: E402
-    SD_BULK_GUIDE_FETCH_THRESHOLD,
-    SD_DAYS_TO_FETCH,
-    SD_MAPPED_GUIDE_BATCH_DEFER_SECONDS,
-    SD_MAPPED_GUIDE_FETCH_DEFER_MAX_RETRIES,
-    SD_POSTER_STYLE_DEFAULT,
-    SD_PROGRAM_BATCH_SIZE,
-    _sd_backfill_schedule_dates_without_data,
-    _sd_compute_schedule_changes_from_md5,
-    _sd_pick_poster_url,
-    _sd_programs_needing_metadata,
-    fetch_schedules_direct,
-    fetch_schedules_direct_stations,
-    fetch_sd_guide_for_epg,
-    fetch_sd_mapped_guide_batch,
-    parse_schedules_direct_time,
-)
-from apps.epg.sd_utils import SD_BASE_URL  # noqa: E402
 
 def delete_epg_refresh_task_by_id(epg_id):
     """
@@ -2564,10 +2537,6 @@ def parse_xmltv_time(time_str):
     except Exception as e:
         logger.error(f"Error parsing XMLTV time '{time_str}': {e}", exc_info=True)
         raise
-
-
-# Re-export from utils to preserve backward compatibility for any callers
-from apps.epg.utils import extract_season_episode_from_description, _ONSCREEN_RE  # noqa: E402,F401
 
 
 def extract_custom_properties(prog):

@@ -23,6 +23,7 @@ from django.utils import timezone
 from apps.channels.models import Channel
 from apps.epg.models import EPGData, EPGSource, ProgramData, SDProgramMD5, SDScheduleMD5
 from apps.epg.sd_utils import SD_BASE_URL, sd_headers_for_source, sd_obtain_token
+from apps.epg.utils import send_epg_update
 from core.utils import (
     acquire_task_lock,
     is_task_lock_held,
@@ -32,12 +33,6 @@ from core.utils import (
 )
 
 logger = logging.getLogger(__name__)
-
-
-def _send_epg_update(*args, **kwargs):
-    """Lazy import to avoid circular import with apps.epg.tasks."""
-    from apps.epg.tasks import send_epg_update
-    return send_epg_update(*args, **kwargs)
 
 
 SD_DAYS_TO_FETCH = 20
@@ -294,12 +289,12 @@ def _sd_setup_single_epg_fetch(source, epg_id, token, sd_headers_fn):
         logger.error(msg)
         source.last_message = msg
         source.save(update_fields=['last_message'])
-        _send_epg_update(source.id, "parsing_programs", 100, status="error", error=msg)
+        send_epg_update(source.id, "parsing_programs", 100, status="error", error=msg)
         return None
 
     sd_lineup_country = _sd_fetch_lineup_country(token, sd_headers_fn)
 
-    _send_epg_update(
+    send_epg_update(
         source.id, "parsing_programs", 15,
         message=f"Fetching guide data for {epg.name or epg.tvg_id}...",
     )
@@ -323,7 +318,7 @@ def _sd_setup_mapped_guide_fetch(source, token, sd_headers_fn):
         logger.info(msg)
         source.last_message = msg
         source.save(update_fields=['last_message'])
-        _send_epg_update(source.id, "parsing_programs", 100, status="idle", message=msg)
+        send_epg_update(source.id, "parsing_programs", 100, status="idle", message=msg)
         return None
 
     station_map = {}
@@ -342,11 +337,11 @@ def _sd_setup_mapped_guide_fetch(source, token, sd_headers_fn):
         logger.warning(msg)
         source.last_message = msg
         source.save(update_fields=['last_message'])
-        _send_epg_update(source.id, "parsing_programs", 100, status="error", error=msg)
+        send_epg_update(source.id, "parsing_programs", 100, status="error", error=msg)
         return None
 
     sd_lineup_country = _sd_fetch_lineup_country(token, sd_headers_fn)
-    _send_epg_update(
+    send_epg_update(
         source.id, "parsing_programs", 15,
         message=f"Fetching guide data for {len(station_map)} mapped stations...",
     )
@@ -544,7 +539,7 @@ def fetch_schedules_direct(
         source.status = EPGSource.STATUS_ERROR
         source.last_message = msg
         source.save(update_fields=['status', 'last_message'])
-        _send_epg_update(source.id, "refresh", 100, status="error", error=msg)
+        send_epg_update(source.id, "refresh", 100, status="error", error=msg)
         return
 
     # -------------------------------------------------------------------------
@@ -574,7 +569,7 @@ def fetch_schedules_direct(
                 source.status = EPGSource.STATUS_IDLE
                 source.last_message = msg
                 source.save(update_fields=['status', 'last_message'])
-                _send_epg_update(source.id, "refresh", 100, status="idle", message=msg)
+                send_epg_update(source.id, "refresh", 100, status="idle", message=msg)
                 return
         else:
             logger.info(f"SD source {source.id}: No prior full refresh detected, skipping 2-hour guard for first full fetch.")
@@ -624,7 +619,7 @@ def fetch_schedules_direct(
 
         if fetch_posters and poster_program_ids:
             logger.info("Poster fetch enabled, retrieving program artwork from Schedules Direct.")
-            _send_epg_update(source.id, "parsing_programs", 98,
+            send_epg_update(source.id, "parsing_programs", 98,
                             message="Fetching program artwork...")
             try:
                 artwork_lookup_ids = set()
@@ -761,7 +756,7 @@ def fetch_schedules_direct(
         source.status = EPGSource.STATUS_FETCHING
         source.last_message = "Authenticating with Schedules Direct..."
         source.save(update_fields=['status', 'last_message'])
-    _send_epg_update(source.id, "parsing_programs", 2, message="Authenticating with Schedules Direct...")
+    send_epg_update(source.id, "parsing_programs", 2, message="Authenticating with Schedules Direct...")
 
     auth = sd_obtain_token(source, username, password, timeout=30)
     if auth.debug_rejected:
@@ -769,7 +764,7 @@ def fetch_schedules_direct(
         source.status = EPGSource.STATUS_ERROR
         source.last_message = auth.message
         source.save(update_fields=['status', 'last_message'])
-        _send_epg_update(
+        send_epg_update(
             source.id, "refresh", 100, status="error", error=auth.message
         )
         return
@@ -780,7 +775,7 @@ def fetch_schedules_direct(
             source.status = EPGSource.STATUS_IDLE
             source.last_message = auth.message
             source.save(update_fields=['status', 'last_message'])
-            _send_epg_update(
+            send_epg_update(
                 source.id, "refresh", 100, status="idle", message=auth.message
             )
             return
@@ -788,7 +783,7 @@ def fetch_schedules_direct(
         source.status = EPGSource.STATUS_ERROR
         source.last_message = auth.message
         source.save(update_fields=['status', 'last_message'])
-        _send_epg_update(
+        send_epg_update(
             source.id, "refresh", 100, status="error", error=auth.message
         )
         return
@@ -819,7 +814,7 @@ def fetch_schedules_direct(
             source.status = EPGSource.STATUS_IDLE
             source.last_message = msg
             source.save(update_fields=['status', 'last_message'])
-            _send_epg_update(source.id, "refresh", 100, status="idle", message=msg)
+            send_epg_update(source.id, "refresh", 100, status="idle", message=msg)
             return
         logger.debug(f"Schedules Direct system status: {system_status}")
     except requests.exceptions.RequestException as e:
@@ -843,7 +838,7 @@ def fetch_schedules_direct(
         # -------------------------------------------------------------------------
         # Step 3: Fetch subscribed lineups and build station map
         # -------------------------------------------------------------------------
-        _send_epg_update(source.id, "parsing_programs", 10, message="Fetching subscribed lineups...")
+        send_epg_update(source.id, "parsing_programs", 10, message="Fetching subscribed lineups...")
         try:
             lineups_response = requests.get(
                 f"{SD_BASE_URL}/lineups",
@@ -861,7 +856,7 @@ def fetch_schedules_direct(
                     source.status = EPGSource.STATUS_IDLE
                     source.last_message = msg
                     source.save(update_fields=['status', 'last_message'])
-                    _send_epg_update(source.id, "refresh", 100, status="idle", message=msg)
+                    send_epg_update(source.id, "refresh", 100, status="idle", message=msg)
                     return
             lineups_response.raise_for_status()
             lineups_data = lineups_response.json()
@@ -872,7 +867,7 @@ def fetch_schedules_direct(
                 source.status = EPGSource.STATUS_IDLE
                 source.last_message = msg
                 source.save(update_fields=['status', 'last_message'])
-                _send_epg_update(source.id, "refresh", 100, status="idle", message=msg)
+                send_epg_update(source.id, "refresh", 100, status="idle", message=msg)
                 return
             logger.info(f"Found {len(lineups)} lineup(s) in SD account.")
 
@@ -890,12 +885,12 @@ def fetch_schedules_direct(
             source.status = EPGSource.STATUS_ERROR
             source.last_message = msg
             source.save(update_fields=['status', 'last_message'])
-            _send_epg_update(source.id, "refresh", 100, status="error", error=msg)
+            send_epg_update(source.id, "refresh", 100, status="error", error=msg)
             return
 
         # Build station metadata map: stationID -> {name, callsign, logo_url}
         station_map = {}
-        _send_epg_update(source.id, "parsing_programs", 18, message=f"Fetching station metadata for {len(lineups)} lineup(s)...")
+        send_epg_update(source.id, "parsing_programs", 18, message=f"Fetching station metadata for {len(lineups)} lineup(s)...")
         for lineup in lineups:
             lineup_id = lineup.get('lineupID') or lineup.get('lineup')
             if not lineup_id:
@@ -936,7 +931,7 @@ def fetch_schedules_direct(
             source.status = EPGSource.STATUS_ERROR
             source.last_message = msg
             source.save(update_fields=['status', 'last_message'])
-            _send_epg_update(source.id, "refresh", 100, status="error", error=msg)
+            send_epg_update(source.id, "refresh", 100, status="error", error=msg)
             return
 
         logger.info(f"Built station map with {len(station_map)} stations.")
@@ -947,7 +942,7 @@ def fetch_schedules_direct(
         source.status = EPGSource.STATUS_PARSING
         source.last_message = f"Syncing {len(station_map)} stations..."
         source.save(update_fields=['status', 'last_message'])
-        _send_epg_update(source.id, "parsing_programs", 28, message=f"Syncing {len(station_map)} stations to database...")
+        send_epg_update(source.id, "parsing_programs", 28, message=f"Syncing {len(station_map)} stations to database...")
 
         existing_epg_map = {
             epg.tvg_id: epg
@@ -1003,7 +998,7 @@ def fetch_schedules_direct(
         # We deliberately do NOT send parsing_channels at 100 with status=success here
         # because that would cause the frontend to mark the source as complete and
         # stop rendering progress updates for the subsequent program fetch phases.
-        _send_epg_update(source.id, "parsing_programs", 30,
+        send_epg_update(source.id, "parsing_programs", 30,
                         message=f"Stations synced ({len(station_map)} stations). Preparing schedule fetch...")
 
         # -------------------------------------------------------------------------
@@ -1020,7 +1015,7 @@ def fetch_schedules_direct(
             source.last_message = success_msg
             source.updated_at = timezone.now()
             source.save(update_fields=['status', 'last_message', 'updated_at'])
-            _send_epg_update(source.id, "parsing_channels", 100, status="success",
+            send_epg_update(source.id, "parsing_channels", 100, status="success",
                             message=success_msg, channels_count=len(station_map))
             logger.info(f"Stations-only fetch complete for source: {source.name} ({len(station_map)} stations)")
             return
@@ -1073,13 +1068,13 @@ def fetch_schedules_direct(
             msg = "No mapped channel found for this EPG entry; guide fetch skipped."
             source.last_message = msg
             source.save(update_fields=['last_message'])
-            _send_epg_update(source.id, "parsing_programs", 100, status="idle", message=msg)
+            send_epg_update(source.id, "parsing_programs", 100, status="idle", message=msg)
             return
         if mapped_guide_batch:
             msg = "No mapped channels with guide data to fetch."
             source.last_message = msg
             source.save(update_fields=['last_message'])
-            _send_epg_update(source.id, "parsing_programs", 100, status="idle", message=msg)
+            send_epg_update(source.id, "parsing_programs", 100, status="idle", message=msg)
             return
         success_msg = (
             f"{len(station_map)} lineup stations synced. "
@@ -1089,10 +1084,10 @@ def fetch_schedules_direct(
         source.last_message = success_msg
         source.updated_at = timezone.now()
         source.save(update_fields=['status', 'last_message', 'updated_at'])
-        _send_epg_update(source.id, "parsing_programs", 100, status="success", message=success_msg)
+        send_epg_update(source.id, "parsing_programs", 100, status="success", message=success_msg)
         return
 
-    _send_epg_update(
+    send_epg_update(
         source.id, "parsing_programs", 33,
         message=f"Checking schedule MD5s for {len(mapped_station_ids)} mapped stations over {SD_DAYS_TO_FETCH} days...",
     )
@@ -1179,7 +1174,7 @@ def fetch_schedules_direct(
         f"Schedule MD5 check: {len(server_md5s)} hashes checked, "
         f"{total_changed} station/date combinations to fetch (of {total_possible} possible)."
     )
-    _send_epg_update(source.id, "parsing_programs", 38,
+    send_epg_update(source.id, "parsing_programs", 38,
                     message=f"MD5 check complete: {len(changed_by_station)} stations have schedule updates.")
 
     # schedules_by_station: stationID -> list of {programID, airDateTime, duration, ...}
@@ -1193,9 +1188,9 @@ def fetch_schedules_direct(
             msg = "No schedule updates needed; guide data is up to date."
             source.last_message = msg
             source.save(update_fields=['last_message'])
-            _send_epg_update(source.id, "parsing_programs", 100, status="success", message=msg)
+            send_epg_update(source.id, "parsing_programs", 100, status="success", message=msg)
             return
-        _send_epg_update(source.id, "parsing_programs", 100, status="success",
+        send_epg_update(source.id, "parsing_programs", 100, status="success",
                         message="No schedule changes detected since last refresh. Guide data is up to date.")
         source.status = EPGSource.STATUS_SUCCESS
         source.last_message = "No schedule changes detected. Guide data is up to date."
@@ -1218,7 +1213,7 @@ def fetch_schedules_direct(
         # Notify frontend at the start of each batch so progress updates immediately
         pre_progress = 38 + int((batch_idx / len(date_batches)) * 22)
         logger.info(f"Fetching schedule batch {batch_idx + 1} of {len(date_batches)}...")
-        _send_epg_update(source.id, "parsing_programs", min(59, pre_progress),
+        send_epg_update(source.id, "parsing_programs", min(59, pre_progress),
                         message=f"Fetching schedules: batch {batch_idx + 1} of {len(date_batches)}...")
         # Yield to gevent hub so the WebSocket update is delivered before the blocking request
         try:
@@ -1282,7 +1277,7 @@ def fetch_schedules_direct(
                             pass
 
             progress = 38 + int(((batch_idx + 1) / len(date_batches)) * 22)
-            _send_epg_update(source.id, "parsing_programs", min(60, progress),
+            send_epg_update(source.id, "parsing_programs", min(60, progress),
                             message=f"Fetching changed schedules: batch {batch_idx + 1}/{len(date_batches)} ({len(program_ids_needed):,} programs found)")
 
         except requests.exceptions.RequestException as e:
@@ -1302,7 +1297,7 @@ def fetch_schedules_direct(
         source.status = EPGSource.STATUS_ERROR
         source.last_message = msg
         source.save(update_fields=['status', 'last_message'])
-        _send_epg_update(source.id, "parsing_programs", 100, status="error", error=msg)
+        send_epg_update(source.id, "parsing_programs", 100, status="error", error=msg)
         return
 
     # -------------------------------------------------------------------------
@@ -1360,7 +1355,7 @@ def fetch_schedules_direct(
             # Notify frontend at the start of each batch so progress updates immediately
             pre_progress = 60 + int((batch_idx / total_batches) * 20)
             logger.info(f"Fetching program metadata batch {batch_idx + 1} of {total_batches} ({batch_idx * SD_PROGRAM_BATCH_SIZE:,} of {len(program_id_list):,} programs)...")
-            _send_epg_update(source.id, "parsing_programs", min(79, pre_progress),
+            send_epg_update(source.id, "parsing_programs", min(79, pre_progress),
                             message=f"Fetching program data: batch {batch_idx + 1} of {total_batches} ({batch_idx * SD_PROGRAM_BATCH_SIZE:,} of {len(program_id_list):,} programs)")
             # Yield to gevent hub so the WebSocket update is delivered before the blocking request
             try:
@@ -1383,7 +1378,7 @@ def fetch_schedules_direct(
                         program_metadata[pid] = prog
 
                 progress = 60 + int(((batch_idx + 1) / total_batches) * 20)
-                _send_epg_update(source.id, "parsing_programs", min(80, progress),
+                send_epg_update(source.id, "parsing_programs", min(80, progress),
                                 message=f"Fetching program details: batch {batch_idx + 1}/{total_batches} ({len(program_metadata):,} programs loaded)")
                 logger.debug(f"Fetched program metadata batch {batch_idx + 1}/{total_batches}")
 
@@ -1391,7 +1386,7 @@ def fetch_schedules_direct(
                 logger.warning(f"Failed to fetch program metadata batch {batch_idx + 1}: {e}")
     else:
         logger.info("All program metadata unchanged - skipping program download.")
-        _send_epg_update(source.id, "parsing_programs", 80, message="Program metadata unchanged - using cached data.")
+        send_epg_update(source.id, "parsing_programs", 80, message="Program metadata unchanged - using cached data.")
 
     gc.collect()
 
@@ -1399,7 +1394,7 @@ def fetch_schedules_direct(
     # Step 7: Build ProgramData records and persist atomically
     # -------------------------------------------------------------------------
     logger.info("Building program records...")
-    _send_epg_update(source.id, "parsing_programs", 80)
+    send_epg_update(source.id, "parsing_programs", 80)
 
     # Cache existing program data for unchanged programs BEFORE surgical delete.
     # When a station/date schedule MD5 changes, ALL airings are re-fetched, but only
@@ -1669,7 +1664,7 @@ def fetch_schedules_direct(
     logger.info(f"Built {total_programs} program records "
                 f"({skipped_unmapped} skipped for unmapped stations).")
 
-    _send_epg_update(source.id, "parsing_programs", 88)
+    send_epg_update(source.id, "parsing_programs", 88)
 
     # Build a map of epg_db_id -> list of (day_start_utc, day_end_utc) for each changed date.
     # Only programs that fall within changed station/date pairs will be deleted and replaced;
@@ -1705,7 +1700,7 @@ def fetch_schedules_direct(
             for i in range(0, len(all_programs_to_create), BATCH_SIZE):
                 ProgramData.objects.bulk_create(all_programs_to_create[i:i + BATCH_SIZE])
                 progress = 88 + int(((i + BATCH_SIZE) / max(len(all_programs_to_create), 1)) * 10)
-                _send_epg_update(source.id, "parsing_programs", min(98, progress))
+                send_epg_update(source.id, "parsing_programs", min(98, progress))
 
         logger.info(f"Committed {total_programs} Schedules Direct programs to database.")
 
@@ -1736,7 +1731,7 @@ def fetch_schedules_direct(
         source.status = EPGSource.STATUS_ERROR
         source.last_message = msg
         source.save(update_fields=['status', 'last_message'])
-        _send_epg_update(source.id, "parsing_programs", 100, status="error", error=msg)
+        send_epg_update(source.id, "parsing_programs", 100, status="error", error=msg)
         return
     finally:
         all_programs_to_create = None
@@ -1758,7 +1753,7 @@ def fetch_schedules_direct(
         )
         source.last_message = success_msg
         source.save(update_fields=['last_message'])
-        _send_epg_update(source.id, "parsing_programs", 100, status="success", message=success_msg)
+        send_epg_update(source.id, "parsing_programs", 100, status="success", message=success_msg)
         log_system_event(
             event_type='epg_refresh',
             source_name=source.name,
@@ -1777,7 +1772,7 @@ def fetch_schedules_direct(
         )
         source.last_message = success_msg
         source.save(update_fields=['last_message'])
-        _send_epg_update(source.id, "parsing_programs", 100, status="success", message=success_msg)
+        send_epg_update(source.id, "parsing_programs", 100, status="success", message=success_msg)
         log_system_event(
             event_type='epg_refresh',
             source_name=source.name,
@@ -1797,7 +1792,7 @@ def fetch_schedules_direct(
     source.last_message = success_msg
     source.updated_at = timezone.now()
     source.save(update_fields=['status', 'last_message', 'updated_at'])
-    _send_epg_update(source.id, "parsing_programs", 100, status="success", message=success_msg)
+    send_epg_update(source.id, "parsing_programs", 100, status="success", message=success_msg)
     log_system_event(
         event_type='epg_refresh',
         source_name=source.name,

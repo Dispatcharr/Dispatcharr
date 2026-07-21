@@ -154,7 +154,7 @@ class FetchSchedulesDirectAuthTests(TestCase):
             password=plaintext,
         )
 
-        with patch('apps.epg.tasks.send_epg_update'):
+        with patch('apps.epg.sd_tasks.send_epg_update'):
             fetch_schedules_direct(source)
 
         # Verify the POST was called and the body contained the hash
@@ -394,7 +394,7 @@ class FetchSchedulesDirectAuthCodeTests(TestCase):
             password='pass',
         )
 
-        with patch('apps.epg.tasks.send_epg_update'):
+        with patch('apps.epg.sd_tasks.send_epg_update'):
             fetch_schedules_direct(source)
 
         source.refresh_from_db()
@@ -420,7 +420,7 @@ class FetchSchedulesDirectAuthCodeTests(TestCase):
             password='badpass',
         )
 
-        with patch('apps.epg.tasks.send_epg_update'):
+        with patch('apps.epg.sd_tasks.send_epg_update'):
             fetch_schedules_direct(source)
 
         source.refresh_from_db()
@@ -453,7 +453,7 @@ class FetchSchedulesDirectAuthCodeTests(TestCase):
             password='badpass',
         )
 
-        with patch('apps.epg.tasks.send_epg_update'):
+        with patch('apps.epg.sd_tasks.send_epg_update'):
             fetch_schedules_direct(source)
 
         source.refresh_from_db()
@@ -476,7 +476,7 @@ class FetchSchedulesDirectAuthCodeTests(TestCase):
         )
         sd_save_auth_lockout(source, 4003, 'baduser', 'badpass')
 
-        with patch('apps.epg.tasks.send_epg_update'):
+        with patch('apps.epg.sd_tasks.send_epg_update'):
             fetch_schedules_direct(source)
 
         mock_post.assert_not_called()
@@ -496,7 +496,7 @@ class FetchSchedulesDirectAuthCodeTests(TestCase):
             }),
             raise_for_status=MagicMock(),
         )
-        with patch('apps.epg.tasks.send_epg_update'), \
+        with patch('apps.epg.sd_tasks.send_epg_update'), \
              patch('apps.epg.sd_tasks.requests.get') as mock_get:
             mock_get.return_value = MagicMock(
                 status_code=200,
@@ -530,7 +530,7 @@ class FetchSchedulesDirectAuthCodeTests(TestCase):
             password='pass',
         )
 
-        with patch('apps.epg.tasks.send_epg_update'):
+        with patch('apps.epg.sd_tasks.send_epg_update'):
             fetch_schedules_direct(source)
 
         source.refresh_from_db()
@@ -551,7 +551,7 @@ class FetchSchedulesDirectAuthCodeTests(TestCase):
             password='pass',
         )
 
-        with patch('apps.epg.tasks.send_epg_update'):
+        with patch('apps.epg.sd_tasks.send_epg_update'):
             fetch_schedules_direct(source)  # Must not raise
 
         source.refresh_from_db()
@@ -561,7 +561,7 @@ class FetchSchedulesDirectAuthCodeTests(TestCase):
 class FetchSchedulesDirectStationsOnlyTests(TestCase):
     """stations_only fetch must signal channel parsing completion to the frontend."""
 
-    @patch('apps.epg.tasks.send_epg_update')
+    @patch('apps.epg.sd_tasks.send_epg_update')
     @patch('apps.epg.sd_tasks.requests.get')
     @patch('apps.epg.sd_tasks.requests.post')
     def test_stations_only_sends_parsing_channels_complete(
@@ -841,7 +841,7 @@ class SDScheduleDeltaIntegrationTests(TestCase):
             )
 
     @patch('apps.epg.tasks.SD_DAYS_TO_FETCH', 3)
-    @patch('apps.epg.tasks.send_epg_update')
+    @patch('apps.epg.sd_tasks.send_epg_update')
     @patch('apps.epg.sd_tasks.requests.get')
     @patch('apps.epg.sd_tasks.requests.post')
     def test_md5_api_only_requests_mapped_stations(
@@ -923,7 +923,7 @@ class SDScheduleDeltaIntegrationTests(TestCase):
         self.assertEqual(source.status, EPGSource.STATUS_SUCCESS)
 
     @patch('apps.epg.tasks.SD_DAYS_TO_FETCH', 3)
-    @patch('apps.epg.tasks.send_epg_update')
+    @patch('apps.epg.sd_tasks.send_epg_update')
     @patch('apps.epg.sd_tasks.requests.get')
     @patch('apps.epg.sd_tasks.requests.post')
     def test_newly_mapped_station_fetches_despite_stale_cache(
@@ -1001,7 +1001,7 @@ class SDScheduleDeltaIntegrationTests(TestCase):
         )
 
     @patch('apps.epg.tasks.SD_DAYS_TO_FETCH', 3)
-    @patch('apps.epg.tasks.send_epg_update')
+    @patch('apps.epg.sd_tasks.send_epg_update')
     @patch('apps.epg.sd_tasks.requests.get')
     @patch('apps.epg.sd_tasks.requests.post')
     def test_orphan_program_data_removed_on_post_refresh(
@@ -1432,7 +1432,7 @@ class SDSingleEpgFetchTests(TestCase):
         self.assertEqual(result, 'SD guide fetch complete')
 
     @patch('apps.epg.tasks.SD_DAYS_TO_FETCH', 3)
-    @patch('apps.epg.tasks.send_epg_update')
+    @patch('apps.epg.sd_tasks.send_epg_update')
     @patch('apps.epg.sd_tasks.requests.get')
     @patch('apps.epg.sd_tasks.requests.post')
     def test_single_epg_fetch_skips_lineup_sync_and_updated_at(

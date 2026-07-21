@@ -1,11 +1,14 @@
 """
-Shared EPG utilities — season/episode extraction.
+Shared EPG utilities.
 
-These live here (rather than in serializers.py or tasks.py) to avoid circular imports:
-serializers → tasks and channels/tasks → serializers both need these functions.
+Season/episode extraction and WebSocket progress updates live here so serializers,
+XMLTV tasks, and Schedules Direct tasks can import without circular dependencies.
 """
 
+import gc
 import re
+
+from core.utils import send_websocket_update
 
 # Matches patterns like "S12 E6", "S3E21", "S8 E8 P2/2"
 _ONSCREEN_RE = re.compile(r'S(\d+)\s*E(\d+)', re.IGNORECASE)
@@ -59,3 +62,23 @@ def extract_season_episode(cp, description=None):
         if episode is None:
             episode = d_episode
     return season, episode
+
+
+def send_epg_update(source_id, action, progress, **kwargs):
+    """Send WebSocket update about EPG download/parsing progress."""
+    data = {
+        "progress": progress,
+        "type": "epg_refresh",
+        "source": source_id,
+        "action": action,
+    }
+    data.update(kwargs)
+
+    # High-frequency program parsing needs more aggressive memory management
+    collect_garbage = action == "parsing_programs" and progress % 10 == 0
+    send_websocket_update('updates', 'update', data, collect_garbage=collect_garbage)
+
+    data = None
+
+    if action == "parsing_programs" and progress % 50 == 0:
+        gc.collect()
