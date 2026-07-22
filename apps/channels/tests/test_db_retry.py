@@ -119,6 +119,81 @@ class DbRetryTests(TestCase):
 
 
 # ---------------------------------------------------------------------------
+# run_recording idempotency guard retry tests
+# ---------------------------------------------------------------------------
+
+class IdempotencyGuardRetryTests(TestCase):
+    """The run_recording idempotency guard must retry transient DB errors."""
+
+    def setUp(self):
+        self.channel = Channel.objects.create(
+            channel_number=96, name="Guard Retry Channel"
+        )
+        now = timezone.now()
+        self.rec = Recording.objects.create(
+            channel=self.channel,
+            start_time=now,
+            end_time=now + timedelta(minutes=30),
+            # Terminal status so run_recording exits right after the guard passes
+            custom_properties={"status": "completed"},
+        )
+
+    @patch("apps.channels.tasks.time.sleep")
+    @patch("apps.channels.tasks.close_old_connections")
+    def test_guard_survives_transient_operational_error(self, _close, _sleep):
+        """A transient OperationalError at fire time must not kill the recording."""
+        from apps.channels.tasks import run_recording
+
+        real_filter = Recording.objects.filter
+        call_count = {"n": 0}
+
+        def flaky_filter(*args, **kwargs):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                raise OperationalError("connection is bad: server not ready")
+            return real_filter(*args, **kwargs)
+
+        with patch.object(Recording.objects, "filter", side_effect=flaky_filter):
+            with self.assertLogs("apps.channels.tasks", level="WARNING") as logs:
+                run_recording(
+                    self.rec.id,
+                    self.channel.id,
+                    str(self.rec.start_time),
+                    str(self.rec.end_time),
+                )
+
+        joined = "\n".join(logs.output)
+        self.assertGreaterEqual(call_count["n"], 2)
+        self.assertIn("idempotency guard check: failed, retrying", joined)
+        self.assertIn("already 'completed'", joined)
+        self.assertNotIn("Idempotency guard DB check failed", joined)
+
+    @patch("apps.channels.tasks.time.sleep")
+    @patch("apps.channels.tasks.close_old_connections")
+    def test_guard_still_fails_closed_on_sustained_outage(self, _close, _sleep):
+        """Exhausted retries must still abort to prevent duplicate recordings."""
+        from apps.channels.tasks import run_recording
+
+        call_count = {"n": 0}
+
+        def dead_filter(*args, **kwargs):
+            call_count["n"] += 1
+            raise OperationalError("db gone")
+
+        with patch.object(Recording.objects, "filter", side_effect=dead_filter):
+            with self.assertLogs("apps.channels.tasks", level="ERROR") as logs:
+                run_recording(
+                    self.rec.id,
+                    self.channel.id,
+                    str(self.rec.start_time),
+                    str(self.rec.end_time),
+                )
+
+        self.assertEqual(call_count["n"], 5)
+        self.assertIn("Idempotency guard DB check failed", "\n".join(logs.output))
+
+
+# ---------------------------------------------------------------------------
 # Final metadata save retry integration tests
 # ---------------------------------------------------------------------------
 
