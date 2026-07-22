@@ -1323,9 +1323,18 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
 
     # --- Idempotency guard (prevents duplicate recordings from task redelivery) ---
     # Fail closed: if the DB is unreachable, abort rather than risk a duplicate
-    # task overwriting a valid recording.
+    # task overwriting a valid recording.  The check retries transient errors
+    # with a wider backoff window than the in-recording retries because nothing
+    # re-dispatches this task if the guard aborts.
+    _guard_db_max_retries = 5
+    _guard_db_retry_interval = 2  # seconds (base for exponential backoff)
     try:
-        rec_check = Recording.objects.filter(id=recording_id).only("custom_properties").first()
+        rec_check = _db_retry(
+            lambda: Recording.objects.filter(id=recording_id).only("custom_properties").first(),
+            max_retries=_guard_db_max_retries,
+            base_interval=_guard_db_retry_interval,
+            label=f"DVR recording {recording_id}: idempotency guard check",
+        )
         if not rec_check:
             logger.info(
                 f"run_recording called for recording {recording_id} but it no longer exists — skipping."
