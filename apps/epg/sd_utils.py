@@ -394,11 +394,12 @@ _DEBUG_REJECTED_MESSAGE = (
 
 def sd_obtain_token(source, username=None, password=None, *, timeout=30):
     """
-    Authenticate with Schedules Direct and return a session token.
+    Return a Schedules Direct session token, reusing a cached one when valid.
 
-    Shared by refresh, lineup/form auth, and the poster proxy. Honors persisted
-    lockouts, reads JSON ``code`` before HTTP status, and persists cooldowns for
-    codes that must not be retried until the user or cooldown clears them.
+    Shared by refresh, lineup/form auth, and the poster proxy. Checks Redis for
+    an unexpired token bound to the current credentials before POSTing /token.
+    Honors persisted lockouts, reads JSON ``code`` before HTTP status, and
+    persists cooldowns for codes that must not be retried until cleared.
     """
     if source is None:
         return SDTokenAuthResult(
@@ -432,6 +433,14 @@ def sd_obtain_token(source, username=None, password=None, *, timeout=30):
             message=msg,
             soft=lockout_code in SD_AUTH_SOFT_CODES if lockout_code else False,
             lockout=True,
+        )
+
+    cached = sd_get_cached_token(source.id, username=username, password=password)
+    if cached:
+        return SDTokenAuthResult(
+            ok=True,
+            token=cached,
+            code=0,
         )
 
     sha1_password = hashlib.sha1(password.encode('utf-8')).hexdigest()
@@ -515,6 +524,74 @@ def sd_obtain_token(source, username=None, password=None, *, timeout=30):
         token_expires=expires,
         code=0,
     )
+
+
+def sd_authorized_request(
+    method,
+    url,
+    *,
+    source,
+    token,
+    username=None,
+    password=None,
+    timeout=30,
+    content_type='application/json',
+    **kwargs,
+):
+    """
+    Perform an authenticated Schedules Direct HTTP request.
+
+    On HTTP 401/403 (SD documents TOKEN_EXPIRED as 403 + code 4006), clears the
+    Redis token cache, obtains a fresh token, and retries the request once.
+
+    Returns ``(response, token)`` where ``token`` may have been refreshed.
+    """
+    method_upper = (method or 'GET').upper()
+    http_fn = {
+        'GET': requests.get,
+        'POST': requests.post,
+        'PUT': requests.put,
+        'DELETE': requests.delete,
+        'HEAD': requests.head,
+        'PATCH': requests.patch,
+    }.get(method_upper)
+
+    def _once(current_token):
+        headers = sd_headers_for_source(
+            source,
+            token=current_token,
+            content_type=content_type,
+        )
+        if http_fn is not None:
+            return http_fn(url, headers=headers, timeout=timeout, **kwargs)
+        return requests.request(
+            method_upper, url, headers=headers, timeout=timeout, **kwargs
+        )
+
+    response = _once(token)
+    if response.status_code not in (401, 403):
+        return response, token
+
+    logger.warning(
+        "SD source %s: %s %s returned %s; clearing cached token and retrying once",
+        getattr(source, 'id', None),
+        method_upper,
+        url,
+        response.status_code,
+    )
+    sd_clear_cached_token(getattr(source, 'id', None))
+    auth_timeout = timeout if isinstance(timeout, (int, float)) else 30
+    auth = sd_obtain_token(
+        source,
+        username=username,
+        password=password,
+        timeout=min(int(auth_timeout), 30) if auth_timeout else 30,
+    )
+    if not auth.ok or not auth.token:
+        return response, token
+
+    retry_response = _once(auth.token)
+    return retry_response, auth.token
 
 
 def sd_next_midnight_utc():

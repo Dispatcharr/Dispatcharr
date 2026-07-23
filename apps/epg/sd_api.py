@@ -25,10 +25,8 @@ from apps.epg.sd_utils import (
     SD_CODE_IMAGE_NOT_FOUND,
     SD_IMAGE_LIMIT_CODES,
     sd_auth_lockout_active,
-    sd_clear_cached_token,
-    sd_get_cached_token,
+    sd_authorized_request,
     sd_handle_2055,
-    sd_headers_for_source,
     sd_image_limit_active,
     sd_mark_icon_missing,
     sd_next_midnight_utc,
@@ -161,14 +159,14 @@ class SchedulesDirectSourceMixin:
         if error:
             return error
 
-        headers = sd_headers_for_source(source, token=token)
-
         if request.method == "GET":
             countries = self._fetch_sd_countries()
             try:
-                resp = http_requests.get(
+                resp, token = sd_authorized_request(
+                    'GET',
                     f"{SD_BASE_URL}/lineups",
-                    headers=headers,
+                    source=source,
+                    token=token,
                     timeout=15,
                 )
                 if resp.status_code == 400:
@@ -219,9 +217,11 @@ class SchedulesDirectSourceMixin:
                 }, status=status.HTTP_200_OK)
 
             try:
-                resp = http_requests.put(
+                resp, token = sd_authorized_request(
+                    'PUT',
                     f"{SD_BASE_URL}/lineups/{lineup_id}",
-                    headers=headers,
+                    source=source,
+                    token=token,
                     timeout=15,
                 )
                 sd_data = resp.json()
@@ -302,9 +302,11 @@ class SchedulesDirectSourceMixin:
                 }, status=status.HTTP_200_OK)
 
             try:
-                resp = http_requests.delete(
+                resp, token = sd_authorized_request(
+                    'DELETE',
                     f"{SD_BASE_URL}/lineups/{lineup_id}",
-                    headers=headers,
+                    source=source,
+                    token=token,
                     timeout=15,
                 )
                 if resp.status_code == 400:
@@ -372,14 +374,14 @@ class SchedulesDirectSourceMixin:
         if error:
             return error
 
-        headers = sd_headers_for_source(source, token=token)
-
         try:
-            resp = http_requests.get(
+            resp, token = sd_authorized_request(
+                'GET',
                 f"{SD_BASE_URL}/headends",
-                params={'country': country, 'postalcode': postalcode},
-                headers=headers,
+                source=source,
+                token=token,
                 timeout=15,
+                params={'country': country, 'postalcode': postalcode},
             )
             try:
                 headends = resp.json()
@@ -471,37 +473,35 @@ class SchedulesDirectPosterMixin:
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
 
-        token = sd_get_cached_token(
-            source.id, username=source.username, password=source.password
-        )
-
-        if not token:
-            auth = sd_obtain_token(source, timeout=10)
-            if auth.debug_rejected:
-                return Response(
-                    {'error': auth.message},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-            if not auth.ok:
-                # Lockout codes are persisted by sd_obtain_token. Other failures
-                # use a short process-local cache so workers do not hammer /token.
-                if not auth.lockout:
-                    self._sd_poster_error_cache[source.id] = {
-                        'until': time.time() + (3600 if auth.code else 300),
-                        'reason': auth.message or 'Authentication failed',
-                    }
-                return Response(
-                    {'error': auth.message},
-                    status=status.HTTP_502_BAD_GATEWAY,
-                )
-            token = auth.token
-            self._sd_poster_error_cache.pop(source.id, None)
+        auth = sd_obtain_token(source, timeout=10)
+        if auth.debug_rejected:
+            return Response(
+                {'error': auth.message},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not auth.ok:
+            # Lockout codes are persisted by sd_obtain_token. Other failures
+            # use a short process-local cache so workers do not hammer /token.
+            if not auth.lockout:
+                self._sd_poster_error_cache[source.id] = {
+                    'until': time.time() + (3600 if auth.code else 300),
+                    'reason': auth.message or 'Authentication failed',
+                }
+            return Response(
+                {'error': auth.message},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+        token = auth.token
+        self._sd_poster_error_cache.pop(source.id, None)
 
         try:
-            img_resp = http_requests.get(
+            img_resp, token = sd_authorized_request(
+                'GET',
                 poster_sd_url,
-                headers=sd_headers_for_source(source, token=token, content_type=None),
+                source=source,
+                token=token,
                 timeout=15,
+                content_type=None,
                 allow_redirects=True,
             )
             err_code, err_data = sd_parse_response_payload(img_resp)
@@ -539,7 +539,8 @@ class SchedulesDirectPosterMixin:
                 return Response(status=status.HTTP_404_NOT_FOUND)
 
             if img_resp.status_code in (401, 403):
-                sd_clear_cached_token(source.id)
+                # Clear already happened inside sd_authorized_request; seed a short
+                # process cache only when the fresh-token retry still failed.
                 self._sd_poster_error_cache[source.id] = {
                     'until': time.time() + 3600,
                     'reason': f'SD returned {img_resp.status_code}',

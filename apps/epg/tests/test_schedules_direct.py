@@ -1942,6 +1942,112 @@ class SDUtilsTests(TestCase):
             sd_get_cached_token(source.id, 'account-b', 'pass-a')
         )
 
+    @patch('apps.epg.sd_utils.requests.post')
+    def test_obtain_token_reuses_cached_token(self, mock_post):
+        """Second obtain must not POST /token while Redis still has a valid token."""
+        from apps.epg.sd_utils import sd_clear_cached_token, sd_obtain_token
+
+        source = EPGSource.objects.create(
+            name='SD Token Reuse',
+            source_type='schedules_direct',
+            username='sduser',
+            password='sdpass',
+        )
+        sd_clear_cached_token(source.id)
+        mock_post.return_value = MagicMock(
+            status_code=200,
+            json=MagicMock(return_value={
+                'code': 0,
+                'token': 'tok-live',
+                'tokenExpires': time.time() + 3600,
+            }),
+            raise_for_status=MagicMock(),
+            headers={},
+            content=b'{}',
+        )
+        first = sd_obtain_token(source)
+        self.assertTrue(first.ok)
+        self.assertEqual(first.token, 'tok-live')
+        mock_post.assert_called_once()
+        mock_post.reset_mock()
+
+        second = sd_obtain_token(source)
+        self.assertTrue(second.ok)
+        self.assertEqual(second.token, 'tok-live')
+        mock_post.assert_not_called()
+
+    @patch('apps.epg.sd_utils.requests.get')
+    @patch('apps.epg.sd_utils.requests.post')
+    def test_authorized_request_retries_once_on_403(self, mock_post, mock_get):
+        """SD TOKEN_EXPIRED is HTTP 403; clear cache and retry once with a fresh token."""
+        from apps.epg.sd_utils import (
+            sd_authorized_request,
+            sd_clear_cached_token,
+            sd_get_cached_token,
+            sd_set_cached_token,
+        )
+
+        source = EPGSource.objects.create(
+            name='SD Token Retry',
+            source_type='schedules_direct',
+            username='sduser',
+            password='sdpass',
+        )
+        sd_clear_cached_token(source.id)
+        sd_set_cached_token(
+            source.id, 'stale-tok', time.time() + 3600,
+            username='sduser', password='sdpass',
+        )
+
+        expired = MagicMock(
+            status_code=403,
+            headers={'Content-Type': 'application/json'},
+            content=b'{"code":4006,"response":"TOKEN_EXPIRED"}',
+        )
+        expired.json = MagicMock(return_value={
+            'code': 4006,
+            'response': 'TOKEN_EXPIRED',
+            'message': 'Token has expired. Request new token.',
+        })
+        ok = MagicMock(
+            status_code=200,
+            headers={'Content-Type': 'application/json'},
+            content=b'{"lineups":[]}',
+        )
+        ok.json = MagicMock(return_value={'lineups': []})
+        mock_get.side_effect = [expired, ok]
+        mock_post.return_value = MagicMock(
+            status_code=200,
+            json=MagicMock(return_value={
+                'code': 0,
+                'token': 'fresh-tok',
+                'tokenExpires': time.time() + 3600,
+            }),
+            raise_for_status=MagicMock(),
+            headers={},
+            content=b'{}',
+        )
+
+        resp, token = sd_authorized_request(
+            'GET',
+            'https://json.schedulesdirect.org/20141201/lineups',
+            source=source,
+            token='stale-tok',
+            timeout=15,
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(token, 'fresh-tok')
+        self.assertEqual(mock_get.call_count, 2)
+        mock_post.assert_called_once()
+        self.assertEqual(
+            sd_get_cached_token(source.id, 'sduser', 'sdpass'),
+            'fresh-tok',
+        )
+        retry_headers = mock_get.call_args_list[1].kwargs.get('headers')
+        if retry_headers is None:
+            retry_headers = mock_get.call_args_list[1][1].get('headers')
+        self.assertEqual(retry_headers.get('token'), 'fresh-tok')
+
 
 class SDPosterProxyErrorHandlingTests(TestCase):
     """Poster proxy must honor SD image error codes so accounts are not blocked."""
@@ -2139,4 +2245,36 @@ class SDPosterProxyErrorHandlingTests(TestCase):
         self.assertEqual(self.client.get(self.url).status_code, 200)
         mock_post.assert_not_called()
         self.assertEqual(mock_get.call_count, 2)
+
+    @patch('requests.get')
+    @patch('requests.post')
+    def test_poster_401_clears_token_and_retries_once(self, mock_post, mock_get):
+        """Invalid image token must be dropped and the image fetch retried once."""
+        from apps.epg.sd_utils import sd_get_cached_token, sd_set_cached_token
+
+        sd_set_cached_token(
+            self.source.id, 'stale-poster', time.time() + 3600,
+            username='sduser', password='sdpass',
+        )
+        unauthorized = MagicMock(status_code=401, headers={}, content=b'')
+        unauthorized.json = MagicMock(side_effect=ValueError('not json'))
+        img = MagicMock()
+        img.status_code = 200
+        img.headers = {'Content-Type': 'image/jpeg'}
+        img.content = b'\xff\xd8\xffjpeg-bytes'
+        img.json = MagicMock(side_effect=ValueError('not json'))
+        mock_get.side_effect = [unauthorized, img]
+        mock_post.return_value = self._auth_ok()
+
+        resp = self.client.get(self.url)
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.content, b'\xff\xd8\xffjpeg-bytes')
+        self.assertEqual(mock_get.call_count, 2)
+        mock_post.assert_called_once()
+        self.assertEqual(
+            sd_get_cached_token(self.source.id, 'sduser', 'sdpass'),
+            'poster-tok',
+        )
+        from apps.epg.api_views import ProgramViewSet
+        self.assertNotIn(self.source.id, ProgramViewSet._sd_poster_error_cache)
 
