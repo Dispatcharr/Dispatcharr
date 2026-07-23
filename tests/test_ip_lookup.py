@@ -1,5 +1,6 @@
 """Tests for stale-while-revalidate public IP lookup in core.api_views (issue #1395)."""
 
+import time
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -10,8 +11,8 @@ from rest_framework.test import APIRequestFactory, force_authenticate
 
 from core.api_views import (
     _IP_CACHE_KEY,
-    _IP_FRESH_KEY,
     _IP_LOCK_KEY,
+    _IP_VERIFY_INTERVAL,
     _perform_ip_lookup,
     environment,
 )
@@ -26,6 +27,10 @@ OLD_RESULT = {
     "country_name": "United States",
     "city": "Austin",
 }
+
+
+def _stale_entry():
+    return {**OLD_RESULT, "verified_at": time.time() - _IP_VERIFY_INTERVAL - 1}
 
 
 def _ok_requests_get(url, timeout=5):
@@ -50,25 +55,31 @@ class PerformIpLookupTests(SimpleTestCase):
 
     @patch("core.api_views.requests.get", side_effect=_ok_requests_get)
     def test_successful_revalidation_overwrites_cache_and_pushes(self, _get, mock_ws, _socket):
-        cache.set(_IP_CACHE_KEY, OLD_RESULT, 3600)
+        cache.set(_IP_CACHE_KEY, _stale_entry(), 3600)
         cache.add(_IP_LOCK_KEY, True, 30)
 
+        before = time.time()
         _perform_ip_lookup()
 
-        self.assertEqual(cache.get(_IP_CACHE_KEY)["public_ip"], "5.6.7.8")
-        self.assertTrue(cache.get(_IP_FRESH_KEY))
+        stored = cache.get(_IP_CACHE_KEY)
+        self.assertEqual(stored["public_ip"], "5.6.7.8")
+        self.assertGreaterEqual(stored["verified_at"], before)
         self.assertIsNone(cache.get(_IP_LOCK_KEY))
         mock_ws.assert_called_once()
-        self.assertEqual(mock_ws.call_args[0][2]["public_ip"], "5.6.7.8")
+        pushed = mock_ws.call_args[0][2]
+        self.assertEqual(pushed["public_ip"], "5.6.7.8")
+        self.assertNotIn("verified_at", pushed)
 
     @patch("core.api_views.requests.get", side_effect=requests_lib.RequestException)
     def test_failed_revalidation_preserves_last_known_result(self, _get, mock_ws, _socket):
-        cache.set(_IP_CACHE_KEY, OLD_RESULT, 3600)
+        seeded = _stale_entry()
+        cache.set(_IP_CACHE_KEY, seeded, 3600)
 
         _perform_ip_lookup()
 
-        self.assertEqual(cache.get(_IP_CACHE_KEY), OLD_RESULT)
-        self.assertTrue(cache.get(_IP_FRESH_KEY))
+        stored = cache.get(_IP_CACHE_KEY)
+        self.assertEqual({k: stored[k] for k in OLD_RESULT}, OLD_RESULT)
+        self.assertGreater(stored["verified_at"], seeded["verified_at"])
         self.assertIsNone(cache.get(_IP_LOCK_KEY))
         mock_ws.assert_not_called()
 
@@ -76,9 +87,11 @@ class PerformIpLookupTests(SimpleTestCase):
     def test_failed_first_lookup_still_caches_and_pushes(self, _get, mock_ws, _socket):
         _perform_ip_lookup()
 
-        self.assertIsNone(cache.get(_IP_CACHE_KEY)["public_ip"])
-        self.assertTrue(cache.get(_IP_FRESH_KEY))
+        stored = cache.get(_IP_CACHE_KEY)
+        self.assertIsNone(stored["public_ip"])
+        self.assertIn("verified_at", stored)
         mock_ws.assert_called_once()
+        self.assertNotIn("verified_at", mock_ws.call_args[0][2])
 
 
 @override_settings(CACHES=LOCMEM_CACHE, ENABLE_IP_LOOKUP=True)
@@ -99,19 +112,28 @@ class EnvironmentStaleWhileRevalidateTests(SimpleTestCase):
 
     @patch("core.api_views.threading.Thread")
     def test_stale_cache_serves_cached_and_kicks_background_refresh(self, mock_thread, *_):
-        cache.set(_IP_CACHE_KEY, OLD_RESULT, 3600)
+        cache.set(_IP_CACHE_KEY, _stale_entry(), 3600)
 
         response = self._get_environment()
 
         self.assertEqual(response.data["public_ip"], "1.2.3.4")
         self.assertFalse(response.data["ip_lookup_pending"])
+        self.assertNotIn("verified_at", response.data)
         mock_thread.assert_called_once_with(target=_perform_ip_lookup, daemon=True)
         mock_thread.return_value.start.assert_called_once()
 
     @patch("core.api_views.threading.Thread")
-    def test_fresh_cache_does_not_refresh(self, mock_thread, *_):
+    def test_missing_verified_at_counts_as_stale(self, mock_thread, *_):
         cache.set(_IP_CACHE_KEY, OLD_RESULT, 3600)
-        cache.set(_IP_FRESH_KEY, True, 60)
+
+        response = self._get_environment()
+
+        self.assertEqual(response.data["public_ip"], "1.2.3.4")
+        mock_thread.assert_called_once_with(target=_perform_ip_lookup, daemon=True)
+
+    @patch("core.api_views.threading.Thread")
+    def test_fresh_cache_does_not_refresh(self, mock_thread, *_):
+        cache.set(_IP_CACHE_KEY, {**OLD_RESULT, "verified_at": time.time()}, 3600)
 
         response = self._get_environment()
 
@@ -120,7 +142,7 @@ class EnvironmentStaleWhileRevalidateTests(SimpleTestCase):
 
     @patch("core.api_views.threading.Thread")
     def test_stale_cache_respects_existing_lock(self, mock_thread, *_):
-        cache.set(_IP_CACHE_KEY, OLD_RESULT, 3600)
+        cache.set(_IP_CACHE_KEY, _stale_entry(), 3600)
         cache.add(_IP_LOCK_KEY, True, 30)
 
         self._get_environment()
@@ -138,7 +160,7 @@ class EnvironmentStaleWhileRevalidateTests(SimpleTestCase):
     @patch("core.api_views.threading.Thread")
     def test_db_disabled_never_refreshes(self, mock_thread, mock_settings, _network):
         mock_settings.return_value = {"enable_ip_lookup": False}
-        cache.set(_IP_CACHE_KEY, OLD_RESULT, 3600)
+        cache.set(_IP_CACHE_KEY, _stale_entry(), 3600)
 
         response = self._get_environment()
 

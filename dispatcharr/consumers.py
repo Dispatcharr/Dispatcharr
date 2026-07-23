@@ -31,6 +31,7 @@ class MyWebSocketConsumer(AsyncWebsocketConsumer):
                 from core.api_views import _IP_CACHE_KEY
                 cached_ip = await sync_to_async(cache.get)(_IP_CACHE_KEY)
                 if cached_ip:
+                    cached_ip.pop("verified_at", None)  # cache-internal, not part of the payload
                     await self.send(text_data=json.dumps({
                         'data': {'type': 'ip_lookup_complete', **cached_ip}
                     }))
