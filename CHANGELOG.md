@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.28.2] - 2026-07-23
+
 ### Added
 
 - **Schedules Direct Extra Debugging option.** EPG source settings include an **Extra Schedules Direct Debugging** toggle that adds a `RouteTo: debug` header so Schedules Direct support can steer traffic to their debug server. The tooltip states it should only be enabled when SD support asks. If SD returns code 2055 (unexpected debug connection), the toggle is turned off automatically.
