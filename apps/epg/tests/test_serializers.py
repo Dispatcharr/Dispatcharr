@@ -484,6 +484,34 @@ class ProgramDataSerializerDescriptionFallbackTests(TestCase):
         self.assertEqual(data["episode"], 1)
 
 
+class SDPosterProxyPathTests(TestCase):
+    """Cache-bust query on SD poster proxy URLs."""
+
+    def test_stable_uri_stable_bust(self):
+        from apps.epg.utils import sd_poster_cache_bust, sd_poster_proxy_path
+
+        uri = 'https://json.schedulesdirect.org/20141201/image/assets/a.jpg'
+        self.assertEqual(sd_poster_cache_bust(uri), sd_poster_cache_bust(uri))
+        path = sd_poster_proxy_path(42, uri)
+        self.assertTrue(path.startswith('/api/epg/programs/42/poster/?v='))
+        self.assertIn(sd_poster_cache_bust(uri), path)
+
+    def test_uri_change_changes_bust(self):
+        from apps.epg.utils import sd_poster_cache_bust
+
+        a = 'https://json.schedulesdirect.org/20141201/image/assets/a.jpg'
+        b = 'https://json.schedulesdirect.org/20141201/image/assets/b.jpg'
+        self.assertNotEqual(sd_poster_cache_bust(a), sd_poster_cache_bust(b))
+
+    def test_empty_uri_has_no_query(self):
+        from apps.epg.utils import sd_poster_proxy_path
+
+        self.assertEqual(
+            sd_poster_proxy_path(7, None),
+            '/api/epg/programs/7/poster/',
+        )
+
+
 class ProgramDetailSerializerTests(TestCase):
     """Tests for ProgramDetailSerializer — rich field extraction from custom_properties."""
 
@@ -670,3 +698,16 @@ class ProgramDetailSerializerTests(TestCase):
         self.assertEqual(slim["is_live"], detail["is_live"])
         self.assertEqual(slim["is_premiere"], detail["is_premiere"])
         self.assertEqual(slim["is_finale"], detail["is_finale"])
+
+    def test_poster_url_includes_cache_bust_from_sd_icon(self):
+        from apps.epg.utils import sd_poster_proxy_path
+
+        uri = 'https://json.schedulesdirect.org/20141201/image/assets/p.jpg'
+        program = self._create_program(custom_properties={"sd_icon": uri})
+        data = ProgramDetailSerializer(program).data
+        self.assertEqual(data["poster_url"], sd_poster_proxy_path(program.id, uri))
+
+    def test_poster_url_none_without_sd_icon(self):
+        program = self._create_program(custom_properties={})
+        data = ProgramDetailSerializer(program).data
+        self.assertIsNone(data["poster_url"])

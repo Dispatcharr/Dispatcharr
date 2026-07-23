@@ -1,5 +1,16 @@
 #!/bin/bash
 
+# TEMPORARY: one-time move of the nginx logo proxy cache to the new layout.
+# Removable once installs have had time to upgrade past the /data/cache/ paths.
+if [ -d /data/logo_cache ] && [ ! -e /data/cache/logos ]; then
+    mkdir -p /data/cache
+    if mv /data/logo_cache /data/cache/logos; then
+        echo "Moved nginx logo cache from /data/logo_cache to /data/cache/logos"
+    else
+        echo "⚠️  Warning: could not move /data/logo_cache to /data/cache/logos"
+    fi
+fi
+
 # Define directories that need to exist and be owned by PUID:PGID.
 # DATA_DIRS may reside on external mounts (NFS, SMB/CIFS, FUSE) where
 # mkdir and chown can fail. Failures are collected and reported as a
@@ -7,7 +18,9 @@
 DATA_DIRS=(
     "/data/backups"
     "/data/logos"
-    "/data/logo_cache"
+    "/data/cache"
+    "/data/cache/logos"
+    "/data/cache/sd_posters"
     "/data/recordings"
     "/data/uploads/m3us"
     "/data/uploads/epgs"

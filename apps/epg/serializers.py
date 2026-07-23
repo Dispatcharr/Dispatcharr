@@ -1,3 +1,8 @@
+from apps.epg.sd_utils import (
+    sd_clear_cached_token,
+    sd_credential_fingerprint,
+)
+from apps.epg.utils import sd_poster_proxy_path
 from core.utils import validate_flexible_url, build_absolute_uri_with_port
 from rest_framework import serializers
 from .models import EPGSource, EPGData, ProgramData
@@ -67,11 +72,16 @@ class EPGSourceSerializer(serializers.ModelSerializer):
                 ct = instance.refresh_task.crontab
                 cron_expr = f'{ct.minute} {ct.hour} {ct.day_of_month} {ct.month_of_year} {ct.day_of_week}'
         instance._cron_expression = cron_expr
+        prior_fp = sd_credential_fingerprint(instance.username, instance.password)
         for attr, value in validated_data.items():
             if attr == 'password' and not value:
                 continue
             setattr(instance, attr, value)
         instance.save()
+        # Drop any Redis SD session tied to the previous username/password so
+        # poster traffic cannot keep using another account's token.
+        if prior_fp != sd_credential_fingerprint(instance.username, instance.password):
+            sd_clear_cached_token(instance.id)
         return instance
 
     def create(self, validated_data):
@@ -169,9 +179,11 @@ class ProgramDetailSerializer(ProgramDataSerializer):
         data['icon'] = cp.get('icon')
         data['images'] = cp.get('images') or []
 
-        # SD poster: expose as absolute proxy URL so frontend/img tags never need SD auth
-        if cp.get('sd_icon'):
-            poster_path = f"/api/epg/programs/{obj.id}/poster/"
+        # SD poster: expose as absolute proxy URL so frontend/img tags never need SD auth.
+        # ``?v=`` tracks the sd_icon URI so nginx/browser caches bust when artwork changes.
+        sd_icon = cp.get('sd_icon')
+        if sd_icon:
+            poster_path = sd_poster_proxy_path(obj.id, sd_icon)
             request = self.context.get('request')
             if request:
                 data['poster_url'] = build_absolute_uri_with_port(request, poster_path)
