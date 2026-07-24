@@ -10,11 +10,29 @@ vi.mock('../../components/forms/LoginForm', () => ({
 vi.mock('../../components/forms/SuperuserForm', () => ({
   default: () => <div data-testid="superuser-form">SuperuserForm</div>,
 }));
+vi.mock('../../assets/logo.png', () => ({ default: 'logo.png' }));
 vi.mock('@mantine/core', () => ({
-  Text: ({ children }) => <div>{children}</div>,
+  Center: ({ children }) => <div>{children}</div>,
+  Image: ({ src, alt }) => <img src={src} alt={alt} />,
+  Loader: (props) => <div role="progressbar" {...props} />,
+  Paper: ({ children }) => <div>{children}</div>,
+  Stack: ({ children }) => <div>{children}</div>,
 }));
 
 describe('Login', () => {
+  it('renders a loading state while setup status is unknown', () => {
+    useAuthStore.mockReturnValue(null);
+
+    render(<Login />);
+
+    expect(
+      screen.getByRole('progressbar', { name: 'Loading login' })
+    ).toBeInTheDocument();
+    expect(screen.getByAltText('Dispatcharr Logo')).toBeInTheDocument();
+    expect(screen.queryByTestId('login-form')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('superuser-form')).not.toBeInTheDocument();
+  });
+
   it('renders SuperuserForm when superuser does not exist', async () => {
     useAuthStore.mockReturnValue(false);
 

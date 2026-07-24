@@ -28,7 +28,6 @@ const useAuthStore = create((set, get) => ({
   isAuthenticated: false,
   isInitialized: false,
   isInitializing: false,
-  needsSuperuser: false,
   user: {
     username: '',
     email: '',
@@ -153,11 +152,18 @@ const useAuthStore = create((set, get) => ({
   accessToken: localStorage.getItem('accessToken') || null,
   refreshToken: localStorage.getItem('refreshToken') || null,
   tokenExpiration: localStorage.getItem('tokenExpiration') || null,
-  superuserExists: true,
+  superuserExists: null,
+  setupAllowed: null,
+  setupClientIp: '',
 
   setIsAuthenticated: (isAuthenticated) => set({ isAuthenticated }),
 
-  setSuperuserExists: (superuserExists) => set({ superuserExists }),
+  setSuperuserStatus: (status) =>
+    set({
+      superuserExists: status?.superuser_exists ?? true,
+      setupAllowed: status?.setup_allowed ?? null,
+      setupClientIp: status?.client_ip ?? '',
+    }),
 
   getToken: async () => {
     const tokenExpiration = localStorage.getItem('tokenExpiration');

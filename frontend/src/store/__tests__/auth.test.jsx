@@ -38,7 +38,7 @@ const localStorageMock = (() => {
   };
 })();
 
-global.localStorage = localStorageMock;
+globalThis.localStorage = localStorageMock;
 
 // Helper to create a mock JWT token
 const createMockToken = (expiresInSeconds = 3600) => {
@@ -108,7 +108,6 @@ describe('useAuthStore', () => {
         isAuthenticated: false,
         isInitialized: false,
         isInitializing: false,
-        needsSuperuser: false,
         user: {
           username: '',
           email: '',
@@ -120,7 +119,9 @@ describe('useAuthStore', () => {
         accessToken: null,
         refreshToken: null,
         tokenExpiration: null,
-        superuserExists: true,
+        superuserExists: null,
+        setupAllowed: null,
+        setupClientIp: '',
       });
     }
   });
@@ -131,7 +132,6 @@ describe('useAuthStore', () => {
 
       expect(result.current.isAuthenticated).toBe(false);
       expect(result.current.isInitialized).toBe(false);
-      expect(result.current.needsSuperuser).toBe(false);
       expect(result.current.user).toEqual({
         username: '',
         email: '',
@@ -140,7 +140,9 @@ describe('useAuthStore', () => {
       });
       expect(result.current.isLoading).toBe(false);
       expect(result.current.error).toBeNull();
-      expect(result.current.superuserExists).toBe(true);
+      expect(result.current.superuserExists).toBeNull();
+      expect(result.current.setupAllowed).toBeNull();
+      expect(result.current.setupClientIp).toBe('');
     });
   });
 
@@ -503,15 +505,21 @@ describe('useAuthStore', () => {
     });
   });
 
-  describe('setSuperuserExists', () => {
-    it('should update superuser exists state', () => {
+  describe('setSuperuserStatus', () => {
+    it('stores the complete bootstrap status response', () => {
       const { result } = renderHook(() => useAuthStore());
 
       act(() => {
-        result.current.setSuperuserExists(false);
+        result.current.setSuperuserStatus({
+          superuser_exists: false,
+          setup_allowed: false,
+          client_ip: '203.0.113.50',
+        });
       });
 
       expect(result.current.superuserExists).toBe(false);
+      expect(result.current.setupAllowed).toBe(false);
+      expect(result.current.setupClientIp).toBe('203.0.113.50');
     });
   });
 
