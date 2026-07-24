@@ -126,6 +126,11 @@ class RedisKeys:
         return f"live:channel:{channel_id}:output:{fmt}:owner"
 
     @staticmethod
+    def output_playlist(channel_id, fmt):
+        """Rolling HLS playlist descriptor (JSON window of segment seq/duration)."""
+        return f"live:channel:{channel_id}:output:{fmt}:playlist"
+
+    @staticmethod
     def output_chunk_timestamps(channel_id, fmt):
         """Sorted set mapping fragment receive-timestamps to fragment indices."""
         return f"live:channel:{channel_id}:output:{fmt}:buffer:chunk_timestamps"
