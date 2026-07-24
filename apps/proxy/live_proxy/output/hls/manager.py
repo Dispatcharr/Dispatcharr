@@ -34,7 +34,12 @@ HLS_KEY_TTL = 3600
 
 # Defaults; both overridable via proxy settings
 DEFAULT_SEGMENT_DURATION = 4
-DEFAULT_WINDOW_SIZE = 6
+# Retain 10 segments (~40s) in the rolling live window. A player starts
+# near the live edge regardless of window length, so a longer window adds
+# no latency; it only keeps older segments available so a client that
+# briefly falls behind (a stall, a slow network hiccup) can still fetch the
+# segment it is on instead of getting a 404 once it has rolled off.
+DEFAULT_WINDOW_SIZE = 10
 
 
 class HLSOutputManager:
@@ -53,6 +58,13 @@ class HLSOutputManager:
 
         self.segment_duration = ConfigHelper.get('HLS_SEGMENT_DURATION', DEFAULT_SEGMENT_DURATION)
         self.window_size = ConfigHelper.get('HLS_WINDOW_SIZE', DEFAULT_WINDOW_SIZE)
+        # Advertised EXT-X-TARGETDURATION, computed ONCE and frozen for the life
+        # of the playlist (RFC 8216 6.2.1: it MUST NOT change across reloads;
+        # AVPlayer latches it at first parse and revalidates every reload). 2x
+        # the cut target gives one GOP of headroom past the cut threshold so a
+        # normal segment never exceeds it; the segmenter force-cuts anything that
+        # would, keeping the frozen value truthful (RFC 8216 4.3.3.1).
+        self.adv_target = int(2 * self.segment_duration + 0.999)
 
         # Same Redis-backed chunk store the fMP4 manager uses; it is
         # format-parameterized by design ("adding a new output format only
@@ -61,8 +73,36 @@ class HLSOutputManager:
         self.segment_buffer = FMP4StreamBuffer(
             channel_id, redis_client=RedisClient.get_buffer(), fmt=fmt
         )
+        # Size the chunk TTL to the advertised window plus ~one playlist of
+        # post-removal availability (RFC 8216 6.2.2): a listed segment must stay
+        # fetchable while in the playlist and for about a playlist duration after
+        # it rolls off. A short default TTL cannot back a 10-segment window of
+        # 5-6.5s segments, which 404s the window tail during stall recovery.
+        try:
+            self.segment_buffer.chunk_ttl = max(
+                self.segment_buffer.chunk_ttl,
+                int(self.window_size * (self.segment_duration + 3) + 30),
+            )
+        except Exception:
+            pass
         self._redis = RedisClient.get_client()
         self._window = []
+        # Seed the rolling window + frozen target from an existing descriptor so
+        # a mid-session worker restart/takeover does not clobber the playlist to
+        # a fresh window (MEDIA-SEQUENCE must never regress; RFC 8216 6.2.2). The
+        # FMP4StreamBuffer already restores its chunk index from Redis, so the
+        # seeded window's seqs line up with the segments still in the buffer.
+        if self._redis:
+            try:
+                existing = self._redis.get(RedisKeys.output_playlist(self.channel_id, self.fmt))
+                if existing:
+                    prior = json.loads(existing)
+                    if prior.get("window"):
+                        self._window = prior["window"]
+                    if prior.get("adv_target"):
+                        self.adv_target = prior["adv_target"]
+            except Exception:
+                pass
 
     # ------------------------------------------------------------------
     # Public API (same surface as FMP4RemuxManager)
@@ -112,7 +152,10 @@ class HLSOutputManager:
 
     def _segmenter_loop(self):
         """Read TS chunks from Redis and feed them through the segmenter."""
-        segmenter = TSSegmenter(target_duration=self.segment_duration)
+        segmenter = TSSegmenter(
+            target_duration=self.segment_duration,
+            max_segment_duration=self.adv_target,
+        )
 
         # Start behind live so the first segments cover the same window a
         # new TS client would receive, matching fMP4 writer positioning.
@@ -179,6 +222,7 @@ class HLSOutputManager:
                 playlist_state = {
                     "window": self._window,
                     "target": self.segment_duration,
+                    "adv_target": self.adv_target,
                 }
                 self._redis.setex(
                     RedisKeys.output_playlist(self.channel_id, self.fmt),
@@ -187,6 +231,13 @@ class HLSOutputManager:
                 )
             except Exception as e:
                 logger.error(f"[HLS:{self.channel_id}] Error updating playlist state: {e}")
+
+        # Heartbeat the owner lock and state key (both set once with ex=3600 and
+        # otherwise never refreshed): a stream longer than an hour would silently
+        # lose mutual exclusion and let a second worker start a duplicate
+        # segmenter, breaking MEDIA-SEQUENCE monotonicity. If ownership has moved,
+        # stop cleanly rather than fight the new owner.
+        self._heartbeat_ownership()
 
         logger.debug(
             f"[HLS:{self.channel_id}] Segment {seq}: "
@@ -211,6 +262,22 @@ class HLSOutputManager:
     def _set_state(self, state: str):
         if self._redis:
             self._redis.setex(RedisKeys.output_state(self.channel_id, self.fmt), HLS_KEY_TTL, state)
+
+    def _heartbeat_ownership(self):
+        """Re-extend the owner lock + state TTL while we still own them; stop the
+        loop if another worker has taken over. Called once per stored segment."""
+        if not self._redis:
+            return
+        try:
+            owner_key = RedisKeys.output_owner(self.channel_id, self.fmt)
+            if self._redis.get(owner_key) == self.worker_id:
+                self._redis.expire(owner_key, HLS_KEY_TTL)
+                self._redis.expire(RedisKeys.output_state(self.channel_id, self.fmt), HLS_KEY_TTL)
+            else:
+                logger.info(f"[HLS:{self.channel_id}] Output ownership moved to another worker; stopping")
+                self.running = False
+        except Exception as e:
+            logger.error(f"[HLS:{self.channel_id}] Ownership heartbeat error: {e}")
 
     def _cleanup_redis(self):
         """Delete all HLS output Redis keys for this channel."""

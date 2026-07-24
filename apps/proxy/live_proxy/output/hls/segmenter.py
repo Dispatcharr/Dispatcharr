@@ -193,8 +193,13 @@ class TSSegmenter:
     it returns finished Segment objects as keyframe boundaries are crossed.
     """
 
-    def __init__(self, target_duration=4.0):
+    def __init__(self, target_duration=4.0, max_segment_duration=None):
         self.target_duration = float(target_duration)
+        # Hard ceiling: force a cut before a segment can exceed this, so no
+        # emitted EXTINF ever exceeds the frozen advertised TARGETDURATION even
+        # on a keyframe drought (RFC 8216 4.3.3.1). Defaults to 2x the target.
+        self.max_segment_duration = float(
+            max_segment_duration if max_segment_duration else 2 * target_duration)
         self._pending = bytearray()
         self._current = bytearray()
         self._pat_packet = None
@@ -203,6 +208,11 @@ class TSSegmenter:
         self._video_pid = None
         self._video_stream_type = None
         self._segment_start_pts = None
+        # First / most-recent video PTS in the current segment; used to report a
+        # MEASURED duration on the discontinuity cut instead of substituting the
+        # nominal target (RFC 8216 4.3.2.1: EXTINF must be accurate).
+        self._seg_first_pts = None
+        self._seg_last_pts = None
         self._collecting = False
         self._pending_discontinuity = False
         self._current_discontinuity = False
@@ -273,26 +283,56 @@ class TSSegmenter:
         if pid == self._video_pid and packet_pusi(packet):
             pts = extract_pts(packet)
             keyframe = starts_keyframe(packet, self._video_stream_type)
+            if pts is not None:
+                self._seg_last_pts = pts
 
             if not self._collecting:
                 if keyframe:
                     self._begin_segment(pts)
             elif keyframe and pts is not None:
                 if self._segment_start_pts is None:
-                    # Discontinuity reset the timeline: cut here.
-                    finished = self._finish_segment(self.target_duration)
+                    # Discontinuity reset the timeline: cut here, reporting the
+                    # measured span of the segment being closed (RFC 8216 4.3.2.1)
+                    # rather than substituting the nominal target.
+                    finished = self._finish_segment(self._measured_span())
                     self._begin_segment(pts)
                 else:
-                    elapsed = pts - self._segment_start_pts
-                    if elapsed < 0:
-                        elapsed += PTS_WRAP / PTS_CLOCK
+                    elapsed = self._elapsed(pts, self._segment_start_pts)
                     if elapsed >= self.target_duration:
                         finished = self._finish_segment(elapsed)
                         self._begin_segment(pts)
+            elif pts is not None and self._collecting and self._segment_start_pts is not None:
+                # Keyframe drought: force a cut so the segment cannot exceed the
+                # frozen TARGETDURATION. Cutting mid-GOP yields a segment that is
+                # not keyframe-independent, an accepted last resort that a healthy
+                # GOP (which cuts on its keyframes well under this ceiling) never
+                # reaches.
+                elapsed = self._elapsed(pts, self._segment_start_pts)
+                if elapsed >= self.max_segment_duration:
+                    finished = self._finish_segment(elapsed)
+                    self._begin_segment(pts)
 
         if self._collecting:
             self._current.extend(packet)
         return finished
+
+    def _elapsed(self, pts, start):
+        """Wrap-safe presentation-time delta in seconds."""
+        d = pts - start
+        if d < 0:
+            d += PTS_WRAP / PTS_CLOCK
+        return d
+
+    def _measured_span(self):
+        """Best measured duration of the segment being closed, from the first and
+        last video PTS seen. Falls back to the target only when unmeasurable or
+        nonsensical (e.g. a timeline jump)."""
+        if self._seg_first_pts is None or self._seg_last_pts is None:
+            return self.target_duration
+        d = self._elapsed(self._seg_last_pts, self._seg_first_pts)
+        if d <= 0 or d > 4 * self.target_duration:
+            return self.target_duration
+        return d
 
     def _begin_segment(self, pts):
         self._current = bytearray()
@@ -301,6 +341,8 @@ class TSSegmenter:
         if self._pmt_packet:
             self._current.extend(self._pmt_packet)
         self._segment_start_pts = pts
+        self._seg_first_pts = pts
+        self._seg_last_pts = pts
         self._collecting = True
         self._current_discontinuity = self._pending_discontinuity
         self._pending_discontinuity = False
@@ -318,26 +360,47 @@ class TSSegmenter:
         return segment
 
 
-def render_media_playlist(window, target_duration, segment_name="{seq}.ts"):
+def render_media_playlist(window, target_duration, segment_name="{seq}.ts", adv_target=None):
     """
     Render an HLS media playlist (RFC 8216, version 3) from a window of
     segment descriptors: [{"seq": int, "dur": float, "disc": bool}, ...].
     Segment URIs are relative so they resolve against the playlist URL.
+
+    ``adv_target`` is the manager's frozen EXT-X-TARGETDURATION; when supplied it
+    is emitted verbatim so the value never changes across reloads (RFC 8216
+    6.2.1). Without it (legacy descriptor) the per-window ceil is used.
     """
+    # Frozen live-edge offset: ~2.5 config target-durations (~10s at the 4s
+    # default) so the value is a session constant and never drifts across
+    # reloads as the window slides (unlike a window-max derivation).
+    start_offset = 2.5 * target_duration
     if not window:
         return (
             "#EXTM3U\n"
             "#EXT-X-VERSION:3\n"
-            f"#EXT-X-TARGETDURATION:{int(round(max(target_duration, 1)))}\n"
+            # Ceil to match the populated branch; a fractional target must never
+            # round DOWN below a real EXTINF (RFC 8216 4.3.3.1).
+            f"#EXT-X-TARGETDURATION:{adv_target if adv_target else int(max(target_duration, 1) + 0.999)}\n"
             "#EXT-X-MEDIA-SEQUENCE:0\n"
         )
-    max_duration = max(entry["dur"] for entry in window)
+    total_duration = sum(entry["dur"] for entry in window)
+    # TARGETDURATION: prefer the manager's frozen constant. RFC 8216 6.2.1 forbids
+    # it changing across reloads; a per-render ceil(window max) flaps on GOP
+    # jitter, and AVPlayer latches the first value and stops advancing on a
+    # contradiction. Legacy fallback keeps the ceil.
+    advertised_target = adv_target if adv_target else int(max(entry["dur"] for entry in window) + 0.999)
     lines = [
         "#EXTM3U",
         "#EXT-X-VERSION:3",
-        f"#EXT-X-TARGETDURATION:{int(max_duration + 0.999)}",
+        f"#EXT-X-TARGETDURATION:{advertised_target}",
         f"#EXT-X-MEDIA-SEQUENCE:{window[0]['seq']}",
     ]
+    # Emit EXT-X-START only once the window is deep enough to honor the frozen
+    # offset, so the tag's value is stable across reloads (RFC 8216 6.2.1). It
+    # pins the join point deterministically across players; a client that sets
+    # its own offset still overrides it.
+    if total_duration >= start_offset:
+        lines.append(f"#EXT-X-START:TIME-OFFSET=-{start_offset:.3f},PRECISE=YES")
     for entry in window:
         if entry.get("disc"):
             lines.append("#EXT-X-DISCONTINUITY")

@@ -1347,7 +1347,11 @@ def hls_playlist(request, channel_id, client_id):
         from .output.hls.segmenter import render_media_playlist
         try:
             state = json.loads(playlist_json)
-            body = render_media_playlist(state.get("window", []), state.get("target", 4))
+            body = render_media_playlist(
+                state.get("window", []),
+                state.get("target", 4),
+                adv_target=state.get("adv_target"),
+            )
         except (ValueError, KeyError) as e:
             logger.error(f"[{client_id}] Malformed HLS playlist state for {channel_id}: {e}")
             return JsonResponse({"error": "Playlist unavailable"}, status=500)
