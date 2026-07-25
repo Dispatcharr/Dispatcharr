@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Bulk channel creation no longer fails with `value too long for type character varying(255)` when provider-supplied logo names exceed 255 characters.** `Logo.name` (and `VODLogo.name`, which had the same latent issue) is now a `TextField`, matching the earlier `url` column widening. Provider-derived logo names of any length are accepted during bulk channel creation, single channel creation, M3U auto-sync, EPG icon application, recording metadata, and VOD imports. (Fixes #1470)
+
 ## [0.28.2] - 2026-07-23
 
 ### Added

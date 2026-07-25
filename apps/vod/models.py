@@ -9,7 +9,7 @@ import uuid
 
 class VODLogo(models.Model):
     """Logo model specifically for VOD content (movies and series)"""
-    name = models.CharField(max_length=255)
+    name = models.TextField()
     url = models.TextField(unique=True)
 
     def __str__(self):

@@ -1150,7 +1150,7 @@ class ChannelGroupM3UAccount(models.Model):
 
 
 class Logo(models.Model):
-    name = models.CharField(max_length=255)
+    name = models.TextField()
     url = models.TextField(unique=True)
 
     def __str__(self):
