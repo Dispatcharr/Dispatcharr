@@ -206,6 +206,18 @@ const StreamInfoCell = React.memo(
               {stream.quality}
             </Badge>
           )}
+          {stream.epg_now_title && (
+            <Tooltip label="Currently airing, from this stream's EPG data">
+              <Badge
+                size="xs"
+                variant="light"
+                color="grape"
+                style={{ textTransform: 'none' }}
+              >
+                {stream.epg_now_title}
+              </Badge>
+            </Tooltip>
+          )}
           {stream.url && (
             <>
               <Tooltip label={stream.url}>

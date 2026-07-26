@@ -17,7 +17,7 @@ from .models import (
 )
 from apps.epg.serializers import EPGDataSerializer
 from core.models import StreamProfile
-from apps.epg.models import EPGData
+from apps.epg.models import EPGData, ProgramData
 from django.db import connection, transaction
 from django.urls import reverse
 from rest_framework import serializers
@@ -117,6 +117,14 @@ class StreamSerializer(serializers.ModelSerializer):
         allow_null=True,
         required=False,
     )
+    # Currently-airing EPG programme title for this stream's tvg_id, if any.
+    # Lets a generically-named stream (a common PPV/event-slot pattern some
+    # providers use) show what's actually on it right now without having to
+    # rename anything. Resolved from context["_epg_now_cache"] when the caller
+    # batched the lookup (see ChannelSerializer.get_streams); falls back to a
+    # single-stream query so StreamSerializer stays correct when used on its
+    # own (e.g. the streams list view).
+    epg_now_title = serializers.SerializerMethodField()
     read_only_fields = ["is_custom", "m3u_account", "stream_hash", "stream_id", "stream_chno"]
 
     class Meta:
@@ -144,7 +152,23 @@ class StreamSerializer(serializers.ModelSerializer):
             "stream_chno",
             "is_catchup",
             "catchup_days",
+            "epg_now_title",
         ]
+
+    def get_epg_now_title(self, obj):
+        if not obj.tvg_id:
+            return None
+        cache = self.context.get("_epg_now_cache")
+        if cache is not None:
+            return cache.get(obj.tvg_id)
+        now = timezone.now()
+        return (
+            ProgramData.objects.filter(
+                epg__tvg_id=obj.tvg_id, start_time__lte=now, end_time__gt=now
+            )
+            .values_list("title", flat=True)
+            .first()
+        )
 
     def get_fields(self):
         fields = super().get_fields()
@@ -561,7 +585,22 @@ class ChannelSerializer(serializers.ModelSerializer):
             for cs in obj.channelstream_set.all()
             if cs.stream_id is not None
         ]
-        return StreamSerializer(ordered_streams, many=True).data
+        # One query for this channel's whole stream list instead of one per
+        # stream — see StreamSerializer.epg_now_title.
+        tvg_ids = {s.tvg_id for s in ordered_streams if s.tvg_id}
+        epg_now_cache = {}
+        if tvg_ids:
+            now = timezone.now()
+            epg_now_cache = dict(
+                ProgramData.objects.filter(
+                    epg__tvg_id__in=tvg_ids, start_time__lte=now, end_time__gt=now
+                ).values_list("epg__tvg_id", "title")
+            )
+        return StreamSerializer(
+            ordered_streams,
+            many=True,
+            context={**self.context, "_epg_now_cache": epg_now_cache},
+        ).data
 
     def create(self, validated_data):
         streams = validated_data.pop("streams", [])
