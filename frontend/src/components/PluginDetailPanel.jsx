@@ -6,6 +6,7 @@ import {
   Button,
   Group,
   Loader,
+  Popover,
   Select,
   Stack,
   Table,
@@ -19,6 +20,7 @@ import {
   AlertTriangle,
   Ban,
   Download,
+  Info,
   RefreshCw,
   ShieldAlert,
   ShieldCheck,
@@ -30,7 +32,101 @@ import {
   compareVersions,
 } from '../utils/components/pluginUtils.js';
 import { formatKB } from '../utils/networkUtils.js';
+import { isSafeHttpUrl } from '../utils/url.js';
 import { DiscordIcon, GitHubIcon } from './icons.jsx';
+
+/**
+ * Author/license/signature/repo-link/discord-link badges, exported so a
+ * caller embedding PluginDetailPanel inline (e.g. PluginDetail.jsx's
+ * "Plugin Management" pane) can merge these into its own pill row instead
+ * of getting a second, separate one from this component (see `hideMeta`).
+ */
+export const PluginMetaBadges = ({ manifest, signatureVerified, size = 'sm' }) => {
+  const safeRepoUrl = isSafeHttpUrl(manifest.repo_url) ? manifest.repo_url : null;
+  // Only rewrite to the discord:// deep-link scheme when the source matched
+  // the strict https://discord.com/channels/ pattern; any other value still
+  // has to pass the plain http(s) allowlist before it's rendered at all.
+  const isDiscordChannel = /^https:\/\/discord\.com\/channels\//.test(manifest.discord_thread || '');
+  const safeDiscordHref = isDiscordChannel
+    ? manifest.discord_thread.replace('https://', 'discord://')
+    : isSafeHttpUrl(manifest.discord_thread)
+      ? manifest.discord_thread
+      : null;
+
+  return (
+    <>
+      {manifest.author && (
+        <Badge size={size} variant="default">
+          <span style={{ opacity: 0.5, marginRight: 4 }}>AUTHOR</span>
+          {manifest.author}
+        </Badge>
+      )}
+      {manifest.license && (
+        <Badge
+          size={size}
+          variant="default"
+          component="a"
+          href={`https://spdx.org/licenses/${encodeURIComponent(manifest.license)}.html`}
+          target="_blank"
+          rel="noopener noreferrer"
+          style={{ cursor: 'pointer' }}
+        >
+          <span style={{ opacity: 0.5, marginRight: 4 }}>LICENSE</span>
+          {manifest.license}
+        </Badge>
+      )}
+      {signatureVerified != null &&
+        (signatureVerified ? (
+          <Badge size={size} variant="default" leftSection={<ShieldCheck size={10} />}>
+            Verified Signature
+          </Badge>
+        ) : (
+          <Tooltip label="Invalid Signature">
+            <Badge
+              size={size}
+              variant="filled"
+              color="red"
+              leftSection={<ShieldAlert size={10} />}
+            >
+              Unverified
+            </Badge>
+          </Tooltip>
+        ))}
+      {safeRepoUrl && (
+        <Tooltip label="Source Repository">
+          <ActionIcon
+            variant="subtle"
+            color="gray"
+            size="sm"
+            component="a"
+            href={safeRepoUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            <GitHubIcon size={16} />
+          </ActionIcon>
+        </Tooltip>
+      )}
+      {safeDiscordHref && (
+        <Tooltip label="Discord Discussion">
+          <ActionIcon
+            variant="subtle"
+            color="gray"
+            size="sm"
+            component="a"
+            href={safeDiscordHref}
+            {...(!isDiscordChannel && {
+              target: '_blank',
+              rel: 'noopener noreferrer',
+            })}
+          >
+            <DiscordIcon size={16} />
+          </ActionIcon>
+        </Tooltip>
+      )}
+    </>
+  );
+};
 
 /**
  * Shared plugin detail panel used in both PluginCard and AvailablePluginCard modals.
@@ -51,8 +147,21 @@ import { DiscordIcon, GitHubIcon } from './icons.jsx';
  *  - installedVersionIsPrerelease  boolean
  *  - repoId          number
  *  - slug            string
+ *  - hideMeta        boolean  skip the description text and PluginMetaBadges
+ *                     row; set when the caller renders those itself, merged
+ *                     into its own pill row (see PluginDetail.jsx)
+ *  - compactVersionDetails  boolean  hide the release-details table behind a
+ *                     "Details" popover button instead of showing it inline
+ *                     (default: inline table, used by AvailablePluginCard's
+ *                     "More Info" modal where there's no space pressure)
+ *  - hideVersionLabel  boolean  omit the "Version" label above the version
+ *                     Select (set when the caller's own section heading
+ *                     already makes that context obvious)
  */
 const PluginDetailPanel = ({
+  hideMeta = false,
+  compactVersionDetails = false,
+  hideVersionLabel = false,
   detail,
   detailLoading,
   selectedVersion,
@@ -195,96 +304,15 @@ const PluginDetailPanel = ({
 
   return (
     <Stack gap="md">
-      {manifest.description && <Text size="sm">{manifest.description}</Text>}
+      {!hideMeta && manifest.description && (
+        <Text size="sm">{manifest.description}</Text>
+      )}
 
-      <Group gap="xs" wrap="wrap">
-        {manifest.author && (
-          <Badge size="sm" variant="default">
-            <span style={{ opacity: 0.5, marginRight: 4 }}>AUTHOR</span>
-            {manifest.author}
-          </Badge>
-        )}
-        {manifest.license && (
-          <Badge
-            size="sm"
-            variant="default"
-            component="a"
-            href={`https://spdx.org/licenses/${encodeURIComponent(manifest.license)}.html`}
-            target="_blank"
-            rel="noopener noreferrer"
-            style={{ cursor: 'pointer' }}
-          >
-            <span style={{ opacity: 0.5, marginRight: 4 }}>LICENSE</span>
-            {manifest.license}
-          </Badge>
-        )}
-        {detail.signature_verified != null &&
-          (detail.signature_verified ? (
-            <Badge
-              size="sm"
-              variant="default"
-              leftSection={<ShieldCheck size={10} />}
-            >
-              Verified Signature
-            </Badge>
-          ) : (
-            <Tooltip label="Invalid Signature">
-              <Badge
-                size="sm"
-                variant="filled"
-                color="red"
-                leftSection={<ShieldAlert size={10} />}
-              >
-                Unverified
-              </Badge>
-            </Tooltip>
-          ))}
-        {manifest.repo_url && (
-          <Tooltip label="Source Repository">
-            <ActionIcon
-              variant="subtle"
-              color="gray"
-              size="sm"
-              component="a"
-              href={manifest.repo_url}
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              <GitHubIcon size={16} />
-            </ActionIcon>
-          </Tooltip>
-        )}
-        {manifest.discord_thread &&
-          (() => {
-            const isDiscordChannel = /^https:\/\/discord\.com\/channels\//.test(
-              manifest.discord_thread
-            );
-            return (
-              <Tooltip label="Discord Discussion">
-                <ActionIcon
-                  variant="subtle"
-                  color="gray"
-                  size="sm"
-                  component="a"
-                  href={
-                    isDiscordChannel
-                      ? manifest.discord_thread.replace(
-                          'https://',
-                          'discord://'
-                        )
-                      : manifest.discord_thread
-                  }
-                  {...(!isDiscordChannel && {
-                    target: '_blank',
-                    rel: 'noopener noreferrer',
-                  })}
-                >
-                  <DiscordIcon size={16} />
-                </ActionIcon>
-              </Tooltip>
-            );
-          })()}
-      </Group>
+      {!hideMeta && (
+        <Group gap="xs" wrap="wrap">
+          <PluginMetaBadges manifest={manifest} signatureVerified={detail.signature_verified} />
+        </Group>
+      )}
 
       {manifest.deprecated && (
         <Alert
@@ -307,11 +335,103 @@ const PluginDetailPanel = ({
             installedVersion,
             installedVersionIsPrerelease
           );
+
+          const versionTable = selectedVersionData && (
+            <Table
+              fontSize="xs"
+              striped
+              highlightOnHover
+              style={{ tableLayout: 'auto' }}
+            >
+              <TableTbody>
+                {selectedVersionData.build_timestamp && (
+                  <TableTr>
+                    <TableTd fw={500} style={{ whiteSpace: 'nowrap' }}>
+                      Built
+                    </TableTd>
+                    <TableTd>
+                      {new Date(
+                        selectedVersionData.build_timestamp
+                      ).toLocaleString()}
+                    </TableTd>
+                  </TableTr>
+                )}
+                {Number.isFinite(selectedVersionData.size) &&
+                  selectedVersionData.size > 0 && (
+                    <TableTr>
+                      <TableTd fw={500} style={{ whiteSpace: 'nowrap' }}>
+                        File Size
+                      </TableTd>
+                      <TableTd>{formatKB(selectedVersionData.size)}</TableTd>
+                    </TableTr>
+                  )}
+                {selectedVersionData.min_dispatcharr_version && (
+                  <TableTr>
+                    <TableTd fw={500} style={{ whiteSpace: 'nowrap' }}>
+                      Min Version
+                    </TableTd>
+                    <TableTd>{selectedVersionData.min_dispatcharr_version}</TableTd>
+                  </TableTr>
+                )}
+                {selectedVersionData.max_dispatcharr_version && (
+                  <TableTr>
+                    <TableTd fw={500} style={{ whiteSpace: 'nowrap' }}>
+                      Max Version
+                    </TableTd>
+                    <TableTd>{selectedVersionData.max_dispatcharr_version}</TableTd>
+                  </TableTr>
+                )}
+                {selectedVersionData.commit_sha_short && (
+                  <TableTr>
+                    <TableTd fw={500} style={{ whiteSpace: 'nowrap' }}>
+                      Commit
+                    </TableTd>
+                    <TableTd>
+                      {manifest.registry_url ? (
+                        <Text
+                          size="xs"
+                          component="a"
+                          href={`${manifest.registry_url}/commit/${selectedVersionData.commit_sha}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          c="blue"
+                        >
+                          {selectedVersionData.commit_sha_short}
+                        </Text>
+                      ) : (
+                        selectedVersionData.commit_sha_short
+                      )}
+                    </TableTd>
+                  </TableTr>
+                )}
+                {selectedVersionData.url && (
+                  <TableTr>
+                    <TableTd fw={500} style={{ whiteSpace: 'nowrap' }}>
+                      Download
+                    </TableTd>
+                    <TableTd>
+                      <Text
+                        size="xs"
+                        component="a"
+                        href={selectedVersionData.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        c="blue"
+                      >
+                        {selectedVersionData.url.split('/').pop()}
+                      </Text>
+                    </TableTd>
+                  </TableTr>
+                )}
+              </TableTbody>
+            </Table>
+          );
+
           return (
             <>
-              <Group gap="xs" align="flex-end">
+              <Group gap="xs" align="flex-end" grow={compactVersionDetails}>
                 <Select
-                  label="Version"
+                  label={hideVersionLabel ? undefined : 'Version'}
                   size="xs"
                   allowDeselect={false}
                   value={selectedVersion}
@@ -319,7 +439,17 @@ const PluginDetailPanel = ({
                   data={versionItems}
                   style={{ maxWidth: 240 }}
                 />
-                <Group gap="xs" align="center">
+                {compactVersionDetails && selectedVersionData && (
+                  <Popover width={260} position="bottom-start" withArrow shadow="md">
+                    <Popover.Target>
+                      <Button size="xs" variant="default" leftSection={<Info size={14} />}>
+                        Details
+                      </Button>
+                    </Popover.Target>
+                    <Popover.Dropdown>{versionTable}</Popover.Dropdown>
+                  </Popover>
+                )}
+                <Group gap="xs" align="center" grow={compactVersionDetails}>
                   {btnProps.tooltip ? (
                     <Tooltip label={btnProps.tooltip}>
                       <Button
@@ -375,102 +505,7 @@ const PluginDetailPanel = ({
                     })()}
                 </Group>
               </Group>
-              {selectedVersionData && (
-                <Table
-                  fontSize="xs"
-                  striped
-                  highlightOnHover
-                  style={{ tableLayout: 'auto' }}
-                >
-                  <TableTbody>
-                    {selectedVersionData.build_timestamp && (
-                      <TableTr>
-                        <TableTd fw={500} style={{ whiteSpace: 'nowrap' }}>
-                          Built
-                        </TableTd>
-                        <TableTd>
-                          {new Date(
-                            selectedVersionData.build_timestamp
-                          ).toLocaleString()}
-                        </TableTd>
-                      </TableTr>
-                    )}
-                    {Number.isFinite(selectedVersionData.size) &&
-                      selectedVersionData.size > 0 && (
-                        <TableTr>
-                          <TableTd fw={500} style={{ whiteSpace: 'nowrap' }}>
-                            File Size
-                          </TableTd>
-                          <TableTd>
-                            {formatKB(selectedVersionData.size)}
-                          </TableTd>
-                        </TableTr>
-                      )}
-                    {selectedVersionData.min_dispatcharr_version && (
-                      <TableTr>
-                        <TableTd fw={500} style={{ whiteSpace: 'nowrap' }}>
-                          Min Version
-                        </TableTd>
-                        <TableTd>
-                          {selectedVersionData.min_dispatcharr_version}
-                        </TableTd>
-                      </TableTr>
-                    )}
-                    {selectedVersionData.max_dispatcharr_version && (
-                      <TableTr>
-                        <TableTd fw={500} style={{ whiteSpace: 'nowrap' }}>
-                          Max Version
-                        </TableTd>
-                        <TableTd>
-                          {selectedVersionData.max_dispatcharr_version}
-                        </TableTd>
-                      </TableTr>
-                    )}
-                    {selectedVersionData.commit_sha_short && (
-                      <TableTr>
-                        <TableTd fw={500} style={{ whiteSpace: 'nowrap' }}>
-                          Commit
-                        </TableTd>
-                        <TableTd>
-                          {manifest.registry_url ? (
-                            <Text
-                              size="xs"
-                              component="a"
-                              href={`${manifest.registry_url}/commit/${selectedVersionData.commit_sha}`}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              c="blue"
-                            >
-                              {selectedVersionData.commit_sha_short}
-                            </Text>
-                          ) : (
-                            selectedVersionData.commit_sha_short
-                          )}
-                        </TableTd>
-                      </TableTr>
-                    )}
-                    {selectedVersionData.url && (
-                      <TableTr>
-                        <TableTd fw={500} style={{ whiteSpace: 'nowrap' }}>
-                          Download
-                        </TableTd>
-                        <TableTd>
-                          <Text
-                            size="xs"
-                            component="a"
-                            href={selectedVersionData.url}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            c="blue"
-                          >
-                            {selectedVersionData.url.split('/').pop()}
-                          </Text>
-                        </TableTd>
-                      </TableTr>
-                    )}
-                  </TableTbody>
-                </Table>
-              )}
+              {!compactVersionDetails && versionTable}
             </>
           );
         })()}
