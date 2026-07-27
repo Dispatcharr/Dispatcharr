@@ -29,6 +29,7 @@ import {
   Settings,
   AlertTriangle,
   Megaphone,
+  PlugZap,
   X,
   Eye,
   EyeOff,
@@ -52,6 +53,8 @@ const getNotificationIcon = (type) => {
       return <Megaphone size={16} />;
     case 'warning':
       return <AlertTriangle size={16} />;
+    case 'plugin_update':
+      return <PlugZap size={16} />;
     case 'info':
     default:
       return <Info size={16} />;
@@ -84,6 +87,8 @@ const getTypeColor = (type) => {
       return 'violet';
     case 'warning':
       return 'orange';
+    case 'plugin_update':
+      return 'yellow';
     case 'info':
     default:
       return 'gray';
