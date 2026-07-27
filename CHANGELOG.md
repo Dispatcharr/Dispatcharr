@@ -10,11 +10,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Security
 
 - **First-time web setup is limited to local networks by default.** `POST /api/accounts/initialize-superuser/` only accepts private/loopback IPv4 and IPv6 ranges unless `DISPATCHARR_SETUP_ALLOWED_IP` is set to a single IP (for remote/VPS setup). While no admin exists, GET reports `client_ip` and `setup_allowed` so the UI can show remote-setup instructions (env override or `createsuperuser`). Once an admin-level user exists, the endpoint only returns `superuser_exists: true`.
+- Updated `Django` 6.0.6 → 6.0.7, resolving the following CVEs:
+  - **CVE-2026-48588**: Potential exposure of private data via cached `Set-Cookie` response in `UpdateCacheMiddleware` / `cache_page()`.
+  - **CVE-2026-53877**: Heap buffer over-read in `GDALRaster` when initialized with certain `bytes` objects.
+  - **CVE-2026-53878**: Header injection possibility since `DomainNameValidator` accepted newlines in input.
 - Updated frontend npm dependencies:
   - `brace-expansion` 5.0.6 → 5.0.8, fixing **high** severity DoS via exponential-time expansion of consecutive non-expanding `{}` groups ([GHSA-3jxr-9vmj-r5cp](https://github.com/advisories/GHSA-3jxr-9vmj-r5cp)) and **high** severity DoS via unbounded expansion length ([GHSA-mh99-v99m-4gvg](https://github.com/advisories/GHSA-mh99-v99m-4gvg))
   - `js-yaml` 5.1.0 → 5.2.2, fixing **moderate** severity quadratic CPU via merge-key chains ([GHSA-g796-fgmg-93mv](https://github.com/advisories/GHSA-g796-fgmg-93mv)), **moderate** severity quadratic DoS via `!!omap` in YAML11_SCHEMA ([GHSA-724g-mxrg-4qvm](https://github.com/advisories/GHSA-724g-mxrg-4qvm)), and **high** severity exponential parsing time in flow collections ([GHSA-pm4m-ph32-ghv5](https://github.com/advisories/GHSA-pm4m-ph32-ghv5))
   - `postcss` 8.5.13 → 8.5.23, fixing **high** severity path traversal in previous source map auto-loading ([GHSA-r28c-9q8g-f849](https://github.com/advisories/GHSA-r28c-9q8g-f849))
   - `react-router` / `react-router-dom` 7.17.0 → 7.18.1, fixing **moderate** severity open redirect via backslash in `<Link>`/`useNavigate` ([GHSA-wrjc-x8rr-h8h6](https://github.com/advisories/GHSA-wrjc-x8rr-h8h6)), **moderate** severity XSS via RSCErrorHandler missing protocol validation ([GHSA-h8fp-f39c-q6mh](https://github.com/advisories/GHSA-h8fp-f39c-q6mh)), **moderate** severity arbitrary constructor injection via `deserializeErrors()` ([GHSA-337j-9hxr-rhxg](https://github.com/advisories/GHSA-337j-9hxr-rhxg)), and **high** severity unauthenticated DoS via inefficient route matching ([GHSA-chx6-hx7r-mcp5](https://github.com/advisories/GHSA-chx6-hx7r-mcp5))
+
+### Changed
+
+- Dependency updates:
+  - `Django` 6.0.6 → 6.0.7 (security patch; see Security section)
+  - `drf-spectacular` 0.29.0 → 0.30.0
+  - `gevent` 26.5.0 → 26.7.0
+  - `torch` 2.12.1+cpu → 2.13.0+cpu
+  - `sentence-transformers` 5.6.0 → 5.6.1
 
 ## [0.28.2] - 2026-07-23
 
