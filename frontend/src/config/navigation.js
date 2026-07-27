@@ -7,8 +7,6 @@ import {
   ChartLine,
   Video,
   PlugZap,
-  Package,
-  Download,
   User,
   FileImage,
   Webhook,
@@ -70,11 +68,13 @@ export const NAV_ITEMS = {
     id: 'plugins',
     label: 'Plugins',
     icon: PlugZap,
+    path: '/plugins',
+    panel: 'plugins',
     adminOnly: true,
-    paths: [
-      { label: 'My Plugins', icon: Package, path: '/plugins' },
-      { label: 'Find Plugins', icon: Download, path: '/plugins/browse' },
-    ],
+    // Sidebar.jsx renders pinned-plugin rows (from usePluginStore + the
+    // user's pinnedPlugins preference) directly beneath this entry in the
+    // primary nav, in addition to the full list living in the slide-over.
+    dynamicPinned: true,
   },
   system: {
     id: 'system',
@@ -114,9 +114,12 @@ export const DEFAULT_USER_ORDER = [
   'settings',
 ];
 
+/** Whether a nav item renders as its own visually-grouped block (heading + rows). */
+const isGroupedItem = (item) => Boolean(item.paths || item.dynamicPinned);
+
 /** True when a divider should render before navItems[idx] (start or end of a grouped section). */
 export const isGroupBoundary = (navItems, idx) =>
-  idx > 0 && Boolean(navItems[idx].paths || navItems[idx - 1].paths);
+  idx > 0 && (isGroupedItem(navItems[idx]) || isGroupedItem(navItems[idx - 1]));
 
 export const getOrderedNavItems = (userOrder, isAdmin, channelIds = []) => {
   const defaultOrder = isAdmin ? DEFAULT_ADMIN_ORDER : DEFAULT_USER_ORDER;
@@ -158,6 +161,7 @@ export const getOrderedNavItems = (userOrder, isAdmin, channelIds = []) => {
       path: item.path,
       canHide: item.canHide,
       panel: item.panel,
+      dynamicPinned: item.dynamicPinned,
     };
 
     // Add badge for channels

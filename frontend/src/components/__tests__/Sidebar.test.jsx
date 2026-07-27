@@ -5,6 +5,7 @@ import Sidebar from '../Sidebar';
 import useChannelsStore from '../../store/channels';
 import useSettingsStore from '../../store/settings';
 import useAuthStore from '../../store/auth';
+import { usePluginStore } from '../../store/plugins';
 import { copyToClipboard } from '../../utils';
 import { USER_LEVELS } from '../../constants';
 
@@ -12,6 +13,7 @@ import { USER_LEVELS } from '../../constants';
 vi.mock('../../store/channels');
 vi.mock('../../store/settings');
 vi.mock('../../store/auth');
+vi.mock('../../store/plugins');
 vi.mock('../../utils', () => ({
   copyToClipboard: vi.fn(),
 }));
@@ -169,6 +171,7 @@ describe('Sidebar', () => {
     vi.clearAllMocks();
 
     useChannelsStore.mockReturnValue(mockChannels);
+    usePluginStore.mockImplementation((selector) => selector({ plugins: [] }));
     useSettingsStore.mockImplementation((selector) => {
       const state = {
         environment: mockEnvironment,
@@ -183,6 +186,8 @@ describe('Sidebar', () => {
         logout: vi.fn(),
         getNavOrder: () => null,
         getHiddenNav: () => [],
+        getPinnedPlugins: () => [],
+        togglePinnedPlugin: vi.fn(),
       };
       return selector(state);
     });
@@ -226,6 +231,7 @@ describe('Sidebar', () => {
       expect(screen.getByText('DVR')).toBeInTheDocument();
       expect(screen.getByText('Stats')).toBeInTheDocument();
       expect(screen.getByText('Plugins')).toBeInTheDocument();
+      expect(screen.getByText('My Plugins')).toBeInTheDocument();
 
       // Expand System group to access Users
       const systemButton = screen.getByText('System');
@@ -280,7 +286,9 @@ describe('Sidebar', () => {
           logout: vi.fn(),
           getNavOrder: () => null,
           getHiddenNav: () => [],
-        };
+          getPinnedPlugins: () => [],
+          togglePinnedPlugin: vi.fn(),
+      };
         return selector(state);
       });
     });
@@ -341,7 +349,9 @@ describe('Sidebar', () => {
           logout: vi.fn(),
           getNavOrder: () => null,
           getHiddenNav: () => [],
-        };
+          getPinnedPlugins: () => [],
+          togglePinnedPlugin: vi.fn(),
+      };
         return selector(state);
       });
 
@@ -382,7 +392,9 @@ describe('Sidebar', () => {
           logout: mockLogout,
           getNavOrder: () => null,
           getHiddenNav: () => [],
-        };
+          getPinnedPlugins: () => [],
+          togglePinnedPlugin: vi.fn(),
+      };
         return selector(state);
       });
 
@@ -411,7 +423,9 @@ describe('Sidebar', () => {
           logout: vi.fn(),
           getNavOrder: () => null,
           getHiddenNav: () => [],
-        };
+          getPinnedPlugins: () => [],
+          togglePinnedPlugin: vi.fn(),
+      };
         return selector(state);
       });
     });
@@ -575,7 +589,9 @@ describe('Sidebar', () => {
           logout: vi.fn(),
           getNavOrder: () => null,
           getHiddenNav: () => [],
-        };
+          getPinnedPlugins: () => [],
+          togglePinnedPlugin: vi.fn(),
+      };
         return selector(state);
       });
 
@@ -594,7 +610,9 @@ describe('Sidebar', () => {
           logout: vi.fn(),
           getNavOrder: () => null,
           getHiddenNav: () => [],
-        };
+          getPinnedPlugins: () => [],
+          togglePinnedPlugin: vi.fn(),
+      };
         return selector(state);
       });
 

@@ -10,6 +10,7 @@ import {
   LogOut,
 } from 'lucide-react';
 import { getVisibleSettingsGroups } from '../config/settingsNav';
+import { buildPluginsNavEntries } from '../config/pluginsNav';
 import { SlidingPanels, usePanelNav } from './SlidingPanels';
 import AboutModal from './AboutModal';
 import { getOrderedNavItems, isGroupBoundary } from '../config/navigation';
@@ -26,14 +27,23 @@ import {
   Skeleton,
   Tooltip,
 } from '@mantine/core';
+import { Download } from 'lucide-react';
 import logo from '../images/logo.png';
 import useChannelsStore from '../store/channels';
 import './sidebar.css';
 import useSettingsStore from '../store/settings';
 import useAuthStore from '../store/auth';
+import { usePluginStore } from '../store/plugins';
 import { USER_LEVELS } from '../constants';
 import UserForm from './forms/User';
 import NotificationCenter from './NotificationCenter';
+
+// Settings is the only remaining sub-panel (plugins used to have one too -
+// removed in favor of pinned rows directly in the primary nav). Kept as a
+// small table rather than a single hard-coded check so adding another panel
+// later doesn't mean re-deriving this logic.
+const PANEL_OPEN_ROUTES = [{ test: (p) => p.startsWith('/settings'), type: 'settings' }];
+const PANEL_SCOPE_PREFIXES = ['/settings'];
 
 // ─── Small shared components ─────────────────────────────────────────────────
 
@@ -78,7 +88,7 @@ const NavRow = ({
 }) => {
   const button = (
     <UnstyledButton
-      {...(to ? { component: Link, to } : { onClick })}
+      {...(to ? { component: Link, to, onClick } : { onClick })}
       className={`navlink${isActive ? ' navlink-active' : ''}${collapsed ? ' navlink-collapsed' : ''}`}
       style={{ width: '100%' }}
     >
@@ -127,15 +137,48 @@ const NavItem = ({ item, isActive, collapsed }) => (
   />
 );
 
-/** Nav row that opens the sidebar's settings sub-panel instead of routing directly. */
-const SettingsPanelRow = ({ item, collapsed, location, panelOpen, onOpen }) => (
+/**
+ * Nav row that opens the sidebar's settings sub-panel; it only ever
+ * navigates via a section row inside the panel, not this top-level row.
+ */
+const PanelRow = ({ item, collapsed, isActive, onOpen }) => (
   <NavRow
     icon={item.icon}
     label={item.label}
-    isActive={panelOpen || location.pathname.startsWith('/settings')}
+    isActive={isActive}
     collapsed={collapsed}
     onClick={onOpen}
     trailing={!collapsed && <ChevronRight size={14} style={{ flexShrink: 0, opacity: 0.5 }} />}
+  />
+);
+
+/** A pinned/listed plugin row: shows the plugin's logo (or a monogram fallback), not a generic icon. */
+const PluginNavItem = ({ entry, isActive, collapsed }) => (
+  <NavRow
+    icon={() => (
+      <Avatar src={entry.logoUrl} radius="sm" size={NAV_ICON_SIZE} alt="">
+        {entry.label?.[0]?.toUpperCase()}
+      </Avatar>
+    )}
+    label={entry.label}
+    isActive={isActive}
+    collapsed={collapsed}
+    to={entry.path}
+    trailing={
+      !collapsed &&
+      entry.updateAvailable && (
+        <Box
+          title="Update available"
+          style={{
+            width: 6,
+            height: 6,
+            borderRadius: '50%',
+            backgroundColor: 'var(--mantine-color-yellow-5)',
+            flexShrink: 0,
+          }}
+        />
+      )
+    }
   />
 );
 
@@ -158,12 +201,11 @@ function NavGroup({ label, paths, location, collapsed, onSettingsClick, settings
         {paths.map((child) => {
           if (child.panel === 'settings' && onSettingsClick) {
             return (
-              <SettingsPanelRow
+              <PanelRow
                 key={child.path}
                 item={child}
                 collapsed={collapsed}
-                location={location}
-                panelOpen={settingsPanelOpen}
+                isActive={settingsPanelOpen || location.pathname.startsWith('/settings')}
                 onOpen={onSettingsClick}
               />
             );
@@ -196,6 +238,8 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
   const logout = useAuthStore((s) => s.logout);
   const getNavOrder = useAuthStore((s) => s.getNavOrder);
   const getHiddenNav = useAuthStore((s) => s.getHiddenNav);
+  const getPinnedPlugins = useAuthStore((s) => s.getPinnedPlugins);
+  const plugins = usePluginStore((s) => s.plugins);
 
   const [userFormOpen, setUserFormOpen] = useState(false);
   const [aboutOpen, setAboutOpen] = useState(false);
@@ -214,20 +258,32 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
   const activeSettingsId = location.hash.replace('#', '');
   const visibleSettingsGroups = getVisibleSettingsGroups(isAdmin);
 
+  const pinnedPluginKeys = getPinnedPlugins();
+  const pluginsNav = useMemo(
+    () => buildPluginsNavEntries(plugins, pinnedPluginKeys),
+    [plugins, pinnedPluginKeys]
+  );
+
   // Panel navigation state, drives the SlidingPanels component
   const nav = usePanelNav();
   // Destructure push so the stable setPanel reference appears in the dep array,
   // not the recreated nav object.
   const { push: pushPanel } = nav;
 
-  // Sync settings route → panel state without causing loops.
+  // Which panel (if any) the current route should force open right now.
+  const forceOpenType = PANEL_OPEN_ROUTES.find((r) => r.test(location.pathname))?.type ?? null;
+  // Whether the current route still belongs to a panel's scope at all -
+  // false only once the location has left every panel-owning route entirely.
+  const inAnyPanelScope = PANEL_SCOPE_PREFIXES.some((p) => location.pathname.startsWith(p));
+
+  // Sync route → panel state without causing loops.
   useEffect(() => {
     pushPanel((curr) => {
-      if (isSettingsPage && curr?.type !== 'settings') return { type: 'settings' };
-      if (!isSettingsPage && curr?.type === 'settings') return null;
+      if (forceOpenType && curr?.type !== forceOpenType) return { type: forceOpenType };
+      if (!inAnyPanelScope && curr) return null;
       return curr;
     });
-  }, [isSettingsPage, pushPanel]);
+  }, [forceOpenType, inAnyPanelScope, pushPanel]);
 
   const copyPublicIP = async () => {
     await copyToClipboard(environment.public_ip, {
@@ -263,15 +319,60 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
             );
           }
 
+          // Plugins: a heading, static "My Plugins" (opens the slide-over)
+          // and "Find Plugins" rows, then any pinned plugins rendered
+          // inline as their own rows, mirroring NavGroup's look.
+          if (item.dynamicPinned && item.id === 'plugins') {
+            return withDivider(
+              <Box key={item.id} style={{ width: '100%' }}>
+                {!collapsed && (
+                  <Text
+                    size="xs"
+                    fw={700}
+                    tt="uppercase"
+                    c="dimmed"
+                    style={{ padding: '2px 10px 4px', letterSpacing: '0.05em', whiteSpace: 'nowrap' }}
+                  >
+                    {item.label}
+                  </Text>
+                )}
+                <Stack gap={4}>
+                  <NavItem
+                    item={{ ...item, label: 'My Plugins' }}
+                    isActive={location.pathname === item.path}
+                    collapsed={collapsed}
+                  />
+                  <NavRow
+                    icon={Download}
+                    label={pluginsNav.findPlugins.label}
+                    isActive={location.pathname === pluginsNav.findPlugins.path}
+                    collapsed={collapsed}
+                    to={pluginsNav.findPlugins.path}
+                  />
+                  {pluginsNav.pinned.map((entry) => (
+                    <PluginNavItem
+                      key={entry.id}
+                      entry={entry}
+                      isActive={location.pathname === entry.path}
+                      collapsed={collapsed}
+                    />
+                  ))}
+                </Stack>
+              </Box>
+            );
+          }
+
           // Settings leaf item: open sidebar sub-panel instead of navigating
           if (item.panel === 'settings') {
             return withDivider(
-              <SettingsPanelRow
+              <PanelRow
                 key={item.path}
                 item={item}
                 collapsed={collapsed}
-                location={location}
-                panelOpen={nav.isOpen}
+                isActive={
+                  (nav.isOpen && nav.displayed?.type === 'settings') ||
+                  location.pathname.startsWith('/settings')
+                }
                 onOpen={() => nav.push({ type: 'settings' })}
               />
             );
