@@ -589,7 +589,13 @@ const EPGsTable = () => {
           borderRadius: 'var(--mantine-radius-default)',
         }}
       >
-        <CustomTable table={table} />
+        {data.length === 0 ? (
+          <Text size="xl" c="dimmed" ta="center" py="xl">
+            No EPG sources yet.
+          </Text>
+        ) : (
+          <CustomTable table={table} />
+        )}
       </Box>
 
       <EPGForm epg={epg} isOpen={epgModalOpen} onClose={closeEPGForm} />

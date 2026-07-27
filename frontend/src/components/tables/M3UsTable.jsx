@@ -773,7 +773,13 @@ const M3UTable = () => {
           borderRadius: 'var(--mantine-radius-default)',
         }}
       >
-        <CustomTable table={table} />
+        {data.length === 0 ? (
+          <Text size="xl" c="dimmed" ta="center" py="xl">
+            No M3U accounts yet.
+          </Text>
+        ) : (
+          <CustomTable table={table} />
+        )}
       </Box>
 
       <M3UForm
