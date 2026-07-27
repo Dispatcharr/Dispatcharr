@@ -631,6 +631,25 @@ LOGGING = {
     },
 }
 
+# Add a file handler to every logger so logs persist to disk for the UI log browser.
+LOG_FILE_DIR = os.environ.get("DISPATCHARR_LOG_DIR", "/data/logs")
+try:
+    os.makedirs(LOG_FILE_DIR, exist_ok=True)
+    LOGGING["handlers"]["file"] = {
+        "class": "logging.handlers.WatchedFileHandler",
+        "filename": os.path.join(LOG_FILE_DIR, "dispatcharr.log"),
+        "formatter": "verbose",
+        "level": 5,
+        "delay": True,
+    }
+    for _logger_config in list(LOGGING["loggers"].values()) + [LOGGING["root"]]:
+        _handlers = _logger_config.setdefault("handlers", [])
+        if "file" not in _handlers:
+            _handlers.append("file")
+except OSError:
+    # No writable /data (e.g. some test environments): console-only.
+    LOG_FILE_DIR = None
+
 # Connect script execution safety settings
 # Allowed base directories for custom scripts; real paths must be inside
 _allowed_dirs_env = os.environ.get("DISPATCHARR_ALLOWED_SCRIPT_DIRS", "/data/scripts")

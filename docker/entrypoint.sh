@@ -190,7 +190,7 @@ variables=(
     DISPATCHARR_ENV DISPATCHARR_DEBUG DISPATCHARR_LOG_LEVEL DISPATCHARR_ENABLE_IP_LOOKUP
     REDIS_HOST REDIS_PORT REDIS_DB REDIS_PASSWORD REDIS_USER REDIS_IDLE_TIMEOUT REDIS_MAX_CONNECTIONS POSTGRES_DIR DISPATCHARR_PORT
     DISPATCHARR_VERSION DISPATCHARR_TIMESTAMP LIBVA_DRIVERS_PATH LIBVA_DRIVER_NAME LD_LIBRARY_PATH
-    CELERY_NICE_LEVEL UWSGI_NICE_LEVEL DJANGO_SECRET_KEY DISPATCHARR_TIME_ZONE
+    CELERY_NICE_LEVEL UWSGI_NICE_LEVEL DJANGO_SECRET_KEY DISPATCHARR_TIME_ZONE DISPATCHARR_LOG_DIR
 )
 
 # Optional variables, only propagate when set to avoid noisy warnings
@@ -235,6 +235,13 @@ fi
 # Run init scripts
 echo "Starting user setup..."
 . /app/docker/init/01-user-setup.sh
+
+# Ensure the persisted-log directory and live file exist for the file handler.
+LOG_FILE_DIR=${DISPATCHARR_LOG_DIR:-/data/logs}
+mkdir -p "$LOG_FILE_DIR"
+touch "$LOG_FILE_DIR/dispatcharr.log"
+# Non-recursive: DISPATCHARR_LOG_DIR is operator-set, so a recursive chown could re-own a mis-pointed data tree (e.g. /data/db).
+chown "$PUID:$PGID" "$LOG_FILE_DIR" "$LOG_FILE_DIR"/dispatcharr.log*
 
 # Fix TLS client key permissions/ownership BEFORE any external PG connections.
 # Must run after 01-user-setup.sh (user exists for chown) and before
