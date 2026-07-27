@@ -426,7 +426,7 @@ describe('UserUtils', () => {
         expect(result.username).toBeNull();
       });
 
-      it('returns error for streamer username with non-alphanumeric characters', () => {
+      it('returns error for streamer username with unsupported characters', () => {
         const result = validate(null, {
           ...getFormInitialValues(),
           username: 'alice!123',
@@ -490,10 +490,10 @@ describe('UserUtils', () => {
         expect(result.xc_password).toBeNull();
       });
 
-      it('returns error for xc_password with non-alphanumeric characters', () => {
+      it('returns error for xc_password with unsupported characters', () => {
         const result = validate(null, {
           ...getFormInitialValues(),
-          xc_password: 'abc\t123',
+          xc_password: 'abc\n123',
         });
         expect(result.xc_password).toBe('XC password contains unsupported characters');
       });
