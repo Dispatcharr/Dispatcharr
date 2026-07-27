@@ -1165,8 +1165,93 @@ def _xc_fetch_priority_distinct_relations(
     return rows
 
 
+RECORDING_VOD_CATEGORY_ID = "dispatcharr-recordings"
+RECORDING_VOD_CATEGORY_NAME = "Recordings"
+RECORDING_VOD_STREAM_PREFIX = "recording-"
+
+
+def _xc_user_can_access_recording(user, recording):
+    """Return whether an XC user can discover or play this recording.
+
+    DVR recordings inherit visibility from their source channel.  Keep the
+    same user-level, profile, output-hidden, and adult-content gates as the
+    regular client-facing channel output.
+    """
+    channel = recording.channel
+    if channel.hidden_from_output:
+        return False
+    if (user.custom_properties or {}).get("hide_adult_content", False) and channel.is_adult:
+        return False
+    if user.user_level >= 10:
+        return True
+
+    filters = {"id": channel.id, "user_level__lte": user.user_level}
+    profiles = user.channel_profiles.all()
+    if profiles.exists():
+        filters.update({
+            "channelprofilemembership__enabled": True,
+            "channelprofilemembership__channel_profile__in": profiles,
+        })
+    return Channel.objects.filter(**filters).distinct().exists()
+
+
+def _xc_completed_recordings_for_user(user):
+    """Return completed, non-empty recording files the XC user may access."""
+    from apps.channels.models import Recording
+
+    recordings = []
+    for recording in Recording.objects.select_related("channel").order_by("-end_time", "-id"):
+        cp = recording.custom_properties or {}
+        path = cp.get("file_path")
+        if (
+            cp.get("status") == "completed"
+            and path
+            and os.path.isfile(path)
+            and os.path.getsize(path) > 0
+            and _xc_user_can_access_recording(user, recording)
+        ):
+            recordings.append(recording)
+    return recordings
+
+
+def _xc_recording_stream_id(recording):
+    return f"{RECORDING_VOD_STREAM_PREFIX}{recording.id}"
+
+
+def _xc_recording_row(recording, num):
+    cp = recording.custom_properties or {}
+    path = cp["file_path"]
+    title = cp.get("title") or cp.get("name") or recording.channel.name
+    extension = os.path.splitext(path)[1].lstrip(".") or "mkv"
+    return {
+        "num": num,
+        "name": title,
+        "stream_type": "movie",
+        "stream_id": _xc_recording_stream_id(recording),
+        "stream_icon": None,
+        "rating": "0",
+        "rating_5based": 0,
+        "added": str(int(recording.end_time.timestamp())),
+        "is_adult": int(recording.channel.is_adult),
+        "tmdb_id": "",
+        "imdb_id": "",
+        "trailer": "",
+        "plot": cp.get("description") or "",
+        "genre": "Recordings",
+        "year": recording.end_time.year,
+        "director": "",
+        "cast": "",
+        "release_date": recording.end_time.date().isoformat(),
+        "category_id": RECORDING_VOD_CATEGORY_ID,
+        "category_ids": [RECORDING_VOD_CATEGORY_ID],
+        "container_extension": extension,
+        "custom_sid": None,
+        "direct_source": "",
+    }
+
+
 def xc_get_vod_categories(user):
-    """Get VOD categories for XtreamCodes API"""
+    """Get VOD categories for XtreamCodes API."""
     from apps.vod.models import VODCategory, M3UMovieRelation
 
     response = []
@@ -1184,11 +1269,24 @@ def xc_get_vod_categories(user):
             "parent_id": 0,
         })
 
+    if _xc_completed_recordings_for_user(user):
+        response.append({
+            "category_id": RECORDING_VOD_CATEGORY_ID,
+            "category_name": RECORDING_VOD_CATEGORY_NAME,
+            "parent_id": 0,
+        })
+
     return response
 
 
 def xc_get_vod_streams(request, user, category_id=None):
-    """Get VOD streams (movies) for XtreamCodes API"""
+    """Get VOD streams (movies) for XtreamCodes API."""
+    if category_id == RECORDING_VOD_CATEGORY_ID:
+        return [
+            _xc_recording_row(recording, num)
+            for num, recording in enumerate(_xc_completed_recordings_for_user(user), 1)
+        ]
+
     from apps.vod.models import M3UMovieRelation
 
     rel_filters = {"m3u_account__is_active": True}
@@ -1608,7 +1706,54 @@ def xc_get_series_info(request, user, series_id):
 
 
 def xc_get_vod_info(request, user, vod_id):
-    """Get detailed VOD (movie) information"""
+    """Get detailed VOD (movie) information."""
+    if str(vod_id).startswith(RECORDING_VOD_STREAM_PREFIX):
+        recording_id = str(vod_id)[len(RECORDING_VOD_STREAM_PREFIX):]
+        from apps.channels.models import Recording
+        try:
+            recording = Recording.objects.select_related("channel").get(pk=recording_id)
+        except (Recording.DoesNotExist, ValueError):
+            raise Http404()
+        if recording not in _xc_completed_recordings_for_user(user):
+            raise Http404()
+        row = _xc_recording_row(recording, 1)
+        return {
+            "info": {
+                "name": row["name"],
+                "o_name": row["name"],
+                "cover_big": None,
+                "movie_image": None,
+                "description": row["plot"],
+                "plot": row["plot"],
+                "year": row["year"],
+                "release_date": row["release_date"],
+                "genre": row["genre"],
+                "director": "",
+                "actors": "",
+                "cast": "",
+                "country": "",
+                "rating": "0",
+                "imdb_id": "",
+                "tmdb_id": "",
+                "youtube_trailer": "",
+                "backdrop_path": [],
+                "cover": "",
+                "bitrate": 0,
+                "video": {},
+                "audio": {},
+            },
+            "movie_data": {
+                "stream_id": row["stream_id"],
+                "name": row["name"],
+                "added": row["added"],
+                "category_id": RECORDING_VOD_CATEGORY_ID,
+                "category_ids": [RECORDING_VOD_CATEGORY_ID],
+                "container_extension": row["container_extension"],
+                "custom_sid": None,
+                "direct_source": "",
+            },
+        }
+
     from apps.vod.models import M3UMovieRelation
     from django.utils import timezone
     from datetime import timedelta

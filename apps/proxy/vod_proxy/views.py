@@ -1222,6 +1222,25 @@ def stream_xc_movie(request, username, password, stream_id, extension):
     if custom_properties["xc_password"] != password:
         return Response({"error": "Invalid credentials"}, status=401)
 
+    # Locally completed DVR recordings are exposed as a virtual VOD category.
+    # They reuse the existing range-capable recording file endpoint after the
+    # XC credential and source-channel visibility checks have succeeded.
+    if str(stream_id).startswith("recording-"):
+        from apps.channels.models import Recording
+        from apps.channels.api_views import RecordingViewSet
+        from apps.output.views import _xc_completed_recordings_for_user
+
+        try:
+            recording = Recording.objects.select_related("channel").get(
+                pk=str(stream_id).removeprefix("recording-")
+            )
+        except (Recording.DoesNotExist, ValueError):
+            return JsonResponse({"error": "Movie not found"}, status=404)
+        if recording not in _xc_completed_recordings_for_user(user):
+            return JsonResponse({"error": "Movie not found"}, status=404)
+        request.user = user
+        return RecordingViewSet().file(request, pk=recording.pk)
+
     # All authenticated users get access to VOD from all active M3U accounts
     filters = {"movie_id": stream_id, "m3u_account__is_active": True}
 
