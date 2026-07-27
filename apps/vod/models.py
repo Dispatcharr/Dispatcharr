@@ -4,6 +4,7 @@ from django.utils import timezone
 from django.contrib.contenttypes.fields import GenericForeignKey
 from django.contrib.contenttypes.models import ContentType
 from apps.m3u.models import M3UAccount
+from apps.vod.utils import sanitize_logo_url
 import uuid
 
 
@@ -12,12 +13,18 @@ class VODLogo(models.Model):
     name = models.CharField(max_length=255)
     url = models.TextField(unique=True)
 
+    def save(self, *args, **kwargs):
+        if self.url:
+            self.url = sanitize_logo_url(self.url)
+        super().save(*args, **kwargs)
+
     def __str__(self):
         return self.name
 
     class Meta:
         verbose_name = 'VOD Logo'
         verbose_name_plural = 'VOD Logos'
+
 
 
 class VODCategory(models.Model):

@@ -8,6 +8,7 @@ from .models import (
     VODCategory, Series, Movie, Episode, VODLogo,
     M3USeriesRelation, M3UMovieRelation, M3UEpisodeRelation, M3UVODCategoryRelation
 )
+from .utils import sanitize_logo_url
 from datetime import datetime
 import logging
 import json
@@ -493,7 +494,7 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
             duration_secs = extract_duration_from_data(movie_data)
             trailer_raw = movie_data.get('trailer') or movie_data.get('youtube_trailer') or ''
             trailer = extract_string_from_array_or_string(trailer_raw) if trailer_raw else None
-            logo_url = movie_data.get('stream_icon') or ''
+            logo_url = sanitize_logo_url(movie_data.get('stream_icon') or '')
 
             director = extract_string_from_array_or_string(
                 movie_data.get('director') or ''
@@ -855,7 +856,7 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
             description = series_data.get('plot', '')
             rating = normalize_rating(series_data.get('rating'))
             genre = series_data.get('genre', '')
-            logo_url = series_data.get('cover') or ''
+            logo_url = sanitize_logo_url(series_data.get('cover') or '')
 
             # Extract additional metadata for custom_properties
             additional_metadata = {}
