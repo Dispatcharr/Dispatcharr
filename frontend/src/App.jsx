@@ -15,12 +15,14 @@ import DVR from './pages/DVR';
 import Settings from './pages/Settings';
 import PluginsPage from './pages/Plugins';
 import PluginBrowsePage from './pages/PluginBrowse';
+import PluginDetailPage from './pages/PluginDetail';
 import ConnectPage from './pages/Connect';
 import Users from './pages/Users';
 import LogosPage from './pages/Logos';
 import VODsPage from './pages/VODs';
 import useAuthStore from './store/auth';
 import useLocalStorage from './hooks/useLocalStorage';
+import { useMediaQuery } from '@mantine/hooks';
 import FloatingVideo from './components/FloatingVideo';
 import { WebsocketProvider } from './WebSocket';
 import { Box, AppShell, MantineProvider } from '@mantine/core';
@@ -54,6 +56,16 @@ const App = () => {
   const toggleDrawer = () => {
     setOpen((prev) => !prev);
   };
+
+  // Collapse the sidebar automatically on phone-sized viewports so it
+  // doesn't eat up the limited screen width. Only fires on the transition
+  // into mobile width, not every render, so the user can still re-expand it
+  // manually afterward.
+  const isMobile = useMediaQuery('(max-width: 48em)');
+  useEffect(() => {
+    if (isMobile && open) setOpen(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isMobile]);
 
   // Check if a superuser exists on first load.
   useEffect(() => {
@@ -157,6 +169,10 @@ const App = () => {
                         <Route
                           path="/plugins/browse"
                           element={<PluginBrowsePage />}
+                        />
+                        <Route
+                          path="/plugins/:key"
+                          element={<PluginDetailPage />}
                         />
                         <Route path="/plugins" element={<PluginsPage />} />
                         <Route path="/connect" element={<ConnectPage />} />

@@ -19,6 +19,12 @@ export const importPlugin = async (
 export const reloadPlugins = async () => {
   return await API.reloadPlugins();
 };
+export const reloadPlugin = async (key) => {
+  return await API.reloadPlugin(key);
+};
+export const refreshSinglePlugin = async (repoId, slug) => {
+  return await API.refreshSinglePlugin(repoId, slug);
+};
 export const deletePluginByKey = (key) => {
   return API.deletePlugin(key);
 };
