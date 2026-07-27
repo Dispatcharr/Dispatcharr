@@ -62,14 +62,14 @@ const NavItem = ({ item, isActive, collapsed }) => {
         to={item.path}
         className={`navlink${isActive ? ' navlink-active' : ''}${collapsed ? ' navlink-collapsed' : ''}`}
       >
-        {Icon && <Icon size={18} />}
+        {Icon && <Icon size={19} />}
         {!collapsed && (
-          <Text size="xs" style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', flex: 1, minWidth: 0 }}>
+          <Text size="sm" style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', flex: 1, minWidth: 0 }}>
             {item.label}
           </Text>
         )}
         {!collapsed && item.badge && (
-          <Text size="xs" style={{ color: '#D4D4D8', whiteSpace: 'nowrap' }}>
+          <Text size="sm" style={{ color: '#D4D4D8', whiteSpace: 'nowrap' }}>
             {item.badge}
           </Text>
         )}
@@ -105,10 +105,10 @@ function NavGroup({ label, paths, location, collapsed, onSettingsClick, settings
                   className={`navlink${isActive ? ' navlink-active' : ''}${collapsed ? ' navlink-collapsed' : ''}`}
                   style={{ width: '100%' }}
                 >
-                  {Icon && <Icon size={18} />}
+                  {Icon && <Icon size={19} />}
                   {!collapsed && (
                     <>
-                      <Text size="xs" style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', flex: 1, minWidth: 0 }}>
+                      <Text size="sm" style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', flex: 1, minWidth: 0 }}>
                         {child.label}
                       </Text>
                       <ChevronRight size={14} style={{ flexShrink: 0, opacity: 0.5 }} />
@@ -135,9 +135,9 @@ const BackButton = ({ label, collapsed, onClick }) => (
       className={`navlink${collapsed ? ' navlink-collapsed' : ''}`}
       style={{ width: '100%' }}
     >
-      <ArrowLeft size={18} />
+      <ArrowLeft size={19} />
       {!collapsed && (
-        <Text size="xs" fw={500} style={{ whiteSpace: 'nowrap' }}>
+        <Text size="sm" fw={500} style={{ whiteSpace: 'nowrap' }}>
           {label}
         </Text>
       )}
@@ -211,12 +211,13 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
         {navItems.flatMap((item, idx) => {
           const els = [];
 
+          if (idx > 0 && (item.paths || navItems[idx - 1].paths)) {
+            els.push(
+              <Box key={`div-${item.id}`} style={{ borderTop: '1px solid #2A2A2E', margin: '4px 4px 6px' }} />
+            );
+          }
+
           if (item.paths) {
-            if (idx > 0) {
-              els.push(
-                <Box key={`div-${item.id}`} style={{ borderTop: '1px solid #2A2A2E', margin: '4px 4px 6px' }} />
-              );
-            }
             els.push(
               <NavGroup
                 key={item.id}
@@ -242,7 +243,7 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
                   className={`navlink${isActive ? ' navlink-active' : ''}${collapsed ? ' navlink-collapsed' : ''}`}
                   style={{ width: '100%' }}
                 >
-                  {Icon && <Icon size={18} />}
+                  {Icon && <Icon size={19} />}
                   {!collapsed && (
                     <>
                       <Text style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', flex: 1, minWidth: 0 }}>
@@ -307,9 +308,9 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
                           className={`navlink${activeSettingsId === section.id ? ' navlink-active' : ''}${collapsed ? ' navlink-collapsed' : ''}`}
                           style={{ width: '100%' }}
                         >
-                          <Icon size={18} />
+                          <Icon size={19} />
                           {!collapsed && (
-                            <Text size="xs" style={{ whiteSpace: 'nowrap' }}>{section.label}</Text>
+                            <Text size="sm" style={{ whiteSpace: 'nowrap' }}>{section.label}</Text>
                           )}
                         </UnstyledButton>
                       </Tooltip>
