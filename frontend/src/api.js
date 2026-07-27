@@ -2306,6 +2306,18 @@ export default class API {
     }
   }
 
+  static async reloadPlugin(key) {
+    try {
+      const response = await request(
+        `${host}/api/plugins/plugins/${key}/reload/`,
+        { method: 'POST' }
+      );
+      return response;
+    } catch (e) {
+      errorNotification('Failed to reload plugin', e);
+    }
+  }
+
   static async importPlugin(file, overwrite = false, silent = false) {
     try {
       const form = new FormData();
@@ -2443,6 +2455,17 @@ export default class API {
       });
     } catch (e) {
       errorNotification('Failed to refresh plugin repo', e);
+    }
+  }
+
+  static async refreshSinglePlugin(repoId, slug) {
+    try {
+      return await request(
+        `${host}/api/plugins/repos/${repoId}/plugins/${slug}/refresh/`,
+        { method: 'POST' }
+      );
+    } catch (e) {
+      errorNotification('Failed to refresh plugin', e);
     }
   }
 

@@ -31,6 +31,7 @@ vi.mock('lucide-react', () => ({
   ),
   Ban: ({ size }) => <svg data-testid="icon-ban" data-size={size} />,
   Download: ({ size }) => <svg data-testid="icon-download" data-size={size} />,
+  Info: ({ size }) => <svg data-testid="icon-info" data-size={size} />,
   RefreshCw: ({ size }) => (
     <svg data-testid="icon-refresh-cw" data-size={size} />
   ),
@@ -104,6 +105,13 @@ vi.mock('@mantine/core', async () => ({
   ),
   Group: ({ children }) => <div>{children}</div>,
   Loader: ({ size }) => <span data-testid="loader" data-size={size} />,
+  Popover: Object.assign(
+    ({ children }) => <div>{children}</div>,
+    {
+      Target: ({ children }) => <div>{children}</div>,
+      Dropdown: ({ children }) => <div>{children}</div>,
+    }
+  ),
   Select: ({ label, value, onChange, data, disabled }) => (
     <select
       data-testid="version-select"
