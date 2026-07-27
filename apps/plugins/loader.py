@@ -559,8 +559,14 @@ class PluginManager:
             return self._registry.get(key)
 
     def update_settings(self, key: str, settings: Dict[str, Any]) -> Dict[str, Any]:
+        settings = settings or {}
+        lp = self.get_plugin(key)
+        for field_def in (lp.fields if lp else None) or []:
+            if field_def.get("type") == "table" and field_def.get("id") in settings:
+                self._validate_table_value(field_def, settings[field_def["id"]])
+
         cfg = PluginConfig.objects.get(key=key)
-        cfg.settings = settings or {}
+        cfg.settings = settings
         cfg.save(update_fields=["settings", "updated_at"])
         return cfg.settings
 
@@ -804,6 +810,43 @@ class PluginManager:
             if field_id not in merged and "default" in field_def:
                 merged[field_id] = field_def.get("default")
         return merged
+
+    def _validate_table_value(self, field_def: Dict[str, Any], value: Any) -> None:
+        """Validate a submitted 'table' field value against its declared columns.
+
+        Raises ValueError with a message naming the offending field/row/column.
+        """
+        field_id = field_def.get("id")
+        if not isinstance(value, list):
+            raise ValueError(f"Field '{field_id}' must be a list of rows")
+
+        columns = {c.get("id"): c for c in field_def.get("columns") or []}
+        type_checks = {
+            "string": lambda v: isinstance(v, str),
+            "number": lambda v: isinstance(v, (int, float)) and not isinstance(v, bool),
+            "boolean": lambda v: isinstance(v, bool),
+        }
+
+        for i, row in enumerate(value):
+            if not isinstance(row, dict):
+                raise ValueError(f"Field '{field_id}' row {i} must be an object")
+            for col_id, col_value in row.items():
+                col = columns.get(col_id)
+                if not col:
+                    continue  # unknown/orphaned column key, ignored but not stripped
+                col_type = col.get("type")
+                if col_type == "select":
+                    allowed = {o.get("value") for o in col.get("options") or []}
+                    if col_value is not None and str(col_value) not in allowed:
+                        raise ValueError(
+                            f"Field '{field_id}' row {i} column '{col_id}' must be one of {sorted(allowed)}"
+                        )
+                else:
+                    check = type_checks.get(col_type)
+                    if check and not check(col_value):
+                        raise ValueError(
+                            f"Field '{field_id}' row {i} column '{col_id}' expects type '{col_type}'"
+                        )
 
     def _build_context(self, lp: LoadedPlugin, cfg: PluginConfig) -> Dict[str, Any]:
         settings = self._merge_settings_with_defaults(cfg.settings or {}, lp.fields or [])

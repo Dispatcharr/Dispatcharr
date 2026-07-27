@@ -23,6 +23,7 @@ from apps.accounts.permissions import (
 )
 from core.http_security import validate_outbound_http_url
 from dispatcharr.utils import network_access_allowed
+from core.utils import safe_upload_path
 
 from .loader import PluginManager
 from .models import PluginConfig, PluginRepo
@@ -35,6 +36,21 @@ logger = logging.getLogger(__name__)
 MAX_PLUGIN_IMPORT_FILES = getattr(settings, "DISPATCHARR_PLUGIN_IMPORT_MAX_FILES", 2000)
 MAX_PLUGIN_IMPORT_BYTES = getattr(settings, "DISPATCHARR_PLUGIN_IMPORT_MAX_BYTES", 200 * 1024 * 1024)
 MAX_PLUGIN_IMPORT_FILE_BYTES = getattr(settings, "DISPATCHARR_PLUGIN_IMPORT_MAX_FILE_BYTES", 200 * 1024 * 1024)
+
+# Plugin "file" settings field uploads: deliberately far below the plugin-zip-import
+# ceilings above, since this is meant for small config/cert/image files, not binaries.
+# A plugin's own declared `max_size` can only lower these, never raise them.
+PLUGIN_FILE_UPLOAD_ALLOWED_EXTENSIONS = getattr(
+    settings,
+    "DISPATCHARR_PLUGIN_FILE_UPLOAD_ALLOWED_EXTENSIONS",
+    {
+        ".ini", ".json", ".csv", ".txt", ".yaml", ".yml", ".xml", ".conf", ".cfg",
+        ".pem", ".crt", ".key",
+        ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg",
+    },
+)
+PLUGIN_FILE_UPLOAD_DEFAULT_MAX_BYTES = getattr(settings, "DISPATCHARR_PLUGIN_FILE_UPLOAD_DEFAULT_MAX_BYTES", 2 * 1024 * 1024)
+PLUGIN_FILE_UPLOAD_HARD_MAX_BYTES = getattr(settings, "DISPATCHARR_PLUGIN_FILE_UPLOAD_HARD_MAX_BYTES", 10 * 1024 * 1024)
 
 
 def _parse_bool(value):
@@ -444,6 +460,73 @@ class PluginSettingsAPIView(PluginAuthMixin, APIView):
             return Response({"success": True, "settings": updated})
         except Exception as e:
             return Response({"success": False, "error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+class PluginFieldUploadAPIView(PluginAuthMixin, APIView):
+    """Handles uploads for a plugin's 'file' settings field.
+
+    Writes only under <plugins_dir>/<key>/uploads/<field_id>/, never into the
+    plugin's own root, so a request can never overwrite plugin.py/plugin.json/
+    __init__.py. field_id must name a field the plugin itself declared with
+    type "file"; an arbitrary/undeclared field_id is rejected before it is
+    ever used as a path segment.
+    """
+
+    def post(self, request, key, field_id):
+        pm = PluginManager.get()
+        lp = pm.get_plugin(key)
+        if not lp:
+            return Response({"success": False, "error": "Plugin not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        field_def = next(
+            (f for f in (lp.fields or []) if f.get("id") == field_id and f.get("type") == "file"),
+            None,
+        )
+        if not field_def:
+            return Response(
+                {"success": False, "error": f"Plugin '{key}' has no file field '{field_id}'"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        upload = request.FILES.get("file")
+        if not upload:
+            return Response({"success": False, "error": "Missing 'file'"}, status=status.HTTP_400_BAD_REQUEST)
+
+        ext = os.path.splitext(upload.name)[1].lower()
+        if ext not in PLUGIN_FILE_UPLOAD_ALLOWED_EXTENSIONS:
+            return Response(
+                {"success": False, "error": f"File type '{ext}' is not allowed"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        max_size = min(
+            field_def.get("max_size") or PLUGIN_FILE_UPLOAD_DEFAULT_MAX_BYTES,
+            PLUGIN_FILE_UPLOAD_HARD_MAX_BYTES,
+        )
+        if upload.size > max_size:
+            return Response(
+                {"success": False, "error": f"File is too large (max {max_size} bytes)"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        safe_field_id = _sanitize_plugin_key(field_id)
+        dest_dir = os.path.join(pm.plugins_dir, key, "uploads", safe_field_id)
+        try:
+            os.makedirs(dest_dir, exist_ok=True)
+            for existing in os.listdir(dest_dir):
+                existing_path = os.path.join(dest_dir, existing)
+                if os.path.isfile(existing_path):
+                    os.remove(existing_path)
+
+            dest_path = safe_upload_path(upload.name, dest_dir)
+        except (ValueError, OSError) as e:
+            return Response({"success": False, "error": f"Invalid upload: {e}"}, status=status.HTTP_400_BAD_REQUEST)
+
+        with open(dest_path, "wb+") as destination:
+            for chunk in upload.chunks():
+                destination.write(chunk)
+
+        return Response({"success": True, "path": dest_path})
 
 
 class PluginRunAPIView(PluginAuthMixin, APIView):

@@ -2273,6 +2273,23 @@ export default class API {
     }
   }
 
+  static async uploadPluginField(key, fieldId, file) {
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      return await request(
+        `${host}/api/plugins/plugins/${key}/fields/${fieldId}/upload/`,
+        {
+          method: 'POST',
+          body: formData,
+        }
+      );
+    } catch (e) {
+      errorNotification('Failed to upload file', e);
+      throw e;
+    }
+  }
+
   static async runPluginAction(key, action, params = {}) {
     try {
       const response = await request(

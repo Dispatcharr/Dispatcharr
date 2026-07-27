@@ -1,4 +1,5 @@
 import {
+  MultiSelect,
   NumberInput,
   Select,
   Switch,
@@ -7,8 +8,10 @@ import {
   TextInput,
 } from '@mantine/core';
 import React from 'react';
+import { PluginTableField } from './PluginTableField';
+import { PluginFileField } from './PluginFileField';
 
-export const Field = ({ field, value, onChange }) => {
+export const Field = ({ field, value, onChange, pluginKey }) => {
   const description = field.help_text ?? field.description ?? field.value;
   const common = { label: field.label, description };
   const effective = value ?? field.default;
@@ -58,6 +61,34 @@ export const Field = ({ field, value, onChange }) => {
           onChange={(v) => onChange(field.id, v)}
           placeholder={field.placeholder}
           {...common}
+        />
+      );
+    case 'multiselect':
+      return (
+        <MultiSelect
+          value={(value ?? field.default ?? []).map((v) => v + '')}
+          data={(field.options || []).map((o) => ({
+            value: o.value + '',
+            label: o.label,
+          }))}
+          onChange={(vals) => onChange(field.id, vals)}
+          placeholder={field.placeholder}
+          {...common}
+        />
+      );
+    case 'section':
+      return null;
+    case 'table':
+      return (
+        <PluginTableField field={field} value={effective} onChange={onChange} />
+      );
+    case 'file':
+      return (
+        <PluginFileField
+          field={field}
+          value={effective}
+          onChange={onChange}
+          pluginKey={pluginKey}
         />
       );
     case 'text':

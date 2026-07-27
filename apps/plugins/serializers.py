@@ -20,10 +20,17 @@ class PluginFieldOptionSerializer(serializers.Serializer):
     label = serializers.CharField()
 
 
+class PluginTableColumnSerializer(serializers.Serializer):
+    id = serializers.CharField()
+    label = serializers.CharField(required=False, allow_blank=True)
+    type = serializers.ChoiceField(choices=["string", "number", "boolean", "select"])
+    options = PluginFieldOptionSerializer(many=True, required=False)
+
+
 class PluginFieldSerializer(serializers.Serializer):
     id = serializers.CharField()
     label = serializers.CharField(required=False, allow_blank=True)
-    type = serializers.ChoiceField(choices=["string", "number", "boolean", "select", "text", "info"])
+    type = serializers.ChoiceField(choices=["string", "number", "boolean", "select", "multiselect", "text", "info", "section", "table", "file"])
     default = serializers.JSONField(required=False)
     help_text = serializers.CharField(required=False, allow_blank=True)
     description = serializers.CharField(required=False, allow_blank=True)
@@ -34,6 +41,11 @@ class PluginFieldSerializer(serializers.Serializer):
     step = serializers.FloatField(required=False)
     value = serializers.CharField(required=False, allow_blank=True)
     options = PluginFieldOptionSerializer(many=True, required=False)
+    section = serializers.CharField(required=False, allow_blank=True)
+    collapsed = serializers.BooleanField(required=False, default=False)
+    columns = PluginTableColumnSerializer(many=True, required=False)
+    accept = serializers.CharField(required=False, allow_blank=True)
+    max_size = serializers.IntegerField(required=False)
 
 
 class PluginSerializer(serializers.Serializer):

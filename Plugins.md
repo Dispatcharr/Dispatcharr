@@ -188,7 +188,11 @@ Supported field `type`s:
 - `string` (single-line text)
 - `text` (multi-line textarea)
 - `select` (requires `options`: `[{"value": ..., "label": ...}, ...]`)
+- `multiselect` (requires `options`, same shape as `select`; stores/returns a JSON array of selected values)
 - `info` (display-only text; useful for headings or notes)
+- `section` (display-only grouping marker; see "Sections" below)
+- `table` (editable list of rows; see "Table Fields" below)
+- `file` (uploads a file into the plugin's own directory; see "File Fields" below)
 
 Common field keys:
 - `id` (str): Settings key.
@@ -198,12 +202,81 @@ Common field keys:
 - `help_text` / `description` (str, optional): Shown under the control.
 - `placeholder` (str, optional): Placeholder text for inputs.
 - `input_type` (str, optional): For `string` fields, set to `"password"` to mask input.
-- `options` (list, for select): List of `{value, label}`.
+- `options` (list, for `select`/`multiselect`): List of `{value, label}`.
+- `section` (str, optional): The `id` of a `section` field this field belongs to. If it names a section that isn't declared, the field renders ungrouped rather than being hidden.
+- `columns` (list, for `table`): See "Table Fields" below.
+- `accept` / `max_size` (for `file`): See "File Fields" below.
 
 Notes:
 - For `info` fields, you can use `description`/`help_text` (or `value`) to show the text.
 
 The UI automatically renders settings and persists them. The backend stores settings in `PluginConfig.settings`.
+
+### Sections
+Group related fields into collapsible sections by declaring a `section`-type marker field and having other fields reference its `id` via their own `section` key. A section marker stores no value.
+
+- `id` (str): Section id, referenced by member fields' `section` key.
+- `label` (str): Section heading text.
+- `collapsed` (bool, optional, default `false`): Renders the section collapsed by default (e.g. for an "Advanced" section). Expand/collapse state is a UI-only preference and is never written to settings.
+
+```json
+{
+  "fields": [
+    { "id": "enabled", "label": "Enable plugin", "type": "boolean" },
+
+    { "id": "sec_advanced", "label": "Advanced", "type": "section", "collapsed": true },
+    { "id": "batch_size", "label": "Batch size", "type": "number", "section": "sec_advanced" }
+  ]
+}
+```
+
+### Table Fields
+A `table` field lets the user add, edit, and delete rows of structured data instead of hand-editing JSON in a text field. The value is stored as a JSON array of row objects keyed by column `id` (no separate storage migration needed).
+
+- `columns` (list): Column definitions, each with:
+  - `id` (str): Row key for this column.
+  - `label` (str, optional): Column header text.
+  - `type` (str): One of `string`, `number`, `boolean`, `select`. `select` columns use `options` with the same `{value, label}` shape as a top-level `select` field.
+
+Row order is preserved as submitted. Cell values that don't match their declared column type are rejected when settings are saved, with an error naming the field, row, and column. Keys present in a stored row that no longer match a declared column are ignored, not deleted.
+
+```json
+{
+  "id": "rename_rules",
+  "label": "Rename rules",
+  "type": "table",
+  "default": [],
+  "columns": [
+    { "id": "find", "label": "Find", "type": "string" },
+    { "id": "replace", "label": "Replace", "type": "string" },
+    { "id": "enabled", "label": "Enabled", "type": "boolean" }
+  ]
+}
+```
+
+### File Fields
+A `file` field lets the user upload a file (e.g. a config, cert, or overlay image) instead of typing a host path or pasting content into a text field. Selecting a file uploads it immediately via `POST /api/plugins/plugins/<key>/fields/<field_id>/upload/`; only the resulting server-side path is stored in settings, never the file's bytes.
+
+- `accept` (str, optional): Browser file-picker hint, e.g. `.ini,.json`. This only narrows what the picker shows — the server enforces its own fixed extension allowlist regardless of this value.
+- `max_size` (int, optional): Requested max size in bytes. The server clamps this to a hard ceiling; a plugin cannot request an unbounded upload.
+
+Server-side, for safety:
+- Only a fixed extension allowlist is accepted (config/text formats, certs, and common image formats). Script/executable extensions are always rejected.
+- The upload is written under a dedicated `uploads/<field_id>/` subdirectory inside the plugin's own directory, never into the plugin's root, so it can never overwrite `plugin.py`, `plugin.json`, or `__init__.py`.
+- Re-uploading to the same field replaces the previous file. Uninstalling the plugin removes the file along with the rest of the plugin's directory.
+
+```json
+{
+  "id": "cert_bundle",
+  "label": "Certificate bundle",
+  "type": "file",
+  "accept": ".pem,.crt",
+  "max_size": 1048576,
+  "help_text": "Uploaded once; read back via context['settings']['cert_bundle']."
+}
+```
+
+Read the stored path in `run()` via `context["settings"][field_id]` and open it directly, the same way the DVR `comskip.ini` path is used.
 
 ### Example: stop() Hook
 ```
