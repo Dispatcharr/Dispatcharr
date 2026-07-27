@@ -236,9 +236,18 @@ fi
 echo "Starting user setup..."
 . /app/docker/init/01-user-setup.sh
 
-# Ensure the persisted-log directory and live file exist for the file handler.
+# Archive the previous run's log on start (WatchedFileHandler keeps appending to the live file); this only
+# shifts, never deletes -- the rotate_log_file worker prunes per system setting once Postgres/Django are up.
 LOG_FILE_DIR=${DISPATCHARR_LOG_DIR:-/data/logs}
 mkdir -p "$LOG_FILE_DIR"
+if [ -s "$LOG_FILE_DIR/dispatcharr.log" ]; then
+    # Shift every existing archive up by one (highest index first, nothing clobbered), then move the live log to .1.
+    for n in $(ls "$LOG_FILE_DIR" 2>/dev/null \
+                 | sed -n 's/^dispatcharr\.log\.\([0-9][0-9]*\)$/\1/p' | sort -rn); do
+        mv "$LOG_FILE_DIR/dispatcharr.log.$n" "$LOG_FILE_DIR/dispatcharr.log.$((n + 1))"
+    done
+    mv "$LOG_FILE_DIR/dispatcharr.log" "$LOG_FILE_DIR/dispatcharr.log.1"
+fi
 touch "$LOG_FILE_DIR/dispatcharr.log"
 # Non-recursive: DISPATCHARR_LOG_DIR is operator-set, so a recursive chown could re-own a mis-pointed data tree (e.g. /data/db).
 chown "$PUID:$PGID" "$LOG_FILE_DIR" "$LOG_FILE_DIR"/dispatcharr.log*

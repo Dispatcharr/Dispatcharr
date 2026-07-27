@@ -430,6 +430,12 @@ CELERY_TASK_SERIALIZER = "json"
 CELERY_WORKER_MAX_MEMORY_PER_CHILD = 524_288  # 512 MB in KB
 
 CELERY_BEAT_SCHEDULER = "django_celery_beat.schedulers.DatabaseScheduler"
+# Cheap check (stat+listdir): run more often at DEBUG/TRACE (faster log growth); worker_ready dispatch (celery.py) covers startup.
+_rotate_interval = (
+    300.0
+    if os.environ.get("DISPATCHARR_LOG_LEVEL", "").upper() in ("DEBUG", "TRACE")
+    else 900.0
+)
 CELERY_BEAT_SCHEDULE = {
     # Explicitly disable the old fetch-channel-statuses task
     # This ensures it gets disabled when DatabaseScheduler syncs
@@ -456,6 +462,12 @@ CELERY_BEAT_SCHEDULE = {
     "check-account-expirations": {
         "task": "apps.m3u.tasks.check_account_expirations",
         "schedule": 86400.0,  # Once every 24 hours
+    },
+    # Rotate/prune the app log; single-owner via beat. 5 min at DEBUG/TRACE,
+    # 15 min otherwise (also dispatched once at worker startup).
+    "rotate-log-file": {
+        "task": "core.tasks.rotate_log_file",
+        "schedule": _rotate_interval,
     },
 }
 

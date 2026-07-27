@@ -14,6 +14,7 @@ from apps.m3u.tasks import refresh_single_m3u_account
 from apps.epg.tasks import refresh_epg_data
 from .models import CoreSettings
 from apps.channels.models import ChannelStream
+from django.conf import settings
 from django.db import transaction
 
 logger = logging.getLogger(__name__)
@@ -998,4 +999,75 @@ def create_setting_recommendation(setting_key, recommended_value, reason, curren
         send_websocket_notification(notification)
 
     return notification
+
+
+def _log_archive_indices(log_dir):
+    """Integer suffixes of the rotated log files (dispatcharr.log.N) in log_dir."""
+    try:
+        names = os.listdir(log_dir)
+    except OSError:
+        return []
+    indices = []
+    for name in names:
+        m = re.fullmatch(r"dispatcharr\.log\.(\d+)", name)
+        if m:
+            indices.append(int(m.group(1)))
+    return indices
+
+
+@shared_task
+def rotate_log_file():
+    """Cap+prune the persisted log out-of-process under a Redis lock (WatchedFileHandler can't rotate safely across the multiple writers).
+    Shifts dispatcharr.log to .1 past log_max_mb; prunes archives past log_keep (both live-read System Settings) every tick."""
+    log_dir = settings.LOG_FILE_DIR
+    if not log_dir:
+        # Console-only mode (no writable log dir): nothing to rotate.
+        return
+
+    live = os.path.join(log_dir, "dispatcharr.log")
+    if not os.path.exists(live):
+        return
+
+    sys_settings = CoreSettings.get_system_settings()
+    max_mb = int(sys_settings.get("log_max_mb", 10))
+    keep = int(sys_settings.get("log_keep", 5))
+    max_bytes = max_mb * 1024 * 1024
+
+    over_cap = os.path.getsize(live) > max_bytes
+    needs_prune = any(n > keep for n in _log_archive_indices(log_dir))
+    if not over_cap and not needs_prune:
+        # Common path: nothing to rotate, nothing to prune. Keep it cheap.
+        return
+
+    # Serialize across workers so overlapping ticks can't double-rotate.
+    if not acquire_task_lock("rotate_log_file", "live"):
+        return
+
+    try:
+        # Size rotation -- re-check under the lock in case another worker just
+        # rotated.
+        if os.path.exists(live) and os.path.getsize(live) > max_bytes:
+            size = os.path.getsize(live)
+            # Shift archives up, move live -> .1, recreate live in append mode (never truncate -- a writer may have just reopened it) for a fresh inode.
+            for n in sorted(_log_archive_indices(log_dir), reverse=True):
+                os.replace(f"{live}.{n}", f"{live}.{n + 1}")
+            os.replace(live, f"{live}.1")
+            open(live, "a").close()
+            logger.info(
+                f"Rotated dispatcharr.log at {size / (1024 * 1024):.1f}MB "
+                f"(cap {max_mb}MB)"
+            )
+
+        # Enforce retention: drop every archive beyond log_keep. This also cleans
+        # up the container-start archive and any excess after a lowered setting.
+        pruned = [n for n in _log_archive_indices(log_dir) if n > keep]
+        for n in pruned:
+            os.remove(f"{live}.{n}")
+        if pruned:
+            logger.info(
+                f"Pruned {len(pruned)} old log file(s) beyond the "
+                f"retention limit of {keep}"
+            )
+    finally:
+        release_task_lock("rotate_log_file", "live")
 
