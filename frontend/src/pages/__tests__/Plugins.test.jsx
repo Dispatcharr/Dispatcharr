@@ -235,11 +235,11 @@ describe('PluginsPage', () => {
       expect(screen.getByText('Import Plugin')).toBeInTheDocument();
     });
 
-    it('renders reload button', () => {
+    it('renders check-for-updates and reload-all buttons', () => {
       render(<PluginsPage />);
 
-      const reloadButton = screen.getByTitle('Reload');
-      expect(reloadButton).toBeInTheDocument();
+      expect(screen.getByText('Check for Updates')).toBeInTheDocument();
+      expect(screen.getByText('Reload All Plugins')).toBeInTheDocument();
     });
 
     it('shows loader when loading and no plugins', () => {
@@ -630,8 +630,31 @@ describe('PluginsPage', () => {
     });
   });
 
-  describe('Reload', () => {
-    it('reloads plugins when reload button is clicked', async () => {
+  describe('Refresh', () => {
+    it('checks for updates without reloading plugin code', async () => {
+      const fetchPlugins = vi.fn().mockResolvedValue(undefined);
+      const fetchAvailablePlugins = vi.fn().mockResolvedValue(undefined);
+      usePluginStore.getState = vi.fn(() => ({
+        ...mockPluginStoreState,
+        fetchPlugins,
+        fetchAvailablePlugins,
+        repos: [],
+      }));
+
+      render(<PluginsPage />);
+
+      fireEvent.click(screen.getByText('Check for Updates'));
+
+      await waitFor(() => {
+        expect(fetchAvailablePlugins).toHaveBeenCalled();
+        expect(fetchPlugins).toHaveBeenCalled();
+      });
+      expect(reloadPlugins).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('Reload All Plugins', () => {
+    it('reloads all plugin code only after explicit confirmation', async () => {
       const fetchPlugins = vi.fn().mockResolvedValue(undefined);
       usePluginStore.getState = vi.fn(() => ({
         ...mockPluginStoreState,
@@ -640,8 +663,14 @@ describe('PluginsPage', () => {
 
       render(<PluginsPage />);
 
-      const reloadButton = screen.getByTitle('Reload');
-      fireEvent.click(reloadButton);
+      fireEvent.click(screen.getByText('Reload All Plugins'));
+
+      await waitFor(() => {
+        expect(screen.getByText('Reload all plugins?')).toBeInTheDocument();
+      });
+      expect(reloadPlugins).not.toHaveBeenCalled();
+
+      fireEvent.click(screen.getByText('Reload All'));
 
       await waitFor(() => {
         expect(reloadPlugins).toHaveBeenCalled();

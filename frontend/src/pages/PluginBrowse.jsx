@@ -1,6 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  ActionIcon,
   AppShellMain,
   Badge,
   Box,
@@ -14,13 +13,12 @@ import {
   Text,
   TextInput,
 } from '@mantine/core';
-import { Package, RefreshCcw, Search } from 'lucide-react';
+import { Package, RefreshCw, Search } from 'lucide-react';
 import { usePluginStore } from '../store/plugins.jsx';
 import useSettingsStore from '../store/settings.jsx';
 import AvailablePluginCard from '../components/cards/AvailablePluginCard.jsx';
 import ManageReposModal from '../components/modals/ManageReposModal.jsx';
 import { showNotification } from '../utils/notificationUtils.js';
-import { reloadPlugins } from '../utils/pages/PluginsUtils.js';
 import { compareVersions } from '../utils/components/pluginUtils.js';
 
 export default function PluginBrowsePage() {
@@ -64,6 +62,10 @@ export default function PluginBrowsePage() {
     }
   }, [fetchRepos, fetchAvailablePlugins]);
 
+  // Checks every enabled repo for updates. Deliberately does NOT trigger a
+  // full Python reload of installed plugins (that's a separate, disruptive
+  // action on the My Plugins page); this only refreshes manifest/version
+  // data.
   const handleRefreshAll = useCallback(async () => {
     setRefreshingAll(true);
     try {
@@ -71,7 +73,6 @@ export default function PluginBrowsePage() {
         await refreshRepo(repo.id);
       }
       await fetchAvailablePlugins();
-      await reloadPlugins();
       usePluginStore.getState().invalidatePlugins();
       showNotification({
         title: 'Refreshed',
@@ -247,14 +248,15 @@ export default function PluginBrowsePage() {
             >
               Manage Repos
             </Button>
-            <ActionIcon
-              variant="light"
+            <Button
+              size="xs"
+              variant="default"
+              leftSection={<RefreshCw size={14} />}
               onClick={handleRefreshAll}
-              title="Refresh all repos"
               loading={refreshingAll}
             >
-              <RefreshCcw size={18} />
-            </ActionIcon>
+              Check for Updates
+            </Button>
           </Group>
         </Group>
 

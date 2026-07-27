@@ -116,9 +116,9 @@ const StatusBadge = ({
   status,
   deprecated,
   isPrerelease,
-  isLatestDowngrade,
   installedSourceRepoName,
 }) => {
+  const isLatestDowngrade = status === 'downgrade_available';
   if (status === 'installed') {
     const baseLabel = isPrerelease ? 'Prerelease' : 'Installed';
     if (!deprecated) {
@@ -150,7 +150,7 @@ const StatusBadge = ({
       </Tooltip>
     );
   }
-  if (status === 'update_available') {
+  if (status === 'update_available' || status === 'downgrade_available') {
     const baseLabel = isLatestDowngrade
       ? 'Newer Installed'
       : 'Update Available';
@@ -263,11 +263,7 @@ const AvailablePluginCard = ({
   const { pathname } = useLocation();
   const onMyPlugins = pathname === '/plugins';
 
-  const isLatestDowngrade =
-    plugin.install_status === 'update_available' &&
-    plugin.latest_version &&
-    plugin.installed_version &&
-    compareVersions(plugin.latest_version, plugin.installed_version) < 0;
+  const isLatestDowngrade = plugin.install_status === 'downgrade_available';
 
   const doInstall = (params) => {
     if (plugin.deprecated) {
@@ -460,7 +456,6 @@ const AvailablePluginCard = ({
                 status={plugin.install_status}
                 deprecated={plugin.deprecated}
                 isPrerelease={plugin.installed_version_is_prerelease}
-                isLatestDowngrade={isLatestDowngrade}
                 installedSourceRepoName={plugin.installed_source_repo_name}
               />
             </Group>
@@ -620,7 +615,8 @@ const AvailablePluginCard = ({
               Uninstall
             </Button>
           )}
-          {plugin.install_status === 'update_available' && (
+          {(plugin.install_status === 'update_available' ||
+            plugin.install_status === 'downgrade_available') && (
             <SizedInstallButton
               size="xs"
               variant="filled"

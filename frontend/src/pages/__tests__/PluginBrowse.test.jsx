@@ -48,22 +48,12 @@ vi.mock('../../utils/components/pluginUtils.js', () => ({
 // ── lucide-react ───────────────────────────────────────────────────────────────
 vi.mock('lucide-react', () => ({
   Package: () => <svg data-testid="icon-package" />,
-  RefreshCcw: () => <svg data-testid="icon-refresh" />,
+  RefreshCw: () => <svg data-testid="icon-refresh" />,
   Search: () => <svg data-testid="icon-search" />,
 }));
 
 // ── @mantine/core ──────────────────────────────────────────────────────────────
 vi.mock('@mantine/core', () => ({
-  ActionIcon: ({ children, onClick, loading, title }) => (
-    <button
-      data-testid="action-icon"
-      data-loading={loading}
-      title={title}
-      onClick={onClick}
-    >
-      {children}
-    </button>
-  ),
   AppShellMain: ({ children }) => <main>{children}</main>,
   Badge: ({ children, color, variant }) => (
     <span data-testid="badge" data-color={color} data-variant={variant}>
@@ -375,31 +365,31 @@ describe('PluginBrowsePage', () => {
         invalidatePlugins: mockInvalidatePlugins,
       });
       render(<PluginBrowsePage />);
-      fireEvent.click(screen.getByTestId('action-icon'));
+      fireEvent.click(screen.getByText('Check for Updates'));
       await waitFor(() => {
         expect(mockRefreshRepo).toHaveBeenCalledWith(1);
         expect(mockRefreshRepo).toHaveBeenCalledWith(2);
       });
     });
 
-    it('calls fetchAvailablePlugins, reloadPlugins, and invalidatePlugins after refresh', async () => {
+    it('calls fetchAvailablePlugins and invalidatePlugins after refresh, without reloading plugin code', async () => {
       setupStore({ repos: [makeRepo()] });
       vi.mocked(usePluginStore).getState.mockReturnValue({
         repos: [makeRepo()],
         invalidatePlugins: mockInvalidatePlugins,
       });
       render(<PluginBrowsePage />);
-      fireEvent.click(screen.getByTestId('action-icon'));
+      fireEvent.click(screen.getByText('Check for Updates'));
       await waitFor(() => {
         expect(mockFetchAvailablePlugins).toHaveBeenCalled();
-        expect(reloadPlugins).toHaveBeenCalled();
         expect(mockInvalidatePlugins).toHaveBeenCalled();
       });
+      expect(reloadPlugins).not.toHaveBeenCalled();
     });
 
     it('shows success notification on successful refresh', async () => {
       render(<PluginBrowsePage />);
-      fireEvent.click(screen.getByTestId('action-icon'));
+      fireEvent.click(screen.getByText('Check for Updates'));
       await waitFor(() => {
         expect(showNotification).toHaveBeenCalledWith(
           expect.objectContaining({ title: 'Refreshed', color: 'green' })
@@ -424,7 +414,7 @@ describe('PluginBrowsePage', () => {
         invalidatePlugins: vi.fn(),
       });
       render(<PluginBrowsePage />);
-      fireEvent.click(screen.getByTestId('action-icon'));
+      fireEvent.click(screen.getByText('Check for Updates'));
       await waitFor(() => {
         expect(showNotification).toHaveBeenCalledWith(
           expect.objectContaining({ title: 'Error', color: 'red' })

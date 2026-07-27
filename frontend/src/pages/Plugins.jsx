@@ -7,7 +7,6 @@ import React, {
   useState,
 } from 'react';
 import {
-  ActionIcon,
   Alert,
   AppShellMain,
   Badge,
@@ -35,11 +34,9 @@ import {
   deletePluginByKey,
   importPlugin,
   reloadPlugins,
-  runPluginAction,
   setPluginEnabled,
-  updatePluginSettings,
 } from '../utils/pages/PluginsUtils.js';
-import { RefreshCcw, Search } from 'lucide-react';
+import { RefreshCw, RotateCw, Search } from 'lucide-react';
 import ErrorBoundary from '../components/ErrorBoundary.jsx';
 import {
   PluginRestartWarning,
@@ -59,7 +56,7 @@ const FILTER_OPTIONS = [
   { value: 'unmanaged', label: 'Unmanaged' },
 ];
 
-const PluginsList = ({ onRequestDelete, onRequireTrust, onRequestConfirm }) => {
+const PluginsList = ({ onRequestDelete, onRequireTrust }) => {
   const plugins = usePluginStore((state) => state.plugins);
   const loading = usePluginStore((state) => state.loading);
   const hasFetchedRef = useRef(false);
@@ -158,12 +155,9 @@ const PluginsList = ({ onRequestDelete, onRequireTrust, onRequestConfirm }) => {
                 <PluginCard
                   key={p.key}
                   plugin={p}
-                  onSaveSettings={updatePluginSettings}
-                  onRunAction={runPluginAction}
                   onToggleEnabled={handleTogglePluginEnabled}
                   onRequireTrust={onRequireTrust}
                   onRequestDelete={onRequestDelete}
-                  onRequestConfirm={onRequestConfirm}
                 />
               ))}
             </Suspense>
@@ -201,7 +195,9 @@ export default function PluginsPage() {
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [deleting, setDeleting] = useState(false);
-  const [reloading, setReloading] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const [reloadAllOpen, setReloadAllOpen] = useState(false);
+  const [reloadingAll, setReloadingAll] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [confirmConfig, setConfirmConfig] = useState({
     title: '',
@@ -209,9 +205,11 @@ export default function PluginsPage() {
     resolve: null,
   });
 
-  const handleReload = async () => {
+  // Check for updates: re-fetch repo manifests + the installed/available
+  // lists. Does NOT touch running plugin code (see handleReloadAllPlugins).
+  const handleRefresh = async () => {
     const { repos, refreshRepo, fetchAvailablePlugins, fetchPlugins } = usePluginStore.getState();
-    setReloading(true);
+    setRefreshing(true);
     try {
       for (const repo of repos) {
         try { await refreshRepo(repo.id); } catch {
@@ -219,11 +217,10 @@ export default function PluginsPage() {
         }
       }
       await fetchAvailablePlugins();
-      await reloadPlugins();
       await fetchPlugins();
       showNotification({
         title: 'Refreshed',
-        message: 'Plugin repos and registry reloaded',
+        message: 'Checked for plugin updates',
         color: 'green',
       });
     } catch {
@@ -233,7 +230,26 @@ export default function PluginsPage() {
         color: 'red',
       });
     } finally {
-      setReloading(false);
+      setRefreshing(false);
+    }
+  };
+
+  // Full Python reload of every plugin: stops and re-imports all plugin
+  // code. Disruptive, so it's a separate, explicitly-confirmed action
+  // rather than a side effect of checking for updates.
+  const handleReloadAllPlugins = async () => {
+    setReloadingAll(true);
+    try {
+      await reloadPlugins();
+      await usePluginStore.getState().fetchPlugins();
+      showNotification({
+        title: 'Reloaded',
+        message: 'All plugins were stopped and reloaded',
+        color: 'green',
+      });
+    } finally {
+      setReloadingAll(false);
+      setReloadAllOpen(false);
     }
   };
 
@@ -408,16 +424,31 @@ export default function PluginsPage() {
           <Button size="xs" variant="light" onClick={showImportForm}>
             Import Plugin
           </Button>
-          <ActionIcon variant="light" onClick={handleReload} title="Reload" loading={reloading} disabled={reloading}>
-            <RefreshCcw size={18} />
-          </ActionIcon>
+          <Button
+            size="xs"
+            variant="default"
+            leftSection={<RefreshCw size={14} />}
+            onClick={handleRefresh}
+            loading={refreshing}
+            disabled={refreshing}
+          >
+            Check for Updates
+          </Button>
+          <Button
+            size="xs"
+            variant="light"
+            color="orange"
+            leftSection={<RotateCw size={14} />}
+            onClick={() => setReloadAllOpen(true)}
+          >
+            Reload All Plugins
+          </Button>
         </Group>
       </Group>
 
       <PluginsList
         onRequestDelete={handleRequestDelete}
         onRequireTrust={requireTrust}
-        onRequestConfirm={requestConfirm}
       />
 
       {/* Import Plugin Modal */}
@@ -630,6 +661,40 @@ export default function PluginsPage() {
             </Button>
             <Button size="xs" onClick={() => handleConfirm(true)}>
               Confirm
+            </Button>
+          </Group>
+        </Stack>
+      </Modal>
+
+      {/* Reload All Plugins confirmation modal */}
+      <Modal
+        opened={reloadAllOpen}
+        onClose={() => setReloadAllOpen(false)}
+        title="Reload all plugins?"
+        centered
+        zIndex={300}
+      >
+        <Stack>
+          <Text size="sm">
+            This stops and re-imports the Python code for every plugin. Any
+            plugin currently running an action will be interrupted. This does
+            not affect saved settings.
+          </Text>
+          <Group justify="flex-end">
+            <Button
+              variant="default"
+              size="xs"
+              onClick={() => setReloadAllOpen(false)}
+            >
+              Cancel
+            </Button>
+            <Button
+              size="xs"
+              color="orange"
+              loading={reloadingAll}
+              onClick={handleReloadAllPlugins}
+            >
+              Reload All
             </Button>
           </Group>
         </Stack>

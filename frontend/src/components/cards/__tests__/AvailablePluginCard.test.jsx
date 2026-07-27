@@ -440,14 +440,14 @@ describe('AvailablePluginCard', () => {
       expect(screen.getByText('2.0.0')).toBeInTheDocument();
     });
 
-    it('renders Downgrade button for update_available when isLatestDowngrade', () => {
+    it('renders Downgrade button when backend reports downgrade_available', () => {
       setupMocks();
-      // compareVersions(latest, installed) < 0 → isLatestDowngrade
-      vi.mocked(compareVersions).mockReturnValue(-1);
+      // isLatestDowngrade is now sourced directly from install_status, not
+      // computed client-side from compareVersions.
       render(
         <AvailablePluginCard
           plugin={makePlugin({
-            install_status: 'update_available',
+            install_status: 'downgrade_available',
             installed: true,
             installed_version: '1.1.0',
           })}
