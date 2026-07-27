@@ -1,9 +1,28 @@
 # dispatcharr/utils.py
-import json
 import ipaddress
-from django.http import JsonResponse
+import logging
+import os
+
 from django.core.exceptions import ValidationError
+from django.http import JsonResponse
+
 from core.models import CoreSettings
+
+logger = logging.getLogger(__name__)
+
+# Private / loopback ranges used as the default for M3U/EPG ACLs and
+# first-time superuser setup (when DISPATCHARR_SETUP_ALLOWED_IP is unset).
+LOCAL_NETWORK_CIDRS = [
+    "127.0.0.0/8",
+    "10.0.0.0/8",
+    "172.16.0.0/12",
+    "192.168.0.0/16",
+    "::1/128",
+    "fc00::/7",
+    "fe80::/10",
+]
+
+SETUP_ALLOWED_IP_ENV = "DISPATCHARR_SETUP_ALLOWED_IP"
 
 
 def json_error_response(message, status=400):
@@ -32,13 +51,56 @@ def get_client_ip(request):
     return request.META.get("HTTP_X_REAL_IP") or request.META.get("REMOTE_ADDR")
 
 
+def setup_ip_allowed(request):
+    """Whether this client may POST to initialize-superuser.
+
+    Default: private / loopback IPv4 and IPv6 only.
+    If DISPATCHARR_SETUP_ALLOWED_IP is set, only that single IP is allowed
+    (for remote / VPS first-time web setup).
+
+    Returns:
+        tuple[bool, str]: (allowed, client_ip_string)
+    """
+    client_ip_str = get_client_ip(request) or ""
+    try:
+        client_ip = ipaddress.ip_address(client_ip_str)
+    except ValueError:
+        return False, client_ip_str
+
+    # Some proxies present IPv4 clients as IPv4-mapped IPv6 (::ffff:x.x.x.x).
+    # Compare using the embedded IPv4 so private-range checks still work.
+    compare_ip = client_ip.ipv4_mapped if getattr(client_ip, "ipv4_mapped", None) else client_ip
+
+    override = os.environ.get(SETUP_ALLOWED_IP_ENV, "").strip()
+    if override:
+        try:
+            override_ip = ipaddress.ip_address(override)
+        except ValueError:
+            logger.warning(
+                "Invalid %s=%r; denying initialize-superuser POST",
+                SETUP_ALLOWED_IP_ENV,
+                override,
+            )
+            return False, client_ip_str
+        override_compare = (
+            override_ip.ipv4_mapped
+            if getattr(override_ip, "ipv4_mapped", None)
+            else override_ip
+        )
+        return compare_ip == override_compare, client_ip_str
+
+    for cidr in LOCAL_NETWORK_CIDRS:
+        if compare_ip in ipaddress.ip_network(cidr):
+            return True, client_ip_str
+    return False, client_ip_str
+
+
 def network_access_allowed(request, settings_key, user=None):
     network_access = CoreSettings.get_network_access_settings()
-    local_cidrs = ["127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "::1/128", "fc00::/7", "fe80::/10"]
     # Set defaults based on endpoint type
     if settings_key == "M3U_EPG":
         # M3U/EPG endpoints: local IPv4 and IPv6 only by default
-        default_cidrs = local_cidrs
+        default_cidrs = LOCAL_NETWORK_CIDRS
     else:
         # Other endpoints: allow all by default
         default_cidrs = ["0.0.0.0/0", "::/0"]
