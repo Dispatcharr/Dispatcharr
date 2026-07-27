@@ -27,31 +27,9 @@ from dispatcharr.utils import network_access_allowed
 from .loader import PluginManager
 from .models import PluginConfig, PluginRepo
 from .serializers import PluginRepoSerializer
+from .version_utils import compare_versions, get_plugin_status
 
 logger = logging.getLogger(__name__)
-
-
-def _compare_versions(a, b):
-    """Compare two semver-like version strings.
-    Returns negative if a < b, 0 if equal, positive if a > b.
-
-    If either version is a prerelease (any dot-segment contains non-digit
-    characters), numeric ordering is meaningless. Falls back to exact string
-    equality: 0 if identical, 1 otherwise.
-    """
-    if not a or not b:
-        return 0
-    na = a.lstrip("v")
-    nb = b.lstrip("v")
-    if any(not p.isdigit() for p in na.split(".")) or any(not p.isdigit() for p in nb.split(".")):
-        return 0 if na == nb else 1
-    pa = [int(x) for x in na.split(".")]
-    pb = [int(x) for x in nb.split(".")]
-    for i in range(max(len(pa), len(pb))):
-        diff = (pa[i] if i < len(pa) else 0) - (pb[i] if i < len(pb) else 0)
-        if diff != 0:
-            return diff
-    return 0
 
 
 MAX_PLUGIN_IMPORT_FILES = getattr(settings, "DISPATCHARR_PLUGIN_IMPORT_MAX_FILES", 2000)
@@ -129,6 +107,22 @@ class PluginReloadAPIView(PluginAuthMixin, APIView):
         pm.stop_all_plugins(reason="reload")
         pm.discover_plugins(force_reload=True)
         return Response({"success": True, "count": len(pm._registry)})
+
+
+class PluginSingleReloadAPIView(PluginAuthMixin, APIView):
+    """Reload one plugin's Python code without stopping or re-importing any others."""
+
+    @extend_schema(
+        description="Reload a single plugin's Python code in isolation (process-local; does not broadcast to other workers).",
+        request=None,
+        responses={200: inline_serializer(name="PluginSingleReloadResponse", fields={"success": serializers.BooleanField()})},
+    )
+    def post(self, request, key):
+        pm = PluginManager.get()
+        ok = pm.reload_plugin(key)
+        if not ok:
+            return Response({"success": False, "error": "Plugin not found or already reloading"}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"success": True})
 
 
 def _install_plugin_from_zip(zip_file, plugins_dir, *, file_name="plugin.zip", allow_overwrite_key=None, allow_overwrite=False):
@@ -996,6 +990,81 @@ class PluginRepoRefreshAPIView(PluginAuthMixin, APIView):
         return Response(PluginRepoSerializer(repo).data)
 
 
+class PluginRepoRefreshSinglePluginAPIView(PluginAuthMixin, APIView):
+    """Check-for-updates for one plugin, scoped to a single repo entry.
+
+    The repo's manifest is one JSON blob covering every plugin it lists, so
+    there's no way to fetch just one plugin's summary data (latest_version,
+    deprecated) without re-fetching that whole blob, so this always does a
+    live, uncached HTTP fetch of the repo manifest (same as the bulk
+    refresh), but unlike the bulk "Refresh all repos" action it: only touches
+    one repo (not every enabled repo), never triggers a full Python plugin
+    reload, and only evaluates/creates an update notification for the one
+    requested plugin rather than sweeping every managed plugin.
+    """
+
+    @extend_schema(
+        description="Refresh one plugin's update-available status by re-fetching its repo's manifest (always a live fetch, never cached).",
+        request=None,
+        responses={200: inline_serializer(name="PluginRepoRefreshSingleResponse", fields={
+            "success": serializers.BooleanField(),
+            "install_status": serializers.CharField(),
+            "latest_version": serializers.CharField(allow_blank=True),
+        }), 404: inline_serializer(name="PluginRepoRefreshSingleNotFound", fields={"error": serializers.CharField()})},
+    )
+    def post(self, request, pk, slug):
+        try:
+            repo = PluginRepo.objects.get(pk=pk)
+        except PluginRepo.DoesNotExist:
+            return Response({"error": "Repo not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        try:
+            key_text = repo.public_key if not repo.is_official else None
+            data, verified = _fetch_manifest(repo.url, public_key_text=key_text)
+        except Exception:
+            logger.exception("Manifest fetch failed for %s", repo.url)
+            return Response(
+                {"error": "Failed to fetch manifest. Check the URL and try again."},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+        err = _save_fetched_manifest_to_repo(repo, data, verified)
+        if err:
+            return Response({"error": err}, status=status.HTTP_400_BAD_REQUEST)
+        _unmanage_dropped_slugs(repo, data)
+        _invalidate_plugin_detail_cache(repo.id, data)
+
+        manifest = data.get("manifest", data)
+        plugin_data = next(
+            (p for p in manifest.get("plugins", []) if p.get("slug") == slug),
+            None,
+        )
+        if not plugin_data:
+            return Response({"error": f"Plugin '{slug}' not found in repo manifest"}, status=status.HTTP_404_NOT_FOUND)
+
+        try:
+            cfg = PluginConfig.objects.get(slug=slug, source_repo_id=repo.id)
+        except PluginConfig.DoesNotExist:
+            cfg = None
+
+        latest_version = plugin_data.get("latest_version", "")
+        install_status = get_plugin_status(
+            cfg.version if cfg else None,
+            latest_version,
+            is_prerelease=bool(cfg and cfg.installed_version_is_prerelease),
+            is_managed=bool(cfg and cfg.source_repo_id),
+        )
+
+        if cfg:
+            from .tasks import evaluate_plugin_update_notification
+            evaluate_plugin_update_notification(cfg.key, cfg.name, cfg.version, latest_version, install_status)
+
+        return Response({
+            "success": True,
+            "install_status": install_status,
+            "latest_version": latest_version,
+        })
+
+
 class AvailablePluginsAPIView(PluginAuthMixin, APIView):
     """Aggregate plugins from all enabled repo manifests."""
 
@@ -1072,13 +1141,16 @@ class AvailablePluginsAPIView(PluginAuthMixin, APIView):
                     is_installed = True
                     installed_version = managed["version"]
                     latest = plugin_data.get("latest_version")
-                    if managed["source_repo_id"] == repo.id:
-                        if installed_version and latest and installed_version != latest and not managed.get("is_prerelease"):
-                            install_status = "update_available"
-                        else:
-                            install_status = "installed"
-                    else:
-                        install_status = "different_repo"
+                    has_repo_match = managed["source_repo_id"] == repo.id
+                    install_status = get_plugin_status(
+                        installed_version,
+                        latest,
+                        is_prerelease=managed.get("is_prerelease", False),
+                        is_managed=True,
+                        has_repo_match=has_repo_match,
+                    )
+                    if install_status in ("up_to_date", "prerelease"):
+                        install_status = "installed"
                 elif key_match:
                     is_installed = True
                     installed_version = installed_by_key.get(sanitized_slug) or installed_by_key.get(
@@ -1245,12 +1317,12 @@ class PluginInstallFromRepoAPIView(PluginAuthMixin, APIView):
         if min_version or max_version:
             from version import __version__ as app_version
             try:
-                if min_version and _compare_versions(app_version, min_version) < 0:
+                if min_version and compare_versions(app_version, min_version) < 0:
                     return Response(
                         {"error": f"This plugin version requires Dispatcharr {min_version} or newer (you have {app_version})"},
                         status=status.HTTP_400_BAD_REQUEST,
                     )
-                if max_version and _compare_versions(app_version, max_version) > 0:
+                if max_version and compare_versions(app_version, max_version) > 0:
                     return Response(
                         {"error": f"This plugin version requires Dispatcharr {max_version} or older (you have {app_version})"},
                         status=status.HTTP_400_BAD_REQUEST,

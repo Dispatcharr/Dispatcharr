@@ -13,6 +13,7 @@ from typing import Any, Dict, Iterator, List, Optional, Tuple
 from django.db import close_old_connections, transaction
 
 from .models import PluginConfig
+from .version_utils import get_plugin_status
 
 logger = logging.getLogger(__name__)
 
@@ -144,7 +145,6 @@ class PluginManager:
                     continue
 
                 plugin_key = entry.replace(" ", "_").lower()
-                alias_name = self._resolve_alias_name(entry, path)
 
                 if force_reload:
                     prev_alias = previous_aliases.get(plugin_key)
@@ -155,94 +155,19 @@ class PluginManager:
                         self._unload_path_modules(prev_path)
 
                 cfg = configs.get(plugin_key) if configs else None
-                enabled = bool(cfg and cfg.enabled)
-                trusted = bool(cfg and (cfg.ever_enabled or cfg.enabled))
-
-                manifest, has_manifest = self._read_manifest(path)
-                legacy = not has_manifest
-                manifest_name = None
-                manifest_version = None
-                manifest_description = None
-                manifest_author = None
-                manifest_help_url = None
-                manifest_fields: List[Dict[str, Any]] = []
-                manifest_actions: List[Dict[str, Any]] = []
-                if has_manifest and isinstance(manifest, dict):
-                    manifest_name = manifest.get("name") if isinstance(manifest.get("name"), str) else None
-                    manifest_version = manifest.get("version") if isinstance(manifest.get("version"), str) else None
-                    manifest_description = manifest.get("description") if isinstance(manifest.get("description"), str) else None
-                    manifest_author = manifest.get("author") if isinstance(manifest.get("author"), str) else None
-                    manifest_help_url = manifest.get("help_url") if isinstance(manifest.get("help_url"), str) else None
-                    manifest_fields = self._normalize_fields(manifest.get("fields", []))
-                    manifest_actions = self._normalize_actions(manifest.get("actions", []))
-
-                display_name = manifest_name or entry
-                display_version = (
-                    manifest_version if manifest_version is not None else (cfg.version if cfg else "")
+                lp, package_name, alias_name = self._load_and_merge_plugin_entry(
+                    plugin_key,
+                    entry,
+                    path,
+                    cfg=cfg,
+                    force_reload=force_reload,
+                    previous_package=previous_packages.get(plugin_key),
                 )
-                display_description = (
-                    manifest_description if manifest_description is not None else (cfg.description if cfg else "")
-                )
-
-                def _make_placeholder() -> LoadedPlugin:
-                    return LoadedPlugin(
-                        key=plugin_key,
-                        name=display_name,
-                        version=display_version,
-                        description=display_description,
-                        author=manifest_author or "",
-                        help_url=manifest_help_url or "",
-                        fields=manifest_fields if has_manifest else [],
-                        actions=manifest_actions if has_manifest else [],
-                        trusted=trusted,
-                        loaded=False,
-                        path=path,
-                        folder_name=entry,
-                        legacy=legacy,
-                    )
-
-                if not enabled:
-                    new_registry[plugin_key] = _make_placeholder()
-                    continue
-
-                try:
-                    lp, package_name = self._load_plugin(
-                        plugin_key,
-                        path,
-                        folder_name=entry,
-                        force_reload=force_reload,
-                        previous_package=previous_packages.get(plugin_key),
-                    )
-                    if lp:
-                        if manifest_name and (not lp.name or lp.name == plugin_key):
-                            lp.name = manifest_name
-                        if manifest_version is not None and not lp.version:
-                            lp.version = manifest_version
-                        if manifest_description is not None and not lp.description:
-                            lp.description = manifest_description
-                        if manifest_author is not None and not lp.author:
-                            lp.author = manifest_author
-                        if manifest_help_url is not None and not lp.help_url:
-                            lp.help_url = manifest_help_url
-                        if manifest_fields and not lp.fields:
-                            lp.fields = manifest_fields
-                        if manifest_actions and not lp.actions:
-                            lp.actions = manifest_actions
-                        lp.trusted = trusted
-                        lp.loaded = True
-                        lp.path = path
-                        lp.folder_name = entry
-                        lp.legacy = legacy
-                        new_registry[plugin_key] = lp
-                        if package_name:
-                            new_packages[plugin_key] = package_name
-                        if alias_name:
-                            new_aliases[plugin_key] = alias_name
-                    else:
-                        new_registry[plugin_key] = _make_placeholder()
-                except Exception:
-                    logger.exception(f"Failed to load plugin '{plugin_key}' from {path}")
-                    new_registry[plugin_key] = _make_placeholder()
+                new_registry[plugin_key] = lp
+                if package_name:
+                    new_packages[plugin_key] = package_name
+                if alias_name:
+                    new_aliases[plugin_key] = alias_name
 
             if force_reload:
                 # Remove stale modules for plugins that no longer exist
@@ -293,6 +218,103 @@ class PluginManager:
                     and event_name in events
                 ):
                     yield key, action_id
+
+    def _load_and_merge_plugin_entry(
+        self,
+        plugin_key: str,
+        entry: str,
+        path: str,
+        *,
+        cfg: Optional[PluginConfig],
+        force_reload: bool,
+        previous_package: Optional[str],
+    ) -> Tuple[LoadedPlugin, Optional[str], Optional[str]]:
+        """Load one plugin directory entry and merge in its plugin.json manifest.
+
+        Shared by the full-directory scan in `_discover_plugins_impl` and by
+        `reload_plugin` (single-plugin reload), so the two paths can't drift.
+        Returns (loaded_plugin_or_placeholder, package_name, alias_name).
+        """
+        alias_name = self._resolve_alias_name(entry, path)
+        enabled = bool(cfg and cfg.enabled)
+        trusted = bool(cfg and (cfg.ever_enabled or cfg.enabled))
+
+        manifest, has_manifest = self._read_manifest(path)
+        legacy = not has_manifest
+        manifest_name = None
+        manifest_version = None
+        manifest_description = None
+        manifest_author = None
+        manifest_help_url = None
+        manifest_fields: List[Dict[str, Any]] = []
+        manifest_actions: List[Dict[str, Any]] = []
+        if has_manifest and isinstance(manifest, dict):
+            manifest_name = manifest.get("name") if isinstance(manifest.get("name"), str) else None
+            manifest_version = manifest.get("version") if isinstance(manifest.get("version"), str) else None
+            manifest_description = manifest.get("description") if isinstance(manifest.get("description"), str) else None
+            manifest_author = manifest.get("author") if isinstance(manifest.get("author"), str) else None
+            manifest_help_url = manifest.get("help_url") if isinstance(manifest.get("help_url"), str) else None
+            manifest_fields = self._normalize_fields(manifest.get("fields", []))
+            manifest_actions = self._normalize_actions(manifest.get("actions", []))
+
+        display_name = manifest_name or entry
+        display_version = manifest_version if manifest_version is not None else (cfg.version if cfg else "")
+        display_description = manifest_description if manifest_description is not None else (cfg.description if cfg else "")
+
+        def _make_placeholder() -> LoadedPlugin:
+            return LoadedPlugin(
+                key=plugin_key,
+                name=display_name,
+                version=display_version,
+                description=display_description,
+                author=manifest_author or "",
+                help_url=manifest_help_url or "",
+                fields=manifest_fields if has_manifest else [],
+                actions=manifest_actions if has_manifest else [],
+                trusted=trusted,
+                loaded=False,
+                path=path,
+                folder_name=entry,
+                legacy=legacy,
+            )
+
+        if not enabled:
+            return _make_placeholder(), None, None
+
+        try:
+            lp, package_name = self._load_plugin(
+                plugin_key,
+                path,
+                folder_name=entry,
+                force_reload=force_reload,
+                previous_package=previous_package,
+            )
+            if not lp:
+                return _make_placeholder(), None, None
+
+            if manifest_name and (not lp.name or lp.name == plugin_key):
+                lp.name = manifest_name
+            if manifest_version is not None and not lp.version:
+                lp.version = manifest_version
+            if manifest_description is not None and not lp.description:
+                lp.description = manifest_description
+            if manifest_author is not None and not lp.author:
+                lp.author = manifest_author
+            if manifest_help_url is not None and not lp.help_url:
+                lp.help_url = manifest_help_url
+            if manifest_fields and not lp.fields:
+                lp.fields = manifest_fields
+            if manifest_actions and not lp.actions:
+                lp.actions = manifest_actions
+            lp.trusted = trusted
+            lp.loaded = True
+            lp.path = path
+            lp.folder_name = entry
+            lp.legacy = legacy
+            return lp, package_name, alias_name
+        except Exception:
+            logger.exception(f"Failed to load plugin '{plugin_key}' from {path}")
+            return _make_placeholder(), None, None
 
     def _load_plugin(
         self,
@@ -447,6 +469,12 @@ class PluginManager:
             conf_slug = conf.slug if conf else ""
             trusted = bool(conf and (conf.ever_enabled or conf.enabled))
             logo_url = self._get_logo_url(key, path=lp.path)
+            plugin_status = get_plugin_status(
+                lp.version,
+                repo_latest.get(conf_slug, ""),
+                is_prerelease=bool(conf and conf.installed_version_is_prerelease),
+                is_managed=bool(conf_slug and conf and conf.source_repo_id),
+            )
             plugins.append(
                 {
                     "key": key,
@@ -473,12 +501,8 @@ class PluginManager:
                     "installed_version_is_prerelease": bool(
                         conf and conf.installed_version_is_prerelease
                     ),
-                    "update_available": bool(
-                        conf_slug and conf and conf.source_repo_id
-                        and not (conf and conf.installed_version_is_prerelease)
-                        and repo_latest.get(conf_slug)
-                        and lp.version != repo_latest.get(conf_slug)
-                    ),
+                    "install_status": plugin_status,
+                    "update_available": plugin_status == "update_available",
                     "latest_version": repo_latest.get(conf_slug, ""),
                     "deprecated": conf.deprecated if conf else False,
                 }
@@ -489,6 +513,12 @@ class PluginManager:
         for key, conf in configs.items():
             if key in discovered_keys:
                 continue
+            plugin_status = get_plugin_status(
+                conf.version,
+                repo_latest.get(conf.slug or "", ""),
+                is_prerelease=bool(conf.installed_version_is_prerelease),
+                is_managed=bool(conf.slug and conf.source_repo_id),
+            )
             plugins.append(
                 {
                     "key": key,
@@ -515,12 +545,8 @@ class PluginManager:
                     "installed_version_is_prerelease": bool(
                         conf.installed_version_is_prerelease
                     ),
-                    "update_available": bool(
-                        conf.slug and conf.source_repo_id
-                        and not conf.installed_version_is_prerelease
-                        and repo_latest.get(conf.slug)
-                        and conf.version != repo_latest.get(conf.slug)
-                    ),
+                    "install_status": plugin_status,
+                    "update_available": plugin_status == "update_available",
                     "latest_version": repo_latest.get(conf.slug or "", ""),
                     "deprecated": conf.deprecated,
                 }
@@ -627,6 +653,89 @@ class PluginManager:
             if self.stop_plugin(key, reason=reason):
                 stopped += 1
         return stopped
+
+    def reload_plugin(self, key: str) -> bool:
+        """Reload a single plugin's Python code in isolation.
+
+        Unlike `discover_plugins(force_reload=True)`, this does not stop or
+        re-import any other plugin, and deliberately does not touch the
+        shared `.reload_token` file used to broadcast full reloads to other
+        worker processes — a single-plugin reload is process-local only.
+        Concurrent reloads of the same key are rejected (returns False)
+        rather than racing with an in-progress unload/re-import.
+        """
+        with self._lock:
+            if not hasattr(self, "_reloading_keys"):
+                self._reloading_keys = set()
+            if key in self._reloading_keys:
+                return False
+            self._reloading_keys.add(key)
+
+        try:
+            self.stop_plugin(key, reason="reload")
+
+            path = None
+            entry_name = None
+            for entry in sorted(os.listdir(self.plugins_dir)):
+                candidate = os.path.join(self.plugins_dir, entry)
+                if not os.path.isdir(candidate):
+                    continue
+                if entry.replace(" ", "_").lower() == key:
+                    path = candidate
+                    entry_name = entry
+                    break
+            if not path:
+                logger.warning("reload_plugin: no directory found for '%s'", key)
+                return False
+
+            with self._lock:
+                previous_package = self._package_names.get(key)
+                previous_alias = self._alias_names.get(key)
+                previous_lp = self._registry.get(key)
+            previous_path = previous_lp.path if previous_lp else None
+
+            if previous_alias:
+                self._unload_alias(previous_alias)
+            if previous_path:
+                self._unload_path_modules(previous_path)
+
+            try:
+                configs = {c.key: c for c in PluginConfig.objects.all()}
+            except Exception:
+                configs = {}
+            cfg = configs.get(key)
+
+            lp, package_name, alias_name = self._load_and_merge_plugin_entry(
+                key,
+                entry_name,
+                path,
+                cfg=cfg,
+                force_reload=True,
+                previous_package=previous_package,
+            )
+
+            with self._lock:
+                self._registry[key] = lp
+                if package_name:
+                    self._package_names[key] = package_name
+                elif key in self._package_names:
+                    del self._package_names[key]
+                if alias_name:
+                    self._alias_names[key] = alias_name
+                elif key in self._alias_names:
+                    del self._alias_names[key]
+
+            try:
+                self._sync_db_with_registry(dict(self._registry))
+            except Exception:
+                logger.exception("Deferring plugin DB sync after single-plugin reload")
+
+            logger.info("Reloaded plugin '%s'", key)
+            return True
+        finally:
+            close_old_connections()
+            with self._lock:
+                self._reloading_keys.discard(key)
 
     def _resolve_package_name(self, key: str) -> str:
         safe_key = self._safe_module_name(key)
