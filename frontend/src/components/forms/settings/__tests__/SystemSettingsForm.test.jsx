@@ -44,12 +44,12 @@ vi.mock('@mantine/core', () => ({
     </button>
   ),
   Flex: ({ children }) => <div>{children}</div>,
-  NumberInput: ({ label, value, onChange, min, max, step, description }) => (
+  NumberInput: ({ label, value, onChange, min, max, step, description, id }) => (
     <div>
       <label>{label}</label>
       <p>{description}</p>
       <input
-        data-testid="number-input"
+        data-testid={id || 'number-input'}
         type="number"
         value={value}
         min={min}
@@ -112,6 +112,8 @@ const setupMocks = ({
 } = {}) => {
   const formValues = {
     max_system_events: settings?.max_system_events ?? 100,
+    log_max_mb: 10,
+    log_keep: 5,
     preferred_region: '',
     auto_import_mapped_files: true,
     enable_ip_lookup: true,
@@ -186,6 +188,22 @@ describe('SystemSettingsForm', () => {
           'Number of events to retain (minimum: 10, maximum: 1000). Events are displayed on the Stats page.'
         )
       ).toBeInTheDocument();
+    });
+
+    it('renders the Maximum Log File Size input', () => {
+      setupMocks();
+      render(<SystemSettingsForm active={true} />);
+      expect(
+        screen.getByText('Maximum Log File Size (MB)')
+      ).toBeInTheDocument();
+      expect(screen.getByTestId('log_max_mb')).toHaveValue(10);
+    });
+
+    it('renders the Log Files Retained input', () => {
+      setupMocks();
+      render(<SystemSettingsForm active={true} />);
+      expect(screen.getByText('Log Files Retained')).toBeInTheDocument();
+      expect(screen.getByTestId('log_keep')).toHaveValue(5);
     });
 
     it('renders the Preferred Region select', () => {
@@ -292,6 +310,8 @@ describe('SystemSettingsForm', () => {
       render(<SystemSettingsForm active={true} />);
       expect(formMock.setValues).toHaveBeenCalledWith({
         max_system_events: 100,
+        log_max_mb: 10,
+        log_keep: 5,
         preferred_region: '',
         auto_import_mapped_files: true,
         enable_ip_lookup: true,
@@ -365,6 +385,20 @@ describe('SystemSettingsForm', () => {
           settings
         );
         expect(saveChangedSettings).toHaveBeenCalled();
+      });
+    });
+
+    it('includes log rotation settings on save', async () => {
+      setupMocks();
+      render(<SystemSettingsForm active={true} />);
+
+      fireEvent.click(screen.getByText('Save'));
+
+      await waitFor(() => {
+        expect(getChangedSettings).toHaveBeenCalledWith(
+          expect.objectContaining({ log_max_mb: 10, log_keep: 5 }),
+          expect.anything()
+        );
       });
     });
 

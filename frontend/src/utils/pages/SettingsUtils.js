@@ -65,6 +65,8 @@ export const saveChangedSettings = async (settings, changedSettings) => {
   const systemFields = [
     'time_zone',
     'max_system_events',
+    'log_max_mb',
+    'log_keep',
     'preferred_region',
     'auto_import_mapped_files',
     'enable_ip_lookup',
@@ -126,6 +128,8 @@ export const saveChangedSettings = async (settings, changedSettings) => {
       'retention_count',
       'schedule_day_of_week',
       'max_system_events',
+      'log_max_mb',
+      'log_keep',
     ];
     if (numericFields.includes(formKey) && value != null) {
       value = typeof value === 'number' ? value : parseInt(value, 10);
@@ -366,6 +370,14 @@ export const parseSettings = (settings) => {
       typeof systemSettings.max_system_events === 'number'
         ? systemSettings.max_system_events
         : parseInt(systemSettings.max_system_events, 10) || 100;
+    parsed.log_max_mb =
+      typeof systemSettings.log_max_mb === 'number'
+        ? systemSettings.log_max_mb
+        : parseInt(systemSettings.log_max_mb, 10) || 10;
+    parsed.log_keep =
+      typeof systemSettings.log_keep === 'number'
+        ? systemSettings.log_keep
+        : parseInt(systemSettings.log_keep, 10) || 5;
     parsed.preferred_region = systemSettings.preferred_region ?? null;
     parsed.auto_import_mapped_files =
       typeof systemSettings.auto_import_mapped_files === 'boolean'

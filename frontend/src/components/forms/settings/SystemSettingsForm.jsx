@@ -80,6 +80,30 @@ const SystemSettingsForm = React.memo(({ active }) => {
         max={1000}
         step={10}
       />
+      <NumberInput
+        label="Maximum Log File Size (MB)"
+        description="Rotate the application log once it grows past this size. Older logs are kept up to the retention limit below."
+        id="log_max_mb"
+        value={form.values['log_max_mb'] || 10}
+        onChange={(value) => {
+          form.setFieldValue('log_max_mb', value);
+        }}
+        min={1}
+        max={1000}
+        step={5}
+      />
+      <NumberInput
+        label="Log Files Retained"
+        description="How many rotated log files to keep before the oldest is deleted."
+        id="log_keep"
+        value={form.values['log_keep'] || 5}
+        onChange={(value) => {
+          form.setFieldValue('log_keep', value);
+        }}
+        min={1}
+        max={50}
+        step={1}
+      />
       <Select
         searchable
         clearable

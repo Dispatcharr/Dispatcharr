@@ -13,6 +13,10 @@ describe('SystemSettingsFormUtils', () => {
         auto_import_mapped_files: true,
         enable_ip_lookup: true,
         catchup_enabled: true,
+        // Added by this commit alongside the size cap and retention
+        // fields; the assertion is an exact match, so it has to list them.
+        log_max_mb: 10,
+        log_keep: 5,
       });
     });
 

@@ -726,6 +726,8 @@ class CoreSettings(models.Model):
             "auto_import_mapped_files": True,
             "enable_ip_lookup": True,
             "catchup_enabled": True,
+            "log_max_mb": 10,
+            "log_keep": 5,
         })
 
     @classmethod
