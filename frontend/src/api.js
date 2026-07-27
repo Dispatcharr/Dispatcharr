@@ -3713,6 +3713,73 @@ export default class API {
     }
   }
 
+  static async getLogFiles() {
+    try {
+      return await request(`${host}/api/core/logs/`);
+    } catch (e) {
+      errorNotification('Failed to retrieve log files', e);
+    }
+  }
+
+  // Raw text, fetched with auth (JWT); { silent: true } drops the toast for background auto-refresh polls.
+  static async getLogFile(name, { silent = false } = {}) {
+    try {
+      const response = await fetch(
+        `${host}/api/core/logs/${encodeURIComponent(name)}/`,
+        {
+          headers: { Authorization: `Bearer ${await API.getAuthToken()}` },
+        }
+      );
+      if (!response.ok) {
+        const error = new Error(`HTTP error! Status: ${response.status}`);
+        let errorBody = await response.text();
+        try {
+          errorBody = JSON.parse(errorBody);
+        } catch (e) {
+          // If parsing fails, leave errorBody as the raw text
+        }
+        error.status = response.status;
+        error.response = response;
+        error.body = errorBody;
+        throw error;
+      }
+      return {
+        content: await response.text(),
+        truncated: response.headers.get('X-Log-Truncated') === '1',
+      };
+    } catch (e) {
+      if (!silent) {
+        errorNotification('Failed to retrieve log file', e);
+      }
+    }
+  }
+
+  static async getLogDownloadToken(name) {
+    const response = await request(
+      `${host}/api/core/logs/${encodeURIComponent(name)}/download-token/`
+    );
+    return response.token;
+  }
+
+  // A signed token lets a plain <a download> link stream via FileResponse instead of buffering it in tab memory.
+  static async downloadLogFile(name) {
+    try {
+      const token = await API.getLogDownloadToken(name);
+      const downloadUrl = `${host}/api/core/logs/${encodeURIComponent(name)}/download/?token=${encodeURIComponent(token)}`;
+
+      const link = document.createElement('a');
+      link.href = downloadUrl;
+      link.download = name;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+
+      return { name };
+    } catch (e) {
+      errorNotification('Failed to download log file', e);
+    }
+  }
+
   static async getSystemEvents(limit = 100, offset = 0, eventType = null) {
     try {
       const params = new URLSearchParams();
