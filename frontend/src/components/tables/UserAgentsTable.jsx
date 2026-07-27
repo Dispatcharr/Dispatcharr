@@ -233,15 +233,12 @@ const UserAgentsTable = () => {
         style={{
           display: 'flex',
           flexDirection: 'column',
-          maxHeight: 300,
           width: '100%',
-          overflow: 'hidden',
         }}
       >
         <Box
           style={{
             flex: 1,
-            overflowY: 'auto',
             overflowX: 'auto',
             border: 'solid 1px rgb(68,68,68)',
             borderRadius: 'var(--mantine-radius-default)',
