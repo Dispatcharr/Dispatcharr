@@ -1001,6 +1001,14 @@ def create_setting_recommendation(setting_key, recommended_value, reason, curren
     return notification
 
 
+def _clamped_int(value, default, lo, hi):
+    """Coerce a System Setting to an int within [lo, hi], falling back to default on garbage."""
+    try:
+        return max(lo, min(hi, int(value)))
+    except (TypeError, ValueError):
+        return default
+
+
 def _log_archive_indices(log_dir):
     """Integer suffixes of the rotated log files (dispatcharr.log.N) in log_dir."""
     try:
@@ -1029,8 +1037,9 @@ def rotate_log_file():
         return
 
     sys_settings = CoreSettings.get_system_settings()
-    max_mb = int(sys_settings.get("log_max_mb", 10))
-    keep = int(sys_settings.get("log_keep", 5))
+    # Bounds mirror the System Settings UI (log_max_mb 1-1000, log_keep 1-50); a bad API value must never wedge rotation.
+    max_mb = _clamped_int(sys_settings.get("log_max_mb", 10), 10, 1, 1000)
+    keep = _clamped_int(sys_settings.get("log_keep", 5), 5, 1, 50)
     max_bytes = max_mb * 1024 * 1024
 
     over_cap = os.path.getsize(live) > max_bytes

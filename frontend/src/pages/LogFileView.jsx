@@ -33,14 +33,18 @@ const LINE_RULES = [
   {
     label: 'error',
     color: COLORS.error,
-    test: (line) => /\b(ERROR|CRITICAL|FATAL)\b|Traceback|Exception/.test(line),
+    // Anchor the level keywords to the level field so a message body mentioning "ERROR" (e.g. "state to ERROR in Redis") doesn't redden an INFO line; Traceback/Exception stay content-matched for stack dumps.
+    test: (line) =>
+      /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}[.,]\d+\s+(ERROR|CRITICAL|FATAL)\b|Traceback|Exception/.test(
+        line
+      ),
   },
   {
     label: 'login/auth',
     color: COLORS.auth,
-    // Real auth events only: apps.accounts logger or django.request 401/403 lines — not any line mentioning "auth".
+    // Real auth events only: apps.accounts / jwt_ws_auth loggers or django.request 401/403 — but not the routine token-refresh/notification 401 polling, which is benign warn noise.
     test: (line) =>
-      /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}[.,]\d+\s+\w+\s+(apps\.accounts\.|django\.request\s+(Unauthorized|Forbidden)\b)/.test(
+      /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}[.,]\d+\s+\w+\s+(apps\.accounts\.|dispatcharr\.jwt_ws_auth\b|django\.request\s+(Unauthorized|Forbidden)\b(?!:\s*\/api\/(?:accounts\/token\/refresh|core\/notifications)))/.test(
         line
       ),
   },
@@ -73,9 +77,11 @@ const LEGEND = [
 // (multi-line messages, traceback frames) and inherits the record's colour.
 const RECORD_START = /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}/;
 
+// Cap on rendered lines: a mixed-severity tail can defeat the run-length grouping (one span per line), so bound the DOM for low-end TV browsers.
+const MAX_RENDER_LINES = 5000;
+
 // Group consecutive same-colour lines into one span each, so a 5 MB file renders a few hundred nodes, not one per line.
-const colorizeLog = (content) => {
-  const lines = content.split('\n');
+const colorizeLines = (lines) => {
   const chunks = [];
   let current = null;
   let recordColor = null;
@@ -116,7 +122,20 @@ const LogFileViewPage = () => {
   const loadingRef = useRef(false);
   const failuresRef = useRef(0);
 
-  const chunks = useMemo(() => colorizeLog(content), [content]);
+  // Render only the last MAX_RENDER_LINES; hiddenLines drives the "showing the last N lines" notice.
+  const { chunks, hiddenLines } = useMemo(() => {
+    const all = content ? content.split('\n') : [];
+    const hidden = Math.max(0, all.length - MAX_RENDER_LINES);
+    return { chunks: colorizeLines(hidden ? all.slice(hidden) : all), hiddenLines: hidden };
+  }, [content]);
+
+  // One notice: line-cap wins over the byte-truncation banner since it states what's actually on screen.
+  const notice =
+    hiddenLines > 0
+      ? `Showing the last ${MAX_RENDER_LINES.toLocaleString()} lines`
+      : truncated
+        ? 'Large file — showing the last 5 MB'
+        : null;
 
   // showLoading=false skips the spinner flash on silent polls (which also suppress getLogFile's toast); returns success/failure.
   const load = useCallback(
@@ -185,9 +204,9 @@ const LogFileViewPage = () => {
           <Title order={4}>{name}</Title>
         </Group>
         <Group gap="sm">
-          {truncated && (
+          {notice && (
             <Text size="sm" c="yellow">
-              Large file — showing the last 5 MB
+              {notice}
             </Text>
           )}
           <Switch

@@ -62,8 +62,9 @@ def list_log_files(request):
     except OSError:
         names = []
     for name in names:
-        path = os.path.join(base, name)
-        if not _NAME_RE.match(name) or not os.path.isfile(path):
+        # Resolve through the same realpath-containment gate as view/download, so a symlink escaping the dir is never even listed.
+        path = _resolve(name)
+        if path is None:
             continue
         try:
             stat = os.stat(path)

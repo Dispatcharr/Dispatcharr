@@ -128,6 +128,18 @@ class LogFilesEndpointTests(TestCase):
         os.symlink(outside, os.path.join(self.log_dir, "escape.log"))
         self.assertIsNone(log_files._resolve("escape.log"))
 
+    def test_list_excludes_symlink_escape(self):
+        # The listing must apply the same containment as view/download: an escaping symlink is not even listed (no metadata leak).
+        fd, outside = tempfile.mkstemp(prefix="dispatcharr-escape-")
+        os.close(fd)
+        self.addCleanup(os.remove, outside)
+        os.symlink(outside, os.path.join(self.log_dir, "escape.log"))
+        response = self.client.get("/api/core/logs/")
+        self.assertEqual(response.status_code, 200)
+        names = {f["name"] for f in response.json()["files"]}
+        self.assertNotIn("escape.log", names)
+        self.assertEqual(names, {"dispatcharr.log", "dispatcharr.log.1"})
+
     def test_traversal_url_never_serves_out_of_dir_files(self):
         secret = os.path.join(self.log_dir, os.pardir, "secret.txt")
         with open(secret, "w") as f:

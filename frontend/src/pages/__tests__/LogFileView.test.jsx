@@ -179,6 +179,55 @@ describe('LogFileViewPage', () => {
     expect(screen.getByText(/sweep died/)).toHaveStyle({ color: '#ff6b6b' });
   });
 
+  it('does not redden an INFO line whose message body mentions ERROR', async () => {
+    // Only the level field reddens: "state to ERROR in Redis" is message text on an INFO line.
+    API.getLogFile.mockResolvedValue({
+      content:
+        '2026-07-19 22:52:20,931 INFO live_proxy.manager Updated channel abc state to ERROR in Redis after stream failure',
+      truncated: false,
+    });
+    renderPage();
+    await waitFor(() => {
+      expect(screen.getByText(/state to ERROR in Redis/)).toBeInTheDocument();
+    });
+    expect(screen.getByText(/state to ERROR in Redis/)).not.toHaveStyle({
+      color: '#ff6b6b',
+    });
+  });
+
+  it('colours WebSocket JWT auth rejections green', async () => {
+    API.getLogFile.mockResolvedValue({
+      content:
+        '2026-07-20 16:45:17,317 WARNING dispatcharr.jwt_ws_auth Invalid token: given token not valid for any token type',
+      truncated: false,
+    });
+    renderPage();
+    await waitFor(() => {
+      expect(screen.getByText(/Invalid token/)).toBeInTheDocument();
+    });
+    expect(screen.getByText(/Invalid token/)).toHaveStyle({ color: '#51cf66' });
+  });
+
+  it('drops routine token-refresh/notification 401 polling to warn, keeps other 401s green', async () => {
+    API.getLogFile.mockResolvedValue({
+      content: [
+        '2026-07-20 00:50:00,000 WARNING django.request Unauthorized: /api/accounts/token/refresh/',
+        '2026-07-20 00:50:01,000 WARNING django.request Unauthorized: /api/core/notifications/',
+        '2026-07-20 00:50:02,000 WARNING django.request Unauthorized: /api/channels/1/',
+      ].join('\n'),
+      truncated: false,
+    });
+    renderPage();
+    await waitFor(() => {
+      expect(screen.getByText(/token\/refresh/)).toBeInTheDocument();
+    });
+    // Benign polling 401s fall through to warn (yellow), not green.
+    expect(screen.getByText(/token\/refresh/)).toHaveStyle({ color: '#ffd43b' });
+    expect(screen.getByText(/notifications/)).toHaveStyle({ color: '#ffd43b' });
+    // A non-routine 401 stays green — a real unauthorized access is notable.
+    expect(screen.getByText(/channels\/1/)).toHaveStyle({ color: '#51cf66' });
+  });
+
   it('shows a load error with Retry and recovers when Retry succeeds', async () => {
     // getLogFile resolves undefined on failure (see api.js catch path).
     API.getLogFile.mockResolvedValue(undefined);
@@ -202,7 +251,7 @@ describe('LogFileViewPage', () => {
   });
 
   it('renders a near-ceiling log (~50k lines / ~5MB, many colour switches) without hanging', async () => {
-    // Deterministic synthetic log near the 5 MB truncation ceiling, interleaving every category to exercise colorizeLog's worst case (frequent colour switches).
+    // Deterministic synthetic log near the 5 MB truncation ceiling, interleaving every category to exercise colorizeLines's worst case (frequent colour switches).
     const LEVELS = [
       { tag: 'INFO', logger: 'core.tasks', msg: 'routine tick, nothing to report this cycle' },
       { tag: 'WARNING', logger: 'core.utils', msg: 'cache miss while resolving stream metadata lookup' },
@@ -220,7 +269,7 @@ describe('LogFileViewPage', () => {
       lines.push(
         `2026-07-15 ${hh}:${mm}:${ss},000 ${level.tag} ${level.logger} ${level.msg} record-${i}`
       );
-      // Every 6th record gets a continuation line, exercising colorizeLog's continuation-inherits-colour path too.
+      // Every 6th record gets a continuation line, exercising colorizeLines's continuation-inherits-colour path too.
       if (i % 6 === 0) {
         lines.push(
           `    caused by: nested detail for record ${i} with additional padding text to widen the payload`
@@ -254,6 +303,9 @@ describe('LogFileViewPage', () => {
     expect(elapsed).toBeLessThan(15000);
     expect(screen.queryByTestId('loader')).not.toBeInTheDocument();
     expect(screen.queryByText('(empty)')).not.toBeInTheDocument();
+    // F3: only the tail renders — the cap notice shows and the first record is dropped from the DOM.
+    expect(screen.getByText(/Showing the last [\d,]+ lines/)).toBeInTheDocument();
+    expect(screen.queryByText(/record-0\b/)).not.toBeInTheDocument();
   }, 20000);
 
   it('does not poll while the tab is hidden', async () => {

@@ -3,7 +3,15 @@ import json
 import ipaddress
 
 from rest_framework import serializers
-from .models import CoreSettings, UserAgent, StreamProfile, OutputProfile, DVR_SETTINGS_KEY, NETWORK_ACCESS_KEY
+from .models import CoreSettings, UserAgent, StreamProfile, OutputProfile, DVR_SETTINGS_KEY, NETWORK_ACCESS_KEY, SYSTEM_SETTINGS_KEY
+
+
+def _clamp_int(value, default, lo, hi):
+    """Coerce a settings value to an int within [lo, hi], falling back to default on garbage."""
+    try:
+        return max(lo, min(hi, int(value)))
+    except (TypeError, ValueError):
+        return default
 
 
 class UserAgentSerializer(serializers.ModelSerializer):
@@ -69,6 +77,15 @@ class CoreSettingsSerializer(serializers.ModelSerializer):
                         "value": invalid,
                     }
                 )
+
+        # Coerce log-rotation settings to sane ints so a bad API payload can't wedge rotate_log_file (the UI constrains these; the raw API is the gap).
+        if instance.key == SYSTEM_SETTINGS_KEY:
+            value = validated_data.get("value")
+            if isinstance(value, dict):
+                if "log_max_mb" in value:
+                    value["log_max_mb"] = _clamp_int(value["log_max_mb"], 10, 1, 1000)
+                if "log_keep" in value:
+                    value["log_keep"] = _clamp_int(value["log_keep"], 5, 1, 50)
 
         # Sanitize series_rules when DVR settings are saved through the
         # generic settings API (e.g. Settings page round-trip) to prevent
