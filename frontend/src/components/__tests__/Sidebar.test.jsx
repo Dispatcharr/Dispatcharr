@@ -253,6 +253,26 @@ describe('Sidebar', () => {
     });
   });
 
+  describe('Settings Sub-Panel', () => {
+    it('opens and renders its sections when the Settings row is clicked', async () => {
+      renderSidebar();
+
+      // Settings is nested under the System group for admin users.
+      fireEvent.click(screen.getByText('System'));
+      await waitFor(() => {
+        expect(screen.getByText('Settings')).toBeInTheDocument();
+      });
+
+      fireEvent.click(screen.getByText('Settings'));
+
+      // Use a section unique to the sub-panel to avoid colliding with
+      // primary-panel group headings like 'System' or 'DVR'.
+      await waitFor(() => {
+        expect(screen.getByText('Backup & Restore')).toBeInTheDocument();
+      });
+    });
+  });
+
   describe('Navigation Links - Regular User', () => {
     beforeEach(() => {
       useAuthStore.mockImplementation((selector) => {

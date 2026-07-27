@@ -17,6 +17,13 @@ import {
   MonitorCog,
 } from 'lucide-react';
 
+// Shared by the top-level `settings` entry and the nested entry under
+// `system.paths`, so the two stay in sync instead of drifting apart.
+// `panel: 'settings'` marks this item as one that opens the sidebar's
+// settings sub-panel instead of routing directly, so Sidebar.jsx can check
+// `item.panel` instead of comparing against the '/settings' path string.
+const SETTINGS_NAV_BASE = { label: 'Settings', icon: LucideSettings, path: '/settings', panel: 'settings' };
+
 export const NAV_ITEMS = {
   channels: {
     id: 'channels',
@@ -90,14 +97,12 @@ export const NAV_ITEMS = {
     paths: [
       { label: 'Users', icon: User, path: '/users' },
       { label: 'Logo Manager', icon: FileImage, path: '/logos' },
-      { label: 'Settings', icon: LucideSettings, path: '/settings' },
+      { ...SETTINGS_NAV_BASE },
     ],
   },
   settings: {
     id: 'settings',
-    label: 'Settings',
-    icon: LucideSettings,
-    path: '/settings',
+    ...SETTINGS_NAV_BASE,
     adminOnly: false,
     canHide: false,
   },
@@ -120,6 +125,10 @@ export const DEFAULT_USER_ORDER = [
   'guide',
   'settings',
 ];
+
+/** True when a divider should render before navItems[idx] (start or end of a grouped section). */
+export const isGroupBoundary = (navItems, idx) =>
+  idx > 0 && Boolean(navItems[idx].paths || navItems[idx - 1].paths);
 
 export const getOrderedNavItems = (userOrder, isAdmin, channelIds = []) => {
   const defaultOrder = isAdmin ? DEFAULT_ADMIN_ORDER : DEFAULT_USER_ORDER;
@@ -160,6 +169,7 @@ export const getOrderedNavItems = (userOrder, isAdmin, channelIds = []) => {
       icon: item.icon,
       path: item.path,
       canHide: item.canHide,
+      panel: item.panel,
     };
 
     // Add badge for channels

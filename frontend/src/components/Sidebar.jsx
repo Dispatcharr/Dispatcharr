@@ -9,10 +9,10 @@ import {
   HelpCircle,
   LogOut,
 } from 'lucide-react';
-import { SETTINGS_GROUPS } from '../config/settingsNav';
+import { getVisibleSettingsGroups } from '../config/settingsNav';
 import { SlidingPanels, usePanelNav } from './SlidingPanels';
 import AboutModal from './AboutModal';
-import { getOrderedNavItems } from '../config/navigation';
+import { getOrderedNavItems, isGroupBoundary } from '../config/navigation';
 import {
   Avatar,
   Box,
@@ -37,6 +37,9 @@ import NotificationCenter from './NotificationCenter';
 
 // ─── Small shared components ─────────────────────────────────────────────────
 
+const NAV_ICON_SIZE = 19;
+const NAV_LABEL_SIZE = 'sm';
+
 const DonateButton = ({ tooltipPosition = 'top' }) => (
   <Tooltip label="Support Dispatcharr" position={tooltipPosition}>
     <ActionIcon
@@ -52,31 +55,89 @@ const DonateButton = ({ tooltipPosition = 'top' }) => (
   </Tooltip>
 );
 
-/** A single leaf nav item that navigates to item.path. */
-const NavItem = ({ item, isActive, collapsed }) => {
-  const Icon = item.icon;
-  return (
-    <Tooltip label={item.label} position="right" withArrow disabled={!collapsed}>
-      <UnstyledButton
-        component={Link}
-        to={item.path}
-        className={`navlink${isActive ? ' navlink-active' : ''}${collapsed ? ' navlink-collapsed' : ''}`}
-      >
-        {Icon && <Icon size={19} />}
-        {!collapsed && (
-          <Text size="sm" style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', flex: 1, minWidth: 0 }}>
-            {item.label}
-          </Text>
-        )}
-        {!collapsed && item.badge && (
-          <Text size="sm" style={{ color: '#D4D4D8', whiteSpace: 'nowrap' }}>
-            {item.badge}
-          </Text>
-        )}
-      </UnstyledButton>
+/** Horizontal rule between sidebar sections; key is supplied by the caller. */
+const NavDivider = () => (
+  <Box style={{ borderTop: '1px solid #2A2A2E', margin: '4px 4px 6px' }} />
+);
+
+/**
+ * One row in the sidebar nav: Tooltip > UnstyledButton > Icon + label (+ trailing).
+ * Pass `to` for a react-router Link; pass `onClick` for an action row (settings
+ * toggle, section nav, back). `trailing` renders after the label when expanded
+ * (a badge or a chevron).
+ */
+const NavRow = ({
+  icon: Icon,
+  label,
+  isActive,
+  collapsed,
+  to,
+  onClick,
+  trailing,
+  fontWeight,
+}) => {
+  const button = (
+    <UnstyledButton
+      {...(to ? { component: Link, to } : { onClick })}
+      className={`navlink${isActive ? ' navlink-active' : ''}${collapsed ? ' navlink-collapsed' : ''}`}
+      style={{ width: '100%' }}
+    >
+      {Icon && <Icon size={NAV_ICON_SIZE} />}
+      {!collapsed && (
+        <Text
+          size={NAV_LABEL_SIZE}
+          fw={fontWeight}
+          style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', flex: 1, minWidth: 0 }}
+        >
+          {label}
+        </Text>
+      )}
+      {!collapsed && trailing}
+    </UnstyledButton>
+  );
+
+  // Tooltip is only ever shown while collapsed (label text is hidden then);
+  // skip mounting it entirely in the expanded state to avoid the floating-ui
+  // hover/focus/positioning setup it carries even when `disabled`.
+  return collapsed ? (
+    <Tooltip label={label} position="right" withArrow>
+      {button}
     </Tooltip>
+  ) : (
+    button
   );
 };
+
+/** A single leaf nav item that navigates to item.path. */
+const NavItem = ({ item, isActive, collapsed }) => (
+  <NavRow
+    icon={item.icon}
+    label={item.label}
+    isActive={isActive}
+    collapsed={collapsed}
+    to={item.path}
+    trailing={
+      !collapsed &&
+      item.badge && (
+        <Text size={NAV_LABEL_SIZE} style={{ color: '#D4D4D8', whiteSpace: 'nowrap' }}>
+          {item.badge}
+        </Text>
+      )
+    }
+  />
+);
+
+/** Nav row that opens the sidebar's settings sub-panel instead of routing directly. */
+const SettingsPanelRow = ({ item, collapsed, location, panelOpen, onOpen }) => (
+  <NavRow
+    icon={item.icon}
+    label={item.label}
+    isActive={panelOpen || location.pathname.startsWith('/settings')}
+    collapsed={collapsed}
+    onClick={onOpen}
+    trailing={!collapsed && <ChevronRight size={14} style={{ flexShrink: 0, opacity: 0.5 }} />}
+  />
+);
 
 /** Flat group with a decorative heading, matches the settings sub-panel design language. */
 function NavGroup({ label, paths, location, collapsed, onSettingsClick, settingsPanelOpen }) {
@@ -95,27 +156,16 @@ function NavGroup({ label, paths, location, collapsed, onSettingsClick, settings
       )}
       <Stack gap={4}>
         {paths.map((child) => {
-          if (child.path === '/settings' && onSettingsClick) {
-            const Icon = child.icon;
-            const isActive = settingsPanelOpen || location.pathname.startsWith('/settings');
+          if (child.panel === 'settings' && onSettingsClick) {
             return (
-              <Tooltip key={child.path} label={child.label} position="right" withArrow disabled={!collapsed}>
-                <UnstyledButton
-                  onClick={onSettingsClick}
-                  className={`navlink${isActive ? ' navlink-active' : ''}${collapsed ? ' navlink-collapsed' : ''}`}
-                  style={{ width: '100%' }}
-                >
-                  {Icon && <Icon size={19} />}
-                  {!collapsed && (
-                    <>
-                      <Text size="sm" style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', flex: 1, minWidth: 0 }}>
-                        {child.label}
-                      </Text>
-                      <ChevronRight size={14} style={{ flexShrink: 0, opacity: 0.5 }} />
-                    </>
-                  )}
-                </UnstyledButton>
-              </Tooltip>
+              <SettingsPanelRow
+                key={child.path}
+                item={child}
+                collapsed={collapsed}
+                location={location}
+                panelOpen={settingsPanelOpen}
+                onOpen={onSettingsClick}
+              />
             );
           }
           return (
@@ -129,20 +179,7 @@ function NavGroup({ label, paths, location, collapsed, onSettingsClick, settings
 
 /** Back button shown at the top of every sub-panel. */
 const BackButton = ({ label, collapsed, onClick }) => (
-  <Tooltip label="Back" position="right" withArrow disabled={!collapsed}>
-    <UnstyledButton
-      onClick={onClick}
-      className={`navlink${collapsed ? ' navlink-collapsed' : ''}`}
-      style={{ width: '100%' }}
-    >
-      <ArrowLeft size={19} />
-      {!collapsed && (
-        <Text size="sm" fw={500} style={{ whiteSpace: 'nowrap' }}>
-          {label}
-        </Text>
-      )}
-    </UnstyledButton>
-  </Tooltip>
+  <NavRow icon={ArrowLeft} label={label} collapsed={collapsed} onClick={onClick} fontWeight={500} />
 );
 
 // ─── Sidebar ─────────────────────────────────────────────────────────────────
@@ -175,7 +212,7 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
 
   const isSettingsPage = location.pathname.startsWith('/settings');
   const activeSettingsId = location.hash.replace('#', '');
-  const visibleSettingsGroups = SETTINGS_GROUPS.filter((g) => !g.adminOnly || isAdmin);
+  const visibleSettingsGroups = getVisibleSettingsGroups(isAdmin);
 
   // Panel navigation state, drives the SlidingPanels component
   const nav = usePanelNav();
@@ -209,16 +246,11 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
     <ScrollArea h="100%" type="scroll" scrollbars="y">
       <Stack gap={4} mt="lg" style={{ minHeight: 0, overflowX: 'hidden', paddingRight: 2 }}>
         {navItems.flatMap((item, idx) => {
-          const els = [];
-
-          if (idx > 0 && (item.paths || navItems[idx - 1].paths)) {
-            els.push(
-              <Box key={`div-${item.id}`} style={{ borderTop: '1px solid #2A2A2E', margin: '4px 4px 6px' }} />
-            );
-          }
+          const withDivider = (el) =>
+            isGroupBoundary(navItems, idx) ? [<NavDivider key={`div-${item.id}`} />, el] : [el];
 
           if (item.paths) {
-            els.push(
+            return withDivider(
               <NavGroup
                 key={item.id}
                 label={item.label}
@@ -229,36 +261,23 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
                 settingsPanelOpen={nav.isOpen}
               />
             );
-            return els;
           }
 
           // Settings leaf item: open sidebar sub-panel instead of navigating
-          if (item.path === '/settings') {
-            const Icon = item.icon;
-            const isActive = nav.isOpen || location.pathname.startsWith('/settings');
-            els.push(
-              <Tooltip key={item.path} label={item.label} position="right" withArrow disabled={!collapsed}>
-                <UnstyledButton
-                  onClick={() => nav.push({ type: 'settings' })}
-                  className={`navlink${isActive ? ' navlink-active' : ''}${collapsed ? ' navlink-collapsed' : ''}`}
-                  style={{ width: '100%' }}
-                >
-                  {Icon && <Icon size={19} />}
-                  {!collapsed && (
-                    <>
-                      <Text style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', flex: 1, minWidth: 0 }}>
-                        {item.label}
-                      </Text>
-                      <ChevronRight size={14} style={{ flexShrink: 0, opacity: 0.5 }} />
-                    </>
-                  )}
-                </UnstyledButton>
-              </Tooltip>
+          if (item.panel === 'settings') {
+            return withDivider(
+              <SettingsPanelRow
+                key={item.path}
+                item={item}
+                collapsed={collapsed}
+                location={location}
+                panelOpen={nav.isOpen}
+                onOpen={() => nav.push({ type: 'settings' })}
+              />
             );
-            return els;
           }
 
-          els.push(
+          return withDivider(
             <NavItem
               key={item.path}
               item={item}
@@ -266,7 +285,6 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
               collapsed={collapsed}
             />
           );
-          return els;
         })}
       </Stack>
     </ScrollArea>
@@ -280,7 +298,7 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
           {nav.displayed?.type === 'settings' &&
             visibleSettingsGroups.map((group, gi) => (
               <Box key={group.id}>
-                {gi > 0 && <Box style={{ borderTop: '1px solid #2A2A2E', margin: '4px 4px 6px' }} />}
+                {gi > 0 && <NavDivider />}
                 {!collapsed && (
                   <Text
                     size="xs"
@@ -293,29 +311,16 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
                   </Text>
                 )}
                 <Stack gap={4}>
-                  {group.sections.map((section) => {
-                    const Icon = section.icon;
-                    return (
-                      <Tooltip
-                        key={section.id}
-                        label={section.label}
-                        position="right"
-                        withArrow
-                        disabled={!collapsed}
-                      >
-                        <UnstyledButton
-                          onClick={() => navigate(`/settings#${section.id}`, { replace: true })}
-                          className={`navlink${activeSettingsId === section.id ? ' navlink-active' : ''}${collapsed ? ' navlink-collapsed' : ''}`}
-                          style={{ width: '100%' }}
-                        >
-                          <Icon size={19} />
-                          {!collapsed && (
-                            <Text size="sm" style={{ whiteSpace: 'nowrap' }}>{section.label}</Text>
-                          )}
-                        </UnstyledButton>
-                      </Tooltip>
-                    );
-                  })}
+                  {group.sections.map((section) => (
+                    <NavRow
+                      key={section.id}
+                      icon={section.icon}
+                      label={section.label}
+                      isActive={activeSettingsId === section.id}
+                      collapsed={collapsed}
+                      onClick={() => navigate(`/settings#${section.id}`, { replace: isSettingsPage })}
+                    />
+                  ))}
                 </Stack>
               </Box>
             ))}

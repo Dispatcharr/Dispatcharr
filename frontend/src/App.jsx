@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useRef } from 'react';
 import {
   BrowserRouter as Router,
   Route,
@@ -21,6 +21,7 @@ import Users from './pages/Users';
 import LogosPage from './pages/Logos';
 import VODsPage from './pages/VODs';
 import useAuthStore from './store/auth';
+import useLocalStorage from './hooks/useLocalStorage';
 import FloatingVideo from './components/FloatingVideo';
 import { WebsocketProvider } from './WebSocket';
 import { Box, AppShell, MantineProvider } from '@mantine/core';
@@ -40,10 +41,7 @@ const miniDrawerWidth = 60;
 const defaultRoute = '/channels';
 
 const App = () => {
-  const [open, setOpen] = useState(() => {
-    const stored = localStorage.getItem('dispatcharr_sidebar_open');
-    return stored === null ? true : stored === 'true';
-  });
+  const [open, setOpen] = useLocalStorage('dispatcharr_sidebar_open', true);
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
   const isInitialized = useAuthStore((s) => s.isInitialized);
   const logout = useAuthStore((s) => s.logout);
@@ -55,11 +53,7 @@ const App = () => {
   const superuserCheckStarted = useRef(false);
 
   const toggleDrawer = () => {
-    setOpen((prev) => {
-      const next = !prev;
-      localStorage.setItem('dispatcharr_sidebar_open', String(next));
-      return next;
-    });
+    setOpen((prev) => !prev);
   };
 
   // Check if a superuser exists on first load.
