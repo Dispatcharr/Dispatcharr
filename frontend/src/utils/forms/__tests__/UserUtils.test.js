@@ -429,10 +429,10 @@ describe('UserUtils', () => {
       it('returns error for streamer username with non-alphanumeric characters', () => {
         const result = validate(null, {
           ...getFormInitialValues(),
-          username: 'alice_123',
+          username: 'alice!123',
           user_level: '2',
         });
-        expect(result.username).toBe('Streamer username must be alphanumeric');
+        expect(result.username).toBe('Streamer username contains unsupported characters');
       });
     });
 
@@ -493,9 +493,9 @@ describe('UserUtils', () => {
       it('returns error for xc_password with non-alphanumeric characters', () => {
         const result = validate(null, {
           ...getFormInitialValues(),
-          xc_password: 'abc!@#',
+          xc_password: 'abc\t123',
         });
-        expect(result.xc_password).toBe('XC password must be alphanumeric');
+        expect(result.xc_password).toBe('XC password contains unsupported characters');
       });
     });
 
