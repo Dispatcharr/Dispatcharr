@@ -584,22 +584,12 @@ const EPGsTable = () => {
 
       <Box
         style={{
-          display: 'flex',
-          flexDirection: 'column',
-          height: 'calc(40vh - 15px)',
+          overflowX: 'auto',
+          border: 'solid 1px rgb(68,68,68)',
+          borderRadius: 'var(--mantine-radius-default)',
         }}
       >
-        <Box
-          style={{
-            flex: 1,
-            overflowY: 'auto',
-            overflowX: 'auto',
-            border: 'solid 1px rgb(68,68,68)',
-            borderRadius: 'var(--mantine-radius-default)',
-          }}
-        >
-          <CustomTable table={table} />
-        </Box>
+        <CustomTable table={table} />
       </Box>
 
       <EPGForm epg={epg} isOpen={epgModalOpen} onClose={closeEPGForm} />
