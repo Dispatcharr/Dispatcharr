@@ -3,6 +3,19 @@ import API from '../../api.js';
 export const updatePluginSettings = async (key, settings) => {
   return await API.updatePluginSettings(key, settings);
 };
+export const uploadPluginFieldFile = async (key, fieldId, file) => {
+  return await API.uploadPluginField(key, fieldId, file);
+};
+export const computeResetSettings = (fields) => {
+  const result = {};
+  for (const field of fields || []) {
+    if (field.type === 'info' || field.type === 'section') continue;
+    if ('default' in field) {
+      result[field.id] = field.default;
+    }
+  }
+  return result;
+};
 export const runPluginAction = async (key, actionId) => {
   return await API.runPluginAction(key, actionId);
 };

@@ -26,6 +26,7 @@ import { usePluginStore } from '../store/plugins.jsx';
 import useSettingsStore from '../store/settings.jsx';
 import useAuthStore from '../store/auth.jsx';
 import {
+  computeResetSettings,
   deletePluginByKey,
   reloadPlugin,
   refreshSinglePlugin,
@@ -117,6 +118,7 @@ function PluginDetailForKey({ routeKey: key }) {
   const [pendingInstallParams, setPendingInstallParams] = useState(null);
   const [uninstallConfirmOpen, setUninstallConfirmOpen] = useState(false);
   const [uninstalling, setUninstalling] = useState(false);
+  const [resetConfirmOpen, setResetConfirmOpen] = useState(false);
   const [reloadingCode, setReloadingCode] = useState(false);
   const [checkingUpdate, setCheckingUpdate] = useState(false);
   // Matches the Grid.Col `lg` breakpoint (see plugin-detail.css); below it
@@ -296,6 +298,11 @@ function PluginDetailForKey({ routeKey: key }) {
 
   const updateField = (id, val) => {
     setSettings((prev) => ({ ...prev, [id]: val }));
+  };
+
+  const handleResetToDefaults = () => {
+    setSettings(computeResetSettings(plugin.fields));
+    setResetConfirmOpen(false);
   };
 
   const handleEnableChange = async (next) => {
@@ -591,12 +598,22 @@ function PluginDetailForKey({ routeKey: key }) {
         <Grid.Col span={{ base: 12, lg: 8 }} className="plugin-detail-col-padding">
           {hasFields ? (
             <Stack gap="md">
-              <CollapsibleHeading
-                label="Settings"
-                isSingleCol={isSingleCol}
-                opened={settingsOpened}
-                onToggle={toggleSettings}
-              />
+              <Group justify="space-between">
+                <CollapsibleHeading
+                  label="Settings"
+                  isSingleCol={isSingleCol}
+                  opened={settingsOpened}
+                  onToggle={toggleSettings}
+                />
+                <Button
+                  variant="subtle"
+                  color="gray"
+                  size="xs"
+                  onClick={() => setResetConfirmOpen(true)}
+                >
+                  Reset to Defaults
+                </Button>
+              </Group>
               <Collapse in={!isSingleCol || settingsOpened}>
                 <Stack gap="md">
                   <PluginFieldList plugin={plugin} settings={settings} updateField={updateField} />
@@ -692,6 +709,29 @@ function PluginDetailForKey({ routeKey: key }) {
             </Button>
             <Button size="xs" color={isDown ? 'orange' : undefined} onClick={confirmAndInstall}>
               {isDown ? 'Downgrade' : 'Update'}
+            </Button>
+          </Group>
+        </Stack>
+      </Modal>
+
+      {/* Reset to Defaults confirmation modal */}
+      <Modal
+        opened={resetConfirmOpen}
+        onClose={() => setResetConfirmOpen(false)}
+        title="Reset settings to defaults?"
+        zIndex={300}
+      >
+        <Stack>
+          <Text size="sm">
+            This will replace any unsaved changes with each field's default value and clear any
+            settings no longer used by this plugin. Nothing is saved until you click Save.
+          </Text>
+          <Group justify="flex-end">
+            <Button variant="default" size="xs" onClick={() => setResetConfirmOpen(false)}>
+              Cancel
+            </Button>
+            <Button size="xs" onClick={handleResetToDefaults}>
+              Reset
             </Button>
           </Group>
         </Stack>
