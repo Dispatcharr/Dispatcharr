@@ -983,6 +983,7 @@ class SystemNotification(models.Model):
         ANNOUNCEMENT = 'announcement', 'System Announcement'
         WARNING = 'warning', 'Warning'
         INFO = 'info', 'Information'
+        PLUGIN_UPDATE = 'plugin_update', 'Plugin Update Available'
 
     class Priority(models.TextChoices):
         LOW = 'low', 'Low'

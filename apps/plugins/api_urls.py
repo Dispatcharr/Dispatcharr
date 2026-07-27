@@ -2,6 +2,7 @@ from django.urls import path
 from .api_views import (
     PluginsListAPIView,
     PluginReloadAPIView,
+    PluginSingleReloadAPIView,
     PluginSettingsAPIView,
     PluginRunAPIView,
     PluginEnabledAPIView,
@@ -12,6 +13,7 @@ from .api_views import (
     PluginRepoPreviewAPIView,
     PluginRepoDetailAPIView,
     PluginRepoRefreshAPIView,
+    PluginRepoRefreshSinglePluginAPIView,
     AvailablePluginsAPIView,
     PluginDetailManifestAPIView,
     PluginInstallFromRepoAPIView,
@@ -29,6 +31,7 @@ urlpatterns = [
     path("plugins/<str:key>/run/", PluginRunAPIView.as_view(), name="run"),
     path("plugins/<str:key>/enabled/", PluginEnabledAPIView.as_view(), name="enabled"),
     path("plugins/<str:key>/logo/", PluginLogoAPIView.as_view(), name="logo"),
+    path("plugins/<str:key>/reload/", PluginSingleReloadAPIView.as_view(), name="single-reload"),
     # Plugin repos (hub / store) - static paths first, then parametric
     path("repos/", PluginRepoListCreateAPIView.as_view(), name="repo-list"),
     path("repos/available/", AvailablePluginsAPIView.as_view(), name="available-plugins"),
@@ -38,4 +41,5 @@ urlpatterns = [
     path("repos/preview/", PluginRepoPreviewAPIView.as_view(), name="repo-preview"),
     path("repos/<int:pk>/", PluginRepoDetailAPIView.as_view(), name="repo-detail"),
     path("repos/<int:pk>/refresh/", PluginRepoRefreshAPIView.as_view(), name="repo-refresh"),
+    path("repos/<int:pk>/plugins/<str:slug>/refresh/", PluginRepoRefreshSinglePluginAPIView.as_view(), name="repo-refresh-single-plugin"),
 ]
