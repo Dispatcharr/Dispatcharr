@@ -12,7 +12,7 @@ const PageContent = () => {
     <Stack
       p="10"
       h="100%" // Set a specific height to ensure proper display
-      miw="1100px" // Prevent tables from becoming too cramped
+      miw={{ base: 0, sm: '1100px' }} // Prevent tables from becoming too cramped on desktop, but don't force horizontal page overflow on mobile
       style={{
         overflowX: 'auto', // Enable horizontal scrolling when needed
         overflowY: 'auto', // Enable vertical scrolling on the container
