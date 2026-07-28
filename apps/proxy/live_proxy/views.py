@@ -1344,7 +1344,7 @@ def hls_playlist(request, channel_id, client_id):
             response["Retry-After"] = "2"
             return response
 
-        from .output.hls.playlist import render_media_playlist
+        from .output.hls.segmenter import render_media_playlist
         try:
             state = json.loads(playlist_json)
             body = render_media_playlist(
