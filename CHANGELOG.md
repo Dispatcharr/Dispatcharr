@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Settings page redesigned as a slide-over panel integrated into the sidebar, replacing the old accordion layout.** Clicking Settings in the main sidebar now slides in a dedicated settings sub-panel (primary nav slides left, settings nav slides in from the right) instead of navigating to a separate page with collapsible sections; Back returns to the main nav while keeping the previously selected settings section active. Main sidebar nav groups render as flat, uppercase-labeled sections instead of collapsible accordions, and the sidebar's collapsed/expanded state is now persisted to `localStorage` across page reloads.
+- **Connections and its separate Logs page are merged into a single Connect page.** The former "Integrations" sidebar group (Connections, Logs) is now one "Connect" entry under System; the log viewer is a collapsible section fixed to the bottom of the Connect page instead of a standalone route.
+- Stream Profiles, Output Profiles, and User-Agents tables on the Settings page grow to fit their content instead of clipping to a fixed height with an internal scrollbar.
+
 ## [0.28.2] - 2026-07-23
 
 ### Added
