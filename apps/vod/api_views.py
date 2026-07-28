@@ -13,6 +13,7 @@ import logging
 import os
 import time
 import requests
+import mimetypes
 from apps.accounts.permissions import (
     Authenticated,
     permission_classes_by_action,
@@ -880,6 +881,16 @@ class VODLogoViewSet(viewsets.ModelViewSet):
                 return HttpResponse(status=404)
 
             try:
+                # Get the default user agent
+                try:
+                    from core.models import CoreSettings, UserAgent
+                    default_user_agent_id = CoreSettings.get_default_user_agent_id()
+                    user_agent_obj = UserAgent.objects.get(id=int(default_user_agent_id))
+                    user_agent = user_agent_obj.user_agent
+                except Exception:
+                    from core.utils import dispatcharr_user_agent
+                    user_agent = dispatcharr_user_agent()
+
                 _LOGO_TOTAL_TIMEOUT = 10  # seconds
                 _LOGO_MAX_BYTES = 5 * 1024 * 1024  # 5 MB
 
@@ -887,6 +898,7 @@ class VODLogoViewSet(viewsets.ModelViewSet):
                     logo.url,
                     stream=True,
                     timeout=(3, 5),  # (connect_timeout, read_timeout per chunk)
+                    headers={'User-Agent': user_agent},
                 )
 
                 if remote_response.status_code != 200:
@@ -915,7 +927,11 @@ class VODLogoViewSet(viewsets.ModelViewSet):
                 # Full read succeeded, clear any previous failure entry
                 _vod_logo_fetch_failures.pop(logo.url, None)
 
-                content_type = remote_response.headers.get('Content-Type', 'image/png')
+                content_type = remote_response.headers.get('Content-Type')
+                if not content_type:
+                    content_type, _ = mimetypes.guess_type(logo.url)
+                if not content_type:
+                    content_type = 'image/jpeg'
 
                 response = HttpResponse(body, content_type=content_type)
                 response["Content-Length"] = str(len(body))
