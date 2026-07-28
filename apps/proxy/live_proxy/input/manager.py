@@ -1296,7 +1296,7 @@ class StreamManager:
         try:
             # Both transcode and HTTP now use the same subprocess/socket approach
             # This gives us perfect control: check flags between chunks, timeout just returns False
-            while self.running and self.connected and not self.stop_requested and not self.needs_stream_switch:
+            while self.running and self.connected and not self.stop_requested and not self.needs_stream_switch and not self.needs_reconnect:
                 if self.fetch_chunk():
                     self.last_data_time = time.time()
                 else:
