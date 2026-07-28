@@ -59,10 +59,8 @@ vi.mock('lucide-react', async (importOriginal) => {
       <div data-testid="file-image-icon" onClick={onClick} />
     ),
     Webhook: () => <div data-testid="webhook-icon" />,
-    Logs: () => <div data-testid="logs-icon" />,
     ChevronRight: () => <div data-testid="chevron-right-icon" />,
     MonitorCog: () => <div data-testid="monitor-cog-icon" />,
-    Blocks: () => <div data-testid="blocks-icon" />,
     Heart: () => <div data-testid="heart-icon" />,
     Package: () => <div data-testid="package-icon" />,
     Download: () => <div data-testid="download-icon" />,
@@ -534,33 +532,24 @@ describe('Sidebar', () => {
   });
 
   describe('NavGroup Component', () => {
-    it('renders Integrations group heading and children always visible', () => {
-      renderSidebar();
-
-      expect(screen.getByText('Integrations')).toBeInTheDocument();
-      expect(screen.getByText('Connections')).toBeInTheDocument();
-      expect(screen.getByText('Logs')).toBeInTheDocument();
-    });
-
     it('renders System group heading and children always visible', () => {
       renderSidebar();
 
       expect(screen.getByText('System')).toBeInTheDocument();
       expect(screen.getByText('Users')).toBeInTheDocument();
       expect(screen.getByText('Logo Manager')).toBeInTheDocument();
+      expect(screen.getByText('Connect')).toBeInTheDocument();
     });
 
-    it('renders both groups simultaneously', () => {
+    it('does not render a separate Integrations heading', () => {
       renderSidebar();
 
-      expect(screen.getByText('Connections')).toBeInTheDocument();
-      expect(screen.getByText('Users')).toBeInTheDocument();
+      expect(screen.queryByText('Integrations')).not.toBeInTheDocument();
     });
 
     it('hides group headings when sidebar is collapsed', () => {
       renderSidebar({ collapsed: true });
 
-      expect(screen.queryByText('Integrations')).not.toBeInTheDocument();
       expect(screen.queryByText('System')).not.toBeInTheDocument();
     });
   });

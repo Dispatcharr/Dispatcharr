@@ -17,7 +17,6 @@ describe('navigation config', () => {
       expect(NAV_ITEMS.dvr).toBeDefined();
       expect(NAV_ITEMS.stats).toBeDefined();
       expect(NAV_ITEMS.plugins).toBeDefined();
-      expect(NAV_ITEMS.integrations).toBeDefined();
       expect(NAV_ITEMS.system).toBeDefined();
       expect(NAV_ITEMS.settings).toBeDefined();
     });
@@ -32,6 +31,14 @@ describe('navigation config', () => {
       expect(nestedSettings.path).toBe(NAV_ITEMS.settings.path);
     });
 
+    it('includes the renamed Connect entry under System', () => {
+      const connectEntry = NAV_ITEMS.system.paths.find(
+        (p) => p.path === '/connect'
+      );
+      expect(connectEntry).toBeDefined();
+      expect(connectEntry.label).toBe('Connect');
+    });
+
     it('has correct adminOnly flags', () => {
       expect(NAV_ITEMS.channels.adminOnly).toBe(false);
       expect(NAV_ITEMS.guide.adminOnly).toBe(false);
@@ -42,7 +49,6 @@ describe('navigation config', () => {
       expect(NAV_ITEMS.dvr.adminOnly).toBe(true);
       expect(NAV_ITEMS.stats.adminOnly).toBe(true);
       expect(NAV_ITEMS.plugins.adminOnly).toBe(true);
-      expect(NAV_ITEMS.integrations.adminOnly).toBe(true);
       expect(NAV_ITEMS.system.adminOnly).toBe(true);
     });
   });
@@ -99,7 +105,7 @@ describe('navigation config', () => {
 
     it('uses custom order when provided', () => {
       const customOrder = [
-        'integrations',
+        'system',
         'channels',
         'vods',
         'sources',
@@ -107,7 +113,6 @@ describe('navigation config', () => {
         'dvr',
         'stats',
         'plugins',
-        'system',
       ];
       const result = getOrderedNavItems(customOrder, true);
 
@@ -130,7 +135,7 @@ describe('navigation config', () => {
       // Missing items should be appended at the end
       const resultIds = result.map((item) => item.id);
       expect(resultIds).toContain('guide');
-      expect(resultIds).toContain('integrations');
+      expect(resultIds).toContain('system');
     });
 
     it('filters out admin-only items for non-admin users', () => {
@@ -163,7 +168,7 @@ describe('navigation config', () => {
         'unknown_item',
         'vods',
         'invalid',
-        'integrations',
+        'system',
       ];
       const result = getOrderedNavItems(savedOrder, true);
 
@@ -173,7 +178,7 @@ describe('navigation config', () => {
       expect(resultIds).not.toContain('invalid');
       expect(resultIds).toContain('channels');
       expect(resultIds).toContain('vods');
-      expect(resultIds).toContain('integrations');
+      expect(resultIds).toContain('system');
     });
 
     it('adds channel badge with correct count', () => {

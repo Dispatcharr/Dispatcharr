@@ -12,8 +12,6 @@ import {
   User,
   FileImage,
   Webhook,
-  Logs,
-  Blocks,
   MonitorCog,
 } from 'lucide-react';
 
@@ -78,16 +76,6 @@ export const NAV_ITEMS = {
       { label: 'Find Plugins', icon: Download, path: '/plugins/browse' },
     ],
   },
-  integrations: {
-    id: 'integrations',
-    label: 'Integrations',
-    icon: Blocks,
-    adminOnly: true,
-    paths: [
-      { label: 'Connections', icon: Webhook, path: '/connect' },
-      { label: 'Logs', icon: Logs, path: '/connect/logs' },
-    ],
-  },
   system: {
     id: 'system',
     label: 'System',
@@ -97,6 +85,7 @@ export const NAV_ITEMS = {
     paths: [
       { label: 'Users', icon: User, path: '/users' },
       { label: 'Logo Manager', icon: FileImage, path: '/logos' },
+      { label: 'Connect', icon: Webhook, path: '/connect' },
       { ...SETTINGS_NAV_BASE },
     ],
   },
@@ -116,7 +105,6 @@ export const DEFAULT_ADMIN_ORDER = [
   'dvr',
   'stats',
   'plugins',
-  'integrations',
   'system',
 ];
 
