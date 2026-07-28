@@ -1,5 +1,5 @@
 import React from 'react';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import EPGsTable from '../EPGsTable';
 
@@ -140,9 +140,13 @@ vi.mock('@mantine/core', () => ({
     rightSection,
     disabled,
     loading,
+    variant,
+    color,
   }) => (
     <button
       data-testid="button"
+      data-variant={variant}
+      data-color={color}
       onClick={onClick}
       disabled={disabled || loading}
     >
@@ -178,11 +182,12 @@ vi.mock('@mantine/core', () => ({
       ),
     }
   ),
+  MenuDivider: () => <hr data-testid="menu-divider" />,
   MenuDropdown: ({ children }) => (
     <div data-testid="menu-dropdown">{children}</div>
   ),
-  MenuItem: ({ children, onClick }) => (
-    <button data-testid="menu-item" onClick={onClick}>
+  MenuItem: ({ children, onClick, disabled }) => (
+    <button data-testid="menu-item" onClick={onClick} disabled={disabled}>
       {children}
     </button>
   ),
@@ -226,7 +231,11 @@ vi.mock('@mantine/core', () => ({
 // ── lucide-react ───────────────────────────────────────────────────────────────
 vi.mock('lucide-react', () => ({
   ChevronDown: () => <svg data-testid="icon-chevron-down" />,
+  Filter: () => <svg data-testid="icon-filter" />,
   RefreshCcw: () => <svg data-testid="icon-refresh" />,
+  RotateCcw: () => <svg data-testid="icon-rotate-ccw" />,
+  Square: () => <svg data-testid="icon-square" />,
+  SquareCheck: () => <svg data-testid="icon-square-check" />,
   SquareMinus: () => <svg data-testid="icon-square-minus" />,
   SquarePen: () => <svg data-testid="icon-square-pen" />,
   SquarePlus: () => <svg data-testid="icon-square-plus" />,
@@ -273,6 +282,7 @@ const setupMocks = ({
   isWarningSuppressed = vi.fn(() => false),
   suppressWarning = vi.fn(),
   tableSize = 'default',
+  typeFilter = ['xmltv', 'schedules_direct', 'dummy'],
 } = {}) => {
   vi.mocked(useEPGsStore).mockImplementation((sel) =>
     sel({ epgs, refreshProgress })
@@ -282,7 +292,12 @@ const setupMocks = ({
     sel({ isWarningSuppressed, suppressWarning })
   );
 
-  vi.mocked(useLocalStorage).mockReturnValue([tableSize, vi.fn()]);
+  const mockSetTypeFilter = vi.fn();
+  vi.mocked(useLocalStorage).mockImplementation((key, defaultValue) => {
+    if (key === 'table-size') return [tableSize, vi.fn()];
+    if (key === 'epg-table-type-filter') return [typeFilter, mockSetTypeFilter];
+    return [defaultValue, vi.fn()];
+  });
 
   // Capture the options EPGsTable passes to useTable so tests can call
   // renderBodyCell / renderHeaderCell manually.
@@ -294,6 +309,8 @@ const setupMocks = ({
       getHeaderGroups: () => [],
     };
   });
+
+  return { mockSetTypeFilter };
 };
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
@@ -999,19 +1016,19 @@ describe('EPGsTable', () => {
     it('renders "XMLTV" for source_type xmltv', () => {
       setupMocks();
       render(<EPGsTable />);
-      const { getByText } = render(
+      const { container } = render(
         getTypeCol().cell({ cell: { getValue: vi.fn(() => 'xmltv') } })
       );
-      expect(getByText('XMLTV')).toBeInTheDocument();
+      expect(within(container).getByText('XMLTV')).toBeInTheDocument();
     });
 
     it('renders "Schedules Direct" for source_type schedules_direct', () => {
       setupMocks();
       render(<EPGsTable />);
-      const { getByText } = render(
+      const { container } = render(
         getTypeCol().cell({ cell: { getValue: vi.fn(() => 'schedules_direct') } })
       );
-      expect(getByText('Schedules Direct')).toBeInTheDocument();
+      expect(within(container).getByText('Schedules Direct')).toBeInTheDocument();
     });
 
     it('renders "Custom Dummy" for source_type dummy', () => {
@@ -1342,6 +1359,123 @@ describe('EPGsTable', () => {
       render(<EPGsTable />);
       const actionsCol = capturedTableOptions.columns.find((c) => c.id === 'actions');
       expect(actionsCol.size).toBe(100);
+    });
+  });
+
+  // ── Type filter ─────────────────────────────────────────────────────────────
+
+  describe('type filter', () => {
+    const epgs = {
+      'epg-1': makeEpg({ id: 'epg-1', name: 'Alpha', source_type: 'xmltv' }),
+      'epg-dummy': makeDummyEpg({ id: 'epg-dummy', name: 'Dummy' }),
+    };
+
+    it('passes all rows through by default (all types checked)', () => {
+      setupMocks({ epgs });
+      render(<EPGsTable />);
+      expect(capturedTableOptions.data).toHaveLength(2);
+      expect(capturedTableOptions.allRowIds).toEqual(
+        expect.arrayContaining(['epg-1', 'epg-dummy'])
+      );
+    });
+
+    it('shows no rows when every type is unchecked', () => {
+      setupMocks({ epgs, typeFilter: [] });
+      render(<EPGsTable />);
+      expect(capturedTableOptions.data).toHaveLength(0);
+    });
+
+    it('narrows to dummy sources when only Dummy is checked', () => {
+      setupMocks({ epgs, typeFilter: ['dummy'] });
+      render(<EPGsTable />);
+      expect(capturedTableOptions.data).toHaveLength(1);
+      expect(capturedTableOptions.data[0].id).toBe('epg-dummy');
+      expect(capturedTableOptions.allRowIds).toEqual(['epg-dummy']);
+    });
+
+    it('narrows to xmltv sources when only XMLTV is checked', () => {
+      setupMocks({ epgs, typeFilter: ['xmltv'] });
+      render(<EPGsTable />);
+      expect(capturedTableOptions.data).toHaveLength(1);
+      expect(capturedTableOptions.data[0].id).toBe('epg-1');
+    });
+
+    it('narrows to xmltv and schedules_direct sources when both are checked, excluding dummy', () => {
+      const epgsWithSd = {
+        ...epgs,
+        'epg-sd': makeEpg({
+          id: 'epg-sd',
+          name: 'SD',
+          source_type: 'schedules_direct',
+        }),
+      };
+      setupMocks({ epgs: epgsWithSd, typeFilter: ['xmltv', 'schedules_direct'] });
+      render(<EPGsTable />);
+      expect(capturedTableOptions.data).toHaveLength(2);
+      expect(capturedTableOptions.data.map((e) => e.id).sort()).toEqual([
+        'epg-1',
+        'epg-sd',
+      ]);
+    });
+
+    it('shows the "match this filter" empty state when a filter matches nothing', () => {
+      setupMocks({
+        epgs: { 'epg-1': makeEpg({ id: 'epg-1', source_type: 'xmltv' }) },
+        typeFilter: ['dummy'],
+      });
+      render(<EPGsTable />);
+      expect(screen.queryByTestId('custom-table')).not.toBeInTheDocument();
+      expect(
+        screen.getByText('No EPG sources match this filter.')
+      ).toBeInTheDocument();
+    });
+
+    it('unchecking the only checked type clears the filter down to an empty array', () => {
+      const { mockSetTypeFilter } = setupMocks({ epgs, typeFilter: ['dummy'] });
+      render(<EPGsTable />);
+      fireEvent.click(screen.getByText('Dummy'));
+      expect(mockSetTypeFilter).toHaveBeenCalledWith([]);
+    });
+
+    it('checking a type while none are checked adds just that type', () => {
+      const { mockSetTypeFilter } = setupMocks({ epgs, typeFilter: [] });
+      render(<EPGsTable />);
+      fireEvent.click(screen.getByText('XMLTV'));
+      expect(mockSetTypeFilter).toHaveBeenCalledWith(['xmltv']);
+    });
+
+    it('filter button shows no active indicator when all types are checked (default)', () => {
+      setupMocks({ epgs });
+      render(<EPGsTable />);
+      const filterButton = screen.getByTestId('icon-filter').closest('button');
+      expect(filterButton).toHaveAttribute('data-variant', 'default');
+    });
+
+    it('filter button shows an active indicator when a type is unchecked', () => {
+      setupMocks({ epgs, typeFilter: ['dummy'] });
+      render(<EPGsTable />);
+      const filterButton = screen.getByTestId('icon-filter').closest('button');
+      expect(filterButton).toHaveAttribute('data-variant', 'filled');
+      expect(filterButton).toHaveAttribute('data-color', 'blue');
+    });
+
+    it('Reset menu item is disabled by default and restores all types when clicked', () => {
+      const { mockSetTypeFilter } = setupMocks({ epgs, typeFilter: ['dummy'] });
+      render(<EPGsTable />);
+      const resetButton = screen.getByText('Reset').closest('button');
+      expect(resetButton).not.toBeDisabled();
+      fireEvent.click(resetButton);
+      expect(mockSetTypeFilter).toHaveBeenCalledWith([
+        'xmltv',
+        'schedules_direct',
+        'dummy',
+      ]);
+    });
+
+    it('Reset menu item is disabled when the filter is already at its default', () => {
+      setupMocks({ epgs });
+      render(<EPGsTable />);
+      expect(screen.getByText('Reset').closest('button')).toBeDisabled();
     });
   });
 });

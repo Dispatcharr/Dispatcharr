@@ -11,19 +11,24 @@ const PageContent = () => {
   return (
     <Stack
       p="10"
-      h="100%" // Set a specific height to ensure proper display
-      miw="1100px" // Prevent tables from becoming too cramped
+      gap="xs"
       style={{
-        overflowX: 'auto', // Enable horizontal scrolling when needed
-        overflowY: 'auto', // Enable vertical scrolling on the container
+        // Fill the viewport exactly; never scroll the page itself. Each table
+        // scrolls internally within its own share of the height.
+        height: '100vh',
+        overflow: 'hidden',
+        display: 'flex',
+        flexDirection: 'column',
       }}
-      spacing="xs" // Reduce spacing to give tables more room
     >
-      <Box sx={{ flex: '1 1 50%', overflow: 'hidden' }}>
+      {/* Takes whatever's left above the EPG table, so adding/filtering M3U
+          rows never resizes the EPG table below it. */}
+      <Box style={{ flex: '1 1 auto', minHeight: 0 }}>
         <M3UsTable />
       </Box>
 
-      <Box sx={{ flex: '1 1 50%', overflow: 'hidden' }}>
+      {/* Fixed to half the available height so it never jumps around. */}
+      <Box style={{ flex: '0 0 50%', minHeight: 0 }}>
         <EPGsTable />
       </Box>
     </Stack>
