@@ -1,10 +1,4 @@
-import {
-  render,
-  screen,
-  fireEvent,
-  waitFor,
-  within,
-} from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // ── API mock ───────────────────────────────────────────────────────────────────
@@ -12,7 +6,6 @@ vi.mock('../../api', () => ({
   default: {
     deleteConnectIntegration: vi.fn(),
     updateConnectIntegration: vi.fn(),
-    getConnectLogs: vi.fn(),
   },
 }));
 
@@ -43,15 +36,9 @@ vi.mock('../../components/forms/Connection', () => ({
     ) : null,
 }));
 
-// ── CustomTable mock ───────────────────────────────────────────────────────────
-vi.mock('../../components/tables/CustomTable', () => ({
-  CustomTable: () => <div data-testid="custom-table" />,
-  useTable: vi.fn(() => ({})),
-}));
-
-// ── Utils mock ─────────────────────────────────────────────────────────────────
-vi.mock('../../utils', () => ({
-  copyToClipboard: vi.fn(),
+// ── ConnectLogsSection mock ────────────────────────────────────────────────────
+vi.mock('../../components/ConnectLogsSection', () => ({
+  default: () => <div data-testid="connect-logs-section" />,
 }));
 
 // ── lucide-react ───────────────────────────────────────────────────────────────
@@ -59,8 +46,6 @@ vi.mock('lucide-react', () => ({
   SquarePlus: () => <svg data-testid="icon-square-plus" />,
   Webhook: () => <svg data-testid="icon-webhook" />,
   FileCode: () => <svg data-testid="icon-file-code" />,
-  Logs: () => <svg data-testid="icon-logs" />,
-  ChevronDown: () => <svg data-testid="icon-chevron-down" />,
 }));
 
 // ── @mantine/core ──────────────────────────────────────────────────────────────
@@ -112,52 +97,6 @@ vi.mock('@mantine/core', () => ({
     </span>
   ),
   Tooltip: ({ children, label }) => <div data-tooltip={label}>{children}</div>,
-  Title: ({ children, order }) => <h4 data-order={order}>{children}</h4>,
-  ActionIcon: ({ children, onClick }) => (
-    <button data-testid="logs-toggle" onClick={onClick}>
-      {children}
-    </button>
-  ),
-  LoadingOverlay: ({ visible }) =>
-    visible ? <div data-testid="loading-overlay" /> : null,
-  NativeSelect: ({ value, onChange, data }) => (
-    <select data-testid="page-size-select" value={value} onChange={onChange}>
-      {data?.map((d) => (
-        <option key={d} value={d}>
-          {d}
-        </option>
-      ))}
-    </select>
-  ),
-  Pagination: ({ total, value, onChange }) => (
-    <div data-testid="pagination">
-      <span data-testid="pagination-total">{total}</span>
-      <button
-        data-testid="next-page"
-        onClick={() => onChange(value + 1)}
-        disabled={value >= total}
-      >
-        Next
-      </button>
-    </div>
-  ),
-  // Distinguish type filter (has 'webhook' option) from integration filter
-  Select: ({ data, value, onChange }) => {
-    const isTypeFilter = data?.some((d) => d.value === 'webhook');
-    return (
-      <select
-        data-testid={isTypeFilter ? 'select-type' : 'select-integration'}
-        value={value ?? ''}
-        onChange={(e) => onChange(e.target.value)}
-      >
-        {data?.map((opt) => (
-          <option key={opt.value} value={opt.value}>
-            {opt.label}
-          </option>
-        ))}
-      </select>
-    );
-  },
   useMantineTheme: () => ({
     tailwind: { green: { 5: '#22c55e' } },
   }),
@@ -193,18 +132,6 @@ const setupStore = (overrides = {}) => {
   return { fetchIntegrations };
 };
 
-const setupApiResponse = (overrides = {}) => {
-  vi.mocked(API.getConnectLogs).mockResolvedValue({
-    results: [],
-    count: 0,
-    ...overrides,
-  });
-};
-
-const expandLogs = () => {
-  fireEvent.click(screen.getByTestId('logs-toggle'));
-};
-
 // ──────────────────────────────────────────────────────────────────────────────
 
 describe('ConnectPage', () => {
@@ -212,7 +139,6 @@ describe('ConnectPage', () => {
     vi.clearAllMocks();
     vi.mocked(API.deleteConnectIntegration).mockResolvedValue(undefined);
     vi.mocked(API.updateConnectIntegration).mockResolvedValue(undefined);
-    setupApiResponse();
   });
 
   // ── Initialization ─────────────────────────────────────────────────────────
@@ -252,8 +178,8 @@ describe('ConnectPage', () => {
         ],
       });
       render(<ConnectPage />);
-      // Two integration cards + one logs section card
-      expect(screen.getAllByTestId('card')).toHaveLength(3);
+      // Two integration cards (logs section is a mocked stub, not a Card)
+      expect(screen.getAllByTestId('card')).toHaveLength(2);
     });
 
     it('renders integration names', () => {
@@ -265,8 +191,8 @@ describe('ConnectPage', () => {
     it('shows no integration cards when integrations list is empty', () => {
       setupStore({ integrations: [] });
       render(<ConnectPage />);
-      // Only the logs section card remains
-      expect(screen.getAllByTestId('card')).toHaveLength(1);
+      // No integration cards remain (logs section is a mocked stub, not a Card)
+      expect(screen.queryAllByTestId('card')).toHaveLength(0);
     });
   });
 
@@ -336,7 +262,6 @@ describe('IntegrationRow', () => {
     vi.clearAllMocks();
     vi.mocked(API.updateConnectIntegration).mockResolvedValue(undefined);
     vi.mocked(API.deleteConnectIntegration).mockResolvedValue(undefined);
-    setupApiResponse();
   });
 
   const renderRow = (integrationOverrides = {}) => {
@@ -474,129 +399,6 @@ describe('IntegrationRow', () => {
       fireEvent.click(screen.getByText('Delete'));
       await waitFor(() => {
         expect(API.deleteConnectIntegration).toHaveBeenCalledWith(11);
-      });
-    });
-  });
-});
-
-// ──────────────────────────────────────────────────────────────────────────────
-
-describe('ConnectLogsSection', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    vi.mocked(API.deleteConnectIntegration).mockResolvedValue(undefined);
-    vi.mocked(API.updateConnectIntegration).mockResolvedValue(undefined);
-    setupApiResponse();
-    setupStore();
-  });
-
-  // ── Collapsed by default ───────────────────────────────────────────────────
-
-  describe('collapsed state', () => {
-    it('renders the Logs section header', () => {
-      render(<ConnectPage />);
-      expect(screen.getByText('Logs')).toBeInTheDocument();
-    });
-
-    it('does not render the log table when collapsed', () => {
-      render(<ConnectPage />);
-      expect(screen.queryByTestId('custom-table')).not.toBeInTheDocument();
-    });
-
-    it('does not fetch logs when collapsed', () => {
-      render(<ConnectPage />);
-      expect(API.getConnectLogs).not.toHaveBeenCalled();
-    });
-  });
-
-  // ── Expanding the section ──────────────────────────────────────────────────
-
-  describe('expanding the section', () => {
-    it('renders the log table and filters once expanded', async () => {
-      render(<ConnectPage />);
-      expandLogs();
-      await waitFor(() => {
-        expect(screen.getByTestId('custom-table')).toBeInTheDocument();
-      });
-      expect(screen.getByTestId('select-type')).toBeInTheDocument();
-      expect(screen.getByTestId('select-integration')).toBeInTheDocument();
-    });
-
-    it('fetches logs once expanded', async () => {
-      render(<ConnectPage />);
-      expandLogs();
-      await waitFor(() => {
-        expect(API.getConnectLogs).toHaveBeenCalledWith(
-          expect.objectContaining({ page: 1, page_size: 50 })
-        );
-      });
-    });
-
-    it('collapses again when toggled a second time', async () => {
-      render(<ConnectPage />);
-      expandLogs();
-      await waitFor(() => {
-        expect(screen.getByTestId('custom-table')).toBeInTheDocument();
-      });
-      expandLogs();
-      expect(screen.queryByTestId('custom-table')).not.toBeInTheDocument();
-    });
-  });
-
-  // ── Filters ─────────────────────────────────────────────────────────────────
-
-  describe('filters', () => {
-    it('populates the integration filter from the store', async () => {
-      setupStore({
-        integrations: [makeIntegration({ id: 3, name: 'Plex Hook' })],
-      });
-      render(<ConnectPage />);
-      expandLogs();
-      await waitFor(() => {
-        expect(
-          within(screen.getByTestId('select-integration')).getByRole(
-            'option',
-            { name: 'Plex Hook' }
-          )
-        ).toBeInTheDocument();
-      });
-    });
-
-    it('refetches with type param when type filter changes', async () => {
-      render(<ConnectPage />);
-      expandLogs();
-      await waitFor(() => expect(API.getConnectLogs).toHaveBeenCalledTimes(1));
-
-      fireEvent.change(screen.getByTestId('select-type'), {
-        target: { value: 'webhook' },
-      });
-
-      await waitFor(() => {
-        expect(API.getConnectLogs).toHaveBeenCalledWith(
-          expect.objectContaining({ type: 'webhook' })
-        );
-      });
-    });
-  });
-
-  // ── Pagination ─────────────────────────────────────────────────────────────
-
-  describe('pagination', () => {
-    it('refetches with page 2 when the next page button is clicked', async () => {
-      vi.mocked(API.getConnectLogs).mockResolvedValue({
-        results: [],
-        count: 100,
-      });
-      render(<ConnectPage />);
-      expandLogs();
-      await waitFor(() => expect(API.getConnectLogs).toHaveBeenCalledTimes(1));
-
-      fireEvent.click(screen.getByTestId('next-page'));
-
-      await waitFor(() => {
-        expect(API.getConnectLogs).toHaveBeenCalledWith(
-          expect.objectContaining({ page: 2 })
-        );
       });
     });
   });
