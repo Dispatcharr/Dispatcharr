@@ -119,7 +119,6 @@ describe('NavOrderForm', () => {
       expect(screen.getByText('DVR')).toBeInTheDocument();
       expect(screen.getByText('Stats')).toBeInTheDocument();
       expect(screen.getByText('Plugins')).toBeInTheDocument();
-      expect(screen.getByText('Integrations')).toBeInTheDocument();
       expect(screen.getByText('System')).toBeInTheDocument();
       // Users, Logo Manager, Settings are children of System group, not top-level
       expect(screen.queryByText('Users')).not.toBeInTheDocument();
@@ -192,7 +191,6 @@ describe('NavOrderForm', () => {
         'dvr',
         'stats',
         'plugins',
-        'integrations',
         'system',
       ];
       mockGetNavOrder.mockReturnValue(customOrder);

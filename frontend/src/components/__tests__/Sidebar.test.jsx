@@ -26,45 +26,48 @@ vi.mock('../AboutModal', () => ({
   default: () => null,
 }));
 
-// Mock lucide-react icons
-vi.mock('lucide-react', () => ({
-  ListOrdered: ({ onClick }) => (
-    <div data-testid="list-ordered-icon" onClick={onClick} />
-  ),
-  Play: ({ onClick }) => <div data-testid="play-icon" onClick={onClick} />,
-  Database: ({ onClick }) => (
-    <div data-testid="database-icon" onClick={onClick} />
-  ),
-  LayoutGrid: ({ onClick }) => (
-    <div data-testid="layout-grid-icon" onClick={onClick} />
-  ),
-  Settings: ({ onClick }) => (
-    <div data-testid="settings-icon" onClick={onClick} />
-  ),
-  Copy: ({ onClick }) => <div data-testid="copy-icon" onClick={onClick} />,
-  ChartLine: ({ onClick }) => (
-    <div data-testid="chart-line-icon" onClick={onClick} />
-  ),
-  Video: ({ onClick }) => <div data-testid="video-icon" onClick={onClick} />,
-  PlugZap: ({ onClick }) => (
-    <div data-testid="plug-zap-icon" onClick={onClick} />
-  ),
-  LogOut: ({ onClick }) => <div data-testid="logout-icon" onClick={onClick} />,
-  User: ({ onClick }) => <div data-testid="user-icon" onClick={onClick} />,
-  FileImage: ({ onClick }) => (
-    <div data-testid="file-image-icon" onClick={onClick} />
-  ),
-  Webhook: () => <div data-testid="webhook-icon" />,
-  Logs: () => <div data-testid="logs-icon" />,
-  ChevronDown: () => <div data-testid="chevron-down-icon" />,
-  ChevronRight: () => <div data-testid="chevron-right-icon" />,
-  MonitorCog: () => <div data-testid="monitor-cog-icon" />,
-  Blocks: () => <div data-testid="blocks-icon" />,
-  Heart: () => <div data-testid="heart-icon" />,
-  Package: () => <div data-testid="package-icon" />,
-  Download: () => <div data-testid="download-icon" />,
-  HelpCircle: () => <div data-testid="help-circle-icon" />,
-}));
+// Mock lucide-react icons: spread actual module so settingsNav icons are available,
+// override specific ones with testid-bearing stubs for assertions.
+vi.mock('lucide-react', async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    ListOrdered: ({ onClick }) => (
+      <div data-testid="list-ordered-icon" onClick={onClick} />
+    ),
+    Play: ({ onClick }) => <div data-testid="play-icon" onClick={onClick} />,
+    Database: ({ onClick }) => (
+      <div data-testid="database-icon" onClick={onClick} />
+    ),
+    LayoutGrid: ({ onClick }) => (
+      <div data-testid="layout-grid-icon" onClick={onClick} />
+    ),
+    Settings: ({ onClick }) => (
+      <div data-testid="settings-icon" onClick={onClick} />
+    ),
+    Copy: ({ onClick }) => <div data-testid="copy-icon" onClick={onClick} />,
+    ChartLine: ({ onClick }) => (
+      <div data-testid="chart-line-icon" onClick={onClick} />
+    ),
+    Video: ({ onClick }) => <div data-testid="video-icon" onClick={onClick} />,
+    PlugZap: ({ onClick }) => (
+      <div data-testid="plug-zap-icon" onClick={onClick} />
+    ),
+    LogOut: ({ onClick }) => <div data-testid="logout-icon" onClick={onClick} />,
+    User: ({ onClick }) => <div data-testid="user-icon" onClick={onClick} />,
+    FileImage: ({ onClick }) => (
+      <div data-testid="file-image-icon" onClick={onClick} />
+    ),
+    Webhook: () => <div data-testid="webhook-icon" />,
+    ChevronRight: () => <div data-testid="chevron-right-icon" />,
+    MonitorCog: () => <div data-testid="monitor-cog-icon" />,
+    Heart: () => <div data-testid="heart-icon" />,
+    Package: () => <div data-testid="package-icon" />,
+    Download: () => <div data-testid="download-icon" />,
+    HelpCircle: () => <div data-testid="help-circle-icon" />,
+    ArrowLeft: () => <div data-testid="arrow-left-icon" />,
+  };
+});
 
 // Mock UserForm component
 vi.mock('../forms/User', () => ({
@@ -245,6 +248,26 @@ describe('Sidebar', () => {
 
       expect(screen.queryByText('Channels')).not.toBeInTheDocument();
       expect(screen.queryByText('(3)')).not.toBeInTheDocument();
+    });
+  });
+
+  describe('Settings Sub-Panel', () => {
+    it('opens and renders its sections when the Settings row is clicked', async () => {
+      renderSidebar();
+
+      // Settings is nested under the System group for admin users.
+      fireEvent.click(screen.getByText('System'));
+      await waitFor(() => {
+        expect(screen.getByText('Settings')).toBeInTheDocument();
+      });
+
+      fireEvent.click(screen.getByText('Settings'));
+
+      // Use a section unique to the sub-panel to avoid colliding with
+      // primary-panel group headings like 'System' or 'DVR'.
+      await waitFor(() => {
+        expect(screen.getByText('Backup & Restore')).toBeInTheDocument();
+      });
     });
   });
 
@@ -509,97 +532,25 @@ describe('Sidebar', () => {
   });
 
   describe('NavGroup Component', () => {
-    it('should render Integrations group with children collapsed by default', () => {
-      renderSidebar();
-
-      expect(screen.getByText('Integrations')).toBeInTheDocument();
-      expect(screen.queryByText('Connections')).not.toBeInTheDocument();
-      expect(screen.queryByText('Logs')).not.toBeInTheDocument();
-    });
-
-    it('should expand Integrations group when clicked', async () => {
-      renderSidebar();
-
-      const integrationsGroup = screen
-        .getByText('Integrations')
-        .closest('button');
-      fireEvent.click(integrationsGroup);
-
-      await waitFor(() => {
-        expect(screen.getByText('Connections')).toBeInTheDocument();
-        expect(screen.getByText('Logs')).toBeInTheDocument();
-      });
-    });
-
-    it('should collapse Integrations group when clicked again', async () => {
-      renderSidebar();
-
-      const integrationsGroup = screen
-        .getByText('Integrations')
-        .closest('button');
-
-      // Expand
-      fireEvent.click(integrationsGroup);
-      await waitFor(() => {
-        expect(screen.getByText('Connections')).toBeInTheDocument();
-      });
-
-      // Collapse
-      fireEvent.click(integrationsGroup);
-      await waitFor(() => {
-        expect(screen.queryByText('Connections')).not.toBeInTheDocument();
-        expect(screen.queryByText('Logs')).not.toBeInTheDocument();
-      });
-    });
-
-    it('should render System group with children collapsed by default', () => {
+    it('renders System group heading and children always visible', () => {
       renderSidebar();
 
       expect(screen.getByText('System')).toBeInTheDocument();
-      expect(screen.queryByText('Users')).not.toBeInTheDocument();
-      expect(screen.queryByText('Logo Manager')).not.toBeInTheDocument();
+      expect(screen.getByText('Users')).toBeInTheDocument();
+      expect(screen.getByText('Logo Manager')).toBeInTheDocument();
+      expect(screen.getByText('Connect')).toBeInTheDocument();
     });
 
-    it('should expand System group when clicked', async () => {
+    it('does not render a separate Integrations heading', () => {
       renderSidebar();
-
-      const systemGroup = screen.getByText('System').closest('button');
-      fireEvent.click(systemGroup);
-
-      await waitFor(() => {
-        expect(screen.getByText('Users')).toBeInTheDocument();
-        expect(screen.getByText('Logo Manager')).toBeInTheDocument();
-        expect(screen.getByText('Settings')).toBeInTheDocument();
-      });
-    });
-
-    it('should hide group label when collapsed sidebar', () => {
-      renderSidebar({ collapsed: true });
 
       expect(screen.queryByText('Integrations')).not.toBeInTheDocument();
-      expect(screen.queryByText('System')).not.toBeInTheDocument();
     });
 
-    it('should not show multiple groups collapsed when both expanded', async () => {
-      renderSidebar();
+    it('hides group headings when sidebar is collapsed', () => {
+      renderSidebar({ collapsed: true });
 
-      const integrationsGroup = screen
-        .getByText('Integrations')
-        .closest('button');
-      const systemGroup = screen.getByText('System').closest('button');
-
-      // Expand Integrations
-      fireEvent.click(integrationsGroup);
-      await waitFor(() => {
-        expect(screen.getByText('Connections')).toBeInTheDocument();
-      });
-
-      // Expand System (Integrations should remain expanded)
-      fireEvent.click(systemGroup);
-      await waitFor(() => {
-        expect(screen.getByText('Users')).toBeInTheDocument();
-        expect(screen.getByText('Connections')).toBeInTheDocument();
-      });
+      expect(screen.queryByText('System')).not.toBeInTheDocument();
     });
   });
 
