@@ -1,5 +1,5 @@
 import React from 'react';
-import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, act, within } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // ── Store mocks ────────────────────────────────────────────────────────────────
@@ -131,13 +131,30 @@ vi.mock('@mantine/core', () => ({
     </button>
   ),
   Box: ({ children, style }) => <div style={style}>{children}</div>,
-  Button: ({ children, onClick, leftSection, disabled, loading }) => (
-    <button data-testid="button" onClick={onClick} disabled={disabled || loading}>
+  Button: ({ children, onClick, leftSection, disabled, loading, variant, color }) => (
+    <button
+      data-testid="button"
+      data-variant={variant}
+      data-color={color}
+      onClick={onClick}
+      disabled={disabled || loading}
+    >
       {leftSection}
       {children}
     </button>
   ),
   Flex: ({ children, style }) => <div style={style}>{children}</div>,
+  Menu: ({ children }) => <div data-testid="menu">{children}</div>,
+  MenuDivider: () => <hr data-testid="menu-divider" />,
+  MenuDropdown: ({ children }) => (
+    <div data-testid="menu-dropdown">{children}</div>
+  ),
+  MenuItem: ({ children, onClick, disabled }) => (
+    <button data-testid="menu-item" onClick={onClick} disabled={disabled}>
+      {children}
+    </button>
+  ),
+  MenuTarget: ({ children }) => <div>{children}</div>,
   Paper: ({ children, style }) => <div style={style}>{children}</div>,
   Switch: ({ checked, onChange }) => (
     <input
@@ -164,7 +181,11 @@ vi.mock('@mantine/core', () => ({
 // ── lucide-react ───────────────────────────────────────────────────────────────
 vi.mock('lucide-react', () => ({
   // Icons used by M3UsTable
+  Filter: () => <svg data-testid="icon-filter" />,
   RefreshCcw: () => <svg data-testid="icon-refresh" />,
+  RotateCcw: () => <svg data-testid="icon-rotate-ccw" />,
+  Square: () => <svg data-testid="icon-square" />,
+  SquareCheck: () => <svg data-testid="icon-square-check" />,
   SquareMinus: () => <svg data-testid="icon-square-minus" />,
   SquarePen: () => <svg data-testid="icon-square-pen" />,
   SquarePlus: () => <svg data-testid="icon-square-plus" />,
@@ -224,6 +245,7 @@ const setupMocks = ({
   isWarningSuppressed = vi.fn(() => false),
   suppressWarning = vi.fn(),
   tableSize = 'default',
+  typeFilter = ['STD', 'XC'],
 } = {}) => {
   const mockSetRefreshProgress = vi.fn();
   const mockSetEditPlaylistId = vi.fn();
@@ -242,14 +264,19 @@ const setupMocks = ({
     sel({ isWarningSuppressed, suppressWarning })
   );
 
-  vi.mocked(useLocalStorage).mockReturnValue([tableSize, vi.fn()]);
+  const mockSetTypeFilter = vi.fn();
+  vi.mocked(useLocalStorage).mockImplementation((key, defaultValue) => {
+    if (key === 'table-size') return [tableSize, vi.fn()];
+    if (key === 'm3u-table-type-filter') return [typeFilter, mockSetTypeFilter];
+    return [defaultValue, vi.fn()];
+  });
 
   vi.mocked(useTable).mockImplementation((opts) => {
     capturedTableOptions = opts;
     return { getRowModel: () => ({ rows: [] }), getHeaderGroups: () => [] };
   });
 
-  return { mockSetRefreshProgress, mockSetEditPlaylistId };
+  return { mockSetRefreshProgress, mockSetEditPlaylistId, mockSetTypeFilter };
 };
 
 const getCol = (keyOrId) =>
@@ -691,19 +718,19 @@ describe('M3UTable', () => {
     it('renders "XC" for Xtream Codes type', () => {
       setupMocks();
       render(<M3UTable />);
-      const { getByText } = render(
+      const { container } = render(
         getCol('account_type').cell({ cell: { getValue: () => 'XC' } })
       );
-      expect(getByText('XC')).toBeInTheDocument();
+      expect(within(container).getByText('XC')).toBeInTheDocument();
     });
 
     it('renders "M3U" for standard type', () => {
       setupMocks();
       render(<M3UTable />);
-      const { getByText } = render(
+      const { container } = render(
         getCol('account_type').cell({ cell: { getValue: () => 'M3U' } })
       );
-      expect(getByText('M3U')).toBeInTheDocument();
+      expect(within(container).getByText('M3U')).toBeInTheDocument();
     });
   });
 
@@ -1255,6 +1282,105 @@ describe('M3UTable', () => {
       render(<M3UTable />);
       const actionsCol = capturedTableOptions.columns.find((c) => c.id === 'actions');
       expect(actionsCol.size).toBe(100);
+    });
+  });
+
+  // ── Type filter ─────────────────────────────────────────────────────────────
+
+  describe('type filter', () => {
+    const playlists = [
+      makePlaylist({ id: 1, name: 'Alpha', account_type: 'STD' }),
+      makePlaylist({ id: 2, name: 'Beta', account_type: 'XC' }),
+    ];
+
+    it('passes all rows through by default (both types checked)', () => {
+      setupMocks({ playlists });
+      render(<M3UTable />);
+      expect(capturedTableOptions.data).toHaveLength(2);
+      expect(capturedTableOptions.allRowIds).toEqual(
+        expect.arrayContaining([1, 2])
+      );
+    });
+
+    it('shows no rows when every type is unchecked', () => {
+      setupMocks({ playlists, typeFilter: [] });
+      render(<M3UTable />);
+      expect(capturedTableOptions.data).toHaveLength(0);
+    });
+
+    it('narrows to XC accounts when only XC is checked', () => {
+      setupMocks({ playlists, typeFilter: ['XC'] });
+      render(<M3UTable />);
+      expect(capturedTableOptions.data).toHaveLength(1);
+      expect(capturedTableOptions.data[0].id).toBe(2);
+      expect(capturedTableOptions.allRowIds).toEqual([2]);
+    });
+
+    it('narrows to non-XC accounts when only M3U is checked', () => {
+      setupMocks({ playlists, typeFilter: ['STD'] });
+      render(<M3UTable />);
+      expect(capturedTableOptions.data).toHaveLength(1);
+      expect(capturedTableOptions.data[0].id).toBe(1);
+    });
+
+    it('passes all rows through when both types are checked', () => {
+      setupMocks({ playlists, typeFilter: ['STD', 'XC'] });
+      render(<M3UTable />);
+      expect(capturedTableOptions.data).toHaveLength(2);
+    });
+
+    it('shows the "match this filter" empty state when a filter matches nothing', () => {
+      setupMocks({
+        playlists: [makePlaylist({ id: 1, account_type: 'STD' })],
+        typeFilter: ['XC'],
+      });
+      render(<M3UTable />);
+      expect(screen.queryByTestId('custom-table')).not.toBeInTheDocument();
+      expect(screen.getByText('No M3U accounts match this filter.')).toBeInTheDocument();
+    });
+
+    it('unchecking the only checked type clears the filter down to an empty array', () => {
+      const { mockSetTypeFilter } = setupMocks({ playlists, typeFilter: ['XC'] });
+      render(<M3UTable />);
+      fireEvent.click(screen.getByText('XC'));
+      expect(mockSetTypeFilter).toHaveBeenCalledWith([]);
+    });
+
+    it('checking a type while none are checked adds just that type', () => {
+      const { mockSetTypeFilter } = setupMocks({ playlists, typeFilter: [] });
+      render(<M3UTable />);
+      fireEvent.click(screen.getByText('M3U'));
+      expect(mockSetTypeFilter).toHaveBeenCalledWith(['STD']);
+    });
+
+    it('filter button shows no active indicator when both types are checked (default)', () => {
+      setupMocks({ playlists });
+      render(<M3UTable />);
+      const filterButton = screen.getByTestId('icon-filter').closest('button');
+      expect(filterButton).toHaveAttribute('data-variant', 'default');
+    });
+
+    it('filter button shows an active indicator when a type is unchecked', () => {
+      setupMocks({ playlists, typeFilter: ['XC'] });
+      render(<M3UTable />);
+      const filterButton = screen.getByTestId('icon-filter').closest('button');
+      expect(filterButton).toHaveAttribute('data-variant', 'filled');
+      expect(filterButton).toHaveAttribute('data-color', 'blue');
+    });
+
+    it('Reset menu item is disabled by default and restores both types when clicked', () => {
+      const { mockSetTypeFilter } = setupMocks({ playlists, typeFilter: ['XC'] });
+      render(<M3UTable />);
+      const resetButton = screen.getByText('Reset').closest('button');
+      expect(resetButton).not.toBeDisabled();
+      fireEvent.click(resetButton);
+      expect(mockSetTypeFilter).toHaveBeenCalledWith(['STD', 'XC']);
+    });
+
+    it('Reset menu item is disabled when the filter is already at its default', () => {
+      setupMocks({ playlists });
+      render(<M3UTable />);
+      expect(screen.getByText('Reset').closest('button')).toBeDisabled();
     });
   });
 });

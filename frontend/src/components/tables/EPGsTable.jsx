@@ -8,6 +8,7 @@ import {
   Button,
   Flex,
   Menu,
+  MenuDivider,
   MenuDropdown,
   MenuItem,
   MenuTarget,
@@ -21,7 +22,11 @@ import {
 } from '@mantine/core';
 import {
   ChevronDown,
+  Filter,
   RefreshCcw,
+  RotateCcw,
+  Square,
+  SquareCheck,
   SquareMinus,
   SquarePen,
   SquarePlus,
@@ -197,6 +202,8 @@ const EPGStatusCell = ({ epg }) => {
   return null;
 };
 
+const ALL_SOURCE_TYPES = ['xmltv', 'schedules_direct', 'dummy'];
+
 const EPGsTable = () => {
   const [epg, setEPG] = useState(null);
   const [epgModalOpen, setEPGModalOpen] = useState(false);
@@ -214,6 +221,10 @@ const EPGsTable = () => {
   const theme = useMantineTheme();
   const { fullDateTimeFormat } = useDateTimeFormat();
   const [tableSize] = useLocalStorage('table-size', 'default');
+  const [typeFilter, setTypeFilter] = useLocalStorage(
+    'epg-table-type-filter',
+    ALL_SOURCE_TYPES
+  );
   const isWarningSuppressed = useWarningsStore((s) => s.isWarningSuppressed);
   const suppressWarning = useWarningsStore((s) => s.suppressWarning);
 
@@ -482,10 +493,25 @@ const EPGsTable = () => {
 
   const renderHeaderCell = makeHeaderCellRenderer(sorting, onSortingChange);
 
+  const filteredData = useMemo(
+    () => data.filter((e) => typeFilter.includes(e.source_type)),
+    [data, typeFilter]
+  );
+
+  const isTypeFiltered = typeFilter.length !== ALL_SOURCE_TYPES.length;
+
+  const toggleTypeFilter = (value) => {
+    setTypeFilter(
+      typeFilter.includes(value)
+        ? typeFilter.filter((v) => v !== value)
+        : [...typeFilter, value]
+    );
+  };
+
   const table = useTable({
     columns,
-    data,
-    allRowIds: data.map((epg) => epg.id),
+    data: filteredData,
+    allRowIds: filteredData.map((epg) => epg.id),
     enablePagination: false,
     enableRowSelection: false,
     renderTopToolbar: false,
@@ -517,13 +543,16 @@ const EPGsTable = () => {
   });
 
   return (
-    <Box>
+    <Box
+      style={{ display: 'flex', flexDirection: 'column', minHeight: 0, height: '100%' }}
+    >
       <Flex
         style={{
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'space-between',
           paddingBottom: 10,
+          flexShrink: 0,
         }}
         gap={15}
       >
@@ -541,29 +570,89 @@ const EPGsTable = () => {
         >
           EPGs
         </Text>
-        <Menu shadow="md" width={200}>
-          <MenuTarget>
-            <Button
-              leftSection={<SquarePlus size={18} />}
-              rightSection={<ChevronDown size={16} />}
-              variant="light"
-              size="xs"
-              p={5}
-              color="green"
-              style={{
-                borderWidth: '1px',
-                borderColor: 'green',
-                color: 'white',
-              }}
-            >
-              Add EPG
-            </Button>
-          </MenuTarget>
-          <MenuDropdown>
-            <MenuItem onClick={createStandardEPG}>Standard EPG Source</MenuItem>
-            <MenuItem onClick={createDummyEPG}>Dummy EPG Source</MenuItem>
-          </MenuDropdown>
-        </Menu>
+        <Flex gap={6} align="center">
+          <Menu shadow="md" width={200} closeOnItemClick={false}>
+            <MenuTarget>
+              <Button
+                size="xs"
+                variant={isTypeFiltered ? 'filled' : 'default'}
+                color={isTypeFiltered ? 'blue' : undefined}
+              >
+                <Filter size={18} />
+              </Button>
+            </MenuTarget>
+
+            <MenuDropdown>
+              <MenuItem
+                onClick={() => toggleTypeFilter('xmltv')}
+                leftSection={
+                  typeFilter.includes('xmltv') ? (
+                    <SquareCheck size={18} />
+                  ) : (
+                    <Square size={18} />
+                  )
+                }
+              >
+                <Text size="xs">XMLTV</Text>
+              </MenuItem>
+              <MenuItem
+                onClick={() => toggleTypeFilter('schedules_direct')}
+                leftSection={
+                  typeFilter.includes('schedules_direct') ? (
+                    <SquareCheck size={18} />
+                  ) : (
+                    <Square size={18} />
+                  )
+                }
+              >
+                <Text size="xs">Schedules Direct</Text>
+              </MenuItem>
+              <MenuItem
+                onClick={() => toggleTypeFilter('dummy')}
+                leftSection={
+                  typeFilter.includes('dummy') ? (
+                    <SquareCheck size={18} />
+                  ) : (
+                    <Square size={18} />
+                  )
+                }
+              >
+                <Text size="xs">Dummy</Text>
+              </MenuItem>
+              <MenuDivider />
+              <MenuItem
+                onClick={() => setTypeFilter(ALL_SOURCE_TYPES)}
+                leftSection={<RotateCcw size={18} />}
+                disabled={!isTypeFiltered}
+              >
+                <Text size="xs">Reset</Text>
+              </MenuItem>
+            </MenuDropdown>
+          </Menu>
+          <Menu shadow="md" width={200}>
+            <MenuTarget>
+              <Button
+                leftSection={<SquarePlus size={18} />}
+                rightSection={<ChevronDown size={16} />}
+                variant="light"
+                size="xs"
+                p={5}
+                color="green"
+                style={{
+                  borderWidth: '1px',
+                  borderColor: 'green',
+                  color: 'white',
+                }}
+              >
+                Add EPG
+              </Button>
+            </MenuTarget>
+            <MenuDropdown>
+              <MenuItem onClick={createStandardEPG}>Standard EPG Source</MenuItem>
+              <MenuItem onClick={createDummyEPG}>Dummy EPG Source</MenuItem>
+            </MenuDropdown>
+          </Menu>
+        </Flex>
       </Flex>
 
       <Paper
@@ -584,14 +673,21 @@ const EPGsTable = () => {
 
       <Box
         style={{
+          // Fill whatever space the page layout gives this table and scroll
+          // internally, instead of sizing to content and pushing the page taller.
+          flex: '1 1 auto',
+          minHeight: 0,
           overflowX: 'auto',
+          overflowY: 'auto',
           border: 'solid 1px rgb(68,68,68)',
           borderRadius: 'var(--mantine-radius-default)',
         }}
       >
-        {data.length === 0 ? (
+        {filteredData.length === 0 ? (
           <Text size="xl" c="dimmed" ta="center" py="xl">
-            No EPG sources yet.
+            {data.length === 0
+              ? 'No EPG sources yet.'
+              : 'No EPG sources match this filter.'}
           </Text>
         ) : (
           <CustomTable table={table} />

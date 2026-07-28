@@ -19,12 +19,21 @@ import {
   ActionIcon,
   Tooltip,
   Switch,
+  Menu,
+  MenuDivider,
+  MenuDropdown,
+  MenuItem,
+  MenuTarget,
 } from '@mantine/core';
 import {
   SquareMinus,
   SquarePen,
   RefreshCcw,
+  RotateCcw,
   SquarePlus,
+  Filter,
+  Square,
+  SquareCheck,
 } from 'lucide-react';
 import useLocalStorage from '../../hooks/useLocalStorage';
 import {
@@ -52,6 +61,8 @@ import {
   makeHeaderCellRenderer,
   makeSortingChangeHandler,
 } from './M3uTableUtils.jsx';
+
+const ALL_ACCOUNT_TYPES = ['STD', 'XC'];
 
 const StatusRow = ({ label, value }) => (
   <Flex justify="space-between" align="center">
@@ -153,6 +164,10 @@ const M3UTable = () => {
 
   const theme = useMantineTheme();
   const [tableSize] = useLocalStorage('table-size', 'default');
+  const [typeFilter, setTypeFilter] = useLocalStorage(
+    'm3u-table-type-filter',
+    ALL_ACCOUNT_TYPES
+  );
   const { fullDateFormat, fullDateTimeFormat } = useDateTimeFormat();
 
   const generateStatusString = (data) => {
@@ -641,11 +656,31 @@ const M3UTable = () => {
     }
   }, []);
 
+  // Mirrors the Type column's own STD-vs-XC display logic so the filter labels
+  // and the rendered values can't drift apart.
+  const filteredData = useMemo(
+    () =>
+      data.filter((p) =>
+        typeFilter.includes(p.account_type === 'XC' ? 'XC' : 'STD')
+      ),
+    [data, typeFilter]
+  );
+
+  const isTypeFiltered = typeFilter.length !== ALL_ACCOUNT_TYPES.length;
+
+  const toggleTypeFilter = (value) => {
+    setTypeFilter(
+      typeFilter.includes(value)
+        ? typeFilter.filter((v) => v !== value)
+        : [...typeFilter, value]
+    );
+  };
+
   const table = useTable({
     columns,
     // Sort data before passing to table: active first, then by name
-    data,
-    allRowIds: data.map((playlist) => playlist.id),
+    data: filteredData,
+    allRowIds: filteredData.map((playlist) => playlist.id),
     enablePagination: false,
     enableRowVirtualization: true,
     enableRowSelection: false,
@@ -668,12 +703,6 @@ const M3UTable = () => {
       earliest_expiration: renderHeaderCell,
       is_active: renderHeaderCell,
       actions: renderHeaderCell,
-    },
-    mantineTableContainerProps: {
-      style: {
-        height: 'calc(40vh - 10px)',
-        overflowX: 'auto', // Ensure horizontal scrolling works
-      },
     },
     mantineTableProps: {
       ...TableHelper.defaultProperties.mantineTableProps,
@@ -699,13 +728,16 @@ const M3UTable = () => {
   });
 
   return (
-    <Box>
+    <Box
+      style={{ display: 'flex', flexDirection: 'column', minHeight: 0, height: '100%' }}
+    >
       <Flex
         style={{
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'space-between',
           paddingBottom: 10,
+          flexShrink: 0,
         }}
         gap={15}
       >
@@ -723,7 +755,53 @@ const M3UTable = () => {
         >
           M3U Accounts
         </Text>
-        <Flex gap={6}>
+        <Flex gap={6} align="center">
+          <Menu shadow="md" width={200} closeOnItemClick={false}>
+            <MenuTarget>
+              <Button
+                size="xs"
+                variant={isTypeFiltered ? 'filled' : 'default'}
+                color={isTypeFiltered ? 'blue' : undefined}
+              >
+                <Filter size={18} />
+              </Button>
+            </MenuTarget>
+
+            <MenuDropdown>
+              <MenuItem
+                onClick={() => toggleTypeFilter('STD')}
+                leftSection={
+                  typeFilter.includes('STD') ? (
+                    <SquareCheck size={18} />
+                  ) : (
+                    <Square size={18} />
+                  )
+                }
+              >
+                <Text size="xs">M3U</Text>
+              </MenuItem>
+              <MenuItem
+                onClick={() => toggleTypeFilter('XC')}
+                leftSection={
+                  typeFilter.includes('XC') ? (
+                    <SquareCheck size={18} />
+                  ) : (
+                    <Square size={18} />
+                  )
+                }
+              >
+                <Text size="xs">XC</Text>
+              </MenuItem>
+              <MenuDivider />
+              <MenuItem
+                onClick={() => setTypeFilter(ALL_ACCOUNT_TYPES)}
+                leftSection={<RotateCcw size={18} />}
+                disabled={!isTypeFiltered}
+              >
+                <Text size="xs">Reset</Text>
+              </MenuItem>
+            </MenuDropdown>
+          </Menu>
           <Button
             variant="light"
             size="xs"
@@ -768,14 +846,21 @@ const M3UTable = () => {
 
       <Box
         style={{
+          // Fill whatever space the page layout gives this table and scroll
+          // internally, instead of sizing to content and pushing the page taller.
+          flex: '1 1 auto',
+          minHeight: 0,
           overflowX: 'auto',
+          overflowY: 'auto',
           border: 'solid 1px rgb(68,68,68)',
           borderRadius: 'var(--mantine-radius-default)',
         }}
       >
-        {data.length === 0 ? (
+        {filteredData.length === 0 ? (
           <Text size="xl" c="dimmed" ta="center" py="xl">
-            No M3U accounts yet.
+            {data.length === 0
+              ? 'No M3U accounts yet.'
+              : 'No M3U accounts match this filter.'}
           </Text>
         ) : (
           <CustomTable table={table} />

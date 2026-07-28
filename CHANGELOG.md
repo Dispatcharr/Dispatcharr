@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Type filter on the M3U and EPG source tables.** M3U & EPG Manager now has a filter dropdown on each table (M3U/XC for playlists, XMLTV/Schedules Direct/Dummy for EPG sources), matching the checklist-style filter menu already used on the Channels page, to narrow the list by type. All types are checked by default; the button highlights and a Reset option appears once anything is unchecked. The selection persists per table across reloads.
+
 ### Security
 
 - **First-time web setup is limited to local networks by default.** `POST /api/accounts/initialize-superuser/` only accepts private/loopback IPv4 and IPv6 ranges unless `DISPATCHARR_SETUP_ALLOWED_IP` is set to a single IP (for remote/VPS setup). While no admin exists, GET reports `client_ip` and `setup_allowed` so the UI can show remote-setup instructions (env override or `createsuperuser`). Once an admin-level user exists, the endpoint only returns `superuser_exists: true`.
@@ -32,8 +36,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **Public IP in the sidebar updates again after the server's IP changes (e.g. a VPN/gluetun reconnect).** The lookup result was cached for an hour with no re-check on page load, so the UI kept serving a stale address until the cache expired. The cached value is still served instantly, but a page load more than a minute after the last check now re-verifies in the background and pushes any change over the existing WebSocket update. A failed re-check keeps the last known address instead of blanking the sidebar. (Fixes #1395) - Thanks [@floppy-disk](https://github.com/floppy-disk)
-- **M3U and EPG source tables size to their content instead of a fixed height.** The tables on M3U & EPG Manager were locked to `height: calc(40vh - 15px)`, which produced a nested scrollbar and reserved the same space whether the table held 0 or 50 rows; they now show an empty state and resize to fit their data. - Thanks [@nagelm](https://github.com/nagelm)
-- **M3U & EPG Manager no longer forces the page to a 1100px minimum width on mobile.** Removing the tables' fixed height above also removed their own internal scroll containers, so touch-scrolling the page on a phone-width viewport now scrolls the whole (horizontally overflowing) document instead of a contained box, which could trigger the browser to zoom out mid-scroll. The 1100px minimum width now only applies at the `sm` breakpoint and up.
+- **M3U and EPG source tables size to their content instead of a fixed height.** The tables on M3U & EPG Manager were locked to `height: calc(40vh - 15px)`, which produced a nested scrollbar and reserved the same space whether the table held 0 or 50 rows; they now show an empty state, size to fit their data, and only scroll internally once they reach the height of the viewport. - Thanks [@nagelm](https://github.com/nagelm)
 
 ## [0.28.2] - 2026-07-23
 
