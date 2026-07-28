@@ -472,6 +472,24 @@ class PluginFieldUploadAPIView(PluginAuthMixin, APIView):
     ever used as a path segment.
     """
 
+    @extend_schema(
+        description="Upload a file for a plugin's 'file' settings field. field_id must name a field the plugin declared with type \"file\".",
+        request=inline_serializer(name="PluginFieldUploadRequest", fields={"file": serializers.FileField()}),
+        responses={
+            200: inline_serializer(name="PluginFieldUploadResponse", fields={
+                "success": serializers.BooleanField(),
+                "path": serializers.CharField(),
+            }),
+            400: inline_serializer(name="PluginFieldUploadError", fields={
+                "success": serializers.BooleanField(),
+                "error": serializers.CharField(),
+            }),
+            404: inline_serializer(name="PluginFieldUploadNotFound", fields={
+                "success": serializers.BooleanField(),
+                "error": serializers.CharField(),
+            }),
+        },
+    )
     def post(self, request, key, field_id):
         pm = PluginManager.get()
         lp = pm.get_plugin(key)
