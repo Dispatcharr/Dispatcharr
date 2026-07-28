@@ -22,7 +22,7 @@ from django.utils import timezone
 
 from apps.channels.models import Channel
 from apps.epg.models import EPGData, EPGSource, ProgramData, SDProgramMD5, SDScheduleMD5
-from apps.epg.sd_utils import SD_BASE_URL, sd_headers_for_source, sd_obtain_token
+from apps.epg.sd_utils import SD_BASE_URL, sd_authorized_request, sd_obtain_token
 from apps.epg.utils import send_epg_update
 from core.utils import (
     acquire_task_lock,
@@ -291,14 +291,10 @@ def _sd_program_ids_needing_posters(mapped_epg_ids, poster_style):
     )
 
 
-def _sd_fetch_lineup_country(token, sd_headers_fn):
+def _sd_fetch_lineup_country(sd_req):
     """Return country code prefix from the first subscribed lineup (poster metadata)."""
     try:
-        lineups_response = requests.get(
-            f"{SD_BASE_URL}/lineups",
-            headers=sd_headers_fn(token),
-            timeout=30,
-        )
+        lineups_response = sd_req('GET', f"{SD_BASE_URL}/lineups", timeout=30)
         if lineups_response.ok:
             for lineup in lineups_response.json().get('lineups', []):
                 lid = lineup.get('lineupID') or lineup.get('lineup') or ''
@@ -309,7 +305,7 @@ def _sd_fetch_lineup_country(token, sd_headers_fn):
     return None
 
 
-def _sd_setup_single_epg_fetch(source, epg_id, token, sd_headers_fn):
+def _sd_setup_single_epg_fetch(source, epg_id, sd_req):
     """Build station_map / epg_id_map for a single mapped EPG entry."""
     epg = EPGData.objects.filter(id=epg_id, epg_source=source).first()
     if not epg or not epg.tvg_id:
@@ -320,7 +316,7 @@ def _sd_setup_single_epg_fetch(source, epg_id, token, sd_headers_fn):
         send_epg_update(source.id, "parsing_programs", 100, status="error", error=msg)
         return None
 
-    sd_lineup_country = _sd_fetch_lineup_country(token, sd_headers_fn)
+    sd_lineup_country = _sd_fetch_lineup_country(sd_req)
 
     send_epg_update(
         source.id, "parsing_programs", 15,
@@ -331,7 +327,7 @@ def _sd_setup_single_epg_fetch(source, epg_id, token, sd_headers_fn):
     return station_map, epg_id_map, sd_lineup_country, epg
 
 
-def _sd_setup_mapped_guide_fetch(source, token, sd_headers_fn):
+def _sd_setup_mapped_guide_fetch(source, sd_req):
     """Build station_map / epg_id_map for all channels mapped to this SD source."""
     from apps.channels.models import Channel
 
@@ -368,7 +364,7 @@ def _sd_setup_mapped_guide_fetch(source, token, sd_headers_fn):
         send_epg_update(source.id, "parsing_programs", 100, status="error", error=msg)
         return None
 
-    sd_lineup_country = _sd_fetch_lineup_country(token, sd_headers_fn)
+    sd_lineup_country = _sd_fetch_lineup_country(sd_req)
     send_epg_update(
         source.id, "parsing_programs", 15,
         message=f"Fetching guide data for {len(station_map)} mapped stations...",
@@ -605,15 +601,10 @@ def fetch_schedules_direct(
         logger.info(f"SD source {source.id}: Force flag set, bypassing 2-hour refresh guard.")
 
     # -------------------------------------------------------------------------
-    # Build SD-specific headers
+    # SD API helpers (authenticated requests defined after /token succeeds)
     # SD API spec requires the User-Agent to identify the application and version.
     # SergeantPanda confirmed Dispatcharr should identify itself properly.
     # -------------------------------------------------------------------------
-    from apps.epg.sd_utils import sd_headers_for_source, sd_obtain_token
-
-    def _sd_headers(token=None, content_type='application/json'):
-        return sd_headers_for_source(source, token=token, content_type=content_type)
-
     def _sd_post_refresh_tasks(mapped_epg_ids, program_metadata, today):
         """Poster fetch, logo auto-apply, and pruning. Runs even when schedules are unchanged.
 
@@ -663,10 +654,10 @@ def fetch_schedules_direct(
                 for batch_idx in range(total_art_batches):
                     batch = artwork_list[batch_idx * SD_ARTWORK_BATCH_SIZE:(batch_idx + 1) * SD_ARTWORK_BATCH_SIZE]
                     try:
-                        art_response = requests.post(
+                        art_response = _sd_req(
+                            'POST',
                             f"{SD_BASE_URL}/metadata/programs/",
                             json=batch,
-                            headers=_sd_headers(token),
                             timeout=120,
                         )
                         art_response.raise_for_status()
@@ -814,15 +805,24 @@ def fetch_schedules_direct(
     token = auth.token
     logger.info("Schedules Direct authentication successful.")
 
+    def _sd_req(method, url, **kwargs):
+        nonlocal token
+        content_type = kwargs.pop('content_type', 'application/json')
+        resp, token = sd_authorized_request(
+            method,
+            url,
+            source=source,
+            token=token,
+            content_type=content_type,
+            **kwargs,
+        )
+        return resp
+
     # -------------------------------------------------------------------------
     # Step 2: Check account status (respect OFFLINE system status)
     # -------------------------------------------------------------------------
     try:
-        status_response = requests.get(
-            f"{SD_BASE_URL}/status",
-            headers=_sd_headers(token),
-            timeout=30,
-        )
+        status_response = _sd_req('GET', f"{SD_BASE_URL}/status", timeout=30)
         status_response.raise_for_status()
         status_data = status_response.json()
         system_status = status_data.get('systemStatus', [{}])[0].get('status', 'Online')
@@ -848,12 +848,12 @@ def fetch_schedules_direct(
     sd_lineup_country = None
 
     if epg_id_only is not None:
-        setup = _sd_setup_single_epg_fetch(source, epg_id_only, token, _sd_headers)
+        setup = _sd_setup_single_epg_fetch(source, epg_id_only, _sd_req)
         if setup is None:
             return
         station_map, epg_id_map, sd_lineup_country, _single_epg = setup
     elif mapped_guide_batch:
-        setup = _sd_setup_mapped_guide_fetch(source, token, _sd_headers)
+        setup = _sd_setup_mapped_guide_fetch(source, _sd_req)
         if setup is None:
             return
         station_map, epg_id_map, sd_lineup_country = setup
@@ -863,11 +863,7 @@ def fetch_schedules_direct(
         # -------------------------------------------------------------------------
         send_epg_update(source.id, "parsing_programs", 10, message="Fetching subscribed lineups...")
         try:
-            lineups_response = requests.get(
-                f"{SD_BASE_URL}/lineups",
-                headers=_sd_headers(token),
-                timeout=30,
-            )
+            lineups_response = _sd_req('GET', f"{SD_BASE_URL}/lineups", timeout=30)
             # SD returns 400 with code 4102 when no lineups are configured.
             # This is a valid account state. The user needs to add lineups via
             # the Manage Lineups UI. Treat as idle rather than error.
@@ -919,9 +915,9 @@ def fetch_schedules_direct(
             if not lineup_id:
                 continue
             try:
-                detail_response = requests.get(
+                detail_response = _sd_req(
+                    'GET',
                     f"{SD_BASE_URL}/lineups/{lineup_id}",
-                    headers=_sd_headers(token),
                     timeout=30,
                 )
                 detail_response.raise_for_status()
@@ -1130,10 +1126,10 @@ def fetch_schedules_direct(
     ]
     for batch in station_batches:
         try:
-            md5_response = requests.post(
+            md5_response = _sd_req(
+                'POST',
                 f"{SD_BASE_URL}/schedules/md5",
                 json=[{'stationID': sid, 'date': date_list} for sid in batch],
-                headers=_sd_headers(token),
                 timeout=120,
             )
             md5_response.raise_for_status()
@@ -1257,10 +1253,10 @@ def fetch_schedules_direct(
         if not request_body:
             continue
         try:
-            sched_response = requests.post(
+            sched_response = _sd_req(
+                'POST',
                 f"{SD_BASE_URL}/schedules",
                 json=request_body,
-                headers=_sd_headers(token),
                 timeout=120,
             )
             sched_response.raise_for_status()
@@ -1392,10 +1388,10 @@ def fetch_schedules_direct(
                 pass
             batch = program_id_list[batch_idx * SD_PROGRAM_BATCH_SIZE:(batch_idx + 1) * SD_PROGRAM_BATCH_SIZE]
             try:
-                prog_response = requests.post(
+                prog_response = _sd_req(
+                    'POST',
                     f"{SD_BASE_URL}/programs",
                     json=batch,
-                    headers=_sd_headers(token),
                     timeout=120,
                 )
                 prog_response.raise_for_status()

@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **First-time web setup is limited to local networks by default.** `POST /api/accounts/initialize-superuser/` only accepts private/loopback IPv4 and IPv6 ranges unless `DISPATCHARR_SETUP_ALLOWED_IP` is set to a single IP (for remote/VPS setup). While no admin exists, GET reports `client_ip` and `setup_allowed` so the UI can show remote-setup instructions (env override or `createsuperuser`). Once an admin-level user exists, the endpoint only returns `superuser_exists: true`.
+- Updated `Django` 6.0.6 → 6.0.7, resolving the following CVEs:
+  - **CVE-2026-48588**: Potential exposure of private data via cached `Set-Cookie` response in `UpdateCacheMiddleware` / `cache_page()`.
+  - **CVE-2026-53877**: Heap buffer over-read in `GDALRaster` when initialized with certain `bytes` objects.
+  - **CVE-2026-53878**: Header injection possibility since `DomainNameValidator` accepted newlines in input.
+- Updated frontend npm dependencies:
+  - `brace-expansion` 5.0.6 → 5.0.8, fixing **high** severity DoS via exponential-time expansion of consecutive non-expanding `{}` groups ([GHSA-3jxr-9vmj-r5cp](https://github.com/advisories/GHSA-3jxr-9vmj-r5cp)) and **high** severity DoS via unbounded expansion length ([GHSA-mh99-v99m-4gvg](https://github.com/advisories/GHSA-mh99-v99m-4gvg))
+  - `js-yaml` 5.1.0 → 5.2.2, fixing **moderate** severity quadratic CPU via merge-key chains ([GHSA-g796-fgmg-93mv](https://github.com/advisories/GHSA-g796-fgmg-93mv)), **moderate** severity quadratic DoS via `!!omap` in YAML11_SCHEMA ([GHSA-724g-mxrg-4qvm](https://github.com/advisories/GHSA-724g-mxrg-4qvm)), and **high** severity exponential parsing time in flow collections ([GHSA-pm4m-ph32-ghv5](https://github.com/advisories/GHSA-pm4m-ph32-ghv5))
+  - `postcss` 8.5.13 → 8.5.23, fixing **high** severity path traversal in previous source map auto-loading ([GHSA-r28c-9q8g-f849](https://github.com/advisories/GHSA-r28c-9q8g-f849))
+  - `react-router` / `react-router-dom` 7.17.0 → 7.18.1, fixing **moderate** severity open redirect via backslash in `<Link>`/`useNavigate` ([GHSA-wrjc-x8rr-h8h6](https://github.com/advisories/GHSA-wrjc-x8rr-h8h6)), **moderate** severity XSS via RSCErrorHandler missing protocol validation ([GHSA-h8fp-f39c-q6mh](https://github.com/advisories/GHSA-h8fp-f39c-q6mh)), **moderate** severity arbitrary constructor injection via `deserializeErrors()` ([GHSA-337j-9hxr-rhxg](https://github.com/advisories/GHSA-337j-9hxr-rhxg)), and **high** severity unauthenticated DoS via inefficient route matching ([GHSA-chx6-hx7r-mcp5](https://github.com/advisories/GHSA-chx6-hx7r-mcp5))
+
+### Changed
+
+- Dependency updates:
+  - `Django` 6.0.6 → 6.0.7 (security patch; see Security section)
+  - `drf-spectacular` 0.29.0 → 0.30.0
+  - `gevent` 26.5.0 → 26.7.0
+  - `torch` 2.12.1+cpu → 2.13.0+cpu
+  - `sentence-transformers` 5.6.0 → 5.6.1
+
+### Fixed
+
+- **M3U and EPG source tables size to their content instead of a fixed height.** The tables on M3U & EPG Manager were locked to `height: calc(40vh - 15px)`, which produced a nested scrollbar and reserved the same space whether the table held 0 or 50 rows; they now show an empty state and resize to fit their data. - Thanks [@nagelm](https://github.com/nagelm)
+- **M3U & EPG Manager no longer forces the page to a 1100px minimum width on mobile.** Removing the tables' fixed height above also removed their own internal scroll containers, so touch-scrolling the page on a phone-width viewport now scrolls the whole (horizontally overflowing) document instead of a contained box, which could trigger the browser to zoom out mid-scroll. The 1100px minimum width now only applies at the `sm` breakpoint and up.
+
+## [0.28.2] - 2026-07-23
+
 ### Added
 
 - **Schedules Direct Extra Debugging option.** EPG source settings include an **Extra Schedules Direct Debugging** toggle that adds a `RouteTo: debug` header so Schedules Direct support can steer traffic to their debug server. The tooltip states it should only be enabled when SD support asks. If SD returns code 2055 (unexpected debug connection), the toggle is turned off automatically.
@@ -20,7 +49,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Schedules Direct poster proxy no longer ignores daily image download limits or missing-image errors.** SD returns codes 5002/5003 as HTTP 200 with a JSON body; the proxy previously only inspected HTTP 400 and kept requesting images after the limit, which can get accounts blocked. It now detects 5002/5003 (subscriber and trial), stops further image fetches for that source until the next midnight UTC (persisted on the EPG source so all workers honor it), and on explicit IMAGE_NOT_FOUND (code 5000) clears that program's `sd_icon` so the same dead URI is not retried. Transient bare HTTP 404s do not blacklist the URI. Successful SD posters use a dedicated nginx cache under `/data/cache/sd_posters` (14 days); channel/VOD logos remain at `/data/cache/logos` (24 hours). On startup, an existing `/data/logo_cache` directory is moved to `/data/cache/logos` once so warm logo entries are kept. API and XMLTV icon URLs include a `?v=` hash of the stored SD image URI so a new artwork link after refresh uses a new cache key without waiting for TTL expiry. Selecting programs that still need artwork no longer uses a negated JSON `AND` that dropped every row when `sd_icon_missing` / `sd_poster_style` keys were absent (Postgres NULL), which had prevented poster links from being saved after refresh.
 - **Schedules Direct auth and lineup change handling better match SD guidelines.** Token codes 3000/3001 (offline/busy) stop as idle with clear "do not retry" messaging instead of looking like credential failures; 4010 (too many unique IPs) and related account codes get explicit messages. Lineup add/delete respects a known daily change lockout before calling SD, handles 4100 on deletes, and the UI blocks remove when no changes remain (adds and deletes both count toward the 6/day limit).
-- **Schedules Direct stops retrying `/token` on auth failures that will not clear by themselves.** Codes 4002/4003 (bad credentials), 4001/4005/4007/4008 (account state), 4009/4010 (login/IP limits), and 4004 (15-minute account lock) persist a cooldown on the EPG source. Soft codes 3000/3001 use a 1-hour idle cooldown. Lockouts clear when username/password change or the cooldown expires. Token auth is centralized in `sd_obtain_token` for refresh, lineup/form, and poster paths. Redis-cached SD tokens are bound to a credential fingerprint (and cleared when the EPG source username/password change) so switching accounts cannot reuse another session.
+- **Schedules Direct stops retrying `/token` on auth failures that will not clear by themselves.** Codes 4002/4003 (bad credentials), 4001/4005/4007/4008 (account state), 4009/4010 (login/IP limits), and 4004 (15-minute account lock) persist a cooldown on the EPG source. Soft codes 3000/3001 use a 1-hour idle cooldown. Lockouts clear when username/password change or the cooldown expires. Token auth is centralized in `sd_obtain_token` for refresh, lineup/form, and poster paths. That helper reuses a Redis-cached token until near `tokenExpires` (bound to a credential fingerprint, and cleared when the EPG source username/password change) so opening the SD form, refreshing EPG, and serving posters do not mint a new token on every call. When an authenticated SD call returns HTTP 401/403 (SD documents TOKEN_EXPIRED as 403), the cached token is cleared and the request is retried once with a fresh `/token`.
 - **Schedules Direct code split out of general EPG modules.** Refresh pipeline and Celery tasks live in `apps/epg/sd_tasks.py`; lineup/poster API mixins in `apps/epg/sd_api.py`; shared protocol helpers remain in `sd_utils.py`. Progress WebSocket updates (`send_epg_update`) live in `apps/epg/utils.py` so XMLTV and SD tasks can import cleanly. `tasks.py` / `api_views.py` re-export or inherit so existing imports and Celery task names are unchanged.
 - **Public IP in the sidebar updates again after the server's IP changes (e.g. a VPN/gluetun reconnect).** The lookup result was cached for an hour and nothing ever re-checked it within that window, so the UI kept serving the stale address even across page reloads and container restarts. The cached value is still served instantly, but a page load more than a minute after the last check now re-verifies the IP in the background and pushes any change to connected clients over the existing WebSocket update. A failed re-check keeps the last known address instead of blanking the sidebar. (Fixes #1395)
 

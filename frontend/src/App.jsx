@@ -43,11 +43,10 @@ const App = () => {
   const [open, setOpen] = useState(true);
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
   const isInitialized = useAuthStore((s) => s.isInitialized);
-  const setIsAuthenticated = useAuthStore((s) => s.setIsAuthenticated);
   const logout = useAuthStore((s) => s.logout);
   const initData = useAuthStore((s) => s.initData);
   const initializeAuth = useAuthStore((s) => s.initializeAuth);
-  const setSuperuserExists = useAuthStore((s) => s.setSuperuserExists);
+  const setSuperuserStatus = useAuthStore((s) => s.setSuperuserStatus);
 
   const authCheckStarted = useRef(false);
   const superuserCheckStarted = useRef(false);
@@ -64,21 +63,22 @@ const App = () => {
     async function checkSuperuser() {
       try {
         const response = await API.fetchSuperUser();
-        if (response && response.superuser_exists === false) {
-          setSuperuserExists(false);
-        }
+        setSuperuserStatus(response);
       } catch (error) {
         console.error('Error checking superuser status:', error);
+        // Preserve the existing fail-open UI behavior if the status check fails.
+        setSuperuserStatus({ superuser_exists: true });
         // If authentication error, redirect to login
         if (error.status === 401) {
-          localStorage.removeItem('token');
+          localStorage.removeItem('accessToken');
           localStorage.removeItem('refreshToken');
+          localStorage.removeItem('tokenExpiration');
           window.location.href = '/login';
         }
       }
     }
     checkSuperuser();
-  }, [setSuperuserExists]);
+  }, [setSuperuserStatus]);
 
   // Authentication check
   useEffect(() => {
@@ -170,7 +170,7 @@ const App = () => {
                         <Route path="/vods" element={<VODsPage />} />
                       </>
                     ) : (
-                      <Route path="/login" element={<Login needsSuperuser />} />
+                      <Route path="/login" element={<Login />} />
                     )}
                     <Route
                       path="*"
