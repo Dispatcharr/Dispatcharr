@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **M3U and EPG source tables size to their content instead of a fixed height.** The tables on M3U & EPG Manager were locked to `height: calc(40vh - 15px)`, which produced a nested scrollbar and reserved the same space whether the table held 0 or 50 rows; they now show an empty state and resize to fit their data. - Thanks [@nagelm](https://github.com/nagelm)
+- **M3U & EPG Manager no longer forces the page to a 1100px minimum width on mobile.** Removing the tables' fixed height above also removed their own internal scroll containers, so touch-scrolling the page on a phone-width viewport now scrolls the whole (horizontally overflowing) document instead of a contained box, which could trigger the browser to zoom out mid-scroll. The 1100px minimum width now only applies at the `sm` breakpoint and up.
+
 ## [0.28.2] - 2026-07-23
 
 ### Added
