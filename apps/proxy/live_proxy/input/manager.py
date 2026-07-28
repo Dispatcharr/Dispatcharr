@@ -1486,6 +1486,21 @@ class StreamManager:
             except Exception as e:
                 logger.error(f"Could not log stream switch event: {e}")
 
+            # Tell this worker's output-format managers the input switched
+            # (manual switch and automatic failover both funnel through here)
+            # so they can mark the gap in their manifests; the HLS playlist
+            # must carry EXT-X-DISCONTINUITY across a provider change
+            # (RFC 8216 4.3.2.3). Import locally: server imports this module.
+            try:
+                from ..server import ProxyServer
+                proxy_server = ProxyServer.get_instance()
+                for output_manager in proxy_server.output_managers.get(self.channel_id, {}).values():
+                    notify = getattr(output_manager, "notify_stream_switch", None)
+                    if notify:
+                        notify()
+            except Exception as e:
+                logger.debug(f"Could not notify output managers of stream switch: {e}")
+
             return True
         except Exception as e:
             logger.error(f"Error during URL update for channel {self.channel_id}: {e}", exc_info=True)

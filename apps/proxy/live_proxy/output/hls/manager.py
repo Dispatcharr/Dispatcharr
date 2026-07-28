@@ -41,6 +41,14 @@ DEFAULT_SEGMENT_DURATION = 4
 # segment it is on instead of getting a 404 once it has rolled off.
 DEFAULT_WINDOW_SIZE = 10
 
+# Demand self-check. HLS clients are pull-based: there is no long-lived
+# response whose teardown reports the disconnect, so the manager itself
+# periodically verifies that at least one live client record still names
+# this output, and retires through the server's shared demand accounting
+# when none has for two consecutive checks.
+DEMAND_CHECK_INTERVAL = 10
+DEMAND_GRACE_CHECKS = 2
+
 
 class HLSOutputManager:
     """
@@ -55,6 +63,9 @@ class HLSOutputManager:
         self.fmt = fmt
         self.running = False
         self._thread = None
+        # Set by the input side (StreamManager.update_url) when the upstream
+        # switched; the next emitted segment is marked as a discontinuity.
+        self._switch_pending = False
 
         self.segment_duration = ConfigHelper.get('HLS_SEGMENT_DURATION', DEFAULT_SEGMENT_DURATION)
         self.window_size = ConfigHelper.get('HLS_WINDOW_SIZE', DEFAULT_WINDOW_SIZE)
@@ -146,6 +157,12 @@ class HLSOutputManager:
         self._cleanup_redis()
         logger.info(f"[HLS:{self.channel_id}] Stopped")
 
+    def notify_stream_switch(self):
+        """Input-side signal: the upstream stream changed (manual switch or
+        automatic failover). The next emitted segment must carry
+        EXT-X-DISCONTINUITY (RFC 8216 4.3.2.3)."""
+        self._switch_pending = True
+
     # ------------------------------------------------------------------
     # Segmenter loop
     # ------------------------------------------------------------------
@@ -165,6 +182,8 @@ class HLSOutputManager:
             start_index = self.ts_buffer.index
         local_index = start_index
         first_segment_stored = False
+        last_demand_check = time.time()
+        idle_demand_checks = 0
         logger.debug(
             f"[HLS:{self.channel_id}] Segmenter started at buffer index "
             f"{local_index} ({behind_seconds}s behind live)"
@@ -172,6 +191,29 @@ class HLSOutputManager:
 
         try:
             while self.running:
+                if self._switch_pending:
+                    self._switch_pending = False
+                    segmenter.flag_discontinuity()
+                    logger.info(
+                        f"[HLS:{self.channel_id}] Input stream switched; next "
+                        f"segment will be marked as a discontinuity"
+                    )
+
+                now = time.time()
+                if now - last_demand_check >= DEMAND_CHECK_INTERVAL:
+                    last_demand_check = now
+                    if self._has_hls_demand():
+                        idle_demand_checks = 0
+                    else:
+                        idle_demand_checks += 1
+                        if idle_demand_checks >= DEMAND_GRACE_CHECKS:
+                            logger.info(
+                                f"[HLS:{self.channel_id}] No {self.fmt} clients for "
+                                f"{idle_demand_checks * DEMAND_CHECK_INTERVAL}s; retiring output"
+                            )
+                            self._retire()
+                            break
+
                 chunks, new_index = self.ts_buffer.get_optimized_client_data(local_index)
 
                 if chunks:
@@ -244,6 +286,66 @@ class HLSOutputManager:
             f"{segment.duration:.2f}s, {len(segment.data)} bytes"
             f"{' [discontinuity]' if segment.discontinuity else ''}"
         )
+
+    # ------------------------------------------------------------------
+    # Demand accounting (pull-based clients)
+    # ------------------------------------------------------------------
+
+    def _has_hls_demand(self):
+        """True when at least one live client record consumes this manager's
+        output. Mirrors the per-format accounting in handle_client_disconnect;
+        set entries whose metadata hash has expired are ghosts and do not
+        count as demand."""
+        if not self._redis:
+            return True  # cannot verify; err on the side of running
+        try:
+            client_ids = list(self._redis.smembers(RedisKeys.clients(self.channel_id)))
+            if not client_ids:
+                return False
+            pipe = self._redis.pipeline(transaction=False)
+            for cid in client_ids:
+                pipe.hget(RedisKeys.client_metadata(self.channel_id, cid), "output_format")
+                pipe.hget(RedisKeys.client_metadata(self.channel_id, cid), "output_profile_id")
+            results = pipe.execute()
+            for i in range(0, len(results), 2):
+                fmt = results[i]
+                if not fmt:
+                    continue  # expired hash: a ghost entry, not demand
+                fmt = fmt.decode() if isinstance(fmt, bytes) else fmt
+                pid = results[i + 1]
+                pid = (pid.decode() if isinstance(pid, bytes) else pid) if pid else ''
+                manager_key = fmt
+                if pid:
+                    try:
+                        manager_key = f"{fmt}:p{int(pid)}"
+                    except ValueError:
+                        pass
+                if manager_key == self.fmt:
+                    return True
+            return False
+        except Exception as e:
+            logger.debug(f"[HLS:{self.channel_id}] Demand check failed: {e}")
+            return True
+
+    def _retire(self):
+        """No consumers remain: prune expired client-set entries, then hand
+        teardown to the server's shared demand accounting so this manager is
+        stopped AND deregistered (and the channel shuts down when nothing
+        else remains), exactly as a streaming client's disconnect would."""
+        try:
+            from ...client_manager import ClientManager
+            ClientManager.remove_ghost_clients(self._redis, self.channel_id)
+        except Exception:
+            pass
+        try:
+            # Import locally: server imports this module at load time. This
+            # runs in the manager's own thread; stop() tolerates the resulting
+            # self-join (the RuntimeError is caught) and the loop exits right
+            # after this call returns.
+            from ...server import ProxyServer
+            ProxyServer.get_instance().handle_client_disconnect(self.channel_id)
+        except Exception as e:
+            logger.error(f"[HLS:{self.channel_id}] Error during retirement: {e}")
 
     # ------------------------------------------------------------------
     # Redis helpers (mirror FMP4RemuxManager)

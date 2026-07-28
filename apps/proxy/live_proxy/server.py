@@ -1118,6 +1118,14 @@ class ProxyServer:
             client_set_key = RedisKeys.clients(channel_id)
             total = self.redis_client.scard(client_set_key) or 0
 
+            if total:
+                # Drop set entries whose metadata hash has expired. Pull-based
+                # clients (HLS) never report a disconnect; when one stops
+                # polling, its hash lapses, and the stale set entry must not
+                # keep the channel or an output manager alive.
+                if ClientManager.remove_ghost_clients(self.redis_client, channel_id):
+                    total = self.redis_client.scard(client_set_key) or 0
+
             logger.debug(
                 f"handle_client_disconnect: channel={channel_id[:8]} total={total} "
                 f"profile_managers={list(self.profile_managers.get(channel_id, {}).keys())} "
