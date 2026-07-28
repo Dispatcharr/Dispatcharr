@@ -31,9 +31,12 @@ class MyWebSocketConsumer(AsyncWebsocketConsumer):
                 from core.api_views import _IP_CACHE_KEY
                 cached_ip = await sync_to_async(cache.get)(_IP_CACHE_KEY)
                 if cached_ip:
-                    cached_ip.pop("verified_at", None)  # cache-internal, not part of the payload
+                    # Omit verified_at (cache-only) without mutating the cached value.
+                    payload = {
+                        k: v for k, v in cached_ip.items() if k != "verified_at"
+                    }
                     await self.send(text_data=json.dumps({
-                        'data': {'type': 'ip_lookup_complete', **cached_ip}
+                        'data': {'type': 'ip_lookup_complete', **payload}
                     }))
             except Exception as e:
                 logger.warning(f"Could not push cached IP result on connect: {e}")

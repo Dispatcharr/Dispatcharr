@@ -349,11 +349,10 @@ def _perform_ip_lookup():
         "country_name": country_name,
         "city": city,
     }
-    # A failed re-check must not clobber the last known good result: keep the
-    # cached fields and only bump verified_at so retries stay rate-limited.
-    # Broadcast when the lookup succeeded, or when nothing is cached yet
-    # (first lookup — the negative result resolves the frontend skeleton).
-    # verified_at is cache-internal and never included in pushed payloads.
+    # On a failed re-check, keep the last known IP and only bump verified_at
+    # so retries stay rate-limited. Store and push on success, or on the first
+    # lookup (including a negative result, so the frontend skeleton resolves).
+    # verified_at stays cache-only and is omitted from websocket payloads.
     cached = cache.get(_IP_CACHE_KEY)
     should_store = public_ip is not None or cached is None
     payload = result if should_store else cached
@@ -390,11 +389,8 @@ def environment(request):
             country_code = cached.get("country_code")
             country_name = cached.get("country_name")
             city = cached.get("city")
-            # Serve the cached result immediately, but if it hasn't been
-            # verified recently, re-check in the background. The websocket
-            # push from _perform_ip_lookup corrects all connected clients if
-            # the IP changed (e.g. after a VPN reconnect). See issue #1395.
-            # Entries without verified_at (pre-upgrade) count as stale.
+            # Serve cache immediately; re-check in the background when stale
+            # (missing verified_at counts as stale). Websocket push updates clients.
             stale = time.time() - cached.get("verified_at", 0) > _IP_VERIFY_INTERVAL
             if stale and cache.add(_IP_LOCK_KEY, True, 30):
                 threading.Thread(target=_perform_ip_lookup, daemon=True).start()

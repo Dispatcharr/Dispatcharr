@@ -1,4 +1,4 @@
-"""Tests for stale-while-revalidate public IP lookup in core.api_views (issue #1395)."""
+"""Tests for stale-while-revalidate public IP lookup in core.api_views."""
 
 import time
 from types import SimpleNamespace
