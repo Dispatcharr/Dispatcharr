@@ -135,7 +135,7 @@ export const getFormValidators = (user) => {
     username: !values.username
       ? 'Username is required'
       : values.user_level == USER_LEVELS.STREAMER &&
-          !values.username.match(/^[A-Za-z0-9._@\-+]+$/)
+          !values.username.match(/^[A-Za-z0-9._@-]+$/)
         ? 'Streamer username contains unsupported characters'
         : null,
     password:
@@ -143,7 +143,7 @@ export const getFormValidators = (user) => {
         ? 'Password is required'
         : null,
     xc_password:
-      values.xc_password && !values.xc_password.match(/^[\x20-\x7E]+$/)
+      values.xc_password && !values.xc_password.match(/^[A-Za-z0-9._@-]+$/)
         ? 'XC password contains unsupported characters'
         : null,
     allowed_ips: (values.allowed_ips || []).some((t) => !isValidNetworkEntry(t))

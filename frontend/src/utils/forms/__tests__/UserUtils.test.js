@@ -493,7 +493,7 @@ describe('UserUtils', () => {
       it('returns error for xc_password with unsupported characters', () => {
         const result = validate(null, {
           ...getFormInitialValues(),
-          xc_password: 'abc\n123',
+          xc_password: 'abc+123',
         });
         expect(result.xc_password).toBe('XC password contains unsupported characters');
       });
