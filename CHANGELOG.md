@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **Type filter on the M3U and EPG source tables.** M3U & EPG Manager now has a filter dropdown on each table (M3U/XC for playlists, XMLTV/Schedules Direct/Dummy for EPG sources), matching the checklist-style filter menu already used on the Channels page, to narrow the list by type. All types are checked by default; the button highlights and a Reset option appears once anything is unchecked. The selection persists per table across reloads.
+- **`{channelId}` substitution token in Stream Profile parameters.** Stream Profile command-line parameters now support `{channelId}` alongside the existing `{streamUrl}` and `{userAgent}` tokens, letting a single profile embed the channel's primary key (the same ID used by the API) in its ffmpeg arguments. (Closes #1252)
 
 ### Security
 
