@@ -217,7 +217,18 @@ class HLSOutputManager:
                                 f"{idle_demand_checks * DEMAND_CHECK_INTERVAL}s; retiring output"
                             )
                             self._retire()
-                            break
+                            if not self.running:
+                                break
+                            # A client tuned in while we were deciding: the
+                            # server's authoritative accounting saw it and
+                            # kept this manager alive, so keep segmenting
+                            # for the newcomer instead of exiting and
+                            # leaving a registered manager with a dead loop.
+                            logger.info(
+                                f"[HLS:{self.channel_id}] New {self.fmt} client "
+                                f"arrived during retirement; resuming"
+                            )
+                            idle_demand_checks = 0
 
                 chunks, new_index = self.ts_buffer.get_optimized_client_data(local_index)
 
@@ -340,7 +351,12 @@ class HLSOutputManager:
         """No consumers remain: prune expired client-set entries, then hand
         teardown to the server's shared demand accounting so this manager is
         stopped AND deregistered (and the channel shuts down when nothing
-        else remains), exactly as a streaming client's disconnect would."""
+        else remains), exactly as a streaming client's disconnect would.
+
+        The server is the arbiter: if a client tuned in between our demand
+        check and this call, the accounting keeps the manager registered and
+        does NOT stop it; the caller must then keep the loop running
+        (self.running stays True) rather than exit."""
         try:
             from ...client_manager import ClientManager
             ClientManager.remove_ghost_clients(self._redis, self.channel_id)
