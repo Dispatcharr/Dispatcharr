@@ -222,11 +222,33 @@ class TSSegmenter:
         return self._video_pid is not None
 
     def flag_discontinuity(self):
-        """Mark that the NEXT emitted segment follows a stream discontinuity
-        (provider failover, buffer skip-ahead)."""
-        self._pending_discontinuity = True
+        """Mark a stream discontinuity (provider failover, buffer skip-ahead).
+
+        Hard cut: the in-progress segment is closed IMMEDIATELY from the bytes
+        already collected, so pre-gap and post-gap data can never share a
+        segment. Collection resumes at the next keyframe, and that new segment
+        is the one tagged with EXT-X-DISCONTINUITY.
+
+        Returns the finished pre-gap Segment, or None when the open segment
+        held nothing playable (its measured span is zero) and was discarded.
+        """
+        finished = None
+        if self._collecting:
+            span = 0.0
+            if self._seg_first_pts is not None and self._seg_last_pts is not None:
+                span = self._elapsed(self._seg_last_pts, self._seg_first_pts)
+            if span > 0:
+                finished = self._finish_segment(span)
+        # Drop any un-finished remainder and wait for the next keyframe; the
         # PTS timeline may jump arbitrarily across the discontinuity.
+        self._collecting = False
+        self._current = bytearray()
+        self._current_discontinuity = False
         self._segment_start_pts = None
+        self._seg_first_pts = None
+        self._seg_last_pts = None
+        self._pending_discontinuity = True
+        return finished
 
     def feed(self, data):
         """Consume raw TS bytes; return a list of finished Segments (possibly empty)."""

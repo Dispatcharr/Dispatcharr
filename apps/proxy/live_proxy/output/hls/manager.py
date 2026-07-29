@@ -193,10 +193,15 @@ class HLSOutputManager:
             while self.running:
                 if self._switch_pending:
                     self._switch_pending = False
-                    segmenter.flag_discontinuity()
+                    # Hard cut: close the open segment from pre-switch bytes
+                    # only; the next segment starts at a post-switch keyframe
+                    # and carries the discontinuity tag.
+                    tail = segmenter.flag_discontinuity()
+                    if tail is not None:
+                        self._store_segment(tail)
                     logger.info(
-                        f"[HLS:{self.channel_id}] Input stream switched; next "
-                        f"segment will be marked as a discontinuity"
+                        f"[HLS:{self.channel_id}] Input stream switched; segment "
+                        f"cut, next segment will be marked as a discontinuity"
                     )
 
                 now = time.time()
@@ -233,9 +238,13 @@ class HLSOutputManager:
                 else:
                     if self.ts_buffer.index > local_index + 20:
                         # Fell too far behind (slow consumer / provider burst):
-                        # skip forward and mark the gap for the playlist.
+                        # skip forward and mark the gap for the playlist. The
+                        # open segment is hard-cut so pre-gap and post-gap
+                        # data never share a segment.
                         local_index = self.ts_buffer.index - 5
-                        segmenter.flag_discontinuity()
+                        tail = segmenter.flag_discontinuity()
+                        if tail is not None:
+                            self._store_segment(tail)
                         logger.debug(
                             f"[HLS:{self.channel_id}] Skipped forward to index {local_index}"
                         )

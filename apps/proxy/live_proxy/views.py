@@ -1253,41 +1253,32 @@ def _hls_resolved_format(client_hash):
 
 def _hls_touch_client(channel_id, client_id):
     """
-    Refresh the client's activity record; returns the client hash, or a
-    freshly re-registered minimal hash when the record lapsed while the
-    channel is still running (e.g. a player paused longer than the ghost
-    window and then resumed).
+    Refresh the client's activity record; returns the client hash, or None
+    when the record has lapsed (e.g. a player paused past the ghost window).
+
+    A lapsed client is deliberately NOT re-registered here: the expired hash
+    carried the client's output format/profile binding, and recreating it
+    from nothing would silently rebind a profiled client (hls:p3) to the
+    plain output. The caller answers 410 instead, so the player re-enters
+    through the normal stream_ts handshake, which rebuilds a complete record.
     """
     from .config_helper import ConfigHelper
 
     proxy_server = ProxyServer.get_instance()
     redis_client = proxy_server.redis_client
-    if not redis_client:
-        return None
 
     client_key = RedisKeys.client_metadata(channel_id, client_id)
     clients_key = RedisKeys.clients(channel_id)
-    ttl = ConfigHelper.get('CLIENT_RECORD_TTL', 60)
-    now = str(time.time())
 
     client_hash = redis_client.hgetall(client_key)
-    pipe = redis_client.pipeline(transaction=False)
     if not client_hash:
-        # Lapsed client returning to a live channel: re-register minimally.
-        client_hash = {
-            "user_agent": "unknown",
-            "ip_address": "unknown",
-            "connected_at": now,
-            "last_active": now,
-            "worker_id": "unknown",
-            "user_id": "0",
-            "output_format": "hls",
-            "output_profile_id": "",
-        }
-        pipe.hset(client_key, mapping=client_hash)
-        logger.info(f"[{client_id}] HLS client re-registered with channel {channel_id}")
-    else:
-        pipe.hset(client_key, "last_active", now)
+        # Drop any stale set entry so it cannot linger as a phantom consumer.
+        redis_client.srem(clients_key, client_id)
+        return None
+
+    ttl = ConfigHelper.get('CLIENT_RECORD_TTL', 60)
+    pipe = redis_client.pipeline(transaction=False)
+    pipe.hset(client_key, "last_active", str(time.time()))
     pipe.expire(client_key, ttl)
     pipe.sadd(clients_key, client_id)
     pipe.expire(clients_key, ttl)
@@ -1319,13 +1310,18 @@ def hls_playlist(request, channel_id, client_id):
         if _hls_session_gone(channel_id, client_id):
             return JsonResponse({"error": "Stream stopped"}, status=410)
 
-        client_hash = _hls_touch_client(channel_id, client_id)
-        if client_hash is None:
-            return JsonResponse({"error": "Proxy unavailable"}, status=503)
-
-        fmt = _hls_resolved_format(client_hash)
         proxy_server = ProxyServer.get_instance()
         redis_client = proxy_server.redis_client
+        if not redis_client:
+            return JsonResponse({"error": "Proxy unavailable"}, status=503)
+
+        client_hash = _hls_touch_client(channel_id, client_id)
+        if not client_hash:
+            # Record lapsed; no guessing (see _hls_touch_client). The player
+            # re-enters via the stream URL, which rebuilds its registration.
+            return JsonResponse({"error": "Session expired"}, status=410)
+
+        fmt = _hls_resolved_format(client_hash)
 
         # The segmenter needs a couple of segments after a cold start; wait
         # briefly (gevent-friendly) instead of bouncing the player.
@@ -1376,9 +1372,15 @@ def hls_segment(request, channel_id, client_id, seq):
         if _hls_session_gone(channel_id, client_id):
             return JsonResponse({"error": "Stream stopped"}, status=410)
 
-        client_hash = _hls_touch_client(channel_id, client_id)
-        if client_hash is None:
+        proxy_server = ProxyServer.get_instance()
+        if not proxy_server.redis_client:
             return JsonResponse({"error": "Proxy unavailable"}, status=503)
+
+        client_hash = _hls_touch_client(channel_id, client_id)
+        if not client_hash:
+            # Record lapsed; no guessing (see _hls_touch_client). The player
+            # re-enters via the stream URL, which rebuilds its registration.
+            return JsonResponse({"error": "Session expired"}, status=410)
 
         fmt = _hls_resolved_format(client_hash)
 

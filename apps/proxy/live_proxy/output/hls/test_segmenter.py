@@ -162,11 +162,55 @@ class SegmenterTests(unittest.TestCase):
     def test_discontinuity_flag_propagates(self):
         seg = self.make_started(target=2.0)
         finished = feed_stream(seg, gop_seconds=2.0, gop_count=2)
-        seg.flag_discontinuity()
+        tail = seg.flag_discontinuity()
+        if tail is not None:
+            finished.append(tail)
         # Timeline jumps far ahead, as after a provider failover
         finished += feed_stream(seg, gop_seconds=2.0, gop_count=3, start_pts=9000.0)
         flagged = [s for s in finished if s.discontinuity]
         self.assertEqual(len(flagged), 1)
+
+    def test_discontinuity_hard_cuts_open_segment(self):
+        seg = self.make_started(target=4.0)
+        # Open a segment and collect ~1s of frames without reaching the cut.
+        seg.feed(make_video_pes(0.0, keyframe=True))
+        for i in range(1, 4):
+            seg.feed(make_video_pes(i * 0.5, keyframe=False))
+        pre_gap_len = len(seg._current)
+        self.assertTrue(seg._collecting)
+
+        tail = seg.flag_discontinuity()
+        # The open segment is finished immediately from pre-gap bytes only,
+        # with its measured span, and is NOT the discontinuity-tagged one.
+        self.assertIsNotNone(tail)
+        self.assertEqual(len(tail.data), pre_gap_len)
+        self.assertAlmostEqual(tail.duration, 1.5, places=3)
+        self.assertFalse(tail.discontinuity)
+        self.assertFalse(seg._collecting)
+
+        # Post-gap data before a keyframe is dropped; collection resumes at
+        # the next keyframe, and THAT segment carries the discontinuity tag.
+        out = seg.feed(make_video_pes(9000.2, keyframe=False))
+        self.assertEqual(out, [])
+        self.assertFalse(seg._collecting)
+        seg.feed(make_video_pes(9001.0, keyframe=True))
+        self.assertTrue(seg._collecting)
+        out = seg.feed(make_video_pes(9006.0, keyframe=True))  # closes it
+        self.assertEqual(len(out), 1)
+        self.assertTrue(out[0].discontinuity)
+
+    def test_discontinuity_discards_empty_open_segment(self):
+        seg = self.make_started(target=4.0)
+        # Only the opening keyframe collected: measured span is zero.
+        seg.feed(make_video_pes(0.0, keyframe=True))
+        tail = seg.flag_discontinuity()
+        self.assertIsNone(tail)
+        self.assertFalse(seg._collecting)
+        # The tag still lands on the next started segment.
+        seg.feed(make_video_pes(100.0, keyframe=True))
+        out = seg.feed(make_video_pes(105.0, keyframe=True))
+        self.assertEqual(len(out), 1)
+        self.assertTrue(out[0].discontinuity)
 
     def test_resync_after_garbage(self):
         seg = self.make_started(target=2.0)
