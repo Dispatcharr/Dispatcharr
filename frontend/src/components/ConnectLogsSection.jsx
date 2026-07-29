@@ -1,29 +1,30 @@
 import React, { useEffect, useMemo, useState, useCallback } from 'react';
 import {
   Box,
-  Title,
-  Badge,
+  Card,
   Group,
+  Title,
+  ActionIcon,
   Text,
-  Paper,
+  Badge,
   NativeSelect,
   Pagination,
   Select,
   LoadingOverlay,
+  Stack,
 } from '@mantine/core';
+import { Webhook, FileCode, Logs, ChevronDown } from 'lucide-react';
 import API from '../api';
-import useConnectStore from '../store/connect';
-import { FileCode, Webhook } from 'lucide-react';
 import { SUBSCRIPTION_EVENTS } from '../constants';
-import { CustomTable, useTable } from '../components/tables/CustomTable';
+import { CustomTable, useTable } from './tables/CustomTable';
 import { copyToClipboard } from '../utils';
 
 const getConnectLogs = (params) => {
   return API.getConnectLogs(params);
 };
 
-export default function ConnectLogsPage() {
-  const { integrations, fetchIntegrations } = useConnectStore();
+export default function ConnectLogsSection({ integrations }) {
+  const [isExpanded, setIsExpanded] = useState(false);
 
   const [logs, setLogs] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -65,15 +66,10 @@ export default function ConnectLogsPage() {
   }, [pagination.pageIndex, pagination.pageSize, filters]);
 
   useEffect(() => {
-    // Load integrations for filter options if not already available
-    if (!integrations || integrations.length === 0) {
-      fetchIntegrations?.();
+    if (isExpanded) {
+      fetchLogs();
     }
-  }, []);
-
-  useEffect(() => {
-    fetchLogs();
-  }, [fetchLogs]);
+  }, [isExpanded, fetchLogs]);
 
   const columns = useMemo(
     () => [
@@ -202,61 +198,76 @@ export default function ConnectLogsPage() {
   );
 
   return (
-    <Box p="md">
-      <Title order={3} fw={'bold'}>
-        Connect Logs
-      </Title>
-      <Paper
-        style={{
-          display: 'flex',
-          flexDirection: 'column',
-          height: 'calc(100vh - 65px)',
-          backgroundColor: '#27272A',
-          border: '1px solid #3f3f46',
-          borderRadius: 'var(--mantine-radius-md)',
-        }}
-      >
-        <Group gap={12} p={12} style={{ borderBottom: '1px solid #3f3f46' }}>
-          <Text size="sm">Type</Text>
-          <Select
-            size="xs"
-            data={[
-              { value: '', label: 'All' },
-              { value: 'webhook', label: 'Webhooks' },
-              { value: 'script', label: 'Scripts' },
-            ]}
-            value={filters.type}
-            onChange={(value) =>
-              setFilters((prev) => ({ ...prev, type: value }))
-            }
-            style={{ width: 150 }}
-          />
-          <Text size="sm">Integration</Text>
-          <Select
-            size="xs"
-            searchable
-            data={[{ value: '', label: 'All' }, ...integrationOptions]}
-            value={filters.integration}
-            onChange={(value) =>
-              setFilters((prev) => ({ ...prev, integration: value }))
-            }
-            style={{ width: 250 }}
-          />
+    <Card
+      shadow="sm"
+      padding="sm"
+      radius="md"
+      withBorder
+      style={{
+        color: '#fff',
+        backgroundColor: '#27272A',
+        width: '100%',
+        maxWidth: isExpanded ? '100%' : '800px',
+        marginLeft: 'auto',
+        marginRight: 'auto',
+        transition: 'max-width 0.3s ease',
+      }}
+    >
+      <Group justify="space-between" mb={isExpanded ? 'sm' : 0}>
+        <Group gap="xs">
+          <Logs size={20} />
+          <Title order={4}>Logs</Title>
         </Group>
-        <Box
-          style={{
-            display: 'flex',
-            flexDirection: 'column',
-            height: 'calc(100vh - 100px)',
-          }}
+        <ActionIcon
+          variant="subtle"
+          onClick={() => setIsExpanded(!isExpanded)}
         >
+          <ChevronDown
+            size={18}
+            style={{
+              transform: isExpanded ? 'rotate(180deg)' : 'rotate(0deg)',
+              transition: 'transform 0.2s',
+            }}
+          />
+        </ActionIcon>
+      </Group>
+
+      {isExpanded && (
+        <Stack gap={0}>
+          <Group gap={12} p={12} style={{ borderBottom: '1px solid #3f3f46' }}>
+            <Text size="sm">Type</Text>
+            <Select
+              size="xs"
+              data={[
+                { value: '', label: 'All' },
+                { value: 'webhook', label: 'Webhooks' },
+                { value: 'script', label: 'Scripts' },
+              ]}
+              value={filters.type}
+              onChange={(value) =>
+                setFilters((prev) => ({ ...prev, type: value }))
+              }
+              style={{ width: 150 }}
+            />
+            <Text size="sm">Integration</Text>
+            <Select
+              size="xs"
+              searchable
+              data={[{ value: '', label: 'All' }, ...integrationOptions]}
+              value={filters.integration}
+              onChange={(value) =>
+                setFilters((prev) => ({ ...prev, integration: value }))
+              }
+              style={{ width: 250 }}
+            />
+          </Group>
           <Box
             style={{
-              flex: 1,
               overflowY: 'auto',
               overflowX: 'auto',
               border: 'solid 1px rgb(68,68,68)',
               borderRadius: 'var(--mantine-radius-default)',
+              maxHeight: '50vh',
             }}
           >
             <div style={{ minWidth: '900px', position: 'relative' }}>
@@ -264,40 +275,27 @@ export default function ConnectLogsPage() {
               <CustomTable table={table} />
             </div>
           </Box>
-          <Box
-            style={{
-              position: 'sticky',
-              bottom: 0,
-              zIndex: 3,
-              backgroundColor: '#27272A',
-            }}
-          >
-            <Group
-              gap={5}
-              justify="center"
-              style={{ padding: 8, borderTop: '1px solid #666' }}
-            >
-              <Text size="xs">Page Size</Text>
-              <NativeSelect
-                size="xxs"
-                value={pagination.pageSize}
-                data={['25', '50', '100', '250']}
-                onChange={onPageSizeChange}
-                style={{ paddingRight: 20 }}
-              />
-              <Pagination
-                total={pageCount}
-                value={pagination.pageIndex + 1}
-                onChange={onPageIndexChange}
-                size="xs"
-                withEdges
-                style={{ paddingRight: 20 }}
-              />
-              <Text size="xs">{paginationString}</Text>
-            </Group>
-          </Box>
-        </Box>
-      </Paper>
-    </Box>
+          <Group gap={5} justify="center" p={8}>
+            <Text size="xs">Page Size</Text>
+            <NativeSelect
+              size="xxs"
+              value={pagination.pageSize}
+              data={['25', '50', '100', '250']}
+              onChange={onPageSizeChange}
+              style={{ paddingRight: 20 }}
+            />
+            <Pagination
+              total={pageCount}
+              value={pagination.pageIndex + 1}
+              onChange={onPageIndexChange}
+              size="xs"
+              withEdges
+              style={{ paddingRight: 20 }}
+            />
+            <Text size="xs">{paginationString}</Text>
+          </Group>
+        </Stack>
+      )}
+    </Card>
   );
 }

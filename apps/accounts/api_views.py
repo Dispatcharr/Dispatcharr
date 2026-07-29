@@ -12,13 +12,44 @@ from drf_spectacular.types import OpenApiTypes
 import json
 import secrets
 from .permissions import IsAdmin, Authenticated
-from dispatcharr.utils import network_access_allowed
+from dispatcharr.utils import (
+    SETUP_ALLOWED_IP_ENV,
+    network_access_allowed,
+    setup_ip_allowed,
+)
 
 from .models import User
 from .serializers import UserSerializer, GroupSerializer, PermissionSerializer
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 
 logger = logging.getLogger(__name__)
+
+
+def _setup_status_payload(request, *, superuser_exists):
+    """Build initialize-superuser JSON including client IP / setup gate info."""
+    payload = {"superuser_exists": superuser_exists}
+    if superuser_exists:
+        return payload
+
+    allowed, client_ip = setup_ip_allowed(request)
+    payload["client_ip"] = client_ip
+    payload["setup_allowed"] = allowed
+    return payload
+
+
+def _setup_forbidden_response(client_ip):
+    return JsonResponse(
+        {
+            "error": (
+                "Web setup is limited to local networks by default. "
+                f"Set {SETUP_ALLOWED_IP_ENV} to your IP to allow setup from this "
+                "network, or create the account with: python manage.py createsuperuser"
+            ),
+            "client_ip": client_ip,
+            "setup_allowed": False,
+        },
+        status=403,
+    )
 
 
 class LoginRateThrottle(AnonRateThrottle):
@@ -123,13 +154,21 @@ class TokenRefreshView(TokenRefreshView):
         return super().post(request, *args, **kwargs)
 
 
-@csrf_exempt  # In production, consider CSRF protection strategies or ensure this endpoint is only accessible when no superuser exists.
+@csrf_exempt  # Bootstrap only; POST is IP-gated and closes once an admin exists.
 def initialize_superuser(request):
     # If an admin-level user already exists, the system is configured
     if User.objects.filter(user_level__gte=10).exists():
-        return JsonResponse({"superuser_exists": True})
+        return JsonResponse(_setup_status_payload(request, superuser_exists=True))
 
     if request.method == "POST":
+        allowed, client_ip = setup_ip_allowed(request)
+        if not allowed:
+            logger.info(
+                "initialize-superuser POST blocked by setup IP policy: ip=%s",
+                client_ip,
+            )
+            return _setup_forbidden_response(client_ip)
+
         try:
             data = json.loads(request.body)
             username = data.get("username")
@@ -146,8 +185,9 @@ def initialize_superuser(request):
             return JsonResponse({"superuser_exists": True})
         except Exception as e:
             return JsonResponse({"error": str(e)}, status=500)
-    # For GET requests, indicate no superuser exists
-    return JsonResponse({"superuser_exists": False})
+
+    # GET: no admin yet. Include client IP so the UI can help remote / VPS setups.
+    return JsonResponse(_setup_status_payload(request, superuser_exists=False))
 
 
 # 🔹 1) Authentication APIs

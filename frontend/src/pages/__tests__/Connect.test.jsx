@@ -36,12 +36,16 @@ vi.mock('../../components/forms/Connection', () => ({
     ) : null,
 }));
 
+// ── ConnectLogsSection mock ────────────────────────────────────────────────────
+vi.mock('../../components/ConnectLogsSection', () => ({
+  default: () => <div data-testid="connect-logs-section" />,
+}));
+
 // ── lucide-react ───────────────────────────────────────────────────────────────
 vi.mock('lucide-react', () => ({
   SquarePlus: () => <svg data-testid="icon-square-plus" />,
   Webhook: () => <svg data-testid="icon-webhook" />,
   FileCode: () => <svg data-testid="icon-file-code" />,
-  Logs: () => <svg data-testid="icon-logs" />,
 }));
 
 // ── @mantine/core ──────────────────────────────────────────────────────────────
@@ -87,7 +91,11 @@ vi.mock('@mantine/core', () => ({
       {label}
     </label>
   ),
-  Text: ({ children, fw }) => <span data-fw={fw}>{children}</span>,
+  Text: ({ children, fw, size }) => (
+    <span data-fw={fw} data-size={size}>
+      {children}
+    </span>
+  ),
   Tooltip: ({ children, label }) => <div data-tooltip={label}>{children}</div>,
   useMantineTheme: () => ({
     tailwind: { green: { 5: '#22c55e' } },
@@ -170,6 +178,7 @@ describe('ConnectPage', () => {
         ],
       });
       render(<ConnectPage />);
+      // Two integration cards (logs section is a mocked stub, not a Card)
       expect(screen.getAllByTestId('card')).toHaveLength(2);
     });
 
@@ -179,10 +188,11 @@ describe('ConnectPage', () => {
       expect(screen.getByText('Plex Hook')).toBeInTheDocument();
     });
 
-    it('shows no cards when integrations list is empty', () => {
+    it('shows no integration cards when integrations list is empty', () => {
       setupStore({ integrations: [] });
       render(<ConnectPage />);
-      expect(screen.queryByTestId('card')).not.toBeInTheDocument();
+      // No integration cards remain (logs section is a mocked stub, not a Card)
+      expect(screen.queryAllByTestId('card')).toHaveLength(0);
     });
   });
 
@@ -266,7 +276,7 @@ describe('IntegrationRow', () => {
   describe('type icons', () => {
     it('shows webhook icon for webhook type', () => {
       renderRow({ type: 'webhook' });
-      expect(screen.getByTestId('icon-webhook')).toBeInTheDocument();
+      expect(screen.getAllByTestId('icon-webhook').length).toBeGreaterThan(0);
     });
 
     it('shows file code icon for non-webhook type', () => {

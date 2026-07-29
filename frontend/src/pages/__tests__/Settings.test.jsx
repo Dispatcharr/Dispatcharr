@@ -4,298 +4,181 @@ import { MemoryRouter } from 'react-router-dom';
 import SettingsPage from '../Settings';
 import useAuthStore from '../../store/auth';
 import { USER_LEVELS } from '../../constants';
-import userEvent from '@testing-library/user-event';
 
-// Mock all dependencies
 vi.mock('../../store/auth');
 vi.mock('../../components/tables/UserAgentsTable', () => ({
   default: ({ active }) => (
-    <div data-testid="user-agents-table">
-      UserAgentsTable {active ? 'active' : 'inactive'}
-    </div>
+    <div data-testid="user-agents-table">UserAgentsTable {active ? 'active' : 'inactive'}</div>
   ),
 }));
 vi.mock('../../components/tables/StreamProfilesTable', () => ({
   default: ({ active }) => (
-    <div data-testid="stream-profiles-table">
-      StreamProfilesTable {active ? 'active' : 'inactive'}
-    </div>
+    <div data-testid="stream-profiles-table">StreamProfilesTable {active ? 'active' : 'inactive'}</div>
   ),
 }));
 vi.mock('../../components/backups/BackupManager', () => ({
   default: ({ active }) => (
-    <div data-testid="backup-manager">
-      BackupManager {active ? 'active' : 'inactive'}
-    </div>
+    <div data-testid="backup-manager">BackupManager {active ? 'active' : 'inactive'}</div>
   ),
 }));
 vi.mock('../../components/forms/settings/UiSettingsForm', () => ({
   default: ({ active }) => (
-    <div data-testid="ui-settings-form">
-      UiSettingsForm {active ? 'active' : 'inactive'}
-    </div>
+    <div data-testid="ui-settings-form">UiSettingsForm {active ? 'active' : 'inactive'}</div>
   ),
 }));
 vi.mock('../../components/forms/settings/NetworkAccessForm', () => ({
   default: ({ active }) => (
-    <div data-testid="network-access-form">
-      NetworkAccessForm {active ? 'active' : 'inactive'}
-    </div>
+    <div data-testid="network-access-form">NetworkAccessForm {active ? 'active' : 'inactive'}</div>
   ),
 }));
 vi.mock('../../components/forms/settings/ProxySettingsForm', () => ({
   default: ({ active }) => (
-    <div data-testid="proxy-settings-form">
-      ProxySettingsForm {active ? 'active' : 'inactive'}
-    </div>
+    <div data-testid="proxy-settings-form">ProxySettingsForm {active ? 'active' : 'inactive'}</div>
   ),
 }));
 vi.mock('../../components/forms/settings/StreamSettingsForm', () => ({
   default: ({ active }) => (
-    <div data-testid="stream-settings-form">
-      StreamSettingsForm {active ? 'active' : 'inactive'}
-    </div>
+    <div data-testid="stream-settings-form">StreamSettingsForm {active ? 'active' : 'inactive'}</div>
   ),
 }));
 vi.mock('../../components/forms/settings/DvrSettingsForm', () => ({
   default: ({ active }) => (
-    <div data-testid="dvr-settings-form">
-      DvrSettingsForm {active ? 'active' : 'inactive'}
-    </div>
+    <div data-testid="dvr-settings-form">DvrSettingsForm {active ? 'active' : 'inactive'}</div>
   ),
 }));
 vi.mock('../../components/forms/settings/SystemSettingsForm', () => ({
   default: ({ active }) => (
-    <div data-testid="system-settings-form">
-      SystemSettingsForm {active ? 'active' : 'inactive'}
-    </div>
+    <div data-testid="system-settings-form">SystemSettingsForm {active ? 'active' : 'inactive'}</div>
   ),
 }));
 vi.mock('../../components/forms/settings/NavOrderForm', () => ({
   default: ({ active }) => (
-    <div data-testid="nav-order-form">
-      NavOrderForm {active ? 'active' : 'inactive'}
-    </div>
+    <div data-testid="nav-order-form">NavOrderForm {active ? 'active' : 'inactive'}</div>
   ),
 }));
 vi.mock('../../components/forms/settings/UserLimitsForm', () => ({
   default: ({ active }) => (
-    <div data-testid="user-limits-form">
-      UserLimitsForm {active ? 'active' : 'inactive'}
-    </div>
+    <div data-testid="user-limits-form">UserLimitsForm {active ? 'active' : 'inactive'}</div>
   ),
 }));
 vi.mock('../../components/ErrorBoundary', () => ({
   default: ({ children }) => <div data-testid="error-boundary">{children}</div>,
 }));
 
-vi.mock('@mantine/core', async () => {
-  const accordionComponent = ({ children, onChange, defaultValue }) => (
-    <div data-testid="accordion">{children}</div>
-  );
-  accordionComponent.Item = ({ children, value }) => (
-    <div data-testid={`accordion-item-${value}`}>{children}</div>
-  );
-  accordionComponent.Control = ({ children }) => (
-    <button data-testid="accordion-control">{children}</button>
-  );
-  accordionComponent.Panel = ({ children }) => (
-    <div data-testid="accordion-panel">{children}</div>
-  );
+vi.mock('@mantine/core', async () => ({
+  Box: ({ children }) => <div>{children}</div>,
+  Divider: () => <hr />,
+  Loader: () => <div data-testid="loader">Loading...</div>,
+  Paper: ({ children }) => <div>{children}</div>,
+  Text: ({ children }) => <span>{children}</span>,
+}));
 
-  return {
-    Accordion: accordionComponent,
-    AccordionItem: accordionComponent.Item,
-    AccordionControl: accordionComponent.Control,
-    AccordionPanel: accordionComponent.Panel,
-    Box: ({ children }) => <div>{children}</div>,
-    Center: ({ children }) => <div>{children}</div>,
-    Divider: () => <hr />,
-    Loader: () => <div data-testid="loader">Loading...</div>,
-    Text: ({ children }) => <span>{children}</span>,
-  };
-});
-
-// Helper function to render with router context
-const renderWithRouter = (
-  component,
-  { initialEntries = ['/settings'] } = {}
-) => {
-  return render(
-    <MemoryRouter initialEntries={initialEntries}>{component}</MemoryRouter>
-  );
-};
+const renderWithRouter = (component, { initialEntries = ['/settings'] } = {}) =>
+  render(<MemoryRouter initialEntries={initialEntries}>{component}</MemoryRouter>);
 
 describe('SettingsPage', () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
-  describe('Rendering for Regular User', () => {
+  describe('no section selected', () => {
     beforeEach(() => {
-      useAuthStore.mockReturnValue({
-        user_level: USER_LEVELS.USER,
-        username: 'testuser',
-      });
+      useAuthStore.mockReturnValue({ user_level: USER_LEVELS.USER, username: 'testuser' });
     });
 
-    it('renders the settings page', () => {
+    it('shows placeholder when no hash', () => {
       renderWithRouter(<SettingsPage />);
-
-      expect(screen.getAllByTestId('accordion').length).toBeGreaterThan(0);
-    });
-
-    it('renders UI Settings accordion item', () => {
-      renderWithRouter(<SettingsPage />);
-
-      expect(
-        screen.getByTestId('accordion-item-ui-settings')
-      ).toBeInTheDocument();
-      expect(screen.getByText('UI Settings')).toBeInTheDocument();
-    });
-
-    it('opens UI Settings panel by default', () => {
-      renderWithRouter(<SettingsPage />);
-
-      expect(screen.getByTestId('ui-settings-form')).toBeInTheDocument();
-    });
-
-    it('does not render admin-only sections for regular users', () => {
-      renderWithRouter(<SettingsPage />);
-
-      expect(screen.queryByText('DVR')).not.toBeInTheDocument();
-      expect(screen.queryByText('Stream Settings')).not.toBeInTheDocument();
-      expect(screen.queryByText('System Settings')).not.toBeInTheDocument();
-      expect(screen.queryByText('User-Agents')).not.toBeInTheDocument();
-      expect(screen.queryByText('Stream Profiles')).not.toBeInTheDocument();
-      expect(screen.queryByText('Network Access')).not.toBeInTheDocument();
-      expect(screen.queryByText('Proxy Settings')).not.toBeInTheDocument();
-      expect(screen.queryByText('Backup & Restore')).not.toBeInTheDocument();
-    });
-
-    it('renders Navigation accordion item for regular users', () => {
-      renderWithRouter(<SettingsPage />);
-
-      expect(
-        screen.getByTestId('accordion-item-nav-order')
-      ).toBeInTheDocument();
-      expect(screen.getByText('Navigation')).toBeInTheDocument();
+      expect(screen.getByText('Select a setting from the sidebar')).toBeInTheDocument();
     });
   });
 
-  describe('Rendering for Admin User', () => {
+  describe('regular user', () => {
     beforeEach(() => {
-      useAuthStore.mockReturnValue({
-        user_level: USER_LEVELS.ADMIN,
-        username: 'admin',
-      });
+      useAuthStore.mockReturnValue({ user_level: USER_LEVELS.USER, username: 'testuser' });
     });
 
-    it('renders all accordion items for admin', async () => {
-      renderWithRouter(<SettingsPage />);
-
-      expect(screen.getByText('UI Settings')).toBeInTheDocument();
-
+    it('renders ui-settings section via hash', async () => {
+      renderWithRouter(<SettingsPage />, { initialEntries: ['/settings#ui-settings'] });
       await waitFor(() => {
-        expect(screen.getByText('DVR')).toBeInTheDocument();
-        expect(screen.getByText('Stream Settings')).toBeInTheDocument();
-        expect(screen.getByText('System Settings')).toBeInTheDocument();
-        expect(screen.getByText('User-Agents')).toBeInTheDocument();
-        expect(screen.getByText('Stream Profiles')).toBeInTheDocument();
-        expect(screen.getByText('Network Access')).toBeInTheDocument();
-        expect(screen.getByText('Proxy Settings')).toBeInTheDocument();
-        expect(screen.getByText('Backup & Restore')).toBeInTheDocument();
-        expect(screen.getByText('Navigation')).toBeInTheDocument();
+        expect(screen.getByTestId('ui-settings-form')).toBeInTheDocument();
+      });
+      expect(screen.getByText('UI Settings')).toBeInTheDocument();
+    });
+
+    it('renders nav-order section via hash', async () => {
+      renderWithRouter(<SettingsPage />, { initialEntries: ['/settings#nav-order'] });
+      await waitFor(() => {
+        expect(screen.getByTestId('nav-order-form')).toBeInTheDocument();
       });
     });
 
-    it('renders DVR settings accordion item', () => {
-      renderWithRouter(<SettingsPage />);
-
-      expect(
-        screen.getByTestId('accordion-item-dvr-settings')
-      ).toBeInTheDocument();
-    });
-
-    it('renders Stream Settings accordion item', () => {
-      renderWithRouter(<SettingsPage />);
-
-      expect(
-        screen.getByTestId('accordion-item-stream-settings')
-      ).toBeInTheDocument();
-    });
-
-    it('renders System Settings accordion item', () => {
-      renderWithRouter(<SettingsPage />);
-
-      expect(
-        screen.getByTestId('accordion-item-system-settings')
-      ).toBeInTheDocument();
-    });
-
-    it('renders User-Agents accordion item', () => {
-      renderWithRouter(<SettingsPage />);
-
-      expect(
-        screen.getByTestId('accordion-item-user-agents')
-      ).toBeInTheDocument();
-    });
-
-    it('renders Stream Profiles accordion item', () => {
-      renderWithRouter(<SettingsPage />);
-
-      expect(
-        screen.getByTestId('accordion-item-stream-profiles')
-      ).toBeInTheDocument();
-    });
-
-    it('renders Network Access accordion item', () => {
-      renderWithRouter(<SettingsPage />);
-
-      expect(
-        screen.getByTestId('accordion-item-network-access')
-      ).toBeInTheDocument();
-    });
-
-    it('renders Proxy Settings accordion item', () => {
-      renderWithRouter(<SettingsPage />);
-
-      expect(
-        screen.getByTestId('accordion-item-proxy-settings')
-      ).toBeInTheDocument();
-    });
-
-    it('renders Backup & Restore accordion item', () => {
-      renderWithRouter(<SettingsPage />);
-
-      expect(screen.getByTestId('accordion-item-backups')).toBeInTheDocument();
-    });
-
-    it('renders Navigation accordion item', () => {
-      renderWithRouter(<SettingsPage />);
-
-      expect(
-        screen.getByTestId('accordion-item-nav-order')
-      ).toBeInTheDocument();
+    it('shows placeholder for admin-only section hash', () => {
+      renderWithRouter(<SettingsPage />, { initialEntries: ['/settings#dvr-settings'] });
+      expect(screen.getByText('Select a setting from the sidebar')).toBeInTheDocument();
     });
   });
 
-  describe('Accordion Interactions', () => {
+  describe('admin user', () => {
     beforeEach(() => {
-      useAuthStore.mockReturnValue({
-        user_level: USER_LEVELS.ADMIN,
-        username: 'admin',
+      useAuthStore.mockReturnValue({ user_level: USER_LEVELS.ADMIN, username: 'admin' });
+    });
+
+    it('renders dvr-settings section via hash', async () => {
+      renderWithRouter(<SettingsPage />, { initialEntries: ['/settings#dvr-settings'] });
+      await waitFor(() => {
+        expect(screen.getByTestId('dvr-settings-form')).toBeInTheDocument();
+      });
+      expect(screen.getByText('DVR Settings')).toBeInTheDocument();
+    });
+
+    it('renders stream-settings section via hash', async () => {
+      renderWithRouter(<SettingsPage />, { initialEntries: ['/settings#stream-settings'] });
+      await waitFor(() => {
+        expect(screen.getByTestId('stream-settings-form')).toBeInTheDocument();
       });
     });
 
-    it('opens DVR settings when clicked', async () => {
-      const user = userEvent.setup();
-      renderWithRouter(<SettingsPage />);
+    it('renders stream-profiles section via hash', async () => {
+      renderWithRouter(<SettingsPage />, { initialEntries: ['/settings#stream-profiles'] });
+      await waitFor(() => {
+        expect(screen.getByTestId('stream-profiles-table')).toBeInTheDocument();
+      });
+    });
 
-      const streamSettingsButton = screen.getByText('DVR');
-      await user.click(streamSettingsButton);
+    it('renders network-access section via hash', async () => {
+      renderWithRouter(<SettingsPage />, { initialEntries: ['/settings#network-access'] });
+      await waitFor(() => {
+        expect(screen.getByTestId('network-access-form')).toBeInTheDocument();
+      });
+    });
 
-      await screen.findByTestId('dvr-settings-form');
+    it('renders proxy-settings section via hash', async () => {
+      renderWithRouter(<SettingsPage />, { initialEntries: ['/settings#proxy-settings'] });
+      await waitFor(() => {
+        expect(screen.getByTestId('proxy-settings-form')).toBeInTheDocument();
+      });
+    });
+
+    it('renders backups section via hash', async () => {
+      renderWithRouter(<SettingsPage />, { initialEntries: ['/settings#backups'] });
+      await waitFor(() => {
+        expect(screen.getByTestId('backup-manager')).toBeInTheDocument();
+      });
+    });
+
+    it('renders system-settings section via hash', async () => {
+      renderWithRouter(<SettingsPage />, { initialEntries: ['/settings#system-settings'] });
+      await waitFor(() => {
+        expect(screen.getByTestId('system-settings-form')).toBeInTheDocument();
+      });
+    });
+
+    it('passes active=true to rendered component', async () => {
+      renderWithRouter(<SettingsPage />, { initialEntries: ['/settings#dvr-settings'] });
+      await waitFor(() => {
+        expect(screen.getByText(/active/)).toBeInTheDocument();
+      });
+      expect(screen.getByText('DvrSettingsForm active')).toBeInTheDocument();
     });
   });
 });

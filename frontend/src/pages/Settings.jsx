@@ -1,242 +1,61 @@
-import React, { Suspense, useState, useEffect } from 'react';
+import React, { Suspense } from 'react';
 import { useLocation } from 'react-router-dom';
 import {
-  Accordion,
-  AccordionControl,
-  AccordionItem,
-  AccordionPanel,
   Box,
-  Center,
   Divider,
-  Text,
   Loader,
+  Paper,
+  Text,
 } from '@mantine/core';
-const UserAgentsTable = React.lazy(
-  () => import('../components/tables/UserAgentsTable.jsx')
-);
-const StreamProfilesTable = React.lazy(
-  () => import('../components/tables/StreamProfilesTable.jsx')
-);
-const OutputProfilesTable = React.lazy(
-  () => import('../components/tables/OutputProfilesTable.jsx')
-);
-const BackupManager = React.lazy(
-  () => import('../components/backups/BackupManager.jsx')
-);
+import { getVisibleSettingsGroups } from '../config/settingsNav';
 import useAuthStore from '../store/auth';
 import { USER_LEVELS } from '../constants';
-import UiSettingsForm from '../components/forms/settings/UiSettingsForm.jsx';
 import ErrorBoundary from '../components/ErrorBoundary.jsx';
-const UserLimitsForm = React.lazy(
-  () => import('../components/forms/settings/UserLimitsForm.jsx')
-);
-const NetworkAccessForm = React.lazy(
-  () => import('../components/forms/settings/NetworkAccessForm.jsx')
-);
-const ProxySettingsForm = React.lazy(
-  () => import('../components/forms/settings/ProxySettingsForm.jsx')
-);
-const StreamSettingsForm = React.lazy(
-  () => import('../components/forms/settings/StreamSettingsForm.jsx')
-);
-const DvrSettingsForm = React.lazy(
-  () => import('../components/forms/settings/DvrSettingsForm.jsx')
-);
-const SystemSettingsForm = React.lazy(
-  () => import('../components/forms/settings/SystemSettingsForm.jsx')
-);
-const NavOrderForm = React.lazy(
-  () => import('../components/forms/settings/NavOrderForm.jsx')
-);
 
 const SettingsPage = () => {
   const authUser = useAuthStore((s) => s.user);
   const location = useLocation();
+  const isAdmin = authUser.user_level >= USER_LEVELS.ADMIN;
 
-  const [accordianValue, setAccordianValue] = useState('ui-settings');
+  const activeSection = location.hash.replace('#', '') || null;
 
-  // Handle hash navigation to open specific accordion
-  useEffect(() => {
-    const hash = location.hash.replace('#', '');
-    if (hash) {
-      setAccordianValue(hash);
-    }
-  }, [location.hash]);
+  const visibleGroups = getVisibleSettingsGroups(isAdmin);
+  const allSections = visibleGroups.flatMap((g) => g.sections);
+  const activeSectionConfig = activeSection
+    ? (allSections.find((s) => s.id === activeSection) ?? null)
+    : null;
+  const ActiveComponent = activeSectionConfig?.Component ?? null;
 
   return (
-    <Center p={10}>
-      <Box w={'100%'} maw={800}>
-        <Accordion
-          variant="separated"
-          value={accordianValue}
-          onChange={setAccordianValue}
-          miw={400}
+    <Box p={10} maw={900} mx="auto">
+      {ActiveComponent ? (
+        <Paper withBorder p="md" radius="md">
+          <Text size="lg" fw={600} mb={6}>
+            {activeSectionConfig.label}
+          </Text>
+          <Divider mb="md" />
+          <ErrorBoundary>
+            <Suspense fallback={<Loader />}>
+              <ActiveComponent active={true} />
+            </Suspense>
+          </ErrorBoundary>
+        </Paper>
+      ) : (
+        <Box
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            height: '100%',
+            minHeight: 200,
+          }}
         >
-          <AccordionItem value="ui-settings">
-            <AccordionControl>UI Settings</AccordionControl>
-            <AccordionPanel>
-              <UiSettingsForm active={accordianValue === 'ui-settings'} />
-              <Divider my="md" />
-              <Accordion variant="contained">
-                <AccordionItem value="nav-order">
-                  <AccordionControl>Navigation</AccordionControl>
-                  <AccordionPanel>
-                    <ErrorBoundary>
-                      <Suspense fallback={<Loader />}>
-                        <NavOrderForm
-                          active={accordianValue === 'ui-settings'}
-                        />
-                      </Suspense>
-                    </ErrorBoundary>
-                  </AccordionPanel>
-                </AccordionItem>
-              </Accordion>
-            </AccordionPanel>
-          </AccordionItem>
-
-          {authUser.user_level >= USER_LEVELS.ADMIN && (
-            <>
-              <AccordionItem value="dvr-settings">
-                <AccordionControl>DVR</AccordionControl>
-                <AccordionPanel>
-                  <ErrorBoundary>
-                    <Suspense fallback={<Loader />}>
-                      <DvrSettingsForm
-                        active={accordianValue === 'dvr-settings'}
-                      />
-                    </Suspense>
-                  </ErrorBoundary>
-                </AccordionPanel>
-              </AccordionItem>
-
-              <AccordionItem value="stream-settings">
-                <AccordionControl>Stream Settings</AccordionControl>
-                <AccordionPanel>
-                  <ErrorBoundary>
-                    <Suspense fallback={<Loader />}>
-                      <StreamSettingsForm
-                        active={accordianValue === 'stream-settings'}
-                      />
-                    </Suspense>
-                  </ErrorBoundary>
-                </AccordionPanel>
-              </AccordionItem>
-
-              <AccordionItem value="system-settings">
-                <AccordionControl>System Settings</AccordionControl>
-                <AccordionPanel>
-                  <ErrorBoundary>
-                    <Suspense fallback={<Loader />}>
-                      <SystemSettingsForm
-                        active={accordianValue === 'system-settings'}
-                      />
-                    </Suspense>
-                  </ErrorBoundary>
-                </AccordionPanel>
-              </AccordionItem>
-
-              <AccordionItem value="user-agents">
-                <AccordionControl>User-Agents</AccordionControl>
-                <AccordionPanel>
-                  <ErrorBoundary>
-                    <Suspense fallback={<Loader />}>
-                      <UserAgentsTable
-                        active={accordianValue === 'user-agents'}
-                      />
-                    </Suspense>
-                  </ErrorBoundary>
-                </AccordionPanel>
-              </AccordionItem>
-
-              <AccordionItem value="stream-profiles">
-                <AccordionControl>Stream Profiles</AccordionControl>
-                <AccordionPanel>
-                  <ErrorBoundary>
-                    <Suspense fallback={<Loader />}>
-                      <StreamProfilesTable
-                        active={accordianValue === 'stream-profiles'}
-                      />
-                    </Suspense>
-                  </ErrorBoundary>
-                </AccordionPanel>
-              </AccordionItem>
-
-              <AccordionItem value="output-profiles">
-                <AccordionControl>Output Profiles</AccordionControl>
-                <AccordionPanel>
-                  <ErrorBoundary>
-                    <Suspense fallback={<Loader />}>
-                      <OutputProfilesTable
-                        active={accordianValue === 'output-profiles'}
-                      />
-                    </Suspense>
-                  </ErrorBoundary>
-                </AccordionPanel>
-              </AccordionItem>
-
-              <AccordionItem value="network-access">
-                <AccordionControl>
-                  <Box>Network Access</Box>
-                  {accordianValue === 'network-access' && (
-                    <Box>
-                      <Text size="sm">Comma-Delimited CIDR ranges</Text>
-                    </Box>
-                  )}
-                </AccordionControl>
-                <AccordionPanel>
-                  <ErrorBoundary>
-                    <Suspense fallback={<Loader />}>
-                      <NetworkAccessForm
-                        active={accordianValue === 'network-access'}
-                      />
-                    </Suspense>
-                  </ErrorBoundary>
-                </AccordionPanel>
-              </AccordionItem>
-
-              <AccordionItem value="proxy-settings">
-                <AccordionControl>
-                  <Box>Proxy Settings</Box>
-                </AccordionControl>
-                <AccordionPanel>
-                  <ErrorBoundary>
-                    <Suspense fallback={<Loader />}>
-                      <ProxySettingsForm
-                        active={accordianValue === 'proxy-settings'}
-                      />
-                    </Suspense>
-                  </ErrorBoundary>
-                </AccordionPanel>
-              </AccordionItem>
-
-              <AccordionItem value="backups">
-                <AccordionControl>Backup & Restore</AccordionControl>
-                <AccordionPanel>
-                  <ErrorBoundary>
-                    <Suspense fallback={<Loader />}>
-                      <BackupManager active={accordianValue === 'backups'} />
-                    </Suspense>
-                  </ErrorBoundary>
-                </AccordionPanel>
-              </AccordionItem>
-
-              <AccordionItem value="user-limits">
-                <AccordionControl>User Limits</AccordionControl>
-                <AccordionPanel>
-                  <ErrorBoundary>
-                    <Suspense fallback={<Loader />}>
-                      <UserLimitsForm
-                        active={accordianValue === 'user-limits'}
-                      />
-                    </Suspense>
-                  </ErrorBoundary>
-                </AccordionPanel>
-              </AccordionItem>
-            </>
-          )}
-        </Accordion>
-      </Box>
-    </Center>
+          <Text c="dimmed" size="sm">
+            Select a setting from the sidebar
+          </Text>
+        </Box>
+      )}
+    </Box>
   );
 };
 

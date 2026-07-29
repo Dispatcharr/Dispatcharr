@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Type filter on the M3U and EPG source tables.** M3U & EPG Manager now has a filter dropdown on each table (M3U/XC for playlists, XMLTV/Schedules Direct/Dummy for EPG sources), matching the checklist-style filter menu already used on the Channels page, to narrow the list by type. All types are checked by default; the button highlights and a Reset option appears once anything is unchecked. The selection persists per table across reloads.
+
+### Security
+
+- **First-time web setup is limited to local networks by default.** `POST /api/accounts/initialize-superuser/` only accepts private/loopback IPv4 and IPv6 ranges unless `DISPATCHARR_SETUP_ALLOWED_IP` is set to a single IP (for remote/VPS setup). While no admin exists, GET reports `client_ip` and `setup_allowed` so the UI can show remote-setup instructions (env override or `createsuperuser`). Once an admin-level user exists, the endpoint only returns `superuser_exists: true`.
+- Updated `Django` 6.0.6 → 6.0.7, resolving the following CVEs:
+  - **CVE-2026-48588**: Potential exposure of private data via cached `Set-Cookie` response in `UpdateCacheMiddleware` / `cache_page()`.
+  - **CVE-2026-53877**: Heap buffer over-read in `GDALRaster` when initialized with certain `bytes` objects.
+  - **CVE-2026-53878**: Header injection possibility since `DomainNameValidator` accepted newlines in input.
+- Updated frontend npm dependencies:
+  - `brace-expansion` 5.0.6 → 5.0.8, fixing **high** severity DoS via exponential-time expansion of consecutive non-expanding `{}` groups ([GHSA-3jxr-9vmj-r5cp](https://github.com/advisories/GHSA-3jxr-9vmj-r5cp)) and **high** severity DoS via unbounded expansion length ([GHSA-mh99-v99m-4gvg](https://github.com/advisories/GHSA-mh99-v99m-4gvg))
+  - `js-yaml` 5.1.0 → 5.2.2, fixing **moderate** severity quadratic CPU via merge-key chains ([GHSA-g796-fgmg-93mv](https://github.com/advisories/GHSA-g796-fgmg-93mv)), **moderate** severity quadratic DoS via `!!omap` in YAML11_SCHEMA ([GHSA-724g-mxrg-4qvm](https://github.com/advisories/GHSA-724g-mxrg-4qvm)), and **high** severity exponential parsing time in flow collections ([GHSA-pm4m-ph32-ghv5](https://github.com/advisories/GHSA-pm4m-ph32-ghv5))
+  - `postcss` 8.5.13 → 8.5.23, fixing **high** severity path traversal in previous source map auto-loading ([GHSA-r28c-9q8g-f849](https://github.com/advisories/GHSA-r28c-9q8g-f849))
+  - `react-router` / `react-router-dom` 7.17.0 → 7.18.1, fixing **moderate** severity open redirect via backslash in `<Link>`/`useNavigate` ([GHSA-wrjc-x8rr-h8h6](https://github.com/advisories/GHSA-wrjc-x8rr-h8h6)), **moderate** severity XSS via RSCErrorHandler missing protocol validation ([GHSA-h8fp-f39c-q6mh](https://github.com/advisories/GHSA-h8fp-f39c-q6mh)), **moderate** severity arbitrary constructor injection via `deserializeErrors()` ([GHSA-337j-9hxr-rhxg](https://github.com/advisories/GHSA-337j-9hxr-rhxg)), and **high** severity unauthenticated DoS via inefficient route matching ([GHSA-chx6-hx7r-mcp5](https://github.com/advisories/GHSA-chx6-hx7r-mcp5))
+
+### Changed
+
+- Dependency updates:
+  - `Django` 6.0.6 → 6.0.7 (security patch; see Security section)
+  - `drf-spectacular` 0.29.0 → 0.30.0
+  - `gevent` 26.5.0 → 26.7.0
+  - `torch` 2.12.1+cpu → 2.13.0+cpu
+  - `sentence-transformers` 5.6.0 → 5.6.1
+- **Settings page redesigned as a slide-over panel integrated into the sidebar, replacing the old accordion layout.** Clicking Settings in the main sidebar now slides in a dedicated settings sub-panel (primary nav slides left, settings nav slides in from the right) instead of navigating to a separate page with collapsible sections; Back returns to the main nav while keeping the previously selected settings section active. Main sidebar nav groups render as flat, uppercase-labeled sections instead of collapsible accordions, and the sidebar's collapsed/expanded state is now persisted to `localStorage` across page reloads.
+- **Connections and its separate Logs page are merged into a single Connect page.** The former "Integrations" sidebar group (Connections, Logs) is now one "Connect" entry under System; the log viewer is a collapsible section fixed to the bottom of the Connect page instead of a standalone route.
+- Stream Profiles, Output Profiles, and User-Agents tables on the Settings page grow to fit their content instead of clipping to a fixed height with an internal scrollbar.
+
+### Fixed
+
+- **Public IP in the sidebar updates again after the server's IP changes (e.g. a VPN/gluetun reconnect).** The lookup result was cached for an hour with no re-check on page load, so the UI kept serving a stale address until the cache expired. The cached value is still served instantly, but a page load more than a minute after the last check now re-verifies in the background and pushes any change over the existing WebSocket update. A failed re-check keeps the last known address instead of blanking the sidebar. (Fixes #1395) - Thanks [@floppy-disk](https://github.com/floppy-disk)
+- **M3U and EPG source tables size to their content instead of a fixed height.** The tables on M3U & EPG Manager were locked to `height: calc(40vh - 15px)`, which produced a nested scrollbar and reserved the same space whether the table held 0 or 50 rows; they now show an empty state, size to fit their data, and only scroll internally once they reach the height of the viewport. - Thanks [@nagelm](https://github.com/nagelm)
+
 ## [0.28.2] - 2026-07-23
 
 ### Added
