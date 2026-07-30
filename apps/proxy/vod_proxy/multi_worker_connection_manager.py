@@ -1017,17 +1017,10 @@ class MultiWorkerVODConnectionManager:
                 # Prepare headers for provider request
                 headers = {}
                 # Use M3U account's user-agent for provider requests, not client's user-agent
-                m3u_user_agent = m3u_profile.m3u_account.get_user_agent()
-                if m3u_user_agent:
-                    headers['User-Agent'] = m3u_user_agent.user_agent
-                    logger.info(f"[{client_id}] Using M3U account user-agent: {m3u_user_agent.user_agent}")
-                elif client_user_agent:
-                    # Fallback to client's user-agent if M3U doesn't have one
-                    headers['User-Agent'] = client_user_agent
-                    logger.info(f"[{client_id}] Using client user-agent (M3U fallback): {client_user_agent}")
-                else:
-                    logger.warning(f"[{client_id}] No user-agent available (neither M3U nor client)")
-
+                headers['User-Agent'] = m3u_profile.m3u_account.get_user_agent_string()
+                logger.info(
+                    f"[{client_id}] Using M3U account user-agent: {headers['User-Agent']}"
+                )
                 # Forward important headers from request
                 important_headers = ['authorization', 'referer', 'origin', 'accept']
                 for header_name in important_headers:

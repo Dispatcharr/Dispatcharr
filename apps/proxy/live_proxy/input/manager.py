@@ -77,6 +77,11 @@ class StreamManager:
         self.health_check_interval = ConfigHelper.get('HEALTH_CHECK_INTERVAL', 5)
         self.chunk_size = ConfigHelper.chunk_size()
 
+        # Recovery flags the health monitor raises for the main loop.
+        self.needs_reconnect = False
+        self.needs_stream_switch = False
+        self.last_health_action_time = 0
+
         # Add to your __init__ method
         self._buffer_check_timers = []
         self.stopping = False
@@ -507,6 +512,18 @@ class StreamManager:
                         if self.stop_requested or not self.running:
                             # Normal shutdown requested
                             return
+
+                        if self.needs_reconnect:
+                            # Health monitor asked for a same-URL reconnect. Clear the
+                            # flag and tear the old socket down so the next establish
+                            # does not orphan the reader thread, then fall through to
+                            # the normal failure accounting. Repeated health reconnects
+                            # count toward max_retries like any other URL failure.
+                            self.needs_reconnect = False
+                            logger.info(
+                                f"Health monitor requested reconnect for channel: {self.channel_id}"
+                            )
+                            self._close_socket()
 
                         self.connected = False
                         failures = self._record_connection_failure()
@@ -1296,7 +1313,8 @@ class StreamManager:
         try:
             # Both transcode and HTTP now use the same subprocess/socket approach
             # This gives us perfect control: check flags between chunks, timeout just returns False
-            while self.running and self.connected and not self.stop_requested and not self.needs_stream_switch:
+            while (self.running and self.connected and not self.stop_requested
+                   and not self.needs_stream_switch and not self.needs_reconnect):
                 if self.fetch_chunk():
                     self.last_data_time = time.time()
                 else:
@@ -1509,11 +1527,6 @@ class StreamManager:
         """Monitor stream health and set flags for the main loop to handle recovery"""
         consecutive_unhealthy_checks = 0
         max_unhealthy_checks = 3
-
-        # Add flags for the main loop to check
-        self.needs_reconnect = False
-        self.needs_stream_switch = False
-        self.last_health_action_time = 0
         action_cooldown = 30  # Prevent rapid recovery attempts
 
         while self.running:

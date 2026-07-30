@@ -157,6 +157,10 @@ export default class API {
 
       return response;
     } catch (e) {
+      // Setup IP policy blocks are explained inline on SuperuserForm.
+      if (e?.status === 403 && e?.body?.setup_allowed === false) {
+        throw e;
+      }
       errorNotification('Failed to create superuser', e);
     }
   }

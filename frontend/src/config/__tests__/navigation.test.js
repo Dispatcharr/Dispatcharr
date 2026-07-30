@@ -4,6 +4,7 @@ import {
   DEFAULT_ADMIN_ORDER,
   DEFAULT_USER_ORDER,
   getOrderedNavItems,
+  isGroupBoundary,
 } from '../navigation';
 
 describe('navigation config', () => {
@@ -16,9 +17,26 @@ describe('navigation config', () => {
       expect(NAV_ITEMS.dvr).toBeDefined();
       expect(NAV_ITEMS.stats).toBeDefined();
       expect(NAV_ITEMS.plugins).toBeDefined();
-      expect(NAV_ITEMS.integrations).toBeDefined();
       expect(NAV_ITEMS.system).toBeDefined();
       expect(NAV_ITEMS.settings).toBeDefined();
+    });
+
+    it('keeps the top-level settings entry and the nested System > Settings entry in sync', () => {
+      const nestedSettings = NAV_ITEMS.system.paths.find(
+        (p) => p.path === '/settings'
+      );
+      expect(nestedSettings).toBeDefined();
+      expect(nestedSettings.label).toBe(NAV_ITEMS.settings.label);
+      expect(nestedSettings.icon).toBe(NAV_ITEMS.settings.icon);
+      expect(nestedSettings.path).toBe(NAV_ITEMS.settings.path);
+    });
+
+    it('includes the renamed Connect entry under System', () => {
+      const connectEntry = NAV_ITEMS.system.paths.find(
+        (p) => p.path === '/connect'
+      );
+      expect(connectEntry).toBeDefined();
+      expect(connectEntry.label).toBe('Connect');
     });
 
     it('has correct adminOnly flags', () => {
@@ -31,7 +49,6 @@ describe('navigation config', () => {
       expect(NAV_ITEMS.dvr.adminOnly).toBe(true);
       expect(NAV_ITEMS.stats.adminOnly).toBe(true);
       expect(NAV_ITEMS.plugins.adminOnly).toBe(true);
-      expect(NAV_ITEMS.integrations.adminOnly).toBe(true);
       expect(NAV_ITEMS.system.adminOnly).toBe(true);
     });
   });
@@ -46,6 +63,10 @@ describe('navigation config', () => {
       adminItems.forEach((id) => {
         expect(DEFAULT_ADMIN_ORDER).toContain(id);
       });
+    });
+
+    it('never includes settings (admins reach it via the System group)', () => {
+      expect(DEFAULT_ADMIN_ORDER).not.toContain('settings');
     });
   });
 
@@ -84,7 +105,7 @@ describe('navigation config', () => {
 
     it('uses custom order when provided', () => {
       const customOrder = [
-        'integrations',
+        'system',
         'channels',
         'vods',
         'sources',
@@ -92,7 +113,6 @@ describe('navigation config', () => {
         'dvr',
         'stats',
         'plugins',
-        'system',
       ];
       const result = getOrderedNavItems(customOrder, true);
 
@@ -115,7 +135,7 @@ describe('navigation config', () => {
       // Missing items should be appended at the end
       const resultIds = result.map((item) => item.id);
       expect(resultIds).toContain('guide');
-      expect(resultIds).toContain('integrations');
+      expect(resultIds).toContain('system');
     });
 
     it('filters out admin-only items for non-admin users', () => {
@@ -148,7 +168,7 @@ describe('navigation config', () => {
         'unknown_item',
         'vods',
         'invalid',
-        'integrations',
+        'system',
       ];
       const result = getOrderedNavItems(savedOrder, true);
 
@@ -158,7 +178,7 @@ describe('navigation config', () => {
       expect(resultIds).not.toContain('invalid');
       expect(resultIds).toContain('channels');
       expect(resultIds).toContain('vods');
-      expect(resultIds).toContain('integrations');
+      expect(resultIds).toContain('system');
     });
 
     it('adds channel badge with correct count', () => {
@@ -207,6 +227,32 @@ describe('navigation config', () => {
 
       // Should only have non-admin items
       expect(resultIds).toHaveLength(3);
+    });
+  });
+
+  describe('isGroupBoundary', () => {
+    const leaf = { id: 'leaf' };
+    const group = { id: 'group', paths: [{ path: '/x' }] };
+
+    it('is false for the first item regardless of type', () => {
+      expect(isGroupBoundary([leaf, leaf], 0)).toBe(false);
+      expect(isGroupBoundary([group, leaf], 0)).toBe(false);
+    });
+
+    it('is false between two consecutive leaves', () => {
+      expect(isGroupBoundary([leaf, leaf], 1)).toBe(false);
+    });
+
+    it('is true between two consecutive groups', () => {
+      expect(isGroupBoundary([group, group], 1)).toBe(true);
+    });
+
+    it('is true before a group that follows a leaf', () => {
+      expect(isGroupBoundary([leaf, group], 1)).toBe(true);
+    });
+
+    it('is true before a leaf that follows a group', () => {
+      expect(isGroupBoundary([group, leaf], 1)).toBe(true);
     });
   });
 });

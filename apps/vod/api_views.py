@@ -13,11 +13,13 @@ import logging
 import os
 import time
 import requests
+import mimetypes
 from apps.accounts.permissions import (
     Authenticated,
     permission_classes_by_action,
 )
 from core.utils import resolve_safe_local_data_path
+from core.models import CoreSettings
 from .models import (
     Series, VODCategory, Movie, Episode, VODLogo,
     M3USeriesRelation, M3UMovieRelation, M3UEpisodeRelation, M3UVODCategoryRelation
@@ -887,6 +889,7 @@ class VODLogoViewSet(viewsets.ModelViewSet):
                     logo.url,
                     stream=True,
                     timeout=(3, 5),  # (connect_timeout, read_timeout per chunk)
+                    headers={'User-Agent': CoreSettings.get_default_user_agent()},
                 )
 
                 if remote_response.status_code != 200:
@@ -915,7 +918,11 @@ class VODLogoViewSet(viewsets.ModelViewSet):
                 # Full read succeeded, clear any previous failure entry
                 _vod_logo_fetch_failures.pop(logo.url, None)
 
-                content_type = remote_response.headers.get('Content-Type', 'image/png')
+                content_type = remote_response.headers.get('Content-Type')
+                if not content_type:
+                    content_type, _ = mimetypes.guess_type(logo.url)
+                if not content_type:
+                    content_type = 'image/jpeg'
 
                 response = HttpResponse(body, content_type=content_type)
                 response["Content-Length"] = str(len(body))

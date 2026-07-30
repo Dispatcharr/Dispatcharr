@@ -214,6 +214,11 @@ _GROUP_CACHE_PREFIX = "coresettings:group:"
 _GROUP_CACHE_VER_PREFIX = "coresettings:groupver:"
 _GROUP_CACHE_TTL_SECONDS = 300
 
+# Resolved default User-Agent string. Invalidated when stream settings change
+# or any UserAgent row is saved/deleted.
+_DEFAULT_USER_AGENT_CACHE_KEY = "coresettings:default_user_agent"
+_DEFAULT_USER_AGENT_CACHE_VER_KEY = "coresettings:default_user_agent:ver"
+
 # Connectivity / timeout only. ResponseError (WRONGTYPE) and similar must still
 # propagate. Note: redis-py's AuthenticationError / AuthorizationError subclass
 # ConnectionError, so helpers re-raise those after the catch.
@@ -318,12 +323,25 @@ class CoreSettings(models.Model):
             return False
 
     @classmethod
+    def invalidate_default_user_agent_cache(cls):
+        """Drop the cached default User-Agent string (all workers share Redis)."""
+        cls._cache_delete(_DEFAULT_USER_AGENT_CACHE_KEY)
+        # Monotonic bump so an in-flight miss fill skips cache.set.
+        # timeout=None: never expire (version must outlive the string entry).
+        cls._cache_set(
+            _DEFAULT_USER_AGENT_CACHE_VER_KEY, time.time_ns(), timeout=None
+        )
+
+    @classmethod
     def invalidate_group_cache(cls, key):
         """Drop the cached JSON for a settings group (all workers share Redis)."""
         cls._cache_delete(cls.group_cache_key(key))
         # Monotonic bump so in-flight _get_group fills skip cache.set.
         # timeout=None: never expire (version must outlive group entries).
         cls._cache_set(cls.group_cache_ver_key(key), time.time_ns(), timeout=None)
+        if key == STREAM_SETTINGS_KEY:
+            # Default UA id lives in stream settings; drop the resolved string.
+            cls.invalidate_default_user_agent_cache()
         if key == PROXY_SETTINGS_KEY:
             # Proxy workers also keep a short process-local copy.
             try:
@@ -413,6 +431,72 @@ class CoreSettings(models.Model):
     @classmethod
     def get_default_user_agent_id(cls):
         return cls.get_stream_settings().get("default_user_agent")
+
+    @classmethod
+    def _load_default_user_agent_string(cls):
+        """Resolve the default User-Agent string from Postgres (no string cache)."""
+        from core.utils import dispatcharr_user_agent
+
+        fallback = dispatcharr_user_agent()
+        try:
+            ua_id = cls.get_default_user_agent_id()
+            if ua_id is None or ua_id == "":
+                return fallback
+            user_agent_obj = UserAgent.objects.get(id=int(ua_id))
+            if user_agent_obj.user_agent:
+                return user_agent_obj.user_agent
+            logger.warning(
+                "Default User-Agent id %s has an empty string; using %s",
+                ua_id,
+                fallback,
+            )
+        except UserAgent.DoesNotExist:
+            logger.warning(
+                "Default User-Agent id %s not found; using %s",
+                ua_id,
+                fallback,
+            )
+        except (TypeError, ValueError):
+            logger.warning(
+                "Default User-Agent id %r is invalid; using %s",
+                ua_id,
+                fallback,
+            )
+        return fallback
+
+    @classmethod
+    def get_default_user_agent(cls):
+        """Return the configured default User-Agent string (Redis-cached).
+
+        Resolves the stream-settings default User-Agent id to its string once,
+        then serves subsequent callers from Redis so hot paths (logo/poster
+        proxies, stream setup) do not query ``UserAgent`` on every request.
+        Falls back to ``dispatcharr_user_agent()`` when unset or missing.
+        Invalidated when stream settings or any UserAgent row changes.
+        """
+        cached = cls._cache_get(_DEFAULT_USER_AGENT_CACHE_KEY)
+        if isinstance(cached, str) and cached:
+            return cached
+
+        # Backend errors are not normal misses: resolve and skip fill.
+        if cached is _CACHE_BACKEND_ERROR:
+            return cls._load_default_user_agent_string()
+
+        ver_before = cls._cache_get(_DEFAULT_USER_AGENT_CACHE_VER_KEY)
+        if ver_before is _CACHE_BACKEND_ERROR:
+            return cls._load_default_user_agent_string()
+
+        value = cls._load_default_user_agent_string()
+
+        # Skip fill if an invalidate landed during the DB read.
+        ver_after = cls._cache_get(_DEFAULT_USER_AGENT_CACHE_VER_KEY)
+        if ver_after is _CACHE_BACKEND_ERROR or ver_after != ver_before:
+            return value
+
+        cls._cache_set(
+            _DEFAULT_USER_AGENT_CACHE_KEY, value, timeout=_GROUP_CACHE_TTL_SECONDS
+        )
+        return value
 
     @classmethod
     def get_default_stream_profile_id(cls):

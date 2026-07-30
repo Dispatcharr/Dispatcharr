@@ -183,11 +183,12 @@ variables=(
     CELERY_NICE_LEVEL UWSGI_NICE_LEVEL DJANGO_SECRET_KEY
 )
 
-# TLS variables are optional — only propagate when set to avoid noisy warnings
-for _tls_var in POSTGRES_SSL POSTGRES_SSL_MODE POSTGRES_SSL_CA_CERT POSTGRES_SSL_CERT POSTGRES_SSL_KEY \
-                REDIS_SSL REDIS_SSL_VERIFY REDIS_SSL_CA_CERT REDIS_SSL_CERT REDIS_SSL_KEY; do
-    if [ -n "${!_tls_var+x}" ]; then
-        variables+=("$_tls_var")
+# Optional variables, only propagate when set to avoid noisy warnings
+for _opt_var in POSTGRES_SSL POSTGRES_SSL_MODE POSTGRES_SSL_CA_CERT POSTGRES_SSL_CERT POSTGRES_SSL_KEY \
+                REDIS_SSL REDIS_SSL_VERIFY REDIS_SSL_CA_CERT REDIS_SSL_CERT REDIS_SSL_KEY \
+                DISPATCHARR_SETUP_ALLOWED_IP; do
+    if [ -n "${!_opt_var+x}" ]; then
+        variables+=("$_opt_var")
     fi
 done
 

@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useRef } from 'react';
 import {
   BrowserRouter as Router,
   Route,
@@ -16,11 +16,11 @@ import Settings from './pages/Settings';
 import PluginsPage from './pages/Plugins';
 import PluginBrowsePage from './pages/PluginBrowse';
 import ConnectPage from './pages/Connect';
-import ConnectLogsPage from './pages/ConnectLogs';
 import Users from './pages/Users';
 import LogosPage from './pages/Logos';
 import VODsPage from './pages/VODs';
 import useAuthStore from './store/auth';
+import useLocalStorage from './hooks/useLocalStorage';
 import FloatingVideo from './components/FloatingVideo';
 import { WebsocketProvider } from './WebSocket';
 import { Box, AppShell, MantineProvider } from '@mantine/core';
@@ -40,20 +40,19 @@ const miniDrawerWidth = 60;
 const defaultRoute = '/channels';
 
 const App = () => {
-  const [open, setOpen] = useState(true);
+  const [open, setOpen] = useLocalStorage('dispatcharr_sidebar_open', true);
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
   const isInitialized = useAuthStore((s) => s.isInitialized);
-  const setIsAuthenticated = useAuthStore((s) => s.setIsAuthenticated);
   const logout = useAuthStore((s) => s.logout);
   const initData = useAuthStore((s) => s.initData);
   const initializeAuth = useAuthStore((s) => s.initializeAuth);
-  const setSuperuserExists = useAuthStore((s) => s.setSuperuserExists);
+  const setSuperuserStatus = useAuthStore((s) => s.setSuperuserStatus);
 
   const authCheckStarted = useRef(false);
   const superuserCheckStarted = useRef(false);
 
   const toggleDrawer = () => {
-    setOpen(!open);
+    setOpen((prev) => !prev);
   };
 
   // Check if a superuser exists on first load.
@@ -64,21 +63,22 @@ const App = () => {
     async function checkSuperuser() {
       try {
         const response = await API.fetchSuperUser();
-        if (response && response.superuser_exists === false) {
-          setSuperuserExists(false);
-        }
+        setSuperuserStatus(response);
       } catch (error) {
         console.error('Error checking superuser status:', error);
+        // Preserve the existing fail-open UI behavior if the status check fails.
+        setSuperuserStatus({ superuser_exists: true });
         // If authentication error, redirect to login
         if (error.status === 401) {
-          localStorage.removeItem('token');
+          localStorage.removeItem('accessToken');
           localStorage.removeItem('refreshToken');
+          localStorage.removeItem('tokenExpiration');
           window.location.href = '/login';
         }
       }
     }
     checkSuperuser();
-  }, [setSuperuserExists]);
+  }, [setSuperuserStatus]);
 
   // Authentication check
   useEffect(() => {
@@ -160,17 +160,13 @@ const App = () => {
                         />
                         <Route path="/plugins" element={<PluginsPage />} />
                         <Route path="/connect" element={<ConnectPage />} />
-                        <Route
-                          path="/connect/logs"
-                          element={<ConnectLogsPage />}
-                        />
                         <Route path="/users" element={<Users />} />
                         <Route path="/settings" element={<Settings />} />
                         <Route path="/logos" element={<LogosPage />} />
                         <Route path="/vods" element={<VODsPage />} />
                       </>
                     ) : (
-                      <Route path="/login" element={<Login needsSuperuser />} />
+                      <Route path="/login" element={<Login />} />
                     )}
                     <Route
                       path="*"
