@@ -24,6 +24,14 @@ def _proxy_url(session_id=TEST_SESSION_ID):
     return f"{base}?session_id={session_id}" if session_id else base
 
 
+def _patch_m3u_account_get(account=None):
+    """Patch M3UAccount.objects.select_related(...).get(...) used by reuse path."""
+    qs = MagicMock()
+    if account is not None:
+        qs.get.return_value = account
+    return patch.object(views.M3UAccount.objects, "select_related", return_value=qs)
+
+
 def _seed_pool_session(
     redis,
     session_id=TEST_SESSION_ID,
@@ -2123,7 +2131,7 @@ class TimeshiftSessionReuseTests(TestCase):
              patch.object(views, "reserve_profile_slot",
                           return_value=(True, 1, None)) as reserve_mock, \
              patch.object(views, "release_profile_slot"), \
-             patch.object(views.M3UAccount.objects, "get", return_value=account), \
+             _patch_m3u_account_get(account), \
              patch.object(views.M3UAccountProfile.objects, "get",
                           return_value=profile), \
              patch.object(views, "get_transformed_credentials", side_effect=_fake_creds), \
@@ -2153,7 +2161,7 @@ class TimeshiftSessionReuseTests(TestCase):
         profile = MagicMock(id=31, custom_properties={})
         account = MagicMock(id=1)
         ok = MagicMock(status_code=200)
-        with patch.object(views.M3UAccount.objects, "get", return_value=account), \
+        with _patch_m3u_account_get(account), \
              patch.object(views, "_attempt_timeshift_stream",
                           return_value=ok) as attempt_mock:
             response = views._stream_reused_session(
@@ -2195,7 +2203,7 @@ class TimeshiftSessionReuseTests(TestCase):
         profile = MagicMock(id=31, custom_properties={})
         account = MagicMock(id=1)
         ok = MagicMock(status_code=200)
-        with patch.object(views.M3UAccount.objects, "get", return_value=account), \
+        with _patch_m3u_account_get(account), \
              patch.object(views, "_attempt_timeshift_stream",
                           return_value=ok) as attempt_mock:
             views._stream_reused_session(
@@ -2248,7 +2256,7 @@ class TimeshiftSessionReuseTests(TestCase):
         profile = MagicMock(id=31, custom_properties={})
         account = MagicMock(id=1)
         ok = MagicMock(status_code=200)
-        with patch.object(views.M3UAccount.objects, "get", return_value=account), \
+        with _patch_m3u_account_get(account), \
              patch.object(views, "_attempt_timeshift_stream",
                           return_value=ok) as attempt_mock:
             views._stream_reused_session(
@@ -2304,7 +2312,7 @@ class TimeshiftSessionReuseTests(TestCase):
         account = MagicMock(id=1)
         ok = MagicMock(status_code=206)
         client_range = f"bytes={remaining - 112_800}-"
-        with patch.object(views.M3UAccount.objects, "get", return_value=account), \
+        with _patch_m3u_account_get(account), \
              patch.object(views, "_attempt_timeshift_stream",
                           return_value=ok) as attempt_mock:
             views._stream_reused_session(
@@ -2364,7 +2372,7 @@ class TimeshiftSessionReuseTests(TestCase):
         profile = MagicMock(id=31, custom_properties={})
         account = MagicMock(id=1)
         ok = MagicMock(status_code=200)
-        with patch.object(views.M3UAccount.objects, "get", return_value=account), \
+        with _patch_m3u_account_get(account), \
              patch.object(views, "_attempt_timeshift_stream",
                           return_value=ok) as attempt_mock:
             views._stream_reused_session(
@@ -2423,7 +2431,7 @@ class TimeshiftSessionReuseTests(TestCase):
         profile = MagicMock(id=31, custom_properties={})
         account = MagicMock(id=1)
         ok = MagicMock(status_code=206)
-        with patch.object(views.M3UAccount.objects, "get", return_value=account), \
+        with _patch_m3u_account_get(account), \
              patch.object(views, "_attempt_timeshift_stream",
                           return_value=ok) as attempt_mock:
             views._stream_reused_session(
@@ -2473,7 +2481,7 @@ class TimeshiftSessionReuseTests(TestCase):
         profile = MagicMock(id=31, custom_properties={})
         account = MagicMock(id=1)
         ok = MagicMock(status_code=200)
-        with patch.object(views.M3UAccount.objects, "get", return_value=account), \
+        with _patch_m3u_account_get(account), \
              patch.object(views, "_attempt_timeshift_stream",
                           return_value=ok) as attempt_mock:
             views._stream_reused_session(
@@ -2520,7 +2528,7 @@ class TimeshiftSessionReuseTests(TestCase):
         profile = MagicMock(id=31, custom_properties={})
         account = MagicMock(id=1)
         ok = MagicMock(status_code=200)
-        with patch.object(views.M3UAccount.objects, "get", return_value=account), \
+        with _patch_m3u_account_get(account), \
              patch.object(views, "_attempt_timeshift_stream",
                           return_value=ok) as attempt_mock:
             views._stream_reused_session(
@@ -2643,7 +2651,7 @@ class TimeshiftSessionReuseTests(TestCase):
         })
         account = MagicMock(id=1)
         ok = MagicMock(status_code=200)
-        with patch.object(views.M3UAccount.objects, "get", return_value=account), \
+        with _patch_m3u_account_get(account), \
              patch.object(views, "_attempt_timeshift_stream",
                           return_value=ok) as attempt_mock:
             views._stream_reused_session(
@@ -2704,7 +2712,7 @@ class TimeshiftSessionReuseTests(TestCase):
              patch.object(views, "reserve_profile_slot",
                           return_value=(True, 1, None)), \
              patch.object(views, "release_profile_slot"), \
-             patch.object(views.M3UAccount.objects, "get", return_value=account), \
+             _patch_m3u_account_get(account), \
              patch.object(views.M3UAccountProfile.objects, "get",
                           return_value=profile), \
              patch.object(views, "get_user_active_connections", return_value=[]), \
@@ -4927,7 +4935,7 @@ class TimeshiftScrubPreemptTests(TestCase):
              patch.object(views, "_preempt_playback_streams") as preempt_mock, \
              patch.object(views, "_register_stats_client") as stats_mock, \
              patch.object(views, "_attempt_timeshift_stream") as attempt_mock, \
-             patch.object(views.M3UAccount.objects, "get") as account_get_mock, \
+             _patch_m3u_account_get() as account_get_mock, \
              patch.object(views, "_open_upstream", return_value=upstream) as open_mock:
             redis_cls.get_client.return_value = self.redis
             channel_cls.objects.get.return_value = MagicMock(
@@ -5010,7 +5018,7 @@ class TimeshiftScrubPreemptTests(TestCase):
              patch.object(views, "_try_reacquire_idle_pool") as reacquire_mock, \
              patch.object(views, "_preempt_playback_streams") as preempt_mock, \
              patch.object(views, "_attempt_timeshift_stream") as attempt_mock, \
-             patch.object(views.M3UAccount.objects, "get") as account_get_mock, \
+             _patch_m3u_account_get() as account_get_mock, \
              patch.object(views, "_open_upstream", return_value=upstream) as open_mock:
             redis_cls.get_client.return_value = self.redis
             channel_cls.objects.get.return_value = MagicMock(
@@ -5073,7 +5081,7 @@ class TimeshiftScrubPreemptTests(TestCase):
              patch.object(views, "get_transformed_credentials", side_effect=_fake_creds), \
              patch.object(views, "get_user_active_connections", return_value=[]), \
              patch.object(views, "_attempt_timeshift_stream") as attempt_mock, \
-             patch.object(views.M3UAccount.objects, "get") as account_get_mock, \
+             _patch_m3u_account_get() as account_get_mock, \
              patch.object(views, "_open_upstream", return_value=upstream) as open_mock:
             redis_cls.get_client.return_value = self.redis
             channel_cls.objects.get.return_value = MagicMock(
