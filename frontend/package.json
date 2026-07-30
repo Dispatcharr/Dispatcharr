@@ -35,7 +35,7 @@
     "react-draggable": "^4.4.6",
     "react-hook-form": "^7.70.0",
     "react-pro-sidebar": "^1.1.0",
-    "react-router-dom": "^7.3.0",
+    "react-router-dom": "^7.18.2",
     "react-virtualized": "^9.22.6",
     "react-virtualized-auto-sizer": "^1.0.26",
     "react-window": "^1.8.11",
