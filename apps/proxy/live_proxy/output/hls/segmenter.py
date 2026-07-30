@@ -193,13 +193,23 @@ class TSSegmenter:
     it returns finished Segment objects as keyframe boundaries are crossed.
     """
 
-    def __init__(self, target_duration=4.0, max_segment_duration=None):
+    def __init__(self, target_duration=4.0, max_segment_duration=None,
+                 startup_keyframe_cuts=4):
         self.target_duration = float(target_duration)
         # Hard ceiling: force a cut before a segment can exceed this, so no
         # emitted EXTINF ever exceeds the frozen advertised TARGETDURATION even
         # on a keyframe drought (RFC 8216 4.3.3.1). Defaults to 2x the target.
         self.max_segment_duration = float(
             max_segment_duration if max_segment_duration else 2 * target_duration)
+        # Fast-start ladder: a cold channel accumulates segments at live
+        # cadence, so with a 4s target a player waits ~8-12s for enough
+        # media to start. The first N segments therefore cut at EVERY
+        # keyframe (one GOP each, typically 1-3s), which gets a playable
+        # playlist up in one GOP and 3 segments within a few seconds; the
+        # cut target then ramps back to normal. Steady-state output is
+        # unchanged, and every starter EXTINF is well under the frozen
+        # TARGETDURATION.
+        self._startup_cuts_remaining = int(startup_keyframe_cuts)
         self._pending = bytearray()
         self._current = bytearray()
         self._pat_packet = None
@@ -320,7 +330,12 @@ class TSSegmenter:
                     self._begin_segment(pts)
                 else:
                     elapsed = self._elapsed(pts, self._segment_start_pts)
-                    if elapsed >= self.target_duration:
+                    # Fast-start ladder: while starter cuts remain, any
+                    # keyframe closes the segment (elapsed > 0 skips
+                    # same-PTS duplicates); afterwards the normal target
+                    # applies.
+                    cut_at = 0.0 if self._startup_cuts_remaining > 0 else self.target_duration
+                    if elapsed >= cut_at and elapsed > 0:
                         finished = self._finish_segment(elapsed)
                         self._begin_segment(pts)
             elif pts is not None and self._collecting and self._segment_start_pts is not None:
@@ -379,6 +394,8 @@ class TSSegmenter:
         )
         self._current = bytearray()
         self._current_discontinuity = False
+        if self._startup_cuts_remaining > 0:
+            self._startup_cuts_remaining -= 1
         return segment
 
 

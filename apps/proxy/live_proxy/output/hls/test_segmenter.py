@@ -127,11 +127,23 @@ def feed_stream(segmenter, gop_seconds, gop_count, start_pts=10.0, fillers_per_g
 
 
 class SegmenterTests(unittest.TestCase):
-    def make_started(self, target=4.0):
-        seg = TSSegmenter(target_duration=target)
+    def make_started(self, target=4.0, startup_cuts=0):
+        # startup_cuts=0 keeps most tests on steady-state behavior; the
+        # fast-start ladder has its own dedicated test.
+        seg = TSSegmenter(target_duration=target, startup_keyframe_cuts=startup_cuts)
         seg.feed(make_pat())
         seg.feed(make_pmt())
         return seg
+
+    def test_fast_start_ladder_cuts_first_segments_per_gop(self):
+        seg = self.make_started(target=4.0, startup_cuts=3)
+        finished = feed_stream(seg, gop_seconds=2.0, gop_count=9)
+        durs = [round(s.duration, 3) for s in finished]
+        # A cold channel accumulates media at live cadence, so the first
+        # segments cut at EVERY keyframe (one 2s GOP each) to get a
+        # playable window up fast; the normal 4s target then resumes.
+        self.assertEqual(durs[:3], [2.0, 2.0, 2.0])
+        self.assertTrue(all(abs(d - 4.0) < 0.01 for d in durs[3:]), durs)
 
     def test_cuts_on_keyframes_at_target_duration(self):
         seg = self.make_started(target=4.0)
