@@ -79,7 +79,7 @@ class UserSerializer(serializers.ModelSerializer):
     def validate_username(self, value):
         if not SAFE_CREDENTIAL_RE.fullmatch(value):
             raise serializers.ValidationError(
-                "Username contains unsupported characters"
+                "Username may only contain letters, numbers, periods (.), underscores (_), at signs (@), and hyphens (-)"
             )
         return value
 
@@ -111,7 +111,7 @@ class UserSerializer(serializers.ModelSerializer):
 
         if xc_password and not SAFE_CREDENTIAL_RE.fullmatch(xc_password):
             raise serializers.ValidationError(
-                "XC password contains unsupported characters"
+                "XC password may only contain letters, numbers, periods (.), underscores (_), at signs (@), and hyphens (-)"
             )
             
         return value
