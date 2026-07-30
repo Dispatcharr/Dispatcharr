@@ -2,7 +2,6 @@
 Utilities for handling stream URLs and transformations.
 """
 
-import logging
 import regex
 from typing import Optional, Tuple, List
 from django.db import close_old_connections
@@ -13,9 +12,7 @@ from apps.m3u.connection_pool import (
     get_profile_connection_count,
     profile_available_for_channel_switch,
 )
-from core.models import UserAgent, CoreSettings, StreamProfile
 from .utils import get_logger
-from uuid import UUID
 import requests
 
 logger = get_logger()
@@ -88,10 +85,7 @@ def generate_stream_url(
                 profile = M3UAccountProfile.objects.get(id=profile_id)
                 m3u_account = stream.m3u_account
 
-                stream_user_agent = m3u_account.get_user_agent().user_agent
-                if stream_user_agent is None:
-                    stream_user_agent = UserAgent.objects.get(id=CoreSettings.get_default_user_agent_id())
-                    logger.debug(f"No user agent found for account, using default: {stream_user_agent}")
+                stream_user_agent = m3u_account.get_user_agent_string()
 
                 stream_url = _resolve_live_stream_url(stream, m3u_account, profile)
 
@@ -130,11 +124,7 @@ def generate_stream_url(
 
             # Get the appropriate user agent
             m3u_account = M3UAccount.objects.get(id=m3u_profile.m3u_account.id)
-            stream_user_agent = m3u_account.get_user_agent().user_agent
-
-            if stream_user_agent is None:
-                stream_user_agent = UserAgent.objects.get(id=CoreSettings.get_default_user_agent_id())
-                logger.debug(f"No user agent found for account, using default: {stream_user_agent}")
+            stream_user_agent = m3u_account.get_user_agent_string()
 
             stream_url = _resolve_live_stream_url(stream, m3u_account, m3u_profile)
 
@@ -281,7 +271,7 @@ def get_stream_info_for_switch(channel_id: str, target_stream_id: Optional[int] 
         profile = get_object_or_404(M3UAccountProfile, pk=m3u_profile_id)
 
         m3u_account = M3UAccount.objects.get(id=profile.m3u_account.id)
-        user_agent = m3u_account.get_user_agent().user_agent
+        user_agent = m3u_account.get_user_agent_string()
 
         stream_url = _resolve_live_stream_url(stream, m3u_account, profile)
 

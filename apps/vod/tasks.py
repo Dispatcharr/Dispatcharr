@@ -70,7 +70,7 @@ def refresh_vod_content(account_id):
             account.server_url,
             account.username,
             account.password,
-            account.get_user_agent().user_agent
+            account.get_user_agent_string()
         ) as client:
 
             category_maps = refresh_categories(account.id, client)
@@ -133,7 +133,7 @@ def refresh_categories(account_id, client=None):
             account.server_url,
             account.username,
             account.password,
-            account.get_user_agent().user_agent
+            account.get_user_agent_string()
         )
     logger.info(f"Refreshing movie categories for account {account.name}")
 
@@ -1311,7 +1311,7 @@ def refresh_series_episodes(account, series, external_series_id, episodes_data=N
                 account.server_url,
                 account.username,
                 account.password,
-                account.get_user_agent().user_agent
+                account.get_user_agent_string()
             ) as client:
                 series_info = client.get_series_info(external_series_id)
                 if series_info:
@@ -1670,7 +1670,7 @@ def batch_refresh_series_episodes(account_id, series_ids=None):
             account.server_url,
             account.username,
             account.password,
-            account.get_user_agent().user_agent
+            account.get_user_agent_string()
         ) as client:
 
             refreshed_count = 0
@@ -2157,7 +2157,7 @@ def refresh_movie_advanced_data(m3u_movie_relation_id, force_refresh=False):
             server_url=account.server_url,
             username=account.username,
             password=account.password,
-            user_agent=account.get_user_agent().user_agent
+            user_agent=account.get_user_agent_string()
         ) as client:
             vod_info = client.get_vod_info(relation.stream_id)
             if vod_info and 'info' in vod_info:

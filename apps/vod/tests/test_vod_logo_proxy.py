@@ -16,7 +16,11 @@ class VODLogoProxyTestCase(TestCase):
         self.assertEqual(db_logo.url, "http://provider.example.com:8080//images//poster.jpg")
 
     @patch("apps.vod.api_views.requests.get")
-    def test_cache_sends_user_agent_header(self, mock_get):
+    @patch(
+        "apps.vod.api_views.CoreSettings.get_default_user_agent",
+        return_value="Dispatcharr-Test/1.0",
+    )
+    def test_cache_sends_user_agent_header(self, _mock_ua, mock_get):
         """Verify that VODLogoViewSet.cache passes the User-Agent header to requests.get."""
         mock_response = MagicMock()
         mock_response.status_code = 200
@@ -30,5 +34,7 @@ class VODLogoProxyTestCase(TestCase):
         self.assertEqual(response.content, b"fake_image_bytes")
         mock_get.assert_called_once()
         _, kwargs = mock_get.call_args
-        self.assertIn("headers", kwargs)
-        self.assertIn("User-Agent", kwargs["headers"])
+        self.assertEqual(
+            kwargs.get("headers"),
+            {"User-Agent": "Dispatcharr-Test/1.0"},
+        )

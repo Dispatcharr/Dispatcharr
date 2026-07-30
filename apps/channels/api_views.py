@@ -26,7 +26,7 @@ from apps.accounts.permissions import (
     permission_classes_by_method,
 )
 
-from core.models import UserAgent, CoreSettings
+from core.models import CoreSettings
 from core.utils import RedisClient, safe_upload_path, resolve_safe_local_data_path
 from apps.m3u.utils import convert_js_numbered_backreferences
 
@@ -2870,16 +2870,6 @@ class LogoViewSet(viewsets.ModelViewSet):
                 raise Http404("Remote image temporarily unavailable")
 
             try:
-                # Get the default user agent
-                try:
-                    default_user_agent_id = CoreSettings.get_default_user_agent_id()
-                    user_agent_obj = UserAgent.objects.get(id=int(default_user_agent_id))
-                    user_agent = user_agent_obj.user_agent
-                except (CoreSettings.DoesNotExist, UserAgent.DoesNotExist, ValueError):
-                    # Fallback if default not found
-                    from core.utils import dispatcharr_user_agent
-                    user_agent = dispatcharr_user_agent()
-
                 # Hard total timeout (connect + full download) prevents a slow
                 # server dripping bytes from holding a greenlet indefinitely.
                 _LOGO_TOTAL_TIMEOUT = 10  # seconds
@@ -2889,7 +2879,7 @@ class LogoViewSet(viewsets.ModelViewSet):
                     logo_url,
                     stream=True,
                     timeout=(3, 5),  # (connect_timeout, read_timeout per chunk)
-                    headers={'User-Agent': user_agent}
+                    headers={'User-Agent': CoreSettings.get_default_user_agent()}
                 )
                 if remote_response.status_code == 200:
                     # Eagerly read the full image with a total time + size cap

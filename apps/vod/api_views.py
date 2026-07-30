@@ -19,6 +19,7 @@ from apps.accounts.permissions import (
     permission_classes_by_action,
 )
 from core.utils import resolve_safe_local_data_path
+from core.models import CoreSettings
 from .models import (
     Series, VODCategory, Movie, Episode, VODLogo,
     M3USeriesRelation, M3UMovieRelation, M3UEpisodeRelation, M3UVODCategoryRelation
@@ -881,16 +882,6 @@ class VODLogoViewSet(viewsets.ModelViewSet):
                 return HttpResponse(status=404)
 
             try:
-                # Get the default user agent
-                try:
-                    from core.models import CoreSettings, UserAgent
-                    default_user_agent_id = CoreSettings.get_default_user_agent_id()
-                    user_agent_obj = UserAgent.objects.get(id=int(default_user_agent_id))
-                    user_agent = user_agent_obj.user_agent
-                except Exception:
-                    from core.utils import dispatcharr_user_agent
-                    user_agent = dispatcharr_user_agent()
-
                 _LOGO_TOTAL_TIMEOUT = 10  # seconds
                 _LOGO_MAX_BYTES = 5 * 1024 * 1024  # 5 MB
 
@@ -898,7 +889,7 @@ class VODLogoViewSet(viewsets.ModelViewSet):
                     logo.url,
                     stream=True,
                     timeout=(3, 5),  # (connect_timeout, read_timeout per chunk)
-                    headers={'User-Agent': user_agent},
+                    headers={'User-Agent': CoreSettings.get_default_user_agent()},
                 )
 
                 if remote_response.status_code != 200:

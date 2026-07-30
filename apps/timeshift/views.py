@@ -2499,8 +2499,8 @@ def _attempt_timeshift_stream(
     )
 
     try:
-        user_agent = m3u_account.get_user_agent().user_agent
-    except AttributeError:
+        user_agent = m3u_account.get_user_agent_string()
+    except Exception:
         user_agent = ""
     _store_pool_provider_user_agent(
         redis_client, pool_session_id, user_agent,

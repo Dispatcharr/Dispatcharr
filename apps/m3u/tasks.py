@@ -24,7 +24,7 @@ from core.utils import (
     log_system_event,
     ensure_custom_properties_dict,
 )
-from core.models import CoreSettings, UserAgent
+from core.models import CoreSettings
 from core.xtream_codes import Client as XCClient
 from core.utils import send_websocket_update
 from .utils import convert_js_numbered_backreferences, normalize_stream_url
@@ -184,12 +184,7 @@ def fetch_m3u_lines(account, use_cache=False):
         if not use_cache or not os.path.exists(file_path):
             try:
                 # Try to get account-specific user agent first
-                user_agent_obj = account.get_user_agent()
-                user_agent = (
-                    user_agent_obj.user_agent
-                    if user_agent_obj
-                    else "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-                )
+                user_agent = account.get_user_agent_string()
 
                 logger.debug(
                     f"Using user agent: {user_agent} for M3U account: {account.name}"
@@ -935,7 +930,7 @@ def collect_xc_streams(account_id, enabled_groups):
             account.server_url,
             account.username,
             account.password,
-            account.get_user_agent(),
+            account.get_user_agent_string(),
         ) as xc_client:
 
             stream_url_prefix = (
@@ -1104,7 +1099,7 @@ def process_xc_category_direct(account_id, batch, groups, hash_keys):
             account.server_url,
             account.username,
             account.password,
-            account.get_user_agent(),
+            account.get_user_agent_string(),
         ) as xc_client:
             # Log the batch details to help with debugging
             logger.debug(f"Processing XC batch: {batch}")
@@ -1614,47 +1609,7 @@ def refresh_m3u_groups(account_id, use_cache=False, full_refresh=False, scan_sta
             try:
                 # Debug the user agent issue
                 logger.debug(f"Getting user agent for account {account.id}")
-
-                # Use a hardcoded user agent string to avoid any issues with object structure
-                user_agent_string = (
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-                )
-
-                try:
-                    # Try to get the user agent directly from the database
-                    if account.user_agent_id:
-                        ua_obj = UserAgent.objects.get(id=account.user_agent_id)
-                        if (
-                            ua_obj
-                            and hasattr(ua_obj, "user_agent")
-                            and ua_obj.user_agent
-                        ):
-                            user_agent_string = ua_obj.user_agent
-                            logger.debug(
-                                f"Using user agent from account: {user_agent_string}"
-                            )
-                    else:
-                        # Get default user agent from CoreSettings
-                        default_ua_id = CoreSettings.get_default_user_agent_id()
-                        logger.debug(
-                            f"Default user agent ID from settings: {default_ua_id}"
-                        )
-                        if default_ua_id:
-                            ua_obj = UserAgent.objects.get(id=default_ua_id)
-                            if (
-                                ua_obj
-                                and hasattr(ua_obj, "user_agent")
-                                and ua_obj.user_agent
-                            ):
-                                user_agent_string = ua_obj.user_agent
-                                logger.debug(
-                                    f"Using default user agent: {user_agent_string}"
-                                )
-                except Exception as e:
-                    logger.warning(
-                        f"Error getting user agent, using fallback: {str(e)}"
-                    )
-
+                user_agent_string = account.get_user_agent_string()
                 logger.debug(f"Final user agent string: {user_agent_string}")
             except Exception as e:
                 user_agent_string = (
@@ -3200,13 +3155,9 @@ def refresh_account_profiles(account_id):
 
         # Get user agent for this account
         try:
-            user_agent_string = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-            if account.user_agent_id:
-                from core.models import UserAgent
-                ua_obj = UserAgent.objects.get(id=account.user_agent_id)
-                if ua_obj and hasattr(ua_obj, "user_agent") and ua_obj.user_agent:
-                    user_agent_string = ua_obj.user_agent
+            user_agent_string = account.get_user_agent_string()
         except Exception as e:
+            user_agent_string = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
             logger.warning(f"Error getting user agent, using fallback: {str(e)}")
         logger.debug(f"Using user agent for profile refresh: {user_agent_string}")
         # Get rate limiting delay from settings
@@ -3305,7 +3256,7 @@ def refresh_account_info(profile_id):
             transformed_url,
             transformed_username,
             transformed_password,
-            account.get_user_agent(),
+            account.get_user_agent_string(),
         )        # Authenticate and get account info
         auth_result = client.authenticate()
         if not auth_result:
