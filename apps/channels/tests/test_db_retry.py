@@ -9,7 +9,7 @@ Covers:
 from datetime import timedelta
 from unittest.mock import MagicMock, patch, call
 
-from django.db import OperationalError
+from django.db import InterfaceError, OperationalError
 from django.test import TestCase
 from django.utils import timezone
 
@@ -50,12 +50,41 @@ class DbRetryTests(TestCase):
 
     @patch("apps.channels.tasks.time.sleep")
     @patch("apps.channels.tasks.close_old_connections")
+    def test_retries_on_interface_error_then_succeeds(self, mock_close, mock_sleep):
+        """Retry succeeds on second attempt after InterfaceError (closed connection)."""
+        call_count = {"n": 0}
+
+        def flaky():
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                raise InterfaceError("connection already closed")
+            return "recovered"
+
+        result = _db_retry(flaky, max_retries=3, base_interval=1)
+        self.assertEqual(result, "recovered")
+        self.assertEqual(call_count["n"], 2)
+        mock_close.assert_called_once()
+
+    @patch("apps.channels.tasks.time.sleep")
+    @patch("apps.channels.tasks.close_old_connections")
     def test_raises_after_max_retries_exhausted(self, mock_close, mock_sleep):
         """Raises OperationalError after all retries fail."""
         def always_fail():
             raise OperationalError("db gone")
 
         with self.assertRaises(OperationalError):
+            _db_retry(always_fail, max_retries=3, base_interval=1)
+
+    @patch("apps.channels.tasks.time.sleep")
+    @patch("apps.channels.tasks.close_old_connections")
+    def test_raises_interface_error_after_max_retries_exhausted(
+        self, mock_close, mock_sleep
+    ):
+        """Raises InterfaceError after all retries fail."""
+        def always_fail():
+            raise InterfaceError("connection already closed")
+
+        with self.assertRaises(InterfaceError):
             _db_retry(always_fail, max_retries=3, base_interval=1)
 
     @patch("apps.channels.tasks.time.sleep")
@@ -90,8 +119,8 @@ class DbRetryTests(TestCase):
 
     @patch("apps.channels.tasks.time.sleep")
     @patch("apps.channels.tasks.close_old_connections")
-    def test_non_operational_error_not_retried(self, mock_close, mock_sleep):
-        """Non-OperationalError exceptions propagate immediately."""
+    def test_non_transient_error_not_retried(self, mock_close, mock_sleep):
+        """Non-transient exceptions (not OperationalError/InterfaceError) propagate immediately."""
         def raise_value_error():
             raise ValueError("not a DB error")
 
@@ -191,6 +220,36 @@ class IdempotencyGuardRetryTests(TestCase):
 
         self.assertEqual(call_count["n"], 5)
         self.assertIn("Idempotency guard DB check failed", "\n".join(logs.output))
+
+    @patch("apps.channels.tasks.time.sleep")
+    @patch("apps.channels.tasks.close_old_connections")
+    def test_guard_survives_transient_interface_error(self, _close, _sleep):
+        """A transient InterfaceError at fire time must not kill the recording."""
+        from apps.channels.tasks import run_recording
+
+        real_filter = Recording.objects.filter
+        call_count = {"n": 0}
+
+        def flaky_filter(*args, **kwargs):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                raise InterfaceError("connection already closed")
+            return real_filter(*args, **kwargs)
+
+        with patch.object(Recording.objects, "filter", side_effect=flaky_filter):
+            with self.assertLogs("apps.channels.tasks", level="WARNING") as logs:
+                run_recording(
+                    self.rec.id,
+                    self.channel.id,
+                    str(self.rec.start_time),
+                    str(self.rec.end_time),
+                )
+
+        joined = "\n".join(logs.output)
+        self.assertGreaterEqual(call_count["n"], 2)
+        self.assertIn("idempotency guard check: failed, retrying", joined)
+        self.assertIn("already 'completed'", joined)
+        self.assertNotIn("Idempotency guard DB check failed", joined)
 
 
 # ---------------------------------------------------------------------------

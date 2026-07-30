@@ -32,7 +32,7 @@ from apps.epg.models import EPGData
 from core.models import CoreSettings
 from core.utils import acquire_task_lock, release_task_lock
 
-from django.db import OperationalError, close_old_connections
+from django.db import InterfaceError, OperationalError, close_old_connections
 from channels.layers import get_channel_layer
 from asgiref.sync import async_to_sync
 import tempfile
@@ -174,11 +174,13 @@ def _db_retry(fn, max_retries=3, base_interval=1, label="DB operation"):
 
     Follows the same backoff pattern as RedisClient.get_client().
     Resets stale connections between attempts so the ORM reconnects.
+    Catches OperationalError and InterfaceError (dead/closed connection
+    errors under psycopg are siblings, not subclasses of OperationalError).
     """
     for attempt in range(max_retries):
         try:
             return fn()
-        except OperationalError:
+        except (OperationalError, InterfaceError):
             if attempt + 1 >= max_retries:
                 raise
             wait = base_interval * (2 ** attempt)
