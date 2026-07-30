@@ -117,9 +117,10 @@ class M3UAccount(models.Model):
     def get_user_agent(self):
         """Return the account-assigned UserAgent model, or None for system default.
 
-        For outbound HTTP headers and XC clients, prefer
-        ``get_user_agent_string()``, which uses the Redis-cached system default
-        when this account has no User-Agent of its own.
+        Returns None when this account has no User-Agent of its own so callers
+        do not pay a Postgres hit for the system default row. For outbound
+        HTTP headers and XC clients, use ``get_user_agent_string()``, which
+        resolves the Redis-cached system default when needed.
         """
         if self.user_agent_id:
             return self.user_agent

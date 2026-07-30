@@ -26,7 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **Default User-Agent string is Redis-cached for hot paths.** `CoreSettings.get_default_user_agent()` caches the configured default string in Redis (same TTL and invalidate pattern as settings groups). Channel/VOD logo proxies use it directly. Provider request paths go through `M3UAccount.get_user_agent_string()`, which prefers the account's own User-Agent when set and otherwise the cached system default (live/VOD/timeshift proxy, M3U/XC refresh, VOD tasks). The cache clears when stream settings or any User-Agent row changes.
+- **Default User-Agent string is Redis-cached for hot paths.** `CoreSettings.get_default_user_agent()` caches the configured default string in Redis (same TTL and invalidate pattern as settings groups). Channel/VOD logo proxies use it directly. Provider request paths go through `M3UAccount.get_user_agent_string()`, which prefers the account's own User-Agent when set and otherwise the cached system default (live/VOD/timeshift proxy, M3U/XC refresh, VOD tasks). Hot account loads use `select_related("user_agent")` / `m3u_account__user_agent` so account-specific UAs do not add an extra query. The cache clears when stream settings or any User-Agent row changes.
 - Dependency updates:
   - `Django` 6.0.6 → 6.0.7 (security patch; see Security section)
   - `drf-spectacular` 0.29.0 → 0.30.0

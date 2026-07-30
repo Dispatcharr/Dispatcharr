@@ -53,7 +53,10 @@ def get_stream_object(id: str):
     except:
         # UUID check failed, assume stream hash
         logger.info(f"Fetching stream hash {id}")
-        return get_object_or_404(Stream, stream_hash=id)
+        return get_object_or_404(
+            Stream.objects.select_related("m3u_account__user_agent"),
+            stream_hash=id,
+        )
 
 def generate_stream_url(
     channel_id: str,
@@ -82,12 +85,15 @@ def generate_stream_url(
                 return None, None, False, None, False, error_reason
 
             try:
-                profile = M3UAccountProfile.objects.get(id=profile_id)
-                m3u_account = stream.m3u_account
+                m3u_profile = M3UAccountProfile.objects.select_related(
+                    "m3u_account__user_agent"
+                ).get(id=profile_id)
+                # Prefer the profile's account so select_related populates the UA.
+                m3u_account = m3u_profile.m3u_account or stream.m3u_account
 
                 stream_user_agent = m3u_account.get_user_agent_string()
 
-                stream_url = _resolve_live_stream_url(stream, m3u_account, profile)
+                stream_url = _resolve_live_stream_url(stream, m3u_account, m3u_profile)
 
                 stream_profile = stream.get_stream_profile()
                 logger.debug(f"Using stream profile: {stream_profile.name}")
@@ -115,15 +121,12 @@ def generate_stream_url(
 
         # get_stream() allocated a connection slot - ensure it's released on any error
         try:
-            # Look up the Stream and Profile objects
             stream = Stream.objects.get(id=stream_id)
-            profile = M3UAccountProfile.objects.get(id=profile_id)
+            m3u_profile = M3UAccountProfile.objects.select_related(
+                "m3u_account__user_agent"
+            ).get(id=profile_id)
 
-            # Get the M3U account profile for URL pattern
-            m3u_profile = profile
-
-            # Get the appropriate user agent
-            m3u_account = M3UAccount.objects.get(id=m3u_profile.m3u_account.id)
+            m3u_account = m3u_profile.m3u_account
             stream_user_agent = m3u_account.get_user_agent_string()
 
             stream_url = _resolve_live_stream_url(stream, m3u_account, m3u_profile)
@@ -209,7 +212,10 @@ def get_stream_info_for_switch(channel_id: str, target_stream_id: Optional[int] 
             stream_id = target_stream_id
 
             # Get the stream object
-            stream = get_object_or_404(Stream, pk=stream_id)
+            stream = get_object_or_404(
+                Stream.objects.select_related("m3u_account"),
+                pk=stream_id,
+            )
 
             # Find compatible profile for this stream with connection availability check
             m3u_account = stream.m3u_account
@@ -268,12 +274,15 @@ def get_stream_info_for_switch(channel_id: str, target_stream_id: Optional[int] 
                 return {'error': error_reason or 'No stream assigned to channel'}
 
         stream = get_object_or_404(Stream, pk=stream_id)
-        profile = get_object_or_404(M3UAccountProfile, pk=m3u_profile_id)
+        m3u_profile = get_object_or_404(
+            M3UAccountProfile.objects.select_related("m3u_account__user_agent"),
+            pk=m3u_profile_id,
+        )
 
-        m3u_account = M3UAccount.objects.get(id=profile.m3u_account.id)
+        m3u_account = m3u_profile.m3u_account
         user_agent = m3u_account.get_user_agent_string()
 
-        stream_url = _resolve_live_stream_url(stream, m3u_account, profile)
+        stream_url = _resolve_live_stream_url(stream, m3u_account, m3u_profile)
 
         stream_profile = channel.get_stream_profile()
         transcode = not (stream_profile.is_proxy() or stream_profile is None)

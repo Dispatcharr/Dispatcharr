@@ -118,7 +118,7 @@ def get_channel_catchup_streams(channel):
     return list(
         channel.streams.filter(is_catchup=True, m3u_account__is_active=True)
         .order_by("channelstream__order")
-        .select_related("m3u_account")
+        .select_related("m3u_account__user_agent")
     )
 
 

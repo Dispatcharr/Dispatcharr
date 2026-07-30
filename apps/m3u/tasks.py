@@ -100,7 +100,7 @@ def _db_query_with_retry(fn, *, label="DB query", max_retries=2):
 
 def _get_active_m3u_account(account_id):
     return _db_query_with_retry(
-        lambda: M3UAccount.objects.get(id=account_id, is_active=True),
+        lambda: M3UAccount.objects.select_related("user_agent").get(id=account_id, is_active=True),
         label=f"load active M3U account {account_id}",
     )
 
@@ -912,7 +912,7 @@ def cleanup_stale_group_relationships(account, scan_start_time):
 
 def collect_xc_streams(account_id, enabled_groups):
     """Collect all XC streams in a single API call and filter by enabled groups."""
-    account = M3UAccount.objects.get(id=account_id)
+    account = M3UAccount.objects.select_related("user_agent").get(id=account_id)
     all_streams = []
     filtered_count = 0
 
@@ -1087,7 +1087,7 @@ def process_xc_category_direct(account_id, batch, groups, hash_keys):
     # Ensure clean database connections for threading
     connections.close_all()
 
-    account = M3UAccount.objects.get(id=account_id)
+    account = M3UAccount.objects.select_related("user_agent").get(id=account_id)
 
     streams_to_create = []
     streams_to_update = []
@@ -1293,7 +1293,7 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys, compiled_filt
     # Ensure clean database connections for threading
     connections.close_all()
 
-    account = M3UAccount.objects.get(id=account_id)
+    account = M3UAccount.objects.select_related("user_agent").get(id=account_id)
 
     if compiled_filters is None:
         compiled_filters = _compile_m3u_stream_filters(account.filters.order_by("order"))
@@ -1495,7 +1495,7 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys, compiled_filt
 
 
 def cleanup_streams(account_id, scan_start_time=timezone.now):
-    account = M3UAccount.objects.get(id=account_id, is_active=True)
+    account = M3UAccount.objects.select_related("user_agent").get(id=account_id, is_active=True)
     existing_groups = ChannelGroup.objects.filter(
         m3u_accounts__m3u_account=account,
         m3u_accounts__enabled=True,
@@ -1552,7 +1552,7 @@ def refresh_m3u_groups(account_id, use_cache=False, full_refresh=False, scan_sta
     lock_renewer.start()
 
     try:
-        account = M3UAccount.objects.get(id=account_id, is_active=True)
+        account = M3UAccount.objects.select_related("user_agent").get(id=account_id, is_active=True)
     except M3UAccount.DoesNotExist:
         lock_renewer.stop()
         release_task_lock("refresh_m3u_account_groups", account_id)
@@ -2040,7 +2040,7 @@ def sync_auto_channels(account_id, scan_start_time=None):
     rename_regex_timeout = 0.1
 
     try:
-        account = M3UAccount.objects.get(id=account_id)
+        account = M3UAccount.objects.select_related("user_agent").get(id=account_id)
         logger.info(f"Starting auto channel sync for M3U account {account.name}")
 
         # Always use scan_start_time as the cutoff for last_seen
@@ -3136,7 +3136,7 @@ def refresh_account_profiles(account_id):
     import time
 
     try:
-        account = M3UAccount.objects.get(id=account_id, is_active=True)
+        account = M3UAccount.objects.select_related("user_agent").get(id=account_id, is_active=True)
 
         if account.account_type != M3UAccount.Types.XC:
             logger.debug(f"Account {account_id} is not XC type, skipping profile refresh")
@@ -3241,7 +3241,9 @@ def refresh_account_info(profile_id):
         from apps.m3u.models import M3UAccountProfile
         import re
 
-        profile = M3UAccountProfile.objects.get(id=profile_id)
+        profile = M3UAccountProfile.objects.select_related(
+            "m3u_account__user_agent"
+        ).get(id=profile_id)
         account = profile.m3u_account
 
         if account.account_type != M3UAccount.Types.XC:
@@ -3493,7 +3495,7 @@ def _refresh_single_m3u_account_impl(account_id):
 
             # XC accounts can have empty extinf_data but valid groups
             try:
-                account = M3UAccount.objects.get(id=account_id)
+                account = M3UAccount.objects.select_related("user_agent").get(id=account_id)
                 is_xc_account = account.account_type == M3UAccount.Types.XC
             except M3UAccount.DoesNotExist:
                 is_xc_account = False

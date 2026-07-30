@@ -54,7 +54,7 @@ def refresh_vod_content(account_id):
     from apps.m3u.tasks import send_m3u_update
 
     try:
-        account = M3UAccount.objects.get(id=account_id, is_active=True)
+        account = M3UAccount.objects.select_related("user_agent").get(id=account_id, is_active=True)
 
         if account.account_type != M3UAccount.Types.XC:
             logger.warning(f"VOD refresh called for non-XC account {account_id}")
@@ -126,7 +126,7 @@ def refresh_vod_content(account_id):
         return f"VOD refresh failed: {str(e)}"
 
 def refresh_categories(account_id, client=None):
-    account = M3UAccount.objects.get(id=account_id, is_active=True)
+    account = M3UAccount.objects.select_related("user_agent").get(id=account_id, is_active=True)
 
     if not client:
         client = XtreamCodesClient(
@@ -1644,7 +1644,7 @@ def batch_refresh_series_episodes(account_id, series_ids=None):
     If series_ids is None, refresh all series that haven't been refreshed recently.
     """
     try:
-        account = M3UAccount.objects.get(id=account_id, is_active=True)
+        account = M3UAccount.objects.select_related("user_agent").get(id=account_id, is_active=True)
 
         if account.account_type != M3UAccount.Types.XC:
             logger.warning(f"Episode refresh called for non-XC account {account_id}")
@@ -2143,7 +2143,7 @@ def refresh_movie_advanced_data(m3u_movie_relation_id, force_refresh=False):
     Only fetch if last_advanced_refresh > 24h ago, unless force_refresh is True.
     """
     try:
-        relation = M3UMovieRelation.objects.select_related('movie', 'm3u_account').get(id=m3u_movie_relation_id)
+        relation = M3UMovieRelation.objects.select_related('movie', 'm3u_account__user_agent').get(id=m3u_movie_relation_id)
         now = timezone.now()
         if not force_refresh and relation.last_advanced_refresh and (now - relation.last_advanced_refresh).total_seconds() < 86400:
             return "Advanced data recently fetched, skipping."
