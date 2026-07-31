@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **Type filter on the M3U and EPG source tables.** M3U & EPG Manager now has a filter dropdown on each table (M3U/XC for playlists, XMLTV/Schedules Direct/Dummy for EPG sources), matching the checklist-style filter menu already used on the Channels page, to narrow the list by type. All types are checked by default; the button highlights and a Reset option appears once anything is unchecked. The selection persists per table across reloads.
+- **Parent-scoped VOD image proxy for backdrops and episode stills.** Movies, series, and episodes expose `GET /api/vod/{movies|series|episodes}/{id}/image/?kind=...` that fetches URLs already stored on the item. Provider-info and XC responses rewrite absolute `backdrop_path` / episode `movie_image` values to those proxy paths; nginx caches them alongside VOD logos. The VOD UI now prefers `logo.cache_url` for posters. Channel logos and VOD images share `core.image_proxy.serve_local_or_remote_image` for fetch timeouts, size caps, and negative failure caching. (Closes #863, Fixes #1174)
 
 ### Security
 

@@ -15,9 +15,9 @@ class VODLogoProxyTestCase(TestCase):
         db_logo = VODLogo.objects.get(id=self.http_logo.id)
         self.assertEqual(db_logo.url, "http://provider.example.com:8080//images//poster.jpg")
 
-    @patch("apps.vod.api_views.requests.get")
+    @patch("core.image_proxy.requests.get")
     @patch(
-        "apps.vod.api_views.CoreSettings.get_default_user_agent",
+        "core.image_proxy.CoreSettings.get_default_user_agent",
         return_value="Dispatcharr-Test/1.0",
     )
     def test_cache_sends_user_agent_header(self, _mock_ua, mock_get):

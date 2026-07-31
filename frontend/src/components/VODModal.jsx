@@ -392,10 +392,16 @@ const VODModal = ({ vod, opened, onClose }) => {
               {/* Movie poster and basic info */}
               <Flex gap="md">
                 {/* Use movie_image or logo */}
-                {displayVOD.movie_image || displayVOD.logo?.url ? (
+                {displayVOD.movie_image ||
+                displayVOD.logo?.cache_url ||
+                displayVOD.logo?.url ? (
                   <Box style={{ flexShrink: 0 }}>
                     <Image
-                      src={displayVOD.movie_image || displayVOD.logo.url}
+                      src={
+                        displayVOD.movie_image ||
+                        displayVOD.logo?.cache_url ||
+                        displayVOD.logo?.url
+                      }
                       width={200}
                       height={300}
                       alt={displayVOD.name}

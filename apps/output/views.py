@@ -26,6 +26,11 @@ from core.models import CoreSettings
 from core.utils import log_system_event, build_absolute_uri_with_port
 import hashlib
 from apps.output.epg import generate_epg, generate_dummy_programs
+from apps.vod.image_proxy import (
+    rewrite_backdrop_paths,
+    rewrite_single_image_url,
+    vod_image_url_parts,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1180,6 +1185,8 @@ def xc_get_series(request, user, category_id=None):
     _logo_prefix_raw, _, _logo_suffix_raw = _sample_logo_path.partition("/0/")
     _logo_url_prefix = _base_url + _logo_prefix_raw + "/"
     _logo_url_suffix = "/" + _logo_suffix_raw
+    # One reverse for all series backdrop rewrites.
+    _series_image_parts = vod_image_url_parts(request, "series")
 
     series_list = []
     append = series_list.append
@@ -1207,7 +1214,13 @@ def xc_get_series(request, user, category_id=None):
             "last_modified": str(int(row['updated_at'].timestamp())),
             "rating": str(rating or "0"),
             "rating_5based": str(round(float(rating or 0) / 2, 2)) if rating else "0",
-            "backdrop_path": custom_props.get('backdrop_path', []),
+            "backdrop_path": rewrite_backdrop_paths(
+                request,
+                'series',
+                row['series__id'],
+                custom_props.get('backdrop_path', []),
+                url_parts=_series_image_parts,
+            ),
             "youtube_trailer": custom_props.get('youtube_trailer', ''),
             "episode_run_time": custom_props.get('episode_run_time', ''),
             "category_id": str(category_id) if category_id else "0",
@@ -1271,6 +1284,8 @@ def xc_get_series_info(request, user, series_id):
 
     # Group episodes by season
     seasons = {}
+    # One reverse for all episode image rewrites in this response.
+    _episode_image_parts = vod_image_url_parts(request, "episode")
     for episode in episodes:
         season_num = episode.season_number or 1
         if season_num not in seasons:
@@ -1323,8 +1338,21 @@ def xc_get_series_info(request, user, series_id):
                 "directed_by": episode.custom_properties.get('director', '') if episode.custom_properties else "",
                 "imdb_id": episode.imdb_id or "",
                 "air_date": f"{episode.air_date}" if episode.air_date else "",
-                "backdrop_path": episode.custom_properties.get('backdrop_path', []) if episode.custom_properties else [],
-                "movie_image": episode.custom_properties.get('movie_image', '') if episode.custom_properties else "",
+                "backdrop_path": rewrite_backdrop_paths(
+                    request,
+                    'episode',
+                    episode.id,
+                    episode.custom_properties.get('backdrop_path', []) if episode.custom_properties else [],
+                    url_parts=_episode_image_parts,
+                ),
+                "movie_image": rewrite_single_image_url(
+                    request,
+                    'episode',
+                    episode.id,
+                    'movie_image',
+                    episode.custom_properties.get('movie_image', '') if episode.custom_properties else '',
+                    url_parts=_episode_image_parts,
+                ),
                 "rating": float(episode.rating or 0),
                 "release_date": f"{episode.air_date}" if episode.air_date else "",
                 "duration_secs": (episode.duration_secs or 0),
@@ -1414,7 +1442,12 @@ def xc_get_series_info(request, user, series_id):
             "last_modified": str(int(series_relation.updated_at.timestamp())),
             "rating": str(series_data['rating']),
             "rating_5based": str(round(float(series_data['rating'] or 0) / 2, 2)) if series_data['rating'] else "0",
-            "backdrop_path": series_data['backdrop_path'],
+            "backdrop_path": rewrite_backdrop_paths(
+                request,
+                'series',
+                series.id,
+                (series.custom_properties or {}).get('backdrop_path') or [],
+            ),
             "youtube_trailer": series_data['youtube_trailer'],
             "imdb": str(series.imdb_id) if series.imdb_id else "",
             "tmdb": str(series.tmdb_id) if series.tmdb_id else "",
@@ -1552,7 +1585,12 @@ def xc_get_vod_info(request, user, vod_id):
             'imdb_id': movie_data.get('imdb_id', ''),
             "tmdb_id": movie_data.get('tmdb_id', ''),
             'youtube_trailer': movie_data.get('youtube_trailer', ''),
-            'backdrop_path': movie_data.get('backdrop_path', []),
+            'backdrop_path': rewrite_backdrop_paths(
+                request,
+                'movie',
+                movie.id,
+                (movie.custom_properties or {}).get('backdrop_path') or [],
+            ),
             'cover': movie_data.get('cover_big', ''),
             'bitrate': movie_data.get('bitrate', 0),
             'video': movie_data.get('video', {}),
