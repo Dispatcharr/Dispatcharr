@@ -367,7 +367,19 @@ class M3UAccountProfile(models.Model):
 
 @receiver(models.signals.post_save, sender=M3UAccount)
 def create_profile_for_m3u_account(sender, instance, created, **kwargs):
-    """Automatically create an M3UAccountProfile when M3UAccount is created."""
+    """Create the default profile on account create; keep its max_streams in sync on update.
+
+    Account form Max Streams is enforced via the default profile's max_streams
+    (connection pool / playback). Sync only when max_streams is part of the
+    account save and the value actually changed. Status/last_message saves
+    during M3U refresh must not load or rewrite the default profile, or they
+    can race with XC account-info refresh and clobber exp_date /
+    custom_properties.
+
+    Uses QuerySet.update (not model.save) so we never touch other profile
+    columns and avoid profile.save() side effects (XC exp_date JSON sync,
+    expiration-notification signal).
+    """
     if created:
         M3UAccountProfile.objects.create(
             m3u_account=instance,
@@ -378,11 +390,15 @@ def create_profile_for_m3u_account(sender, instance, created, **kwargs):
             search_pattern="^(.*)$",
             replace_pattern="$1",
         )
-    else:
-        profile = M3UAccountProfile.objects.get(
-            m3u_account=instance,
-            is_default=True,
-        )
+        return
 
-        profile.max_streams = instance.max_streams
-        profile.save()
+    update_fields = kwargs.get("update_fields")
+    if update_fields is not None and "max_streams" not in update_fields:
+        return
+
+    M3UAccountProfile.objects.filter(
+        m3u_account=instance,
+        is_default=True,
+    ).exclude(max_streams=instance.max_streams).update(
+        max_streams=instance.max_streams
+    )
