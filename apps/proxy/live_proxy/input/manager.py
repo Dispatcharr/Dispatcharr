@@ -740,7 +740,7 @@ class StreamManager:
                     stream_profile = channel.get_stream_profile()
 
                 # Build and start transcode command
-                self.transcode_cmd = stream_profile.build_command(self.url, self.user_agent)
+                self.transcode_cmd = stream_profile.build_command(self.url, self.user_agent, channel.id)
 
                 # Store stream command for efficient log parser routing
                 self.stream_command = stream_profile.command
