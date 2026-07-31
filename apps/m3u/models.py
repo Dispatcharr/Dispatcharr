@@ -1,12 +1,11 @@
 from datetime import datetime, timezone
 from django.db import models
 from django.core.exceptions import ValidationError
-from core.models import UserAgent
+from core.models import CoreSettings, UserAgent
 import re
 from django.dispatch import receiver
 from apps.channels.models import StreamProfile
 from django_celery_beat.models import PeriodicTask
-from core.models import CoreSettings, UserAgent
 from core.utils import custom_properties_as_dict
 
 CUSTOM_M3U_ACCOUNT_NAME = "custom"
@@ -116,13 +115,28 @@ class M3UAccount(models.Model):
         return cls.objects.get(name=CUSTOM_M3U_ACCOUNT_NAME, locked=True)
 
     def get_user_agent(self):
-        user_agent = self.user_agent
-        if not user_agent:
-            user_agent = UserAgent.objects.get(
-                id=CoreSettings.get_default_user_agent_id()
-            )
+        """Return the account-assigned UserAgent model, or None for system default.
 
-        return user_agent
+        Returns None when this account has no User-Agent of its own so callers
+        do not pay a Postgres hit for the system default row. For outbound
+        HTTP headers and XC clients, use ``get_user_agent_string()``, which
+        resolves the Redis-cached system default when needed.
+        """
+        if self.user_agent_id:
+            return self.user_agent
+        return None
+
+    def get_user_agent_string(self):
+        """Return the User-Agent string for provider requests.
+
+        Uses this account's configured User-Agent when set; otherwise the
+        Redis-cached system default from ``CoreSettings.get_default_user_agent()``.
+        """
+        if self.user_agent_id:
+            ua = self.user_agent
+            if ua is not None and ua.user_agent:
+                return ua.user_agent
+        return CoreSettings.get_default_user_agent()
 
     def save(self, *args, **kwargs):
         if self.custom_properties is not None and not isinstance(

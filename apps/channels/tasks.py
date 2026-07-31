@@ -32,7 +32,7 @@ from apps.epg.models import EPGData
 from core.models import CoreSettings
 from core.utils import acquire_task_lock, release_task_lock
 
-from django.db import OperationalError, close_old_connections
+from django.db import InterfaceError, OperationalError, close_old_connections
 from channels.layers import get_channel_layer
 from asgiref.sync import async_to_sync
 import tempfile
@@ -169,16 +169,31 @@ def _match_epg_program_by_timeslot(channel_epg_data, rec_start, rec_end):
     return None
 
 
-def _db_retry(fn, max_retries=3, base_interval=1, label="DB operation"):
-    """Execute fn() with exponential backoff retry on transient DB errors.
+# Default: transient DB errors only. InterfaceError is a sibling of
+# DatabaseError (not a subclass of OperationalError), so both are listed.
+_DB_RETRY_TRANSIENT = (OperationalError, InterfaceError)
+
+
+def _db_retry(
+    fn,
+    max_retries=3,
+    base_interval=1,
+    label="DB operation",
+    retry_exceptions=_DB_RETRY_TRANSIENT,
+):
+    """Execute fn() with exponential backoff on selected exceptions.
 
     Follows the same backoff pattern as RedisClient.get_client().
     Resets stale connections between attempts so the ORM reconnects.
+
+    By default only OperationalError / InterfaceError are retried (in-recording
+    and recovery call sites). Pass retry_exceptions=Exception for fire-time
+    checks where any failure must be retried before fail-closed abort.
     """
     for attempt in range(max_retries):
         try:
             return fn()
-        except OperationalError:
+        except retry_exceptions:
             if attempt + 1 >= max_retries:
                 raise
             wait = base_interval * (2 ** attempt)
@@ -1322,10 +1337,20 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
     from .models import Recording, Logo
 
     # --- Idempotency guard (prevents duplicate recordings from task redelivery) ---
-    # Fail closed: if the DB is unreachable, abort rather than risk a duplicate
-    # task overwriting a valid recording.
+    # Fail closed after retries: without a definitive status read we must not
+    # start ffmpeg. Retry any Exception (not only transient DB errors) over a
+    # wider window than in-recording retries, because nothing re-dispatches
+    # this task if the guard aborts.
+    _guard_db_max_retries = 5
+    _guard_db_retry_interval = 2  # seconds (base for exponential backoff)
     try:
-        rec_check = Recording.objects.filter(id=recording_id).only("custom_properties").first()
+        rec_check = _db_retry(
+            lambda: Recording.objects.filter(id=recording_id).only("custom_properties").first(),
+            max_retries=_guard_db_max_retries,
+            base_interval=_guard_db_retry_interval,
+            label=f"DVR recording {recording_id}: idempotency guard check",
+            retry_exceptions=Exception,
+        )
         if not rec_check:
             logger.info(
                 f"run_recording called for recording {recording_id} but it no longer exists — skipping."

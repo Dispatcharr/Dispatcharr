@@ -293,6 +293,122 @@ class DispatcharrUserAgentTests(TestCase):
         })
 
 
+class DefaultUserAgentCacheTests(TestCase):
+    """Resolved default User-Agent string is Redis-cached and invalidated."""
+
+    def setUp(self):
+        from core.models import UserAgent
+
+        cache.clear()
+        CoreSettings.objects.filter(key=STREAM_SETTINGS_KEY).delete()
+        self.UserAgent = UserAgent
+        self.ua = UserAgent.objects.create(
+            name="Cache Test UA",
+            user_agent="CacheTestAgent/1.0",
+        )
+        CoreSettings.objects.create(
+            key=STREAM_SETTINGS_KEY,
+            name="Stream Settings",
+            value={"default_user_agent": self.ua.id},
+        )
+
+    def tearDown(self):
+        cache.clear()
+
+    def test_second_read_does_not_query_database(self):
+        self.assertEqual(CoreSettings.get_default_user_agent(), "CacheTestAgent/1.0")
+        with self.assertNumQueries(0):
+            self.assertEqual(
+                CoreSettings.get_default_user_agent(), "CacheTestAgent/1.0"
+            )
+
+    def test_stream_settings_save_invalidates_string_cache(self):
+        self.assertEqual(CoreSettings.get_default_user_agent(), "CacheTestAgent/1.0")
+
+        other = self.UserAgent.objects.create(
+            name="Other UA",
+            user_agent="OtherAgent/2.0",
+        )
+        obj = CoreSettings.objects.get(key=STREAM_SETTINGS_KEY)
+        obj.value = {**obj.value, "default_user_agent": other.id}
+        obj.save()
+
+        self.assertEqual(CoreSettings.get_default_user_agent(), "OtherAgent/2.0")
+
+    def test_user_agent_save_invalidates_string_cache(self):
+        self.assertEqual(CoreSettings.get_default_user_agent(), "CacheTestAgent/1.0")
+
+        self.ua.user_agent = "CacheTestAgent/1.1"
+        self.ua.save()
+
+        self.assertEqual(CoreSettings.get_default_user_agent(), "CacheTestAgent/1.1")
+
+    def test_user_agent_delete_falls_back_to_dispatcharr(self):
+        self.assertEqual(CoreSettings.get_default_user_agent(), "CacheTestAgent/1.0")
+
+        ua_id = self.ua.id
+        self.ua.delete()
+
+        with patch("version.__version__", "9.9.9"), self.assertLogs(
+            "core.models", level="WARNING"
+        ) as logs:
+            # Stale id remains in stream settings; missing row uses fallback.
+            self.assertEqual(
+                CoreSettings.get_default_user_agent(), "Dispatcharr/9.9.9"
+            )
+        self.assertTrue(
+            any("not found" in message for message in logs.output),
+            logs.output,
+        )
+        # Id is still the deleted one (settings not rewritten).
+        self.assertEqual(
+            str(CoreSettings.get_default_user_agent_id()), str(ua_id)
+        )
+
+    @patch("version.__version__", "1.2.3")
+    def test_missing_default_falls_back_without_warning(self):
+        CoreSettings.objects.filter(key=STREAM_SETTINGS_KEY).delete()
+        cache.clear()
+
+        with self.assertNoLogs("core.models", level="WARNING"):
+            self.assertEqual(CoreSettings.get_default_user_agent(), "Dispatcharr/1.2.3")
+        with self.assertNumQueries(0):
+            self.assertEqual(
+                CoreSettings.get_default_user_agent(), "Dispatcharr/1.2.3"
+            )
+    def test_stale_fill_does_not_repoison_after_invalidate(self):
+        cache.delete(core_models._DEFAULT_USER_AGENT_CACHE_KEY)
+
+        real_get = self.UserAgent.objects.get
+        cached_sets = []
+
+        def racing_get(*args, **kwargs):
+            row = real_get(*args, **kwargs)
+            CoreSettings.invalidate_default_user_agent_cache()
+            return row
+
+        real_set = cache.set
+
+        def tracking_set(key, value, timeout=None, **kwargs):
+            cached_sets.append(key)
+            return real_set(key, value, timeout=timeout, **kwargs)
+
+        with patch.object(self.UserAgent.objects, "get", side_effect=racing_get), \
+             patch.object(cache, "set", side_effect=tracking_set):
+            CoreSettings.get_default_user_agent()
+
+        self.assertNotIn(core_models._DEFAULT_USER_AGENT_CACHE_KEY, cached_sets)
+
+    def test_redis_down_falls_back_to_postgres(self):
+        from redis.exceptions import ConnectionError as RedisConnectionError
+
+        cache.clear()
+        with patch.object(cache, "get", side_effect=RedisConnectionError("down")), \
+             patch.object(cache, "set", side_effect=RedisConnectionError("down")):
+            self.assertEqual(
+                CoreSettings.get_default_user_agent(), "CacheTestAgent/1.0"
+            )
+
 class ProgrammeIndexRebuildTests(TestCase):
     def test_startup_rebuild_does_not_lock_out_queued_build_task(self):
         source = EPGSource.objects.create(

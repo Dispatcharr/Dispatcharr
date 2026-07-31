@@ -51,7 +51,7 @@ from apps.proxy.utils import (
     find_ts_sync,
     get_user_active_connections,
 )
-from core.utils import RedisClient, _is_gevent_monkey_patched
+from core.utils import RedisClient, _is_gevent_monkey_patched, dispatcharr_user_agent
 from dispatcharr.utils import network_access_allowed
 
 from .helpers import (
@@ -2499,9 +2499,9 @@ def _attempt_timeshift_stream(
     )
 
     try:
-        user_agent = m3u_account.get_user_agent().user_agent
-    except AttributeError:
-        user_agent = ""
+        user_agent = m3u_account.get_user_agent_string()
+    except Exception:
+        user_agent = dispatcharr_user_agent()
     _store_pool_provider_user_agent(
         redis_client, pool_session_id, user_agent,
     )
@@ -2575,7 +2575,9 @@ def _stream_reused_session(
 ):
     """Stream an idle pooled session that was just re-reserved for this request."""
     try:
-        m3u_account = M3UAccount.objects.get(id=int(descriptor["account_id"]))
+        m3u_account = M3UAccount.objects.select_related("user_agent").get(
+            id=int(descriptor["account_id"])
+        )
     except (M3UAccount.DoesNotExist, ValueError, TypeError):
         _discard_pool_session(redis_client, session_id, profile.id)
         return None

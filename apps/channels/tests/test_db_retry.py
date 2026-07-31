@@ -1,7 +1,9 @@
 """Tests for DVR retry logic.
 
 Covers:
-  - _db_retry(): exponential backoff, max retries, connection reset
+  - _db_retry(): exponential backoff, max retries, connection reset,
+    default transient DB exceptions vs retry_exceptions override
+  - run_recording idempotency guard retries any Exception then fail-closed
   - Final metadata save retry in run_recording post-processing
   - Initial TS proxy connection retry (per-base retry on retriable errors)
   - recover_recordings_on_startup DB retry wrappers
@@ -9,7 +11,7 @@ Covers:
 from datetime import timedelta
 from unittest.mock import MagicMock, patch, call
 
-from django.db import OperationalError
+from django.db import InterfaceError, OperationalError
 from django.test import TestCase
 from django.utils import timezone
 
@@ -50,12 +52,41 @@ class DbRetryTests(TestCase):
 
     @patch("apps.channels.tasks.time.sleep")
     @patch("apps.channels.tasks.close_old_connections")
+    def test_retries_on_interface_error_then_succeeds(self, mock_close, mock_sleep):
+        """Retry succeeds on second attempt after InterfaceError (closed connection)."""
+        call_count = {"n": 0}
+
+        def flaky():
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                raise InterfaceError("connection already closed")
+            return "recovered"
+
+        result = _db_retry(flaky, max_retries=3, base_interval=1)
+        self.assertEqual(result, "recovered")
+        self.assertEqual(call_count["n"], 2)
+        mock_close.assert_called_once()
+
+    @patch("apps.channels.tasks.time.sleep")
+    @patch("apps.channels.tasks.close_old_connections")
     def test_raises_after_max_retries_exhausted(self, mock_close, mock_sleep):
         """Raises OperationalError after all retries fail."""
         def always_fail():
             raise OperationalError("db gone")
 
         with self.assertRaises(OperationalError):
+            _db_retry(always_fail, max_retries=3, base_interval=1)
+
+    @patch("apps.channels.tasks.time.sleep")
+    @patch("apps.channels.tasks.close_old_connections")
+    def test_raises_interface_error_after_max_retries_exhausted(
+        self, mock_close, mock_sleep
+    ):
+        """Raises InterfaceError after all retries fail."""
+        def always_fail():
+            raise InterfaceError("connection already closed")
+
+        with self.assertRaises(InterfaceError):
             _db_retry(always_fail, max_retries=3, base_interval=1)
 
     @patch("apps.channels.tasks.time.sleep")
@@ -90,14 +121,36 @@ class DbRetryTests(TestCase):
 
     @patch("apps.channels.tasks.time.sleep")
     @patch("apps.channels.tasks.close_old_connections")
-    def test_non_operational_error_not_retried(self, mock_close, mock_sleep):
-        """Non-OperationalError exceptions propagate immediately."""
+    def test_non_transient_error_not_retried(self, mock_close, mock_sleep):
+        """By default, non-DB exceptions propagate immediately."""
         def raise_value_error():
             raise ValueError("not a DB error")
 
         with self.assertRaises(ValueError):
             _db_retry(raise_value_error, max_retries=3)
         mock_sleep.assert_not_called()
+
+    @patch("apps.channels.tasks.time.sleep")
+    @patch("apps.channels.tasks.close_old_connections")
+    def test_retry_exceptions_override_retries_any_exception(
+        self, mock_close, mock_sleep
+    ):
+        """retry_exceptions=Exception retries non-DB errors then succeeds."""
+        call_count = {"n": 0}
+
+        def flaky():
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                raise RuntimeError("unexpected blip")
+            return "recovered"
+
+        result = _db_retry(
+            flaky, max_retries=3, base_interval=1, retry_exceptions=Exception
+        )
+        self.assertEqual(result, "recovered")
+        self.assertEqual(call_count["n"], 2)
+        mock_close.assert_called_once()
+        mock_sleep.assert_called_once_with(1)
 
     @patch("apps.channels.tasks.time.sleep")
     @patch("apps.channels.tasks.close_old_connections")
@@ -116,6 +169,116 @@ class DbRetryTests(TestCase):
                 max_retries=1,
             )
         mock_sleep.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# run_recording idempotency guard retry tests
+# ---------------------------------------------------------------------------
+
+class IdempotencyGuardRetryTests(TestCase):
+    """The run_recording idempotency guard retries any Exception before fail-closed."""
+
+    def setUp(self):
+        self.channel = Channel.objects.create(
+            channel_number=96, name="Guard Retry Channel"
+        )
+        now = timezone.now()
+        self.rec = Recording.objects.create(
+            channel=self.channel,
+            start_time=now,
+            end_time=now + timedelta(minutes=30),
+            # Terminal status so run_recording exits right after the guard passes
+            custom_properties={"status": "completed"},
+        )
+
+    def _run_with_flaky_filter(self, flaky_filter):
+        from apps.channels.tasks import run_recording
+
+        with patch.object(Recording.objects, "filter", side_effect=flaky_filter):
+            run_recording(
+                self.rec.id,
+                self.channel.id,
+                str(self.rec.start_time),
+                str(self.rec.end_time),
+            )
+
+    @patch("apps.channels.tasks.time.sleep")
+    @patch("apps.channels.tasks.close_old_connections")
+    def test_guard_survives_transient_operational_error(self, _close, _sleep):
+        """A transient OperationalError at fire time must not kill the recording."""
+        real_filter = Recording.objects.filter
+        call_count = {"n": 0}
+
+        def flaky_filter(*args, **kwargs):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                raise OperationalError("connection is bad: server not ready")
+            return real_filter(*args, **kwargs)
+
+        with self.assertLogs("apps.channels.tasks", level="WARNING") as logs:
+            self._run_with_flaky_filter(flaky_filter)
+
+        joined = "\n".join(logs.output)
+        self.assertGreaterEqual(call_count["n"], 2)
+        self.assertIn("idempotency guard check: failed, retrying", joined)
+        self.assertIn("already 'completed'", joined)
+        self.assertNotIn("Idempotency guard DB check failed", joined)
+
+    @patch("apps.channels.tasks.time.sleep")
+    @patch("apps.channels.tasks.close_old_connections")
+    def test_guard_survives_unexpected_exception(self, _close, _sleep):
+        """Non-DB exceptions at fire time are retried like DB errors."""
+        real_filter = Recording.objects.filter
+        call_count = {"n": 0}
+
+        def flaky_filter(*args, **kwargs):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                raise RuntimeError("unexpected guard failure")
+            return real_filter(*args, **kwargs)
+
+        with self.assertLogs("apps.channels.tasks", level="WARNING") as logs:
+            self._run_with_flaky_filter(flaky_filter)
+
+        joined = "\n".join(logs.output)
+        self.assertGreaterEqual(call_count["n"], 2)
+        self.assertIn("idempotency guard check: failed, retrying", joined)
+        self.assertIn("already 'completed'", joined)
+        self.assertNotIn("Idempotency guard DB check failed", joined)
+
+    @patch("apps.channels.tasks.time.sleep")
+    @patch("apps.channels.tasks.close_old_connections")
+    def test_guard_still_fails_closed_on_sustained_outage(self, _close, _sleep):
+        """Exhausted retries must still abort to prevent duplicate recordings."""
+        call_count = {"n": 0}
+
+        def dead_filter(*args, **kwargs):
+            call_count["n"] += 1
+            raise OperationalError("db gone")
+
+        with self.assertLogs("apps.channels.tasks", level="ERROR") as logs:
+            self._run_with_flaky_filter(dead_filter)
+
+        self.assertEqual(call_count["n"], 5)
+        self.assertIn("Idempotency guard DB check failed", "\n".join(logs.output))
+
+    @patch("apps.channels.tasks.time.sleep")
+    @patch("apps.channels.tasks.close_old_connections")
+    def test_guard_fails_closed_on_sustained_non_db_error(self, _close, _sleep):
+        """Exhausted retries on non-DB errors still fail closed."""
+        call_count = {"n": 0}
+
+        def dead_filter(*args, **kwargs):
+            call_count["n"] += 1
+            raise RuntimeError("persistent failure")
+
+        with self.assertLogs("apps.channels.tasks", level="ERROR") as logs:
+            self._run_with_flaky_filter(dead_filter)
+
+        self.assertEqual(call_count["n"], 5)
+        joined = "\n".join(logs.output)
+        self.assertIn("Idempotency guard DB check failed", joined)
+        self.assertIn("RuntimeError", joined)
 
 
 # ---------------------------------------------------------------------------

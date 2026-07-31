@@ -5,19 +5,14 @@ from rest_framework.filters import SearchFilter, OrderingFilter
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.permissions import AllowAny
 from django_filters.rest_framework import DjangoFilterBackend
-from django.shortcuts import get_object_or_404
-from django.http import StreamingHttpResponse, HttpResponse, FileResponse
 from django.db.models import Q
 import django_filters
 import logging
-import os
-import time
-import requests
+from types import SimpleNamespace
 from apps.accounts.permissions import (
     Authenticated,
     permission_classes_by_action,
 )
-from core.utils import resolve_safe_local_data_path
 from .models import (
     Series, VODCategory, Movie, Episode, VODLogo,
     M3USeriesRelation, M3UMovieRelation, M3UEpisodeRelation, M3UVODCategoryRelation
@@ -32,16 +27,19 @@ from .serializers import (
     M3USeriesRelationSerializer,
     M3UEpisodeRelationSerializer
 )
+from .image_proxy import (
+    rewrite_backdrop_paths,
+    rewrite_single_image_url,
+    serve_vod_image,
+    vod_image_action,
+    vod_image_url_parts,
+    vodlogo_cache_url,
+)
 from .tasks import refresh_series_episodes, refresh_movie_advanced_data
 from django.utils import timezone
 from datetime import timedelta
 
 logger = logging.getLogger(__name__)
-
-# Negative cache for remote VOD logo URLs that failed to fetch.
-# Prevents repeated blocking requests to unreachable hosts.
-_vod_logo_fetch_failures = {}
-_VOD_LOGO_FAIL_TTL = 300  # seconds
 
 
 class VODPagination(PageNumberPagination):
@@ -95,6 +93,8 @@ class MovieViewSet(viewsets.ReadOnlyModelViewSet):
         try:
             return [perm() for perm in permission_classes_by_action[self.action]]
         except KeyError:
+            if self.action == 'image':
+                return [AllowAny()]
             return [Authenticated()]
 
     def get_queryset(self):
@@ -154,8 +154,10 @@ class MovieViewSet(viewsets.ReadOnlyModelViewSet):
 
         force_refresh = request.query_params.get('force_refresh', 'false').lower() == 'true'
         now = timezone.now()
+        detailed_fetched = (relation.custom_properties or {}).get('detailed_fetched', False)
         needs_refresh = (
             force_refresh or
+            not detailed_fetched or
             not relation.last_advanced_refresh or
             (now - relation.last_advanced_refresh).total_seconds() > 86400
         )
@@ -173,6 +175,25 @@ class MovieViewSet(viewsets.ReadOnlyModelViewSet):
         custom_props = relation.custom_properties or {}
         info = custom_props.get('detailed_info', {})
         movie_data = custom_props.get('movie_data', {})
+
+        movie_props = movie.custom_properties or {}
+        backdrop_path = rewrite_backdrop_paths(
+            request,
+            'movie',
+            movie.id,
+            movie_props.get('backdrop_path') or [],
+        )
+        if movie.logo:
+            movie_image = vodlogo_cache_url(request, movie.logo)
+        else:
+            # Only proxy URLs stored on the movie itself; provider-only values stay as-is.
+            stored_movie_image = movie_props.get('movie_image') or ''
+            if stored_movie_image:
+                movie_image = rewrite_single_image_url(
+                    request, 'movie', movie.id, 'movie_image', stored_movie_image
+                )
+            else:
+                movie_image = info.get('movie_image', '')
 
         # Build response with available data
         response_data = {
@@ -195,10 +216,10 @@ class MovieViewSet(viewsets.ReadOnlyModelViewSet):
             'youtube_trailer': (movie.custom_properties or {}).get('youtube_trailer') or info.get('youtube_trailer') or info.get('trailer', ''),
             'duration_secs': movie.duration_secs or info.get('duration_secs'),
             'age': info.get('age', ''),
-            'backdrop_path': (movie.custom_properties or {}).get('backdrop_path') or info.get('backdrop_path', []),
+            'backdrop_path': backdrop_path,
             'cover': info.get('cover_big', ''),
             'cover_big': info.get('cover_big', ''),
-            'movie_image': movie.logo.url if movie.logo else info.get('movie_image', ''),
+            'movie_image': movie_image,
             'bitrate': info.get('bitrate', 0),
             'video': info.get('video', {}),
             'audio': info.get('audio', {}),
@@ -214,10 +235,16 @@ class MovieViewSet(viewsets.ReadOnlyModelViewSet):
         }
         return Response(response_data)
 
+    @action(detail=True, methods=['get'], url_path='image', permission_classes=[AllowAny])
+    def image(self, request, pk=None):
+        """Proxy a stored movie image (backdrop, movie_image, poster_path)."""
+        return vod_image_action(self, request, 'movie')
+
+
 class EpisodeFilter(django_filters.FilterSet):
     name = django_filters.CharFilter(lookup_expr="icontains")
     series = django_filters.NumberFilter(field_name="series__id")
-    m3u_account = django_filters.NumberFilter(field_name="m3u_account__id")
+    m3u_account = django_filters.NumberFilter(field_name="m3u_relations__m3u_account__id")
     season_number = django_filters.NumberFilter()
     episode_number = django_filters.NumberFilter()
 
@@ -271,12 +298,19 @@ class EpisodeViewSet(viewsets.ReadOnlyModelViewSet):
         try:
             return [perm() for perm in permission_classes_by_action[self.action]]
         except KeyError:
+            if self.action == 'image':
+                return [AllowAny()]
             return [Authenticated()]
 
     def get_queryset(self):
-        return Episode.objects.select_related(
-            'series', 'm3u_account'
-        ).filter(m3u_account__is_active=True)
+        return Episode.objects.select_related('series').filter(
+            m3u_relations__m3u_account__is_active=True
+        ).distinct()
+
+    @action(detail=True, methods=['get'], url_path='image', permission_classes=[AllowAny])
+    def image(self, request, pk=None):
+        """Proxy a stored episode image (movie_image, backdrop, poster_path)."""
+        return vod_image_action(self, request, 'episode')
 
 
 class SeriesViewSet(viewsets.ReadOnlyModelViewSet):
@@ -295,6 +329,8 @@ class SeriesViewSet(viewsets.ReadOnlyModelViewSet):
         try:
             return [perm() for perm in permission_classes_by_action[self.action]]
         except KeyError:
+            if self.action == 'image':
+                return [AllowAny()]
             return [Authenticated()]
 
     def get_queryset(self):
@@ -410,6 +446,17 @@ class SeriesViewSet(viewsets.ReadOnlyModelViewSet):
 
             # Return the database data (which should now be fresh)
             custom_props = relation.custom_properties or {}
+            series_props = series.custom_properties or {}
+            raw_backdrops = series_props.get('backdrop_path') or []
+            cover = None
+            if series.logo:
+                cover = {
+                    'id': series.logo.id,
+                    'url': series.logo.url,
+                    'cache_url': vodlogo_cache_url(request, series.logo),
+                    'name': series.logo.name,
+                }
+
             response_data = {
                 'id': series.id,
                 'series_id': relation.external_series_id,
@@ -422,11 +469,8 @@ class SeriesViewSet(viewsets.ReadOnlyModelViewSet):
                 'imdb_id': series.imdb_id,
                 'category_id': relation.category.id if relation.category else None,
                 'category_name': relation.category.name if relation.category else None,
-                'cover': {
-                    'id': series.logo.id,
-                    'url': series.logo.url,
-                    'name': series.logo.name,
-                } if series.logo else None,
+                'cover': cover,
+                'backdrop_path': rewrite_backdrop_paths(request, 'series', series.id, raw_backdrops),
                 'last_refreshed': series.updated_at,
                 'custom_properties': series.custom_properties,
                 'm3u_account': {
@@ -443,6 +487,7 @@ class SeriesViewSet(viewsets.ReadOnlyModelViewSet):
             if include_episodes and custom_props.get('episodes_fetched', False):
                 logger.debug(f"Including episodes for series {series.id}")
                 episodes_by_season = {}
+                episode_image_parts = vod_image_url_parts(request, 'episode')
                 for episode in series.episodes.all().order_by('season_number', 'episode_number'):
                     season_key = str(episode.season_number or 0)
                     if season_key not in episodes_by_season:
@@ -454,6 +499,10 @@ class SeriesViewSet(viewsets.ReadOnlyModelViewSet):
                         m3u_account=relation.m3u_account
                     ).first()
 
+                    raw_episode_image = (
+                        episode.custom_properties.get('movie_image', '')
+                        if episode.custom_properties else ''
+                    )
                     episode_data = {
                         'id': episode.id,
                         'uuid': episode.uuid,
@@ -468,7 +517,14 @@ class SeriesViewSet(viewsets.ReadOnlyModelViewSet):
                         'rating': episode.rating,
                         'tmdb_id': episode.tmdb_id,
                         'imdb_id': episode.imdb_id,
-                        'movie_image': episode.custom_properties.get('movie_image', '') if episode.custom_properties else '',
+                        'movie_image': rewrite_single_image_url(
+                            request,
+                            'episode',
+                            episode.id,
+                            'movie_image',
+                            raw_episode_image,
+                            url_parts=episode_image_parts,
+                        ),
                         'container_extension': episode_relation.container_extension if episode_relation else 'mp4',
                         'type': 'episode',
                         'series': {
@@ -493,6 +549,11 @@ class SeriesViewSet(viewsets.ReadOnlyModelViewSet):
                 {'error': f'Failed to fetch series information: {str(e)}'},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
+
+    @action(detail=True, methods=['get'], url_path='image', permission_classes=[AllowAny])
+    def image(self, request, pk=None):
+        """Proxy a stored series image (backdrop, movie_image, poster_path)."""
+        return vod_image_action(self, request, 'series')
 
 
 class VODCategoryFilter(django_filters.FilterSet):
@@ -724,7 +785,13 @@ class UnifiedContentViewSet(viewsets.ReadOnlyModelViewSet):
                             'id': item_dict['logo_id'],
                             'name': item_dict['logo_name'],
                             'url': item_dict['logo_url'],
-                            'cache_url': f"/api/vod/vodlogos/{item_dict['logo_id']}/cache/",
+                            'cache_url': vodlogo_cache_url(
+                                request,
+                                SimpleNamespace(
+                                    id=item_dict['logo_id'],
+                                    url=item_dict['logo_url'],
+                                ),
+                            ),
                             'movie_count': 0,  # We don't calculate this in raw SQL
                             'series_count': 0,  # We don't calculate this in raw SQL
                             'is_used': True
@@ -856,82 +923,7 @@ class VODLogoViewSet(viewsets.ModelViewSet):
     def cache(self, request, pk=None):
         """Streams the VOD logo file, whether it's local or remote."""
         logo = self.get_object()
-
-        if not logo.url:
-            return HttpResponse(status=404)
-
-        # Check if this is a local file path
-        if logo.url.startswith('/data'):
-            safe_path = resolve_safe_local_data_path(logo.url)
-            if safe_path is None or not os.path.exists(safe_path):
-                logger.error(f"VOD logo file not found or unsafe path: {logo.url}")
-                return HttpResponse(status=404)
-
-            try:
-                return FileResponse(open(safe_path, 'rb'), content_type='image/png')
-            except Exception as e:
-                logger.error(f"Error serving VOD logo file {safe_path}: {str(e)}")
-                return HttpResponse(status=500)
-        else:
-            # It's a remote URL - proxy it
-            # Skip URLs that recently failed to avoid blocking workers
-            fail_expiry = _vod_logo_fetch_failures.get(logo.url)
-            if fail_expiry and time.monotonic() < fail_expiry:
-                return HttpResponse(status=404)
-
-            try:
-                _LOGO_TOTAL_TIMEOUT = 10  # seconds
-                _LOGO_MAX_BYTES = 5 * 1024 * 1024  # 5 MB
-
-                remote_response = requests.get(
-                    logo.url,
-                    stream=True,
-                    timeout=(3, 5),  # (connect_timeout, read_timeout per chunk)
-                )
-
-                if remote_response.status_code != 200:
-                    now = time.monotonic()
-                    _vod_logo_fetch_failures[logo.url] = now + _VOD_LOGO_FAIL_TTL
-                    return HttpResponse(status=404)
-
-                # Eagerly read the full image with a total time + size cap
-                # so the greenlet is released quickly.
-                chunks = []
-                total = 0
-                deadline = time.monotonic() + _LOGO_TOTAL_TIMEOUT
-                for chunk in remote_response.iter_content(chunk_size=8192):
-                    total += len(chunk)
-                    if total > _LOGO_MAX_BYTES:
-                        remote_response.close()
-                        return HttpResponse(status=404)
-                    if time.monotonic() > deadline:
-                        remote_response.close()
-                        now = time.monotonic()
-                        _vod_logo_fetch_failures[logo.url] = now + _VOD_LOGO_FAIL_TTL
-                        return HttpResponse(status=404)
-                    chunks.append(chunk)
-                body = b"".join(chunks)
-
-                # Full read succeeded, clear any previous failure entry
-                _vod_logo_fetch_failures.pop(logo.url, None)
-
-                content_type = remote_response.headers.get('Content-Type', 'image/png')
-
-                response = HttpResponse(body, content_type=content_type)
-                response["Content-Length"] = str(len(body))
-                if remote_response.headers.get("Cache-Control"):
-                    response["Cache-Control"] = remote_response.headers.get("Cache-Control")
-                if remote_response.headers.get("Last-Modified"):
-                    response["Last-Modified"] = remote_response.headers.get("Last-Modified")
-                response["Content-Disposition"] = 'inline; filename="{}"'.format(
-                    os.path.basename(logo.url)
-                )
-                return response
-            except requests.exceptions.RequestException as e:
-                now = time.monotonic()
-                _vod_logo_fetch_failures[logo.url] = now + _VOD_LOGO_FAIL_TTL
-                logger.error(f"Error fetching remote VOD logo {logo.url}: {str(e)}")
-                return HttpResponse(status=404)
+        return serve_vod_image(logo.url)
 
     @action(detail=False, methods=["delete"], url_path="bulk-delete")
     def bulk_delete(self, request):
