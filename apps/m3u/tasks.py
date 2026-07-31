@@ -3144,10 +3144,12 @@ def refresh_account_profiles(account_id):
 
         from apps.m3u.models import M3UAccountProfile
 
+        # select_related so M3UAccountProfile.save()'s account_type check
+        # (see model's exp_date sync) doesn't issue a query per profile.
         profiles = M3UAccountProfile.objects.filter(
             m3u_account=account,
             is_active=True
-        )
+        ).select_related("m3u_account")
 
         if not profiles.exists():
             logger.info(f"No active profiles found for account {account.name}")

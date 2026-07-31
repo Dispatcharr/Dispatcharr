@@ -282,16 +282,24 @@ class M3UAccountProfile(models.Model):
 
     def save(self, *args, **kwargs):
         """Auto-sync exp_date from custom_properties for XC accounts on every save.
-        For non-XC accounts, exp_date is set directly and left untouched here."""
+        For non-XC accounts, exp_date is set directly and left untouched here.
+
+        Leftover XC user_info on a Standard account must not overwrite a
+        manually set expiration (e.g. after converting XC to Standard).
+        """
         if self.custom_properties is not None and not isinstance(
             self.custom_properties, dict
         ):
             self.custom_properties = custom_properties_as_dict(self.custom_properties)
 
-        parsed = self._parse_exp_date_from_custom_properties()
-        if parsed is not None:
-            # XC account with exp_date in custom_properties — always sync
-            self.exp_date = parsed
+        is_xc = (
+            bool(self.m3u_account_id)
+            and self.m3u_account.account_type == M3UAccount.Types.XC
+        )
+        if is_xc:
+            parsed = self._parse_exp_date_from_custom_properties()
+            if parsed is not None:
+                self.exp_date = parsed
         # else: keep whatever exp_date is already set (manual entry for non-XC)
         super().save(*args, **kwargs)
 
