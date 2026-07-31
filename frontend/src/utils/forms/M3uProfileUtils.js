@@ -111,6 +111,30 @@ export const prepareExpDate = (expDateValue, isXC) => {
   return expDateValue || null;
 };
 
+/**
+ * Resolve the expiration picker value for a profile editor.
+ * For the default profile, prefer the parent account form's unsaved pendingExpDate
+ * when provided (including null = cleared). Otherwise use the profile's saved exp_date.
+ * @param {{ is_default?: boolean, exp_date?: string|null }|null|undefined} profile
+ * @param {Date|string|null|undefined} pendingExpDate undefined means "not provided"
+ * @returns {Date|null}
+ */
+export const resolveProfileExpDate = (profile, pendingExpDate) => {
+  if (profile?.is_default && pendingExpDate !== undefined) {
+    if (pendingExpDate instanceof Date) {
+      return Number.isNaN(pendingExpDate.getTime())
+        ? null
+        : new Date(pendingExpDate.getTime());
+    }
+    if (!pendingExpDate) return null;
+    const parsed = new Date(pendingExpDate);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  }
+  if (!profile?.exp_date) return null;
+  const parsed = new Date(profile.exp_date);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+};
+
 export const applyXcSimplePatterns = (
   values,
   m3u,

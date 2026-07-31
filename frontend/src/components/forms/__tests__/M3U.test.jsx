@@ -14,7 +14,22 @@ vi.mock('../../../utils/forms/M3uUtils.js', () => ({
   getPlaylist: vi.fn(),
   prepareSubmitValues: vi.fn((values) => values),
   updatePlaylist: vi.fn(),
+  expDateFromPlaylist: (expDate) => {
+    if (!expDate) return null;
+    const parsed = new Date(expDate);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  },
+  expDateKey: (expDate) => {
+    if (expDate instanceof Date) {
+      return Number.isNaN(expDate.getTime()) ? null : expDate.toISOString();
+    }
+    if (!expDate) return null;
+    const parsed = new Date(expDate);
+    return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
+  },
 }));
+
+vi.mock('../../../store/playlists', () => ({ default: vi.fn() }));
 
 vi.mock('../../../utils/forms/DummyEpgUtils.js', () => ({
   addEPG: vi.fn(),
@@ -308,6 +323,7 @@ import useUserAgentsStore from '../../../store/userAgents';
 import useChannelsStore from '../../../store/channels';
 import useEPGsStore from '../../../store/epgs';
 import useVODStore from '../../../store/useVODStore';
+import usePlaylistsStore from '../../../store/playlists';
 import * as M3uUtils from '../../../utils/forms/M3uUtils.js';
 import * as DummyEpgUtils from '../../../utils/forms/DummyEpgUtils.js';
 import * as mantineForm from '@mantine/form';
@@ -375,6 +391,11 @@ const setupStores = (overrides = {}) => {
       fetchCategories,
     };
     return selector(state);
+  });
+
+  usePlaylistsStore.mockImplementation((selector) => {
+    const playlists = overrides.playlists || [];
+    return selector({ playlists });
   });
 
   return {
