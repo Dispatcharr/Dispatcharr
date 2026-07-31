@@ -15,9 +15,10 @@ class UserSerializerValidationTests(TestCase):
         self.assertTrue(serializer.is_valid(), serializer.errors)
 
     def test_username_validation_rejects_unsupported_characters(self):
+        # Use +, which Django allows but our XC-safe allow-list rejects.
         serializer = UserSerializer(
             data={
-                "username": "joe!smith",
+                "username": "joe+smith",
                 "password": "testpassword123",
             }
         )
@@ -28,6 +29,7 @@ class UserSerializerValidationTests(TestCase):
             "Username may only contain letters, numbers, periods (.), underscores (_), at signs (@), and hyphens (-)",
             str(serializer.errors["username"]),
         )
+
     def test_xc_password_allows_supported_characters(self):
         serializer = UserSerializer(
             data={

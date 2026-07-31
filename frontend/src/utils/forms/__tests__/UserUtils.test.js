@@ -417,11 +417,11 @@ describe('UserUtils', () => {
         expect(result.username).toBeNull();
       });
 
-      it('returns null for a valid alphanumeric streamer username', () => {
+      it('returns null for a username with supported special characters', () => {
         const result = validate(null, {
           ...getFormInitialValues(),
-          username: 'alice123',
-          user_level: '2',
+          username: 'alice.smith_123@test-user',
+          user_level: '0',
         });
         expect(result.username).toBeNull();
       });
@@ -429,8 +429,8 @@ describe('UserUtils', () => {
       it('returns error for username with unsupported characters', () => {
         const result = validate(null, {
           ...getFormInitialValues(),
-          username: 'alice!123',
-          user_level: '2',
+          username: 'alice+123',
+          user_level: '0',
         });
         expect(result.username).toBe('Username may only contain letters, numbers, periods (.), underscores (_), at signs (@), and hyphens (-)');
       });
