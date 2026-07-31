@@ -334,10 +334,10 @@ class SeriesViewSet(viewsets.ReadOnlyModelViewSet):
             return [Authenticated()]
 
     def get_queryset(self):
-        # Only return series that have active M3U relations
+        # Only return series that have active M3U relations.
         return Series.objects.filter(
             m3u_relations__m3u_account__is_active=True
-        ).distinct().select_related('logo').prefetch_related('episodes', 'm3u_relations__m3u_account')
+        ).distinct().select_related('logo').prefetch_related('m3u_relations__m3u_account')
 
     @action(detail=True, methods=['get'], url_path='providers')
     def get_providers(self, request, pk=None):
@@ -395,7 +395,7 @@ class SeriesViewSet(viewsets.ReadOnlyModelViewSet):
         qs = M3USeriesRelation.objects.filter(
             series=series,
             m3u_account__is_active=True
-        ).select_related('m3u_account')
+        ).select_related('m3u_account', 'category')
 
         if relation_id is not None:
             relation = qs.filter(id=relation_id).first()
@@ -486,18 +486,31 @@ class SeriesViewSet(viewsets.ReadOnlyModelViewSet):
             include_episodes = request.query_params.get('include_episodes', 'true').lower() == 'true'
             if include_episodes and custom_props.get('episodes_fetched', False):
                 logger.debug(f"Including episodes for series {series.id}")
+                # Only episodes this provider actually has streams for. Shared Series
+                # rows can include specials/seasons from another account.
+                relations_by_episode_id = {
+                    rel.episode_id: rel
+                    for rel in M3UEpisodeRelation.objects.filter(
+                        m3u_account_id=relation.m3u_account_id,
+                        episode__series_id=series.id,
+                    ).only('episode_id', 'container_extension')
+                }
+                episodes = list(
+                    Episode.objects.filter(
+                        id__in=relations_by_episode_id.keys()
+                    ).order_by('season_number', 'episode_number')
+                )
+
                 episodes_by_season = {}
                 episode_image_parts = vod_image_url_parts(request, 'episode')
-                for episode in series.episodes.all().order_by('season_number', 'episode_number'):
-                    season_key = str(episode.season_number or 0)
+                for episode in episodes:
+                    season_key = str(
+                        episode.season_number if episode.season_number is not None else 0
+                    )
                     if season_key not in episodes_by_season:
                         episodes_by_season[season_key] = []
 
-                    # Get episode relation for additional data
-                    episode_relation = M3UEpisodeRelation.objects.filter(
-                        episode=episode,
-                        m3u_account=relation.m3u_account
-                    ).first()
+                    episode_relation = relations_by_episode_id.get(episode.id)
 
                     raw_episode_image = (
                         episode.custom_properties.get('movie_image', '')
@@ -525,7 +538,10 @@ class SeriesViewSet(viewsets.ReadOnlyModelViewSet):
                             raw_episode_image,
                             url_parts=episode_image_parts,
                         ),
-                        'container_extension': episode_relation.container_extension if episode_relation else 'mp4',
+                        'container_extension': (
+                            episode_relation.container_extension
+                            if episode_relation else 'mp4'
+                        ),
                         'type': 'episode',
                         'series': {
                             'id': series.id,

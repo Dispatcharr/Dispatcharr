@@ -1273,30 +1273,44 @@ def xc_get_series_info(request, user, series_id):
     except Exception as e:
         logger.error(f"Error refreshing series data for relation {series_relation.id}: {str(e)}")
 
-    # Get unique episodes for this series that have relations from any active M3U account
-    # We query episodes directly to avoid duplicates when multiple relations exist
-    # (e.g., same episode in different languages/qualities)
-    from apps.vod.models import Episode
-    episodes = Episode.objects.filter(
-        series=series,
-        m3u_relations__m3u_account__is_active=True
-    ).distinct().order_by('season_number', 'episode_number')
+    # Include episodes from any active provider for this shared Series (XC clients
+    # see a unified catalog). Prefer the highest-priority account's stream metadata.
+    from apps.vod.models import Episode, M3UEpisodeRelation
+
+    episodes = list(
+        Episode.objects.filter(
+            series=series,
+            m3u_relations__m3u_account__is_active=True,
+        ).distinct().order_by('season_number', 'episode_number')
+    )
+
+    relations_by_episode_id = {}
+    for rel in M3UEpisodeRelation.objects.filter(
+        episode_id__in=[ep.id for ep in episodes],
+        m3u_account__is_active=True,
+    ).select_related('m3u_account').only(
+        'episode_id',
+        'container_extension',
+        'created_at',
+        'custom_properties',
+        'm3u_account__priority',
+    ).order_by('episode_id', '-m3u_account__priority', 'id'):
+        # First row per episode wins due to priority/id ordering.
+        if rel.episode_id not in relations_by_episode_id:
+            relations_by_episode_id[rel.episode_id] = rel
 
     # Group episodes by season
     seasons = {}
     # One reverse for all episode image rewrites in this response.
     _episode_image_parts = vod_image_url_parts(request, "episode")
     for episode in episodes:
-        season_num = episode.season_number or 1
+        season_num = (
+            episode.season_number if episode.season_number is not None else 1
+        )
         if season_num not in seasons:
             seasons[season_num] = []
 
-        # Get the highest priority relation for this episode (for container_extension, video/audio/bitrate)
-        from apps.vod.models import M3UEpisodeRelation
-        best_relation = M3UEpisodeRelation.objects.filter(
-            episode=episode,
-            m3u_account__is_active=True
-        ).select_related('m3u_account').order_by('-m3u_account__priority', 'id').first()
+        best_relation = relations_by_episode_id.get(episode.id)
 
         video = audio = bitrate = None
         container_extension = "mp4"
