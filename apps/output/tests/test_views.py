@@ -615,6 +615,7 @@ class XcVodSeriesDistinctTests(TestCase):
             custom_properties={
                 "basic_data": {"name": "NF - Canonical Movie"},
                 "detailed_info": {"name": "Netflix Movie"},
+                "detailed_fetched": True,
             },
             last_advanced_refresh=timezone.now(),
         )
@@ -627,6 +628,7 @@ class XcVodSeriesDistinctTests(TestCase):
             custom_properties={
                 "basic_data": {"name": "DE - Canonical Movie"},
                 "detailed_info": {"name": "German Movie"},
+                "detailed_fetched": True,
             },
             last_advanced_refresh=timezone.now(),
         )

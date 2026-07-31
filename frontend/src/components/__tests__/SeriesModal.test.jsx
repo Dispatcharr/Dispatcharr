@@ -43,7 +43,7 @@ vi.mock('@mantine/core', async () => {
 
   return {
     ...actual,
-    Modal: ({ opened, onClose, title, children, size, ...props }) => {
+    Modal: ({ opened, onClose, title, children, size }) => {
       if (!opened) return null;
       return (
         <div data-testid="modal" data-title={title} data-size={size}>

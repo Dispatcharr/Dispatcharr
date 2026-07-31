@@ -654,7 +654,9 @@ const SeriesModal = ({ series, opened, onClose }) => {
                           <TableTr>
                             <TableTh style={{ width: '60px' }}>Ep</TableTh>
                             <TableTh>Title</TableTh>
-                            <TableTh style={{ width: '80px' }}>Duration</TableTh>
+                            <TableTh style={{ width: '80px' }}>
+                              Duration
+                            </TableTh>
                             <TableTh style={{ width: '60px' }}>Date</TableTh>
                             <TableTh style={{ width: '80px' }}>Action</TableTh>
                           </TableTr>
