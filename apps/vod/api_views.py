@@ -154,8 +154,10 @@ class MovieViewSet(viewsets.ReadOnlyModelViewSet):
 
         force_refresh = request.query_params.get('force_refresh', 'false').lower() == 'true'
         now = timezone.now()
+        detailed_fetched = (relation.custom_properties or {}).get('detailed_fetched', False)
         needs_refresh = (
             force_refresh or
+            not detailed_fetched or
             not relation.last_advanced_refresh or
             (now - relation.last_advanced_refresh).total_seconds() > 86400
         )

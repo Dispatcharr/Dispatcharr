@@ -1505,7 +1505,9 @@ def xc_get_vod_info(request, user, vod_id):
     # Duplicate the provider_info logic for detailed information
     try:
         # Check if we need to refresh detailed info (same logic as provider_info)
+        detailed_fetched = (movie_relation.custom_properties or {}).get('detailed_fetched', False)
         should_refresh = (
+            not detailed_fetched or
             not movie_relation.last_advanced_refresh or
             movie_relation.last_advanced_refresh < timezone.now() - timedelta(hours=24)
         )
