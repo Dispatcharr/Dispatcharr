@@ -2555,7 +2555,8 @@ def extract_custom_properties(prog):
 
     # Extract episode numbers
     for ep_num in prog.findall('episode-num'):
-        system = ep_num.get('system', '')
+        # XMLTV DTD defaults missing system to onscreen
+        system = ep_num.get('system') or 'onscreen'
         if system == 'xmltv_ns' and ep_num.text:
             # Parse XMLTV episode-num format (season.episode.part)
             parts = ep_num.text.split('.')
