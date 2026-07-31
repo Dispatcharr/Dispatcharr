@@ -87,4 +87,26 @@ describe('VODCardUtils', () => {
       expect(result).toBe('');
     });
   });
+
+  describe('vodLogoSrc', () => {
+    it('prefers cache_url over url', () => {
+      expect(
+        VODCardUtils.vodLogoSrc({
+          cache_url: '/api/vod/vodlogos/1/cache/',
+          url: 'http://provider/poster.jpg',
+        })
+      ).toBe('/api/vod/vodlogos/1/cache/');
+    });
+
+    it('falls back to url when cache_url is missing', () => {
+      expect(VODCardUtils.vodLogoSrc({ url: 'http://provider/poster.jpg' })).toBe(
+        'http://provider/poster.jpg'
+      );
+    });
+
+    it('returns null for missing logo', () => {
+      expect(VODCardUtils.vodLogoSrc(null)).toBeNull();
+      expect(VODCardUtils.vodLogoSrc({})).toBeNull();
+    });
+  });
 });

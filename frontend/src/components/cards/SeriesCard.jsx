@@ -10,8 +10,10 @@ import {
 } from '@mantine/core';
 import { Calendar, Play, Star } from 'lucide-react';
 import React from 'react';
+import { vodLogoSrc } from '../../utils/cards/VODCardUtils.js';
 
 const SeriesCard = ({ series, onClick }) => {
+  const posterSrc = vodLogoSrc(series.logo);
   return (
     <Card
       shadow="sm"
@@ -23,9 +25,9 @@ const SeriesCard = ({ series, onClick }) => {
     >
       <CardSection>
         <Box pos="relative" h={300}>
-          {series.logo?.url ? (
+          {posterSrc ? (
             <Image
-              src={series.logo.url}
+              src={posterSrc}
               height={300}
               alt={series.name}
               fit="contain"

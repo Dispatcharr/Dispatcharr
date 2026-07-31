@@ -48,10 +48,16 @@ import { YouTubeTrailerModal } from './modals/YouTubeTrailerModal.jsx';
 const Series = ({ displaySeries, onClickYouTubeTrailer }) => {
   return (
     <Flex gap="md">
-      {displaySeries.series_image || displaySeries.logo?.url ? (
+      {displaySeries.series_image ||
+      displaySeries.logo?.cache_url ||
+      displaySeries.logo?.url ? (
         <Box style={{ flexShrink: 0 }}>
           <Image
-            src={displaySeries.series_image || displaySeries.logo.url}
+            src={
+              displaySeries.series_image ||
+              displaySeries.logo?.cache_url ||
+              displaySeries.logo?.url
+            }
             width={200}
             height={300}
             alt={displaySeries.name}
