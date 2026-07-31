@@ -138,7 +138,7 @@ export const getFormValidators = (user) => {
         ? 'Username may only contain letters, numbers, periods (.), underscores (_), at signs (@), and hyphens (-)'
         : null,
     password:
-      !user && !values.password
+      !user && !values.password && values.user_level != USER_LEVELS.STREAMER
         ? 'Password is required'
         : null,
     xc_password:

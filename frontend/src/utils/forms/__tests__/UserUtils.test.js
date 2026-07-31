@@ -408,7 +408,7 @@ describe('UserUtils', () => {
         expect(result.username).toBe('Username is required');
       });
 
-      it('returns null for a valid non-streamer username', () => {
+      it('returns null for a valid username', () => {
         const result = validate(null, {
           ...getFormInitialValues(),
           username: 'alice',
@@ -426,13 +426,13 @@ describe('UserUtils', () => {
         expect(result.username).toBeNull();
       });
 
-      it('returns error for streamer username with unsupported characters', () => {
+      it('returns error for username with unsupported characters', () => {
         const result = validate(null, {
           ...getFormInitialValues(),
           username: 'alice!123',
           user_level: '2',
         });
-        expect(result.username).toBe('Streamer username contains unsupported characters');
+        expect(result.username).toBe('Username may only contain letters, numbers, periods (.), underscores (_), at signs (@), and hyphens (-)');
       });
     });
 
@@ -482,10 +482,10 @@ describe('UserUtils', () => {
         expect(result.xc_password).toBeNull();
       });
 
-      it('returns null for a valid alphanumeric xc_password', () => {
+      it('returns null for an xc_password with supported characters', () => {
         const result = validate(null, {
           ...getFormInitialValues(),
-          xc_password: 'abc123',
+          xc_password: 'abc.123_test-user@example',
         });
         expect(result.xc_password).toBeNull();
       });
@@ -495,7 +495,9 @@ describe('UserUtils', () => {
           ...getFormInitialValues(),
           xc_password: 'abc+123',
         });
-        expect(result.xc_password).toBe('XC password contains unsupported characters');
+        expect(result.xc_password).toBe(
+          'XC password may only contain letters, numbers, periods (.), underscores (_), at signs (@), and hyphens (-)'
+        );
       });
     });
 
