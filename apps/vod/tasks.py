@@ -1393,10 +1393,29 @@ def batch_process_episodes(account, series, episodes_data, scan_start_time=None,
     if not episodes_data:
         return
 
+    # XC panels encode seasons as a PHP array keyed by season number. When keys are
+    # contiguous from 0 (common with Season 0 specials), json_encode emits a JSON
+    # array instead of an object. Accept both shapes and use the key/index as the
+    # season number.
+    if isinstance(episodes_data, dict):
+        season_items = episodes_data.items()
+    elif isinstance(episodes_data, list):
+        season_items = enumerate(episodes_data)
+    else:
+        logger.warning(
+            f"Unexpected episodes_data type {type(episodes_data).__name__} "
+            f"for series {series.name}; skipping"
+        )
+        return
+
     # Flatten episodes data
     all_episodes_data = []
-    for season_num, season_episodes in episodes_data.items():
+    for season_num, season_episodes in season_items:
+        if not isinstance(season_episodes, list):
+            continue
         for episode_data in season_episodes:
+            if not isinstance(episode_data, dict):
+                continue
             episode_data['_season_number'] = int(season_num)
             all_episodes_data.append(episode_data)
 
