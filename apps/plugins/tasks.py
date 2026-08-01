@@ -1,5 +1,6 @@
 import logging
 import os
+import time
 
 from celery import shared_task
 
@@ -23,6 +24,7 @@ def run_plugin_action_task(self, key, action_id, params=None):
     """Runs a plugin action on the dedicated `plugins` queue and always sends
     a terminal plugin_task_complete websocket event."""
     from apps.plugins.loader import PluginManager
+    from apps.plugins.task_history import record_task_complete
     from core.utils import send_websocket_update
 
     task_id = self.request.id
@@ -35,7 +37,9 @@ def run_plugin_action_task(self, key, action_id, params=None):
             "task_id": task_id,
             "status": "error",
             "error": str(e),
+            "updatedAt": int(time.time() * 1000),
         })
+        record_task_complete(key, task_id, "error", error=str(e))
         raise
     send_websocket_update("updates", "update", {
         "type": "plugin_task_complete",
@@ -43,7 +47,9 @@ def run_plugin_action_task(self, key, action_id, params=None):
         "task_id": task_id,
         "status": "ok",
         "result": result,
+        "updatedAt": int(time.time() * 1000),
     })
+    record_task_complete(key, task_id, "ok", result=result)
     return result
 
 
