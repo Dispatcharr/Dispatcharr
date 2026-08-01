@@ -4,6 +4,7 @@ import {
   Box,
   Button,
   Group,
+  Progress,
   Stack,
   Text,
   TextInput,
@@ -151,6 +152,68 @@ export const PluginActionStatus = ({ running, lastResult }) => {
         </Text>
       )}
     </>
+  );
+};
+
+const TASK_STATUS_COLOR = { running: 'blue', ok: 'green', error: 'red' };
+
+const PluginTaskRow = ({ taskId, task, onDismiss }) => {
+  const isDone = task.status !== 'running';
+  return (
+    <Box
+      style={{
+        border: '1px solid var(--mantine-color-default-border)',
+        borderRadius: 'var(--mantine-radius-sm)',
+        padding: 8,
+      }}
+    >
+      <Group justify="space-between" align="flex-start" wrap="wrap" gap="xs">
+        <Box style={{ minWidth: 0, flex: '1 1 200px' }}>
+          <Group gap={6} wrap="wrap" align="center">
+            <Text size="xs" fw={500}>{task.actionLabel}</Text>
+            <Badge size="xs" variant="light" color={TASK_STATUS_COLOR[task.status] || 'gray'}>
+              {task.status}
+            </Badge>
+          </Group>
+          {task.message && (
+            <Text size="xs" c="dimmed" style={{ whiteSpace: 'normal' }}>
+              {task.message}
+            </Text>
+          )}
+          {task.status === 'error' && task.error && (
+            <Text size="xs" c="red" style={{ whiteSpace: 'normal' }}>
+              {String(task.error)}
+            </Text>
+          )}
+        </Box>
+        {isDone && (
+          <Button size="xs" variant="subtle" color="gray" onClick={() => onDismiss(taskId)} style={{ flexShrink: 0 }}>
+            Dismiss
+          </Button>
+        )}
+      </Group>
+      {!isDone && (
+        <Progress
+          mt={6}
+          size="xs"
+          value={typeof task.percent === 'number' ? task.percent : 100}
+          animated={typeof task.percent !== 'number'}
+          color="blue"
+        />
+      )}
+    </Box>
+  );
+};
+
+export const PluginTaskList = ({ tasks, onDismiss }) => {
+  const entries = Object.entries(tasks || {});
+  if (entries.length === 0) return null;
+  return (
+    <Stack gap="xs">
+      {entries.map(([taskId, task]) => (
+        <PluginTaskRow key={taskId} taskId={taskId} task={task} onDismiss={onDismiss} />
+      ))}
+    </Stack>
   );
 };
 
