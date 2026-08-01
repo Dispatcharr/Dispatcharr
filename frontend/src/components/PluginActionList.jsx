@@ -19,19 +19,34 @@ import { SUBSCRIPTION_EVENTS } from '../constants.js';
 // list in its own scrollbar.
 const SEARCH_THRESHOLD = 6;
 
+// Shared box/group shell for one row in the Actions or Running Tasks list -
+// both are a bordered box with a left content column and a right-aligned
+// action element (a Run button, or a Dismiss button + progress bar).
+const PluginListRow = ({ left, right, footer }) => (
+  <Box
+    style={{
+      border: '1px solid var(--mantine-color-default-border)',
+      borderRadius: 'var(--mantine-radius-sm)',
+      padding: 8,
+    }}
+  >
+    <Group justify="space-between" align="flex-start" wrap="wrap" gap="xs">
+      <Box style={{ minWidth: 0, flex: '1 1 200px' }}>{left}</Box>
+      {/* Its own flex item (not a fixed-width table cell) so a long
+          custom button_label can't get clipped or blow out a column. */}
+      {right && <Box style={{ flexShrink: 0 }}>{right}</Box>}
+    </Group>
+    {footer}
+  </Box>
+);
+
 const PluginActionRow = ({ action, enabled, runningActionId, handlePluginRun }) => {
   const events = Array.isArray(action?.events) ? action.events : [];
   const running = runningActionId === action.id;
   return (
-    <Box
-      style={{
-        border: '1px solid var(--mantine-color-default-border)',
-        borderRadius: 'var(--mantine-radius-sm)',
-        padding: 8,
-      }}
-    >
-      <Group justify="space-between" align="flex-start" wrap="wrap" gap="xs">
-        <Box style={{ minWidth: 0, flex: '1 1 200px' }}>
+    <PluginListRow
+      left={
+        <>
           <Group gap={6} wrap="wrap" align="center">
             <Text size="xs" fw={500}>
               {action.label}
@@ -59,9 +74,9 @@ const PluginActionRow = ({ action, enabled, runningActionId, handlePluginRun }) 
               {action.description}
             </Text>
           )}
-        </Box>
-        {/* Its own flex item (not a fixed-width table cell) so a long
-            custom button_label can't get clipped or blow out a column. */}
+        </>
+      }
+      right={
         <Button
           loading={running}
           disabled={!enabled || running}
@@ -69,12 +84,11 @@ const PluginActionRow = ({ action, enabled, runningActionId, handlePluginRun }) 
           size="xs"
           variant={action.button_variant || 'filled'}
           color={action.button_color}
-          style={{ flexShrink: 0 }}
         >
           {running ? 'Running…' : action.button_label || 'Run'}
         </Button>
-      </Group>
-    </Box>
+      }
+    />
   );
 };
 
@@ -160,15 +174,9 @@ const TASK_STATUS_COLOR = { running: 'blue', ok: 'green', error: 'red' };
 const PluginTaskRow = ({ taskId, task, onDismiss }) => {
   const isDone = task.status !== 'running';
   return (
-    <Box
-      style={{
-        border: '1px solid var(--mantine-color-default-border)',
-        borderRadius: 'var(--mantine-radius-sm)',
-        padding: 8,
-      }}
-    >
-      <Group justify="space-between" align="flex-start" wrap="wrap" gap="xs">
-        <Box style={{ minWidth: 0, flex: '1 1 200px' }}>
+    <PluginListRow
+      left={
+        <>
           <Group gap={6} wrap="wrap" align="center">
             <Text size="xs" fw={500}>{task.actionLabel}</Text>
             <Badge size="xs" variant="light" color={TASK_STATUS_COLOR[task.status] || 'gray'}>
@@ -185,23 +193,27 @@ const PluginTaskRow = ({ taskId, task, onDismiss }) => {
               {String(task.error)}
             </Text>
           )}
-        </Box>
-        {isDone && (
-          <Button size="xs" variant="subtle" color="gray" onClick={() => onDismiss(taskId)} style={{ flexShrink: 0 }}>
+        </>
+      }
+      right={
+        isDone && (
+          <Button size="xs" variant="subtle" color="gray" onClick={() => onDismiss(taskId)}>
             Dismiss
           </Button>
-        )}
-      </Group>
-      {!isDone && (
-        <Progress
-          mt={6}
-          size="xs"
-          value={typeof task.percent === 'number' ? task.percent : 100}
-          animated={typeof task.percent !== 'number'}
-          color="blue"
-        />
-      )}
-    </Box>
+        )
+      }
+      footer={
+        !isDone && (
+          <Progress
+            mt={6}
+            size="xs"
+            value={typeof task.percent === 'number' ? task.percent : 100}
+            animated={typeof task.percent !== 'number'}
+            color="blue"
+          />
+        )
+      }
+    />
   );
 };
 

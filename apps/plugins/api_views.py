@@ -584,11 +584,14 @@ class PluginRunAPIView(PluginAuthMixin, APIView):
         try:
             result = pm.run_action(key, action, params)
             return self._response_for_result(result)
-        except PermissionError as e:
-            return Response({"success": False, "error": str(e)}, status=status.HTTP_403_FORBIDDEN)
         except Exception as e:
-            logger.exception("Plugin action failed")
-            return Response({"success": False, "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            return self._error_response(e)
+
+    def _error_response(self, exc):
+        if isinstance(exc, PermissionError):
+            return Response({"success": False, "error": str(exc)}, status=status.HTTP_403_FORBIDDEN)
+        logger.exception("Plugin action failed")
+        return Response({"success": False, "error": str(exc)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     def _response_for_result(self, result):
         # A plugin can self-dispatch via context['dispatch_task'] and return
@@ -608,7 +611,9 @@ class PluginRunAPIView(PluginAuthMixin, APIView):
 
         async_result = run_plugin_action_task.apply_async(args=[key, action, params], queue="plugins")
         try:
-            result = async_result.get(timeout=PLUGIN_RUN_SYNC_TIMEOUT)
+            # interval=1: Celery's 0.5s default poll would otherwise hit the
+            # result backend ~100+ times over the full timeout window.
+            result = async_result.get(timeout=PLUGIN_RUN_SYNC_TIMEOUT, interval=1)
         except CeleryTimeoutError:
             # Task keeps running on the plugins worker; this just stops waiting.
             return Response(
@@ -619,11 +624,8 @@ class PluginRunAPIView(PluginAuthMixin, APIView):
                 },
                 status=status.HTTP_504_GATEWAY_TIMEOUT,
             )
-        except PermissionError as e:
-            return Response({"success": False, "error": str(e)}, status=status.HTTP_403_FORBIDDEN)
         except Exception as e:
-            logger.exception("Plugin action failed")
-            return Response({"success": False, "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            return self._error_response(e)
         return self._response_for_result(result)
 
 
