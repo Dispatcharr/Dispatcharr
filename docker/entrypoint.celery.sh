@@ -70,5 +70,13 @@ fi
 
 # DVR worker: thread pool for the long-running, I/O-bound run_recording task.
 nice -n "$NICE_LEVEL" celery -A dispatcharr worker -Q dvr -n dvr@%h --pool=threads --concurrency=20 -l info &
-# Default prefork worker: every queue except `dvr`.
+
+# Plugins worker: isolated queue, deprioritized and memory-capped below the
+# other workers so plugin code can't degrade the rest of the app.
+PLUGINS_NICE_LEVEL="${CELERY_PLUGINS_NICE_LEVEL:-$((NICE_LEVEL + 5))}"
+PLUGINS_CONCURRENCY="${CELERY_PLUGINS_CONCURRENCY:-10}"
+PLUGINS_MAX_MEMORY_PER_CHILD="${CELERY_PLUGIN_WORKER_MAX_MEMORY_PER_CHILD:-262144}"
+nice -n "$PLUGINS_NICE_LEVEL" celery -A dispatcharr worker -Q plugins -n plugins@%h --pool=threads --concurrency="$PLUGINS_CONCURRENCY" --max-memory-per-child="$PLUGINS_MAX_MEMORY_PER_CHILD" -l info &
+
+# Default prefork worker: every queue except `dvr`/`plugins`.
 nice -n "$NICE_LEVEL" celery -A dispatcharr worker -Q celery -n default@%h --autoscale=6,1 -l info
