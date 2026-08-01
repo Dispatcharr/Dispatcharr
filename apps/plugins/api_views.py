@@ -575,7 +575,7 @@ class PluginRunAPIView(PluginAuthMixin, APIView):
         is_async_action = bool(action_def.get("async"))
 
         if is_async_action:
-            return self._dispatch_async(key, action, params)
+            return self._dispatch_async(key, action, params, action_def.get("label", action))
 
         from core.models import CoreSettings
         if CoreSettings.get_plugin_dedicated_worker_enabled():
@@ -600,9 +600,11 @@ class PluginRunAPIView(PluginAuthMixin, APIView):
             return Response({"success": True, "status": "started", "task_id": result["task_id"]})
         return Response({"success": True, "result": result})
 
-    def _dispatch_async(self, key, action, params):
+    def _dispatch_async(self, key, action, params, action_label):
         from .tasks import run_plugin_action_task
+        from .task_history import record_task_started
         async_result = run_plugin_action_task.apply_async(args=[key, action, params], queue="plugins")
+        record_task_started(key, async_result.id, action, action_label)
         return Response({"success": True, "status": "started", "task_id": async_result.id})
 
     def _run_via_dedicated_worker(self, key, action, params):
@@ -627,6 +629,12 @@ class PluginRunAPIView(PluginAuthMixin, APIView):
         except Exception as e:
             return self._error_response(e)
         return self._response_for_result(result)
+
+
+class PluginTaskHistoryAPIView(PluginAuthMixin, APIView):
+    def get(self, request, key):
+        from .task_history import get_task_history
+        return Response({"tasks": get_task_history(key)})
 
 
 class PluginEnabledAPIView(PluginAuthMixin, APIView):

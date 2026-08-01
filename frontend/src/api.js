@@ -2308,6 +2308,18 @@ export default class API {
     }
   }
 
+  // Bounded, best-effort history of past async task runs for this plugin
+  // (see apps/plugins/task_history.py), used to rehydrate the Tasks panel
+  // on page load / in a second tab, not just tasks started in this session.
+  static async getPluginTaskHistory(key) {
+    try {
+      const response = await request(`${host}/api/plugins/plugins/${key}/tasks/`);
+      return response?.tasks || [];
+    } catch {
+      return [];
+    }
+  }
+
   static async setPluginEnabled(key, enabled) {
     try {
       const response = await request(

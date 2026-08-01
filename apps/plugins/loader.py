@@ -1116,7 +1116,7 @@ class PluginManager:
             "logger": logger,
             "actions": {a.get("id"): a for a in (lp.actions or [])},
             "report_progress": self._make_progress_reporter(lp.key, task_id),
-            "dispatch_task": self._make_task_dispatcher(lp.key),
+            "dispatch_task": self._make_task_dispatcher(lp),
         }
 
     def _make_progress_reporter(self, plugin_key: str, task_id: Optional[str]):
@@ -1125,23 +1125,31 @@ class PluginManager:
             if task_id is None:
                 return
             from core.utils import send_websocket_update
+            from .task_history import record_task_progress
             send_websocket_update("updates", "update", {
                 "type": "plugin_task_progress",
                 "plugin": plugin_key,
                 "task_id": task_id,
                 "percent": percent,
                 "message": message,
+                "updatedAt": int(time.time() * 1000),
             })
+            record_task_progress(plugin_key, task_id, percent, message)
         return report_progress
 
-    def _make_task_dispatcher(self, plugin_key: str):
+    def _make_task_dispatcher(self, lp: LoadedPlugin):
         """Lets an action hand work off to the plugins queue at runtime,
         independent of the manifest 'async' flag."""
         def dispatch_task(action_id, params=None):
             from .tasks import run_plugin_action_task
+            from .task_history import record_task_started
             async_result = run_plugin_action_task.apply_async(
-                args=[plugin_key, action_id, params or {}], queue="plugins",
+                args=[lp.key, action_id, params or {}], queue="plugins",
             )
+            action_def = next(
+                (a for a in (lp.actions or []) if isinstance(a, dict) and a.get("id") == action_id), {}
+            )
+            record_task_started(lp.key, async_result.id, action_id, action_def.get("label", action_id))
             return async_result.id
         return dispatch_task
 

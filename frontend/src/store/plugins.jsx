@@ -1,6 +1,33 @@
 import { create } from 'zustand';
 import API from '../api';
 
+// Dismissing a task doesn't delete its history (see dismissPluginTask below);
+// it just needs to survive a page reload without a backend write, so we
+// track dismissed ids per plugin in localStorage, capped like the Redis-side
+// history is (see apps/plugins/task_history.py HISTORY_MAX_ENTRIES).
+const DISMISSED_TASKS_STORAGE_PREFIX = 'dispatcharr.dismissedPluginTasks.';
+const DISMISSED_TASKS_MAX = 50;
+
+const getDismissedTaskIds = (pluginKey) => {
+  try {
+    const raw = localStorage.getItem(`${DISMISSED_TASKS_STORAGE_PREFIX}${pluginKey}`);
+    return raw ? new Set(JSON.parse(raw)) : new Set();
+  } catch {
+    return new Set();
+  }
+};
+
+const addDismissedTaskId = (pluginKey, taskId) => {
+  try {
+    const ids = Array.from(getDismissedTaskIds(pluginKey));
+    ids.push(taskId);
+    const capped = ids.slice(-DISMISSED_TASKS_MAX);
+    localStorage.setItem(`${DISMISSED_TASKS_STORAGE_PREFIX}${pluginKey}`, JSON.stringify(capped));
+  } catch {
+    /* localStorage unavailable (e.g. private browsing); dismissal just won't survive reload */
+  }
+};
+
 export const usePluginStore = create((set, get) => ({
   plugins: [],
   loading: false,
@@ -13,49 +40,109 @@ export const usePluginStore = create((set, get) => ({
   availableLoading: false,
 
   // Async plugin action tasks (see WebSocket.jsx plugin_task_progress/
-  // plugin_task_complete and PluginDetail.jsx's "Running Tasks" section).
-  // Keyed by task_id; only tasks started from this UI are tracked here, so
-  // progress/complete events for other in-flight tasks (e.g. event-hook
-  // dispatches with the dedicated-worker toggle on) are silently ignored.
+  // plugin_task_complete and PluginDetail.jsx's "Tasks" section). Keyed by
+  // task_id (globally unique Celery id), so this map can hold entries for
+  // more than one plugin at once without collision.
+  //
+  // A task_id is also durably recorded server-side (apps/plugins/task_history.py,
+  // Redis-backed, capped + TTL'd) as soon as it's dispatched, so
+  // hydratePluginTasks can rehydrate this map from GET .../tasks/ on mount -
+  // history survives a reload or a second browser tab, not just tasks
+  // started in this session. Dismissal (see dismissPluginTask) is tracked
+  // client-side only (localStorage), not sent to the backend.
   pluginTasks: {},
 
-  startPluginTask: (taskId, { plugin, actionLabel }) => {
+  startPluginTask: (taskId, { pluginKey, plugin, actionId, actionLabel }) => {
     set((state) => ({
       pluginTasks: {
         ...state.pluginTasks,
-        [taskId]: { plugin, actionLabel, status: 'running', percent: null, message: null },
+        [taskId]: {
+          pluginKey, plugin, actionId, actionLabel,
+          status: 'running', percent: null, message: null,
+          startedAt: null, updatedAt: null, dismissed: false,
+        },
       },
     }));
   },
 
-  updatePluginTaskProgress: (taskId, { percent, message }) => {
+  updatePluginTaskProgress: (taskId, { percent, message, updatedAt }) => {
     set((state) => {
       if (!state.pluginTasks[taskId]) return state;
       return {
         pluginTasks: {
           ...state.pluginTasks,
-          [taskId]: { ...state.pluginTasks[taskId], percent, message },
+          [taskId]: {
+            ...state.pluginTasks[taskId],
+            percent, message,
+            startedAt: state.pluginTasks[taskId].startedAt ?? updatedAt,
+            updatedAt: updatedAt ?? state.pluginTasks[taskId].updatedAt,
+          },
         },
       };
     });
   },
 
-  completePluginTask: (taskId, { status, result, error }) => {
+  completePluginTask: (taskId, { status, result, error, updatedAt }) => {
     set((state) => {
       if (!state.pluginTasks[taskId]) return state;
       return {
         pluginTasks: {
           ...state.pluginTasks,
-          [taskId]: { ...state.pluginTasks[taskId], status, result, error },
+          [taskId]: {
+            ...state.pluginTasks[taskId],
+            status, result, error,
+            startedAt: state.pluginTasks[taskId].startedAt ?? updatedAt,
+            updatedAt: updatedAt ?? state.pluginTasks[taskId].updatedAt,
+          },
         },
       };
     });
   },
 
-  clearPluginTask: (taskId) => {
+  // Marks a task dismissed (hidden from the live list) without deleting it -
+  // history is retained (bounded, see DISMISSED_TASKS_MAX / the backend's
+  // HISTORY_MAX_ENTRIES) so it's still reachable via "show dismissed" in the
+  // task group modal.
+  dismissPluginTask: (taskId) => {
     set((state) => {
-      const { [taskId]: _dropped, ...rest } = state.pluginTasks;
-      return { pluginTasks: rest };
+      const task = state.pluginTasks[taskId];
+      if (!task) return state;
+      if (task.pluginKey) addDismissedTaskId(task.pluginKey, taskId);
+      return {
+        pluginTasks: {
+          ...state.pluginTasks,
+          [taskId]: { ...task, dismissed: true },
+        },
+      };
+    });
+  },
+
+  // Merges server-side task history for one plugin into the live map. Never
+  // overwrites an entry already tracked locally, so a slightly-stale fetch
+  // can't clobber an in-flight websocket update.
+  hydratePluginTasks: (pluginKey, pluginName, tasks) => {
+    if (!Array.isArray(tasks) || tasks.length === 0) return;
+    const dismissedIds = getDismissedTaskIds(pluginKey);
+    set((state) => {
+      const next = { ...state.pluginTasks };
+      for (const t of tasks) {
+        if (next[t.task_id]) continue;
+        next[t.task_id] = {
+          pluginKey,
+          plugin: pluginName,
+          actionId: t.action_id,
+          actionLabel: t.action_label,
+          status: t.status,
+          percent: t.percent,
+          message: t.message,
+          result: t.result,
+          error: t.error,
+          startedAt: t.startedAt,
+          updatedAt: t.updatedAt,
+          dismissed: dismissedIds.has(t.task_id),
+        };
+      }
+      return { pluginTasks: next };
     });
   },
 

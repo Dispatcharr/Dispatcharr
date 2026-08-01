@@ -995,14 +995,14 @@ export const WebsocketProvider = ({ children }) => {
             }
 
             case 'plugin_task_progress': {
-              const { task_id, percent, message } = parsedEvent.data;
-              usePluginStore.getState().updatePluginTaskProgress(task_id, { percent, message });
+              const { task_id, percent, message, updatedAt } = parsedEvent.data;
+              usePluginStore.getState().updatePluginTaskProgress(task_id, { percent, message, updatedAt });
               break;
             }
 
             case 'plugin_task_complete': {
-              const { task_id, plugin, status: taskStatus, result, error } = parsedEvent.data;
-              usePluginStore.getState().completePluginTask(task_id, { status: taskStatus, result, error });
+              const { task_id, plugin, status: taskStatus, result, error, updatedAt } = parsedEvent.data;
+              usePluginStore.getState().completePluginTask(task_id, { status: taskStatus, result, error, updatedAt });
               notifications.update({
                 id: `plugin-task-${task_id}`,
                 title: plugin,
