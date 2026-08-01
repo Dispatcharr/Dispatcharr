@@ -344,8 +344,37 @@ Each action is a dict:
 - `button_label` (str, optional): Button text (defaults to “Run”).
 - `button_variant` (str, optional): Button style (Mantine variants like `filled`, `outline`, `subtle`).
 - `button_color` (str, optional): Button color (e.g., `red`, `blue`, `orange`).
+- `async` (bool, optional): See "Long-Running Actions" below.
 
 Clicking an action calls your plugin’s `run(action, params, context)` and shows a notification with the result or error.
+
+### Long-Running Actions (Async Dispatch)
+
+The manual Run button and event hooks normally call `run()` inline and wait for it to return, so anything slower than a typical reverse-proxy timeout (60-120s) fails. Two ways to avoid that:
+
+**1. Mark the action `async` in its manifest.** The button dispatches immediately and returns; your `run()` executes on a dedicated Celery worker instead of the request:
+```python
+actions = [
+    {"id": "bulk_match", "label": "Match All Streams", "async": True},
+]
+```
+
+**2. Or call `context["dispatch_task"]` from any action, sync or async.** Useful when only some invocations of an action turn out to be slow:
+```python
+def run(self, action, params, context):
+    if action == "start_scan":
+        task_id = context["dispatch_task"]("do_scan", params)
+        return {"status": "started", "task_id": task_id}
+    if action == "do_scan":
+        # runs on the plugins worker when reached via dispatch_task
+        ...
+```
+
+Either way, call `context["report_progress"](percent, message)` from inside the dispatched action to push progress to the UI. It's a no-op when your action isn't running async, so it's safe to call unconditionally.
+
+Event hooks and non-async manual actions can also be routed through the same dedicated worker without any manifest changes, via a system-wide "Dedicated Plugin Worker" setting (off by default). Turning it on doesn't change your action's `run()` contract, only where it executes.
+
+**Deployment note:** `async` actions and `dispatch_task` always target the `plugins` Celery queue, which ships enabled by default in both the AIO image and the standard split-container `docker-compose.yml`. If you run a custom-mounted `entrypoint.celery.sh` or `uwsgi.ini` that predates this queue, add a `plugins` worker yourself (mirror the existing `dvr` worker line) or these dispatch paths will queue work that never runs.
 
 ### Action Confirmation (Modal)
 Developers can request a confirmation modal per action using the `confirm` key on the action. Options:
@@ -387,6 +416,7 @@ Plugins are server-side Python code running within the Django application. You c
   refresh_m3u_accounts.delay()
   refresh_all_epg_data.delay()
   ```
+  A plugin's own `@shared_task` registers correctly on worker startup regardless of which queue it's routed to; avoid `queue='dvr'` yourself, since that's reserved for recordings.
 
 - Send WebSocket updates:
   ```
