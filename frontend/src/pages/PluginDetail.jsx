@@ -40,7 +40,7 @@ import PluginHeader from '../components/PluginHeader.jsx';
 import PluginDetailPanel from '../components/PluginDetailPanel.jsx';
 import PluginFieldList from '../components/PluginFieldList.jsx';
 import EvenlyWrappedPills from '../components/EvenlyWrappedPills.jsx';
-import { PluginActionList, PluginActionStatus } from '../components/PluginActionList.jsx';
+import { PluginActionList, PluginActionStatus, PluginTaskList } from '../components/PluginActionList.jsx';
 import API from '../api';
 import './plugin-detail.css';
 
@@ -127,6 +127,14 @@ function PluginDetailForKey({ routeKey: key }) {
   const isSingleCol = useMediaQuery('(max-width: 74.99em)');
   const [actionsOpened, { toggle: toggleActions }] = useDisclosure(true);
   const [settingsOpened, { toggle: toggleSettings }] = useDisclosure(true);
+  // Independent of isSingleCol: unlike Actions/Settings, this section
+  // should stay user-toggleable regardless of layout breakpoint.
+  const [tasksOpened, { toggle: toggleTasks }] = useDisclosure(true);
+  const allPluginTasks = usePluginStore((s) => s.pluginTasks) || {};
+  const pluginTasks = Object.fromEntries(
+    Object.entries(allPluginTasks).filter(([, t]) => t.plugin === plugin?.name)
+  );
+  const hasPluginTasks = Object.keys(pluginTasks).length > 0;
 
   useEffect(() => {
     setSettings(plugin?.settings || {});
@@ -351,7 +359,20 @@ function PluginDetailForKey({ routeKey: key }) {
         /* ignore, run anyway */
       }
       const resp = await runPluginAction(plugin.key, action.id);
-      if (resp?.success) {
+      if (resp?.status === 'started' && resp?.task_id) {
+        usePluginStore.getState().startPluginTask(resp.task_id, {
+          plugin: plugin.name,
+          actionLabel: action.label,
+        });
+        showNotification({
+          id: `plugin-task-${resp.task_id}`,
+          title: plugin.name,
+          message: `${action.label} started`,
+          color: 'blue',
+          loading: true,
+          autoClose: false,
+        });
+      } else if (resp?.success) {
         setLastResult(resp.result || {});
         showNotification({ title: plugin.name, message: resp.result?.message || 'Plugin action completed', color: 'green' });
       } else {
@@ -570,6 +591,23 @@ function PluginDetailForKey({ routeKey: key }) {
                 )}
               </Stack>
             </Paper>
+
+            {hasPluginTasks && (
+              <Stack gap="sm">
+                <CollapsibleHeading
+                  label="Running Tasks"
+                  isSingleCol
+                  opened={tasksOpened}
+                  onToggle={toggleTasks}
+                />
+                <Collapse in={tasksOpened}>
+                  <PluginTaskList
+                    tasks={pluginTasks}
+                    onDismiss={(taskId) => usePluginStore.getState().clearPluginTask(taskId)}
+                  />
+                </Collapse>
+              </Stack>
+            )}
 
             {hasActions && (
               <Stack gap="sm">

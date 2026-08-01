@@ -2290,6 +2290,9 @@ export default class API {
     }
   }
 
+  // Response is either {success, result} (synchronous) or
+  // {success, status: 'started', task_id} (async; see plugin_task_progress/
+  // plugin_task_complete in WebSocket.jsx).
   static async runPluginAction(key, action, params = {}) {
     try {
       const response = await request(
