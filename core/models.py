@@ -1,6 +1,7 @@
 # core/models.py
 
 import logging
+import os
 import time
 from shlex import split as shlex_split
 
@@ -726,6 +727,7 @@ class CoreSettings(models.Model):
             "auto_import_mapped_files": True,
             "enable_ip_lookup": True,
             "catchup_enabled": True,
+            "plugin_dedicated_worker": False,
         })
 
     @classmethod
@@ -733,6 +735,17 @@ class CoreSettings(models.Model):
         """Whether catch-up / timeshift is enabled system-wide (default True)."""
         # Stored as a JSON boolean by System Settings; default on when unset.
         return cls.get_system_settings().get("catchup_enabled", True) is not False
+
+    @classmethod
+    def get_plugin_dedicated_worker_enabled(cls):
+        """Whether plugin actions route through the plugins queue (default off).
+        DISPATCHARR_PLUGIN_DEDICATED_WORKER, if set, overrides the stored value."""
+        env_value = os.environ.get("DISPATCHARR_PLUGIN_DEDICATED_WORKER", "").strip().lower()
+        if env_value in ("true", "1", "yes"):
+            return True
+        if env_value in ("false", "0", "no"):
+            return False
+        return cls.get_system_settings().get("plugin_dedicated_worker", False) is True
 
     @classmethod
     def get_system_time_zone(cls):

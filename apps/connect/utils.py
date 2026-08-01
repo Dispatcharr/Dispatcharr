@@ -113,6 +113,9 @@ def trigger_event(event_name, payload):
         len(handlers),
         len(enabled_keys),
     )
+    from core.models import CoreSettings
+    dedicated_worker = CoreSettings.get_plugin_dedicated_worker_enabled()
+
     params = {"event": event_name, "payload": payload}
     for key, action_id in handlers:
         if key not in enabled_keys:
@@ -127,7 +130,12 @@ def trigger_event(event_name, payload):
             action_id,
         )
         try:
-            pm.run_action(key, action_id, params)
+            if dedicated_worker:
+                # Fire-and-forget; nothing consumes the result either way.
+                from apps.plugins.tasks import run_plugin_action_task
+                run_plugin_action_task.apply_async(args=[key, action_id, params], queue="plugins")
+            else:
+                pm.run_action(key, action_id, params)
         except Exception:
             logger.exception(
                 "Plugin action failed for event '%s' on plugin id=%s action=%s",

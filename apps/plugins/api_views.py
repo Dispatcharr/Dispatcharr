@@ -547,6 +547,11 @@ class PluginFieldUploadAPIView(PluginAuthMixin, APIView):
         return Response({"success": True, "path": dest_path})
 
 
+# Bounded by real reverse-proxy/uWSGI timeouts, not a design choice
+# things expected to run longer than this must be marked "async" instead.
+PLUGIN_RUN_SYNC_TIMEOUT = int(os.environ.get("DISPATCHARR_PLUGIN_RUN_SYNC_TIMEOUT_SECONDS", 55))
+
+
 class PluginRunAPIView(PluginAuthMixin, APIView):
     def post(self, request, key):
         pm = PluginManager.get()
@@ -563,14 +568,63 @@ class PluginRunAPIView(PluginAuthMixin, APIView):
         except PluginConfig.DoesNotExist:
             return Response({"success": False, "error": "Plugin not found"}, status=status.HTTP_404_NOT_FOUND)
 
+        lp = pm.get_plugin(key)
+        action_def = next(
+            (a for a in (lp.actions or []) if isinstance(a, dict) and a.get("id") == action), {}
+        ) if lp else {}
+        is_async_action = bool(action_def.get("async"))
+
+        if is_async_action:
+            return self._dispatch_async(key, action, params)
+
+        from core.models import CoreSettings
+        if CoreSettings.get_plugin_dedicated_worker_enabled():
+            return self._run_via_dedicated_worker(key, action, params)
+
         try:
             result = pm.run_action(key, action, params)
-            return Response({"success": True, "result": result})
+            return self._response_for_result(result)
         except PermissionError as e:
             return Response({"success": False, "error": str(e)}, status=status.HTTP_403_FORBIDDEN)
         except Exception as e:
             logger.exception("Plugin action failed")
             return Response({"success": False, "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    def _response_for_result(self, result):
+        # A plugin can self-dispatch via context['dispatch_task'] and return
+        # this shape; normalize it to the same contract _dispatch_async uses.
+        if isinstance(result, dict) and result.get("status") == "started" and result.get("task_id"):
+            return Response({"success": True, "status": "started", "task_id": result["task_id"]})
+        return Response({"success": True, "result": result})
+
+    def _dispatch_async(self, key, action, params):
+        from .tasks import run_plugin_action_task
+        async_result = run_plugin_action_task.apply_async(args=[key, action, params], queue="plugins")
+        return Response({"success": True, "status": "started", "task_id": async_result.id})
+
+    def _run_via_dedicated_worker(self, key, action, params):
+        from celery.exceptions import TimeoutError as CeleryTimeoutError
+        from .tasks import run_plugin_action_task
+
+        async_result = run_plugin_action_task.apply_async(args=[key, action, params], queue="plugins")
+        try:
+            result = async_result.get(timeout=PLUGIN_RUN_SYNC_TIMEOUT)
+        except CeleryTimeoutError:
+            # Task keeps running on the plugins worker; this just stops waiting.
+            return Response(
+                {
+                    "success": False,
+                    "error": "Plugin action timed out waiting for a response; it may still be running.",
+                    "task_id": async_result.id,
+                },
+                status=status.HTTP_504_GATEWAY_TIMEOUT,
+            )
+        except PermissionError as e:
+            return Response({"success": False, "error": str(e)}, status=status.HTTP_403_FORBIDDEN)
+        except Exception as e:
+            logger.exception("Plugin action failed")
+            return Response({"success": False, "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        return self._response_for_result(result)
 
 
 class PluginEnabledAPIView(PluginAuthMixin, APIView):

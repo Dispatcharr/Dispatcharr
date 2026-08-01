@@ -604,7 +604,13 @@ class PluginManager:
         cfg.save(update_fields=["settings", "updated_at"])
         return cfg.settings
 
-    def run_action(self, key: str, action_id: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    def run_action(
+        self,
+        key: str,
+        action_id: str,
+        params: Optional[Dict[str, Any]] = None,
+        task_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
         try:
             lp = self.get_plugin(key)
             if not lp or not lp.instance:
@@ -619,7 +625,7 @@ class PluginManager:
                 raise PermissionError(f"Plugin '{key}' is disabled")
             params = params or {}
 
-            context = self._build_context(lp, cfg)
+            context = self._build_context(lp, cfg, task_id=task_id)
 
             run_method = getattr(lp.instance, "run", None)
             if not callable(run_method):
@@ -1101,13 +1107,43 @@ class PluginManager:
                             f"Field '{field_id}' row {i} column '{col_id}' expects type '{col_type}'"
                         )
 
-    def _build_context(self, lp: LoadedPlugin, cfg: PluginConfig) -> Dict[str, Any]:
+    def _build_context(
+        self, lp: LoadedPlugin, cfg: PluginConfig, task_id: Optional[str] = None
+    ) -> Dict[str, Any]:
         settings = self._merge_settings_with_defaults(cfg.settings or {}, lp.fields or [])
         return {
             "settings": settings,
             "logger": logger,
             "actions": {a.get("id"): a for a in (lp.actions or [])},
+            "report_progress": self._make_progress_reporter(lp.key, task_id),
+            "dispatch_task": self._make_task_dispatcher(lp.key),
         }
+
+    def _make_progress_reporter(self, plugin_key: str, task_id: Optional[str]):
+        """No-op when task_id is None, so plugins can call it unconditionally."""
+        def report_progress(percent, message=None):
+            if task_id is None:
+                return
+            from core.utils import send_websocket_update
+            send_websocket_update("updates", "update", {
+                "type": "plugin_task_progress",
+                "plugin": plugin_key,
+                "task_id": task_id,
+                "percent": percent,
+                "message": message,
+            })
+        return report_progress
+
+    def _make_task_dispatcher(self, plugin_key: str):
+        """Lets an action hand work off to the plugins queue at runtime,
+        independent of the manifest 'async' flag."""
+        def dispatch_task(action_id, params=None):
+            from .tasks import run_plugin_action_task
+            async_result = run_plugin_action_task.apply_async(
+                args=[plugin_key, action_id, params or {}], queue="plugins",
+            )
+            return async_result.id
+        return dispatch_task
 
     def _read_manifest(self, path: str) -> tuple[Optional[Dict[str, Any]], bool]:
         manifest_path = os.path.join(path, "plugin.json")
