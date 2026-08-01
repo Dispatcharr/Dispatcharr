@@ -202,6 +202,34 @@ def setup_celery_logging(**kwargs):
 
 
 @worker_ready.connect
+def register_plugin_tasks(sender=None, **kwargs):
+    """Fixes #1460/#1244: a prefork worker's *parent* process snapshots
+    app.tasks into consumer.strategies at startup and never refreshes it.
+    Plugin @shared_task modules are only imported lazily in forked children
+    (worker_process_init, above), never in the parent, so plugin tasks
+    routed to the default `celery` queue are permanently rejected as
+    "unregistered" even though a child process has them registered fine.
+
+    Runs discovery here (in the parent, pre-fork of any *future* autoscale
+    children) purely for its @shared_task import side effect, then asks the
+    consumer to pick up any newly-registered task names. Must run on every
+    worker_ready firing (every process, every boot), unlike on_worker_ready
+    below, this must NOT be guarded by the one-shot cluster lock.
+    """
+    try:
+        from apps.plugins.loader import PluginManager
+        PluginManager.get().discover_plugins(sync_db=False, use_cache=True)
+    except Exception:
+        logger.exception("plugin task registration import failed")
+
+    if sender is not None and hasattr(sender, "update_strategies"):
+        try:
+            sender.update_strategies()
+        except Exception:
+            logger.exception("update_strategies() failed during plugin task registration")
+
+
+@worker_ready.connect
 def on_worker_ready(**kwargs):
     """Tasks to run once the worker is fully connected and ready.
 
