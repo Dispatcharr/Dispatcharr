@@ -132,7 +132,7 @@ function PluginDetailForKey({ routeKey: key }) {
   const [tasksOpened, { toggle: toggleTasks }] = useDisclosure(true);
   const allPluginTasks = usePluginStore((s) => s.pluginTasks) || {};
   const pluginTasks = Object.fromEntries(
-    Object.entries(allPluginTasks).filter(([, t]) => t.plugin === plugin?.name)
+    Object.entries(allPluginTasks).filter(([, t]) => t.pluginKey === plugin?.key)
   );
   const hasPluginTasks = Object.keys(pluginTasks).length > 0;
 
@@ -140,6 +140,21 @@ function PluginDetailForKey({ routeKey: key }) {
     setSettings(plugin?.settings || {});
     setEnabled(!!plugin?.enabled);
   }, [plugin?.key, plugin?.settings, plugin?.enabled]);
+
+  // Rehydrate the Tasks panel from the backend's bounded task history so
+  // past runs (including from a prior page load or another tab) show up
+  // alongside anything already tracked live in this session.
+  useEffect(() => {
+    if (!plugin?.key) return;
+    let cancelled = false;
+    API.getPluginTaskHistory(plugin.key).then((tasks) => {
+      if (cancelled) return;
+      usePluginStore.getState().hydratePluginTasks(plugin.key, plugin.name, tasks);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [plugin?.key, plugin?.name]);
 
   const isManaged = !!(plugin?.slug && plugin?.source_repo);
 
@@ -363,7 +378,9 @@ function PluginDetailForKey({ routeKey: key }) {
       const resp = await runPluginAction(plugin.key, action.id);
       if (resp?.status === 'started' && resp?.task_id) {
         usePluginStore.getState().startPluginTask(resp.task_id, {
+          pluginKey: plugin.key,
           plugin: plugin.name,
+          actionId: action.id,
           actionLabel: action.label,
         });
         showNotification({
@@ -597,7 +614,7 @@ function PluginDetailForKey({ routeKey: key }) {
             {hasPluginTasks && (
               <Stack gap="sm">
                 <CollapsibleHeading
-                  label="Running Tasks"
+                  label="Tasks"
                   isSingleCol
                   opened={tasksOpened}
                   onToggle={toggleTasks}
@@ -605,7 +622,7 @@ function PluginDetailForKey({ routeKey: key }) {
                 <Collapse in={tasksOpened}>
                   <PluginTaskList
                     tasks={pluginTasks}
-                    onDismiss={(taskId) => usePluginStore.getState().clearPluginTask(taskId)}
+                    onDismiss={(taskId) => usePluginStore.getState().dismissPluginTask(taskId)}
                   />
                 </Collapse>
               </Stack>
