@@ -2,7 +2,7 @@
 import os
 from celery import Celery
 import logging
-from celery.signals import task_postrun, task_prerun, worker_process_init, worker_ready
+from celery.signals import task_postrun, task_prerun, worker_process_init, worker_ready, worker_shutdown
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +61,19 @@ def init_worker_process(**_kwargs):
         PluginManager.get().discover_plugins(sync_db=False)
     except Exception:
         logger.exception("plugin discovery on worker_process_init failed")
+
+
+@worker_shutdown.connect(weak=False)
+def release_plugin_leaderships_on_shutdown(**_kwargs):
+    """Best-effort graceful leadership release (see PluginManager
+    release_all_leaderships). Not the only safety net for leader-election
+    plugins; a hard kill (SIGKILL/OOM) never fires this signal, which is
+    why the Redis lease also has a TTL that expires on its own."""
+    try:
+        from apps.plugins.loader import PluginManager
+        PluginManager.get().release_all_leaderships()
+    except Exception:
+        logger.exception("plugin leadership release on worker_shutdown failed")
 
 
 # Use environment variable for log level with fallback to INFO

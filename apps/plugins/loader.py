@@ -4,8 +4,10 @@ import json
 import logging
 import os
 import re
+import socket
 import sys
 import threading
+import time
 import types
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterator, List, Optional, Tuple
@@ -35,12 +37,24 @@ class LoadedPlugin:
     path: Optional[str] = None
     folder_name: Optional[str] = None
     legacy: bool = False
+    # Snapshot of merged settings taken at discovery time, used only to build
+    # the lightweight context passed to on_leader_acquired/on_leader_lost --
+    # the leadership tick loop must not hit the DB on every tick (see
+    # PluginManager._leadership_tick), so it can't call _build_context()'s
+    # live PluginConfig lookup like run_action()/stop_plugin() do.
+    cached_settings: Dict[str, Any] = field(default_factory=dict)
 
 
 class PluginManager:
     """Singleton manager that discovers and runs plugins from /data/plugins."""
 
     _instance: Optional["PluginManager"] = None
+
+    # Leader-election tuning (see apps/plugins/loader.py leadership methods
+    # below). 30s TTL / 10s renewal mirrors apps/proxy/live_proxy/server.py's
+    # ProxyServer channel-ownership lease, which uses the same tradeoff.
+    LEADER_LEASE_TTL = 30
+    LEADER_RENEW_INTERVAL = 10
 
     @classmethod
     def get(cls) -> "PluginManager":
@@ -58,10 +72,22 @@ class PluginManager:
         self._discovery_completed = False
         self._lock = threading.RLock()
 
+        # Leader-election state, all process-local. `_leadership_state` maps
+        # plugin_key -> "leader"/"follower"; only keys with a value are
+        # tracked at all, and only plugins defining on_leader_acquired ever
+        # get an entry. worker_id identifies this OS process for the Redis
+        # lease, matching ProxyServer's `f"{hostname}:{pid}"` scheme.
+        self.worker_id = f"{socket.gethostname()}:{os.getpid()}"
+        self._leadership_state: Dict[str, str] = {}
+        self._leadership_lock = threading.RLock()
+        self._leadership_thread_started = False
+
         # Ensure plugins directory exists
         os.makedirs(self.plugins_dir, exist_ok=True)
         if self.plugins_dir not in sys.path:
             sys.path.append(self.plugins_dir)
+
+        self._ensure_leadership_loop_started()
 
     def discover_plugins(
         self,
@@ -173,6 +199,11 @@ class PluginManager:
                 # Remove stale modules for plugins that no longer exist
                 removed_keys = set(previous_packages.keys()) - set(new_packages.keys())
                 for key in removed_keys:
+                    # Release synchronously rather than waiting on TTL expiry --
+                    # a plugin dropped from the registry mid-reload must not
+                    # leave a dangling leadership lease held by a module that
+                    # no longer exists in this process.
+                    self._release_plugin_leadership(key)
                     self._unload_package(previous_packages[key])
                     prev_alias = previous_aliases.get(key)
                     if prev_alias:
@@ -311,6 +342,9 @@ class PluginManager:
             lp.path = path
             lp.folder_name = entry
             lp.legacy = legacy
+            lp.cached_settings = self._merge_settings_with_defaults(
+                cfg.settings if cfg else {}, lp.fields or []
+            )
             return lp, package_name, alias_name
         except Exception:
             logger.exception(f"Failed to load plugin '{plugin_key}' from {path}")
@@ -607,6 +641,13 @@ class PluginManager:
 
     def stop_plugin(self, key: str, reason: Optional[str] = None) -> bool:
         try:
+            # Tear down any persistent service this process leads for this
+            # plugin synchronously: disable/reload must not leave a server
+            # running headless under a lease the (about to be replaced or
+            # disabled) instance no longer knows about, and must not wait on
+            # TTL expiry for another process to notice.
+            self._release_plugin_leadership(key)
+
             lp = self.get_plugin(key)
             if not lp or not lp.instance:
                 return False
@@ -659,6 +700,218 @@ class PluginManager:
             if self.stop_plugin(key, reason=reason):
                 stopped += 1
         return stopped
+
+    # ------------------------------------------------------------------
+    # Leader election for persistent plugin services.
+    #
+    # discover_plugins() instantiates every enabled plugin in every process
+    # that touches the app, so a plugin starting its own server in __init__
+    # collides across processes. on_leader_acquired/on_leader_lost run in
+    # exactly one process cluster-wide instead, via a Redis lease mirroring
+    # ProxyServer's channel-ownership pattern in apps/proxy/live_proxy/server.py
+    # (try_acquire_ownership/extend_ownership/release_ownership). Plugins
+    # that don't define on_leader_acquired are never touched by this.
+    # ------------------------------------------------------------------
+
+    def _leader_redis_client(self):
+        try:
+            from core.utils import RedisClient
+            return RedisClient.get_client()
+        except Exception:
+            logger.warning("Leader election: Redis unavailable", exc_info=True)
+            return None
+
+    @staticmethod
+    def _leader_key(plugin_key: str) -> str:
+        return f"plugin:{plugin_key}:leader"
+
+    def try_acquire_leadership(self, plugin_key: str, ttl: Optional[int] = None) -> bool:
+        """Try to become the leader for `plugin_key`. No Redis => always leader
+        (degrades to today's every-process-runs-it behavior rather than
+        hard-failing when Redis is down, matching ProxyServer's precedent)."""
+        ttl = ttl or self.LEADER_LEASE_TTL
+        client = self._leader_redis_client()
+        if client is None:
+            return True
+        try:
+            lock_key = self._leader_key(plugin_key)
+            acquired = client.set(lock_key, self.worker_id, nx=True, ex=ttl)
+            if acquired:
+                return True
+            current = client.get(lock_key)
+            if current and current == self.worker_id:
+                client.expire(lock_key, ttl)
+                return True
+            return False
+        except Exception:
+            logger.warning("Leader election: acquire failed for '%s'", plugin_key, exc_info=True)
+            return False
+
+    def extend_leadership(self, plugin_key: str, ttl: Optional[int] = None) -> bool:
+        """Renew this process's lease. Returns False if leadership was lost
+        (another process now holds the key) so the caller can transition."""
+        ttl = ttl or self.LEADER_LEASE_TTL
+        client = self._leader_redis_client()
+        if client is None:
+            return True
+        try:
+            lock_key = self._leader_key(plugin_key)
+            current = client.get(lock_key)
+            if current is None:
+                # Lease expired outright (e.g. this process stalled past the
+                # TTL). Try to reacquire rather than assume we still lead --
+                # if someone else grabbed it first, this correctly reports
+                # loss so on_leader_lost fires.
+                return bool(client.set(lock_key, self.worker_id, nx=True, ex=ttl))
+            if current == self.worker_id:
+                client.expire(lock_key, ttl)
+                return True
+            return False
+        except Exception:
+            logger.warning("Leader election: renew failed for '%s'", plugin_key, exc_info=True)
+            return False
+
+    def release_leadership(self, plugin_key: str) -> None:
+        client = self._leader_redis_client()
+        if client is None:
+            return
+        try:
+            lock_key = self._leader_key(plugin_key)
+            current = client.get(lock_key)
+            if current and current == self.worker_id:
+                client.delete(lock_key)
+        except Exception:
+            logger.warning("Leader election: release failed for '%s'", plugin_key, exc_info=True)
+
+    def _build_leadership_context(self, lp: LoadedPlugin) -> Dict[str, Any]:
+        # Deliberately does not call _build_context()'s live PluginConfig
+        # lookup, since the tick loop runs in every process and must not touch
+        # the DB every LEADER_RENEW_INTERVAL seconds. Uses the settings
+        # snapshot taken at discovery time instead (see LoadedPlugin.cached_settings).
+        return {
+            "settings": lp.cached_settings,
+            "logger": logger,
+        }
+
+    def _transition_to_leader(self, key: str, lp: LoadedPlugin) -> None:
+        hook = getattr(lp.instance, "on_leader_acquired", None)
+        if not callable(hook):
+            return
+        with self._leadership_lock:
+            self._leadership_state[key] = "leader"
+        try:
+            hook(self._build_leadership_context(lp))
+        except Exception:
+            logger.exception(
+                "Plugin '%s' on_leader_acquired() failed; releasing leadership so "
+                "another process can take over", key,
+            )
+            with self._leadership_lock:
+                self._leadership_state[key] = "follower"
+            self.release_leadership(key)
+
+    def _transition_to_follower(self, key: str, lp: Optional[LoadedPlugin]) -> None:
+        with self._leadership_lock:
+            was_leader = self._leadership_state.get(key) == "leader"
+            self._leadership_state[key] = "follower"
+        if not was_leader:
+            return
+        if lp is not None and lp.instance is not None:
+            hook = getattr(lp.instance, "on_leader_lost", None)
+            if callable(hook):
+                try:
+                    hook(self._build_leadership_context(lp))
+                except Exception:
+                    logger.exception("Plugin '%s' on_leader_lost() failed", key)
+
+    def _release_plugin_leadership(self, key: str) -> None:
+        """Synchronous teardown for disable/reload/removal; do not wait for
+        TTL expiry. Safe to call for a plugin that was never a leader."""
+        lp = self.get_plugin(key)
+        try:
+            self._transition_to_follower(key, lp)
+        finally:
+            self.release_leadership(key)
+
+    def release_all_leaderships(self) -> None:
+        """Best-effort graceful teardown on process shutdown (see
+        dispatcharr/celery.py worker_shutdown hook). Not the only safety net;
+        lease TTL expiry covers hard kills where this never runs."""
+        with self._leadership_lock:
+            keys = [k for k, v in self._leadership_state.items() if v == "leader"]
+        for key in keys:
+            try:
+                self._release_plugin_leadership(key)
+            except Exception:
+                logger.exception("Failed to release leadership for '%s' on shutdown", key)
+
+    def _leadership_tick(self) -> None:
+        with self._lock:
+            registry_snapshot = list(self._registry.items())
+        for key, lp in registry_snapshot:
+            if not lp.instance:
+                continue
+            hook = getattr(lp.instance, "on_leader_acquired", None)
+            if not callable(hook):
+                continue
+            try:
+                with self._leadership_lock:
+                    currently_leader = self._leadership_state.get(key) == "leader"
+                if currently_leader:
+                    if not self.extend_leadership(key):
+                        self._transition_to_follower(key, lp)
+                else:
+                    if self.try_acquire_leadership(key):
+                        self._transition_to_leader(key, lp)
+            except Exception:
+                # One plugin's bug must not stop leadership handling for
+                # every other plugin on this tick.
+                logger.exception("Leader election tick failed for plugin '%s'", key)
+
+    def _leadership_loop(self) -> None:
+        # Genuine OS thread regardless of gevent monkey-patching (see
+        # _ensure_leadership_loop_started); time.sleep() here blocks only
+        # this dedicated thread, never the gevent hub or any request/task.
+        while True:
+            try:
+                self._leadership_tick()
+            except Exception:
+                logger.exception("Leader election tick loop iteration failed")
+            time.sleep(self.LEADER_RENEW_INTERVAL)
+
+    def _ensure_leadership_loop_started(self) -> None:
+        with self._leadership_lock:
+            if self._leadership_thread_started:
+                return
+            self._leadership_thread_started = True
+
+        try:
+            from django.conf import settings
+            if getattr(settings, "TESTING", False):
+                return
+        except Exception:
+            pass
+
+        # Always use a genuine OS thread, never a greenlet: if gevent has
+        # monkey-patched `threading`, grab the original pre-patch Thread
+        # class via gevent.monkey.get_original(). This sidesteps needing to
+        # detect whether a gevent hub is actively driving this process (a
+        # known-hard problem here, see core/utils.py's
+        # _should_use_sync_websocket_send() docstring for the same class of
+        # issue with gevent.spawn in Celery prefork workers): a real OS
+        # thread runs and sleeps on its own regardless of whether anything
+        # else ever yields to a gevent hub in this process.
+        thread_cls = threading.Thread
+        try:
+            import gevent.monkey
+            if gevent.monkey.is_module_patched("threading"):
+                thread_cls = gevent.monkey.get_original("threading", "Thread")
+        except Exception:
+            pass
+
+        thread = thread_cls(target=self._leadership_loop, daemon=True)
+        thread.name = "plugin-leader-election"
+        thread.start()
 
     def reload_plugin(self, key: str) -> bool:
         """Reload a single plugin's Python code in isolation.

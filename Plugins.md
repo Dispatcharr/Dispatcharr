@@ -305,6 +305,37 @@ class Plugin:
 
 Read settings in `run` via `context["settings"]`.
 
+### Running a Persistent Service (Leader Election)
+
+**Do not start a server, socket listener, or other persistent process in `__init__` or at module import time.** Dispatcharr instantiates every enabled plugin's `Plugin` class in every process that touches the app, often a dozen or more per plugin. Anything started in `__init__` starts once per process, so servers collide on ports.
+
+For a persistent background service, implement `on_leader_acquired`/`on_leader_lost` instead:
+
+```python
+class Plugin:
+    name = "Example Service Plugin"
+    version = "1.0.0"
+
+    def on_leader_acquired(self, context):
+        """Called once, in one process cluster-wide. Start your service here."""
+        self._server = self._start_my_server()
+
+    def on_leader_lost(self, context):
+        """Called when this process's lease is released or expires. Stop your service here."""
+        self._stop_my_server()
+```
+
+Plugins opt in by defining `on_leader_acquired`; plugins that don't define it are unaffected.
+
+Dispatcharr elects one process per plugin using a Redis lease (30s TTL, renewed every 10s). If the leader process dies, another takes over within about 30s. The `context` passed here is lighter than `run()`'s: `settings` (a snapshot from discovery time, not a live read) and `logger`, no `actions`.
+
+Things every service plugin must handle:
+- **Bind failures on takeover.** The previous leader's socket may still be closing (`TIME_WAIT`) when a new leader binds. Set `SO_REUSEADDR`, and give `on_leader_acquired` its own short bind retry.
+- **Redis being unavailable.** Every process becomes leader in that case (same as today's behavior), so `on_leader_acquired` should be safe to run concurrently if your deployment doesn't run Redis.
+- **Being called again after `on_leader_lost`.** Don't assume state survived a loss; restart your service from scratch on reacquisition.
+- **A brief overlap window is possible.** This is a lease, not a strict lock: a stalled leader (e.g. a GC pause past the TTL) can briefly overlap with a new leader. Account for that if dual-leadership has unsafe side effects.
+- **Disable/reload releases immediately**, not just on TTL expiry, so `on_leader_lost` can fire outside of a timeout too.
+
 ### Actions
 Each action is a dict:
 - `id` (str): Unique action id.
