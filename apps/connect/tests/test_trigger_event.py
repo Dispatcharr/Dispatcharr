@@ -51,7 +51,9 @@ class TriggerEventDispatchTests(SimpleTestCase):
             return_value=_empty_subscription_chain(),
         ), patch(
             "apps.plugins.models.PluginConfig"
-        ) as mock_cfg:
+        ) as mock_cfg, patch(
+            "core.models.CoreSettings.get_plugin_dedicated_worker_enabled", return_value=False
+        ):
             mock_cfg.objects.filter.return_value = enabled_qs
             from apps.connect.utils import trigger_event
 
@@ -138,7 +140,9 @@ class TriggerEventDispatchTests(SimpleTestCase):
             return_value=_empty_subscription_chain(),
         ), patch(
             "apps.plugins.models.PluginConfig"
-        ) as mock_cfg:
+        ) as mock_cfg, patch(
+            "core.models.CoreSettings.get_plugin_dedicated_worker_enabled", return_value=False
+        ):
             mock_cfg.objects.filter.return_value = enabled_qs
             from apps.connect.utils import trigger_event
 
