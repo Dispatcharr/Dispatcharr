@@ -103,7 +103,7 @@ def refresh_plugin_repos():
     from core.utils import send_notification_dismissed
     from django.utils import timezone
 
-    repos = PluginRepo.objects.filter(enabled=True)
+    repos = list(PluginRepo.objects.filter(enabled=True))
     for repo in repos:
         try:
             key_text = repo.public_key if not repo.is_official else None
@@ -126,7 +126,7 @@ def refresh_plugin_repos():
     # the freshly-refreshed repo manifests.
     active_keys = set()
     manifest_by_repo = {}
-    for repo in PluginRepo.objects.filter(enabled=True):
+    for repo in repos:
         manifest_data = repo.cached_manifest or {}
         manifest = manifest_data.get("manifest", manifest_data)
         manifest_by_repo[repo.id] = {
