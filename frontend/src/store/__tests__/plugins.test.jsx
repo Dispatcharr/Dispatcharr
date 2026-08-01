@@ -233,4 +233,82 @@ describe('usePluginStore', () => {
     expect(result.current.plugins).toEqual(mockPlugins);
     expect(API.getPlugins).toHaveBeenCalled();
   });
+
+  describe('plugin tasks', () => {
+    beforeEach(() => {
+      usePluginStore.setState({ pluginTasks: {} });
+    });
+
+    it('starts a task in the running state', () => {
+      const { result } = renderHook(() => usePluginStore());
+
+      act(() => {
+        result.current.startPluginTask('task-1', { plugin: 'My Plugin', actionLabel: 'Do Work' });
+      });
+
+      expect(result.current.pluginTasks['task-1']).toEqual({
+        plugin: 'My Plugin',
+        actionLabel: 'Do Work',
+        status: 'running',
+        percent: null,
+        message: null,
+      });
+    });
+
+    it('updates progress for a tracked task', () => {
+      const { result } = renderHook(() => usePluginStore());
+
+      act(() => {
+        result.current.startPluginTask('task-1', { plugin: 'My Plugin', actionLabel: 'Do Work' });
+        result.current.updatePluginTaskProgress('task-1', { percent: 40, message: 'Halfway' });
+      });
+
+      expect(result.current.pluginTasks['task-1']).toMatchObject({ percent: 40, message: 'Halfway' });
+    });
+
+    it('ignores progress updates for an untracked task', () => {
+      const { result } = renderHook(() => usePluginStore());
+
+      act(() => {
+        result.current.updatePluginTaskProgress('unknown-task', { percent: 40, message: 'Halfway' });
+      });
+
+      expect(result.current.pluginTasks).toEqual({});
+    });
+
+    it('completes a tracked task', () => {
+      const { result } = renderHook(() => usePluginStore());
+
+      act(() => {
+        result.current.startPluginTask('task-1', { plugin: 'My Plugin', actionLabel: 'Do Work' });
+        result.current.completePluginTask('task-1', { status: 'ok', result: { message: 'Done' } });
+      });
+
+      expect(result.current.pluginTasks['task-1']).toMatchObject({
+        status: 'ok',
+        result: { message: 'Done' },
+      });
+    });
+
+    it('ignores completion for an untracked task', () => {
+      const { result } = renderHook(() => usePluginStore());
+
+      act(() => {
+        result.current.completePluginTask('unknown-task', { status: 'ok' });
+      });
+
+      expect(result.current.pluginTasks).toEqual({});
+    });
+
+    it('clears a task', () => {
+      const { result } = renderHook(() => usePluginStore());
+
+      act(() => {
+        result.current.startPluginTask('task-1', { plugin: 'My Plugin', actionLabel: 'Do Work' });
+        result.current.clearPluginTask('task-1');
+      });
+
+      expect(result.current.pluginTasks).toEqual({});
+    });
+  });
 });
