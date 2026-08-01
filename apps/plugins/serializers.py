@@ -14,6 +14,13 @@ class PluginActionSerializer(serializers.Serializer):
         child=serializers.CharField(), required=False, allow_empty=True
     )
 
+    def get_fields(self):
+        # "async" is a Python keyword, so it can't be a class attribute above;
+        # add it here where the field name is just a dict key.
+        fields = super().get_fields()
+        fields["async"] = serializers.BooleanField(required=False, default=False)
+        return fields
+
 
 class PluginFieldOptionSerializer(serializers.Serializer):
     value = serializers.CharField()

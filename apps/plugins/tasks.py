@@ -1,9 +1,50 @@
 import logging
+import os
+
 from celery import shared_task
 
 logger = logging.getLogger(__name__)
 
 PLUGIN_REPO_REFRESH_TASK_NAME = "plugin-repo-refresh-task"
+
+# opt in via env var if you want one anyway.
+PLUGIN_TASK_SOFT_TIME_LIMIT = os.environ.get("CELERY_PLUGIN_TASK_SOFT_TIME_LIMIT_SECONDS")
+PLUGIN_TASK_TIME_LIMIT = os.environ.get("CELERY_PLUGIN_TASK_TIME_LIMIT_SECONDS")
+
+_task_kwargs = {"bind": True, "name": "apps.plugins.tasks.run_plugin_action"}
+if PLUGIN_TASK_SOFT_TIME_LIMIT:
+    _task_kwargs["soft_time_limit"] = int(PLUGIN_TASK_SOFT_TIME_LIMIT)
+if PLUGIN_TASK_TIME_LIMIT:
+    _task_kwargs["time_limit"] = int(PLUGIN_TASK_TIME_LIMIT)
+
+
+@shared_task(**_task_kwargs)
+def run_plugin_action_task(self, key, action_id, params=None):
+    """Runs a plugin action on the dedicated `plugins` queue and always sends
+    a terminal plugin_task_complete websocket event."""
+    from apps.plugins.loader import PluginManager
+    from core.utils import send_websocket_update
+
+    task_id = self.request.id
+    try:
+        result = PluginManager.get().run_action(key, action_id, params or {}, task_id=task_id)
+    except Exception as e:
+        send_websocket_update("updates", "update", {
+            "type": "plugin_task_complete",
+            "plugin": key,
+            "task_id": task_id,
+            "status": "error",
+            "error": str(e),
+        })
+        raise
+    send_websocket_update("updates", "update", {
+        "type": "plugin_task_complete",
+        "plugin": key,
+        "task_id": task_id,
+        "status": "ok",
+        "result": result,
+    })
+    return result
 
 
 def evaluate_plugin_update_notification(plugin_key, name, installed_version, latest_version, install_status):
