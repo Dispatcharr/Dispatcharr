@@ -17,6 +17,7 @@ import useWarningsStore from '../store/warnings';
  * @param {Function} props.onSuppressChange - Called when "don't show again" option changes
  * @param {string} [props.size='md'] - Size of the modal
  * @param {boolean} [props.loading=false] - Whether the confirm button should show loading state
+ * @param {string} [props.confirmColor='red'] - Color of the confirm button
  * @param {boolean} [props.showDeleteFileOption=false] - Show "also delete files" checkbox
  * @param {string} [props.deleteFileLabel] - Label for delete-files checkbox
  * @param {boolean} [props.showStopStreamOption=false] - Show "also stop channel" checkbox
@@ -39,6 +40,7 @@ const ConfirmationDialog = ({
   showStopStreamOption = false,
   stopStreamLabel = 'Also stop active channel if playing',
   loading = false,
+  confirmColor = 'red',
 }) => {
   const suppressWarning = useWarningsStore((s) => s.suppressWarning);
   const isWarningSuppressed = useWarningsStore((s) => s.isWarningSuppressed);
@@ -142,7 +144,7 @@ const ConfirmationDialog = ({
           {cancelLabel}
         </Button>
         <Button
-          color="red"
+          color={confirmColor}
           onClick={handleConfirm}
           loading={loading}
           disabled={loading}
