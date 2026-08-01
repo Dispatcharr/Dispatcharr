@@ -792,6 +792,119 @@ class XcVodSeriesRegressionTests(TestCase):
         self.assertEqual(stream["category_id"], str(comedy.id))
         self.assertEqual(stream["category_ids"], [comedy.id])
 
+    def test_vod_streams_stream_icon_falls_back_to_relation_basic_data(self):
+        """No synced VODLogo: fall back to the winning relation's own list-sync icon."""
+        account = self._account(f"acct-{uuid4().hex[:6]}")
+        movie = Movie.objects.create(name="No Logo Movie")
+        M3UMovieRelation.objects.create(
+            m3u_account=account,
+            movie=movie,
+            stream_id="no-logo-1",
+            custom_properties={
+                "basic_data": {"stream_icon": "https://cdn.example.com/icon.jpg"},
+            },
+        )
+
+        stream = xc_get_vod_streams(self.request, self.user)[0]
+
+        self.assertIsNotNone(stream["stream_icon"])
+        self.assertIn("/image/", stream["stream_icon"])
+        self.assertIn("kind=movie_image", stream["stream_icon"])
+
+    def test_vod_streams_stream_icon_prefers_relation_over_synced_logo(self):
+        """Winning relation still beats a shared Movie.logo (last-writer-wins)."""
+        account = self._account(f"acct-{uuid4().hex[:6]}")
+        logo = VODLogo.objects.create(name="Synced", url="http://example.com/synced.png")
+        movie = Movie.objects.create(name="Logo Movie", logo=logo)
+        M3UMovieRelation.objects.create(
+            m3u_account=account,
+            movie=movie,
+            stream_id="logo-1",
+            custom_properties={
+                "basic_data": {"stream_icon": "https://cdn.example.com/icon.jpg"},
+            },
+        )
+
+        stream = xc_get_vod_streams(self.request, self.user)[0]
+
+        self.assertIn("/image/", stream["stream_icon"])
+        self.assertIn("kind=movie_image", stream["stream_icon"])
+        self.assertNotIn(f"/{logo.id}/", stream["stream_icon"])
+
+    def test_vod_streams_stream_icon_ignores_blank_relation_image_keys(self):
+        """basic_data is stored raw, so a blank key must not shadow a populated one."""
+        account = self._account(f"acct-{uuid4().hex[:6]}")
+        logo = VODLogo.objects.create(name="Synced", url="http://example.com/synced.png")
+        movie = Movie.objects.create(name="Blank Key Movie", logo=logo)
+        M3UMovieRelation.objects.create(
+            m3u_account=account,
+            movie=movie,
+            stream_id="blank-key-1",
+            custom_properties={
+                "basic_data": {
+                    "movie_image": "",
+                    "stream_icon": "https://cdn.example.com/icon.jpg",
+                },
+            },
+        )
+
+        stream = xc_get_vod_streams(self.request, self.user)[0]
+
+        self.assertIn("kind=movie_image", stream["stream_icon"])
+        self.assertNotIn(f"/{logo.id}/", stream["stream_icon"])
+
+    def test_vod_streams_stream_icon_ignores_whitespace_only_image_keys(self):
+        account = self._account(f"acct-{uuid4().hex[:6]}")
+        movie = Movie.objects.create(name="Whitespace Key Movie")
+        M3UMovieRelation.objects.create(
+            m3u_account=account,
+            movie=movie,
+            stream_id="ws-key-1",
+            custom_properties={
+                "basic_data": {
+                    "movie_image": "   ",
+                    "stream_icon": "https://cdn.example.com/icon.jpg",
+                },
+            },
+        )
+
+        stream = xc_get_vod_streams(self.request, self.user)[0]
+
+        self.assertIn("kind=movie_image", stream["stream_icon"])
+
+    def test_series_backdrop_skips_empty_detailed_array(self):
+        """Empty detailed_info.backdrop_path must not block basic_data."""
+        account = self._account(f"acct-{uuid4().hex[:6]}")
+        series = Series.objects.create(name="Empty Bd Series")
+        M3USeriesRelation.objects.create(
+            m3u_account=account,
+            series=series,
+            external_series_id="empty-bd-s",
+            custom_properties={
+                "detailed_info": {"backdrop_path": []},
+                "basic_data": {"backdrop_path": "https://cdn.example.com/bd.jpg"},
+            },
+        )
+
+        row = xc_get_series(self.request, self.user)[0]
+
+        self.assertEqual(len(row["backdrop_path"]), 1)
+        self.assertIn("kind=backdrop", row["backdrop_path"][0])
+
+    def test_vod_streams_stream_icon_falls_back_to_logo_without_relation_art(self):
+        account = self._account(f"acct-{uuid4().hex[:6]}")
+        logo = VODLogo.objects.create(name="Synced", url="http://example.com/synced.png")
+        movie = Movie.objects.create(name="Logo Only Movie", logo=logo)
+        M3UMovieRelation.objects.create(
+            m3u_account=account,
+            movie=movie,
+            stream_id="logo-only-1",
+        )
+
+        stream = xc_get_vod_streams(self.request, self.user)[0]
+
+        self.assertIn(f"/{logo.id}/", stream["stream_icon"])
+
     def test_series_response_keys_and_metadata(self):
         account = self._account(f"acct-{uuid4().hex[:6]}")
         logo = VODLogo.objects.create(name="Cover", url="http://example.com/cover.png")
@@ -840,6 +953,88 @@ class XcVodSeriesRegressionTests(TestCase):
         self.assertEqual(row["category_id"], str(category.id))
         self.assertEqual(row["category_ids"], [category.id])
         self.assertEqual(row["last_modified"], str(int(relation.updated_at.timestamp())))
+
+    def test_series_cover_falls_back_to_relation_basic_data(self):
+        """No synced VODLogo: fall back to the winning relation's own list-sync cover."""
+        account = self._account(f"acct-{uuid4().hex[:6]}")
+        series = Series.objects.create(name="No Logo Series")
+        M3USeriesRelation.objects.create(
+            m3u_account=account,
+            series=series,
+            external_series_id="no-logo-s",
+            custom_properties={
+                "basic_data": {"cover": "https://cdn.example.com/cover.jpg"},
+            },
+        )
+
+        row = xc_get_series(self.request, self.user)[0]
+
+        self.assertIsNotNone(row["cover"])
+        self.assertIn("/image/", row["cover"])
+        self.assertIn("kind=movie_image", row["cover"])
+
+    def test_series_backdrop_prefers_higher_priority_relation_basic_data(self):
+        """Shared Series.custom_properties can be stale; the winning relation's
+        own list-sync backdrop should be preferred when it has one."""
+        low = self._account(f"low-{uuid4().hex[:6]}", priority=1)
+        high = self._account(f"high-{uuid4().hex[:6]}", priority=10)
+        series = Series.objects.create(
+            name="Multi Provider Series",
+            custom_properties={"backdrop_path": ["https://cdn.example.com/stale.jpg"]},
+        )
+        M3USeriesRelation.objects.create(
+            m3u_account=low,
+            series=series,
+            external_series_id="low-s",
+        )
+        M3USeriesRelation.objects.create(
+            m3u_account=high,
+            series=series,
+            external_series_id="high-s",
+            custom_properties={
+                "basic_data": {"backdrop_path": "https://cdn.example.com/fresh.jpg"},
+            },
+        )
+
+        row = xc_get_series(self.request, self.user)[0]
+
+        self.assertEqual(len(row["backdrop_path"]), 1)
+        self.assertIn("/image/", row["backdrop_path"][0])
+        from hashlib import md5
+        expected_v = md5(b"https://cdn.example.com/fresh.jpg").hexdigest()[:8]
+        self.assertIn(f"v={expected_v}", row["backdrop_path"][0])
+
+    def test_series_cover_falls_back_to_logo_without_relation_art(self):
+        account = self._account(f"acct-{uuid4().hex[:6]}")
+        logo = VODLogo.objects.create(name="Cover", url="http://example.com/cover.png")
+        series = Series.objects.create(name="Logo Only Series", logo=logo)
+        M3USeriesRelation.objects.create(
+            m3u_account=account,
+            series=series,
+            external_series_id="logo-only-s",
+        )
+
+        row = xc_get_series(self.request, self.user)[0]
+
+        self.assertIn(f"/{logo.id}/", row["cover"])
+
+    def test_series_cover_prefers_relation_over_synced_logo(self):
+        account = self._account(f"acct-{uuid4().hex[:6]}")
+        logo = VODLogo.objects.create(name="Cover", url="http://example.com/cover.png")
+        series = Series.objects.create(name="Both Series", logo=logo)
+        M3USeriesRelation.objects.create(
+            m3u_account=account,
+            series=series,
+            external_series_id="both-s",
+            custom_properties={
+                "basic_data": {"cover": "https://cdn.example.com/cover.jpg"},
+            },
+        )
+
+        row = xc_get_series(self.request, self.user)[0]
+
+        self.assertIn("/image/", row["cover"])
+        self.assertNotIn(f"/{logo.id}/", row["cover"])
 
     def test_series_null_optional_fields(self):
         account = self._account(f"acct-{uuid4().hex[:6]}")

@@ -107,6 +107,35 @@ class XCGetSeriesInfoTests(TestCase):
         info = self._info(self.relation_a.id)
         self.assertEqual(info['episodes'][1][0]['container_extension'], 'mp4')
 
+    def test_episode_artwork_prefers_higher_priority_relation(self):
+        self.s1e1.custom_properties = {
+            'movie_image': 'https://cdn.example.com/stale.jpg',
+        }
+        self.s1e1.save(update_fields=['custom_properties'])
+        M3UEpisodeRelation.objects.filter(
+            episode=self.s1e1, m3u_account=self.account
+        ).update(
+            custom_properties={
+                'info': {'info': {'movie_image': 'https://cdn.example.com/low.jpg'}}
+            }
+        )
+        M3UEpisodeRelation.objects.filter(
+            episode=self.s1e1, m3u_account=self.other_account
+        ).update(
+            custom_properties={
+                'info': {'info': {'movie_image': 'https://cdn.example.com/high.jpg'}}
+            }
+        )
+
+        info = self._info(self.relation_a.id)
+        movie_image = info['episodes'][1][0]['info']['movie_image']
+        self.assertIn('/api/vod/episodes/', movie_image)
+        self.assertIn('kind=movie_image', movie_image)
+        # Proxied URL embeds a hash of the preferred (high-priority) source URL.
+        from hashlib import md5
+        expected_v = md5(b'https://cdn.example.com/high.jpg').hexdigest()[:8]
+        self.assertIn(f'v={expected_v}', movie_image)
+
     def test_does_not_n_plus_one_episode_relations(self):
         for i in range(2, 12):
             ep = Episode.objects.create(

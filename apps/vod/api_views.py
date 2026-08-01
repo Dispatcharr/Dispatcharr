@@ -28,6 +28,8 @@ from .serializers import (
     M3UEpisodeRelationSerializer
 )
 from .image_proxy import (
+    is_proxyable_image_url,
+    prefer_relation_artwork,
     rewrite_backdrop_paths,
     rewrite_single_image_url,
     serve_vod_image,
@@ -177,23 +179,29 @@ class MovieViewSet(viewsets.ReadOnlyModelViewSet):
         movie_data = custom_props.get('movie_data', {})
 
         movie_props = movie.custom_properties or {}
+        artwork = prefer_relation_artwork(custom_props, movie_props)
+        account_id = relation.m3u_account_id
         backdrop_path = rewrite_backdrop_paths(
             request,
             'movie',
             movie.id,
-            movie_props.get('backdrop_path') or [],
+            artwork['backdrop_path'],
+            m3u_account_id=account_id,
         )
-        if movie.logo:
+        # Relation/object still first; synced VODLogo only when none is available.
+        if is_proxyable_image_url(artwork['movie_image']):
+            movie_image = rewrite_single_image_url(
+                request,
+                'movie',
+                movie.id,
+                'movie_image',
+                artwork['movie_image'],
+                m3u_account_id=account_id,
+            )
+        elif movie.logo:
             movie_image = vodlogo_cache_url(request, movie.logo)
         else:
-            # Only proxy URLs stored on the movie itself; provider-only values stay as-is.
-            stored_movie_image = movie_props.get('movie_image') or ''
-            if stored_movie_image:
-                movie_image = rewrite_single_image_url(
-                    request, 'movie', movie.id, 'movie_image', stored_movie_image
-                )
-            else:
-                movie_image = info.get('movie_image', '')
+            movie_image = ''
 
         # Build response with available data
         response_data = {
@@ -217,8 +225,10 @@ class MovieViewSet(viewsets.ReadOnlyModelViewSet):
             'duration_secs': movie.duration_secs or info.get('duration_secs'),
             'age': info.get('age', ''),
             'backdrop_path': backdrop_path,
-            'cover': info.get('cover_big', ''),
-            'cover_big': info.get('cover_big', ''),
+            # All three mirror the resolved cover so the UI never falls back to a
+            # raw provider URL that bypasses the proxy.
+            'cover': movie_image,
+            'cover_big': movie_image,
             'movie_image': movie_image,
             'bitrate': info.get('bitrate', 0),
             'video': info.get('video', {}),
@@ -447,15 +457,34 @@ class SeriesViewSet(viewsets.ReadOnlyModelViewSet):
             # Return the database data (which should now be fresh)
             custom_props = relation.custom_properties or {}
             series_props = series.custom_properties or {}
-            raw_backdrops = series_props.get('backdrop_path') or []
-            cover = None
-            if series.logo:
+            series_artwork = prefer_relation_artwork(custom_props, series_props)
+            account_id = relation.m3u_account_id
+            # Relation/object cover first; synced VODLogo object only as fallback
+            # (UI expects the logo-shaped cover payload when a VODLogo exists).
+            if is_proxyable_image_url(series_artwork['movie_image']):
+                proxied = rewrite_single_image_url(
+                    request,
+                    'series',
+                    series.id,
+                    'movie_image',
+                    series_artwork['movie_image'],
+                    m3u_account_id=account_id,
+                )
+                cover = {
+                    'id': None,
+                    'url': series_artwork['movie_image'],
+                    'cache_url': proxied,
+                    'name': series.name,
+                }
+            elif series.logo:
                 cover = {
                     'id': series.logo.id,
                     'url': series.logo.url,
                     'cache_url': vodlogo_cache_url(request, series.logo),
                     'name': series.logo.name,
                 }
+            else:
+                cover = None
 
             response_data = {
                 'id': series.id,
@@ -470,7 +499,13 @@ class SeriesViewSet(viewsets.ReadOnlyModelViewSet):
                 'category_id': relation.category.id if relation.category else None,
                 'category_name': relation.category.name if relation.category else None,
                 'cover': cover,
-                'backdrop_path': rewrite_backdrop_paths(request, 'series', series.id, raw_backdrops),
+                'backdrop_path': rewrite_backdrop_paths(
+                    request,
+                    'series',
+                    series.id,
+                    series_artwork['backdrop_path'],
+                    m3u_account_id=account_id,
+                ),
                 'last_refreshed': series.updated_at,
                 'custom_properties': series.custom_properties,
                 'm3u_account': {
@@ -493,7 +528,7 @@ class SeriesViewSet(viewsets.ReadOnlyModelViewSet):
                     for rel in M3UEpisodeRelation.objects.filter(
                         m3u_account_id=relation.m3u_account_id,
                         episode__series_id=series.id,
-                    ).only('episode_id', 'container_extension')
+                    ).only('episode_id', 'container_extension', 'custom_properties')
                 }
                 episodes = list(
                     Episode.objects.filter(
@@ -511,11 +546,11 @@ class SeriesViewSet(viewsets.ReadOnlyModelViewSet):
                         episodes_by_season[season_key] = []
 
                     episode_relation = relations_by_episode_id.get(episode.id)
-
-                    raw_episode_image = (
-                        episode.custom_properties.get('movie_image', '')
-                        if episode.custom_properties else ''
+                    episode_artwork = prefer_relation_artwork(
+                        episode_relation.custom_properties if episode_relation else None,
+                        episode.custom_properties,
                     )
+                    raw_episode_image = episode_artwork['movie_image']
                     episode_data = {
                         'id': episode.id,
                         'uuid': episode.uuid,
@@ -537,6 +572,7 @@ class SeriesViewSet(viewsets.ReadOnlyModelViewSet):
                             'movie_image',
                             raw_episode_image,
                             url_parts=episode_image_parts,
+                            m3u_account_id=account_id,
                         ),
                         'container_extension': (
                             episode_relation.container_extension

@@ -124,6 +124,33 @@ class SeriesProviderInfoQueryTests(TestCase):
         self.assertEqual(len(relation_queries), 1)
         self.assertLessEqual(len(ctx.captured_queries), 12)
 
+    def test_provider_info_backdrop_prefers_selected_relation_basic_data(self):
+        """Shared Series.custom_properties can be stale; the selected account's
+        own list-sync backdrop should be preferred when it has one."""
+        self.series.custom_properties = {
+            'backdrop_path': ['https://cdn.example.com/stale.jpg'],
+        }
+        self.series.save(update_fields=['custom_properties'])
+        self.other_relation.custom_properties = {
+            'episodes_fetched': True,
+            'detailed_fetched': True,
+            'basic_data': {'backdrop_path': 'https://cdn.example.com/fresh.jpg'},
+        }
+        self.other_relation.save(update_fields=['custom_properties'])
+
+        url = (
+            f'/api/vod/series/{self.series.id}/provider-info/'
+            f'?include_episodes=false&relation_id={self.other_relation.id}'
+        )
+        response = self.client.get(url)
+
+        self.assertEqual(response.status_code, 200)
+        backdrops = response.data.get('backdrop_path') or []
+        self.assertEqual(len(backdrops), 1)
+        from hashlib import md5
+        expected_v = md5(b'https://cdn.example.com/fresh.jpg').hexdigest()[:8]
+        self.assertIn(f'v={expected_v}', backdrops[0])
+
     def test_provider_info_omits_episodes_only_on_other_accounts(self):
         url = (
             f'/api/vod/series/{self.series.id}/provider-info/'
