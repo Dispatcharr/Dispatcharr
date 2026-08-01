@@ -11,7 +11,6 @@ import {
   Grid,
   Group,
   Loader,
-  Modal,
   Paper,
   SegmentedControl,
   Stack,
@@ -36,6 +35,7 @@ import {
 } from '../utils/pages/PluginsUtils.js';
 import { getConfirmationDetails } from '../utils/cards/PluginCardUtils.js';
 import { compareVersions } from '../utils/components/pluginUtils.js';
+import ConfirmationDialog from '../components/ConfirmationDialog.jsx';
 import PluginHeader from '../components/PluginHeader.jsx';
 import PluginDetailPanel from '../components/PluginDetailPanel.jsx';
 import PluginFieldList from '../components/PluginFieldList.jsx';
@@ -353,10 +353,12 @@ function PluginDetailForKey({ routeKey: key }) {
 
       setRunningActionId(action.id);
       setLastResult(null);
-      try {
-        await updatePluginSettings(plugin.key, settings);
-      } catch {
-        /* ignore, run anyway */
+      if (isSettingsDirty) {
+        try {
+          await updatePluginSettings(plugin.key, settings);
+        } catch {
+          /* ignore, run anyway */
+        }
       }
       const resp = await runPluginAction(plugin.key, action.id);
       if (resp?.status === 'started' && resp?.task_id) {
@@ -719,83 +721,49 @@ function PluginDetailForKey({ routeKey: key }) {
       </Transition>
 
       {/* Install/update confirmation modal */}
-      <Modal
+      <ConfirmationDialog
         opened={installConfirmOpen}
         onClose={() => {
           setInstallConfirmOpen(false);
           setPendingInstallParams(null);
         }}
+        onConfirm={confirmAndInstall}
         zIndex={300}
-        title={`Confirm ${isDown ? 'Downgrade' : 'Update'}`}
         size="sm"
-      >
-        <Stack gap="md">
-          <Text size="sm">
+        title={`Confirm ${isDown ? 'Downgrade' : 'Update'}`}
+        message={
+          <>
             You are about to {isDown ? 'downgrade' : 'update'} <b>{plugin.name}</b> from{' '}
             <b>v{plugin.version}</b> to <b>v{selVer}</b>.
-          </Text>
-          <Group justify="flex-end" gap="xs">
-            <Button
-              size="xs"
-              variant="default"
-              onClick={() => {
-                setInstallConfirmOpen(false);
-                setPendingInstallParams(null);
-              }}
-            >
-              Cancel
-            </Button>
-            <Button size="xs" color={isDown ? 'orange' : undefined} onClick={confirmAndInstall}>
-              {isDown ? 'Downgrade' : 'Update'}
-            </Button>
-          </Group>
-        </Stack>
-      </Modal>
+          </>
+        }
+        confirmLabel={isDown ? 'Downgrade' : 'Update'}
+        confirmColor={isDown ? 'orange' : undefined}
+      />
 
       {/* Reset to Defaults confirmation modal */}
-      <Modal
+      <ConfirmationDialog
         opened={resetConfirmOpen}
         onClose={() => setResetConfirmOpen(false)}
-        title="Reset settings to defaults?"
+        onConfirm={handleResetToDefaults}
         zIndex={300}
-      >
-        <Stack>
-          <Text size="sm">
-            This will replace any unsaved changes with each field's default value and clear any
-            settings no longer used by this plugin. Nothing is saved until you click Save.
-          </Text>
-          <Group justify="flex-end">
-            <Button variant="default" size="xs" onClick={() => setResetConfirmOpen(false)}>
-              Cancel
-            </Button>
-            <Button size="xs" onClick={handleResetToDefaults}>
-              Reset
-            </Button>
-          </Group>
-        </Stack>
-      </Modal>
+        title="Reset settings to defaults?"
+        message="This will replace any unsaved changes with each field's default value and clear any settings no longer used by this plugin. Nothing is saved until you click Save."
+        confirmLabel="Reset"
+        confirmColor={undefined}
+      />
 
       {/* Uninstall confirmation modal */}
-      <Modal
+      <ConfirmationDialog
         opened={uninstallConfirmOpen}
         onClose={() => setUninstallConfirmOpen(false)}
-        title={`Delete ${plugin.name}?`}
+        onConfirm={handleUninstall}
         zIndex={300}
-      >
-        <Stack>
-          <Text size="sm">
-            This will remove the plugin files and its configuration. This action cannot be undone.
-          </Text>
-          <Group justify="flex-end">
-            <Button variant="default" size="xs" onClick={() => setUninstallConfirmOpen(false)}>
-              Cancel
-            </Button>
-            <Button size="xs" color="red" loading={uninstalling} onClick={handleUninstall}>
-              Delete
-            </Button>
-          </Group>
-        </Stack>
-      </Modal>
+        title={`Delete ${plugin.name}?`}
+        message="This will remove the plugin files and its configuration. This action cannot be undone."
+        confirmLabel="Delete"
+        loading={uninstalling}
+      />
     </AppShellMain>
   );
 }
