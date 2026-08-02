@@ -1,33 +1,6 @@
 import { create } from 'zustand';
 import API from '../api';
 
-// Dismissing a task doesn't delete its history (see dismissPluginTask below);
-// it just needs to survive a page reload without a backend write, so we
-// track dismissed ids per plugin in localStorage, capped like the Redis-side
-// history is (see apps/plugins/task_history.py HISTORY_MAX_ENTRIES).
-const DISMISSED_TASKS_STORAGE_PREFIX = 'dispatcharr.dismissedPluginTasks.';
-const DISMISSED_TASKS_MAX = 50;
-
-const getDismissedTaskIds = (pluginKey) => {
-  try {
-    const raw = localStorage.getItem(`${DISMISSED_TASKS_STORAGE_PREFIX}${pluginKey}`);
-    return raw ? new Set(JSON.parse(raw)) : new Set();
-  } catch {
-    return new Set();
-  }
-};
-
-const addDismissedTaskId = (pluginKey, taskId) => {
-  try {
-    const ids = Array.from(getDismissedTaskIds(pluginKey));
-    ids.push(taskId);
-    const capped = ids.slice(-DISMISSED_TASKS_MAX);
-    localStorage.setItem(`${DISMISSED_TASKS_STORAGE_PREFIX}${pluginKey}`, JSON.stringify(capped));
-  } catch {
-    /* localStorage unavailable (e.g. private browsing); dismissal just won't survive reload */
-  }
-};
-
 export const usePluginStore = create((set, get) => ({
   plugins: [],
   loading: false,
@@ -40,7 +13,7 @@ export const usePluginStore = create((set, get) => ({
   availableLoading: false,
 
   // Async plugin action tasks (see WebSocket.jsx plugin_task_progress/
-  // plugin_task_complete and PluginDetail.jsx's "Tasks" section). Keyed by
+  // plugin_task_complete and PluginDetail.jsx's "Background Tasks" section). Keyed by
   // task_id (globally unique Celery id), so this map can hold entries for
   // more than one plugin at once without collision.
   //
@@ -48,8 +21,7 @@ export const usePluginStore = create((set, get) => ({
   // Redis-backed, capped + TTL'd) as soon as it's dispatched, so
   // hydratePluginTasks can rehydrate this map from GET .../tasks/ on mount -
   // history survives a reload or a second browser tab, not just tasks
-  // started in this session. Dismissal (see dismissPluginTask) is tracked
-  // client-side only (localStorage), not sent to the backend.
+  // started in this session.
   pluginTasks: {},
 
   startPluginTask: (taskId, { pluginKey, plugin, actionId, actionLabel }) => {
@@ -59,7 +31,7 @@ export const usePluginStore = create((set, get) => ({
         [taskId]: {
           pluginKey, plugin, actionId, actionLabel,
           status: 'running', percent: null, message: null,
-          startedAt: null, updatedAt: null, dismissed: false,
+          startedAt: null, updatedAt: null,
         },
       },
     }));
@@ -99,30 +71,11 @@ export const usePluginStore = create((set, get) => ({
     });
   },
 
-  // Marks a task dismissed (hidden from the live list) without deleting it -
-  // history is retained (bounded, see DISMISSED_TASKS_MAX / the backend's
-  // HISTORY_MAX_ENTRIES) so it's still reachable via "show dismissed" in the
-  // task group modal.
-  dismissPluginTask: (taskId) => {
-    set((state) => {
-      const task = state.pluginTasks[taskId];
-      if (!task) return state;
-      if (task.pluginKey) addDismissedTaskId(task.pluginKey, taskId);
-      return {
-        pluginTasks: {
-          ...state.pluginTasks,
-          [taskId]: { ...task, dismissed: true },
-        },
-      };
-    });
-  },
-
   // Merges server-side task history for one plugin into the live map. Never
   // overwrites an entry already tracked locally, so a slightly-stale fetch
   // can't clobber an in-flight websocket update.
   hydratePluginTasks: (pluginKey, pluginName, tasks) => {
     if (!Array.isArray(tasks) || tasks.length === 0) return;
-    const dismissedIds = getDismissedTaskIds(pluginKey);
     set((state) => {
       const next = { ...state.pluginTasks };
       for (const t of tasks) {
@@ -139,7 +92,6 @@ export const usePluginStore = create((set, get) => ({
           error: t.error,
           startedAt: t.startedAt,
           updatedAt: t.updatedAt,
-          dismissed: dismissedIds.has(t.task_id),
         };
       }
       return { pluginTasks: next };

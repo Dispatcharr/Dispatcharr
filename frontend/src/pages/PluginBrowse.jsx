@@ -232,7 +232,7 @@ export default function PluginBrowsePage() {
             <Button
               size="xs"
               variant="light"
-              color="teal"
+              color="blue"
               component="a"
               href="https://github.com/Dispatcharr/Plugins?tab=contributing-ov-file"
               target="_blank"

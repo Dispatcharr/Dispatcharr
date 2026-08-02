@@ -1,6 +1,5 @@
 import React, { useMemo, useState } from 'react';
 import {
-  ActionIcon,
   Badge,
   Box,
   Button,
@@ -12,7 +11,7 @@ import {
   TextInput,
   Tooltip,
 } from '@mantine/core';
-import { Eye, EyeOff, Search } from 'lucide-react';
+import { Search } from 'lucide-react';
 import dayjs from 'dayjs';
 import relativeTime from 'dayjs/plugin/relativeTime';
 import { SUBSCRIPTION_EVENTS } from '../constants.js';
@@ -25,9 +24,9 @@ dayjs.extend(relativeTime);
 // list in its own scrollbar.
 const SEARCH_THRESHOLD = 6;
 
-// Shared box/group shell for one row in the Actions or Running Tasks list -
-// both are a bordered box with a left content column and a right-aligned
-// action element (a Run button, or a Dismiss button + progress bar).
+// Shared box/group shell for one row in the Actions or Tasks list: both are
+// a bordered box with a left content column and a right-aligned action
+// element (a Run button, or a status/progress footer).
 const PluginListRow = ({ left, right, footer }) => (
   <Box
     style={{
@@ -186,21 +185,29 @@ const formatRelativeOrAbsolute = (ms) => {
   return diffHours < 24 ? d.fromNow() : d.format('MMM D, HH:mm');
 };
 
-const PluginTaskTimestamp = ({ label, ms }) => {
+// A single compact "Started 2m ago" / "Finished 1m ago" line, whichever
+// moment is most relevant right now, rather than showing both start and
+// finish side by side, which reads as noise once a run is done and was
+// prone to wrapping mid-phrase in the narrow group row. Hover for the exact
+// start (and finish, once done) timestamps.
+const PluginTaskTimestamp = ({ task }) => {
+  const isDone = task.status !== 'running';
+  const ms = isDone ? (task.updatedAt ?? task.startedAt) : task.startedAt;
   if (!ms) return null;
-  const d = dayjs(ms);
+  const tooltipLines = [];
+  if (task.startedAt) tooltipLines.push(`Started: ${dayjs(task.startedAt).format('YYYY-MM-DD HH:mm:ss')}`);
+  if (isDone && task.updatedAt) tooltipLines.push(`Finished: ${dayjs(task.updatedAt).format('YYYY-MM-DD HH:mm:ss')}`);
   return (
-    <Tooltip label={d.format('YYYY-MM-DD HH:mm:ss')}>
-      <Text size="xs" c="dimmed" style={{ cursor: 'default' }}>
-        {label} {formatRelativeOrAbsolute(ms)}
+    <Tooltip label={tooltipLines.join('\n')} multiline>
+      <Text size="xs" c="dimmed" style={{ cursor: 'default', whiteSpace: 'nowrap' }}>
+        {isDone ? 'Finished' : 'Started'} {formatRelativeOrAbsolute(ms)}
       </Text>
     </Tooltip>
   );
 };
 
-// One individual run, used both inline (a group with a single run) and as
-// a row inside PluginTaskGroupModal (a group with more than one run).
-const PluginTaskRunRow = ({ taskId, task, onDismiss }) => {
+// One individual run, shown inside PluginTaskGroupModal's history list.
+const PluginTaskRunRow = ({ task }) => {
   const isDone = task.status !== 'running';
   return (
     <PluginListRow
@@ -212,10 +219,7 @@ const PluginTaskRunRow = ({ taskId, task, onDismiss }) => {
               {task.status}
             </Badge>
           </Group>
-          <Group gap={10} wrap="wrap">
-            <PluginTaskTimestamp label="Started" ms={task.startedAt} />
-            {isDone && <PluginTaskTimestamp label="Finished" ms={task.updatedAt} />}
-          </Group>
+          <PluginTaskTimestamp task={task} />
           {task.message && (
             <Text size="xs" c="dimmed" style={{ whiteSpace: 'normal' }}>
               {task.message}
@@ -227,13 +231,6 @@ const PluginTaskRunRow = ({ taskId, task, onDismiss }) => {
             </Text>
           )}
         </>
-      }
-      right={
-        isDone && !task.dismissed && (
-          <Button size="xs" variant="subtle" color="gray" onClick={() => onDismiss(taskId)}>
-            Dismiss
-          </Button>
-        )
       }
       footer={
         !isDone && (
@@ -252,9 +249,7 @@ const PluginTaskRunRow = ({ taskId, task, onDismiss }) => {
 
 // Groups tasks by action (actionId when known, falling back to actionLabel)
 // so concurrent/historical runs of the same action stack into one row
-// instead of piling up as separate unlabeled rows. Newest run first. Groups
-// where every run has been dismissed are still returned (not dropped) so
-// history stays reachable via the "View" modal rather than disappearing.
+// instead of piling up as separate unlabeled rows. Newest run first.
 const groupPluginTasks = (tasks) => {
   const groups = {};
   for (const [taskId, task] of Object.entries(tasks || {})) {
@@ -267,110 +262,85 @@ const groupPluginTasks = (tasks) => {
   return Object.values(groups)
     .map((g) => {
       const runs = [...g.runs].sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0));
+      const runningRuns = runs.filter((r) => r.status === 'running');
       return {
         ...g,
         runs,
         latest: runs[0],
-        runningCount: runs.filter((r) => r.status === 'running').length,
-        visibleRuns: runs.filter((r) => !r.dismissed),
+        runningCount: runningRuns.length,
+        runningRun: runningRuns[0],
       };
     })
     .sort((a, b) => (b.latest?.startedAt ?? 0) - (a.latest?.startedAt ?? 0));
 };
 
-const PluginTaskGroupModal = ({ group, opened, onClose, onDismiss }) => {
-  const dismissedCount = group.runs.length - group.visibleRuns.length;
-  // Nothing but history to show (e.g. a single dismissed run reopened from
-  // its "View history" button); default to showing it rather than an
-  // empty state the user has to click through.
-  const [showDismissed, setShowDismissed] = useState(group.visibleRuns.length === 0);
-  const runsToShow = showDismissed ? group.runs : group.visibleRuns;
-  return (
-    <Modal opened={opened} onClose={onClose} title={`${group.actionLabel} — ${group.runs.length} run${group.runs.length > 1 ? 's' : ''}`} size="lg">
-      <Stack gap="xs">
-        {dismissedCount > 0 && (
-          <Group justify="flex-end">
-            <ActionIcon
-              size="sm"
-              variant="subtle"
-              color="gray"
-              onClick={() => setShowDismissed((v) => !v)}
-              title={showDismissed ? 'Hide dismissed runs' : `Show ${dismissedCount} dismissed run${dismissedCount > 1 ? 's' : ''}`}
-            >
-              {showDismissed ? <EyeOff size={14} /> : <Eye size={14} />}
-            </ActionIcon>
-          </Group>
-        )}
-        {runsToShow.map((run) => (
-          <PluginTaskRunRow key={run.taskId} taskId={run.taskId} task={run} onDismiss={onDismiss} />
-        ))}
-        {runsToShow.length === 0 && (
-          <Text size="xs" c="dimmed">No runs to show.</Text>
-        )}
-      </Stack>
-    </Modal>
-  );
-};
+const PluginTaskGroupModal = ({ group, opened, onClose }) => (
+  <Modal opened={opened} onClose={onClose} title={`${group.actionLabel} (${group.runs.length} run${group.runs.length > 1 ? 's' : ''})`} size="lg">
+    <Stack gap="xs">
+      {group.runs.map((run) => (
+        <PluginTaskRunRow key={run.taskId} task={run} />
+      ))}
+    </Stack>
+  </Modal>
+);
 
-const PluginTaskGroupRow = ({ group, onDismiss }) => {
+// One row per action, regardless of run count: status/timestamp at a
+// glance, full history (every run, its own progress/timestamps/message)
+// a click away behind the single "View history" button.
+const PluginTaskGroupRow = ({ group }) => {
   const [modalOpened, setModalOpened] = useState(false);
-
-  // A single non-dismissed run: render exactly as before, no extra click to
-  // reach it. Once that lone run is dismissed (or a second run exists),
-  // fall through to the stacked row so history stays reachable.
-  if (group.runs.length === 1 && !group.latest.dismissed) {
-    return <PluginTaskRunRow taskId={group.latest.taskId} task={group.latest} onDismiss={onDismiss} />;
-  }
-
-  const { latest, runningCount, runs, visibleRuns } = group;
-  const isHistoryOnly = visibleRuns.length === 0;
+  const { latest, runningCount, runningRun } = group;
   return (
     <>
       <PluginListRow
         left={
           <>
             <Group gap={6} wrap="wrap" align="center">
-              <Text size="xs" fw={500} c={isHistoryOnly ? 'dimmed' : undefined}>{group.actionLabel}</Text>
+              <Text size="xs" fw={500}>{group.actionLabel}</Text>
               {runningCount > 0 ? (
                 <Badge size="xs" variant="light" color="blue">Running ({runningCount})</Badge>
               ) : (
-                <Badge size="xs" variant="light" color={isHistoryOnly ? 'gray' : (TASK_STATUS_COLOR[latest.status] || 'gray')}>
-                  {isHistoryOnly ? 'dismissed' : latest.status}
+                <Badge size="xs" variant="light" color={TASK_STATUS_COLOR[latest.status] || 'gray'}>
+                  {latest.status}
                 </Badge>
               )}
-              {runs.length > 1 && (
-                <Badge size="xs" variant="outline" color="gray">{runs.length} runs</Badge>
-              )}
             </Group>
-            <Group gap={10} wrap="wrap">
-              <PluginTaskTimestamp label="Latest started" ms={latest.startedAt} />
-              {latest.status !== 'running' && <PluginTaskTimestamp label="Finished" ms={latest.updatedAt} />}
-            </Group>
+            <PluginTaskTimestamp task={latest} />
           </>
         }
         right={
-          <Button size="xs" variant="light" color={isHistoryOnly ? 'gray' : undefined} onClick={() => setModalOpened(true)}>
-            {isHistoryOnly ? 'View history' : `View ${runs.length} runs`}
+          <Button size="xs" variant="light" color="gray" onClick={() => setModalOpened(true)}>
+            View history
           </Button>
+        }
+        footer={
+          runningRun && (
+            <Progress
+              mt={6}
+              size="xs"
+              value={typeof runningRun.percent === 'number' ? runningRun.percent : 100}
+              animated={typeof runningRun.percent !== 'number'}
+              color="blue"
+            />
+          )
         }
       />
       <PluginTaskGroupModal
         group={group}
         opened={modalOpened}
         onClose={() => setModalOpened(false)}
-        onDismiss={onDismiss}
       />
     </>
   );
 };
 
-export const PluginTaskList = ({ tasks, onDismiss }) => {
+export const PluginTaskList = ({ tasks }) => {
   const groups = useMemo(() => groupPluginTasks(tasks), [tasks]);
   if (groups.length === 0) return null;
   return (
     <Stack gap="xs">
       {groups.map((group) => (
-        <PluginTaskGroupRow key={group.groupKey} group={group} onDismiss={onDismiss} />
+        <PluginTaskGroupRow key={group.groupKey} group={group} />
       ))}
     </Stack>
   );
