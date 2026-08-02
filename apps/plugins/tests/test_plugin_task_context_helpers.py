@@ -1,11 +1,11 @@
 """context['report_progress'] and context['dispatch_task'], the two helpers
 _build_context adds for async plugin actions (see PluginManager.run_action)."""
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 
 from django.test import SimpleTestCase
 
-from apps.plugins.loader import PluginManager
+from apps.plugins.loader import LoadedPlugin, PluginManager
 
 
 class ReportProgressTests(SimpleTestCase):
@@ -19,7 +19,9 @@ class ReportProgressTests(SimpleTestCase):
     def test_sends_websocket_update_when_task_id_present(self):
         pm = PluginManager()
         report_progress = pm._make_progress_reporter("my-plugin", task_id="task-1")
-        with patch("core.utils.send_websocket_update") as mock_send:
+        with patch("core.utils.send_websocket_update") as mock_send, patch(
+            "apps.plugins.task_history.record_task_progress"
+        ) as mock_record:
             report_progress(50, "halfway")
 
         mock_send.assert_called_once_with("updates", "update", {
@@ -28,33 +30,45 @@ class ReportProgressTests(SimpleTestCase):
             "task_id": "task-1",
             "percent": 50,
             "message": "halfway",
+            "updatedAt": ANY,
         })
+        mock_record.assert_called_once_with("my-plugin", "task-1", 50, "halfway")
 
 
 class DispatchTaskTests(SimpleTestCase):
+    def _lp(self):
+        return LoadedPlugin(
+            key="my-plugin",
+            name="My Plugin",
+            actions=[{"id": "do_work", "label": "Do Work"}],
+        )
+
     def test_dispatches_to_plugins_queue_and_returns_task_id(self):
         pm = PluginManager()
-        dispatch_task = pm._make_task_dispatcher("my-plugin")
+        dispatch_task = pm._make_task_dispatcher(self._lp())
 
         async_result = MagicMock(id="task-2")
         with patch(
             "apps.plugins.tasks.run_plugin_action_task.apply_async", return_value=async_result
-        ) as mock_apply_async:
+        ) as mock_apply_async, patch(
+            "apps.plugins.task_history.record_task_started"
+        ) as mock_record:
             task_id = dispatch_task("do_work", {"limit": 5})
 
         self.assertEqual(task_id, "task-2")
         mock_apply_async.assert_called_once_with(
             args=["my-plugin", "do_work", {"limit": 5}], queue="plugins"
         )
+        mock_record.assert_called_once_with("my-plugin", "task-2", "do_work", "Do Work")
 
     def test_default_params_is_empty_dict(self):
         pm = PluginManager()
-        dispatch_task = pm._make_task_dispatcher("my-plugin")
+        dispatch_task = pm._make_task_dispatcher(self._lp())
 
         with patch(
             "apps.plugins.tasks.run_plugin_action_task.apply_async",
             return_value=MagicMock(id="task-3"),
-        ) as mock_apply_async:
+        ) as mock_apply_async, patch("apps.plugins.task_history.record_task_started"):
             dispatch_task("do_work")
 
         mock_apply_async.assert_called_once_with(
