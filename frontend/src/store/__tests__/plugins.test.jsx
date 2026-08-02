@@ -247,11 +247,15 @@ describe('usePluginStore', () => {
       });
 
       expect(result.current.pluginTasks['task-1']).toEqual({
+        pluginKey: undefined,
         plugin: 'My Plugin',
+        actionId: undefined,
         actionLabel: 'Do Work',
         status: 'running',
         percent: null,
         message: null,
+        startedAt: null,
+        updatedAt: null,
       });
     });
 
@@ -300,15 +304,27 @@ describe('usePluginStore', () => {
       expect(result.current.pluginTasks).toEqual({});
     });
 
-    it('clears a task', () => {
+    it('hydrates history for tasks not already tracked locally', () => {
       const { result } = renderHook(() => usePluginStore());
 
       act(() => {
         result.current.startPluginTask('task-1', { plugin: 'My Plugin', actionLabel: 'Do Work' });
-        result.current.clearPluginTask('task-1');
+        result.current.hydratePluginTasks('my-plugin', 'My Plugin', [
+          { task_id: 'task-1', status: 'error', message: 'stale' },
+          { task_id: 'task-2', action_id: 'do_other', action_label: 'Do Other', status: 'ok' },
+        ]);
       });
 
-      expect(result.current.pluginTasks).toEqual({});
+      // task-1 was already tracked locally (e.g. a live websocket update) -
+      // the hydration fetch must not clobber it with a stale snapshot.
+      expect(result.current.pluginTasks['task-1']).toMatchObject({ status: 'running' });
+      expect(result.current.pluginTasks['task-2']).toMatchObject({
+        pluginKey: 'my-plugin',
+        plugin: 'My Plugin',
+        actionId: 'do_other',
+        actionLabel: 'Do Other',
+        status: 'ok',
+      });
     });
   });
 });

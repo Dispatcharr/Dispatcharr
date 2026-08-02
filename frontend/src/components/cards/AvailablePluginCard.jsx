@@ -126,7 +126,7 @@ const StatusBadge = ({
         <Badge
           size="xs"
           variant="light"
-          color={isPrerelease ? 'violet' : 'green'}
+          color={isPrerelease ? 'gray' : 'green'}
           leftSection={
             isPrerelease ? <FlaskConical size={8} /> : <Check size={8} />
           }
