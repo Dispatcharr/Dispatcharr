@@ -94,7 +94,7 @@ const PluginCard = ({
               <Badge
                 size="xs"
                 variant="light"
-                color={plugin.deprecated ? 'red' : 'violet'}
+                color={plugin.deprecated ? 'red' : 'gray'}
                 leftSection={plugin.deprecated ? <Ban size={8} /> : <FlaskConical size={8} />}
                 style={{ cursor: 'pointer' }}
                 onClick={openDetail}

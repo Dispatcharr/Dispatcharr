@@ -436,8 +436,7 @@ export default function PluginsPage() {
           </Button>
           <Button
             size="xs"
-            variant="light"
-            color="orange"
+            variant="default"
             leftSection={<RotateCw size={14} />}
             onClick={() => setReloadAllOpen(true)}
           >
@@ -690,7 +689,6 @@ export default function PluginsPage() {
             </Button>
             <Button
               size="xs"
-              color="orange"
               loading={reloadingAll}
               onClick={handleReloadAllPlugins}
             >

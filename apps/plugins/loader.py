@@ -925,7 +925,7 @@ class PluginManager:
         Unlike `discover_plugins(force_reload=True)`, this does not stop or
         re-import any other plugin, and deliberately does not touch the
         shared `.reload_token` file used to broadcast full reloads to other
-        worker processes — a single-plugin reload is process-local only.
+        worker processes (a single-plugin reload is process-local only).
         Concurrent reloads of the same key are rejected (returns False)
         rather than racing with an in-progress unload/re-import.
         """

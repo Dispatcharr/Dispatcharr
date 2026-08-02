@@ -119,6 +119,7 @@ function PluginDetailForKey({ routeKey: key }) {
   const [uninstallConfirmOpen, setUninstallConfirmOpen] = useState(false);
   const [uninstalling, setUninstalling] = useState(false);
   const [resetConfirmOpen, setResetConfirmOpen] = useState(false);
+  const [reloadConfirmOpen, setReloadConfirmOpen] = useState(false);
   const [reloadingCode, setReloadingCode] = useState(false);
   const [checkingUpdate, setCheckingUpdate] = useState(false);
   // Matches the Grid.Col `lg` breakpoint (see plugin-detail.css); below it
@@ -323,8 +324,10 @@ function PluginDetailForKey({ routeKey: key }) {
     setSettings((prev) => ({ ...prev, [id]: val }));
   };
 
-  const handleResetToDefaults = () => {
-    setSettings(computeResetSettings(plugin.fields));
+  const handleResetToDefaults = async () => {
+    const defaults = computeResetSettings(plugin.fields);
+    setSettings(defaults);
+    await saveSettings(defaults);
     setResetConfirmOpen(false);
   };
 
@@ -344,12 +347,12 @@ function PluginDetailForKey({ routeKey: key }) {
     }
   };
 
-  const saveSettings = async () => {
+  const saveSettings = async (settingsToSave = settings) => {
     setSaving(true);
     try {
-      const result = await updatePluginSettings(plugin.key, settings);
+      const result = await updatePluginSettings(plugin.key, settingsToSave);
       if (result) {
-        usePluginStore.getState().updatePlugin(plugin.key, { settings });
+        usePluginStore.getState().updatePlugin(plugin.key, { settings: settingsToSave });
         showNotification({ title: 'Saved', message: `${plugin.name} settings updated`, color: 'green' });
       } else {
         showNotification({ title: `${plugin.name} error`, message: 'Failed to update settings', color: 'red' });
@@ -462,6 +465,7 @@ function PluginDetailForKey({ routeKey: key }) {
       }
     } finally {
       setReloadingCode(false);
+      setReloadConfirmOpen(false);
     }
   };
 
@@ -561,12 +565,11 @@ function PluginDetailForKey({ routeKey: key }) {
                   )}
                   <Button
                     size="xs"
-                    variant="light"
-                    color="orange"
+                    variant="default"
                     loading={reloadingCode}
                     disabled={reloadingCode || missing}
                     leftSection={<RotateCw size={14} />}
-                    onClick={handleReloadCode}
+                    onClick={() => setReloadConfirmOpen(true)}
                   >
                     Reload Plugin
                   </Button>
@@ -614,16 +617,13 @@ function PluginDetailForKey({ routeKey: key }) {
             {hasPluginTasks && (
               <Stack gap="sm">
                 <CollapsibleHeading
-                  label="Tasks"
+                  label="Background Tasks"
                   isSingleCol
                   opened={tasksOpened}
                   onToggle={toggleTasks}
                 />
                 <Collapse in={tasksOpened}>
-                  <PluginTaskList
-                    tasks={pluginTasks}
-                    onDismiss={(taskId) => usePluginStore.getState().dismissPluginTask(taskId)}
-                  />
+                  <PluginTaskList tasks={pluginTasks} />
                 </Collapse>
               </Stack>
             )}
@@ -765,9 +765,23 @@ function PluginDetailForKey({ routeKey: key }) {
         onConfirm={handleResetToDefaults}
         zIndex={300}
         title="Reset settings to defaults?"
-        message="This will replace any unsaved changes with each field's default value and clear any settings no longer used by this plugin. Nothing is saved until you click Save."
+        message="This will reset every setting to its default value and save immediately. This cannot be undone."
         confirmLabel="Reset"
         confirmColor={undefined}
+        loading={saving}
+      />
+
+      {/* Reload Plugin confirmation modal */}
+      <ConfirmationDialog
+        opened={reloadConfirmOpen}
+        onClose={() => setReloadConfirmOpen(false)}
+        onConfirm={handleReloadCode}
+        zIndex={300}
+        title="Reload plugin code?"
+        message="This reimports the plugin's Python code from disk. Continue?"
+        confirmLabel="Reload"
+        confirmColor={undefined}
+        loading={reloadingCode}
       />
 
       {/* Uninstall confirmation modal */}

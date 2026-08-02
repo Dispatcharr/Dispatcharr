@@ -257,7 +257,7 @@ Row order is preserved as submitted. Cell values that don't match their declared
 ### File Fields
 A `file` field lets the user upload a file (e.g. a config, cert, or overlay image) instead of typing a host path or pasting content into a text field. Selecting a file uploads it immediately via `POST /api/plugins/plugins/<key>/fields/<field_id>/upload/`; only the resulting server-side path is stored in settings, never the file's bytes.
 
-- `accept` (str, optional): Browser file-picker hint, e.g. `.ini,.json`. This only narrows what the picker shows — the server enforces its own fixed extension allowlist regardless of this value.
+- `accept` (str, optional): Browser file-picker hint, e.g. `.ini,.json`. This only narrows what the picker shows; the server enforces its own fixed extension allowlist regardless of this value.
 - `max_size` (int, optional): Requested max size in bytes. The server clamps this to a hard ceiling; a plugin cannot request an unbounded upload.
 
 Server-side, for safety:

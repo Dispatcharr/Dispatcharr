@@ -1,4 +1,4 @@
-// Unlike settingsNav.js, this can't be a static config — installed plugins
+// Unlike settingsNav.js, this can't be a static config: installed plugins
 // vary per instance. Sidebar.jsx calls this with the live plugin list (from
 // usePluginStore) and the user's pinned-plugin preference (from useAuthStore)
 // on every render.

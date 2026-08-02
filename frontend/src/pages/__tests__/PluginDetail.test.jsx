@@ -154,6 +154,7 @@ describe('PluginDetail', () => {
       removePlugin: vi.fn(),
       invalidatePlugins: vi.fn(),
       installPlugin: vi.fn(),
+      hydratePluginTasks: vi.fn(),
     }));
     useSettingsStore.mockImplementation((selector) =>
       selector({ version: { version: '1.0.0' } })
@@ -240,6 +241,7 @@ describe('PluginDetail', () => {
       removePlugin: vi.fn(),
       invalidatePlugins: vi.fn(),
       installPlugin: vi.fn(),
+      hydratePluginTasks: vi.fn(),
     }));
     render(<PluginDetail />);
 
@@ -259,11 +261,12 @@ describe('PluginDetail', () => {
     expect(screen.getByText('Uninstall')).toBeInTheDocument();
   });
 
-  it('reloads plugin code when Reload Plugin is clicked', async () => {
+  it('reloads plugin code when Reload Plugin is confirmed', async () => {
     reloadPlugin.mockResolvedValue({ success: true });
     render(<PluginDetail />);
 
     fireEvent.click(screen.getByText('Reload Plugin'));
+    fireEvent.click(screen.getByText('Reload'));
 
     await waitFor(() => {
       expect(reloadPlugin).toHaveBeenCalledWith('test-plugin');
