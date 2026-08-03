@@ -527,7 +527,35 @@ def _evaluate_series_rules_locked(tvg_id, result):
     # it cannot be used for deduplication.  Only load future recordings
     # to bound the set size — past recordings cannot collide with newly
     # scheduled future programs.
+    # Those times are NOT stable: the upstream EPG nudges programme boundaries
+    # between refreshes, an exact key misses on any drift, and the same airing is
+    # scheduled twice onto one output path. Episode identity (season/episode, or
+    # onscreen_episode, or sub_title) IS stable across refreshes, so it is the
+    # primary guard; the start-time tolerance below only covers programmes that
+    # carry no identity at all, and recordings scheduled before this existed.
+    from django.utils.dateparse import parse_datetime
+
+    def _identity_of(props, sub_title):
+        """Stable episode identity, mirroring _episode_key minus its id fallback."""
+        try:
+            season = props.get("season")
+            episode = props.get("episode")
+            onscreen = props.get("onscreen_episode")
+        except Exception:
+            return None
+        if season is not None and episode is not None:
+            return "s%se%s" % (season, episode)
+        if onscreen:
+            return str(onscreen).strip().lower()
+        if sub_title:
+            return str(sub_title).strip().lower()
+        return None
+
+    DEDUP_START_TOLERANCE = timedelta(minutes=15)
+
     existing_program_keys = set()
+    existing_episode_keys = set()
+    existing_program_index = {}
     for cp in Recording.objects.filter(
         end_time__gte=now,
     ).values_list("custom_properties", flat=True):
@@ -538,6 +566,19 @@ def _evaluate_series_rules_locked(tvg_id, result):
             et = prog_data.get("end_time")
             if tvg_id_val and st and et:
                 existing_program_keys.add((str(tvg_id_val), str(st), str(et)))
+            if tvg_id_val:
+                title_l = str(prog_data.get("title") or "").strip().lower()
+                ident = _identity_of(prog_data, prog_data.get("sub_title"))
+                if ident:
+                    existing_episode_keys.add((str(tvg_id_val), title_l, ident))
+                elif st:
+                    # Only airings with NO identity feed the time window, so an
+                    # identifiable episode can never be suppressed by one.
+                    st_dt = parse_datetime(str(st))
+                    if st_dt is not None:
+                        existing_program_index.setdefault(
+                            (str(tvg_id_val), title_l), []
+                        ).append(st_dt)
         except Exception:
             continue
 
@@ -681,6 +722,29 @@ def _evaluate_series_rules_locked(tvg_id, result):
                 prog_key = (str(prog.tvg_id), prog.start_time.isoformat(), prog.end_time.isoformat())
                 if prog_key in existing_program_keys:
                     continue
+                # Same airing after an EPG refresh moved its boundaries.
+                # Episode identity survives a refresh, so when it exists it is
+                # authoritative and the time window is not consulted at all: an
+                # identifiable episode that is not already scheduled is a genuinely
+                # different airing, however close it sits to another one.
+                prog_title_l = str(prog.title or "").strip().lower()
+                prog_ident = _identity_of(prog.custom_properties or {}, prog.sub_title)
+                idx_key = (str(prog.tvg_id), prog_title_l)
+                if prog_ident:
+                    if (str(prog.tvg_id), prog_title_l, prog_ident) in existing_episode_keys:
+                        continue
+                else:
+                    # No identity at all: a narrow start-time window is the only
+                    # signal left. Compared solely against other identity-less
+                    # airings, so this can never suppress an identifiable episode.
+                    try:
+                        if any(
+                            abs(seen - prog.start_time) <= DEDUP_START_TOLERANCE
+                            for seen in existing_program_index.get(idx_key, ())
+                        ):
+                            continue
+                    except TypeError:
+                        pass  # naive/aware mismatch in stored data: fall through
                 # Extra guard: DB query using the same stable attributes
                 # stored in custom_properties (unadjusted program times,
                 # not offset-adjusted Recording.start_time/end_time).
@@ -720,10 +784,24 @@ def _evaluate_series_rules_locked(tvg_id, result):
                             "description": prog.description,
                             "start_time": prog.start_time.isoformat(),
                             "end_time": prog.end_time.isoformat(),
+                            # Stable across EPG refreshes, unlike the times above.
+                            "season": (prog.custom_properties or {}).get("season"),
+                            "episode": (prog.custom_properties or {}).get("episode"),
+                            "onscreen_episode": (prog.custom_properties or {}).get(
+                                "onscreen_episode"
+                            ),
                         }
                     },
                 )
                 existing_program_keys.add(prog_key)
+                if prog_ident:
+                    existing_episode_keys.add(
+                        (str(prog.tvg_id), prog_title_l, prog_ident)
+                    )
+                else:
+                    existing_program_index.setdefault(idx_key, []).append(
+                        prog.start_time
+                    )
                 created_here += 1
                 try:
                     prefetch_recording_artwork.apply_async(args=[rec.id], countdown=1)
