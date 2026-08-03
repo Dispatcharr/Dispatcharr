@@ -136,3 +136,35 @@ class ParseProgramsForTvgIdSwapTests(TestCase):
         self.assertEqual(
             ProgramData.objects.filter(epg=self.epg).get().title, 'New Show'
         )
+
+    def test_parses_when_epg_only_on_channel_override(self):
+        """Override-only EPG must not early-exit as unmapped."""
+        from apps.channels.models import ChannelOverride
+
+        self.channel.epg_data = None
+        self.channel.auto_created = True
+        self.channel.save(update_fields=['epg_data', 'auto_created'])
+        ChannelOverride.objects.create(channel=self.channel, epg_data=self.epg)
+
+        self._configure_source_file(
+            _programme_xml('test.channel', 'Override Show', self.start, self.stop)
+        )
+
+        parse_programs_for_tvg_id(self.epg.id)
+
+        self.assertEqual(
+            ProgramData.objects.filter(epg=self.epg).get().title,
+            'Override Show',
+        )
+
+    def test_skips_when_epg_not_mapped_on_channel_or_override(self):
+        self.channel.epg_data = None
+        self.channel.save(update_fields=['epg_data'])
+        self._configure_source_file(
+            _programme_xml('test.channel', 'Should Skip', self.start, self.stop)
+        )
+
+        result = parse_programs_for_tvg_id(self.epg.id)
+
+        self.assertIsNone(result)
+        self.assertFalse(ProgramData.objects.filter(epg=self.epg).exists())

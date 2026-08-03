@@ -5,7 +5,7 @@ from django.dispatch import receiver
 from django.utils.timezone import now, is_aware, make_aware
 from celery.result import AsyncResult
 from django_celery_beat.models import ClockedSchedule, PeriodicTask
-from .models import Channel, Stream, ChannelStream, ChannelProfile, ChannelProfileMembership, Recording
+from .models import Channel, Stream, ChannelStream, ChannelProfile, ChannelProfileMembership, ChannelOverride, Recording
 from apps.m3u.models import M3UAccount
 from apps.epg.tasks import parse_programs_for_tvg_id
 import json
@@ -14,6 +14,24 @@ from .tasks import run_recording, prefetch_recording_artwork
 from datetime import timedelta
 
 logger = logging.getLogger(__name__)
+
+
+def _queue_epg_program_refresh(epg_data):
+    """Queue programme import for a newly assigned (non-dummy) EPGData row."""
+    if not epg_data:
+        return
+    if epg_data.epg_source and epg_data.epg_source.source_type == 'dummy':
+        return
+    logger.info(f"Triggering EPG program refresh for {epg_data.tvg_id}")
+    parse_programs_for_tvg_id.delay(epg_data.id)
+
+
+def _invalidate_epg_output_cache():
+    """Drop cached /output/epg so the next request rebuilds with current assignments."""
+    from apps.output.streaming_chunk_cache import invalidate_epg_chunk_cache
+
+    invalidate_epg_chunk_cache()
+
 
 @receiver(m2m_changed, sender=Channel.streams.through)
 def update_channel_tvg_id_and_logo(sender, instance, action, reverse, model, pk_set, **kwargs):
@@ -163,22 +181,55 @@ def release_compact_number_on_hide(sender, instance, created, **kwargs):
 def refresh_epg_programs(sender, instance, created, **kwargs):
     """
     When a channel is saved, check if the EPG data has changed.
-    If so, trigger a refresh of the program data for the EPG.
+    If so, drop the XMLTV chunk cache and trigger a refresh of programme data.
     """
     # Check if this is an update (not a new channel) and the epg_data has changed
     if not created and kwargs.get('update_fields') and 'epg_data' in kwargs['update_fields']:
         logger.info(f"Channel {instance.id} ({instance.name}) EPG data updated, refreshing program data")
-        if instance.epg_data:
-            if instance.epg_data.epg_source and instance.epg_data.epg_source.source_type == 'dummy':
-                return
-            logger.info(f"Triggering EPG program refresh for {instance.epg_data.tvg_id}")
-            parse_programs_for_tvg_id.delay(instance.epg_data.id)
+        _invalidate_epg_output_cache()
+        _queue_epg_program_refresh(instance.epg_data)
     # For new channels with EPG data, also refresh
     elif created and instance.epg_data:
-        if instance.epg_data.epg_source and instance.epg_data.epg_source.source_type == 'dummy':
-            return
         logger.info(f"New channel {instance.id} ({instance.name}) created with EPG data, refreshing program data")
-        parse_programs_for_tvg_id.delay(instance.epg_data.id)
+        _invalidate_epg_output_cache()
+        _queue_epg_program_refresh(instance.epg_data)
+
+
+@receiver(pre_save, sender=ChannelOverride)
+def cache_previous_override_epg(sender, instance, **kwargs):
+    """Remember prior epg_data_id so post_save can detect real EPG changes."""
+    if not instance.pk:
+        instance._previous_epg_data_id = None
+        return
+    instance._previous_epg_data_id = (
+        ChannelOverride.objects.filter(pk=instance.pk)
+        .values_list("epg_data_id", flat=True)
+        .first()
+    )
+
+
+@receiver(post_save, sender=ChannelOverride)
+def refresh_epg_programs_for_override(sender, instance, created, **kwargs):
+    """
+    Hand-assigned EPG on auto-synced channels lives on ChannelOverride.
+    When that field changes, drop the XMLTV chunk cache (XC is uncached and
+    would otherwise diverge) and queue programme import for the new id.
+
+    Bulk create/update bypasses signals; those paths dispatch refresh and
+    cache invalidation explicitly.
+    """
+    previous_id = getattr(instance, "_previous_epg_data_id", None)
+    current_id = instance.epg_data_id
+    if current_id == previous_id:
+        return
+    logger.info(
+        f"Channel override for channel {instance.channel_id} EPG data changed "
+        f"({previous_id} -> {current_id}), invalidating XMLTV cache"
+    )
+    _invalidate_epg_output_cache()
+    if current_id:
+        _queue_epg_program_refresh(instance.epg_data)
+
 
 @receiver(post_save, sender=ChannelProfile)
 def create_profile_memberships(sender, instance, created, **kwargs):

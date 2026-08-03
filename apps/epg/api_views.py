@@ -855,12 +855,15 @@ class CurrentProgramsAPIView(APIView):
 
             return Response(current_programs, status=status.HTTP_200_OK)
 
-        # Otherwise, use channel-based query
-        # Import Channel model
+        # Otherwise, use channel-based query. Honour ChannelOverride.epg_data
+        # via Coalesce; filtering on Channel.epg_data alone skips override-only
+        # assignments (editor Current Program uses epg_data_ids and is fine).
+        from django.db.models.functions import Coalesce
         from apps.channels.models import Channel
 
-        # Build query for channels with EPG data
-        query = Channel.objects.filter(epg_data__isnull=False)
+        query = Channel.objects.annotate(
+            effective_epg_data_id=Coalesce("override__epg_data_id", "epg_data_id"),
+        ).exclude(effective_epg_data_id__isnull=True)
 
         if channel_uuids is not None:
             if not isinstance(channel_uuids, list):
@@ -870,16 +873,11 @@ class CurrentProgramsAPIView(APIView):
                 )
             query = query.filter(uuid__in=channel_uuids)
 
-        # Get channels with EPG data
-        channels = query.select_related('epg_data')
-
-        # Build list of current programs
         current_programs = []
 
-        for channel in channels:
-            # Query for current program
+        for channel in query:
             program = ProgramData.objects.select_related("epg").filter(
-                epg=channel.epg_data,
+                epg_id=channel.effective_epg_data_id,
                 start_time__lte=now,
                 end_time__gt=now
             ).first()

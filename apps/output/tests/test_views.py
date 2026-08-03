@@ -5,7 +5,7 @@ from unittest.mock import patch
 from uuid import uuid4
 from django.db import connection
 from django.test.utils import CaptureQueriesContext
-from apps.channels.models import Channel, ChannelGroup, ChannelProfile, ChannelProfileMembership
+from apps.channels.models import Channel, ChannelGroup, ChannelOverride, ChannelProfile, ChannelProfileMembership
 from apps.epg.models import EPGData, EPGSource
 from apps.accounts.models import User
 from apps.m3u.models import M3UAccount
@@ -295,6 +295,77 @@ class OutputEPGXMLEscapingTest(OutputEndpointTestMixin, TestCase):
 
         self.assertLess(content.find('<title>First</title>'), content.find('<title>Second</title>'))
         self.assertLess(content.find('<title>Second</title>'), content.find('<title>Third</title>'))
+
+    def test_override_epg_change_invalidates_xmltv_chunk_cache(self):
+        """
+        XC reads live ProgramData; XMLTV is chunk-cached. Changing the
+        effective EPG via ChannelOverride must drop that cache so the next
+        /output/epg emits the new station's programmes, not the previous ones.
+        """
+        from django.utils import timezone
+        from apps.channels.models import ChannelOverride
+        from apps.epg.models import ProgramData
+        from django_redis import get_redis_connection
+
+        # This mixin normally bypasses Redis chunk caching; use the real path here.
+        self._epg_cache_patch.stop()
+        try:
+            epg_source = EPGSource.objects.create(name="Cache EPG Src", source_type="xmltv")
+            epg_old = EPGData.objects.create(
+                name="Old Station",
+                epg_source=epg_source,
+                tvg_id="old.station",
+            )
+            epg_new = EPGData.objects.create(
+                name="New Station",
+                epg_source=epg_source,
+                tvg_id="new.station",
+            )
+            channel = self._add_channel(
+                channel_number=149.0,
+                name="Cache Channel",
+                tvg_id="cache.channel",
+                epg_data=epg_old,
+            )
+            now = timezone.now()
+            ProgramData.objects.create(
+                epg=epg_old,
+                start_time=now + timedelta(hours=1),
+                end_time=now + timedelta(hours=2),
+                title="OLD PROGRAMME",
+                tvg_id="old.station",
+            )
+            ProgramData.objects.create(
+                epg=epg_new,
+                start_time=now + timedelta(hours=1),
+                end_time=now + timedelta(hours=2),
+                title="NEW PROGRAMME",
+                tvg_id="new.station",
+            )
+
+            url = self._epg_url("tvg_id_source=channel_number&days=7")
+            before = _response_text(self.client.get(url))
+            self.assertIn('<title>OLD PROGRAMME</title>', before)
+            self.assertNotIn('<title>NEW PROGRAMME</title>', before)
+
+            redis = get_redis_connection("default")
+            cached_before = list(redis.scan_iter(match="epg_content:*", count=200))
+            self.assertGreater(len(cached_before), 0, "XMLTV chunk cache should be warm")
+
+            ChannelOverride.objects.create(channel=channel, epg_data=epg_new)
+
+            cached_after = list(redis.scan_iter(match="epg_content:*", count=200))
+            self.assertEqual(
+                len(cached_after),
+                0,
+                "Override EPG change must invalidate XMLTV chunk cache",
+            )
+
+            after = _response_text(self.client.get(url))
+            self.assertIn('<title>NEW PROGRAMME</title>', after)
+            self.assertNotIn('<title>OLD PROGRAMME</title>', after)
+        finally:
+            self._epg_cache_patch.start()
 
 
 class OutputEPGCustomDummyTest(TestCase):

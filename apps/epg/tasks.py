@@ -1630,7 +1630,9 @@ def parse_programs_for_tvg_id(epg_id, force=False, _defer_retry=0):
             # cached via select_related) instead of issuing a second query mid-task.
             epg = epg_obj
 
-            if not force and not Channel.objects.filter(epg_data=epg).exists():
+            from apps.channels.managers import is_epg_mapped_to_channel
+
+            if not force and not is_epg_mapped_to_channel(epg):
                 logger.info(f"No channels matched to EPG {epg.tvg_id}")
                 return
 
@@ -1838,6 +1840,10 @@ def parse_programs_for_tvg_id(epg_id, force=False, _defer_retry=0):
                 f"Replaced {deleted_count} program(s) with {len(programs_to_create)} "
                 f"for {epg.tvg_id}"
             )
+            # Programme rows changed; drop XMLTV chunk cache so /output/epg
+            # does not keep serving the pre-import guide for this station.
+            from apps.output.streaming_chunk_cache import invalidate_epg_chunk_cache
+            invalidate_epg_chunk_cache()
             programs_to_create = None
             custom_props = None
             custom_properties_json = None
@@ -1955,13 +1961,14 @@ def _flush_epg_program_staging_batch(programs_batch):
 
 
 def _epg_ids_mapped_to_channels(epg_source):
-    """EPGData ids currently assigned to at least one channel on this source."""
-    return set(
-        Channel.objects.filter(
-            epg_data__epg_source=epg_source,
-            epg_data__isnull=False,
-        ).values_list('epg_data_id', flat=True)
-    )
+    """EPGData ids currently assigned to at least one channel on this source.
+
+    Includes ChannelOverride.epg_data so hand-assigned EPG on auto-synced
+    channels is treated as mapped for import and orphan cleanup.
+    """
+    from apps.channels.managers import epg_ids_mapped_to_channels
+
+    return epg_ids_mapped_to_channels(epg_source=epg_source)
 
 
 def _delete_orphaned_epg_programs(epg_source):
@@ -2108,12 +2115,8 @@ def parse_programs_for_source(epg_source, tvg_id=None):
 
     try:
         # Only get EPG entries that are actually mapped to channels
-        mapped_epg_ids = set(
-            Channel.objects.filter(
-                epg_data__epg_source=epg_source,
-                epg_data__isnull=False
-            ).values_list('epg_data_id', flat=True)
-        )
+        # (Channel.epg_data or ChannelOverride.epg_data).
+        mapped_epg_ids = _epg_ids_mapped_to_channels(epg_source)
 
         if not mapped_epg_ids:
             total_epg_count = EPGData.objects.filter(epg_source=epg_source).count()
@@ -2324,6 +2327,8 @@ def parse_programs_for_source(epg_source, tvg_id=None):
                 logger.info(
                     f"Atomic update complete: deleted {deleted_count}, inserted {total_programs} programs"
                 )
+                from apps.output.streaming_chunk_cache import invalidate_epg_chunk_cache
+                invalidate_epg_chunk_cache()
             except Exception as db_error:
                 logger.error(f"Database error during atomic update: {db_error}", exc_info=True)
                 epg_source.status = EPGSource.STATUS_ERROR
