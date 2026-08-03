@@ -724,6 +724,7 @@ class SystemEvent(models.Model):
         ('login_failed', 'Login Failed'),
         ('logout', 'User Logged Out'),
         ('m3u_blocked', 'M3U Download Blocked'),
+        ('m3u_error', 'M3U Error'),
         ('epg_blocked', 'EPG Download Blocked'),
         ('vod_start', 'VOD Started'),
         ('vod_stop', 'VOD Stopped'),
