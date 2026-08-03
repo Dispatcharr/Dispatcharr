@@ -317,11 +317,11 @@ def generate_m3u(request, profile_name=None, user=None):
             if first_stream and first_stream.url:
                 # Use the direct stream URL
                 stream_url = first_stream.url
-                # Normalize Multicast URL
-                if "udp://" in stream_url and not "udp://@" in stream_url:
+                # Restore VLC-style @ for multicast UDP
+                if stream_url.startswith("udp://") and "udp://@" not in stream_url:
                     try:
                         if ip_address(urlparse(stream_url).hostname).is_multicast:
-                            stream_url = stream_url.replace("udp://", "udp://@")
+                            stream_url = stream_url.replace("udp://", "udp://@", 1)
                     except ValueError:
                         pass
             else:
