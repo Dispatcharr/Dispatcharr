@@ -9,6 +9,7 @@ from apps.m3u.tasks import (
 )
 
 
+@patch("apps.m3u.tasks._release_task_db_connection")
 class M3UErrorEventTests(TestCase):
     def setUp(self):
         self.account = M3UAccount.objects.create(
@@ -20,7 +21,7 @@ class M3UErrorEventTests(TestCase):
     @patch("apps.m3u.tasks.log_system_event")
     @patch("apps.m3u.tasks.send_m3u_update")
     def test_set_m3u_account_status_logs_m3u_error_event(
-        self, mock_send_m3u_update, mock_log_system_event
+        self, mock_send_m3u_update, mock_log_system_event, _mock_release_db
     ):
         _set_m3u_account_status(
             self.account.id,
@@ -42,7 +43,7 @@ class M3UErrorEventTests(TestCase):
     @patch("apps.m3u.tasks.log_system_event")
     @patch("apps.m3u.tasks.send_m3u_update")
     def test_ensure_m3u_refresh_terminal_status_logs_m3u_error_event(
-        self, mock_send_m3u_update, mock_log_system_event
+        self, mock_send_m3u_update, mock_log_system_event, _mock_release_db
     ):
         _ensure_m3u_refresh_terminal_status(self.account.id)
 
