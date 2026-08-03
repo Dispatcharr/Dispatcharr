@@ -12,6 +12,8 @@ import { Calendar, Play, Star } from 'lucide-react';
 import React from 'react';
 
 const SeriesCard = ({ series, onClick }) => {
+  const posterUrl = series.logo?.cache_url || series.logo?.url;
+
   return (
     <Card
       shadow="sm"
@@ -23,9 +25,9 @@ const SeriesCard = ({ series, onClick }) => {
     >
       <CardSection>
         <Box pos="relative" h={300}>
-          {series.logo?.url ? (
+          {posterUrl ? (
             <Image
-              src={series.logo.url}
+              src={posterUrl}
               height={300}
               alt={series.name}
               fit="contain"

@@ -11,6 +11,7 @@ urlpatterns = [
     path('epg/', include(('apps.epg.api_urls', 'epg'), namespace='epg')),
     path('hdhr/', include(('apps.hdhr.api_urls', 'hdhr'), namespace='hdhr')),
     path('m3u/', include(('apps.m3u.api_urls', 'm3u'), namespace='m3u')),
+    path('media-library/', include(('apps.media_servers.api_urls', 'media_servers'), namespace='media_servers')),
     path('core/', include(('core.api_urls', 'core'), namespace='core')),
     path('plugins/', include(('apps.plugins.api_urls', 'plugins'), namespace='plugins')),
     path('vod/', include(('apps.vod.api_urls', 'vod'), namespace='vod')),

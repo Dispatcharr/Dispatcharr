@@ -43,7 +43,9 @@ const Movie = ({
   const showVideo = useVideoStore((s) => s.showVideo);
   const env_mode = useSettingsStore((s) => s.environment.env_mode);
 
-  const displayVOD = detailedVOD || vod;
+  const displayVOD = detailedVOD
+    ? { ...vod, ...detailedVOD, logo: detailedVOD.logo || vod.logo }
+    : vod;
 
   const getStreamUrl = () => {
     if (!displayVOD) return null;
@@ -330,7 +332,13 @@ const VODModal = ({ vod, opened, onClose }) => {
   if (!vod) return null;
 
   // Use detailed data if available, otherwise use basic vod data
-  const displayVOD = detailedVOD || vod;
+  const displayVOD = detailedVOD
+    ? { ...vod, ...detailedVOD, logo: detailedVOD.logo || vod.logo }
+    : vod;
+  const posterUrl =
+    displayVOD.logo?.cache_url ||
+    displayVOD.movie_image ||
+    displayVOD.logo?.url;
 
   return (
     <>
@@ -392,10 +400,10 @@ const VODModal = ({ vod, opened, onClose }) => {
               {/* Movie poster and basic info */}
               <Flex gap="md">
                 {/* Use movie_image or logo */}
-                {displayVOD.movie_image || displayVOD.logo?.url ? (
+                {posterUrl ? (
                   <Box style={{ flexShrink: 0 }}>
                     <Image
-                      src={displayVOD.movie_image || displayVOD.logo.url}
+                      src={posterUrl}
                       width={200}
                       height={300}
                       alt={displayVOD.name}

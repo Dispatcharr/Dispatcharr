@@ -17,6 +17,35 @@ from apps.vod.models import Movie, Episode
 from apps.m3u.models import M3UAccountProfile
 
 logger = logging.getLogger("vod_proxy")
+SENSITIVE_PROVIDER_HEADERS = {
+    "x-plex-token",
+    "x-emby-token",
+    "x-emby-authorization",
+}
+
+
+def _strip_cross_origin_provider_headers(headers, source_url, target_url):
+    source = urlparse(source_url)
+    target = urlparse(target_url)
+    if (source.scheme, source.netloc) == (target.scheme, target.netloc):
+        return headers
+    return {
+        key: value
+        for key, value in headers.items()
+        if key.lower() not in SENSITIVE_PROVIDER_HEADERS
+    }
+
+
+class ProviderRedirectSession(requests.Session):
+    """Never forward provider authentication headers across origins."""
+
+    def rebuild_auth(self, prepared_request, response):
+        super().rebuild_auth(prepared_request, response)
+        prepared_request.headers = _strip_cross_origin_provider_headers(
+            prepared_request.headers,
+            response.request.url,
+            prepared_request.url,
+        )
 
 # Atomic active_streams mutations. These run as Redis Lua so INCR/DECR never
 # contend with the session metadata lock used for ownership, seek info, and
@@ -63,6 +92,22 @@ end
 -- may hold it for ownership/seek updates, and removing it would let a late
 -- HSET recreate a zombie session without a coherent active_streams field.
 redis.call('DEL', conn_key)
+return 1
+"""
+
+_LUA_RESERVE_MEDIA_LIBRARY_TARGET = """
+local key = KEYS[1]
+local session_id = ARGV[1]
+local limit = tonumber(ARGV[2])
+if redis.call('HEXISTS', key, session_id) == 1 then
+  redis.call('EXPIRE', key, 3600)
+  return 1
+end
+if limit > 0 and redis.call('HLEN', key) >= limit then
+  return 0
+end
+redis.call('HSET', key, session_id, ARGV[3])
+redis.call('EXPIRE', key, 3600)
 return 1
 """
 
@@ -129,20 +174,24 @@ def infer_content_type_from_url(url: str) -> Optional[str]:
         }
 
         if ext in video_mime_types:
-            logger.debug(f"Inferred content type '{video_mime_types[ext]}' from extension '{ext}' in URL: {url}")
+            logger.debug(
+                "Inferred content type '%s' from extension '%s'",
+                video_mime_types[ext],
+                ext,
+            )
             return video_mime_types[ext]
 
         # Fallback to mimetypes module
         mime_type, _ = mimetypes.guess_type(path)
         if mime_type and mime_type.startswith('video/'):
-            logger.debug(f"Inferred content type '{mime_type}' using mimetypes for URL: {url}")
+            logger.debug("Inferred content type '%s' using mimetypes", mime_type)
             return mime_type
 
-        logger.debug(f"Could not infer content type from URL: {url}")
+        logger.debug("Could not infer content type from stream path")
         return None
 
     except Exception as e:
-        logger.warning(f"Error inferring content type from URL '{url}': {e}")
+        logger.warning("Error inferring stream content type: %s", e)
         return None
 
 
@@ -169,6 +218,7 @@ class SerializableConnectionState:
         self.request_count = 0
         self.active_streams = 0
         self.user_id = user_id
+        self.media_library_target_id = None
 
         # Session metadata (consolidated from vod_session key)
         self.content_obj_type = content_obj_type
@@ -227,6 +277,10 @@ class SerializableConnectionState:
             'total_content_size': str(self.total_content_size),
             'last_seek_timestamp': str(self.last_seek_timestamp),
             'user_id': str(self.user_id),
+            'media_library_target_id': (
+                str(self.media_library_target_id)
+                if self.media_library_target_id is not None else ''
+            ),
         }
 
     @classmethod
@@ -265,6 +319,10 @@ class SerializableConnectionState:
         obj.last_seek_percentage = float(data.get('last_seek_percentage', 0.0))
         obj.total_content_size = int(data.get('total_content_size', 0))
         obj.last_seek_timestamp = float(data.get('last_seek_timestamp', 0.0))
+        obj.media_library_target_id = (
+            int(data['media_library_target_id'])
+            if data.get('media_library_target_id') else None
+        )
         return obj
 
 
@@ -317,9 +375,6 @@ class RedisBackedVODConnection:
             data = state.to_dict()
             if not include_active_streams:
                 data.pop('active_streams', None)
-
-            # Log the data being saved for debugging
-            logger.trace(f"[{self.session_id}] Saving connection state: {data}")
 
             # Verify all values are valid for Redis
             for key, value in data.items():
@@ -392,6 +447,9 @@ class RedisBackedVODConnection:
                 'decr': client.register_script(_LUA_DECR_ACTIVE_STREAMS),
                 'cleanup': client.register_script(_LUA_CLEANUP_IF_IDLE),
                 'meta_save': client.register_script(_LUA_META_SAVE_IF_EXISTS),
+                'target_reserve': client.register_script(
+                    _LUA_RESERVE_MEDIA_LIBRARY_TARGET
+                ),
             }
             _vod_script_cache[cache_key] = cached
         return cached
@@ -402,7 +460,8 @@ class RedisBackedVODConnection:
                          content_name: str = None, client_ip: str = None,
                          client_user_agent: str = None, utc_start: str = None,
                          utc_end: str = None, offset: str = None,
-                         worker_id: str = None, user=None) -> bool:
+                         worker_id: str = None, user=None,
+                         media_library_target_id: int = None) -> bool:
         """Create a new connection state in Redis with consolidated session metadata"""
         if not self._acquire_lock():
             logger.warning(f"[{self.session_id}] Could not acquire lock for connection creation")
@@ -433,6 +492,7 @@ class RedisBackedVODConnection:
                 worker_id=worker_id,
                 user_id=user.id if user else "unknown"
             )
+            state.media_library_target_id = media_library_target_id
             # Seed active_streams=0 once; later mutations are Lua HINCRBY only.
             success = self._save_connection_state(state, include_active_streams=True)
 
@@ -458,7 +518,7 @@ class RedisBackedVODConnection:
         try:
             # Create local session if needed
             if not self.local_session:
-                self.local_session = requests.Session()
+                self.local_session = ProviderRedirectSession()
 
             # Prepare headers
             headers = state.headers.copy()
@@ -477,6 +537,11 @@ class RedisBackedVODConnection:
             # Use final URL if available, otherwise original URL
             target_url = state.final_url if state.final_url else state.stream_url
             allow_redirects = not state.final_url  # Only follow redirects if we don't have final URL
+            headers = _strip_cross_origin_provider_headers(
+                headers,
+                state.stream_url,
+                target_url,
+            )
 
             logger.info(f"[{self.session_id}] Making request #{state.request_count} to {'final' if state.final_url else 'original'} URL")
 
@@ -530,8 +595,6 @@ class RedisBackedVODConnection:
                         # No Content-Range, use Content-Length (for non-range requests)
                         state.content_length = response.headers.get('content-length')
 
-                logger.debug(f"[{self.session_id}] Response headers received: {dict(response.headers)}")
-
                 if not state.content_type:  # This will be True for None, '', or any falsy value
                     # Get content type from provider response headers
                     provider_content_type = (response.headers.get('content-type') or
@@ -573,7 +636,21 @@ class RedisBackedVODConnection:
             return response
 
         except Exception as e:
-            logger.error(f"[{self.session_id}] Error establishing connection: {e}")
+            if any(
+                key.lower() in SENSITIVE_PROVIDER_HEADERS
+                for key in (state.headers or {})
+            ):
+                logger.error(
+                    "[%s] Error establishing authenticated provider connection (%s)",
+                    self.session_id,
+                    type(e).__name__,
+                )
+            else:
+                logger.error(
+                    "[%s] Error establishing connection: %s",
+                    self.session_id,
+                    e,
+                )
             self.cleanup()
             raise
 
@@ -584,8 +661,10 @@ class RedisBackedVODConnection:
                 return range_header
 
             range_part = range_header.replace('bytes=', '')
+            if ',' in range_part:
+                return None
             if '-' not in range_part:
-                return range_header
+                return None
 
             start_str, end_str = range_part.split('-', 1)
 
@@ -595,7 +674,11 @@ class RedisBackedVODConnection:
                 if start_byte >= content_length:
                     return None  # Not satisfiable
             else:
-                start_byte = 0
+                suffix_length = int(end_str)
+                if suffix_length <= 0:
+                    return None
+                start_byte = max(0, content_length - suffix_length)
+                end_str = ''
 
             # Parse end byte
             if end_str:
@@ -805,6 +888,14 @@ class RedisBackedVODConnection:
                     logger.warning(f"[{self.session_id}] No profile ID in connection state - cannot decrement profile connections")
                 elif not connection_manager:
                     logger.warning(f"[{self.session_id}] No connection manager provided - cannot decrement profile connections")
+            if state.media_library_target_id:
+                self.redis_client.hdel(
+                    (
+                        'media_library_target_connections:'
+                        f'{state.media_library_target_id}'
+                    ),
+                    self.session_id,
+                )
 
         except Exception as e:
             logger.error(f"[{self.session_id}] Error cleaning up Redis state: {e}")
@@ -949,9 +1040,70 @@ class MultiWorkerVODConnectionManager:
             logger.error(f"Error decrementing profile connections: {e}")
             return None
 
+    def _reserve_media_library_target_slot(
+        self,
+        target_id: int,
+        limit: int,
+        session_id: str,
+    ) -> bool:
+        if not target_id or not limit:
+            return True
+        key = f'media_library_target_connections:{target_id}'
+        script = self.redis_client.register_script(
+            _LUA_RESERVE_MEDIA_LIBRARY_TARGET
+        )
+        return bool(
+            int(
+                script(
+                    keys=[key],
+                    args=[session_id, str(limit), str(time.time())],
+                )
+                or 0
+            )
+        )
+
+    def _refresh_media_library_target_slot(
+        self,
+        target_id: int,
+        limit: int,
+        session_id: str,
+    ) -> bool:
+        """Refresh or atomically reacquire a target slot for a live session."""
+        return self._reserve_media_library_target_slot(
+            target_id,
+            limit,
+            session_id,
+        )
+
+    def _release_media_library_target_slot(
+        self,
+        target_id: int,
+        session_id: str,
+    ) -> None:
+        if target_id:
+            self.redis_client.hdel(
+                f'media_library_target_connections:{target_id}',
+                session_id,
+            )
+
+    @staticmethod
+    def _revalidate_local_media_path(file_path: str) -> str:
+        from apps.media_servers.path_security import resolve_import_path
+
+        resolved = resolve_import_path(
+            file_path,
+            must_exist=True,
+            require_directory=False,
+        )
+        if not resolved.is_file():
+            raise FileNotFoundError("The local media path is not a regular file.")
+        return str(resolved)
+
     def stream_content_with_session(self, session_id, content_obj, stream_url, m3u_profile,
                                   client_ip, client_user_agent, request,
-                                  utc_start=None, utc_end=None, offset=None, range_header=None, user=None):
+                                  utc_start=None, utc_end=None, offset=None, range_header=None, user=None,
+                                  provider_headers=None, media_library_target_id=None,
+                                  media_library_target_limit=0):
         """Stream content with Redis-backed persistent connection"""
 
         # Generate client ID
@@ -962,6 +1114,7 @@ class MultiWorkerVODConnectionManager:
 
         # Track whether we incremented profile connections (for cleanup on error)
         profile_connections_incremented = False
+        media_library_target_reserved = False
         redis_connection = None
         existing_state = None
 
@@ -969,15 +1122,17 @@ class MultiWorkerVODConnectionManager:
 
         try:
             # First, try to find an existing idle session that matches our criteria
-            matching_session_id = self.find_matching_idle_session(
-                content_type=content_type,
-                content_uuid=content_uuid,
-                client_ip=client_ip,
-                client_user_agent=client_user_agent,
-                utc_start=utc_start,
-                utc_end=utc_end,
-                offset=offset
-            )
+            matching_session_id = None
+            if not media_library_target_id:
+                matching_session_id = self.find_matching_idle_session(
+                    content_type=content_type,
+                    content_uuid=content_uuid,
+                    client_ip=client_ip,
+                    client_user_agent=client_user_agent,
+                    utc_start=utc_start,
+                    utc_end=utc_end,
+                    offset=offset
+                )
 
             # Use matching session if found, otherwise use the provided session_id
             if matching_session_id:
@@ -1002,12 +1157,49 @@ class MultiWorkerVODConnectionManager:
 
             # Check if connection exists, create if not
             existing_state = redis_connection._get_connection_state()
+            if (
+                existing_state
+                and media_library_target_id
+                and existing_state.media_library_target_id != media_library_target_id
+            ):
+                return HttpResponse("Playback target mismatch", status=403)
+            if (
+                existing_state
+                and media_library_target_id
+                and not self._refresh_media_library_target_slot(
+                    media_library_target_id,
+                    media_library_target_limit,
+                    session_id,
+                )
+            ):
+                return HttpResponse(
+                    "Media library target stream limit exceeded",
+                    status=429,
+                )
             if not existing_state:
                 logger.info(f"[{client_id}] Worker {self.worker_id} - Creating new Redis-backed connection")
+
+                if not self._reserve_media_library_target_slot(
+                    media_library_target_id,
+                    media_library_target_limit,
+                    session_id,
+                ):
+                    return HttpResponse(
+                        "Media library target stream limit exceeded",
+                        status=429,
+                    )
+                media_library_target_reserved = bool(
+                    media_library_target_id and media_library_target_limit
+                )
 
                 # Atomically check and reserve a profile connection slot (INCR-first)
                 if not self._check_and_reserve_profile_slot(m3u_profile):
                     logger.warning(f"[{client_id}] Profile {m3u_profile.name} connection limit exceeded")
+                    if media_library_target_reserved:
+                        self._release_media_library_target_slot(
+                            media_library_target_id,
+                            session_id,
+                        )
                     return HttpResponse("Connection limit exceeded for profile", status=429)
                 profile_connections_incremented = True
 
@@ -1016,6 +1208,7 @@ class MultiWorkerVODConnectionManager:
 
                 # Prepare headers for provider request
                 headers = {}
+                headers.update(provider_headers or {})
                 # Use M3U account's user-agent for provider requests, not client's user-agent
                 m3u_user_agent = m3u_profile.m3u_account.get_user_agent()
                 if m3u_user_agent:
@@ -1029,7 +1222,7 @@ class MultiWorkerVODConnectionManager:
                     logger.warning(f"[{client_id}] No user-agent available (neither M3U nor client)")
 
                 # Forward important headers from request
-                important_headers = ['authorization', 'referer', 'origin', 'accept']
+                important_headers = ['referer', 'origin', 'accept']
                 for header_name in important_headers:
                     django_header = f'HTTP_{header_name.upper().replace("-", "_")}'
                     if hasattr(request, 'META') and django_header in request.META:
@@ -1050,12 +1243,18 @@ class MultiWorkerVODConnectionManager:
                     utc_end=utc_end,
                     offset=str(offset) if offset else None,
                     worker_id=self.worker_id,
-                    user=user
+                    user=user,
+                    media_library_target_id=media_library_target_id,
                 ):
                     logger.error(f"[{client_id}] Worker {self.worker_id} - Failed to create Redis connection")
                     # Roll back the profile slot reservation since connection failed
                     self._decrement_profile_connections(m3u_profile.id)
                     profile_connections_incremented = False
+                    if media_library_target_reserved:
+                        self._release_media_library_target_slot(
+                            media_library_target_id,
+                            session_id,
+                        )
                     return HttpResponse("Failed to create connection", status=500)
 
                 logger.info(f"[{client_id}] Worker {self.worker_id} - Created consolidated connection with session metadata")
@@ -1164,6 +1363,12 @@ class MultiWorkerVODConnectionManager:
 
                             # Check for stop signal every 100 chunks
                             if chunk_count % 100 == 0:
+                                if media_library_target_id:
+                                    self._refresh_media_library_target_slot(
+                                        media_library_target_id,
+                                        media_library_target_limit,
+                                        effective_session_id,
+                                    )
                                 # Check if stop signal has been set
                                 if self.redis_client and self.redis_client.exists(stop_key):
                                     logger.info(f"[{client_id}] Worker {self.worker_id} - Stop signal detected, terminating stream")
@@ -1322,7 +1527,11 @@ class MultiWorkerVODConnectionManager:
                 # For range requests, Content-Length should be the partial content size, not full file size
                 if range_header and 'bytes=' in range_header:
                     try:
-                        range_part = range_header.replace('bytes=', '')
+                        validated_range = redis_connection._validate_range_header(
+                            range_header,
+                            int(connection_headers['content_length']),
+                        )
+                        range_part = validated_range.replace('bytes=', '')
                         if '-' in range_part:
                             start_byte, end_byte = range_part.split('-', 1)
                             start = int(start_byte) if start_byte else 0
@@ -1387,7 +1596,21 @@ class MultiWorkerVODConnectionManager:
             return response
 
         except Exception as e:
-            logger.error(f"[{client_id}] Worker {self.worker_id} - Error in Redis-backed stream_content_with_session: {e}", exc_info=True)
+            if provider_headers:
+                logger.error(
+                    "[%s] Worker %s - authenticated provider stream failed (%s)",
+                    client_id,
+                    self.worker_id,
+                    type(e).__name__,
+                )
+            else:
+                logger.error(
+                    "[%s] Worker %s - Error in Redis-backed stream_content_with_session: %s",
+                    client_id,
+                    self.worker_id,
+                    e,
+                    exc_info=True,
+                )
 
             # Roll back stream reservation if we incremented before get_stream failed
             if existing_state and redis_connection:
@@ -1408,8 +1631,267 @@ class MultiWorkerVODConnectionManager:
                         redis_connection.cleanup(current_worker_id=self.worker_id)
                     except Exception as cleanup_error:
                         logger.error(f"[{client_id}] Error during cleanup after connection failure: {cleanup_error}")
+            if (
+                media_library_target_reserved
+                and (
+                    not redis_connection
+                    or not redis_connection._get_connection_state()
+                )
+            ):
+                self._release_media_library_target_slot(
+                    media_library_target_id,
+                    session_id,
+                )
 
-            return HttpResponse(f"Streaming error: {str(e)}", status=500)
+            return HttpResponse("Streaming error", status=500)
+
+    def stream_local_file_with_session(
+        self,
+        *,
+        session_id,
+        content_obj,
+        file_path,
+        relation,
+        m3u_profile,
+        client_ip,
+        client_user_agent,
+        request,
+        range_header=None,
+        media_library_target_id=None,
+        media_library_target_limit=0,
+    ):
+        """Stream an allowed local import file through the normal VOD accounting path."""
+        content_type = "movie" if isinstance(content_obj, Movie) else "episode"
+        content_uuid = str(content_obj.uuid)
+        content_name = getattr(content_obj, 'name', str(content_obj))
+        redis_connection = RedisBackedVODConnection(session_id, self.redis_client)
+        existing_state = redis_connection._get_connection_state()
+        profile_reserved = False
+        active_incremented = False
+
+        try:
+            file_path = self._revalidate_local_media_path(file_path)
+            if not os.path.isfile(file_path):
+                return HttpResponse("File not found", status=404)
+            file_size = os.path.getsize(file_path)
+            mime_type = mimetypes.guess_type(file_path)[0] or "application/octet-stream"
+
+            if (
+                existing_state
+                and media_library_target_id
+                and existing_state.media_library_target_id != media_library_target_id
+            ):
+                return HttpResponse("Playback target mismatch", status=403)
+            if (
+                existing_state
+                and media_library_target_id
+                and not self._refresh_media_library_target_slot(
+                    media_library_target_id,
+                    media_library_target_limit,
+                    session_id,
+                )
+            ):
+                return HttpResponse(
+                    "Media library target stream limit exceeded",
+                    status=429,
+                )
+
+            if not existing_state:
+                if not self._reserve_media_library_target_slot(
+                    media_library_target_id,
+                    media_library_target_limit,
+                    session_id,
+                ):
+                    return HttpResponse(
+                        "Media library target stream limit exceeded",
+                        status=429,
+                    )
+                if not self._check_and_reserve_profile_slot(m3u_profile):
+                    self._release_media_library_target_slot(
+                        media_library_target_id,
+                        session_id,
+                    )
+                    return HttpResponse("Connection limit exceeded for profile", status=429)
+                profile_reserved = True
+                if not redis_connection.create_connection(
+                    stream_url=f"file://{file_path}",
+                    headers={},
+                    m3u_profile_id=m3u_profile.id,
+                    content_obj_type=content_type,
+                    content_uuid=content_uuid,
+                    content_name=content_name,
+                    client_ip=client_ip,
+                    client_user_agent=client_user_agent,
+                    worker_id=self.worker_id,
+                    media_library_target_id=media_library_target_id,
+                ):
+                    self._decrement_profile_connections(m3u_profile.id)
+                    self._release_media_library_target_slot(
+                        media_library_target_id,
+                        session_id,
+                    )
+                    return HttpResponse("Failed to create connection", status=500)
+                state = redis_connection._get_connection_state()
+                state.content_length = str(file_size)
+                state.content_type = mime_type
+                state.total_content_size = file_size
+                state.connection_type = "local_file"
+                redis_connection._save_connection_state(state)
+            else:
+                active_count = redis_connection.increment_active_streams()
+                if active_count <= 0:
+                    return HttpResponse("Failed to reserve stream", status=500)
+                active_incremented = True
+                if active_count == 1:
+                    if not self._check_and_reserve_profile_slot(m3u_profile):
+                        redis_connection.decrement_active_streams()
+                        return HttpResponse(
+                            "Connection limit exceeded for profile",
+                            status=429,
+                        )
+                    profile_reserved = True
+
+            start_byte = 0
+            end_byte = file_size - 1
+            is_range = False
+            if range_header:
+                validated = redis_connection._validate_range_header(
+                    range_header,
+                    file_size,
+                )
+                if not validated:
+                    if active_incremented:
+                        redis_connection.decrement_active_streams()
+                    if profile_reserved:
+                        self._decrement_profile_connections(m3u_profile.id)
+                    if not redis_connection.has_active_streams():
+                        redis_connection.cleanup(
+                            current_worker_id=self.worker_id,
+                        )
+                    response = HttpResponse(
+                        "Requested Range Not Satisfiable",
+                        status=416,
+                    )
+                    response['Content-Range'] = f'bytes */{file_size}'
+                    response['Accept-Ranges'] = 'bytes'
+                    return response
+                range_spec = validated.split('=', 1)[1]
+                start_raw, end_raw = range_spec.split('-', 1)
+                start_byte = int(start_raw)
+                end_byte = int(end_raw)
+                is_range = True
+
+            content_length = end_byte - start_byte + 1
+
+            def local_file_generator():
+                stream_decremented = False
+                profile_decremented = False
+                try:
+                    if not active_incremented:
+                        redis_connection.increment_active_streams()
+                    stop_key = get_vod_client_stop_key(session_id)
+                    current_path = self._revalidate_local_media_path(file_path)
+                    open_flags = os.O_RDONLY
+                    if hasattr(os, "O_NOFOLLOW"):
+                        open_flags |= os.O_NOFOLLOW
+                    descriptor = os.open(current_path, open_flags)
+                    with os.fdopen(descriptor, "rb") as handle:
+                        handle.seek(start_byte)
+                        remaining = content_length
+                        chunks = 0
+                        while remaining:
+                            chunk = handle.read(min(64 * 1024, remaining))
+                            if not chunk:
+                                break
+                            yield chunk
+                            remaining -= len(chunk)
+                            chunks += 1
+                            if (
+                                chunks % 100 == 0
+                                and media_library_target_id
+                            ):
+                                self._refresh_media_library_target_slot(
+                                    media_library_target_id,
+                                    media_library_target_limit,
+                                    session_id,
+                                )
+                            if (
+                                chunks % 100 == 0
+                                and self.redis_client.exists(stop_key)
+                            ):
+                                self.redis_client.delete(stop_key)
+                                break
+                finally:
+                    stream_decremented, has_remaining = (
+                        redis_connection.decrement_active_streams_and_check()
+                    )
+                    if stream_decremented and not has_remaining:
+                        self._decrement_profile_connections(m3u_profile.id)
+                        profile_decremented = True
+
+                        def delayed_cleanup():
+                            time.sleep(1)
+                            redis_connection.cleanup(
+                                current_worker_id=self.worker_id,
+                            )
+
+                        thread = threading.Thread(target=delayed_cleanup, daemon=True)
+                        thread.start()
+
+            response = StreamingHttpResponse(
+                local_file_generator(),
+                status=206 if is_range else 200,
+                content_type=mime_type,
+            )
+            response['Content-Length'] = str(content_length)
+            response['Accept-Ranges'] = 'bytes'
+            response['Cache-Control'] = 'no-cache'
+            if is_range:
+                response['Content-Range'] = (
+                    f'bytes {start_byte}-{end_byte}/{file_size}'
+                )
+            return response
+        except Exception:
+            logger.exception(
+                "[%s] Local media library stream failed",
+                session_id,
+            )
+            if active_incremented:
+                redis_connection.decrement_active_streams()
+            if profile_reserved:
+                self._decrement_profile_connections(m3u_profile.id)
+            if redis_connection._get_connection_state():
+                redis_connection.cleanup(current_worker_id=self.worker_id)
+            else:
+                self._release_media_library_target_slot(
+                    media_library_target_id,
+                    session_id,
+                )
+            return HttpResponse("Local file streaming error", status=500)
+
+    def head_local_file_with_session(
+        self,
+        *,
+        session_id,
+        content_obj,
+        file_path,
+        relation,
+        client_ip,
+        client_user_agent,
+        session_url,
+    ):
+        file_path = self._revalidate_local_media_path(file_path)
+        if not os.path.isfile(file_path):
+            return HttpResponse("File not found", status=404)
+        response = HttpResponse()
+        response['Content-Length'] = str(os.path.getsize(file_path))
+        response['Content-Type'] = (
+            mimetypes.guess_type(file_path)[0] or "application/octet-stream"
+        )
+        response['Accept-Ranges'] = 'bytes'
+        response['X-Session-URL'] = session_url
+        response['X-Dispatcharr-Session'] = session_id
+        return response
 
     def _apply_timeshift_parameters(self, original_url, utc_start=None, utc_end=None, offset=None):
         """Apply timeshift parameters to URL"""
@@ -1478,7 +1960,7 @@ class MultiWorkerVODConnectionManager:
                 parsed_url.fragment
             ))
 
-            logger.info(f"Modified URL: {modified_url}")
+            logger.info("Applied timeshift parameters to stream URL")
             return modified_url
 
         except Exception as e:

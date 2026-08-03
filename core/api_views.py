@@ -9,7 +9,8 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.decorators import api_view, permission_classes, action
-from drf_spectacular.utils import extend_schema
+from drf_spectacular.types import OpenApiTypes
+from drf_spectacular.utils import OpenApiParameter, extend_schema
 from .models import (
     UserAgent,
     StreamProfile,
@@ -32,6 +33,7 @@ import socket
 import threading
 import requests
 import os
+from django.core.exceptions import ValidationError
 from django.core.cache import cache
 from core.tasks import rehash_streams
 from apps.accounts.permissions import (
@@ -41,9 +43,51 @@ from apps.accounts.permissions import (
     permission_classes_by_action,
 )
 from dispatcharr.utils import get_client_ip
+from .path_browser import browse_directories
 
 
 logger = logging.getLogger(__name__)
+
+
+@extend_schema(
+    parameters=[
+        OpenApiParameter(
+            name="scope",
+            type=OpenApiTypes.STR,
+            location=OpenApiParameter.QUERY,
+            required=True,
+        ),
+        OpenApiParameter(
+            name="path",
+            type=OpenApiTypes.STR,
+            location=OpenApiParameter.QUERY,
+            required=False,
+        ),
+    ],
+    responses={200: OpenApiTypes.OBJECT},
+)
+@api_view(["GET"])
+@permission_classes([IsAdmin])
+def browse_safe_directories(request):
+    """Admin-only directory listing constrained to a server-defined scope."""
+    scope = str(request.query_params.get("scope") or "").strip()
+    if not scope:
+        return Response(
+            {"detail": "A directory browser scope is required."},
+            status=400,
+        )
+    try:
+        return Response(
+            browse_directories(
+                scope,
+                str(request.query_params.get("path") or ""),
+            )
+        )
+    except ValidationError as exc:
+        detail = exc.messages[0] if exc.messages else str(exc)
+        return Response({"detail": detail}, status=400)
+    except PermissionError as exc:
+        return Response({"detail": str(exc)}, status=403)
 
 
 class UserAgentViewSet(viewsets.ModelViewSet):
@@ -732,4 +776,3 @@ class SystemNotificationViewSet(viewsets.ModelViewSet):
         return Response({
             'unread_count': unread_count
         })
-

@@ -18,6 +18,7 @@ import {
 
 const VODCard = ({ vod, onClick }) => {
   const isEpisode = vod.type === 'episode';
+  const posterUrl = vod.logo?.cache_url || vod.logo?.url;
 
   const getDisplayTitle = () => {
     if (isEpisode && vod.series) {
@@ -51,13 +52,8 @@ const VODCard = ({ vod, onClick }) => {
     >
       <CardSection>
         <Box pos="relative" h={300}>
-          {vod.logo?.url ? (
-            <Image
-              src={vod.logo.url}
-              height={300}
-              alt={vod.name}
-              fit="contain"
-            />
+          {posterUrl ? (
+            <Image src={posterUrl} height={300} alt={vod.name} fit="contain" />
           ) : (
             <Box
               style={{

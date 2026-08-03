@@ -51,6 +51,7 @@ Build custom integrations using Dispatcharr's robust plugin system. Automate tas
 ✅ **M3U & Xtream Codes** — Import, filter, and organize playlists with multiple backend support\
 ✅ **EPG Matching & Generation** — Auto-match EPG to channels or generate custom TV guides\
 ✅ **Video on Demand** — Stream movies and TV series with rich metadata and IMDB/TMDB integration\
+✅ **Media Library** — Import local/Plex/Emby/Jellyfin VOD and export Jellyfin/Emby STRM/NFO libraries\
 ✅ **Multi-Format Output** — Export as M3U, XMLTV EPG, Xtream Codes API, or HDHomeRun device\
 ✅ **Real-Time Monitoring** — Live connection stats, bandwidth tracking, and automatic failover\
 ✅ **Stream Profiles** — Configure how Dispatcharr connects to backend streams (VLC, FFmpeg, Streamlink, or custom commands)\
@@ -131,11 +132,11 @@ We welcome **PRs, issues, ideas, and suggestions**!
 ## 📚 Documentation & Roadmap
 
 - 📖 **Documentation:** [Dispatcharr Docs](https://dispatcharr.github.io/Dispatcharr-Docs/)
+- 📁 **Media Library setup:** [docs/media-library.md](docs/media-library.md)
 
 **Upcoming Features (in no particular order):**
 
 - 🎬 **VOD Management Enhancements** — Granular metadata control and cleanup of unwanted VOD content
-- 📁 **Media Library** — Import local files and serve them over XC API
 - 👥 **Enhanced User Management** — Customizable XC API output per user account
 - 🔌 **Fallback Videos** — Automatic fallback content when channels are unavailable
 

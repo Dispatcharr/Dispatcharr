@@ -37,6 +37,7 @@ dependencies = [
     "django-celery-beat>=2.9.0",
     "lxml==6.1.1",
     "packaging",
+    "guessit",
 ]
 
 [build-system]

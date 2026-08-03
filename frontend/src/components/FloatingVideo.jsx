@@ -1036,7 +1036,7 @@ export default function FloatingVideo() {
             }}
             // Add poster for VOD if available
             {...(contentType === 'vod' && {
-              poster: metadata?.logo?.url, // Use VOD poster if available
+              poster: metadata?.logo?.cache_url || metadata?.logo?.url,
             })}
           />
 

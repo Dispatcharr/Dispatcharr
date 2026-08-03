@@ -12,7 +12,8 @@ from .api_views import (
     version,
     rehash_streams_endpoint,
     TimezoneListView,
-    get_system_events
+    get_system_events,
+    browse_safe_directories,
 )
 
 router = DefaultRouter()
@@ -27,5 +28,6 @@ urlpatterns = [
     path('rehash-streams/', rehash_streams_endpoint, name='rehash_streams'),
     path('timezones/', TimezoneListView.as_view(), name='timezones'),
     path('system-events/', get_system_events, name='system_events'),
+    path('directories/browse/', browse_safe_directories, name='browse_safe_directories'),
     path('', include(router.urls)),
 ]

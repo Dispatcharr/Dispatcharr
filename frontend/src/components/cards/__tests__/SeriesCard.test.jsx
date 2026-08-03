@@ -84,6 +84,24 @@ describe('SeriesCard', () => {
       expect(img).toHaveAttribute('src', '/posters/breaking-bad.jpg');
     });
 
+    it('prefers the browser-safe logo cache URL', () => {
+      render(
+        <SeriesCard
+          series={makeSeries({
+            logo: {
+              url: '/data/logos/poster.jpg',
+              cache_url: '/api/vod/vodlogos/2/cache/',
+            },
+          })}
+          onClick={vi.fn()}
+        />
+      );
+      expect(screen.getByAltText('Breaking Bad')).toHaveAttribute(
+        'src',
+        '/api/vod/vodlogos/2/cache/'
+      );
+    });
+
     it('renders a fallback image when poster_url is missing', () => {
       render(
         <SeriesCard

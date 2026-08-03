@@ -9,6 +9,16 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+
+def _is_media_library_managed_account(instance):
+    properties = (
+        instance.custom_properties
+        if isinstance(instance.custom_properties, dict)
+        else {}
+    )
+    return properties.get("managed_source") == "media_server"
+
+
 @receiver(post_save, sender=M3UAccount)
 def refresh_account_on_save(sender, instance, created, **kwargs):
     """
@@ -16,7 +26,11 @@ def refresh_account_on_save(sender, instance, created, **kwargs):
     call a Celery task that fetches & parses that single account
     if it is active or newly created.
     """
-    if created and instance.account_type != M3UAccount.Types.XC:
+    if (
+        created
+        and instance.account_type != M3UAccount.Types.XC
+        and not _is_media_library_managed_account(instance)
+    ):
         refresh_m3u_groups.delay(instance.id)
 
 @receiver(post_save, sender=M3UAccount)
@@ -25,6 +39,10 @@ def create_or_update_refresh_task(sender, instance, created, update_fields=None,
     Create or update a Celery Beat periodic task when an M3UAccount is created/updated.
     Supports both interval-based and cron-based scheduling via the shared utility.
     """
+    # Media Library owns synchronization for its locked VOD account.
+    if _is_media_library_managed_account(instance):
+        return
+
     # Skip rescheduling when only non-schedule fields were saved (e.g. status/last_message
     # updates from the refresh task itself). We only need to reschedule when schedule-relevant
     # fields change or when _cron_expression was explicitly set by the serializer.

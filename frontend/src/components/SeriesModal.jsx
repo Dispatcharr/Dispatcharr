@@ -46,12 +46,17 @@ import {
 import { YouTubeTrailerModal } from './modals/YouTubeTrailerModal.jsx';
 
 const Series = ({ displaySeries, onClickYouTubeTrailer }) => {
+  const posterUrl =
+    displaySeries.logo?.cache_url ||
+    displaySeries.series_image ||
+    displaySeries.logo?.url;
+
   return (
     <Flex gap="md">
-      {displaySeries.series_image || displaySeries.logo?.url ? (
+      {posterUrl ? (
         <Box style={{ flexShrink: 0 }}>
           <Image
-            src={displaySeries.series_image || displaySeries.logo.url}
+            src={posterUrl}
             width={200}
             height={300}
             alt={displaySeries.name}
@@ -482,7 +487,13 @@ const SeriesModal = ({ series, opened, onClose }) => {
   if (!series) return null;
 
   // Use detailed data if available, otherwise use basic series data
-  const displaySeries = detailedSeries || series;
+  const displaySeries = detailedSeries
+    ? {
+        ...series,
+        ...detailedSeries,
+        logo: detailedSeries.logo || series.logo,
+      }
+    : series;
 
   return (
     <>
@@ -619,7 +630,9 @@ const SeriesModal = ({ series, opened, onClose }) => {
                           <TableTr>
                             <TableTh style={{ width: '60px' }}>Ep</TableTh>
                             <TableTh>Title</TableTh>
-                            <TableTh style={{ width: '80px' }}>Duration</TableTh>
+                            <TableTh style={{ width: '80px' }}>
+                              Duration
+                            </TableTh>
                             <TableTh style={{ width: '60px' }}>Date</TableTh>
                             <TableTh style={{ width: '80px' }}>Action</TableTh>
                           </TableTr>

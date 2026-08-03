@@ -6,15 +6,21 @@ Supports M3U profiles for authentication and URL transformation.
 import time
 import random
 import logging
+import ipaddress
 import requests
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 from django.db import close_old_connections
 from django.http import  JsonResponse, Http404, HttpResponse
 from django.shortcuts import get_object_or_404
 from django.views.decorators.csrf import csrf_exempt
 from apps.vod.models import Movie, Series, Episode, M3UMovieRelation, M3UEpisodeRelation
 from apps.m3u.models import  M3UAccountProfile
-from apps.proxy.vod_proxy.multi_worker_connection_manager import MultiWorkerVODConnectionManager, infer_content_type_from_url, get_vod_client_stop_key
+from apps.proxy.vod_proxy.multi_worker_connection_manager import (
+    MultiWorkerVODConnectionManager,
+    ProviderRedirectSession,
+    infer_content_type_from_url,
+    get_vod_client_stop_key,
+)
 from .utils import get_client_info
 from rest_framework.decorators import api_view, authentication_classes, permission_classes
 from rest_framework.permissions import AllowAny
@@ -24,7 +30,10 @@ from rest_framework_simplejwt.authentication import JWTAuthentication
 from apps.accounts.authentication import ApiKeyAuthentication, QueryParamJWTAuthentication
 from apps.proxy.utils import check_user_stream_limits
 from dispatcharr.utils import network_access_allowed
+from dispatcharr.utils import get_client_ip as get_request_client_ip
 from core.utils import dispatcharr_user_agent
+from apps.media_servers.models import MediaLibraryExportTarget, MediaLibrarySource
+from apps.media_servers.path_security import resolve_import_path
 
 logger = logging.getLogger(__name__)
 
@@ -269,20 +278,96 @@ def _get_stream_url_from_relation(relation):
         logger.info(f"[VOD-URL] Account type: {relation.m3u_account.account_type}")
         logger.info(f"[VOD-URL] Stream ID: {getattr(relation, 'stream_id', 'N/A')}")
 
+        properties = relation.custom_properties or {}
+        if properties.get('managed_source') == 'media_server':
+            local_path = str(properties.get('file_path') or '').strip()
+            if local_path:
+                resolved = resolve_import_path(
+                    local_path,
+                    must_exist=True,
+                    require_directory=False,
+                )
+                return f'file://{resolved}'
+
+            source_url = str(properties.get('source_url') or '').strip()
+            source_id = properties.get('integration_id')
+            source = MediaLibrarySource.objects.filter(
+                id=source_id,
+                enabled=True,
+            ).only('base_url').first()
+            if not source or not source_url:
+                return None
+            source_origin = urlsplit(source.base_url)
+            stream_origin = urlsplit(source_url)
+            if (
+                stream_origin.scheme not in {'http', 'https'}
+                or stream_origin.scheme != source_origin.scheme
+                or stream_origin.netloc != source_origin.netloc
+            ):
+                logger.error(
+                    '[VOD-URL] Rejected media library source URL outside configured origin'
+                )
+                return None
+            return source_url
+
         # First try the get_stream_url method (this should build URLs dynamically)
         if hasattr(relation, 'get_stream_url'):
             url = relation.get_stream_url()
             if url:
-                logger.info(f"[VOD-URL] Built URL from get_stream_url(): {url}")
+                logger.info("[VOD-URL] Built URL from relation")
                 return url
             else:
                 logger.warning(f"[VOD-URL] get_stream_url() returned None")
 
         logger.error(f"[VOD-URL] Relation has no get_stream_url method or it failed")
         return None
-    except Exception as e:
-        logger.error(f"[VOD-URL] Error getting stream URL from relation: {e}", exc_info=True)
+    except Exception as exc:
+        logger.error(
+            "[VOD-URL] Error resolving stream URL from relation (%s)",
+            type(exc).__name__,
+        )
         return None
+
+
+def _get_upstream_headers_from_relation(relation):
+    properties = relation.custom_properties or {}
+    if properties.get('managed_source') != 'media_server':
+        return {}
+    source = MediaLibrarySource.objects.filter(
+        id=properties.get('integration_id'),
+        enabled=True,
+    ).only('provider_type', 'api_token').first()
+    if not source or not source.api_token:
+        return {}
+    if source.provider_type == MediaLibrarySource.ProviderTypes.PLEX:
+        return {'X-Plex-Token': source.api_token}
+    if source.provider_type in {
+        MediaLibrarySource.ProviderTypes.EMBY,
+        MediaLibrarySource.ProviderTypes.JELLYFIN,
+    }:
+        return {'X-Emby-Token': source.api_token}
+    return {}
+
+
+def _media_library_target_for_request(request, target_public_id):
+    if target_public_id is None:
+        return None
+    target = MediaLibraryExportTarget.objects.filter(
+        public_id=target_public_id,
+        enabled=True,
+    ).first()
+    if not target:
+        raise Http404('Media library playback target not found')
+    try:
+        client_ip = ipaddress.ip_address(get_request_client_ip(request))
+        networks = [
+            ipaddress.ip_network(value.strip(), strict=False)
+            for value in target.playback_cidrs.split(',')
+            if value.strip()
+        ]
+    except ValueError:
+        return False
+    return target if any(client_ip in network for network in networks) else False
 
 def _get_m3u_profile(m3u_account, profile_id, session_id=None):
     """Get appropriate M3U profile for streaming using Redis-based viewer counts
@@ -419,10 +504,18 @@ def _transform_url(original_url, m3u_profile):
         logger.error(f"Error transforming URL: {e}")
         return original_url
 
-@api_view(["GET"])
+@api_view(["GET", "HEAD"])
 @authentication_classes([JWTAuthentication, ApiKeyAuthentication, QueryParamJWTAuthentication])
 @permission_classes([AllowAny])
-def stream_vod(request, content_type, content_id, session_id=None, profile_id=None, user=None):
+def stream_vod(
+    request,
+    content_type,
+    content_id,
+    session_id=None,
+    profile_id=None,
+    user=None,
+    target_public_id=None,
+):
     """
     Stream VOD content (movies or series episodes) with session-based connection reuse
 
@@ -432,14 +525,27 @@ def stream_vod(request, content_type, content_id, session_id=None, profile_id=No
         session_id: Optional session ID from URL path (for persistent connections)
         profile_id: Optional M3U profile ID for authentication
     """
+    media_library_target = _media_library_target_for_request(
+        request,
+        target_public_id,
+    )
+    if media_library_target is False:
+        return JsonResponse({"error": "Forbidden"}, status=403)
     if not network_access_allowed(request, "STREAMS"):
         return JsonResponse({"error": "Forbidden"}, status=403)
+    if request.method == 'HEAD':
+        return head_vod(
+            request._request,
+            content_type,
+            content_id,
+            session_id=session_id,
+            profile_id=profile_id,
+            media_library_target=media_library_target,
+        )
     if user is None and hasattr(request, "user") and request.user.is_authenticated:
         user = request.user
     logger.info(f"[VOD-REQUEST] Starting VOD stream request: {content_type}/{content_id}, session: {session_id}, profile: {profile_id}")
-    logger.info(f"[VOD-REQUEST] Full request path: {request.get_full_path()}")
     logger.info(f"[VOD-REQUEST] Request method: {request.method}")
-    logger.info(f"[VOD-REQUEST] Request headers: {dict(request.headers)}")
 
     try:
         client_ip, client_user_agent = get_client_info(request)
@@ -463,13 +569,16 @@ def stream_vod(request, content_type, content_id, session_id=None, profile_id=No
 
         # Extract Range header for seeking support
         range_header = request.META.get('HTTP_RANGE')
+        if range_header and (
+            not range_header.startswith('bytes=')
+            or ',' in range_header.split('=', 1)[-1]
+        ):
+            response = HttpResponse("Multiple or malformed ranges are not supported", status=416)
+            response['Accept-Ranges'] = 'bytes'
+            return response
 
         logger.info(f"[VOD-TIMESHIFT] Timeshift params - utc_start: {utc_start}, utc_end: {utc_end}, offset: {offset}")
         logger.info(f"[VOD-SESSION] Session ID: {session_id}")
-
-        # Log all query parameters for debugging
-        if request.GET:
-            logger.debug(f"[VOD-PARAMS] All query params: {dict(request.GET)}")
 
         if range_header:
             logger.info(f"[VOD-RANGE] Range header: {range_header}")
@@ -541,7 +650,7 @@ def stream_vod(request, content_type, content_id, session_id=None, profile_id=No
                 query_string = urlencode(query_params, doseq=True)
                 redirect_url = f"{request.path}?{query_string}"
 
-            logger.info(f"[VOD-SESSION] Redirecting to path-based URL: {redirect_url}")
+            logger.info("[VOD-SESSION] Redirecting to session-scoped VOD path")
 
             # Persist the authenticated user to Redis so the streaming request
             # (which arrives without the token after the redirect) can resolve it.
@@ -631,19 +740,44 @@ def stream_vod(request, content_type, content_id, session_id=None, profile_id=No
             return HttpResponse("No available stream", status=503)
 
         logger.info(f"[VOD-ACCOUNT] Using M3U account: {m3u_account.name}")
-        logger.info(f"[VOD-CONTENT] Content URL: {stream_url or 'No URL found'}")
-
         m3u_profile, current_connections = profile_result
         logger.info(f"[VOD-PROFILE] Using M3U profile: {m3u_profile.id} (max_streams: {m3u_profile.max_streams}, current: {current_connections})")
 
         # Connection tracking is handled by the connection manager
         # Transform URL based on profile
         final_stream_url = _transform_url(stream_url, m3u_profile)
-        logger.info(f"[VOD-URL] Final stream URL: {final_stream_url}")
+        if final_stream_url and final_stream_url.startswith('file://'):
+            local_path = str(
+                resolve_import_path(
+                    final_stream_url[7:],
+                    must_exist=True,
+                    require_directory=False,
+                )
+            )
+            connection_manager = MultiWorkerVODConnectionManager.get_instance()
+            close_old_connections()
+            return connection_manager.stream_local_file_with_session(
+                session_id=session_id,
+                content_obj=content_obj,
+                file_path=local_path,
+                relation=relation,
+                m3u_profile=m3u_profile,
+                client_ip=client_ip,
+                client_user_agent=client_user_agent,
+                request=request,
+                range_header=range_header,
+                media_library_target_id=(
+                    media_library_target.id if media_library_target else None
+                ),
+                media_library_target_limit=(
+                    media_library_target.playback_stream_limit
+                    if media_library_target else 0
+                ),
+            )
 
         # Validate stream URL
         if not final_stream_url or not final_stream_url.startswith(('http://', 'https://')):
-            logger.error(f"[VOD-ERROR] Invalid stream URL: {final_stream_url}")
+            logger.error("[VOD-ERROR] Relation produced an invalid stream URL")
             return HttpResponse("Invalid stream URL", status=500)
 
         # Get connection manager (Redis-backed for multi-worker support)
@@ -667,6 +801,14 @@ def stream_vod(request, content_type, content_id, session_id=None, profile_id=No
             offset=offset,
             range_header=range_header,
             user=user,
+            provider_headers=_get_upstream_headers_from_relation(relation),
+            media_library_target_id=(
+                media_library_target.id if media_library_target else None
+            ),
+            media_library_target_limit=(
+                media_library_target.playback_stream_limit
+                if media_library_target else 0
+            ),
         )
 
         logger.info(f"[VOD-SUCCESS] Stream response created successfully, type: {type(response)}")
@@ -674,12 +816,19 @@ def stream_vod(request, content_type, content_id, session_id=None, profile_id=No
 
     except Exception as e:
         logger.error(f"[VOD-EXCEPTION] Error streaming {content_type} {content_id}: {e}", exc_info=True)
-        return HttpResponse(f"Streaming error: {str(e)}", status=500)
+        return HttpResponse("Streaming error", status=500)
 
 @api_view(["HEAD"])
 @authentication_classes([JWTAuthentication, ApiKeyAuthentication, QueryParamJWTAuthentication])
 @permission_classes([AllowAny])
-def head_vod(request, content_type, content_id, session_id=None, profile_id=None):
+def head_vod(
+    request,
+    content_type,
+    content_id,
+    session_id=None,
+    profile_id=None,
+    media_library_target=None,
+):
     """
     Handle HEAD requests for FUSE filesystem integration
 
@@ -757,6 +906,23 @@ def head_vod(request, content_type, content_id, session_id=None, profile_id=None
 
         # Transform URL if needed
         final_stream_url = _transform_url(stream_url, m3u_profile)
+        if final_stream_url and final_stream_url.startswith('file://'):
+            local_path = str(
+                resolve_import_path(
+                    final_stream_url[7:],
+                    must_exist=True,
+                    require_directory=False,
+                )
+            )
+            return MultiWorkerVODConnectionManager.get_instance().head_local_file_with_session(
+                session_id=session_id,
+                content_obj=content_obj,
+                file_path=local_path,
+                relation=relation,
+                client_ip=client_ip,
+                client_user_agent=client_user_agent,
+                session_url=session_url,
+            )
 
         # Make a small range GET request to get content length since providers don't support HEAD
         # We'll use a tiny range to minimize data transfer but get the headers we need
@@ -767,9 +933,17 @@ def head_vod(request, content_type, content_id, session_id=None, profile_id=None
             'Accept': '*/*',
             'Range': 'bytes=0-1'  # Request only first 2 bytes
         }
+        headers.update(_get_upstream_headers_from_relation(relation))
 
-        logger.info(f"[VOD-HEAD] Making small range GET request to provider: {final_stream_url}")
-        response = requests.get(final_stream_url, headers=headers, timeout=30, allow_redirects=True, stream=True)
+        logger.info("[VOD-HEAD] Making small range GET request to provider")
+        with ProviderRedirectSession() as provider_session:
+            response = provider_session.get(
+                final_stream_url,
+                headers=headers,
+                timeout=30,
+                allow_redirects=True,
+                stream=True,
+            )
 
         # Check for range support - should be 206 for partial content
         if response.status_code == 206:
@@ -856,12 +1030,12 @@ def head_vod(request, content_type, content_id, session_id=None, profile_id=None
         head_response['X-Session-URL'] = session_url
         head_response['X-Dispatcharr-Session'] = session_id
 
-        logger.info(f"[VOD-HEAD] Returning HEAD response with session URL: {session_url}")
+        logger.info("[VOD-HEAD] Returning HEAD response with a session URL")
         return head_response
 
     except Exception as e:
         logger.error(f"[VOD-HEAD] Error in HEAD request: {e}", exc_info=True)
-        return HttpResponse(f"HEAD error: {str(e)}", status=500)
+        return HttpResponse("HEAD request failed", status=500)
 
 def build_vod_stats_data(redis_client):
     """

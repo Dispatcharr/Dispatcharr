@@ -15,6 +15,7 @@ import {
   Logs,
   Blocks,
   MonitorCog,
+  LibraryBig,
 } from 'lucide-react';
 
 export const NAV_ITEMS = {
@@ -31,6 +32,13 @@ export const NAV_ITEMS = {
     label: 'VODs',
     icon: Video,
     path: '/vods',
+    adminOnly: true,
+  },
+  mediaLibrary: {
+    id: 'mediaLibrary',
+    label: 'Media Library',
+    icon: LibraryBig,
+    path: '/media-library',
     adminOnly: true,
   },
   sources: {
@@ -106,6 +114,7 @@ export const NAV_ITEMS = {
 export const DEFAULT_ADMIN_ORDER = [
   'channels',
   'vods',
+  'mediaLibrary',
   'sources',
   'guide',
   'dvr',

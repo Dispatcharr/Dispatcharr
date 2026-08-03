@@ -20,6 +20,7 @@ import ConnectLogsPage from './pages/ConnectLogs';
 import Users from './pages/Users';
 import LogosPage from './pages/Logos';
 import VODsPage from './pages/VODs';
+import MediaLibrary from './pages/MediaLibrary';
 import useAuthStore from './store/auth';
 import FloatingVideo from './components/FloatingVideo';
 import { WebsocketProvider } from './WebSocket';
@@ -168,6 +169,7 @@ const App = () => {
                         <Route path="/settings" element={<Settings />} />
                         <Route path="/logos" element={<LogosPage />} />
                         <Route path="/vods" element={<VODsPage />} />
+                        <Route path="/media-library" element={<MediaLibrary />} />
                       </>
                     ) : (
                       <Route path="/login" element={<Login />} />

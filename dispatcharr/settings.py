@@ -30,6 +30,50 @@ REDIS_DB = os.environ.get("REDIS_DB", "0")
 REDIS_USER = os.environ.get("REDIS_USER", "")
 REDIS_PASSWORD = os.environ.get("REDIS_PASSWORD", "")
 
+
+def _path_list_env(name, default=""):
+    return tuple(
+        str(Path(value.strip()).expanduser())
+        for value in os.environ.get(name, default).split(os.pathsep)
+        if value.strip()
+    )
+
+
+# Media Library paths are container-side paths. Import roots are intentionally
+# empty until explicitly configured. Export/artwork defaults remain inside
+# Dispatcharr's managed /data tree.
+MEDIA_LIBRARY_IMPORT_ROOTS = _path_list_env("MEDIA_LIBRARY_IMPORT_ROOTS")
+MEDIA_LIBRARY_EXPORT_ROOTS = _path_list_env(
+    "MEDIA_LIBRARY_EXPORT_ROOTS",
+    "/data/media/strm",
+)
+MEDIA_LIBRARY_ARTWORK_ROOT = os.environ.get(
+    "MEDIA_LIBRARY_ARTWORK_ROOT",
+    "/data/logos/media-library",
+)
+
+# Reusable safe directory-browser scopes. A browser request supplies only one
+# of these names; the client can never provide or broaden a root. Additional
+# features can add a scope that points at their own explicit root setting.
+SAFE_DIRECTORY_BROWSER_SCOPES = {
+    "media-library-import": {
+        "label": "allowed media directory",
+        "setting_name": "MEDIA_LIBRARY_IMPORT_ROOTS",
+        "configuration_hint": (
+            "Set MEDIA_LIBRARY_IMPORT_ROOTS and mount the same read-only "
+            "container paths in both the web and Celery services."
+        ),
+    },
+    "media-library-export": {
+        "label": "allowed export directory",
+        "setting_name": "MEDIA_LIBRARY_EXPORT_ROOTS",
+        "configuration_hint": (
+            "Set MEDIA_LIBRARY_EXPORT_ROOTS and mount the same writable "
+            "container paths in both the web and Celery services."
+        ),
+    },
+}
+
 # Redis TLS configuration
 REDIS_SSL = os.environ.get("REDIS_SSL", "false").lower() == "true"
 REDIS_SSL_VERIFY = os.environ.get("REDIS_SSL_VERIFY", "true").lower() == "true"
@@ -81,6 +125,7 @@ INSTALLED_APPS = [
     "apps.epg",
     "apps.hdhr",
     "apps.m3u",
+    "apps.media_servers.apps.MediaServersConfig",
     "apps.output",
     "apps.proxy.apps.ProxyConfig",
     "apps.proxy.live_proxy",

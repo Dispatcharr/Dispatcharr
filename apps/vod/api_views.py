@@ -10,6 +10,7 @@ from django.http import StreamingHttpResponse, HttpResponse, FileResponse
 from django.db.models import Q
 import django_filters
 import logging
+import mimetypes
 import os
 import time
 import requests
@@ -868,7 +869,14 @@ class VODLogoViewSet(viewsets.ModelViewSet):
                 return HttpResponse(status=404)
 
             try:
-                return FileResponse(open(safe_path, 'rb'), content_type='image/png')
+                content_type = (
+                    mimetypes.guess_type(safe_path)[0]
+                    or 'application/octet-stream'
+                )
+                return FileResponse(
+                    open(safe_path, 'rb'),
+                    content_type=content_type,
+                )
             except Exception as e:
                 logger.error(f"Error serving VOD logo file {safe_path}: {str(e)}")
                 return HttpResponse(status=500)

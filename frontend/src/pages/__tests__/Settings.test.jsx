@@ -57,6 +57,13 @@ vi.mock('../../components/forms/settings/StreamSettingsForm', () => ({
     </div>
   ),
 }));
+vi.mock('../../components/forms/settings/MediaLibrarySettingsForm', () => ({
+  default: ({ active }) => (
+    <div data-testid="media-library-settings-form">
+      MediaLibrarySettingsForm {active ? 'active' : 'inactive'}
+    </div>
+  ),
+}));
 vi.mock('../../components/forms/settings/DvrSettingsForm', () => ({
   default: ({ active }) => (
     <div data-testid="dvr-settings-form">
@@ -90,7 +97,7 @@ vi.mock('../../components/ErrorBoundary', () => ({
 }));
 
 vi.mock('@mantine/core', async () => {
-  const accordionComponent = ({ children, onChange, defaultValue }) => (
+  const accordionComponent = ({ children }) => (
     <div data-testid="accordion">{children}</div>
   );
   accordionComponent.Item = ({ children, value }) => (
@@ -165,6 +172,7 @@ describe('SettingsPage', () => {
 
       expect(screen.queryByText('DVR')).not.toBeInTheDocument();
       expect(screen.queryByText('Stream Settings')).not.toBeInTheDocument();
+      expect(screen.queryByText('Media Library')).not.toBeInTheDocument();
       expect(screen.queryByText('System Settings')).not.toBeInTheDocument();
       expect(screen.queryByText('User-Agents')).not.toBeInTheDocument();
       expect(screen.queryByText('Stream Profiles')).not.toBeInTheDocument();
@@ -199,6 +207,7 @@ describe('SettingsPage', () => {
       await waitFor(() => {
         expect(screen.getByText('DVR')).toBeInTheDocument();
         expect(screen.getByText('Stream Settings')).toBeInTheDocument();
+        expect(screen.getByText('Media Library')).toBeInTheDocument();
         expect(screen.getByText('System Settings')).toBeInTheDocument();
         expect(screen.getByText('User-Agents')).toBeInTheDocument();
         expect(screen.getByText('Stream Profiles')).toBeInTheDocument();
@@ -222,6 +231,14 @@ describe('SettingsPage', () => {
 
       expect(
         screen.getByTestId('accordion-item-stream-settings')
+      ).toBeInTheDocument();
+    });
+
+    it('renders Media Library settings accordion item', () => {
+      renderWithRouter(<SettingsPage />);
+
+      expect(
+        screen.getByTestId('accordion-item-media-library-settings')
       ).toBeInTheDocument();
     });
 

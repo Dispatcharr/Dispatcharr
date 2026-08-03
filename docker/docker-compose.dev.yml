@@ -13,11 +13,13 @@ services:
     volumes:
       - ../:/app
       - ./data:/data
+      - /Users/lee/Desktop/DP/media:/media:ro
     environment:
       - DISPATCHARR_ENV=dev
       - REDIS_HOST=localhost
       - CELERY_BROKER_URL=redis://localhost:6379/0
       - DISPATCHARR_LOG_LEVEL=debug
+      - MEDIA_LIBRARY_IMPORT_ROOTS=/media
       # First-time web setup from a public IP (optional). When unset, only
       # local/private networks may POST to initialize-superuser.
       #- DISPATCHARR_SETUP_ALLOWED_IP=203.0.113.50

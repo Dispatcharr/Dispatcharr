@@ -4014,4 +4014,179 @@ export default class API {
       errorNotification('Failed to search Schedules Direct lineups', e);
     }
   }
+
+  static getMediaLibrarySources() {
+    return request(`${host}/api/media-library/sources/`);
+  }
+
+  static saveMediaLibrarySource(source) {
+    const id = source.id;
+    return request(`${host}/api/media-library/sources/${id ? `${id}/` : ''}`, {
+      method: id ? 'PATCH' : 'POST',
+      body: source,
+    });
+  }
+
+  static deleteMediaLibrarySource(id) {
+    return request(`${host}/api/media-library/sources/${id}/`, {
+      method: 'DELETE',
+    });
+  }
+
+  static syncMediaLibrarySource(id) {
+    return request(`${host}/api/media-library/sources/${id}/sync/`, {
+      method: 'POST',
+    });
+  }
+
+  static testMediaLibrarySource(id) {
+    return request(`${host}/api/media-library/sources/${id}/test-connection/`, {
+      method: 'POST',
+    });
+  }
+
+  static getMediaLibrarySourceLibraries(id) {
+    return request(`${host}/api/media-library/sources/${id}/libraries/`);
+  }
+
+  static browseSafeDirectories(scope, path = '') {
+    const params = new URLSearchParams({ scope });
+    if (path) params.set('path', path);
+    return request(`${host}/api/core/directories/browse/?${params.toString()}`);
+  }
+
+  static startPlexMediaLibraryAuth() {
+    return request(`${host}/api/media-library/sources/plex-auth/start/`, {
+      method: 'POST',
+    });
+  }
+
+  static checkPlexMediaLibraryAuth(payload) {
+    return request(`${host}/api/media-library/sources/plex-auth/check/`, {
+      method: 'POST',
+      body: payload,
+    });
+  }
+
+  static getPlexMediaLibraryServers(credentialHandle) {
+    return request(`${host}/api/media-library/sources/plex-auth/servers/`, {
+      method: 'POST',
+      body: { credential_handle: credentialHandle },
+    });
+  }
+
+  static getMediaLibraryImportRuns(sourceId = null) {
+    const params = new URLSearchParams();
+    if (sourceId) params.set('source', sourceId);
+    const query = params.toString();
+    return request(
+      `${host}/api/media-library/import-runs/${query ? `?${query}` : ''}`
+    );
+  }
+
+  static cancelMediaLibraryImportRun(id) {
+    return request(`${host}/api/media-library/import-runs/${id}/cancel/`, {
+      method: 'POST',
+    });
+  }
+
+  static deleteMediaLibraryImportRun(id) {
+    return request(`${host}/api/media-library/import-runs/${id}/`, {
+      method: 'DELETE',
+    });
+  }
+
+  static purgeMediaLibraryImportRuns(sourceId = null) {
+    const params = new URLSearchParams();
+    if (sourceId) params.set('source', sourceId);
+    const query = params.toString();
+    return request(
+      `${host}/api/media-library/import-runs/purge/${query ? `?${query}` : ''}`,
+      { method: 'DELETE' }
+    );
+  }
+
+  static testMediaLibrarySourceConfiguration(values) {
+    return request(`${host}/api/media-library/sources/test-configuration/`, {
+      method: 'POST',
+      body: values,
+    });
+  }
+
+  static getMediaLibrarySettings() {
+    return request(`${host}/api/media-library/settings/`);
+  }
+
+  static updateMediaLibrarySettings(values) {
+    return request(`${host}/api/media-library/settings/`, {
+      method: 'PATCH',
+      body: values,
+    });
+  }
+
+  static getMediaLibraryExportTargets() {
+    return request(`${host}/api/media-library/export-targets/`);
+  }
+
+  static saveMediaLibraryExportTarget(target) {
+    const id = target.id;
+    return request(
+      `${host}/api/media-library/export-targets/${id ? `${id}/` : ''}`,
+      {
+        method: id ? 'PATCH' : 'POST',
+        body: target,
+      }
+    );
+  }
+
+  static deleteMediaLibraryExportTarget(id) {
+    return request(`${host}/api/media-library/export-targets/${id}/`, {
+      method: 'DELETE',
+    });
+  }
+
+  static buildMediaLibraryExport(id) {
+    return request(`${host}/api/media-library/export-targets/${id}/export/`, {
+      method: 'POST',
+    });
+  }
+
+  static rotateMediaLibraryPlaybackId(id) {
+    return request(
+      `${host}/api/media-library/export-targets/${id}/rotate-playback-id/`,
+      { method: 'POST' }
+    );
+  }
+
+  static getMediaLibraryExportRuns(targetId = null) {
+    const params = new URLSearchParams();
+    if (targetId) params.set('target', targetId);
+    const query = params.toString();
+    return request(
+      `${host}/api/media-library/export-runs/${query ? `?${query}` : ''}`
+    );
+  }
+
+  static cancelMediaLibraryExportRun(id) {
+    return request(`${host}/api/media-library/export-runs/${id}/cancel/`, {
+      method: 'POST',
+    });
+  }
+
+  static purgeMediaLibraryExportRuns(targetId = null) {
+    const params = new URLSearchParams();
+    if (targetId) params.set('target', targetId);
+    const query = params.toString();
+    return request(
+      `${host}/api/media-library/export-runs/purge/${query ? `?${query}` : ''}`,
+      { method: 'DELETE' }
+    );
+  }
+
+  static cleanupMediaLibraryExportFiles(id) {
+    return request(
+      `${host}/api/media-library/export-targets/${id}/cleanup-files/`,
+      { method: 'POST' }
+    );
+  }
 }

@@ -11,6 +11,7 @@ describe('navigation config', () => {
     it('has all expected nav items', () => {
       expect(NAV_ITEMS.channels).toBeDefined();
       expect(NAV_ITEMS.vods).toBeDefined();
+      expect(NAV_ITEMS.mediaLibrary).toBeDefined();
       expect(NAV_ITEMS.sources).toBeDefined();
       expect(NAV_ITEMS.guide).toBeDefined();
       expect(NAV_ITEMS.dvr).toBeDefined();
@@ -27,6 +28,7 @@ describe('navigation config', () => {
       expect(NAV_ITEMS.settings.adminOnly).toBe(false);
 
       expect(NAV_ITEMS.vods.adminOnly).toBe(true);
+      expect(NAV_ITEMS.mediaLibrary.adminOnly).toBe(true);
       expect(NAV_ITEMS.sources.adminOnly).toBe(true);
       expect(NAV_ITEMS.dvr.adminOnly).toBe(true);
       expect(NAV_ITEMS.stats.adminOnly).toBe(true);
@@ -87,6 +89,7 @@ describe('navigation config', () => {
         'integrations',
         'channels',
         'vods',
+        'mediaLibrary',
         'sources',
         'guide',
         'dvr',

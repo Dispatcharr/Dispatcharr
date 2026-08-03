@@ -10,11 +10,16 @@ services:
       - 9191:9191
     volumes:
       - dispatcharr_data:/data
+      # Optional Media Library mounts. Imports should normally be read-only.
+      #- /host/media:/media:ro
+      #- /host/dispatcharr-library:/exports
     environment:
       - DISPATCHARR_ENV=aio
       - REDIS_HOST=localhost
       - CELERY_BROKER_URL=redis://localhost:6379/0
       - DISPATCHARR_LOG_LEVEL=info
+      #- MEDIA_LIBRARY_IMPORT_ROOTS=/media
+      #- MEDIA_LIBRARY_EXPORT_ROOTS=/exports
       # First-time web setup from a public IP (optional). When unset, only
       # local/private networks may POST to initialize-superuser.
       #- DISPATCHARR_SETUP_ALLOWED_IP=203.0.113.50

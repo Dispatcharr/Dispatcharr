@@ -46,6 +46,9 @@ vi.mock('lucide-react', () => ({
     <div data-testid="chart-line-icon" onClick={onClick} />
   ),
   Video: ({ onClick }) => <div data-testid="video-icon" onClick={onClick} />,
+  LibraryBig: ({ onClick }) => (
+    <div data-testid="media-library-icon" onClick={onClick} />
+  ),
   PlugZap: ({ onClick }) => (
     <div data-testid="plug-zap-icon" onClick={onClick} />
   ),

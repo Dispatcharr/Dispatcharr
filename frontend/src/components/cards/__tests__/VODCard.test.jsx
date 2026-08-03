@@ -165,6 +165,24 @@ describe('VODCard', () => {
       expect(img).toHaveAttribute('src', 'http://example.com/poster.jpg');
     });
 
+    it('prefers the browser-safe logo cache URL', () => {
+      render(
+        <VODCard
+          vod={makeMovie({
+            logo: {
+              url: '/data/logos/poster.jpg',
+              cache_url: '/api/vod/vodlogos/1/cache/',
+            },
+          })}
+          onClick={vi.fn()}
+        />
+      );
+      expect(screen.getByRole('img')).toHaveAttribute(
+        'src',
+        '/api/vod/vodlogos/1/cache/'
+      );
+    });
+
     it('renders the year when present', () => {
       render(<VODCard vod={makeMovie()} onClick={vi.fn()} />);
       expect(screen.getByText('2022')).toBeInTheDocument();

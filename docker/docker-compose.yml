@@ -14,6 +14,10 @@ services:
       - 9191:9191
     volumes:
       - ./data:/data
+      # Media Library imports must be mounted at the same container path in
+      # both web and celery, and should normally be read-only.
+      #- /host/media:/media:ro
+      #- /host/dispatcharr-library:/exports
       #- ./certs:/certs:ro  # TLS certificates (optional)
     depends_on:
       db:
@@ -57,6 +61,9 @@ services:
 
       # Logging
       - DISPATCHARR_LOG_LEVEL=info
+      # Colon-separated container paths. Keep these identical in web/celery.
+      #- MEDIA_LIBRARY_IMPORT_ROOTS=/media
+      #- MEDIA_LIBRARY_EXPORT_ROOTS=/exports
 
       # First-time web setup from a public IP (optional). When unset, only
       # local/private networks may POST to initialize-superuser.
@@ -111,6 +118,8 @@ services:
         condition: service_started
     volumes:
       - ./data:/data
+      #- /host/media:/media:ro
+      #- /host/dispatcharr-library:/exports
       #- ./certs:/certs:ro  # TLS certificates (optional)
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -156,6 +165,8 @@ services:
 
       # Logging
       - DISPATCHARR_LOG_LEVEL=info
+      #- MEDIA_LIBRARY_IMPORT_ROOTS=/media
+      #- MEDIA_LIBRARY_EXPORT_ROOTS=/exports
 
       # Process Priority Configuration (Optional)
       #- CELERY_NICE_LEVEL=5  # Celery/EPG/Background tasks (default: 5, low priority; Range: -20 to 19)

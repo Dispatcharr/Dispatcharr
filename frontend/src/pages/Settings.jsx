@@ -39,6 +39,9 @@ const ProxySettingsForm = React.lazy(
 const StreamSettingsForm = React.lazy(
   () => import('../components/forms/settings/StreamSettingsForm.jsx')
 );
+const MediaLibrarySettingsForm = React.lazy(
+  () => import('../components/forms/settings/MediaLibrarySettingsForm.jsx')
+);
 const DvrSettingsForm = React.lazy(
   () => import('../components/forms/settings/DvrSettingsForm.jsx')
 );
@@ -116,6 +119,19 @@ const SettingsPage = () => {
                     <Suspense fallback={<Loader />}>
                       <StreamSettingsForm
                         active={accordianValue === 'stream-settings'}
+                      />
+                    </Suspense>
+                  </ErrorBoundary>
+                </AccordionPanel>
+              </AccordionItem>
+
+              <AccordionItem value="media-library-settings">
+                <AccordionControl>Media Library</AccordionControl>
+                <AccordionPanel>
+                  <ErrorBoundary>
+                    <Suspense fallback={<Loader />}>
+                      <MediaLibrarySettingsForm
+                        active={accordianValue === 'media-library-settings'}
                       />
                     </Suspense>
                   </ErrorBoundary>
