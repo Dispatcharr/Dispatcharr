@@ -29,12 +29,19 @@ import {
   fetchFirstStreamUrl,
   getDetectedMode,
   prepareExpDate,
+  resolveProfileExpDate,
   splitByPattern,
   updateM3UProfile,
   validateXcSimple,
 } from '../../utils/forms/M3uProfileUtils.js';
 
-const RegexFormAndView = ({ profile = null, m3u, isOpen, onClose }) => {
+const RegexFormAndView = ({
+  profile = null,
+  m3u,
+  isOpen,
+  onClose,
+  pendingExpDate,
+}) => {
   const [websocketReady, sendMessage] = useWebSocket();
   const [streamUrl, setStreamUrl] = useState('');
   const [searchPattern, setSearchPattern] = useState('');
@@ -56,9 +63,9 @@ const RegexFormAndView = ({ profile = null, m3u, isOpen, onClose }) => {
       search_pattern: profile?.search_pattern || '',
       replace_pattern: profile?.replace_pattern || '',
       notes: profile?.custom_properties?.notes || '',
-      exp_date: profile?.exp_date ? new Date(profile.exp_date) : null,
+      exp_date: resolveProfileExpDate(profile, pendingExpDate),
     }),
-    [profile]
+    [profile, pendingExpDate]
   );
 
   const getResolver = () => {

@@ -5,6 +5,8 @@ import {
   getPlaylist,
   refreshPlaylist,
   prepareSubmitValues,
+  expDateFromPlaylist,
+  expDateKey,
 } from '../M3uUtils.js';
 
 vi.mock('../../../api.js', () => ({
@@ -20,6 +22,42 @@ import API from '../../../api.js';
 
 describe('M3uUtils', () => {
   beforeEach(() => vi.clearAllMocks());
+
+  // ── expDateFromPlaylist / expDateKey ───────────────────────────────────────
+
+  describe('expDateFromPlaylist', () => {
+    it('returns null for null, undefined, and empty string', () => {
+      expect(expDateFromPlaylist(null)).toBeNull();
+      expect(expDateFromPlaylist(undefined)).toBeNull();
+      expect(expDateFromPlaylist('')).toBeNull();
+    });
+
+    it('parses an ISO string into a Date', () => {
+      const iso = '2026-12-01T15:30:00.000Z';
+      const result = expDateFromPlaylist(iso);
+      expect(result).toBeInstanceOf(Date);
+      expect(result.toISOString()).toBe(iso);
+    });
+
+    it('returns null for an invalid date string', () => {
+      expect(expDateFromPlaylist('not-a-date')).toBeNull();
+    });
+  });
+
+  describe('expDateKey', () => {
+    it('returns null for null, undefined, empty string, and invalid Date', () => {
+      expect(expDateKey(null)).toBeNull();
+      expect(expDateKey(undefined)).toBeNull();
+      expect(expDateKey('')).toBeNull();
+      expect(expDateKey(new Date('invalid'))).toBeNull();
+    });
+
+    it('returns the same ISO key for a Date and matching string', () => {
+      const iso = '2026-07-31T12:00:00.000Z';
+      expect(expDateKey(new Date(iso))).toBe(iso);
+      expect(expDateKey(iso)).toBe(iso);
+    });
+  });
 
   // ── updatePlaylist ─────────────────────────────────────────────────────────────
 

@@ -258,6 +258,16 @@ describe('SeriesModalUtils', () => {
       const grouped = groupEpisodesBySeason(episodes);
       expect(grouped[1]).toHaveLength(1);
     });
+
+    it('should keep season 0 (specials) as its own group', () => {
+      const episodes = [
+        { season_number: 0, episode_number: 1 },
+        { season_number: 1, episode_number: 1 },
+      ];
+      const grouped = groupEpisodesBySeason(episodes);
+      expect(grouped[0]).toHaveLength(1);
+      expect(grouped[1]).toHaveLength(1);
+    });
   });
 
   describe('sortBySeasonNumber', () => {
@@ -269,6 +279,11 @@ describe('SeriesModalUtils', () => {
       };
       const sorted = sortBySeasonNumber(episodesBySeason);
       expect(sorted).toEqual([1, 2, 3]);
+    });
+
+    it('should include season 0 before season 1', () => {
+      const sorted = sortBySeasonNumber({ 1: [], 0: [], 2: [] });
+      expect(sorted).toEqual([0, 1, 2]);
     });
   });
 

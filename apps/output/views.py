@@ -26,6 +26,13 @@ from core.models import CoreSettings
 from core.utils import log_system_event, build_absolute_uri_with_port
 import hashlib
 from apps.output.epg import generate_epg, generate_dummy_programs
+from apps.vod.image_proxy import (
+    is_proxyable_image_url,
+    prefer_relation_artwork,
+    rewrite_backdrop_paths,
+    rewrite_single_image_url,
+    vod_image_url_parts,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -986,6 +993,8 @@ XC_MOVIE_VALUE_FIELDS = (
     'movie__id', 'movie__name', 'movie__rating', 'movie__created_at',
     'movie__tmdb_id', 'movie__imdb_id', 'movie__description', 'movie__genre',
     'movie__year', 'movie__custom_properties', 'movie__logo_id',
+    # Lean relation-artwork extracts (see _xc_annotate_relation_artwork).
+    'rel_movie_image', 'rel_backdrop',
 )
 
 XC_SERIES_VALUE_FIELDS = (
@@ -993,7 +1002,103 @@ XC_SERIES_VALUE_FIELDS = (
     'series__id', 'series__name', 'series__description', 'series__genre',
     'series__year', 'series__rating', 'series__custom_properties', 'series__logo_id',
     'series__tmdb_id', 'series__imdb_id',
+    # Lean relation-artwork extracts (see _xc_annotate_relation_artwork).
+    'rel_movie_image', 'rel_backdrop',
 )
+
+
+# Same key precedence get_relation_artwork uses for a single cover/still.
+XC_RELATION_IMAGE_KEYS = ('movie_image', 'cover_big', 'stream_icon', 'cover')
+
+
+def _xc_annotate_relation_artwork(qs):
+    """Annotate lean artwork fields from relation custom_properties JSON.
+
+    Avoids selecting the full JSON blob (basic_data holds the raw provider list
+    entry and detailed_info the advanced payload, which add up across 50k+ VOD
+    rows) while keeping get_relation_artwork's preference order for movie/series
+    relations: detailed_info, then basic_data. Blank / whitespace-only strings and
+    empty backdrop arrays are treated as missing, matching the Python helper,
+    since raw basic_data is stored uncleaned and often carries empty image keys.
+    """
+    from django.db.models import CharField, Value
+    from django.db.models.fields.json import JSONField, KeyTextTransform, KeyTransform
+    from django.db.models.functions import Coalesce, NullIf, Trim
+
+    basic = KeyTransform('basic_data', 'custom_properties')
+    detailed = KeyTransform('detailed_info', 'custom_properties')
+
+    def image_candidates(container):
+        return [
+            NullIf(Trim(KeyTextTransform(key, container)), Value(''))
+            for key in XC_RELATION_IMAGE_KEYS
+        ]
+
+    def backdrop_candidates(container):
+        path = KeyTransform('backdrop_path', container)
+        # Nested NullIf so an empty array is not kept by the empty-string check
+        # (Coalesce would otherwise stop on [] because [] != '').
+        return [
+            NullIf(
+                NullIf(path, Value([], output_field=JSONField())),
+                Value('', output_field=JSONField()),
+            )
+        ]
+
+    return qs.annotate(
+        rel_movie_image=Coalesce(
+            *image_candidates(detailed),
+            *image_candidates(basic),
+            Value(''),
+            output_field=CharField(),
+        ),
+        rel_backdrop=Coalesce(
+            *backdrop_candidates(detailed),
+            *backdrop_candidates(basic),
+        ),
+    )
+
+
+def _xc_relation_artwork_from_row(row, object_custom_properties):
+    """Build prefer_relation_artwork input from lean list-row extracts."""
+    return prefer_relation_artwork(
+        {
+            'movie_image': row.get('rel_movie_image') or '',
+            'backdrop_path': row.get('rel_backdrop') or [],
+        },
+        object_custom_properties,
+    )
+
+
+def _xc_vodlogo_url_parts(request):
+    """Return (prefix, suffix) for VODLogo cache URLs.
+
+    Precomputed once per response so each row is a string concat instead of a
+    reverse() plus absolute-URI build.
+    """
+    base_url = build_absolute_uri_with_port(request, "")
+    sample_path = reverse("api:vod:vodlogo-cache", args=[0])
+    prefix_raw, _, suffix_raw = sample_path.partition("/0/")
+    return base_url + prefix_raw + "/", "/" + suffix_raw
+
+
+def _xc_cover_or_logo(
+    request, resource, pk, artwork_movie_image, *, logo_id, logo_url_parts, url_parts
+):
+    """Relation/object still first; synced VODLogo only when no proxyable still exists."""
+    if is_proxyable_image_url(artwork_movie_image):
+        return rewrite_single_image_url(
+            request,
+            resource,
+            pk,
+            'movie_image',
+            artwork_movie_image,
+            url_parts=url_parts,
+        )
+    if logo_id:
+        logo_prefix, logo_suffix = logo_url_parts
+        return f"{logo_prefix}{logo_id}{logo_suffix}"
+    return None
 
 
 def _xc_fetch_priority_distinct_relations(
@@ -1018,7 +1123,7 @@ def _xc_fetch_priority_distinct_relations(
 
     def _fetch_by_ids(ids):
         return list(
-            manager.filter(pk__in=ids)
+            _xc_annotate_relation_artwork(manager.filter(pk__in=ids))
             .values(*value_fields)
             .order_by(Lower(order_by_name_field))
         )
@@ -1041,7 +1146,9 @@ def _xc_fetch_priority_distinct_relations(
             return _fetch_by_ids(winning_ids)
 
     seen = {}
-    for row in narrow_qs.values(*value_fields).order_by('-m3u_account__priority', 'id'):
+    for row in _xc_annotate_relation_artwork(narrow_qs).values(*value_fields).order_by(
+        '-m3u_account__priority', 'id'
+    ):
         key = row[distinct_field]
         if key not in seen:
             seen[key] = row
@@ -1088,13 +1195,9 @@ def xc_get_vod_streams(request, user, category_id=None):
         order_by_name_field='movie__name',
     )
 
-    # Precompute logo URL prefix/suffix once (mirrors _xc_live_streams_setup)
-    # so each row only needs a string concat instead of reverse() + URI build.
-    _base_url = build_absolute_uri_with_port(request, "")
-    _sample_logo_path = reverse("api:vod:vodlogo-cache", args=[0])
-    _logo_prefix_raw, _, _logo_suffix_raw = _sample_logo_path.partition("/0/")
-    _logo_url_prefix = _base_url + _logo_prefix_raw + "/"
-    _logo_url_suffix = "/" + _logo_suffix_raw
+    _logo_url_parts = _xc_vodlogo_url_parts(request)
+    # One reverse for the fallback-icon proxy rewrites below.
+    _movie_image_parts = vod_image_url_parts(request, "movie")
 
     streams = []
     append = streams.append
@@ -1104,15 +1207,21 @@ def xc_get_vod_streams(request, user, category_id=None):
         category_id_str = str(category_id) if category_id else "0"
         category_id_list = [category_id] if category_id else []
         rating = row['movie__rating']
-        logo_id = row['movie__logo_id']
+        artwork = _xc_relation_artwork_from_row(row, custom_props)
 
         append({
             "num": num,
             "name": row['movie__name'],
             "stream_type": "movie",
             "stream_id": row['movie__id'],
-            "stream_icon": (
-                f"{_logo_url_prefix}{logo_id}{_logo_url_suffix}" if logo_id else None
+            "stream_icon": _xc_cover_or_logo(
+                request,
+                'movie',
+                row['movie__id'],
+                artwork['movie_image'],
+                logo_id=row['movie__logo_id'],
+                logo_url_parts=_logo_url_parts,
+                url_parts=_movie_image_parts,
             ),
             "rating": rating or "0",
             "rating_5based": round(float(rating or 0) / 2, 2) if rating else 0,
@@ -1175,11 +1284,9 @@ def xc_get_series(request, user, category_id=None):
         order_by_name_field='series__name',
     )
 
-    _base_url = build_absolute_uri_with_port(request, "")
-    _sample_logo_path = reverse("api:vod:vodlogo-cache", args=[0])
-    _logo_prefix_raw, _, _logo_suffix_raw = _sample_logo_path.partition("/0/")
-    _logo_url_prefix = _base_url + _logo_prefix_raw + "/"
-    _logo_url_suffix = "/" + _logo_suffix_raw
+    _logo_url_parts = _xc_vodlogo_url_parts(request)
+    # One reverse for all series backdrop rewrites.
+    _series_image_parts = vod_image_url_parts(request, "series")
 
     series_list = []
     append = series_list.append
@@ -1187,16 +1294,22 @@ def xc_get_series(request, user, category_id=None):
         custom_props = row['series__custom_properties'] or {}
         category_id = row['category_id']
         rating = row['series__rating']
-        logo_id = row['series__logo_id']
         year_str = str(row['series__year']) if row['series__year'] else ""
         release_date = custom_props.get('release_date', year_str)
+        artwork = _xc_relation_artwork_from_row(row, custom_props)
 
         append({
             "num": num,
             "name": row['series__name'],
             "series_id": row['id'],
-            "cover": (
-                f"{_logo_url_prefix}{logo_id}{_logo_url_suffix}" if logo_id else None
+            "cover": _xc_cover_or_logo(
+                request,
+                'series',
+                row['series__id'],
+                artwork['movie_image'],
+                logo_id=row['series__logo_id'],
+                logo_url_parts=_logo_url_parts,
+                url_parts=_series_image_parts,
             ),
             "plot": row['series__description'] or "",
             "cast": custom_props.get('cast', ''),
@@ -1207,7 +1320,13 @@ def xc_get_series(request, user, category_id=None):
             "last_modified": str(int(row['updated_at'].timestamp())),
             "rating": str(rating or "0"),
             "rating_5based": str(round(float(rating or 0) / 2, 2)) if rating else "0",
-            "backdrop_path": custom_props.get('backdrop_path', []),
+            "backdrop_path": rewrite_backdrop_paths(
+                request,
+                'series',
+                row['series__id'],
+                artwork['backdrop_path'],
+                url_parts=_series_image_parts,
+            ),
             "youtube_trailer": custom_props.get('youtube_trailer', ''),
             "episode_run_time": custom_props.get('episode_run_time', ''),
             "category_id": str(category_id) if category_id else "0",
@@ -1260,28 +1379,44 @@ def xc_get_series_info(request, user, series_id):
     except Exception as e:
         logger.error(f"Error refreshing series data for relation {series_relation.id}: {str(e)}")
 
-    # Get unique episodes for this series that have relations from any active M3U account
-    # We query episodes directly to avoid duplicates when multiple relations exist
-    # (e.g., same episode in different languages/qualities)
-    from apps.vod.models import Episode
-    episodes = Episode.objects.filter(
-        series=series,
-        m3u_relations__m3u_account__is_active=True
-    ).distinct().order_by('season_number', 'episode_number')
+    # Include episodes from any active provider for this shared Series (XC clients
+    # see a unified catalog). Prefer the highest-priority account's stream metadata.
+    from apps.vod.models import Episode, M3UEpisodeRelation
+
+    episodes = list(
+        Episode.objects.filter(
+            series=series,
+            m3u_relations__m3u_account__is_active=True,
+        ).distinct().order_by('season_number', 'episode_number')
+    )
+
+    relations_by_episode_id = {}
+    for rel in M3UEpisodeRelation.objects.filter(
+        episode_id__in=[ep.id for ep in episodes],
+        m3u_account__is_active=True,
+    ).select_related('m3u_account').only(
+        'episode_id',
+        'container_extension',
+        'created_at',
+        'custom_properties',
+        'm3u_account__priority',
+    ).order_by('episode_id', '-m3u_account__priority', 'id'):
+        # First row per episode wins due to priority/id ordering.
+        if rel.episode_id not in relations_by_episode_id:
+            relations_by_episode_id[rel.episode_id] = rel
 
     # Group episodes by season
     seasons = {}
+    # One reverse for all episode image rewrites in this response.
+    _episode_image_parts = vod_image_url_parts(request, "episode")
     for episode in episodes:
-        season_num = episode.season_number or 1
+        season_num = (
+            episode.season_number if episode.season_number is not None else 1
+        )
         if season_num not in seasons:
             seasons[season_num] = []
 
-        # Get the highest priority relation for this episode (for container_extension, video/audio/bitrate)
-        from apps.vod.models import M3UEpisodeRelation
-        best_relation = M3UEpisodeRelation.objects.filter(
-            episode=episode,
-            m3u_account__is_active=True
-        ).select_related('m3u_account').order_by('-m3u_account__priority', 'id').first()
+        best_relation = relations_by_episode_id.get(episode.id)
 
         video = audio = bitrate = None
         container_extension = "mp4"
@@ -1306,6 +1441,11 @@ def xc_get_series_info(request, user, series_id):
         if bitrate is None:
             bitrate = episode.custom_properties.get('bitrate', 0) if episode.custom_properties else 0
 
+        episode_artwork = prefer_relation_artwork(
+            best_relation.custom_properties if best_relation else None,
+            episode.custom_properties,
+        )
+
         seasons[season_num].append({
             "id": episode.id,
             "season": season_num,
@@ -1323,8 +1463,21 @@ def xc_get_series_info(request, user, series_id):
                 "directed_by": episode.custom_properties.get('director', '') if episode.custom_properties else "",
                 "imdb_id": episode.imdb_id or "",
                 "air_date": f"{episode.air_date}" if episode.air_date else "",
-                "backdrop_path": episode.custom_properties.get('backdrop_path', []) if episode.custom_properties else [],
-                "movie_image": episode.custom_properties.get('movie_image', '') if episode.custom_properties else "",
+                "backdrop_path": rewrite_backdrop_paths(
+                    request,
+                    'episode',
+                    episode.id,
+                    episode_artwork['backdrop_path'],
+                    url_parts=_episode_image_parts,
+                ),
+                "movie_image": rewrite_single_image_url(
+                    request,
+                    'episode',
+                    episode.id,
+                    'movie_image',
+                    episode_artwork['movie_image'],
+                    url_parts=_episode_image_parts,
+                ),
                 "rating": float(episode.rating or 0),
                 "release_date": f"{episode.air_date}" if episode.air_date else "",
                 "duration_secs": (episode.duration_secs or 0),
@@ -1393,17 +1546,31 @@ def xc_get_series_info(request, user, series_id):
         for season_num in sorted(seasons.keys(), key=lambda x: int(x))
     ]
 
+    series_artwork = prefer_relation_artwork(
+        series_relation.custom_properties,
+        series.custom_properties,
+    )
+    if is_proxyable_image_url(series_artwork['movie_image']):
+        series_cover = rewrite_single_image_url(
+            request,
+            'series',
+            series.id,
+            'movie_image',
+            series_artwork['movie_image'],
+        )
+    elif series.logo:
+        series_cover = build_absolute_uri_with_port(
+            request,
+            reverse("api:vod:vodlogo-cache", args=[series.logo.id])
+        )
+    else:
+        series_cover = None
+
     info = {
         'seasons': seasons_list,
         "info": {
             "name": series_data['name'],
-            "cover": (
-                None if not series.logo
-                else build_absolute_uri_with_port(
-                    request,
-                    reverse("api:vod:vodlogo-cache", args=[series.logo.id])
-                )
-            ),
+            "cover": series_cover,
             "plot": series_data['description'],
             "cast": series_data['cast'],
             "director": series_data['director'],
@@ -1414,7 +1581,12 @@ def xc_get_series_info(request, user, series_id):
             "last_modified": str(int(series_relation.updated_at.timestamp())),
             "rating": str(series_data['rating']),
             "rating_5based": str(round(float(series_data['rating'] or 0) / 2, 2)) if series_data['rating'] else "0",
-            "backdrop_path": series_data['backdrop_path'],
+            "backdrop_path": rewrite_backdrop_paths(
+                request,
+                'series',
+                series.id,
+                series_artwork['backdrop_path'],
+            ),
             "youtube_trailer": series_data['youtube_trailer'],
             "imdb": str(series.imdb_id) if series.imdb_id else "",
             "tmdb": str(series.tmdb_id) if series.tmdb_id else "",
@@ -1472,7 +1644,9 @@ def xc_get_vod_info(request, user, vod_id):
     # Duplicate the provider_info logic for detailed information
     try:
         # Check if we need to refresh detailed info (same logic as provider_info)
+        detailed_fetched = (movie_relation.custom_properties or {}).get('detailed_fetched', False)
         should_refresh = (
+            not detailed_fetched or
             not movie_relation.last_advanced_refresh or
             movie_relation.last_advanced_refresh < timezone.now() - timedelta(hours=24)
         )
@@ -1520,25 +1694,36 @@ def xc_get_vod_info(request, user, vod_id):
     except Exception as e:
         logger.error(f"Failed to process movie data: {e}")
 
+    # Real XC servers return the same URL for cover_big and movie_image, so both
+    # are set from a single resolved cover: winning-provider still first, synced
+    # VODLogo only when the relation/object has no proxyable image.
+    movie_artwork = prefer_relation_artwork(
+        movie_relation.custom_properties,
+        movie.custom_properties,
+    )
+    if is_proxyable_image_url(movie_artwork['movie_image']):
+        movie_cover = rewrite_single_image_url(
+            request,
+            'movie',
+            movie.id,
+            'movie_image',
+            movie_artwork['movie_image'],
+        )
+    elif movie.logo:
+        movie_cover = build_absolute_uri_with_port(
+            request,
+            reverse("api:vod:vodlogo-cache", args=[movie.logo.id])
+        )
+    else:
+        movie_cover = None
+
     # Transform API response to XtreamCodes format
     info = {
         "info": {
             "name": movie_data.get('name', movie.name),
             "o_name": movie_data.get('name', movie.name),
-            "cover_big": (
-                None if not movie.logo
-                else build_absolute_uri_with_port(
-                    request,
-                    reverse("api:vod:vodlogo-cache", args=[movie.logo.id])
-                )
-            ),
-            "movie_image": (
-                None if not movie.logo
-                else build_absolute_uri_with_port(
-                    request,
-                    reverse("api:vod:vodlogo-cache", args=[movie.logo.id])
-                )
-            ),
+            "cover_big": movie_cover,
+            "movie_image": movie_cover,
             'description': movie_data.get('description', ''),
             'plot': movie_data.get('description', ''),
             'year': movie_data.get('year', ''),
@@ -1552,8 +1737,13 @@ def xc_get_vod_info(request, user, vod_id):
             'imdb_id': movie_data.get('imdb_id', ''),
             "tmdb_id": movie_data.get('tmdb_id', ''),
             'youtube_trailer': movie_data.get('youtube_trailer', ''),
-            'backdrop_path': movie_data.get('backdrop_path', []),
-            'cover': movie_data.get('cover_big', ''),
+            'backdrop_path': rewrite_backdrop_paths(
+                request,
+                'movie',
+                movie.id,
+                movie_artwork['backdrop_path'],
+            ),
+            'cover': movie_cover,
             'bitrate': movie_data.get('bitrate', 0),
             'video': movie_data.get('video', {}),
             'audio': movie_data.get('audio', {}),

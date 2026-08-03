@@ -408,7 +408,7 @@ describe('UserUtils', () => {
         expect(result.username).toBe('Username is required');
       });
 
-      it('returns null for a valid non-streamer username', () => {
+      it('returns null for a valid username', () => {
         const result = validate(null, {
           ...getFormInitialValues(),
           username: 'alice',
@@ -417,22 +417,22 @@ describe('UserUtils', () => {
         expect(result.username).toBeNull();
       });
 
-      it('returns null for a valid alphanumeric streamer username', () => {
+      it('returns null for a username with supported special characters', () => {
         const result = validate(null, {
           ...getFormInitialValues(),
-          username: 'alice123',
-          user_level: '2',
+          username: 'alice.smith_123@test-user',
+          user_level: '0',
         });
         expect(result.username).toBeNull();
       });
 
-      it('returns error for streamer username with non-alphanumeric characters', () => {
+      it('returns error for username with unsupported characters', () => {
         const result = validate(null, {
           ...getFormInitialValues(),
-          username: 'alice_123',
-          user_level: '2',
+          username: 'alice+123',
+          user_level: '0',
         });
-        expect(result.username).toBe('Streamer username must be alphanumeric');
+        expect(result.username).toBe('Username may only contain letters, numbers, periods (.), underscores (_), at signs (@), and hyphens (-)');
       });
     });
 
@@ -482,20 +482,22 @@ describe('UserUtils', () => {
         expect(result.xc_password).toBeNull();
       });
 
-      it('returns null for a valid alphanumeric xc_password', () => {
+      it('returns null for an xc_password with supported characters', () => {
         const result = validate(null, {
           ...getFormInitialValues(),
-          xc_password: 'abc123',
+          xc_password: 'abc.123_test-user@example',
         });
         expect(result.xc_password).toBeNull();
       });
 
-      it('returns error for xc_password with non-alphanumeric characters', () => {
+      it('returns error for xc_password with unsupported characters', () => {
         const result = validate(null, {
           ...getFormInitialValues(),
-          xc_password: 'abc!@#',
+          xc_password: 'abc+123',
         });
-        expect(result.xc_password).toBe('XC password must be alphanumeric');
+        expect(result.xc_password).toBe(
+          'XC password may only contain letters, numbers, periods (.), underscores (_), at signs (@), and hyphens (-)'
+        );
       });
     });
 

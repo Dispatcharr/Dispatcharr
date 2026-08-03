@@ -17,6 +17,13 @@ vi.mock('../../../utils/forms/M3uProfileUtils.js', () => ({
   fetchFirstStreamUrl: vi.fn(),
   getDetectedMode: vi.fn(),
   prepareExpDate: vi.fn(),
+  resolveProfileExpDate: vi.fn((profile, pendingExpDate) => {
+    if (profile?.is_default && pendingExpDate !== undefined) {
+      if (pendingExpDate instanceof Date) return new Date(pendingExpDate.getTime());
+      return pendingExpDate ? new Date(pendingExpDate) : null;
+    }
+    return profile?.exp_date ? new Date(profile.exp_date) : null;
+  }),
   splitByPattern: vi.fn(),
   updateM3UProfile: vi.fn(),
   validateXcSimple: vi.fn(),

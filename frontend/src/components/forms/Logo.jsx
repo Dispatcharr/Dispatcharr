@@ -183,19 +183,22 @@ const LogoForm = ({ logo = null, isOpen, onClose, onSuccess }) => {
 
   const handleUrlBlur = (event) => {
     const urlValue = event.target.value;
-    if (urlValue) {
-      try {
-        const url = new URL(urlValue);
-        const pathname = url.pathname;
-        const filename = pathname.substring(pathname.lastIndexOf('/') + 1);
-        const nameWithoutExtension = getFilenameWithoutExtension(filename);
-        if (nameWithoutExtension) {
-          setValue('name', nameWithoutExtension);
-        }
-      } catch (error) {
-        // If the URL is invalid, do nothing.
-        // The validation schema will catch this.
+    // Only suggest a name from the URL when the name field is empty.
+    // Do not overwrite a custom name when focusing or leaving the URL field.
+    if (!urlValue || watch('name')) {
+      return;
+    }
+    try {
+      const url = new URL(urlValue);
+      const pathname = url.pathname;
+      const filename = pathname.substring(pathname.lastIndexOf('/') + 1);
+      const nameWithoutExtension = getFilenameWithoutExtension(filename);
+      if (nameWithoutExtension) {
+        setValue('name', nameWithoutExtension);
       }
+    } catch (error) {
+      // If the URL is invalid, do nothing.
+      // The validation schema will catch this.
     }
   };
 

@@ -10,6 +10,7 @@ import {
   fetchFirstStreamUrl,
   validateXcSimple,
   prepareExpDate,
+  resolveProfileExpDate,
   applyXcSimplePatterns,
   buildSubmitValues,
   splitByPattern,
@@ -421,6 +422,49 @@ describe('M3uProfileUtils', () => {
       expect(prepareExpDate(null, false)).toBeNull();
       expect(prepareExpDate('', false)).toBeNull();
       expect(prepareExpDate(undefined, false)).toBeNull();
+    });
+  });
+
+  describe('resolveProfileExpDate', () => {
+    const savedIso = '2026-01-01T00:00:00.000Z';
+    const pendingIso = '2026-12-31T12:00:00.000Z';
+
+    it('uses pendingExpDate for the default profile when provided', () => {
+      const pending = new Date(pendingIso);
+      const result = resolveProfileExpDate(
+        { is_default: true, exp_date: savedIso },
+        pending
+      );
+      expect(result).toBeInstanceOf(Date);
+      expect(result.toISOString()).toBe(pendingIso);
+      expect(result).not.toBe(pending);
+    });
+
+    it('uses null pendingExpDate (cleared) for the default profile', () => {
+      expect(
+        resolveProfileExpDate({ is_default: true, exp_date: savedIso }, null)
+      ).toBeNull();
+    });
+
+    it('falls back to profile.exp_date when pendingExpDate is undefined', () => {
+      const result = resolveProfileExpDate(
+        { is_default: true, exp_date: savedIso },
+        undefined
+      );
+      expect(result.toISOString()).toBe(savedIso);
+    });
+
+    it('ignores pendingExpDate for non-default profiles', () => {
+      const result = resolveProfileExpDate(
+        { is_default: false, exp_date: savedIso },
+        new Date(pendingIso)
+      );
+      expect(result.toISOString()).toBe(savedIso);
+    });
+
+    it('returns null when profile has no exp_date and no pending', () => {
+      expect(resolveProfileExpDate({ is_default: false }, undefined)).toBeNull();
+      expect(resolveProfileExpDate(null, undefined)).toBeNull();
     });
   });
 

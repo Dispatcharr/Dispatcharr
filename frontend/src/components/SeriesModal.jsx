@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   Box,
   Button,
@@ -46,17 +46,18 @@ import {
 import { YouTubeTrailerModal } from './modals/YouTubeTrailerModal.jsx';
 
 const Series = ({ displaySeries, onClickYouTubeTrailer }) => {
-  const posterUrl =
-    displaySeries.logo?.cache_url ||
-    displaySeries.series_image ||
-    displaySeries.logo?.url;
-
   return (
     <Flex gap="md">
-      {posterUrl ? (
+      {displaySeries.series_image ||
+      displaySeries.logo?.cache_url ||
+      displaySeries.logo?.url ? (
         <Box style={{ flexShrink: 0 }}>
           <Image
-            src={posterUrl}
+            src={
+              displaySeries.series_image ||
+              displaySeries.logo?.cache_url ||
+              displaySeries.logo?.url
+            }
             width={200}
             height={300}
             alt={displaySeries.name}
@@ -354,20 +355,20 @@ const SeriesModal = ({ series, opened, onClose }) => {
   const [providers, setProviders] = useState([]);
   const [selectedProvider, setSelectedProvider] = useState(null);
   const [loadingProviders, setLoadingProviders] = useState(false);
+  const detailsRequestIdRef = useRef(0);
 
   useEffect(() => {
     if (opened && series) {
+      const requestId = ++detailsRequestIdRef.current;
       // Fetch detailed series info which now includes episodes
       setLoadingDetails(true);
       fetchSeriesInfo(series.id)
         .then((details) => {
+          if (detailsRequestIdRef.current !== requestId) return;
           setDetailedSeries(details);
-          // Check if episodes were fetched
-          if (!details.episodes_fetched) {
-            // Episodes not yet fetched, may need to wait for background fetch
-          }
         })
         .catch((error) => {
+          if (detailsRequestIdRef.current !== requestId) return;
           console.warn(
             'Failed to fetch series details, using basic info:',
             error
@@ -375,16 +376,17 @@ const SeriesModal = ({ series, opened, onClose }) => {
           setDetailedSeries(series); // Fallback to basic data
         })
         .finally(() => {
-          setLoadingDetails(false);
+          if (detailsRequestIdRef.current === requestId) {
+            setLoadingDetails(false);
+          }
         });
 
-      // Fetch available providers
+      // Fetch available providers (does not re-trigger series info fetch)
       setLoadingProviders(true);
       fetchSeriesProviders(series.id)
         .then((providersData) => {
           setProviders(providersData);
-          // Set the first provider as default if none selected
-          if (providersData.length > 0 && !selectedProvider) {
+          if (providersData.length > 0) {
             setSelectedProvider(providersData[0]);
           }
         })
@@ -396,10 +398,11 @@ const SeriesModal = ({ series, opened, onClose }) => {
           setLoadingProviders(false);
         });
     }
-  }, [opened, series, fetchSeriesInfo, fetchSeriesProviders, selectedProvider]);
+  }, [opened, series, fetchSeriesInfo, fetchSeriesProviders]);
 
   useEffect(() => {
     if (!opened) {
+      detailsRequestIdRef.current += 1;
       setDetailedSeries(null);
       setLoadingDetails(false);
       setProviders([]);
@@ -476,11 +479,23 @@ const SeriesModal = ({ series, opened, onClose }) => {
     const provider = providers.find((p) => p.id.toString() === value);
     setSelectedProvider(provider);
     if (provider) {
+      const requestId = ++detailsRequestIdRef.current;
       setLoadingDetails(true);
+      // Clear episodes immediately so the previous provider's list cannot flash
+      setDetailedSeries((prev) =>
+        prev ? { ...prev, episodesList: [] } : prev
+      );
       fetchSeriesInfo(series.id, provider.id)
-        .then((details) => setDetailedSeries(details))
+        .then((details) => {
+          if (detailsRequestIdRef.current !== requestId) return;
+          setDetailedSeries(details);
+        })
         .catch(() => {})
-        .finally(() => setLoadingDetails(false));
+        .finally(() => {
+          if (detailsRequestIdRef.current === requestId) {
+            setLoadingDetails(false);
+          }
+        });
     }
   };
 
@@ -630,9 +645,7 @@ const SeriesModal = ({ series, opened, onClose }) => {
                           <TableTr>
                             <TableTh style={{ width: '60px' }}>Ep</TableTh>
                             <TableTh>Title</TableTh>
-                            <TableTh style={{ width: '80px' }}>
-                              Duration
-                            </TableTh>
+                            <TableTh style={{ width: '80px' }}>Duration</TableTh>
                             <TableTh style={{ width: '60px' }}>Date</TableTh>
                             <TableTh style={{ width: '80px' }}>Action</TableTh>
                           </TableTr>

@@ -112,7 +112,8 @@ export const sortEpisodesList = (episodesList) => {
 export const groupEpisodesBySeason = (seriesEpisodes) => {
   const grouped = {};
   seriesEpisodes.forEach((episode) => {
-    const season = episode.season_number || 1;
+    // Use nullish coalescing so Season 0 (specials) is not treated as missing.
+    const season = episode.season_number ?? 1;
     if (!grouped[season]) {
       grouped[season] = [];
     }
@@ -169,7 +170,7 @@ export const getEpisodeAirdate = (episode) => {
 export const getTmdbUrlLink = (displaySeries, episode) => {
   return (
     tmdbUrl(displaySeries.tmdb_id, 'tv') +
-    (episode.season_number && episode.episode_number
+    (episode.season_number != null && episode.episode_number != null
       ? `/season/${episode.season_number}/episode/${episode.episode_number}`
       : '')
   );

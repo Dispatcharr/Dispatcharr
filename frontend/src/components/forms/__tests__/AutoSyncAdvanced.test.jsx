@@ -570,6 +570,55 @@ describe('AutoSyncAdvanced', () => {
     });
   });
 
+  // ── Channel profiles MultiSelect ───────────────────────────────────────────
+  describe('channel profiles MultiSelect', () => {
+    it('coerces numeric channel_profile_ids so MultiSelect value stays strings', () => {
+      vi.mocked(useChannelsStore).mockImplementation((sel) =>
+        sel({
+          fetchGroups: vi.fn(),
+          profiles: {
+            1: { id: 1, name: 'Default' },
+            2: { id: 2, name: 'Kids' },
+          },
+        })
+      );
+      renderComponent({
+        group: makeGroup({
+          custom_properties: { channel_profile_ids: [1, 2] },
+        }),
+      });
+      const multi = screen.getByTestId('Channel Profiles');
+      // HTMLSelectElement.selectedOptions reflects the coerced string values.
+      const selected = Array.from(multi.selectedOptions).map((o) => o.value);
+      expect(selected).toEqual(['1', '2']);
+    });
+
+    it('persists selected profiles as integers', () => {
+      vi.mocked(useChannelsStore).mockImplementation((sel) =>
+        sel({
+          fetchGroups: vi.fn(),
+          profiles: {
+            1: { id: 1, name: 'Default' },
+            2: { id: 2, name: 'Kids' },
+          },
+        })
+      );
+      const { onApplyGroupChange } = renderComponent();
+      const multi = screen.getByTestId('Channel Profiles');
+      Array.from(multi.options).forEach((opt) => {
+        opt.selected = opt.value === '1' || opt.value === '2';
+      });
+      fireEvent.change(multi);
+      expect(onApplyGroupChange).toHaveBeenCalledWith(
+        expect.objectContaining({
+          custom_properties: expect.objectContaining({
+            channel_profile_ids: [1, 2],
+          }),
+        })
+      );
+    });
+  });
+
   // ── Custom properties toggles ──────────────────────────────────────────────
   describe('custom properties toggles', () => {
     it('renders switches/checkboxes for advanced options', () => {

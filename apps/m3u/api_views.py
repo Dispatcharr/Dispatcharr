@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 from .models import M3UAccount, M3UFilter, ServerGroup, M3UAccountProfile
 from core.models import UserAgent
 from core.utils import safe_upload_path, ensure_custom_properties_dict
+from apps.channels.utils import coerce_channel_profile_ids
 from apps.channels.models import ChannelGroupM3UAccount
 from core.serializers import UserAgentSerializer
 from apps.vod.models import M3UVODCategoryRelation
@@ -521,8 +522,10 @@ class M3UAccountViewSet(viewsets.ModelViewSet):
                         auto_channel_sync=setting.get("auto_channel_sync", False),
                         auto_sync_channel_start=setting.get("auto_sync_channel_start"),
                         auto_sync_channel_end=setting.get("auto_sync_channel_end"),
-                        custom_properties=ensure_custom_properties_dict(
-                            setting.get("custom_properties")
+                        custom_properties=coerce_channel_profile_ids(
+                            ensure_custom_properties_dict(
+                                setting.get("custom_properties")
+                            )
                         ),
                     )
                     for setting in group_settings

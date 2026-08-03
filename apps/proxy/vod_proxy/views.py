@@ -67,7 +67,7 @@ def _get_content_and_relation(content_type, content_id, preferred_m3u_account_id
                         .filter(stream_id=preferred_stream_id,
                                 m3u_account_id=preferred_m3u_account_id,
                                 m3u_account__is_active=True)
-                        .select_related('movie', 'm3u_account')
+                        .select_related('movie', 'm3u_account__user_agent')
                         .first()
                     )
                 if rel is None:
@@ -75,7 +75,7 @@ def _get_content_and_relation(content_type, content_id, preferred_m3u_account_id
                         M3UMovieRelation.objects
                         .filter(stream_id=preferred_stream_id,
                                 m3u_account__is_active=True)
-                        .select_related('movie', 'm3u_account')
+                        .select_related('movie', 'm3u_account__user_agent')
                         .order_by('-m3u_account__priority', 'id')
                         .first()
                     )
@@ -101,7 +101,7 @@ def _get_content_and_relation(content_type, content_id, preferred_m3u_account_id
             candidates = list(
                 content_obj.m3u_relations
                 .filter(m3u_account__is_active=True)
-                .select_related('m3u_account')
+                .select_related('m3u_account__user_agent')
                 .order_by('-m3u_account__priority', 'id')
             )
 
@@ -142,7 +142,7 @@ def _get_content_and_relation(content_type, content_id, preferred_m3u_account_id
                         .filter(stream_id=preferred_stream_id,
                                 m3u_account_id=preferred_m3u_account_id,
                                 m3u_account__is_active=True)
-                        .select_related('episode', 'm3u_account')
+                        .select_related('episode', 'm3u_account__user_agent')
                         .first()
                     )
                 if rel is None:
@@ -150,7 +150,7 @@ def _get_content_and_relation(content_type, content_id, preferred_m3u_account_id
                         M3UEpisodeRelation.objects
                         .filter(stream_id=preferred_stream_id,
                                 m3u_account__is_active=True)
-                        .select_related('episode', 'm3u_account')
+                        .select_related('episode', 'm3u_account__user_agent')
                         .order_by('-m3u_account__priority', 'id')
                         .first()
                     )
@@ -176,7 +176,7 @@ def _get_content_and_relation(content_type, content_id, preferred_m3u_account_id
             candidates = list(
                 content_obj.m3u_relations
                 .filter(m3u_account__is_active=True)
-                .select_related('m3u_account')
+                .select_related('m3u_account__user_agent')
                 .order_by('-m3u_account__priority', 'id')
             )
 
@@ -219,7 +219,7 @@ def _get_content_and_relation(content_type, content_id, preferred_m3u_account_id
             candidates = list(
                 episode.m3u_relations
                 .filter(m3u_account__is_active=True)
-                .select_related('m3u_account')
+                .select_related('m3u_account__user_agent')
                 .order_by('-m3u_account__priority', 'id')
             )
 
@@ -394,7 +394,7 @@ def _get_m3u_profile(m3u_account, profile_id, session_id=None):
                 m3u_account=m3u_account,
                 is_active=True,
                 is_default=True
-            ).first()
+            ).select_related('m3u_account__user_agent').first()
             return (default_profile, 0) if default_profile else None
 
         # Check if this session already has an active connection
@@ -406,7 +406,9 @@ def _get_m3u_profile(m3u_account, profile_id, session_id=None):
                 existing_profile_id = connection_data.get('m3u_profile_id')
                 if existing_profile_id:
                     try:
-                        existing_profile = M3UAccountProfile.objects.get(
+                        existing_profile = M3UAccountProfile.objects.select_related(
+                            'm3u_account__user_agent'
+                        ).get(
                             id=int(existing_profile_id),
                             m3u_account=m3u_account,
                             is_active=True
@@ -429,7 +431,9 @@ def _get_m3u_profile(m3u_account, profile_id, session_id=None):
         # If specific profile requested, try to use it
         if profile_id:
             try:
-                profile = M3UAccountProfile.objects.get(
+                profile = M3UAccountProfile.objects.select_related(
+                    'm3u_account__user_agent'
+                ).get(
                     id=profile_id,
                     m3u_account=m3u_account,
                     is_active=True
@@ -449,7 +453,7 @@ def _get_m3u_profile(m3u_account, profile_id, session_id=None):
         m3u_profiles = M3UAccountProfile.objects.filter(
             m3u_account=m3u_account,
             is_active=True
-        )
+        ).select_related('m3u_account__user_agent')
 
         default_profile = m3u_profiles.filter(is_default=True).first()
         if not default_profile:
@@ -927,7 +931,9 @@ def head_vod(
         # Make a small range GET request to get content length since providers don't support HEAD
         # We'll use a tiny range to minimize data transfer but get the headers we need
         # Use M3U account's user agent as primary, client user agent as fallback
-        m3u_user_agent = m3u_account.get_user_agent().user_agent if m3u_account.get_user_agent() else None
+        m3u_user_agent = (
+            m3u_account.get_user_agent_string() if m3u_account else None
+        )
         headers = {
             'User-Agent': m3u_user_agent or client_user_agent or dispatcharr_user_agent(),
             'Accept': '*/*',
@@ -1148,7 +1154,7 @@ def build_vod_stats_data(redis_client):
                             try:
                                 from apps.m3u.models import M3UAccountProfile
 
-                                profile = M3UAccountProfile.objects.select_related('m3u_account').get(id=m3u_profile_id)
+                                profile = M3UAccountProfile.objects.select_related('m3u_account__user_agent').get(id=m3u_profile_id)
                                 m3u_profile_info = {
                                     'profile_name': profile.name,
                                     'account_name': profile.m3u_account.name,

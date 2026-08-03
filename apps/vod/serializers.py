@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from django.urls import reverse
+from .image_proxy import vodlogo_cache_url
 from .models import (
     Series, VODCategory, Movie, Episode, VODLogo,
     M3USeriesRelation, M3UMovieRelation, M3UEpisodeRelation, M3UVODCategoryRelation
@@ -40,12 +40,7 @@ class VODLogoSerializer(serializers.ModelSerializer):
         return instance
 
     def get_cache_url(self, obj):
-        request = self.context.get("request")
-        if request:
-            return request.build_absolute_uri(
-                reverse("api:vod:vodlogo-cache", args=[obj.id])
-            )
-        return reverse("api:vod:vodlogo-cache", args=[obj.id])
+        return vodlogo_cache_url(self.context.get("request"), obj)
 
     def get_movie_count(self, obj):
         """Get the number of movies using this logo"""

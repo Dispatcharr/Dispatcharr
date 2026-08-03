@@ -11,3 +11,6 @@ export const getSeasonLabel = (vod) => {
     ? `S${vod.season_number.toString().padStart(2, '0')}E${vod.episode_number.toString().padStart(2, '0')}`
     : '';
 };
+
+/** Prefer proxied cache_url for VOD posters; fall back to the raw provider URL. */
+export const vodLogoSrc = (logo) => logo?.cache_url || logo?.url || null;
