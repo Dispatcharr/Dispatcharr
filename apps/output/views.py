@@ -14,7 +14,8 @@ from django.shortcuts import get_object_or_404
 from datetime import datetime, timedelta, timezone as dt_timezone
 import html
 import time
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
+from ipaddress import ip_address
 import base64
 import logging
 from django.db.models.functions import Lower
@@ -316,6 +317,13 @@ def generate_m3u(request, profile_name=None, user=None):
             if first_stream and first_stream.url:
                 # Use the direct stream URL
                 stream_url = first_stream.url
+                # Restore VLC-style @ for multicast UDP
+                if stream_url.startswith("udp://") and "udp://@" not in stream_url:
+                    try:
+                        if ip_address(urlparse(stream_url).hostname).is_multicast:
+                            stream_url = stream_url.replace("udp://", "udp://@", 1)
+                    except ValueError:
+                        pass
             else:
                 # Fall back to proxy URL if no direct URL available
                 stream_url = f"{_stream_url_prefix}{channel.uuid}"
