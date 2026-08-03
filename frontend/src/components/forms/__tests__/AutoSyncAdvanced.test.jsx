@@ -572,7 +572,7 @@ describe('AutoSyncAdvanced', () => {
 
   // ── Channel profiles MultiSelect ───────────────────────────────────────────
   describe('channel profiles MultiSelect', () => {
-    it('coerces numeric channel_profile_ids so MultiSelect value stays strings', () => {
+    const setupProfiles = () => {
       vi.mocked(useChannelsStore).mockImplementation((sel) =>
         sel({
           fetchGroups: vi.fn(),
@@ -582,6 +582,118 @@ describe('AutoSyncAdvanced', () => {
           },
         })
       );
+    };
+
+    it('renders the No Profiles pseudo-option', () => {
+      setupProfiles();
+      renderComponent();
+      expect(
+        screen.getByRole('option', { name: 'No Profiles' })
+      ).toBeInTheDocument();
+    });
+
+    it('loads No Profiles as the only selected option from the persisted flag', () => {
+      setupProfiles();
+      renderComponent({
+        group: makeGroup({
+          custom_properties: {
+            skip_channel_profile_memberships: true,
+            channel_profile_ids: [1],
+          },
+        }),
+      });
+      const multi = screen.getByTestId('Channel Profiles');
+      const selected = Array.from(multi.selectedOptions).map((o) => o.value);
+      expect(selected).toEqual(['none']);
+    });
+
+    it('selecting No Profiles persists the flag and removes profile IDs', () => {
+      setupProfiles();
+      const { onApplyGroupChange } = renderComponent({
+        group: makeGroup({
+          custom_properties: { channel_profile_ids: [1, 2] },
+        }),
+      });
+      const multi = screen.getByTestId('Channel Profiles');
+      Array.from(multi.options).forEach((opt) => {
+        opt.selected = opt.value === 'none';
+      });
+      fireEvent.change(multi);
+
+      const customProperties =
+        onApplyGroupChange.mock.calls.at(-1)[0].custom_properties;
+      expect(customProperties.skip_channel_profile_memberships).toBe(true);
+      expect(customProperties).not.toHaveProperty('channel_profile_ids');
+    });
+
+    it('removes No Profiles when a real profile is added', () => {
+      setupProfiles();
+      const { onApplyGroupChange } = renderComponent({
+        group: makeGroup({
+          custom_properties: { skip_channel_profile_memberships: true },
+        }),
+      });
+      const multi = screen.getByTestId('Channel Profiles');
+      Array.from(multi.options).forEach((opt) => {
+        opt.selected = opt.value === 'none' || opt.value === '1';
+      });
+      fireEvent.change(multi);
+
+      const customProperties =
+        onApplyGroupChange.mock.calls.at(-1)[0].custom_properties;
+      expect(customProperties.channel_profile_ids).toEqual([1]);
+      expect(customProperties).not.toHaveProperty(
+        'skip_channel_profile_memberships'
+      );
+    });
+
+    it('switching to a real profile removes the persisted No Profiles flag', () => {
+      setupProfiles();
+      const { onApplyGroupChange } = renderComponent({
+        group: makeGroup({
+          custom_properties: { skip_channel_profile_memberships: true },
+        }),
+      });
+      const multi = screen.getByTestId('Channel Profiles');
+      Array.from(multi.options).forEach((opt) => {
+        opt.selected = opt.value === '2';
+      });
+      fireEvent.change(multi);
+
+      const customProperties =
+        onApplyGroupChange.mock.calls.at(-1)[0].custom_properties;
+      expect(customProperties.channel_profile_ids).toEqual([2]);
+      expect(customProperties).not.toHaveProperty(
+        'skip_channel_profile_memberships'
+      );
+    });
+
+    it('clearing the selection removes both profile settings', () => {
+      setupProfiles();
+      const { onApplyGroupChange } = renderComponent({
+        group: makeGroup({
+          custom_properties: {
+            skip_channel_profile_memberships: true,
+            channel_profile_ids: [1],
+          },
+        }),
+      });
+      const multi = screen.getByTestId('Channel Profiles');
+      Array.from(multi.options).forEach((opt) => {
+        opt.selected = false;
+      });
+      fireEvent.change(multi);
+
+      const customProperties =
+        onApplyGroupChange.mock.calls.at(-1)[0].custom_properties;
+      expect(customProperties).not.toHaveProperty('channel_profile_ids');
+      expect(customProperties).not.toHaveProperty(
+        'skip_channel_profile_memberships'
+      );
+    });
+
+    it('coerces numeric channel_profile_ids so MultiSelect value stays strings', () => {
+      setupProfiles();
       renderComponent({
         group: makeGroup({
           custom_properties: { channel_profile_ids: [1, 2] },
@@ -594,15 +706,7 @@ describe('AutoSyncAdvanced', () => {
     });
 
     it('persists selected profiles as integers', () => {
-      vi.mocked(useChannelsStore).mockImplementation((sel) =>
-        sel({
-          fetchGroups: vi.fn(),
-          profiles: {
-            1: { id: 1, name: 'Default' },
-            2: { id: 2, name: 'Kids' },
-          },
-        })
-      );
+      setupProfiles();
       const { onApplyGroupChange } = renderComponent();
       const multi = screen.getByTestId('Channel Profiles');
       Array.from(multi.options).forEach((opt) => {

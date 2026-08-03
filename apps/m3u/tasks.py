@@ -2138,6 +2138,10 @@ def sync_auto_channels(account_id, scan_start_time=None):
                 channel_numbering_mode = group_custom_props.get("channel_numbering_mode", "fixed")
                 channel_numbering_fallback = group_custom_props.get("channel_numbering_fallback", 1)
 
+            skip_profile_memberships = (
+                group_custom_props.get("skip_channel_profile_memberships") is True
+            )
+
             # Determine which group to use for created channels
             target_group = channel_group
             if override_group_id:
@@ -2422,21 +2426,23 @@ def sync_auto_channels(account_id, scan_start_time=None):
             # Prepare profiles to assign to new channels
             from apps.channels.models import ChannelProfile, ChannelProfileMembership
 
-            if (
-                channel_profile_ids
-                and isinstance(channel_profile_ids, list)
-                and len(channel_profile_ids) > 0
-            ):
-                # Convert all to int (in case they're strings)
-                try:
-                    profile_ids = [int(pid) for pid in channel_profile_ids]
-                except Exception:
-                    profile_ids = []
-                profiles_to_assign = list(
-                    ChannelProfile.objects.filter(id__in=profile_ids)
-                )
-            else:
-                profiles_to_assign = list(ChannelProfile.objects.all())
+            profiles_to_assign = []
+            if not skip_profile_memberships:
+                if (
+                    channel_profile_ids
+                    and isinstance(channel_profile_ids, list)
+                    and len(channel_profile_ids) > 0
+                ):
+                    # Convert all to int (in case they're strings)
+                    try:
+                        profile_ids = [int(pid) for pid in channel_profile_ids]
+                    except Exception:
+                        profile_ids = []
+                    profiles_to_assign = list(
+                        ChannelProfile.objects.filter(id__in=profile_ids)
+                    )
+                else:
+                    profiles_to_assign = list(ChannelProfile.objects.all())
 
             # Get stream profile to assign if specified
             from core.models import StreamProfile
@@ -2838,63 +2844,64 @@ def sync_auto_channels(account_id, scan_start_time=None):
                     f"channels (fields: {sorted(existing_dirty_field_set)})"
                 )
 
-            # Reconcile ChannelProfileMembership in two writes: one
-            # bulk_update for enable-flips, one bulk_create for missing
-            # rows. Avoids a per-channel save loop.
-            existing_channel_ids = [
-                c.id for c in existing_channel_map.values()
-            ]
-            target_profile_ids = {p.id for p in profiles_to_assign}
-            if existing_channel_ids:
-                membership_rows = list(
-                    ChannelProfileMembership.objects.filter(
-                        channel_id__in=existing_channel_ids
-                    ).only("id", "channel_id", "channel_profile_id", "enabled")
-                )
-                memberships_by_channel = {}
-                for m in membership_rows:
-                    memberships_by_channel.setdefault(m.channel_id, []).append(m)
+            if not skip_profile_memberships:
+                # Reconcile ChannelProfileMembership in two writes: one
+                # bulk_update for enable-flips, one bulk_create for missing
+                # rows. Avoids a per-channel save loop.
+                existing_channel_ids = [
+                    c.id for c in existing_channel_map.values()
+                ]
+                target_profile_ids = {p.id for p in profiles_to_assign}
+                if existing_channel_ids:
+                    membership_rows = list(
+                        ChannelProfileMembership.objects.filter(
+                            channel_id__in=existing_channel_ids
+                        ).only("id", "channel_id", "channel_profile_id", "enabled")
+                    )
+                    memberships_by_channel = {}
+                    for m in membership_rows:
+                        memberships_by_channel.setdefault(m.channel_id, []).append(m)
 
-                rows_to_flip = []
-                rows_to_create = []
-                for ch_id in existing_channel_ids:
-                    rows = memberships_by_channel.get(ch_id, [])
-                    have_for_target = set()
-                    for m in rows:
-                        if m.channel_profile_id in target_profile_ids:
-                            have_for_target.add(m.channel_profile_id)
-                            if not m.enabled:
-                                m.enabled = True
-                                rows_to_flip.append(m)
-                        else:
-                            if m.enabled:
-                                m.enabled = False
-                                rows_to_flip.append(m)
-                    missing = target_profile_ids - have_for_target
-                    for pid in missing:
-                        rows_to_create.append(
-                            ChannelProfileMembership(
-                                channel_id=ch_id,
-                                channel_profile_id=pid,
-                                enabled=True,
+                    rows_to_flip = []
+                    rows_to_create = []
+                    for ch_id in existing_channel_ids:
+                        rows = memberships_by_channel.get(ch_id, [])
+                        have_for_target = set()
+                        for m in rows:
+                            if m.channel_profile_id in target_profile_ids:
+                                have_for_target.add(m.channel_profile_id)
+                                if not m.enabled:
+                                    m.enabled = True
+                                    rows_to_flip.append(m)
+                            else:
+                                if m.enabled:
+                                    m.enabled = False
+                                    rows_to_flip.append(m)
+                        missing = target_profile_ids - have_for_target
+                        for pid in missing:
+                            rows_to_create.append(
+                                ChannelProfileMembership(
+                                    channel_id=ch_id,
+                                    channel_profile_id=pid,
+                                    enabled=True,
+                                )
                             )
-                        )
 
-                if rows_to_flip:
-                    ChannelProfileMembership.objects.bulk_update(
-                        rows_to_flip, ["enabled"], batch_size=500
-                    )
-                if rows_to_create:
-                    ChannelProfileMembership.objects.bulk_create(
-                        rows_to_create, ignore_conflicts=True, batch_size=500
-                    )
-                if rows_to_flip or rows_to_create:
-                    logger.debug(
-                        f"Reconciled memberships for "
-                        f"{len(existing_channel_ids)} channels "
-                        f"({len(rows_to_flip)} flipped, "
-                        f"{len(rows_to_create)} created)"
-                    )
+                    if rows_to_flip:
+                        ChannelProfileMembership.objects.bulk_update(
+                            rows_to_flip, ["enabled"], batch_size=500
+                        )
+                    if rows_to_create:
+                        ChannelProfileMembership.objects.bulk_create(
+                            rows_to_create, ignore_conflicts=True, batch_size=500
+                        )
+                    if rows_to_flip or rows_to_create:
+                        logger.debug(
+                            f"Reconciled memberships for "
+                            f"{len(existing_channel_ids)} channels "
+                            f"({len(rows_to_flip)} flipped, "
+                            f"{len(rows_to_create)} created)"
+                        )
 
             # Delete channels whose streams have all disappeared.
             # Hidden channels are preserved so event/PPV holds across

@@ -245,16 +245,30 @@ const AutoSyncAdvanced = ({
     else setCp({ group_override: parseInt(value) });
   };
 
-  // MultiSelect requires string values; persist ints like sibling ID fields.
-  const profileValue = (cp.channel_profile_ids || []).map(String);
+  // MultiSelect requires string values; "none" is a UI-only option while
+  // real profile IDs are persisted as integers.
+  const profileValue =
+    cp.skip_channel_profile_memberships === true
+      ? ['none']
+      : (cp.channel_profile_ids || []).map(String);
   const updateProfiles = (value) => {
     if (!value || value.length === 0) {
-      setCp({}, ['channel_profile_ids']);
-    } else {
-      setCp({
-        channel_profile_ids: value.map((id) => parseInt(id, 10)),
-      });
+      setCp({}, ['channel_profile_ids', 'skip_channel_profile_memberships']);
+      return;
     }
+
+    const lastSelected = value[value.length - 1];
+    if (lastSelected === 'none') {
+      setCp({ skip_channel_profile_memberships: true }, [
+        'channel_profile_ids',
+      ]);
+      return;
+    }
+
+    const profileIds = value.filter((id) => id !== 'none');
+    setCp({ channel_profile_ids: profileIds.map((id) => parseInt(id, 10)) }, [
+      'skip_channel_profile_memberships',
+    ]);
   };
 
   const streamProfileValue = cp.stream_profile_id
@@ -623,7 +637,7 @@ const AutoSyncAdvanced = ({
             />
           </Tooltip>
           <Tooltip
-            label="Limit auto-created channels to specific channel profiles. Defaults to all profiles when blank."
+            label="No selection assigns auto-created channels to all profiles. Select No Profiles to leave profile memberships entirely manual."
             withArrow
             multiline
             w={280}
@@ -634,10 +648,13 @@ const AutoSyncAdvanced = ({
               placeholder="All profiles (default)"
               value={profileValue}
               onChange={updateProfiles}
-              data={Object.values(profiles).map((profile) => ({
-                value: profile.id.toString(),
-                label: profile.name,
-              }))}
+              data={[
+                { value: 'none', label: 'No Profiles' },
+                ...Object.values(profiles).map((profile) => ({
+                  value: profile.id.toString(),
+                  label: profile.name,
+                })),
+              ]}
               clearable
               searchable
               size="xs"

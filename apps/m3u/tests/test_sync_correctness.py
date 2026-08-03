@@ -7,7 +7,7 @@ the correct post-fix behavior. Comments call out the failure mode and the
 fix location.
 """
 from unittest import skipUnless
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from django.db import connection
 from django.test import TestCase, TransactionTestCase
@@ -17,6 +17,8 @@ from apps.channels.models import (
     Channel,
     ChannelGroup,
     ChannelGroupM3UAccount,
+    ChannelProfile,
+    ChannelProfileMembership,
     ChannelStream,
     Stream,
 )
@@ -1636,6 +1638,279 @@ class SyncPerformanceRegressionTests(TestCase):
             8,
             f"Logo queries: {len(logo_queries)} (expected <= 8 after batching)",
         )
+
+
+class AutoSyncMembershipRegressionTests(TestCase):
+    def _make_existing_channel(self, account, group, *streams):
+        channel = Channel.objects.create(
+            name=streams[0].name,
+            channel_number=100,
+            channel_group=group,
+            auto_created=True,
+            auto_created_by=account,
+        )
+        ChannelStream.objects.bulk_create(
+            [ChannelStream(channel=channel, stream=stream) for stream in streams]
+        )
+        return channel
+
+    @staticmethod
+    def _membership_snapshot(channel):
+        return list(
+            ChannelProfileMembership.objects.filter(channel=channel)
+            .order_by("channel_profile_id")
+            .values_list("channel_profile_id", "enabled")
+        )
+
+    @staticmethod
+    def _set_custom_properties(group_relation, custom_properties):
+        group_relation.custom_properties = custom_properties
+        group_relation.save(update_fields=["custom_properties"])
+
+    def test_selected_profiles_keep_historical_reconciliation(self):
+        account = _make_account()
+        group = _make_group()
+        target_disabled = ChannelProfile.objects.create(name="Target disabled")
+        target_missing = ChannelProfile.objects.create(name="Target missing")
+        other_profile = ChannelProfile.objects.create(name="Other profile")
+        _attach_group_to_account(
+            account,
+            group,
+            custom_properties={
+                "channel_profile_ids": [target_disabled.id, target_missing.id]
+            },
+        )
+        stream = _make_stream(account, group)
+        channel = self._make_existing_channel(account, group, stream)
+        ChannelProfileMembership.objects.create(
+            channel=channel,
+            channel_profile=target_disabled,
+            enabled=False,
+        )
+        ChannelProfileMembership.objects.create(
+            channel=channel,
+            channel_profile=other_profile,
+            enabled=True,
+        )
+
+        result = _sync(account)
+
+        self.assertEqual(result["status"], "ok")
+        self.assertTrue(
+            ChannelProfileMembership.objects.get(
+                channel=channel, channel_profile=target_disabled
+            ).enabled
+        )
+        self.assertTrue(
+            ChannelProfileMembership.objects.get(
+                channel=channel, channel_profile=target_missing
+            ).enabled
+        )
+        self.assertFalse(
+            ChannelProfileMembership.objects.get(
+                channel=channel, channel_profile=other_profile
+            ).enabled
+        )
+
+    def test_no_profiles_creates_new_channel_without_memberships(self):
+        account = _make_account()
+        group = _make_group()
+        ChannelProfile.objects.create(name="Existing profile")
+        _attach_group_to_account(
+            account,
+            group,
+            custom_properties={"skip_channel_profile_memberships": True},
+        )
+        _make_stream(account, group)
+
+        result = _sync(account)
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["channels_created"], 1)
+        channel = Channel.objects.get(auto_created_by=account)
+        self.assertFalse(
+            ChannelProfileMembership.objects.filter(channel=channel).exists()
+        )
+
+    def test_no_profiles_preserves_all_existing_memberships(self):
+        account = _make_account()
+        group = _make_group()
+        enabled_profile = ChannelProfile.objects.create(name="Enabled")
+        disabled_profile = ChannelProfile.objects.create(name="Disabled")
+        other_profile = ChannelProfile.objects.create(name="Other")
+        _attach_group_to_account(
+            account,
+            group,
+            custom_properties={"skip_channel_profile_memberships": True},
+        )
+        stream = _make_stream(account, group)
+        channel = self._make_existing_channel(account, group, stream)
+        ChannelProfileMembership.objects.create(
+            channel=channel,
+            channel_profile=enabled_profile,
+            enabled=True,
+        )
+        ChannelProfileMembership.objects.create(
+            channel=channel,
+            channel_profile=disabled_profile,
+            enabled=False,
+        )
+        ChannelProfileMembership.objects.create(
+            channel=channel,
+            channel_profile=other_profile,
+            enabled=True,
+        )
+
+        before = self._membership_snapshot(channel)
+        result = _sync(account)
+        after = self._membership_snapshot(channel)
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(after, before)
+        self.assertEqual(len(after), 3)
+        self.assertIn((enabled_profile.id, True), after)
+        self.assertIn((disabled_profile.id, False), after)
+        self.assertIn((other_profile.id, True), after)
+
+    def test_no_profiles_is_idempotent_across_repeated_refreshes(self):
+        account = _make_account()
+        group = _make_group()
+        enabled_profile = ChannelProfile.objects.create(name="Enabled")
+        disabled_profile = ChannelProfile.objects.create(name="Disabled")
+        _attach_group_to_account(
+            account,
+            group,
+            custom_properties={"skip_channel_profile_memberships": True},
+        )
+        stream = _make_stream(account, group)
+        channel = self._make_existing_channel(account, group, stream)
+        ChannelProfileMembership.objects.create(
+            channel=channel, channel_profile=enabled_profile, enabled=True
+        )
+        ChannelProfileMembership.objects.create(
+            channel=channel, channel_profile=disabled_profile, enabled=False
+        )
+
+        before = self._membership_snapshot(channel)
+        first_result = _sync(account)
+        after_first = self._membership_snapshot(channel)
+        second_result = _sync(account)
+        after_second = self._membership_snapshot(channel)
+
+        self.assertEqual(first_result["status"], "ok")
+        self.assertEqual(second_result["status"], "ok")
+        self.assertEqual(after_first, before)
+        self.assertEqual(after_second, before)
+
+    def test_switching_from_profile_to_no_profiles_preserves_last_state(self):
+        account = _make_account()
+        group = _make_group()
+        target_profile = ChannelProfile.objects.create(name="Target")
+        other_profile = ChannelProfile.objects.create(name="Other")
+        group_relation = _attach_group_to_account(
+            account,
+            group,
+            custom_properties={"channel_profile_ids": [target_profile.id]},
+        )
+        stream = _make_stream(account, group)
+        channel = self._make_existing_channel(account, group, stream)
+        ChannelProfileMembership.objects.create(
+            channel=channel, channel_profile=target_profile, enabled=False
+        )
+        ChannelProfileMembership.objects.create(
+            channel=channel, channel_profile=other_profile, enabled=True
+        )
+
+        standard_result = _sync(account)
+        standard_snapshot = self._membership_snapshot(channel)
+        self._set_custom_properties(
+            group_relation, {"skip_channel_profile_memberships": True}
+        )
+        no_profiles_result = _sync(account)
+
+        self.assertEqual(standard_result["status"], "ok")
+        self.assertEqual(no_profiles_result["status"], "ok")
+        self.assertEqual(self._membership_snapshot(channel), standard_snapshot)
+        self.assertIn((target_profile.id, True), standard_snapshot)
+        self.assertIn((other_profile.id, False), standard_snapshot)
+
+    def test_switching_from_no_profiles_to_profile_resumes_reconciliation(self):
+        account = _make_account()
+        group = _make_group()
+        target_profile = ChannelProfile.objects.create(name="Target")
+        other_profile = ChannelProfile.objects.create(name="Other")
+        group_relation = _attach_group_to_account(
+            account,
+            group,
+            custom_properties={"skip_channel_profile_memberships": True},
+        )
+        stream = _make_stream(account, group)
+        channel = self._make_existing_channel(account, group, stream)
+        ChannelProfileMembership.objects.create(
+            channel=channel, channel_profile=target_profile, enabled=False
+        )
+        ChannelProfileMembership.objects.create(
+            channel=channel, channel_profile=other_profile, enabled=True
+        )
+
+        no_profiles_result = _sync(account)
+        no_profiles_snapshot = self._membership_snapshot(channel)
+        self._set_custom_properties(
+            group_relation, {"channel_profile_ids": [target_profile.id]}
+        )
+        selected_profile_result = _sync(account)
+        selected_profile_snapshot = self._membership_snapshot(channel)
+
+        self.assertEqual(no_profiles_result["status"], "ok")
+        self.assertEqual(selected_profile_result["status"], "ok")
+        self.assertIn((target_profile.id, False), no_profiles_snapshot)
+        self.assertIn((other_profile.id, True), no_profiles_snapshot)
+        self.assertIn((target_profile.id, True), selected_profile_snapshot)
+        self.assertIn((other_profile.id, False), selected_profile_snapshot)
+
+    def test_no_profiles_flag_precedes_residual_profile_ids(self):
+        account = _make_account()
+        group = _make_group()
+        profile = ChannelProfile.objects.create(name="Residual target")
+        _attach_group_to_account(
+            account,
+            group,
+            custom_properties={
+                "skip_channel_profile_memberships": True,
+                "channel_profile_ids": [profile.id],
+            },
+        )
+        _make_stream(account, group)
+        profile_manager = ChannelProfile.objects
+        membership_manager = ChannelProfileMembership.objects
+
+        with (
+            patch.object(
+                profile_manager, "filter", wraps=profile_manager.filter
+            ) as profile_filter,
+            patch.object(
+                profile_manager, "all", wraps=profile_manager.all
+            ) as profile_all,
+            patch.object(
+                membership_manager,
+                "bulk_create",
+                wraps=membership_manager.bulk_create,
+            ) as membership_bulk_create,
+            patch.object(
+                membership_manager,
+                "bulk_update",
+                wraps=membership_manager.bulk_update,
+            ) as membership_bulk_update,
+        ):
+            result = _sync(account)
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["channels_created"], 1)
+        profile_filter.assert_not_called()
+        profile_all.assert_not_called()
+        membership_bulk_create.assert_not_called()
+        membership_bulk_update.assert_not_called()
+        self.assertFalse(ChannelProfileMembership.objects.exists())
 
 
 class OrphanCleanupModeTests(TestCase):
