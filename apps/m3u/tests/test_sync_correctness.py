@@ -20,6 +20,7 @@ from apps.channels.models import (
     ChannelProfile,
     ChannelProfileMembership,
     ChannelStream,
+    Logo,
     Stream,
 )
 from apps.m3u.models import M3UAccount
@@ -1911,6 +1912,102 @@ class AutoSyncMembershipRegressionTests(TestCase):
         membership_bulk_create.assert_not_called()
         membership_bulk_update.assert_not_called()
         self.assertFalse(ChannelProfileMembership.objects.exists())
+
+
+class AutoSyncLogoValidationRegressionTests(TestCase):
+    @staticmethod
+    def _invalid_data_uri(marker):
+        return f"data:image/png;base64,{marker}" + ("A" * 5000)
+
+    def test_new_channel_with_rejected_logo_is_created_without_logo(self):
+        account = _make_account()
+        group = _make_group()
+        _attach_group_to_account(account, group)
+        stream = _make_stream(account, group)
+        rejected_url = self._invalid_data_uri("PRIVATE_BASE64_PAYLOAD")
+        stream.logo_url = rejected_url
+        stream.save(update_fields=["logo_url"])
+        logo_manager = Logo.objects
+
+        with (
+            self.assertLogs("apps.channels.tasks", level="WARNING") as logs,
+            patch.object(
+                logo_manager, "filter", wraps=logo_manager.filter
+            ) as logo_filter,
+            patch.object(
+                logo_manager, "get_or_create", wraps=logo_manager.get_or_create
+            ) as logo_get_or_create,
+        ):
+            result = _sync(account)
+
+        channel = Channel.objects.get(auto_created_by=account)
+        warning_output = "\n".join(logs.output)
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["channels_failed"], 0)
+        self.assertIsNone(channel.logo_id)
+        self.assertFalse(Logo.objects.filter(url=rejected_url).exists())
+        self.assertIn("Logo URL rejected", warning_output)
+        self.assertIn(stream.name, warning_output)
+        self.assertIn(
+            str(len(rejected_url.encode("utf-8"))), warning_output
+        )
+        self.assertIn("2000", warning_output)
+        self.assertNotIn("PRIVATE_BASE64_PAYLOAD", warning_output)
+        self.assertNotIn("A" * 100, warning_output)
+        self.assertNotIn(rejected_url, warning_output)
+        self.assertEqual(logo_filter.call_count, 0)
+        logo_get_or_create.assert_not_called()
+
+    def test_rejected_logo_warns_only_once_per_sync(self):
+        account = _make_account()
+        group = _make_group()
+        _attach_group_to_account(account, group)
+        rejected_url = self._invalid_data_uri("SHARED_PRIVATE_PAYLOAD")
+        first = _make_stream(account, group, name="First", tvg_id="first")
+        second = _make_stream(account, group, name="Second", tvg_id="second")
+        Stream.objects.filter(id__in=[first.id, second.id]).update(
+            logo_url=rejected_url
+        )
+
+        with self.assertLogs("apps.channels.tasks", level="WARNING") as logs:
+            result = _sync(account)
+
+        rejection_warnings = [
+            message for message in logs.output if "Logo URL rejected" in message
+        ]
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["channels_created"], 2)
+        self.assertEqual(len(rejection_warnings), 1)
+        self.assertNotIn("SHARED_PRIVATE_PAYLOAD", rejection_warnings[0])
+
+    def test_rejected_provider_logo_preserves_existing_valid_logo(self):
+        account = _make_account()
+        group = _make_group()
+        _attach_group_to_account(account, group)
+        stream = _make_stream(account, group)
+        valid_logo = Logo.objects.create(
+            name="Existing logo", url="https://logos.example.com/existing.png"
+        )
+        channel = Channel.objects.create(
+            name=stream.name,
+            channel_number=100,
+            channel_group=group,
+            auto_created=True,
+            auto_created_by=account,
+            logo=valid_logo,
+        )
+        ChannelStream.objects.create(channel=channel, stream=stream)
+        rejected_url = self._invalid_data_uri("REJECTED_PROVIDER_PAYLOAD")
+        stream.logo_url = rejected_url
+        stream.save(update_fields=["logo_url"])
+
+        result = _sync(account)
+
+        channel.refresh_from_db()
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["channels_failed"], 0)
+        self.assertEqual(channel.logo_id, valid_logo.id)
+        self.assertFalse(Logo.objects.filter(url=rejected_url).exists())
 
 
 class OrphanCleanupModeTests(TestCase):

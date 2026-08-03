@@ -205,20 +205,47 @@ def _db_retry(
             time.sleep(wait)
 
 
-# PostgreSQL btree index has a limit of ~2704 bytes (1/3 of 8KB page size)
-# We use 2000 as a safe maximum to account for multibyte characters
-def validate_logo_url(logo_url, max_length=2000):
+# PostgreSQL btree index has a limit of ~2704 bytes (1/3 of 8KB page size).
+# Use 2000 bytes as a conservative maximum for the uniquely indexed value.
+def validate_logo_url(logo_url, max_length=2000, context=None):
     """
     Fast validation for logo URLs during bulk creation.
     Returns None if URL is too long (would exceed PostgreSQL btree index limit),
-    original URL otherwise.
+    original URL otherwise. Optional context identifies the owning object in
+    warnings without logging any part of the URL.
 
     PostgreSQL btree indexes have a maximum size of ~2704 bytes. URLs longer than
     this cannot be indexed and would cause database errors. These are typically
     base64-encoded images embedded in URLs.
     """
-    if logo_url and len(logo_url) > max_length:
-        logger.warning(f"Logo URL too long ({len(logo_url)} > {max_length}), skipping: {logo_url[:100]}...")
+    if not logo_url:
+        return logo_url
+    if not isinstance(logo_url, str):
+        if context:
+            logger.warning(
+                "Logo URL rejected for %s: value is not a string", context
+            )
+        else:
+            logger.warning("Logo URL rejected: value is not a string")
+        return None
+
+    encoded_length = len(logo_url.encode("utf-8"))
+    if encoded_length > max_length:
+        if context:
+            logger.warning(
+                "Logo URL rejected for %s: encoded length %d bytes exceeds "
+                "safe limit %d bytes",
+                context,
+                encoded_length,
+                max_length,
+            )
+        else:
+            logger.warning(
+                "Logo URL rejected: encoded length %d bytes exceeds safe "
+                "limit %d bytes",
+                encoded_length,
+                max_length,
+            )
         return None
     return logo_url
 

@@ -2028,6 +2028,7 @@ def sync_auto_channels(account_id, scan_start_time=None):
         Stream,
         ChannelStream,
     )
+    from apps.channels.tasks import validate_logo_url
     from apps.epg.models import EPGData
     from django.utils import timezone
 
@@ -2064,6 +2065,8 @@ def sync_auto_channels(account_id, scan_start_time=None):
         # power-user diagnostics regardless of the cap.
         failed_stream_details = []
         FAILURE_LOG_LIMIT = 1000
+        rejected_logo_urls = set()
+        rejected_logo = object()
 
         # Group range reservations (start+end) are advisory and NOT seeded
         # here: two groups with overlapping ranges must cooperate, so only
@@ -2327,18 +2330,37 @@ def sync_auto_channels(account_id, scan_start_time=None):
                 stream_iter = (
                     current_streams
                     if streams_is_list
-                    else list(current_streams.values("logo_url", "tvg_id"))
+                    else list(
+                        current_streams.values("logo_url", "tvg_id", "name")
+                    )
                 )
-                unique_logo_urls = {
-                    s.get("logo_url") if isinstance(s, dict) else getattr(s, "logo_url", None)
-                    for s in stream_iter
-                }
-                unique_logo_urls.discard(None)
-                unique_logo_urls.discard("")
-                if unique_logo_urls:
+                logo_context_by_url = {}
+                for stream_data in stream_iter:
+                    if isinstance(stream_data, dict):
+                        logo_url = stream_data.get("logo_url")
+                        stream_name = stream_data.get("name")
+                    else:
+                        logo_url = getattr(stream_data, "logo_url", None)
+                        stream_name = getattr(stream_data, "name", None)
+                    if logo_url:
+                        logo_context_by_url.setdefault(
+                            logo_url, f"stream '{stream_name or 'Unknown'}'"
+                        )
+                valid_logo_urls = set()
+                for logo_url, logo_context in logo_context_by_url.items():
+                    if logo_url in rejected_logo_urls:
+                        continue
+                    validated_logo_url = validate_logo_url(
+                        logo_url, context=logo_context
+                    )
+                    if validated_logo_url is None:
+                        rejected_logo_urls.add(logo_url)
+                    else:
+                        valid_logo_urls.add(validated_logo_url)
+                if valid_logo_urls:
                     logo_cache_by_url = {
                         lg.url: lg
-                        for lg in Logo.objects.filter(url__in=unique_logo_urls)
+                        for lg in Logo.objects.filter(url__in=valid_logo_urls)
                     }
 
                 unique_tvg_ids = {
@@ -2368,14 +2390,23 @@ def sync_auto_channels(account_id, scan_start_time=None):
                 url = getattr(stream, "logo_url", None)
                 if not url:
                     return None
-                cached = logo_cache_by_url.get(url)
+                if url in rejected_logo_urls:
+                    return rejected_logo
+                validated_url = validate_logo_url(
+                    url,
+                    context=f"stream '{stream.name or 'Unknown'}'",
+                )
+                if validated_url is None:
+                    rejected_logo_urls.add(url)
+                    return rejected_logo
+                cached = logo_cache_by_url.get(validated_url)
                 if cached is not None:
                     return cached
                 created, _ = Logo.objects.get_or_create(
-                    url=url,
+                    url=validated_url,
                     defaults={"name": stream.name or stream.tvg_id or "Unknown"},
                 )
-                logo_cache_by_url[url] = created
+                logo_cache_by_url[validated_url] = created
                 return created
 
             def _resolve_epg_for_stream(stream):
@@ -2651,10 +2682,15 @@ def sync_auto_channels(account_id, scan_start_time=None):
                             if custom_logo_id and custom_logo is not None
                             else _resolve_logo_for_stream(stream)
                         )
-                        current_logo_id = current_logo.id if current_logo else None
-                        if existing_channel.logo_id != current_logo_id:
-                            existing_channel.logo = current_logo
-                            dirty_fields.append("logo")
+                        # A rejected provider value must not erase a valid
+                        # logo already assigned to an existing channel.
+                        if current_logo is not rejected_logo:
+                            current_logo_id = (
+                                current_logo.id if current_logo else None
+                            )
+                            if existing_channel.logo_id != current_logo_id:
+                                existing_channel.logo = current_logo
+                                dirty_fields.append("logo")
 
                         # EPG: handled centrally by _resolve_epg_for_stream
                         current_epg_data = _resolve_epg_for_stream(stream)
@@ -2726,6 +2762,8 @@ def sync_auto_channels(account_id, scan_start_time=None):
                             if custom_logo_id and custom_logo is not None
                             else _resolve_logo_for_stream(stream)
                         )
+                        if new_logo is rejected_logo:
+                            new_logo = None
                         new_epg_data = _resolve_epg_for_stream(stream)
 
                         new_channels_pending.append(
