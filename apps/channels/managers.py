@@ -53,3 +53,45 @@ def with_effective_values(queryset, select_related_fks=False):
             "override__stream_profile",
         )
     return qs
+
+
+def epg_ids_mapped_to_channels(epg_source=None, epg_source_id=None):
+    """
+    EPGData ids effectively assigned to at least one channel.
+
+    An assignment counts whether it lives on Channel.epg_data or on
+    ChannelOverride.epg_data (hand-assigned overrides for auto-synced
+    channels). Programme import and orphan cleanup use this so
+    override-only mappings still get ProgramData rows.
+    """
+    from apps.channels.models import Channel, ChannelOverride
+
+    channel_filter = {"epg_data__isnull": False}
+    override_filter = {"epg_data__isnull": False}
+    if epg_source is not None:
+        channel_filter["epg_data__epg_source"] = epg_source
+        override_filter["epg_data__epg_source"] = epg_source
+    elif epg_source_id is not None:
+        channel_filter["epg_data__epg_source_id"] = epg_source_id
+        override_filter["epg_data__epg_source_id"] = epg_source_id
+
+    mapped = set(
+        Channel.objects.filter(**channel_filter).values_list(
+            "epg_data_id", flat=True
+        )
+    )
+    mapped.update(
+        ChannelOverride.objects.filter(**override_filter).values_list(
+            "epg_data_id", flat=True
+        )
+    )
+    return mapped
+
+
+def is_epg_mapped_to_channel(epg):
+    """True if any channel effectively uses this EPGData row."""
+    from apps.channels.models import Channel, ChannelOverride
+
+    if Channel.objects.filter(epg_data=epg).exists():
+        return True
+    return ChannelOverride.objects.filter(epg_data=epg).exists()

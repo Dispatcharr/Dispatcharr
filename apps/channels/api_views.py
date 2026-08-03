@@ -1379,14 +1379,26 @@ class ChannelViewSet(viewsets.ModelViewSet):
                     to_create = []
                     to_update = []
                     update_field_set = set()
+                    changed_override_epg_ids = set()
+                    override_epg_assignment_changed = False
                     for channel_id, defaults in overrides_to_upsert:
                         existing = existing_overrides.get(channel_id)
                         if existing:
+                            if "epg_data_id" in defaults:
+                                new_epg_id = defaults.get("epg_data_id")
+                                if new_epg_id != existing.epg_data_id:
+                                    override_epg_assignment_changed = True
+                                    if new_epg_id:
+                                        changed_override_epg_ids.add(new_epg_id)
                             for f, v in defaults.items():
                                 setattr(existing, f, v)
                                 update_field_set.add(f)
                             to_update.append(existing)
                         else:
+                            new_epg_id = defaults.get("epg_data_id")
+                            if new_epg_id:
+                                override_epg_assignment_changed = True
+                                changed_override_epg_ids.add(new_epg_id)
                             to_create.append(
                                 ChannelOverride(
                                     channel_id=channel_id, **defaults
@@ -1401,6 +1413,21 @@ class ChannelViewSet(viewsets.ModelViewSet):
                     if to_create:
                         ChannelOverride.objects.bulk_create(
                             to_create, batch_size=200
+                        )
+
+                    # bulk_* bypasses post_save: drop XMLTV chunk cache and
+                    # queue programme import for newly assigned override EPG.
+                    if override_epg_assignment_changed:
+                        from apps.output.streaming_chunk_cache import (
+                            invalidate_epg_chunk_cache,
+                        )
+                        invalidate_epg_chunk_cache()
+                    if changed_override_epg_ids:
+                        from apps.epg.tasks import (
+                            dispatch_program_refresh_for_epg_ids,
+                        )
+                        dispatch_program_refresh_for_epg_ids(
+                            changed_override_epg_ids
                         )
 
                     # Drop override rows that ended up all-null; an empty

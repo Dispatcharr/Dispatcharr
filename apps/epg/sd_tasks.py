@@ -329,14 +329,9 @@ def _sd_setup_single_epg_fetch(source, epg_id, sd_req):
 
 def _sd_setup_mapped_guide_fetch(source, sd_req):
     """Build station_map / epg_id_map for all channels mapped to this SD source."""
-    from apps.channels.models import Channel
+    from apps.channels.managers import epg_ids_mapped_to_channels
 
-    mapped_epg_ids = set(
-        Channel.objects.filter(
-            epg_data__epg_source=source,
-            epg_data__isnull=False,
-        ).values_list('epg_data_id', flat=True)
-    )
+    mapped_epg_ids = epg_ids_mapped_to_channels(epg_source=source)
     if not mapped_epg_ids:
         msg = "No channels mapped to this Schedules Direct source."
         logger.info(msg)
@@ -1046,16 +1041,13 @@ def fetch_schedules_direct(
     # -------------------------------------------------------------------------
     from django.utils.dateparse import parse_datetime
 
+    from apps.channels.managers import epg_ids_mapped_to_channels
+
     station_ids = list(station_map.keys())
     today = date.today()
     date_list = [(today + timedelta(days=i)).strftime('%Y-%m-%d') for i in range(SD_DAYS_TO_FETCH)]
 
-    mapped_epg_ids = set(
-        Channel.objects.filter(
-            epg_data__epg_source=source,
-            epg_data__isnull=False,
-        ).values_list('epg_data_id', flat=True)
-    )
+    mapped_epg_ids = epg_ids_mapped_to_channels(epg_source=source)
     mapped_tvg_ids = set(
         EPGData.objects.filter(
             id__in=mapped_epg_ids,

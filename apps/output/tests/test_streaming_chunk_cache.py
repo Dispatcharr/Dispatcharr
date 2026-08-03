@@ -69,6 +69,20 @@ class FakeRedis:
     def llen(self, key):
         return len(self._lists.get(key, []))
 
+    def scan_iter(self, match=None, count=None):  # noqa: ARG002
+        self._purge_expired()
+        import fnmatch
+
+        keys = list(self._strings) + list(self._lists)
+        if match:
+            # Redis glob: * matches anything
+            pattern = match
+            for key in keys:
+                if fnmatch.fnmatch(key, pattern):
+                    yield key
+        else:
+            yield from keys
+
 
 def _consume(response):
     return b"".join(response.streaming_content).decode("utf-8")
@@ -185,3 +199,23 @@ class StreamingChunkCacheTests(TestCase):
         self.assertEqual(results["t1"], "x")
         self.assertEqual(results["t2"], "x")
         self.assertEqual(len(build_calls), 1)
+
+    def test_invalidate_epg_chunk_cache_deletes_epg_content_keys(self):
+        from unittest.mock import patch
+
+        from apps.output.streaming_chunk_cache import invalidate_epg_chunk_cache
+
+        redis = FakeRedis()
+        redis.set("epg_content:all:anonymous:d=0:ready", "1")
+        redis.rpush("epg_content:all:anonymous:d=0:chunks", b"<tv/>")
+        redis.set("unrelated:key", "keep")
+
+        with patch(
+            "apps.output.streaming_chunk_cache._get_redis",
+            return_value=redis,
+        ):
+            invalidate_epg_chunk_cache()
+
+        self.assertFalse(redis.exists("epg_content:all:anonymous:d=0:ready"))
+        self.assertFalse(redis.exists("epg_content:all:anonymous:d=0:chunks"))
+        self.assertTrue(redis.exists("unrelated:key"))
