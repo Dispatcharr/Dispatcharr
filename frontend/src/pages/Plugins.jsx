@@ -40,9 +40,10 @@ import { RefreshCw, RotateCw, Search } from 'lucide-react';
 import ErrorBoundary from '../components/ErrorBoundary.jsx';
 import {
   PluginRestartWarning,
-  PluginSecurityWarning,
   PluginSupportDisclaimer,
 } from '../components/PluginWarnings.jsx';
+import PluginEnableConfirmModal from '../components/PluginEnableConfirmModal.jsx';
+import ConfirmationDialog from '../components/ConfirmationDialog.jsx';
 const PluginCard = React.lazy(
   () => import('../components/cards/PluginCard.jsx')
 );
@@ -190,8 +191,6 @@ export default function PluginsPage() {
   const [importing, setImporting] = useState(false);
   const [imported, setImported] = useState(null);
   const [enableAfterImport, setEnableAfterImport] = useState(false);
-  const [trustOpen, setTrustOpen] = useState(false);
-  const [trustResolve, setTrustResolve] = useState(null);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [deleting, setDeleting] = useState(false);
@@ -258,12 +257,8 @@ export default function PluginsPage() {
     setDeleteOpen(true);
   }, []);
 
-  // eslint-disable-next-line no-unused-vars
   const requireTrust = useCallback((plugin) => {
-    return new Promise((resolve) => {
-      setTrustResolve(() => resolve);
-      setTrustOpen(true);
-    });
+    return usePluginStore.getState().requestEnableConfirmation(plugin);
   }, []);
 
   const showImportForm = useCallback(() => {
@@ -556,147 +551,43 @@ export default function PluginsPage() {
         </Stack>
       </Modal>
 
-      {/* Trust Warning Modal */}
-      <Modal
-        opened={trustOpen}
-        onClose={() => {
-          setTrustOpen(false);
-          trustResolve && trustResolve(false);
-        }}
-        title="Enable third-party plugins?"
-        centered
-        zIndex={300}
-      >
-        <Stack>
-          <PluginSecurityWarning>
-            Plugins run server-side code with full access to your Dispatcharr
-            instance and its data. Only enable plugins from developers you
-            trust. Malicious plugins could read or modify data, call internal
-            APIs, or perform unwanted actions. Review the source or trust the
-            author before enabling.
-          </PluginSecurityWarning>
-          <PluginSupportDisclaimer />
-          <Group justify="flex-end">
-            <Button
-              variant="default"
-              size="xs"
-              onClick={() => {
-                setTrustOpen(false);
-                trustResolve && trustResolve(false);
-              }}
-            >
-              Cancel
-            </Button>
-            <Button
-              size="xs"
-              color="red"
-              onClick={() => {
-                setTrustOpen(false);
-                trustResolve && trustResolve(true);
-              }}
-            >
-              I understand, enable
-            </Button>
-          </Group>
-        </Stack>
-      </Modal>
-
-      {/* Delete Plugin Modal */}
-      <Modal
+      <ConfirmationDialog
         opened={deleteOpen}
         onClose={() => {
           setDeleteOpen(false);
           setDeleteTarget(null);
         }}
-        title={deleteTarget ? `Delete ${deleteTarget.name}?` : 'Delete Plugin'}
-        centered
+        onConfirm={handleDeletePlugin()}
         zIndex={300}
-      >
-        <Stack>
-          <Text size="sm">
-            This will remove the plugin files and its configuration. This action
-            cannot be undone.
-          </Text>
-          <Group justify="flex-end">
-            <Button
-              variant="default"
-              size="xs"
-              onClick={() => {
-                setDeleteOpen(false);
-                setDeleteTarget(null);
-              }}
-            >
-              Cancel
-            </Button>
-            <Button
-              size="xs"
-              color="red"
-              loading={deleting}
-              onClick={handleDeletePlugin()}
-            >
-              Delete
-            </Button>
-          </Group>
-        </Stack>
-      </Modal>
+        title={deleteTarget ? `Delete ${deleteTarget.name}?` : 'Delete Plugin'}
+        message="This will remove the plugin files and its configuration. This action cannot be undone."
+        confirmLabel="Delete"
+        loading={deleting}
+      />
 
-      {/* Confirmation modal */}
-      <Modal
+      <ConfirmationDialog
         opened={confirmOpen}
         onClose={() => handleConfirm(false)}
-        title={confirmConfig.title}
-        centered
+        onConfirm={() => handleConfirm(true)}
         zIndex={300}
-      >
-        <Stack>
-          <Text size="sm">{confirmConfig.message}</Text>
-          <Group justify="flex-end">
-            <Button
-              variant="default"
-              size="xs"
-              onClick={() => handleConfirm(false)}
-            >
-              Cancel
-            </Button>
-            <Button size="xs" onClick={() => handleConfirm(true)}>
-              Confirm
-            </Button>
-          </Group>
-        </Stack>
-      </Modal>
+        title={confirmConfig.title}
+        message={confirmConfig.message}
+        confirmColor="blue"
+      />
 
-      {/* Reload All Plugins confirmation modal */}
-      <Modal
+      <ConfirmationDialog
         opened={reloadAllOpen}
         onClose={() => setReloadAllOpen(false)}
-        title="Reload all plugins?"
-        centered
+        onConfirm={handleReloadAllPlugins}
         zIndex={300}
-      >
-        <Stack>
-          <Text size="sm">
-            This stops and re-imports the Python code for every plugin. Any
-            plugin currently running an action will be interrupted. This does
-            not affect saved settings.
-          </Text>
-          <Group justify="flex-end">
-            <Button
-              variant="default"
-              size="xs"
-              onClick={() => setReloadAllOpen(false)}
-            >
-              Cancel
-            </Button>
-            <Button
-              size="xs"
-              loading={reloadingAll}
-              onClick={handleReloadAllPlugins}
-            >
-              Reload All
-            </Button>
-          </Group>
-        </Stack>
-      </Modal>
+        title="Reload all plugins?"
+        message="This stops and re-imports the Python code for every plugin. Any plugin currently running an action will be interrupted. This does not affect saved settings."
+        confirmLabel="Reload All"
+        confirmColor="blue"
+        loading={reloadingAll}
+      />
+
+      <PluginEnableConfirmModal />
     </AppShellMain>
   );
 }

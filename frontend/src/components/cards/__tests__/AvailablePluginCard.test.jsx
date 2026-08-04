@@ -229,6 +229,7 @@ const setupMocks = ({ pathname = '/available-plugins' } = {}) => {
   usePluginStore.getState.mockReturnValue({
     invalidatePlugins: mockInvalidatePlugins,
     fetchAvailablePlugins: mockFetchAvailablePlugins,
+    requestEnableConfirmation: vi.fn().mockResolvedValue(true),
   });
 
   // Default: versions are compatible, no downgrade, no bad signature
