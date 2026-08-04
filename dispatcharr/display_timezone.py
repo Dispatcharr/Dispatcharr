@@ -16,6 +16,14 @@ def _env_zone():
         return ZoneInfo("UTC")
 
 
+def set_display_zone(zone_name):
+    try:
+        _cache["zone"] = ZoneInfo(zone_name)
+        _cache["checked"] = time.monotonic()
+    except Exception:
+        pass
+
+
 def refresh_display_zone(force=False):
     """Refresh the cached display zone from CoreSettings.
 

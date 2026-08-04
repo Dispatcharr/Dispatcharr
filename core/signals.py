@@ -3,7 +3,7 @@ from django.core.signals import request_started
 from django.db.models.signals import pre_delete, post_delete, post_save
 from django.dispatch import receiver
 from django.core.exceptions import ValidationError
-from dispatcharr.display_timezone import refresh_display_zone
+from dispatcharr.display_timezone import refresh_display_zone, set_display_zone
 from .models import StreamProfile, CoreSettings, UserAgent, NETWORK_ACCESS_KEY, SYSTEM_SETTINGS_KEY
 
 @receiver(pre_delete, sender=StreamProfile)
@@ -22,7 +22,7 @@ def refresh_log_display_zone_on_task(**kwargs):
 @receiver(post_save, sender=CoreSettings)
 def refresh_log_display_zone_on_settings_change(sender, instance, **kwargs):
     if instance.key == SYSTEM_SETTINGS_KEY:
-        refresh_display_zone(force=True)
+        set_display_zone((instance.value or {}).get("time_zone"))
 
 @receiver(post_save, sender=CoreSettings)
 @receiver(post_delete, sender=CoreSettings)

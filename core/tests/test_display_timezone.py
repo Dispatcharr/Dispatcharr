@@ -59,6 +59,16 @@ class DisplayTimezoneFormatterTests(TestCase):
             self.formatter.formatTime(_record()), _expected("Pacific/Auckland")
         )
 
+    def test_settings_change_wins_over_stale_cached_read(self):
+        CoreSettings.set_system_time_zone("Europe/Zurich")
+        with mock.patch.object(
+            CoreSettings, "get_system_time_zone", return_value="Europe/Zurich"
+        ):
+            CoreSettings.set_system_time_zone("Pacific/Auckland")
+            self.assertEqual(
+                self.formatter.formatTime(_record()), _expected("Pacific/Auckland")
+            )
+
     @override_settings(DISPATCHARR_DISPLAY_TZ="Europe/Zurich")
     def test_database_errors_keep_previous_value(self):
         with mock.patch.object(
