@@ -13,7 +13,7 @@ import {
   FileImage,
   Webhook,
   MonitorCog,
-  Logs,
+  ScrollText,
 } from 'lucide-react';
 
 // Shared by the top-level `settings` entry and the nested entry under
@@ -87,7 +87,7 @@ export const NAV_ITEMS = {
       { label: 'Users', icon: User, path: '/users' },
       { label: 'Logo Manager', icon: FileImage, path: '/logos' },
       { label: 'Connect', icon: Webhook, path: '/connect' },
-      { label: 'Log Files', icon: Logs, path: '/logs' },
+      { label: 'Logs', icon: ScrollText, path: '/logs' },
       { ...SETTINGS_NAV_BASE },
     ],
   },

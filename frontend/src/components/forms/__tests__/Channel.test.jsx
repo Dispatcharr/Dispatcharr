@@ -131,6 +131,7 @@ vi.mock('lucide-react', () => ({
   LayoutGrid: () => <svg data-testid="icon-layout-grid" />,
   ListOrdered: () => <svg data-testid="icon-list-ordered" />,
   Logs: () => <svg data-testid="icon-logs" />,
+  ScrollText: () => <svg />,
   MonitorCog: () => <svg data-testid="icon-monitor-cog" />,
   Package: () => <svg data-testid="icon-package" />,
   Play: () => <svg data-testid="icon-play" />,

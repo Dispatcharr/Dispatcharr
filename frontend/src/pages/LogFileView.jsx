@@ -199,7 +199,7 @@ const LogFileViewPage = () => {
       <Group justify="space-between" mb="sm">
         <Group gap="sm">
           <Anchor component={Link} to="/logs" size="sm">
-            ← Log Files
+            ← Logs
           </Anchor>
           <Title order={4}>{name}</Title>
         </Group>

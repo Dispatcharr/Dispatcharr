@@ -45,7 +45,7 @@ const LogFilesPage = () => {
   return (
     <Box p="md" maw={1100} mx="auto">
       <Group justify="space-between" mb="md">
-        <Title order={3}>Log Files</Title>
+        <Title order={3}>Logs</Title>
         <Button
           size="xs"
           variant="default"

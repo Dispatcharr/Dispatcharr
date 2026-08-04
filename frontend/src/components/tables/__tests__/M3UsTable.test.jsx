@@ -200,6 +200,7 @@ vi.mock('lucide-react', () => ({
   LayoutGrid: () => <svg />,
   ListOrdered: () => <svg />,
   Logs: () => <svg />,
+  ScrollText: () => <svg />,
   MonitorCog: () => <svg />,
   Package: () => <svg />,
   Play: () => <svg />,
