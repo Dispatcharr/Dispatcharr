@@ -65,6 +65,10 @@ class XcRecordingVodTests(TestCase):
         self.assertEqual(streams[0]["container_extension"], "mkv")
         self.assertNotIn(self.file.name, str(streams[0]))
 
+    def test_unfiltered_vod_streams_include_completed_recordings_for_clients_that_filter_locally(self):
+        streams = xc_get_vod_streams(self.factory.get("/player_api.php"), self.user)
+        self.assertEqual([row["stream_id"] for row in streams], [f"recording-{self.recording.id}"])
+
     def test_incomplete_or_missing_recording_is_not_exposed(self):
         now = timezone.now()
         Recording.objects.create(

@@ -1349,6 +1349,16 @@ def xc_get_vod_streams(request, user, category_id=None):
             "direct_source": "",
         })
 
+    # A number of Xtream clients request the complete VOD list once and apply
+    # their category filter locally.  Include completed local recordings in
+    # that unfiltered form as well as in the dedicated category response.
+    if not category_id:
+        start_num = len(streams) + 1
+        streams.extend(
+            _xc_recording_row(recording, num)
+            for num, recording in enumerate(_xc_completed_recordings_for_user(user), start_num)
+        )
+
     return streams
 
 
