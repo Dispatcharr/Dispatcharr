@@ -1627,9 +1627,8 @@ def xc_series_stream(request, username, password, stream_id, extension):
     # All authenticated users get access to series/episodes from all active M3U accounts
     filters = {"episode_id": stream_id, "m3u_account__is_active": True}
 
-    try:
-        episode_relation = M3UEpisodeRelation.objects.select_related('episode').filter(**filters).order_by('-m3u_account__priority', 'id').first()
-    except M3UEpisodeRelation.DoesNotExist:
+    episode_relation = M3UEpisodeRelation.objects.select_related('episode').filter(**filters).order_by('-m3u_account__priority', 'id').first()
+    if not episode_relation:
         return JsonResponse({"error": "Episode not found"}, status=404)
 
     # Redirect to the VOD proxy endpoint
