@@ -804,7 +804,7 @@ class XcVodSeriesRegressionTests(TestCase):
     def test_vod_streams_response_keys(self):
         account = self._account(f"acct-{uuid4().hex[:6]}")
         movie = Movie.objects.create(name="Schema Movie", rating="10")
-        M3UMovieRelation.objects.create(
+        relation = M3UMovieRelation.objects.create(
             m3u_account=account, movie=movie, stream_id="schema-1"
         )
 
@@ -812,7 +812,9 @@ class XcVodSeriesRegressionTests(TestCase):
 
         self.assertEqual(set(stream.keys()), XC_VOD_STREAM_KEYS)
         self.assertEqual(stream["stream_type"], "movie")
-        self.assertEqual(stream["stream_id"], movie.id)
+        # The relation's own PK, not the Movie's -- stable across a catalog
+        # refresh (relations are upserted in place; Movie rows are not).
+        self.assertEqual(stream["stream_id"], relation.id)
         self.assertEqual(stream["rating_5based"], 5.0)
         self.assertEqual(stream["custom_sid"], None)
         self.assertEqual(stream["direct_source"], "")

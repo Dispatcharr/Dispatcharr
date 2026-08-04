@@ -1221,7 +1221,12 @@ def xc_get_vod_streams(request, user, category_id=None):
             "num": num,
             "name": row['movie__name'],
             "stream_type": "movie",
-            "stream_id": row['movie__id'],
+            # The relation's own PK, not the Movie's -- mirrors xc_get_series's
+            # "series_id": row['id'] below. The relation PK is stable across a
+            # catalog refresh (relations are upserted in place); the Movie PK
+            # is not (a refresh can delete/recreate the Movie row), which was
+            # the root cause of stream_xc_movie/stream_xc_episode going stale.
+            "stream_id": row['id'],
             "stream_icon": _xc_cover_or_logo(
                 request,
                 'movie',
@@ -1454,8 +1459,14 @@ def xc_get_series_info(request, user, series_id):
             episode.custom_properties,
         )
 
+        # The relation's own PK, not the Episode's -- same rationale as
+        # xc_get_series's "series_id": row['id'] and xc_get_vod_streams's
+        # "stream_id": row['id']. Falls back to episode.id only when there's
+        # no active relation at all, in which case it isn't playable either way.
+        client_facing_id = best_relation.id if best_relation else episode.id
+
         seasons[season_num].append({
-            "id": episode.id,
+            "id": client_facing_id,
             "season": season_num,
             "episode_num": episode.episode_number or 0,
             "title": episode.name,
@@ -1464,7 +1475,7 @@ def xc_get_series_info(request, user, series_id):
             "custom_sid": None,
             "direct_source": "",
             "info": {
-                "id": int(episode.id),
+                "id": client_facing_id,
                 "name": episode.name,
                 "overview": episode.description or "",
                 "crew": str(episode.custom_properties.get('crew', "") if episode.custom_properties else ""),
@@ -1616,17 +1627,15 @@ def xc_get_vod_info(request, user, vod_id):
     if not vod_id:
         raise Http404()
 
-    # All authenticated users get access to VOD from all active M3U accounts
-    filters = {"movie_id": vod_id, "m3u_account__is_active": True}
-
-    try:
-        # Order by account priority to get the best relation when multiple exist
-        movie_relation = M3UMovieRelation.objects.select_related('movie', 'movie__logo').filter(**filters).order_by('-m3u_account__priority', 'id').first()
-        if not movie_relation:
-            raise Http404()
-        movie = movie_relation.movie
-    except (M3UMovieRelation.DoesNotExist, M3UMovieRelation.MultipleObjectsReturned):
+    # vod_id here is the M3UMovieRelation's own PK (see the "stream_id" emitted
+    # below and by xc_get_vod_streams) -- stable across a catalog refresh,
+    # unlike the underlying Movie's PK.
+    movie_relation = M3UMovieRelation.objects.select_related('movie', 'movie__logo').filter(
+        id=vod_id, m3u_account__is_active=True
+    ).first()
+    if not movie_relation:
         raise Http404()
+    movie = movie_relation.movie
 
     # Initialize basic movie data first
     movie_data = {
@@ -1757,7 +1766,9 @@ def xc_get_vod_info(request, user, vod_id):
             'audio': movie_data.get('audio', {}),
         },
         "movie_data": {
-            "stream_id": movie.id,
+            # The relation's own PK, not the Movie's -- see the note on the
+            # filters lookup above.
+            "stream_id": movie_relation.id,
             "name": movie.name,
             "added": str(int(movie_relation.created_at.timestamp())),
             "category_id": str(movie_relation.category.id) if movie_relation.category else "0",
@@ -1769,77 +1780,6 @@ def xc_get_vod_info(request, user, vod_id):
     }
 
     return info
-
-
-def xc_movie_stream(request, username, password, stream_id, extension):
-    """Handle XtreamCodes movie streaming requests"""
-    from apps.vod.models import M3UMovieRelation
-
-    user = get_object_or_404(User, username=username)
-
-    custom_properties = user.custom_properties or {}
-
-    if "xc_password" not in custom_properties:
-        return JsonResponse({"error": "Invalid credentials"}, status=401)
-
-    if custom_properties["xc_password"] != password:
-        return JsonResponse({"error": "Invalid credentials"}, status=401)
-
-    # All authenticated users get access to VOD from all active M3U accounts
-    filters = {"movie_id": stream_id, "m3u_account__is_active": True}
-
-    try:
-        # Order by account priority to get the best relation when multiple exist
-        movie_relation = M3UMovieRelation.objects.select_related('movie').filter(**filters).order_by('-m3u_account__priority', 'id').first()
-        if not movie_relation:
-            return JsonResponse({"error": "Movie not found"}, status=404)
-    except (M3UMovieRelation.DoesNotExist, M3UMovieRelation.MultipleObjectsReturned):
-        return JsonResponse({"error": "Movie not found"}, status=404)
-
-    # Redirect to the VOD proxy endpoint
-    from django.http import HttpResponseRedirect
-    from django.urls import reverse
-
-    vod_url = reverse('proxy:vod_proxy:vod_stream', kwargs={
-        'content_type': 'movie',
-        'content_id': movie_relation.movie.uuid
-    })
-
-    return HttpResponseRedirect(vod_url)
-
-
-def xc_series_stream(request, username, password, stream_id, extension):
-    """Handle XtreamCodes series/episode streaming requests"""
-    from apps.vod.models import M3UEpisodeRelation
-
-    user = get_object_or_404(User, username=username)
-
-    custom_properties = user.custom_properties or {}
-
-    if "xc_password" not in custom_properties:
-        return JsonResponse({"error": "Invalid credentials"}, status=401)
-
-    if custom_properties["xc_password"] != password:
-        return JsonResponse({"error": "Invalid credentials"}, status=401)
-
-    # All authenticated users get access to series/episodes from all active M3U accounts
-    filters = {"episode_id": stream_id, "m3u_account__is_active": True}
-
-    try:
-        episode_relation = M3UEpisodeRelation.objects.select_related('episode').filter(**filters).order_by('-m3u_account__priority', 'id').first()
-    except M3UEpisodeRelation.DoesNotExist:
-        return JsonResponse({"error": "Episode not found"}, status=404)
-
-    # Redirect to the VOD proxy endpoint
-    from django.http import HttpResponseRedirect
-    from django.urls import reverse
-
-    vod_url = reverse('proxy:vod_proxy:vod_stream', kwargs={
-        'content_type': 'episode',
-        'content_id': episode_relation.episode.uuid
-    })
-
-    return HttpResponseRedirect(vod_url)
 
 
 def format_duration_hms(seconds):

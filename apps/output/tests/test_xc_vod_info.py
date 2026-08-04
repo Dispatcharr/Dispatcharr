@@ -39,7 +39,9 @@ class XCGetVodInfoArtworkTests(TestCase):
 
     def _info(self):
         request = self.factory.get('/player_api.php')
-        return xc_get_vod_info(request, self.user, str(self.movie.id))
+        # vod_id is the M3UMovieRelation's own PK, not the Movie's -- see the
+        # note in xc_get_vod_info on why the lookup changed.
+        return xc_get_vod_info(request, self.user, str(self.relation.id))
 
     def test_cover_big_and_movie_image_are_identical(self):
         """Real XC servers return the same URL for both fields; clients may read either."""

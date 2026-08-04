@@ -1222,15 +1222,16 @@ def stream_xc_movie(request, username, password, stream_id, extension):
     if custom_properties["xc_password"] != password:
         return Response({"error": "Invalid credentials"}, status=401)
 
-    # All authenticated users get access to VOD from all active M3U accounts
-    filters = {"movie_id": stream_id, "m3u_account__is_active": True}
-
-    try:
-        # Order by account priority to get the best relation when multiple exist
-        movie_relation = M3UMovieRelation.objects.select_related('movie').filter(**filters).order_by('-m3u_account__priority', 'id').first()
-        if not movie_relation:
-            return JsonResponse({"error": "Movie not found"}, status=404)
-    except (M3UMovieRelation.DoesNotExist, M3UMovieRelation.MultipleObjectsReturned):
+    # stream_id here is the M3UMovieRelation's own PK (see xc_get_vod_streams /
+    # xc_get_vod_info, which now emit that instead of the underlying Movie's
+    # PK) -- the relation's PK is stable across a catalog refresh because
+    # relations are upserted in place, keyed by (m3u_account, stream_id) from
+    # the provider. The Movie row itself is not: a refresh can delete and
+    # recreate it, which is what made lookups keyed on movie_id go stale.
+    movie_relation = M3UMovieRelation.objects.select_related('movie').filter(
+        id=stream_id, m3u_account__is_active=True
+    ).first()
+    if not movie_relation:
         return JsonResponse({"error": "Movie not found"}, status=404)
 
     return stream_vod(request._request, 'movie', movie_relation.movie.uuid, session_id, profile_id, user)
@@ -1259,12 +1260,17 @@ def stream_xc_episode(request, username, password, stream_id, extension):
     if custom_properties["xc_password"] != password:
         return Response({"error": "Invalid credentials"}, status=401)
 
-    # All authenticated users get access to series/episodes from all active M3U accounts
-    filters = {"episode_id": stream_id, "m3u_account__is_active": True}
-
-    try:
-        episode_relation = M3UEpisodeRelation.objects.select_related('episode').filter(**filters).order_by('-m3u_account__priority', 'id').first()
-    except M3UEpisodeRelation.DoesNotExist:
+    # stream_id here is the M3UEpisodeRelation's own PK (see xc_get_series_info,
+    # which now emits that instead of the underlying Episode's PK) -- the
+    # relation's PK is stable across a catalog refresh because relations are
+    # upserted in place, keyed by (m3u_account, stream_id) from the provider.
+    # The Episode row itself is not: a refresh can delete and recreate it,
+    # which is what made lookups keyed on episode_id go stale and, combined
+    # with the .first()/DoesNotExist mismatch below, crash instead of 404.
+    episode_relation = M3UEpisodeRelation.objects.select_related('episode').filter(
+        id=stream_id, m3u_account__is_active=True
+    ).first()
+    if not episode_relation:
         return JsonResponse({"error": "Episode not found"}, status=404)
 
     return stream_vod(request._request, 'episode', episode_relation.episode.uuid, session_id, profile_id, user)
