@@ -126,7 +126,10 @@ const LogFileViewPage = () => {
   const { chunks, hiddenLines } = useMemo(() => {
     const all = content ? content.split('\n') : [];
     const hidden = Math.max(0, all.length - MAX_RENDER_LINES);
-    return { chunks: colorizeLines(hidden ? all.slice(hidden) : all), hiddenLines: hidden };
+    return {
+      chunks: colorizeLines(hidden ? all.slice(hidden) : all),
+      hiddenLines: hidden,
+    };
   }, [content]);
 
   // One notice: line-cap wins over the byte-truncation banner since it states what's actually on screen.
@@ -184,7 +187,8 @@ const LogFileViewPage = () => {
           setAutoRefresh(false);
           notifications.show({
             title: 'Auto-refresh paused',
-            message: 'Stopped auto-refresh after repeated errors loading the log.',
+            message:
+              'Stopped auto-refresh after repeated errors loading the log.',
             color: 'yellow',
             autoClose: 6000,
           });

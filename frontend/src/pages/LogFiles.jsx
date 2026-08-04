@@ -1,14 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import {
-  Anchor,
-  Box,
-  Button,
-  Group,
-  Table,
-  Text,
-  Title,
-} from '@mantine/core';
+import { Anchor, Box, Button, Group, Table, Text, Title } from '@mantine/core';
 import { RefreshCcw } from 'lucide-react';
 import API from '../api';
 import { useDateTimeFormat, format } from '../utils/dateTimeUtils.js';

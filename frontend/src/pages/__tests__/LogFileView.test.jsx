@@ -1,5 +1,11 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
+import {
+  render,
+  screen,
+  fireEvent,
+  waitFor,
+  act,
+} from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import LogFileViewPage from '../LogFileView';
 import API from '../../api';
@@ -94,8 +100,8 @@ describe('LogFileViewPage', () => {
     await waitFor(() => {
       expect(screen.getByText('login/auth')).toBeInTheDocument();
     });
-    ['text', 'error', 'warn', 'login/auth', 'plugin'].forEach(
-      (label) => expect(screen.getByText(label)).toBeInTheDocument()
+    ['text', 'error', 'warn', 'login/auth', 'plugin'].forEach((label) =>
+      expect(screen.getByText(label)).toBeInTheDocument()
     );
   });
 
@@ -222,7 +228,9 @@ describe('LogFileViewPage', () => {
       expect(screen.getByText(/token\/refresh/)).toBeInTheDocument();
     });
     // Benign polling 401s fall through to warn (yellow), not green.
-    expect(screen.getByText(/token\/refresh/)).toHaveStyle({ color: '#ffd43b' });
+    expect(screen.getByText(/token\/refresh/)).toHaveStyle({
+      color: '#ffd43b',
+    });
     expect(screen.getByText(/notifications/)).toHaveStyle({ color: '#ffd43b' });
     // A non-routine 401 stays green — a real unauthorized access is notable.
     expect(screen.getByText(/channels\/1/)).toHaveStyle({ color: '#51cf66' });
@@ -253,11 +261,31 @@ describe('LogFileViewPage', () => {
   it('renders a near-ceiling log (~50k lines / ~5MB, many colour switches) without hanging', async () => {
     // Deterministic synthetic log near the 5 MB truncation ceiling, interleaving every category to exercise colorizeLines's worst case (frequent colour switches).
     const LEVELS = [
-      { tag: 'INFO', logger: 'core.tasks', msg: 'routine tick, nothing to report this cycle' },
-      { tag: 'WARNING', logger: 'core.utils', msg: 'cache miss while resolving stream metadata lookup' },
-      { tag: 'ERROR', logger: 'apps.epg', msg: 'boom failure refreshing programme guide data source' },
-      { tag: 'INFO', logger: 'apps.accounts.api_views', msg: 'Login success: user=demo ip=192.0.2.7 session=abcdef' },
-      { tag: 'INFO', logger: 'plugins.iptv_checker', msg: 'sweep tick probing configured channel groups' },
+      {
+        tag: 'INFO',
+        logger: 'core.tasks',
+        msg: 'routine tick, nothing to report this cycle',
+      },
+      {
+        tag: 'WARNING',
+        logger: 'core.utils',
+        msg: 'cache miss while resolving stream metadata lookup',
+      },
+      {
+        tag: 'ERROR',
+        logger: 'apps.epg',
+        msg: 'boom failure refreshing programme guide data source',
+      },
+      {
+        tag: 'INFO',
+        logger: 'apps.accounts.api_views',
+        msg: 'Login success: user=demo ip=192.0.2.7 session=abcdef',
+      },
+      {
+        tag: 'INFO',
+        logger: 'plugins.iptv_checker',
+        msg: 'sweep tick probing configured channel groups',
+      },
     ];
     const RECORD_COUNT = 45000;
     const lines = [];
@@ -304,7 +332,9 @@ describe('LogFileViewPage', () => {
     expect(screen.queryByTestId('loader')).not.toBeInTheDocument();
     expect(screen.queryByText('(empty)')).not.toBeInTheDocument();
     // F3: only the tail renders — the cap notice shows and the first record is dropped from the DOM.
-    expect(screen.getByText(/Showing the last [\d,]+ lines/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/Showing the last [\d,]+ lines/)
+    ).toBeInTheDocument();
     expect(screen.queryByText(/record-0\b/)).not.toBeInTheDocument();
   }, 20000);
 
