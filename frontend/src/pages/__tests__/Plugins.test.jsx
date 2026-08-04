@@ -208,6 +208,9 @@ describe('PluginsPage', () => {
     invalidatePlugins: vi.fn(),
     refreshRepo: vi.fn(),
     fetchAvailablePlugins: vi.fn(),
+    enableConfirm: { opened: false, plugin: null, resolve: null },
+    resolveEnableConfirmation: vi.fn(),
+    requestEnableConfirmation: vi.fn().mockResolvedValue(true),
   };
 
   beforeEach(() => {
@@ -247,6 +250,9 @@ describe('PluginsPage', () => {
         plugins: [],
         loading: true,
         fetchPlugins: vi.fn(),
+        enableConfirm: { opened: false, plugin: null, resolve: null },
+        resolveEnableConfirmation: vi.fn(),
+        requestEnableConfirmation: vi.fn().mockResolvedValue(true),
       };
       usePluginStore.mockImplementation((selector) => {
         return selector ? selector(loadingState) : loadingState;
@@ -259,7 +265,14 @@ describe('PluginsPage', () => {
     });
 
     it('shows empty state when no plugins', () => {
-      const emptyState = { plugins: [], loading: false, fetchPlugins: vi.fn() };
+      const emptyState = {
+        plugins: [],
+        loading: false,
+        fetchPlugins: vi.fn(),
+        enableConfirm: { opened: false, plugin: null, resolve: null },
+        resolveEnableConfirmation: vi.fn(),
+        requestEnableConfirmation: vi.fn().mockResolvedValue(true),
+      };
       usePluginStore.mockImplementation((selector) => {
         return selector ? selector(emptyState) : emptyState;
       });
@@ -476,20 +489,23 @@ describe('PluginsPage', () => {
   });
 
   describe('Trust Warning', () => {
-    it('shows trust warning for untrusted plugins', async () => {
-      const mockPlugin = {
-        key: 'new-plugin',
-        name: 'New Plugin',
-        description: 'New Description',
-        ever_enabled: false,
-        enabled: false,
-      };
-      importPlugin.mockResolvedValue({
-        success: true,
-        plugin: mockPlugin,
-      });
-      setPluginEnabled.mockResolvedValue({ success: true, ever_enabled: true });
+    // The confirmation dialog itself now lives in the shared
+    // <PluginEnableConfirmModal/>, backed by usePluginStore's
+    // requestEnableConfirmation/enableConfirm (see store/plugins.jsx and
+    // components/PluginEnableConfirmModal.jsx). These tests exercise
+    // Plugins.jsx's gating logic (does it ask for confirmation, does it
+    // respect the answer) by controlling requestEnableConfirmation's
+    // resolved value directly; the dialog's own rendering is covered
+    // separately.
+    const mockPlugin = {
+      key: 'new-plugin',
+      name: 'New Plugin',
+      description: 'New Description',
+      ever_enabled: false,
+      enabled: false,
+    };
 
+    const importAndToggleEnableNow = async () => {
       render(<PluginsPage />);
 
       fireEvent.click(screen.getByText('Import Plugin'));
@@ -516,117 +532,43 @@ describe('PluginsPage', () => {
         .getAllByText('Enable')
         .find((btn) => btn.tagName === 'BUTTON');
       fireEvent.click(enableButton);
+    };
+
+    it('requests enable confirmation for untrusted plugins before enabling', async () => {
+      importPlugin.mockResolvedValue({ success: true, plugin: mockPlugin });
+      setPluginEnabled.mockResolvedValue({ success: true, ever_enabled: true });
+
+      await importAndToggleEnableNow();
 
       await waitFor(() => {
-        expect(
-          screen.getByText('Enable third-party plugins?')
-        ).toBeInTheDocument();
+        expect(mockPluginStoreState.requestEnableConfirmation).toHaveBeenCalledWith(
+          expect.objectContaining(mockPlugin)
+        );
       });
     });
 
-    it('enables plugin when trust is confirmed', async () => {
-      const mockPlugin = {
-        key: 'new-plugin',
-        name: 'New Plugin',
-        description: 'New Description',
-        ever_enabled: false,
-        enabled: false,
-      };
-      importPlugin.mockResolvedValue({
-        success: true,
-        plugin: mockPlugin,
-      });
+    it('enables plugin when confirmation is granted', async () => {
+      importPlugin.mockResolvedValue({ success: true, plugin: mockPlugin });
       setPluginEnabled.mockResolvedValue({ success: true, ever_enabled: true });
+      mockPluginStoreState.requestEnableConfirmation.mockResolvedValueOnce(true);
 
-      render(<PluginsPage />);
-
-      fireEvent.click(screen.getByText('Import Plugin'));
-
-      const fileInput = screen.getByPlaceholderText('Select plugin .zip');
-      const file = new File(['content'], 'plugin.zip', {
-        type: 'application/zip',
-      });
-      fireEvent.change(fileInput, { target: { files: [file] } });
-
-      const uploadButton = screen
-        .getAllByText('Upload')
-        .find((btn) => btn.tagName === 'BUTTON');
-      fireEvent.click(uploadButton);
-
-      await waitFor(() => {
-        expect(screen.getByText('Enable now')).toBeInTheDocument();
-      });
-
-      const enableSwitch = screen.getByRole('checkbox');
-      fireEvent.click(enableSwitch);
-
-      const enableButton = screen
-        .getAllByText('Enable')
-        .find((btn) => btn.tagName === 'BUTTON');
-      fireEvent.click(enableButton);
-
-      await waitFor(() => {
-        expect(screen.getByText('I understand, enable')).toBeInTheDocument();
-      });
-
-      fireEvent.click(screen.getByText('I understand, enable'));
+      await importAndToggleEnableNow();
 
       await waitFor(() => {
         expect(setPluginEnabled).toHaveBeenCalledWith('new-plugin', true);
       });
     });
 
-    it('cancels enable when trust is denied', async () => {
-      const mockPlugin = {
-        key: 'new-plugin',
-        name: 'New Plugin',
-        description: 'New Description',
-        ever_enabled: false,
-        enabled: false,
-      };
-      importPlugin.mockResolvedValue({
-        success: true,
-        plugin: mockPlugin,
-      });
+    it('does not enable plugin when confirmation is denied', async () => {
+      importPlugin.mockResolvedValue({ success: true, plugin: mockPlugin });
+      mockPluginStoreState.requestEnableConfirmation.mockResolvedValueOnce(false);
 
-      render(<PluginsPage />);
-
-      fireEvent.click(screen.getByText('Import Plugin'));
-
-      const fileInput = screen.getByPlaceholderText('Select plugin .zip');
-      const file = new File(['content'], 'plugin.zip', {
-        type: 'application/zip',
-      });
-      fireEvent.change(fileInput, { target: { files: [file] } });
-
-      const uploadButton = screen
-        .getAllByText('Upload')
-        .find((btn) => btn.tagName === 'BUTTON');
-      fireEvent.click(uploadButton);
+      await importAndToggleEnableNow();
 
       await waitFor(() => {
-        expect(screen.getByText('Enable now')).toBeInTheDocument();
+        expect(mockPluginStoreState.requestEnableConfirmation).toHaveBeenCalled();
       });
-
-      const enableSwitch = screen.getByRole('checkbox');
-      fireEvent.click(enableSwitch);
-
-      const enableButton = screen
-        .getAllByText('Enable')
-        .find((btn) => btn.tagName === 'BUTTON');
-      fireEvent.click(enableButton);
-
-      await waitFor(() => {
-        const cancelButtons = screen.getAllByText('Cancel');
-        expect(cancelButtons.length).toBeGreaterThan(0);
-      });
-
-      const cancelButtons = screen.getAllByText('Cancel');
-      fireEvent.click(cancelButtons[cancelButtons.length - 1]);
-
-      await waitFor(() => {
-        expect(setPluginEnabled).not.toHaveBeenCalled();
-      });
+      expect(setPluginEnabled).not.toHaveBeenCalled();
     });
   });
 

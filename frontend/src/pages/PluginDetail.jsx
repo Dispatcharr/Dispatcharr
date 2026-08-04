@@ -36,6 +36,7 @@ import {
 import { getConfirmationDetails } from '../utils/cards/PluginCardUtils.js';
 import { compareVersions } from '../utils/components/pluginUtils.js';
 import ConfirmationDialog from '../components/ConfirmationDialog.jsx';
+import PluginEnableConfirmModal from '../components/PluginEnableConfirmModal.jsx';
 import PluginHeader from '../components/PluginHeader.jsx';
 import PluginDetailPanel from '../components/PluginDetailPanel.jsx';
 import PluginFieldList from '../components/PluginFieldList.jsx';
@@ -332,6 +333,10 @@ function PluginDetailForKey({ routeKey: key }) {
   };
 
   const handleEnableChange = async (next) => {
+    if (next && !plugin.ever_enabled) {
+      const ok = await usePluginStore.getState().requestEnableConfirmation(plugin);
+      if (!ok) return;
+    }
     const previous = enabled;
     setEnabled(next);
     try {
@@ -795,6 +800,8 @@ function PluginDetailForKey({ routeKey: key }) {
         confirmLabel="Delete"
         loading={uninstalling}
       />
+
+      <PluginEnableConfirmModal />
     </AppShellMain>
   );
 }
