@@ -3735,7 +3735,7 @@ export default class API {
         let errorBody = await response.text();
         try {
           errorBody = JSON.parse(errorBody);
-        } catch (e) {
+        } catch {
           // If parsing fails, leave errorBody as the raw text
         }
         error.status = response.status;
