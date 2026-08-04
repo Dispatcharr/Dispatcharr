@@ -140,15 +140,15 @@ class LogFilesEndpointTests(TestCase):
         self.assertNotIn("escape.log", names)
         self.assertEqual(names, {"dispatcharr.log", "dispatcharr.log.1"})
 
-    def test_traversal_url_never_serves_out_of_dir_files(self):
+    def test_traversal_name_that_reaches_the_view_is_404(self):
+        # Only slash-free names route here; traversal forms never reach the view and are covered by test_resolver_rejects_traversal_and_dotfiles.
         secret = os.path.join(self.log_dir, os.pardir, "secret.txt")
         with open(secret, "w") as f:
             f.write("TOP SECRET")
         self.addCleanup(os.remove, secret)
-        for name in ("..", "%2e%2e%2fsecret.txt", ".hidden"):
-            response = self.client.get(f"/api/core/logs/{name}/")
-            body = getattr(response, "content", b"")
-            self.assertNotIn(b"TOP SECRET", body, name)
+        response = self.client.get("/api/core/logs/.hidden/")
+        self.assertEqual(response.status_code, 404)
+        self.assertNotIn(b"TOP SECRET", response.content)
 
     def test_missing_file_is_404(self):
         response = self.client.get("/api/core/logs/nope.log/")
