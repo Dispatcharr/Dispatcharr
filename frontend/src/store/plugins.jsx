@@ -11,6 +11,8 @@ export const usePluginStore = create((set, get) => ({
   availablePlugins: [],
   reposLoading: false,
   availableLoading: false,
+  reposError: null,
+  availableError: null,
 
   // Async plugin action tasks (see WebSocket.jsx plugin_task_progress/
   // plugin_task_complete and PluginDetail.jsx's "Background Tasks" section). Keyed by
@@ -116,6 +118,25 @@ export const usePluginStore = create((set, get) => ({
     }));
   },
 
+  // First-ever-enable confirmation: a single dialog instance (rendered by
+  // <PluginEnableConfirmModal/> in Plugins.jsx and PluginDetail.jsx) shared
+  // across every entry point that can flip PluginConfig.enabled, so the
+  // capabilities prompt can't drift between them. `requestEnableConfirmation`
+  // resolves true/false based on the user's choice in that dialog.
+  enableConfirm: { opened: false, plugin: null, resolve: null },
+
+  requestEnableConfirmation: (plugin) => {
+    return new Promise((resolve) => {
+      set({ enableConfirm: { opened: true, plugin, resolve } });
+    });
+  },
+
+  resolveEnableConfirmation: (confirmed) => {
+    const { resolve } = get().enableConfirm;
+    set({ enableConfirm: { opened: false, plugin: null, resolve: null } });
+    if (resolve) resolve(confirmed);
+  },
+
   addPlugin: (plugin) => {
     set((state) => ({ plugins: [...state.plugins, plugin] }));
   },
@@ -133,12 +154,12 @@ export const usePluginStore = create((set, get) => ({
 
   // Repo management
   fetchRepos: async () => {
-    set({ reposLoading: true });
+    set({ reposLoading: true, reposError: null });
     try {
       const repos = await API.getPluginRepos();
       set({ repos: repos || [], reposLoading: false });
-    } catch {
-      set({ reposLoading: false });
+    } catch (reposError) {
+      set({ reposError, reposLoading: false });
     }
   },
 
@@ -174,12 +195,12 @@ export const usePluginStore = create((set, get) => ({
   },
 
   fetchAvailablePlugins: async () => {
-    set({ availableLoading: true });
+    set({ availableLoading: true, availableError: null });
     try {
       const plugins = await API.getAvailablePlugins();
       set({ availablePlugins: plugins || [], availableLoading: false });
-    } catch {
-      set({ availableLoading: false });
+    } catch (availableError) {
+      set({ availableError, availableLoading: false });
     }
   },
 

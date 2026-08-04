@@ -36,12 +36,23 @@ class ReportProgressTests(SimpleTestCase):
 
 
 class DispatchTaskTests(SimpleTestCase):
-    def _lp(self):
+    def _lp(self, capabilities=("background_tasks",)):
         return LoadedPlugin(
             key="my-plugin",
             name="My Plugin",
             actions=[{"id": "do_work", "label": "Do Work"}],
+            capabilities=list(capabilities),
         )
+
+    def test_raises_permission_error_without_background_tasks_capability(self):
+        pm = PluginManager()
+        dispatch_task = pm._make_task_dispatcher(self._lp(capabilities=()))
+
+        with patch("apps.plugins.tasks.run_plugin_action_task.apply_async") as mock_apply_async:
+            with self.assertRaises(PermissionError):
+                dispatch_task("do_work")
+
+        mock_apply_async.assert_not_called()
 
     def test_dispatches_to_plugins_queue_and_returns_task_id(self):
         pm = PluginManager()

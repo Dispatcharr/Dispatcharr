@@ -13,11 +13,14 @@ from django.test import SimpleTestCase, override_settings
 from apps.plugins.loader import LoadedPlugin, PluginManager
 
 
-def _plugin_with_leader_hooks(key="leader_plugin"):
+def _plugin_with_leader_hooks(key="leader_plugin", capabilities=("persistent_service",)):
     instance = MagicMock()
     instance.on_leader_acquired = MagicMock()
     instance.on_leader_lost = MagicMock()
-    return LoadedPlugin(key=key, name=key, instance=instance, loaded=True), instance
+    return (
+        LoadedPlugin(key=key, name=key, instance=instance, loaded=True, capabilities=list(capabilities)),
+        instance,
+    )
 
 
 def _plugin_without_leader_hooks(key="plain_plugin"):
@@ -203,6 +206,29 @@ class LeadershipTickTests(SimpleTestCase):
         self.assertEqual(pm._leadership_state["svc"], "follower")
 
         pm._leadership_tick()  # reacquires
+        instance.on_leader_acquired.assert_called_once()
+        self.assertEqual(pm._leadership_state["svc"], "leader")
+
+    def test_hook_without_persistent_service_capability_is_skipped(self):
+        pm = PluginManager()
+        lp, instance = _plugin_with_leader_hooks("svc", capabilities=())
+        pm._registry = {"svc": lp}
+        pm.try_acquire_leadership = MagicMock()
+
+        pm._leadership_tick()
+
+        pm.try_acquire_leadership.assert_not_called()
+        instance.on_leader_acquired.assert_not_called()
+        self.assertNotIn("svc", pm._leadership_state)
+
+    def test_hook_with_persistent_service_capability_runs(self):
+        pm = PluginManager()
+        lp, instance = _plugin_with_leader_hooks("svc", capabilities=("persistent_service",))
+        pm._registry = {"svc": lp}
+        pm.try_acquire_leadership = MagicMock(return_value=True)
+
+        pm._leadership_tick()
+
         instance.on_leader_acquired.assert_called_once()
         self.assertEqual(pm._leadership_state["svc"], "leader")
 

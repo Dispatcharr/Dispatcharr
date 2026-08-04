@@ -165,6 +165,24 @@ If `plugin.json` is missing or invalid, the plugin is treated as **legacy**:
 - `logo.png` still displays if present.
 - The UI shows a warning asking the developer to upgrade to the new standard.
 
+### `manifest_version` and `capabilities`
+
+```
+{
+  "manifest_version": 1,
+  "name": "My Plugin",
+  "capabilities": ["background_tasks"],
+  ...
+}
+```
+
+- `manifest_version` (int, optional): if omitted, your manifest is treated as version `0` (every manifest written before this field existed). Set `"manifest_version": 1` to opt into the schema documented here.
+- `capabilities` (list of strings, optional): a self-declared list of what your plugin needs. Currently supported:
+  - `background_tasks`: your plugin uses `context["dispatch_task"]` and/or a manifest action with `"async": true` (see "Long-Running Actions" below). Declaring it explicitly isn't required if you already set `async: true` on an action (that implies it), but is required if you *only* call `dispatch_task()` at runtime without any `async` action, since that usage can't be detected from the manifest alone.
+  - Unknown/future capability ids are ignored gracefully by older Dispatcharr builds; the registry is intentionally extensible.
+- Declaring `background_tasks` shows users an itemized capability prompt the first time they enable your plugin, and is also what decides whether the dedicated `plugins` Celery worker gets started at container boot (see the deployment note below).
+- **`context["dispatch_task"]` is enforced:** calling it without the plugin having the `background_tasks` capability (declared directly, or implied by any `async: true` action) raises a `PermissionError`, surfaced to the caller as a 403. This prevents a plugin from quietly piggybacking on another plugin's already-running `plugins` worker without declaring that it needs one. Manifest `async: true` actions never hit this check, since the capability is always inferred for them automatically.
+
 ---
 
 ## Plugin Interface
@@ -309,7 +327,7 @@ Read settings in `run` via `context["settings"]`.
 
 **Do not start a server, socket listener, or other persistent process in `__init__` or at module import time.** Dispatcharr instantiates every enabled plugin's `Plugin` class in every process that touches the app, often a dozen or more per plugin. Anything started in `__init__` starts once per process, so servers collide on ports.
 
-For a persistent background service, implement `on_leader_acquired`/`on_leader_lost` instead:
+For a persistent background service, implement `on_leader_acquired`/`on_leader_lost` **and** declare the `persistent_service` capability:
 
 ```python
 class Plugin:
@@ -325,7 +343,14 @@ class Plugin:
         self._stop_my_server()
 ```
 
-Plugins opt in by defining `on_leader_acquired`; plugins that don't define it are unaffected.
+```json
+{
+  "manifest_version": 1,
+  "capabilities": ["persistent_service"]
+}
+```
+
+**Declaring the capability is required, not optional.** Unlike `background_tasks`, nothing about `on_leader_acquired` can be inferred from the rest of the manifest, so if `persistent_service` isn't declared, Dispatcharr skips leader election for your plugin entirely: `on_leader_acquired` is simply never called, silently, no error. This shows users an itemized capability prompt the first time they enable your plugin, the same as `background_tasks` (see `manifest_version` and `capabilities`, above).
 
 Dispatcharr elects one process per plugin using a Redis lease (30s TTL, renewed every 10s). If the leader process dies, another takes over within about 30s. The `context` passed here is lighter than `run()`'s: `settings` (a snapshot from discovery time, not a live read) and `logger`, no `actions`.
 
@@ -374,7 +399,9 @@ Either way, call `context["report_progress"](percent, message)` from inside the 
 
 Event hooks and non-async manual actions can also be routed through the same dedicated worker without any manifest changes, via a system-wide "Dedicated Plugin Worker" setting (off by default). Turning it on doesn't change your action's `run()` contract, only where it executes.
 
-**Deployment note:** `async` actions and `dispatch_task` always target the `plugins` Celery queue, which ships enabled by default in both the AIO image and the standard split-container `docker-compose.yml`. If you run a custom-mounted `entrypoint.celery.sh` or `uwsgi.ini` that predates this queue, add a `plugins` worker yourself (mirror the existing `dvr` worker line) or these dispatch paths will queue work that never runs.
+**Deployment note:** `async` actions and `dispatch_task` always target the `plugins` Celery queue, which ships in both the AIO image and the standard split-container `docker-compose.yml`. If you run a custom-mounted `entrypoint.celery.sh` or `uwsgi.ini` that predates this queue, add a `plugins` worker yourself (mirror the existing `dvr` worker line) or these dispatch paths will queue work that never runs.
+
+**The `plugins` worker is only started when needed.** At container startup, Dispatcharr checks whether any *enabled* plugin declares the `background_tasks` capability (directly, or implicitly via an `async: true` action) and only spawns the `plugins` Celery worker if so. See `docker/plugins-worker-guard.sh` and `apps/plugins/management/commands/plugins_worker_needed.py`. This detection runs once at boot, not continuously: **enabling a plugin that newly needs background tasks requires restarting the Celery/AIO container** for the worker to actually start, in addition to enabling the plugin itself. Operators can override the auto-detection with the `CELERY_PLUGINS_WORKER` environment variable (`auto` default / `always` / `never`).
 
 ### Action Confirmation (Modal)
 Developers can request a confirmation modal per action using the `confirm` key on the action. Options:

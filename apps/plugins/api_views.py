@@ -439,6 +439,8 @@ class PluginImportAPIView(PluginAuthMixin, APIView):
                 "ever_enabled": getattr(cfg, "ever_enabled", False) if cfg else False,
                 "fields": [],
                 "actions": [],
+                "capabilities": [],
+                "manifest_version": 0,
                 "trusted": bool(cfg and (cfg.ever_enabled or cfg.enabled)),
                 "loaded": False,
                 "missing": False,

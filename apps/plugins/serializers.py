@@ -55,6 +55,13 @@ class PluginFieldSerializer(serializers.Serializer):
     max_size = serializers.IntegerField(required=False)
 
 
+class PluginCapabilitySerializer(serializers.Serializer):
+    id = serializers.CharField()
+    label = serializers.CharField()
+    description = serializers.CharField(required=False, allow_blank=True)
+    requires_restart = serializers.BooleanField(required=False, default=False)
+
+
 class PluginSerializer(serializers.Serializer):
     key = serializers.CharField()
     name = serializers.CharField()
@@ -66,6 +73,8 @@ class PluginSerializer(serializers.Serializer):
     fields = PluginFieldSerializer(many=True)
     settings = serializers.JSONField()
     actions = PluginActionSerializer(many=True)
+    capabilities = PluginCapabilitySerializer(many=True, required=False)
+    manifest_version = serializers.IntegerField(required=False, default=0)
     source_repo = serializers.IntegerField(required=False, allow_null=True)
     slug = serializers.CharField(required=False, allow_blank=True)
     is_managed = serializers.BooleanField(required=False)

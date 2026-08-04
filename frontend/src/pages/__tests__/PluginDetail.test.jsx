@@ -27,6 +27,14 @@ vi.mock('react-router-dom', async (importOriginal) => {
 
 const mockParams = { key: 'test-plugin' };
 
+// <PluginEnableConfirmModal/> (rendered unconditionally by PluginDetail.jsx)
+// reads this off the store hook on every render, regardless of what a given
+// test's selector state is otherwise testing.
+const enableConfirmDefaults = {
+  enableConfirm: { opened: false, plugin: null, resolve: null },
+  resolveEnableConfirmation: vi.fn(),
+};
+
 vi.mock('../../store/plugins');
 vi.mock('../../store/settings');
 vi.mock('../../store/auth');
@@ -142,6 +150,7 @@ describe('PluginDetail', () => {
         plugins: [mockPlugin],
         loading: false,
         installPlugin: vi.fn(),
+        ...enableConfirmDefaults,
       })
     );
     usePluginStore.getState = vi.fn(() => ({
@@ -155,6 +164,7 @@ describe('PluginDetail', () => {
       invalidatePlugins: vi.fn(),
       installPlugin: vi.fn(),
       hydratePluginTasks: vi.fn(),
+      requestEnableConfirmation: vi.fn().mockResolvedValue(true),
     }));
     useSettingsStore.mockImplementation((selector) =>
       selector({ version: { version: '1.0.0' } })
@@ -190,7 +200,7 @@ describe('PluginDetail', () => {
   it('shows a not-found state and a back link when the plugin does not exist', () => {
     mockParams.key = 'missing-plugin';
     usePluginStore.mockImplementation((selector) =>
-      selector({ plugins: [], loading: false })
+      selector({ plugins: [], loading: false, ...enableConfirmDefaults })
     );
     render(<PluginDetail />);
     expect(screen.getByText('Plugin not found.')).toBeInTheDocument();
@@ -255,6 +265,7 @@ describe('PluginDetail', () => {
       selector({
         plugins: [{ ...mockPlugin, slug: '', source_repo: null, is_managed: false }],
         loading: false,
+        ...enableConfirmDefaults,
       })
     );
     render(<PluginDetail />);
@@ -286,6 +297,7 @@ describe('PluginDetail', () => {
           plugins: [pluginWithFields],
           loading: false,
           installPlugin: vi.fn(),
+          ...enableConfirmDefaults,
         })
       );
     });
@@ -329,7 +341,7 @@ describe('PluginDetail', () => {
     it('always shows actions expanded in wide (multi-column) mode', () => {
       vi.mocked(useMediaQuery).mockReturnValue(false);
       usePluginStore.mockImplementation((selector) =>
-        selector({ plugins: [pluginWithActions], loading: false })
+        selector({ plugins: [pluginWithActions], loading: false, ...enableConfirmDefaults })
       );
       render(<PluginDetail />);
       expect(screen.getByTestId('plugin-action-list')).toBeInTheDocument();
@@ -338,7 +350,7 @@ describe('PluginDetail', () => {
     it('starts expanded but collapses on click in single-column mode', () => {
       vi.mocked(useMediaQuery).mockReturnValue(true);
       usePluginStore.mockImplementation((selector) =>
-        selector({ plugins: [pluginWithActions], loading: false })
+        selector({ plugins: [pluginWithActions], loading: false, ...enableConfirmDefaults })
       );
       render(<PluginDetail />);
 

@@ -14,10 +14,40 @@ from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 from django.db import close_old_connections, transaction
 
+from .capabilities import (
+    compute_effective_capabilities,
+    describe_capabilities,
+    min_app_version_for_manifest_version,
+    parse_manifest_version,
+    manifest_version_supported,
+)
 from .models import PluginConfig
 from .version_utils import get_plugin_status
+from version import __version__
 
 logger = logging.getLogger(__name__)
+
+
+def read_plugin_manifest(path: str) -> tuple[Optional[Dict[str, Any]], bool]:
+    """Read and parse <path>/plugin.json, if present.
+
+    Module-level (no PluginManager instance needed) so lightweight tooling
+    (e.g. the plugins_worker_needed management command) can read
+    manifests without booting the full plugin discovery/leadership machinery.
+    """
+    manifest_path = os.path.join(path, "plugin.json")
+    if not os.path.isfile(manifest_path):
+        return None, False
+    try:
+        with open(manifest_path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except Exception:
+        logger.warning("Invalid plugin.json for plugin at %s", path)
+        return None, False
+    if not isinstance(data, dict):
+        logger.warning("plugin.json must be an object for plugin at %s", path)
+        return None, False
+    return data, True
 
 
 @dataclass
@@ -32,6 +62,8 @@ class LoadedPlugin:
     instance: Any = None
     fields: List[Dict[str, Any]] = field(default_factory=list)
     actions: List[Dict[str, Any]] = field(default_factory=list)
+    capabilities: List[str] = field(default_factory=list)
+    manifest_schema_version: int = 0
     trusted: bool = False
     loaded: bool = False
     path: Optional[str] = None
@@ -81,6 +113,9 @@ class PluginManager:
         self._leadership_state: Dict[str, str] = {}
         self._leadership_lock = threading.RLock()
         self._leadership_thread_started = False
+        # Keys already warned about missing the persistent_service capability,
+        # so _leadership_tick logs once per plugin instead of every tick.
+        self._leadership_capability_warned: set = set()
 
         # Ensure plugins directory exists
         os.makedirs(self.plugins_dir, exist_ok=True)
@@ -279,6 +314,8 @@ class PluginManager:
         manifest_help_url = None
         manifest_fields: List[Dict[str, Any]] = []
         manifest_actions: List[Dict[str, Any]] = []
+        manifest_capabilities: List[str] = []
+        manifest_schema_version = 0
         if has_manifest and isinstance(manifest, dict):
             manifest_name = manifest.get("name") if isinstance(manifest.get("name"), str) else None
             manifest_version = manifest.get("version") if isinstance(manifest.get("version"), str) else None
@@ -287,6 +324,18 @@ class PluginManager:
             manifest_help_url = manifest.get("help_url") if isinstance(manifest.get("help_url"), str) else None
             manifest_fields = self._normalize_fields(manifest.get("fields", []))
             manifest_actions = self._normalize_actions(manifest.get("actions", []))
+            manifest_capabilities = compute_effective_capabilities(manifest)
+            manifest_schema_version = parse_manifest_version(manifest)
+            if not manifest_version_supported(manifest_schema_version, __version__):
+                logger.warning(
+                    "Plugin '%s' declares manifest_version=%s, which requires "
+                    "Dispatcharr >= %s (running %s). Falling back to best-effort "
+                    "parsing of manifest fields this build understands.",
+                    plugin_key,
+                    manifest_schema_version,
+                    min_app_version_for_manifest_version(manifest_schema_version),
+                    __version__,
+                )
 
         display_name = manifest_name or entry
         display_version = manifest_version if manifest_version is not None else (cfg.version if cfg else "")
@@ -302,6 +351,8 @@ class PluginManager:
                 help_url=manifest_help_url or "",
                 fields=manifest_fields if has_manifest else [],
                 actions=manifest_actions if has_manifest else [],
+                capabilities=manifest_capabilities if has_manifest else [],
+                manifest_schema_version=manifest_schema_version,
                 trusted=trusted,
                 loaded=False,
                 path=path,
@@ -337,6 +388,8 @@ class PluginManager:
                 lp.fields = manifest_fields
             if manifest_actions and not lp.actions:
                 lp.actions = manifest_actions
+            lp.capabilities = manifest_capabilities
+            lp.manifest_schema_version = manifest_schema_version
             lp.trusted = trusted
             lp.loaded = True
             lp.path = path
@@ -522,6 +575,8 @@ class PluginManager:
                     "fields": lp.fields or [],
                     "settings": (conf.settings if conf else {}),
                     "actions": lp.actions or [],
+                    "capabilities": describe_capabilities(lp.capabilities or []),
+                    "manifest_version": lp.manifest_schema_version,
                     "missing": False,
                     "trusted": trusted,
                     "loaded": bool(lp.loaded),
@@ -566,6 +621,8 @@ class PluginManager:
                     "fields": [],
                     "settings": conf.settings or {},
                     "actions": [],
+                    "capabilities": [],
+                    "manifest_version": 0,
                     "missing": True,
                     "trusted": bool(conf.ever_enabled or conf.enabled),
                     "loaded": False,
@@ -860,6 +917,17 @@ class PluginManager:
             hook = getattr(lp.instance, "on_leader_acquired", None)
             if not callable(hook):
                 continue
+            if "persistent_service" not in (lp.capabilities or []):
+                if key not in self._leadership_capability_warned:
+                    self._leadership_capability_warned.add(key)
+                    logger.warning(
+                        "Plugin '%s' defines on_leader_acquired() without declaring the "
+                        "'persistent_service' capability in plugin.json; skipping leader "
+                        'election for it. Add "capabilities": ["persistent_service"] to '
+                        "the manifest to allow this.",
+                        key,
+                    )
+                continue
             try:
                 with self._leadership_lock:
                     currently_leader = self._leadership_state.get(key) == "leader"
@@ -1139,8 +1207,25 @@ class PluginManager:
 
     def _make_task_dispatcher(self, lp: LoadedPlugin):
         """Lets an action hand work off to the plugins queue at runtime,
-        independent of the manifest 'async' flag."""
+        independent of the manifest 'async' flag.
+
+        Enforced (unlike the rest of the capabilities model, which is
+        advisory-only for backward compatibility, see apps/plugins/capabilities.py):
+        a plugin must declare the background_tasks capability to use this.
+        Manifest actions with "async": true don't need a separate check here,
+        since compute_effective_capabilities() already infers background_tasks
+        from those, so lp.capabilities is guaranteed to include it whenever an
+        async action reaches this dispatcher via run_action(). This only
+        actually blocks a plugin that calls dispatch_task() at runtime without
+        declaring background_tasks (directly, or via any async action) at all.
+        """
         def dispatch_task(action_id, params=None):
+            if "background_tasks" not in (lp.capabilities or []):
+                raise PermissionError(
+                    f"Plugin '{lp.key}' called dispatch_task() without declaring the "
+                    "'background_tasks' capability in plugin.json. Add "
+                    '"capabilities": ["background_tasks"] to the manifest to allow this.'
+                )
             from .tasks import run_plugin_action_task
             from .task_history import record_task_started
             async_result = run_plugin_action_task.apply_async(
@@ -1154,19 +1239,7 @@ class PluginManager:
         return dispatch_task
 
     def _read_manifest(self, path: str) -> tuple[Optional[Dict[str, Any]], bool]:
-        manifest_path = os.path.join(path, "plugin.json")
-        if not os.path.isfile(manifest_path):
-            return None, False
-        try:
-            with open(manifest_path, "r", encoding="utf-8") as fh:
-                data = json.load(fh)
-        except Exception:
-            logger.warning("Invalid plugin.json for plugin at %s", path)
-            return None, False
-        if not isinstance(data, dict):
-            logger.warning("plugin.json must be an object for plugin at %s", path)
-            return None, False
-        return data, True
+        return read_plugin_manifest(path)
 
     def _get_logo_url(self, key: str, *, path: Optional[str] = None) -> Optional[str]:
         logo_path = os.path.join(self.plugins_dir, key, "logo.png")

@@ -32,6 +32,10 @@ vi.mock('../../components/modals/ManageReposModal.jsx', () => ({
     ) : null,
 }));
 
+vi.mock('../../components/PluginEnableConfirmModal.jsx', () => ({
+  default: () => null,
+}));
+
 // ── Utility mocks ──────────────────────────────────────────────────────────────
 vi.mock('../../utils/notificationUtils.js', () => ({
   showNotification: vi.fn(),
@@ -188,6 +192,8 @@ const setupStore = ({
       fetchRepos: mockFetchRepos,
       fetchAvailablePlugins: mockFetchAvailablePlugins,
       refreshRepo: mockRefreshRepo,
+      enableConfirm: { opened: false, plugin: null, resolve: null },
+      resolveEnableConfirmation: vi.fn(),
     })
   );
 
@@ -407,6 +413,8 @@ describe('PluginBrowsePage', () => {
           fetchRepos: vi.fn(),
           fetchAvailablePlugins: vi.fn(),
           refreshRepo: mockRefreshRepo,
+          enableConfirm: { opened: false, plugin: null, resolve: null },
+          resolveEnableConfirmation: vi.fn(),
         })
       );
       vi.mocked(usePluginStore).getState.mockReturnValue({

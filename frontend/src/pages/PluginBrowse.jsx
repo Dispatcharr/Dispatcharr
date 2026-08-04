@@ -18,6 +18,7 @@ import { usePluginStore } from '../store/plugins.jsx';
 import useSettingsStore from '../store/settings.jsx';
 import AvailablePluginCard from '../components/cards/AvailablePluginCard.jsx';
 import ManageReposModal from '../components/modals/ManageReposModal.jsx';
+import PluginEnableConfirmModal from '../components/PluginEnableConfirmModal.jsx';
 import { showNotification } from '../utils/notificationUtils.js';
 import { compareVersions } from '../utils/components/pluginUtils.js';
 
@@ -400,6 +401,8 @@ export default function PluginBrowsePage() {
         opened={repoModalOpen}
         onClose={() => setRepoModalOpen(false)}
       />
+
+      <PluginEnableConfirmModal />
     </AppShellMain>
   );
 }

@@ -32,6 +32,7 @@ import {
   PluginSecurityWarning,
   PluginSupportDisclaimer,
 } from '../PluginWarnings.jsx';
+import ConfirmationDialog from '../ConfirmationDialog.jsx';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { usePluginStore } from '../../store/plugins';
 import PluginDetailPanel from '../PluginDetailPanel.jsx';
@@ -250,6 +251,7 @@ const AvailablePluginCard = ({
   const [installAction, setInstallAction] = useState(null); // 'installed' | 'updated' | 'downgraded'
   const [pendingInstall, setPendingInstall] = useState(null);
   const [installedKey, setInstalledKey] = useState(null);
+  const [installedPlugin, setInstalledPlugin] = useState(null);
   const [enableNow, setEnableNow] = useState(false);
   const [enabling, setEnabling] = useState(false);
   const [pluginIsDisabled, setPluginIsDisabled] = useState(false);
@@ -305,6 +307,7 @@ const AvailablePluginCard = ({
         wasDowngrade ? 'downgraded' : wasInstalled ? 'updated' : 'installed'
       );
       setInstalledKey(result.plugin?.key || params.slug);
+      setInstalledPlugin(result.plugin || null);
       setPluginIsDisabled(result.plugin?.enabled === false);
       setEnableNow(false);
       setRestartPromptOpen(true);
@@ -316,11 +319,18 @@ const AvailablePluginCard = ({
 
   const handleDismissRestart = async (andNavigate = false) => {
     if (enableNow && installedKey) {
-      setEnabling(true);
-      try {
-        await setPluginEnabled(installedKey, true);
-      } finally {
-        setEnabling(false);
+      const proceed =
+        installedPlugin?.ever_enabled ||
+        (await usePluginStore
+          .getState()
+          .requestEnableConfirmation(installedPlugin || { key: installedKey }));
+      if (proceed) {
+        setEnabling(true);
+        try {
+          await setPluginEnabled(installedKey, true);
+        } finally {
+          setEnabling(false);
+        }
       }
     }
     setRestartPromptOpen(false);
@@ -713,64 +723,46 @@ const AvailablePluginCard = ({
         />
       </Modal>
 
-      {/* Deprecation warning modal */}
-      <Modal
+      <ConfirmationDialog
         opened={deprecationWarnOpen}
         onClose={() => {
           setDeprecationWarnOpen(false);
           setPendingDeprecatedInstall(null);
         }}
+        onConfirm={confirmDeprecatedInstall}
         zIndex={300}
+        size="sm"
         title={
           <Group gap="xs" align="center">
             <Ban size={18} color="var(--mantine-color-red-6)" />
             <Text fw={600}>Deprecated Plugin</Text>
           </Group>
         }
-        size="sm"
-      >
-        <Stack gap="md">
-          <Text size="sm">
-            <b>{plugin.name}</b> has been marked as <b>deprecated</b> by its
-            maintainer.
-          </Text>
-          <Text size="sm" c="dimmed">
-            Deprecated plugins may no longer receive updates or fixes, and could
-            stop working with future versions of Dispatcharr. It is recommended
-            to look for an alternative.
-          </Text>
-          <PluginSecurityWarning>
-            Plugins run server-side code with full access to your Dispatcharr
-            instance and its data. Only install plugins from developers you
-            trust. Malicious plugins could read or modify data, call internal
-            APIs, or perform unwanted actions.
-          </PluginSecurityWarning>
-          <PluginSupportDisclaimer />
-          <Text size="sm" fw={500}>
-            Do you still want to proceed?
-          </Text>
-          <Group justify="flex-end" gap="xs">
-            <Button
-              size="xs"
-              variant="default"
-              onClick={() => {
-                setDeprecationWarnOpen(false);
-                setPendingDeprecatedInstall(null);
-              }}
-            >
-              Cancel
-            </Button>
-            <Button
-              size="xs"
-              color="red"
-              leftSection={<Ban size={14} />}
-              onClick={confirmDeprecatedInstall}
-            >
-              Install Anyway
-            </Button>
-          </Group>
-        </Stack>
-      </Modal>
+        confirmLabel="Install Anyway"
+        message={
+          <Stack gap="md">
+            <Text size="sm">
+              <b>{plugin.name}</b> has been marked as <b>deprecated</b> by its
+              maintainer.
+            </Text>
+            <Text size="sm" c="dimmed">
+              Deprecated plugins may no longer receive updates or fixes, and
+              could stop working with future versions of Dispatcharr. It is
+              recommended to look for an alternative.
+            </Text>
+            <PluginSecurityWarning>
+              Plugins run server-side code with full access to your
+              Dispatcharr instance and its data. Only install plugins from
+              developers you trust. Malicious plugins could read or modify
+              data, call internal APIs, or perform unwanted actions.
+            </PluginSecurityWarning>
+            <PluginSupportDisclaimer />
+            <Text size="sm" fw={500}>
+              Do you still want to proceed?
+            </Text>
+          </Stack>
+        }
+      />
 
       {/* Unified install confirmation modal */}
       {(() => {
@@ -790,15 +782,17 @@ const AvailablePluginCard = ({
               ? 'orange'
               : isBadSig
                 ? 'red'
-                : undefined;
+                : 'blue';
         return (
-          <Modal
+          <ConfirmationDialog
             opened={confirmOpen}
             onClose={() => {
               setConfirmOpen(false);
               setPendingInstall(null);
             }}
+            onConfirm={confirmAndInstall}
             zIndex={300}
+            size="sm"
             title={
               <Group gap="xs" align="center">
                 {isBadSig ? (
@@ -814,124 +808,95 @@ const AvailablePluginCard = ({
                 <Text fw={600}>Confirm {actionLabel}</Text>
               </Group>
             }
-            size="sm"
-          >
-            <Stack gap="md">
-              <Text size="sm">
-                You are about to {actionLabel.toLowerCase()}{' '}
-                <b>{plugin.name}</b>{' '}
-                {isUpdate || isDowngrade ? (
-                  <>
-                    from <b>v{plugin.installed_version}</b> to{' '}
-                    <b>v{pendingInstall?.version}</b>
-                  </>
-                ) : (
-                  <>
-                    <b>v{pendingInstall?.version}</b>
-                  </>
-                )}
-                {plugin.repo_name ? (
-                  <>
-                    {' '}
-                    from <b>{plugin.repo_name}</b>
-                  </>
-                ) : (
-                  ''
-                )}
-                .
-              </Text>
-              <PluginSecurityWarning>
-                Plugins run server-side code with full access to your
-                Dispatcharr instance and its data. Only install plugins from
-                developers you trust. Malicious plugins could read or modify
-                data, call internal APIs, or perform unwanted actions.
-              </PluginSecurityWarning>
-              <PluginSupportDisclaimer />
-              {isDowngrade && (
-                <PluginDowngradeWarning>
-                  Downgrading may cause issues with saved settings or data.
-                </PluginDowngradeWarning>
-              )}
-              {isBadSig && (
+            confirmLabel={actionLabel}
+            confirmColor={btnColor}
+            message={
+              <Stack gap="md">
+                <Text size="sm">
+                  You are about to {actionLabel.toLowerCase()}{' '}
+                  <b>{plugin.name}</b>{' '}
+                  {isUpdate || isDowngrade ? (
+                    <>
+                      from <b>v{plugin.installed_version}</b> to{' '}
+                      <b>v{pendingInstall?.version}</b>
+                    </>
+                  ) : (
+                    <>
+                      <b>v{pendingInstall?.version}</b>
+                    </>
+                  )}
+                  {plugin.repo_name ? (
+                    <>
+                      {' '}
+                      from <b>{plugin.repo_name}</b>
+                    </>
+                  ) : (
+                    ''
+                  )}
+                  .
+                </Text>
                 <PluginSecurityWarning>
-                  This repository has an invalid or unverified signature.
-                  Installing plugins from unverified sources may be risky.
+                  Plugins run server-side code with full access to your
+                  Dispatcharr instance and its data. Only install plugins from
+                  developers you trust. Malicious plugins could read or modify
+                  data, call internal APIs, or perform unwanted actions.
                 </PluginSecurityWarning>
-              )}
-              {plugin.install_status === 'unmanaged' && (
-                <PluginInfoNote>
-                  This plugin was installed manually. Installing from this repo
-                  will bring it under repo management and enable future update
-                  checks.
-                </PluginInfoNote>
-              )}
-              {plugin.install_status === 'different_repo' && (
-                <PluginInfoNote>
-                  This plugin is currently managed by{' '}
-                  <b>{plugin.installed_source_repo_name || 'another repo'}</b>.
-                  Installing will transfer management to this repo.
-                </PluginInfoNote>
-              )}
-              <Text size="sm" fw={500}>
-                Are you sure you want to proceed?
-              </Text>
-              <Group justify="flex-end" gap="xs">
-                <Button
-                  size="xs"
-                  variant="default"
-                  onClick={() => {
-                    setConfirmOpen(false);
-                    setPendingInstall(null);
-                  }}
-                >
-                  Cancel
-                </Button>
-                <Button size="xs" color={btnColor} onClick={confirmAndInstall}>
-                  {actionLabel}
-                </Button>
-              </Group>
-            </Stack>
-          </Modal>
+                <PluginSupportDisclaimer />
+                {isDowngrade && (
+                  <PluginDowngradeWarning>
+                    Downgrading may cause issues with saved settings or data.
+                  </PluginDowngradeWarning>
+                )}
+                {isBadSig && (
+                  <PluginSecurityWarning>
+                    This repository has an invalid or unverified signature.
+                    Installing plugins from unverified sources may be risky.
+                  </PluginSecurityWarning>
+                )}
+                {plugin.install_status === 'unmanaged' && (
+                  <PluginInfoNote>
+                    This plugin was installed manually. Installing from this
+                    repo will bring it under repo management and enable
+                    future update checks.
+                  </PluginInfoNote>
+                )}
+                {plugin.install_status === 'different_repo' && (
+                  <PluginInfoNote>
+                    This plugin is currently managed by{' '}
+                    <b>{plugin.installed_source_repo_name || 'another repo'}</b>.
+                    Installing will transfer management to this repo.
+                  </PluginInfoNote>
+                )}
+                <Text size="sm" fw={500}>
+                  Are you sure you want to proceed?
+                </Text>
+              </Stack>
+            }
+          />
         );
       })()}
 
-      {/* Uninstall confirmation modal */}
-      <Modal
+      <ConfirmationDialog
         opened={uninstallConfirmOpen}
         onClose={() => setUninstallConfirmOpen(false)}
+        onConfirm={handleUninstall}
         zIndex={300}
+        size="sm"
         title={
           <Group gap="xs" align="center">
             <Trash2 size={18} color="var(--mantine-color-red-6)" />
             <Text fw={600}>Uninstall Plugin</Text>
           </Group>
         }
-        size="sm"
-      >
-        <Stack gap="md">
+        confirmLabel="Uninstall"
+        loading={uninstalling}
+        message={
           <Text size="sm">
-            Are you sure you want to uninstall <b>{plugin.name}</b>? This will
-            remove the plugin files and all associated settings.
+            Are you sure you want to uninstall <b>{plugin.name}</b>? This
+            will remove the plugin files and all associated settings.
           </Text>
-          <Group justify="flex-end" gap="xs">
-            <Button
-              size="xs"
-              variant="default"
-              onClick={() => setUninstallConfirmOpen(false)}
-            >
-              Cancel
-            </Button>
-            <Button
-              size="xs"
-              color="red"
-              loading={uninstalling}
-              onClick={handleUninstall}
-            >
-              Uninstall
-            </Button>
-          </Group>
-        </Stack>
-      </Modal>
+        }
+      />
 
       {/* Post-uninstall notice */}
       <Modal
