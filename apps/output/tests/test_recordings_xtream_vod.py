@@ -89,6 +89,13 @@ class XcRecordingVodTests(TestCase):
         )
         self.assertEqual([row["stream_id"] for row in streams], [f"recording-{self.recording.id}"])
 
+    def test_file_stat_race_hides_recording(self):
+        with patch("apps.output.views.os.stat", side_effect=OSError):
+            streams = xc_get_vod_streams(
+                self.factory.get("/player_api.php"), self.user, "dispatcharr-recordings"
+            )
+        self.assertEqual(streams, [])
+
     def test_xc_movie_route_streams_completed_recording_with_range_support(self):
         with patch("apps.proxy.vod_proxy.views.network_access_allowed", return_value=True), patch(
             "apps.channels.api_views.network_access_allowed", return_value=True
