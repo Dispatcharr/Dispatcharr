@@ -20,6 +20,7 @@ import base64
 import logging
 from django.db.models.functions import Lower
 import os
+import stat
 from apps.m3u.utils import calculate_tuner_count
 from apps.proxy.utils import get_user_active_connections
 import regex
@@ -1171,12 +1172,7 @@ RECORDING_VOD_STREAM_PREFIX = "recording-"
 
 
 def _xc_user_can_access_recording(user, recording):
-    """Return whether an XC user can discover or play this recording.
-
-    DVR recordings inherit visibility from their source channel.  Keep the
-    same user-level, profile, output-hidden, and adult-content gates as the
-    regular client-facing channel output.
-    """
+    """Apply the XC channel visibility rules to a recording's source channel."""
     channel = recording.channel
     if channel.hidden_from_output:
         return False
@@ -1195,23 +1191,54 @@ def _xc_user_can_access_recording(user, recording):
     return Channel.objects.filter(**filters).distinct().exists()
 
 
+def _xc_recording_file_is_available(recording):
+    path = (recording.custom_properties or {}).get("file_path")
+    if not path:
+        return False
+    try:
+        file_stat = os.stat(path)
+    except OSError:
+        return False
+    return stat.S_ISREG(file_stat.st_mode) and file_stat.st_size > 0
+
+
+def _xc_recording_is_available_to_user(user, recording):
+    return (
+        (recording.custom_properties or {}).get("status") == "completed"
+        and _xc_recording_file_is_available(recording)
+        and _xc_user_can_access_recording(user, recording)
+    )
+
+
 def _xc_completed_recordings_for_user(user):
-    """Return completed, non-empty recording files the XC user may access."""
+    """Yield completed recording files that the XC user may access."""
     from apps.channels.models import Recording
 
-    recordings = []
-    for recording in Recording.objects.select_related("channel").order_by("-end_time", "-id"):
-        cp = recording.custom_properties or {}
-        path = cp.get("file_path")
-        if (
-            cp.get("status") == "completed"
-            and path
-            and os.path.isfile(path)
-            and os.path.getsize(path) > 0
-            and _xc_user_can_access_recording(user, recording)
-        ):
-            recordings.append(recording)
-    return recordings
+    recordings = Recording.objects.filter(
+        custom_properties__status="completed"
+    ).select_related("channel").order_by("-end_time", "-id")
+    return (
+        recording
+        for recording in recordings
+        if _xc_recording_is_available_to_user(user, recording)
+    )
+
+
+def _xc_get_available_recording(user, stream_id):
+    """Return an XC-visible completed recording for its virtual stream ID."""
+    stream_id = str(stream_id)
+    if not stream_id.startswith(RECORDING_VOD_STREAM_PREFIX):
+        return None
+
+    from apps.channels.models import Recording
+
+    try:
+        recording = Recording.objects.select_related("channel").get(
+            pk=stream_id.removeprefix(RECORDING_VOD_STREAM_PREFIX)
+        )
+    except (Recording.DoesNotExist, ValueError):
+        return None
+    return recording if _xc_recording_is_available_to_user(user, recording) else None
 
 
 def _xc_recording_stream_id(recording):
@@ -1269,7 +1296,7 @@ def xc_get_vod_categories(user):
             "parent_id": 0,
         })
 
-    if _xc_completed_recordings_for_user(user):
+    if next(_xc_completed_recordings_for_user(user), None):
         response.append({
             "category_id": RECORDING_VOD_CATEGORY_ID,
             "category_name": RECORDING_VOD_CATEGORY_NAME,
@@ -1349,9 +1376,7 @@ def xc_get_vod_streams(request, user, category_id=None):
             "direct_source": "",
         })
 
-    # A number of Xtream clients request the complete VOD list once and apply
-    # their category filter locally.  Include completed local recordings in
-    # that unfiltered form as well as in the dedicated category response.
+    # Some Xtream clients fetch all VOD before filtering categories locally.
     if not category_id:
         start_num = len(streams) + 1
         streams.extend(
@@ -1718,13 +1743,8 @@ def xc_get_series_info(request, user, series_id):
 def xc_get_vod_info(request, user, vod_id):
     """Get detailed VOD (movie) information."""
     if str(vod_id).startswith(RECORDING_VOD_STREAM_PREFIX):
-        recording_id = str(vod_id)[len(RECORDING_VOD_STREAM_PREFIX):]
-        from apps.channels.models import Recording
-        try:
-            recording = Recording.objects.select_related("channel").get(pk=recording_id)
-        except (Recording.DoesNotExist, ValueError):
-            raise Http404()
-        if recording not in _xc_completed_recordings_for_user(user):
+        recording = _xc_get_available_recording(user, vod_id)
+        if recording is None:
             raise Http404()
         row = _xc_recording_row(recording, 1)
         return {

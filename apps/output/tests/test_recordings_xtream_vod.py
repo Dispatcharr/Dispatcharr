@@ -7,6 +7,7 @@ from uuid import uuid4
 from django.test import TestCase
 from django.utils import timezone
 from django.test.client import RequestFactory
+from django.http import Http404
 from rest_framework.test import APIClient
 
 from apps.accounts.models import User
@@ -105,3 +106,10 @@ class XcRecordingVodTests(TestCase):
         )
         self.assertEqual(info["movie_data"]["stream_id"], f"recording-{self.recording.id}")
         self.assertNotIn(self.file.name, str(info))
+
+        self.channel.hidden_from_output = True
+        self.channel.save(update_fields=["hidden_from_output"])
+        with self.assertRaises(Http404):
+            xc_get_vod_info(
+                self.factory.get("/player_api.php"), self.user, f"recording-{self.recording.id}"
+            )
