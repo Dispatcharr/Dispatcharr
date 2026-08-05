@@ -2195,22 +2195,104 @@ class SDPosterProxyErrorHandlingTests(TestCase):
     @patch('requests.get')
     @patch('requests.post')
     def test_2055_disables_extra_debugging_on_auth(self, mock_post, mock_get):
+        """2055 on /token must clear the toggle and retry auth without RouteTo."""
         self.source.custom_properties = {'sd_extra_debugging': True}
         self.source.save(update_fields=['custom_properties'])
 
-        mock_post.return_value = self._json_response(200, {
+        rejected = self._json_response(400, {
             'response': 'INVALID_PARAMETER:DEBUG',
             'code': 2055,
             'message': 'Unexpected debug connection from client.',
         })
+        mock_post.side_effect = [rejected, self._auth_ok()]
+        img = MagicMock()
+        img.status_code = 200
+        img.headers = {'Content-Type': 'image/jpeg'}
+        img.content = b'\xff\xd8\xffjpeg-bytes'
+        img.json = MagicMock(side_effect=ValueError('not json'))
+        mock_get.return_value = img
 
         resp = self.client.get(self.url)
-        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.status_code, 200)
         self.source.refresh_from_db()
         self.assertFalse(self.source.custom_properties.get('sd_extra_debugging'))
-        mock_get.assert_not_called()
-        auth_headers = mock_post.call_args.kwargs.get('headers') or mock_post.call_args[1].get('headers')
-        self.assertEqual(auth_headers.get('RouteTo'), 'debug')
+        self.assertEqual(mock_post.call_count, 2)
+        first_headers = (
+            mock_post.call_args_list[0].kwargs.get('headers')
+            or mock_post.call_args_list[0][1].get('headers')
+        )
+        second_headers = (
+            mock_post.call_args_list[1].kwargs.get('headers')
+            or mock_post.call_args_list[1][1].get('headers')
+        )
+        self.assertEqual(first_headers.get('RouteTo'), 'debug')
+        self.assertNotIn('RouteTo', second_headers)
+        mock_get.assert_called_once()
+
+    @patch('apps.epg.sd_utils.requests.get')
+    @patch('apps.epg.sd_utils.requests.post')
+    def test_2055_on_authorized_request_with_cached_token(
+        self, mock_post, mock_get
+    ):
+        """Cached tokens skip /token; 2055 on later calls must still clear debug."""
+        from apps.epg.sd_utils import (
+            sd_authorized_request,
+            sd_clear_cached_token,
+            sd_set_cached_token,
+        )
+
+        self.source.custom_properties = {'sd_extra_debugging': True}
+        self.source.save(update_fields=['custom_properties'])
+        sd_clear_cached_token(self.source.id)
+        sd_set_cached_token(
+            self.source.id, 'cached-tok', time.time() + 3600,
+            username='sduser', password='sdpass',
+        )
+
+        rejected = MagicMock(
+            status_code=400,
+            headers={'Content-Type': 'application/json'},
+            content=(
+                b'{"response":"INVALID_PARAMETER:DEBUG","code":2055,'
+                b'"message":"Unexpected debug connection from client."}'
+            ),
+        )
+        rejected.json = MagicMock(return_value={
+            'response': 'INVALID_PARAMETER:DEBUG',
+            'code': 2055,
+            'message': 'Unexpected debug connection from client.',
+        })
+        ok = MagicMock(
+            status_code=200,
+            headers={'Content-Type': 'application/json'},
+            content=b'{"lineups":[]}',
+        )
+        ok.json = MagicMock(return_value={'lineups': []})
+        mock_get.side_effect = [rejected, ok]
+
+        resp, token = sd_authorized_request(
+            'GET',
+            'https://json.schedulesdirect.org/20141201/lineups',
+            source=self.source,
+            token='cached-tok',
+            timeout=15,
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(token, 'cached-tok')
+        self.source.refresh_from_db()
+        self.assertFalse(self.source.custom_properties.get('sd_extra_debugging'))
+        mock_post.assert_not_called()
+        self.assertEqual(mock_get.call_count, 2)
+        first_headers = (
+            mock_get.call_args_list[0].kwargs.get('headers')
+            or mock_get.call_args_list[0][1].get('headers')
+        )
+        second_headers = (
+            mock_get.call_args_list[1].kwargs.get('headers')
+            or mock_get.call_args_list[1][1].get('headers')
+        )
+        self.assertEqual(first_headers.get('RouteTo'), 'debug')
+        self.assertNotIn('RouteTo', second_headers)
 
     @patch('requests.get')
     @patch('requests.post')
