@@ -14,6 +14,7 @@ import secrets
 from .permissions import IsAdmin, Authenticated
 from dispatcharr.utils import (
     SETUP_ALLOWED_IP_ENV,
+    get_client_ip,
     network_access_allowed,
     setup_ip_allowed,
 )
@@ -64,7 +65,7 @@ class TokenObtainPairView(TokenObtainPairView):
             # Log blocked login attempt due to network restrictions
             from core.utils import log_system_event
             username = request.data.get("username", 'unknown')
-            client_ip = request.META.get('REMOTE_ADDR', 'unknown')
+            client_ip = get_client_ip(request) or "unknown"
             user_agent = request.META.get('HTTP_USER_AGENT', 'unknown')
             logger.info(f"Login blocked by network policy: user={username} ip={client_ip} ua={user_agent}")
             log_system_event(
@@ -81,7 +82,7 @@ class TokenObtainPairView(TokenObtainPairView):
 
         # Log login attempt
         from core.utils import log_system_event
-        client_ip = request.META.get('REMOTE_ADDR', 'unknown')
+        client_ip = get_client_ip(request) or "unknown"
         user_agent = request.META.get('HTTP_USER_AGENT', 'unknown')
 
         try:
@@ -139,7 +140,7 @@ class TokenRefreshView(TokenRefreshView):
         if not network_access_allowed(request, "UI"):
             # Log blocked token refresh attempt due to network restrictions
             from core.utils import log_system_event
-            client_ip = request.META.get('REMOTE_ADDR', 'unknown')
+            client_ip = get_client_ip(request) or "unknown"
             user_agent = request.META.get('HTTP_USER_AGENT', 'unknown')
             logger.info(f"Token refresh blocked by network policy: ip={client_ip} ua={user_agent}")
             log_system_event(
@@ -226,7 +227,7 @@ class AuthViewSet(viewsets.ViewSet):
         # Log logout event before actually logging out
         from core.utils import log_system_event
         username = request.user.username if request.user and request.user.is_authenticated else 'unknown'
-        client_ip = request.META.get('REMOTE_ADDR', 'unknown')
+        client_ip = get_client_ip(request) or "unknown"
         user_agent = request.META.get('HTTP_USER_AGENT', 'unknown')
 
         log_system_event(

@@ -23,6 +23,16 @@ LOCAL_NETWORK_CIDRS = [
 ]
 
 SETUP_ALLOWED_IP_ENV = "DISPATCHARR_SETUP_ALLOWED_IP"
+TRUSTED_PROXIES_ENV = "DISPATCHARR_TRUSTED_PROXIES"
+
+# Parsed trusted-proxy networks. Rebuilt when the config key changes.
+# Config key is "__default_local__", "__none__", or the raw env string.
+_trusted_proxies_key = None
+_trusted_proxies_networks = ()
+
+# Sentinel values for DISPATCHARR_TRUSTED_PROXIES when explicitly disabling
+# header trust (env unset still means default local CIDRs).
+_TRUSTED_PROXIES_NONE = frozenset({"", "none", "off", "false", "0"})
 
 
 def json_error_response(message, status=400):
@@ -47,8 +57,86 @@ def validate_logo_file(file):
         raise ValidationError("File too large. Max 5MB.")
 
 
+def _normalize_ip(value):
+    """Parse an IP string, returning the IPv4 form for IPv4-mapped IPv6."""
+    try:
+        ip = ipaddress.ip_address((value or "").strip())
+    except ValueError:
+        return None
+    return ip.ipv4_mapped if getattr(ip, "ipv4_mapped", None) else ip
+
+
+def _trusted_proxy_networks():
+    """Return networks whose peers may set X-Real-IP / X-Forwarded-For.
+
+    When DISPATCHARR_TRUSTED_PROXIES is unset, defaults to LOCAL_NETWORK_CIDRS
+    so Docker/Traefik-style reverse proxies on private networks work without
+    configuration. Set the env to a comma-separated IP/CIDR list to narrow
+    trust, or to none / off / false / empty to trust no proxy headers.
+    """
+    global _trusted_proxies_key, _trusted_proxies_networks
+
+    if TRUSTED_PROXIES_ENV not in os.environ:
+        key = "__default_local__"
+        source = LOCAL_NETWORK_CIDRS
+    else:
+        raw = os.environ.get(TRUSTED_PROXIES_ENV, "").strip()
+        if raw.lower() in _TRUSTED_PROXIES_NONE:
+            key = "__none__"
+            source = []
+        else:
+            key = raw
+            source = [p.strip() for p in raw.split(",") if p.strip()]
+
+    if key == _trusted_proxies_key:
+        return _trusted_proxies_networks
+
+    networks = []
+    for part in source:
+        try:
+            networks.append(ipaddress.ip_network(part, strict=False))
+        except ValueError:
+            logger.warning("Invalid %s entry %r; ignoring", TRUSTED_PROXIES_ENV, part)
+    _trusted_proxies_key = key
+    _trusted_proxies_networks = tuple(networks)
+    return _trusted_proxies_networks
+
+
+def _ip_in_trusted(ip):
+    if ip is None:
+        return False
+    return any(ip in network for network in _trusted_proxy_networks())
+
+
 def get_client_ip(request):
-    return request.META.get("HTTP_X_REAL_IP") or request.META.get("REMOTE_ADDR")
+    """Return the client IP for ACLs and logging.
+
+    Proxy headers (X-Real-IP, X-Forwarded-For) are honored only when
+    REMOTE_ADDR is a trusted proxy. By default that means private/loopback
+    peers (LOCAL_NETWORK_CIDRS). Override with DISPATCHARR_TRUSTED_PROXIES.
+    Public peers never get header trust unless explicitly listed.
+    IPv4-mapped IPv6 addresses are returned in IPv4 form.
+    """
+    peer_str = request.META.get("REMOTE_ADDR") or ""
+    peer = _normalize_ip(peer_str)
+    if peer is None:
+        return peer_str or None
+    if not _ip_in_trusted(peer):
+        return str(peer)
+
+    real_ip = _normalize_ip(request.META.get("HTTP_X_REAL_IP"))
+    if real_ip is not None:
+        return str(real_ip)
+
+    xff = request.META.get("HTTP_X_FORWARDED_FOR") or ""
+    for hop in reversed([h.strip() for h in xff.split(",") if h.strip()]):
+        hop_ip = _normalize_ip(hop)
+        if hop_ip is None:
+            continue
+        if not _ip_in_trusted(hop_ip):
+            return str(hop_ip)
+
+    return str(peer)
 
 
 def setup_ip_allowed(request):
@@ -62,32 +150,21 @@ def setup_ip_allowed(request):
         tuple[bool, str]: (allowed, client_ip_string)
     """
     client_ip_str = get_client_ip(request) or ""
-    try:
-        client_ip = ipaddress.ip_address(client_ip_str)
-    except ValueError:
+    compare_ip = _normalize_ip(client_ip_str)
+    if compare_ip is None:
         return False, client_ip_str
-
-    # Some proxies present IPv4 clients as IPv4-mapped IPv6 (::ffff:x.x.x.x).
-    # Compare using the embedded IPv4 so private-range checks still work.
-    compare_ip = client_ip.ipv4_mapped if getattr(client_ip, "ipv4_mapped", None) else client_ip
 
     override = os.environ.get(SETUP_ALLOWED_IP_ENV, "").strip()
     if override:
-        try:
-            override_ip = ipaddress.ip_address(override)
-        except ValueError:
+        override_ip = _normalize_ip(override)
+        if override_ip is None:
             logger.warning(
                 "Invalid %s=%r; denying initialize-superuser POST",
                 SETUP_ALLOWED_IP_ENV,
                 override,
             )
             return False, client_ip_str
-        override_compare = (
-            override_ip.ipv4_mapped
-            if getattr(override_ip, "ipv4_mapped", None)
-            else override_ip
-        )
-        return compare_ip == override_compare, client_ip_str
+        return compare_ip == override_ip, client_ip_str
 
     for cidr in LOCAL_NETWORK_CIDRS:
         if compare_ip in ipaddress.ip_network(cidr):
@@ -111,8 +188,11 @@ def network_access_allowed(request, settings_key, user=None):
         else default_cidrs
     )
 
+    client_ip = _normalize_ip(get_client_ip(request))
+    if client_ip is None:
+        return False
+
     network_allowed = False
-    client_ip = ipaddress.ip_address(get_client_ip(request))
     for cidr in cidrs:
         network = ipaddress.ip_network(cidr)
         if client_ip in network:

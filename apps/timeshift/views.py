@@ -44,7 +44,7 @@ from apps.timeshift.redis_keys import (
 )
 
 stats_channel_id = make_stats_channel_id
-from apps.proxy.live_proxy.utils import get_client_ip
+from dispatcharr.utils import get_client_ip
 from apps.proxy.utils import (
     _timeshift_stop_channel_id,
     check_user_stream_limits,

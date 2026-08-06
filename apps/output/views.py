@@ -8,7 +8,7 @@ from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 from apps.epg.models import ProgramData
 from apps.accounts.models import User
-from dispatcharr.utils import network_access_allowed
+from dispatcharr.utils import get_client_ip, network_access_allowed
 from django.utils import timezone as django_timezone
 from django.shortcuts import get_object_or_404
 from datetime import datetime, timedelta, timezone as dt_timezone
@@ -44,15 +44,8 @@ def get_client_identifier(request):
     Returns:
         tuple: (client_id_hash, client_ip, user_agent)
     """
-    # Get client IP (handle proxies)
-    x_forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')
-    if x_forwarded_for:
-        client_ip = x_forwarded_for.split(',')[0].strip()
-    else:
-        client_ip = request.META.get('REMOTE_ADDR', 'unknown')
-
-    # Get user agent
-    user_agent = request.META.get('HTTP_USER_AGENT', 'unknown')
+    client_ip = get_client_ip(request) or "unknown"
+    user_agent = request.META.get("HTTP_USER_AGENT", "unknown")
 
     # Create a hash for a shorter cache key
     client_str = f"{client_ip}:{user_agent}"
@@ -65,7 +58,7 @@ def m3u_endpoint(request, profile_name=None, user=None):
     if not network_access_allowed(request, "M3U_EPG"):
         # Log blocked M3U download
         from core.utils import log_system_event
-        client_ip = request.META.get('REMOTE_ADDR', 'unknown')
+        client_ip = get_client_ip(request) or "unknown"
         user_agent = request.META.get('HTTP_USER_AGENT', 'unknown')
         log_system_event(
             event_type='m3u_blocked',
@@ -90,7 +83,7 @@ def epg_endpoint(request, profile_name=None, user=None):
     if not network_access_allowed(request, "M3U_EPG"):
         # Log blocked EPG download
         from core.utils import log_system_event
-        client_ip = request.META.get('REMOTE_ADDR', 'unknown')
+        client_ip = get_client_ip(request) or "unknown"
         user_agent = request.META.get('HTTP_USER_AGENT', 'unknown')
         log_system_event(
             event_type='epg_blocked',
@@ -497,7 +490,7 @@ def xc_get(request):
     if not network_access_allowed(request, 'XC_API'):
         # Log blocked M3U download
         from core.utils import log_system_event
-        client_ip = request.META.get('REMOTE_ADDR', 'unknown')
+        client_ip = get_client_ip(request) or "unknown"
         user_agent = request.META.get('HTTP_USER_AGENT', 'unknown')
         log_system_event(
             event_type='m3u_blocked',
@@ -514,7 +507,7 @@ def xc_get(request):
     if user is None:
         # Log blocked M3U download due to invalid credentials
         from core.utils import log_system_event
-        client_ip = request.META.get('REMOTE_ADDR', 'unknown')
+        client_ip = get_client_ip(request) or "unknown"
         user_agent = request.META.get('HTTP_USER_AGENT', 'unknown')
         log_system_event(
             event_type='m3u_blocked',
@@ -532,7 +525,7 @@ def xc_xmltv(request):
     if not network_access_allowed(request, 'XC_API'):
         # Log blocked EPG download
         from core.utils import log_system_event
-        client_ip = request.META.get('REMOTE_ADDR', 'unknown')
+        client_ip = get_client_ip(request) or "unknown"
         user_agent = request.META.get('HTTP_USER_AGENT', 'unknown')
         log_system_event(
             event_type='epg_blocked',
@@ -548,7 +541,7 @@ def xc_xmltv(request):
     if user is None:
         # Log blocked EPG download due to invalid credentials
         from core.utils import log_system_event
-        client_ip = request.META.get('REMOTE_ADDR', 'unknown')
+        client_ip = get_client_ip(request) or "unknown"
         user_agent = request.META.get('HTTP_USER_AGENT', 'unknown')
         log_system_event(
             event_type='epg_blocked',
