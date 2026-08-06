@@ -1,4 +1,5 @@
 from unittest.mock import patch, MagicMock
+import os
 
 from django.core.cache import cache
 from django.test import TestCase, SimpleTestCase
@@ -682,3 +683,93 @@ class MallocTrimTests(SimpleTestCase):
             'ctypes.CDLL', return_value=fake_libc
         ):
             self.assertFalse(trim_c_allocator_heap())
+
+
+class GetClientIpTests(SimpleTestCase):
+    """Trusted-proxy behavior for dispatcharr.utils.get_client_ip (no nginx)."""
+
+    def setUp(self):
+        from django.test import RequestFactory
+
+        self.factory = RequestFactory()
+
+    def _request(self, remote_addr=None, **extra):
+        request = self.factory.get("/")
+        if remote_addr is not None:
+            request.META["REMOTE_ADDR"] = remote_addr
+        elif "REMOTE_ADDR" in request.META:
+            del request.META["REMOTE_ADDR"]
+        request.META.update(extra)
+        return request
+
+    def test_untrusted_peer_ignores_spoofed_x_real_ip(self):
+        """Public peers never get header trust, even with default local CIDRs."""
+        from dispatcharr.utils import get_client_ip
+
+        with patch.dict("os.environ"):
+            os.environ.pop("DISPATCHARR_TRUSTED_PROXIES", None)
+            request = self._request(
+                "203.0.113.99",
+                HTTP_X_REAL_IP="127.0.0.1",
+            )
+            self.assertEqual(get_client_ip(request), "203.0.113.99")
+
+    def test_default_trusts_private_peer_headers(self):
+        """Unset env defaults to local CIDRs so Docker/Traefik peers work."""
+        from dispatcharr.utils import get_client_ip
+
+        with patch.dict("os.environ"):
+            os.environ.pop("DISPATCHARR_TRUSTED_PROXIES", None)
+            request = self._request(
+                "172.18.0.1",
+                HTTP_X_REAL_IP="203.0.113.50",
+            )
+            self.assertEqual(get_client_ip(request), "203.0.113.50")
+
+    def test_explicit_none_disables_header_trust(self):
+        from dispatcharr.utils import get_client_ip
+
+        with patch.dict("os.environ", {"DISPATCHARR_TRUSTED_PROXIES": "none"}):
+            request = self._request(
+                "172.18.0.1",
+                HTTP_X_REAL_IP="203.0.113.50",
+            )
+            self.assertEqual(get_client_ip(request), "172.18.0.1")
+
+    def test_trusted_peer_uses_x_real_ip(self):
+        from dispatcharr.utils import get_client_ip
+
+        with patch.dict("os.environ", {"DISPATCHARR_TRUSTED_PROXIES": "127.0.0.1"}):
+            request = self._request(
+                "127.0.0.1",
+                HTTP_X_REAL_IP="203.0.113.50",
+            )
+            self.assertEqual(get_client_ip(request), "203.0.113.50")
+
+    def test_trusted_peer_xff_skips_trusted_hops(self):
+        from dispatcharr.utils import get_client_ip
+
+        with patch.dict(
+            "os.environ",
+            {"DISPATCHARR_TRUSTED_PROXIES": "10.0.0.1,10.0.0.2"},
+        ):
+            request = self._request(
+                "10.0.0.1",
+                HTTP_X_FORWARDED_FOR="203.0.113.50, 10.0.0.2",
+            )
+            self.assertEqual(get_client_ip(request), "203.0.113.50")
+
+    def test_missing_remote_addr_returns_empty(self):
+        from dispatcharr.utils import get_client_ip
+
+        with patch.dict("os.environ", {"DISPATCHARR_TRUSTED_PROXIES": "none"}):
+            request = self._request(None, HTTP_X_REAL_IP="127.0.0.1")
+            self.assertIsNone(get_client_ip(request))
+
+    def test_ipv4_mapped_peer_returned_as_ipv4(self):
+        from dispatcharr.utils import get_client_ip
+
+        with patch.dict("os.environ"):
+            os.environ.pop("DISPATCHARR_TRUSTED_PROXIES", None)
+            request = self._request("::ffff:192.168.1.50")
+            self.assertEqual(get_client_ip(request), "192.168.1.50")
