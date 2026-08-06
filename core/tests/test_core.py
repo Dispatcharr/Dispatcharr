@@ -410,6 +410,68 @@ class DefaultUserAgentCacheTests(TestCase):
                 CoreSettings.get_default_user_agent(), "CacheTestAgent/1.0"
             )
 
+
+class DefaultStreamProfileRedirectCacheTests(TestCase):
+    """Default-is-Redirect check compares ids without a per-request StreamProfile get."""
+
+    def setUp(self):
+        from core.models import StreamProfile, REDIRECT_PROFILE_NAME, PROXY_PROFILE_NAME
+
+        cache.clear()
+        CoreSettings.objects.filter(key=STREAM_SETTINGS_KEY).delete()
+        self.StreamProfile = StreamProfile
+        self.redirect = StreamProfile.objects.filter(
+            name=REDIRECT_PROFILE_NAME, locked=True
+        ).first()
+        if self.redirect is None:
+            self.redirect = StreamProfile.objects.create(
+                name=REDIRECT_PROFILE_NAME,
+                command="",
+                parameters="",
+                is_active=True,
+                locked=True,
+            )
+        self.proxy = StreamProfile.objects.filter(
+            name=PROXY_PROFILE_NAME, locked=True
+        ).first()
+        if self.proxy is None:
+            self.proxy = StreamProfile.objects.create(
+                name=PROXY_PROFILE_NAME,
+                command="",
+                parameters="",
+                is_active=True,
+                locked=True,
+            )
+        CoreSettings.objects.create(
+            key=STREAM_SETTINGS_KEY,
+            name="Stream Settings",
+            value={"default_stream_profile": self.redirect.id},
+        )
+
+    def tearDown(self):
+        cache.clear()
+
+    def test_second_read_does_not_query_stream_profile(self):
+        self.assertTrue(CoreSettings.is_default_stream_profile_redirect())
+        with self.assertNumQueries(0):
+            self.assertTrue(CoreSettings.is_default_stream_profile_redirect())
+
+    def test_false_when_default_is_proxy(self):
+        obj = CoreSettings.objects.get(key=STREAM_SETTINGS_KEY)
+        obj.value = {**obj.value, "default_stream_profile": self.proxy.id}
+        obj.save()
+        cache.clear()
+
+        self.assertFalse(CoreSettings.is_default_stream_profile_redirect())
+        with self.assertNumQueries(0):
+            self.assertFalse(CoreSettings.is_default_stream_profile_redirect())
+
+    def test_false_when_default_unset(self):
+        CoreSettings.objects.filter(key=STREAM_SETTINGS_KEY).delete()
+        cache.clear()
+        self.assertFalse(CoreSettings.is_default_stream_profile_redirect())
+
+
 class ProgrammeIndexRebuildTests(TestCase):
     def test_startup_rebuild_does_not_lock_out_queued_build_task(self):
         source = EPGSource.objects.create(
