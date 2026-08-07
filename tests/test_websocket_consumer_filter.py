@@ -235,3 +235,106 @@ class ConsumerM3UProfileTestReceiveTests(SimpleTestCase):
             async_to_sync(consumer.receive)(json.dumps(payload))
         mock_transform.assert_called_once()
         consumer.send.assert_awaited_once()
+
+    def test_m3u_profile_test_rejects_oversized_fields(self):
+        """Oversized url/search/replace must not reach regex.sub or transform."""
+        from dispatcharr.consumers import (
+            _M3U_PROFILE_TEST_PATTERN_MAX_LEN,
+            _M3U_PROFILE_TEST_URL_MAX_LEN,
+        )
+
+        consumer = self._consumer(_user(user_level=User.UserLevel.ADMIN))
+        url = "http://example.com/" + ("x" * _M3U_PROFILE_TEST_URL_MAX_LEN)
+        payload = {
+            "type": "m3u_profile_test",
+            "url": url,
+            "search": "a" * (_M3U_PROFILE_TEST_PATTERN_MAX_LEN + 1),
+            "replace": "b",
+        }
+        with patch(
+            "apps.proxy.live_proxy.url_utils.transform_url"
+        ) as mock_transform, patch(
+            "dispatcharr.consumers.regex.sub"
+        ) as mock_sub:
+            async_to_sync(consumer.receive)(json.dumps(payload))
+        mock_transform.assert_not_called()
+        mock_sub.assert_not_called()
+        consumer.send.assert_awaited_once()
+        sent = json.loads(consumer.send.await_args.kwargs["text_data"])
+        self.assertEqual(sent["data"]["type"], "m3u_profile_test")
+        self.assertEqual(
+            sent["data"]["result"],
+            url[:_M3U_PROFILE_TEST_URL_MAX_LEN],
+        )
+
+    def test_m3u_profile_test_catastrophic_regex_returns_quickly(self):
+        """Alternation+star ReDoS must time out instead of blocking Daphne."""
+        import time
+
+        from dispatcharr.consumers import _M3U_PROFILE_TEST_REGEX_TIMEOUT
+
+        consumer = self._consumer(_user(user_level=User.UserLevel.ADMIN))
+        # (a|a)*$ backtracks exponentially on the regex engine; without a
+        # timeout this stalls Daphne's shared event loop.
+        payload = {
+            "type": "m3u_profile_test",
+            "url": ("a" * 28) + "!",
+            "search": r"(a|a)*$",
+            "replace": "x",
+        }
+        started = time.perf_counter()
+        async_to_sync(consumer.receive)(json.dumps(payload))
+        elapsed = time.perf_counter() - started
+        # Two regex calls (preview + transform) each bounded by the timeout;
+        # a generous multiple keeps this from being flaky under CI load
+        # while still catching a regression back to unbounded backtracking.
+        self.assertLess(
+            elapsed,
+            _M3U_PROFILE_TEST_REGEX_TIMEOUT * 20,
+            f"m3u_profile_test blocked for {elapsed:.2f}s on catastrophic regex",
+        )
+        consumer.send.assert_awaited_once()
+        sent = json.loads(consumer.send.await_args.kwargs["text_data"])
+        # On timeout, preview and transform fall back to the original URL.
+        self.assertEqual(sent["data"]["search_preview"], payload["url"])
+        self.assertEqual(sent["data"]["result"], payload["url"])
+
+    def test_m3u_profile_test_passes_timeout_to_preview_sub(self):
+        from dispatcharr.consumers import _M3U_PROFILE_TEST_REGEX_TIMEOUT
+
+        consumer = self._consumer(_user(user_level=User.UserLevel.ADMIN))
+        payload = {
+            "type": "m3u_profile_test",
+            "url": "http://example.com/a",
+            "search": "a",
+            "replace": "b",
+        }
+        with patch(
+            "apps.proxy.live_proxy.url_utils.transform_url",
+            return_value="http://example.com/b",
+        ), patch(
+            "dispatcharr.consumers.regex.sub",
+            return_value="http://example.com/<mark>a</mark>",
+        ) as mock_sub:
+            async_to_sync(consumer.receive)(json.dumps(payload))
+        self.assertEqual(
+            mock_sub.call_args.kwargs.get("timeout"),
+            _M3U_PROFILE_TEST_REGEX_TIMEOUT,
+        )
+
+    def test_m3u_profile_test_normal_rewrite_still_works(self):
+        consumer = self._consumer(_user(user_level=User.UserLevel.ADMIN))
+        payload = {
+            "type": "m3u_profile_test",
+            "url": "http://example.com/live/user/pass/1.ts",
+            "search": r"(.*)/(.*)/(.*)/(.*)$",
+            "replace": r"$1/newuser/newpass/$4",
+        }
+        async_to_sync(consumer.receive)(json.dumps(payload))
+        consumer.send.assert_awaited_once()
+        sent = json.loads(consumer.send.await_args.kwargs["text_data"])
+        self.assertIn("<mark>", sent["data"]["search_preview"])
+        self.assertEqual(
+            sent["data"]["result"],
+            "http://example.com/live/newuser/newpass/1.ts",
+        )
