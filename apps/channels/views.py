@@ -27,7 +27,9 @@ class StreamDashboardView(View):
         import json
         try:
             data = json.loads(request.body)
-            new_stream = Stream.objects.create(**data)
+            allowed_fields = {'name', 'url', 'channel_group', 'current_viewers'}
+            stream_data = {k: v for k, v in data.items() if k in allowed_fields}
+            new_stream = Stream.objects.create(**stream_data)
             return JsonResponse({
                 'id': new_stream.id,
                 'message': 'Stream created successfully!'
