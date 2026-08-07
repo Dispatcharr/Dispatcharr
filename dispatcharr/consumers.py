@@ -3,7 +3,34 @@ from channels.generic.websocket import AsyncWebsocketConsumer
 from asgiref.sync import sync_to_async
 import regex, logging
 
+from apps.accounts.models import User
+
 logger = logging.getLogger(__name__)
+
+# Connection telemetry on the shared "updates" group. These payloads include
+# channel/content UUIDs (usable against anonymous /proxy/ts/stream/<uuid>),
+# upstream stream URLs, client IPs, and session details. The Stats UI is
+# already admin-only; keep that telemetry off Standard-user sockets.
+ADMIN_ONLY_UPDATE_TYPES = frozenset({
+    "channel_stats",
+    "vod_stats",
+    "timeshift_stats",
+    "vod_started",
+    "vod_stopped",
+})
+
+
+def user_may_receive_update(user, data):
+    """Return True when *user* is allowed to receive this update payload."""
+    event_type = (data or {}).get("type")
+    if event_type not in ADMIN_ONLY_UPDATE_TYPES:
+        return True
+    return (
+        user is not None
+        and getattr(user, "is_authenticated", False)
+        and getattr(user, "user_level", 0) >= User.UserLevel.ADMIN
+    )
+
 
 class MyWebSocketConsumer(AsyncWebsocketConsumer):
     async def connect(self):
@@ -59,6 +86,14 @@ class MyWebSocketConsumer(AsyncWebsocketConsumer):
         data = json.loads(text_data)
 
         if data["type"] == "m3u_profile_test":
+            user = self.scope.get("user")
+            if (
+                not user
+                or not getattr(user, "is_authenticated", False)
+                or getattr(user, "user_level", 0) < User.UserLevel.ADMIN
+            ):
+                return
+
             from apps.proxy.live_proxy.url_utils import transform_url
 
             def replace_with_mark(match):
@@ -82,4 +117,6 @@ class MyWebSocketConsumer(AsyncWebsocketConsumer):
             }))
 
     async def update(self, event):
+        if not user_may_receive_update(self.scope.get("user"), event.get("data")):
+            return
         await self.send(text_data=json.dumps(event))
