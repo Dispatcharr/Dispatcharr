@@ -49,6 +49,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Connections and its separate Logs page are merged into a single Connect page.** The former "Integrations" sidebar group (Connections, Logs) is now one "Connect" entry under System; the log viewer is a collapsible section fixed to the bottom of the Connect page instead of a standalone route.
 - Stream Profiles, Output Profiles, and User-Agents tables on the Settings page grow to fit their content instead of clipping to a fixed height with an internal scrollbar.
 
+### Removed
+
+- **Unused legacy Django dashboard scaffolding.** Removed unmounted example views/URLs/forms under channels, m3u, epg, dashboard, accounts, vod, and core, plus the broken HDHR HTML dashboard routes (template was missing; `discover.json` / `lineup.json` and device APIs are unchanged). Also dropped unused `xc_movie_stream` / `xc_series_stream` helpers from `apps/output` (root XC movie/series streaming already goes through the proxy handlers).
+
 ### Fixed
 
 - **M3U profile regex preview no longer stalls Daphne on a catastrophic pattern.** The admin `m3u_profile_test` WebSocket path (and shared `transform_url` used for live URL rewrites) ran sync `regex` substitution with no length or time bounds, so a nested/alternation-heavy pattern could block the shared event loop and drop other real-time clients. Preview inputs are capped to the same lengths as saved profile fields (255 for search/replace, 8KB for the sample URL), and both the preview and `transform_url` apply the same short substitution timeout already used by Auto Channel Sync rename/preview.
