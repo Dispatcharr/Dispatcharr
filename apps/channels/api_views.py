@@ -19,7 +19,6 @@ from datetime import timedelta
 from apps.accounts.permissions import (
     Authenticated,
     IsAdmin,
-    IsOwnerOfObject,
     IsStandardUser,
     permission_classes_by_action,
     permission_classes_by_method,
@@ -3052,11 +3051,19 @@ class GetChannelStreamStatsAPIView(APIView):
 
 
 class UpdateChannelMembershipAPIView(APIView):
-    permission_classes = [IsOwnerOfObject]
+    permission_classes = [Authenticated]
 
     def patch(self, request, profile_id, channel_id):
         """Enable or disable a channel for a specific group"""
-        channel_profile = get_object_or_404(ChannelProfile, id=profile_id)
+        # Scope the fetch to profiles the caller may touch (admin: all,
+        # otherwise their assigned profiles). Auth is the queryset itself,
+        # so there is no second ownership lookup after get_object_or_404.
+        user = request.user
+        if getattr(user, "user_level", None) == 10:
+            profiles = ChannelProfile.objects.all()
+        else:
+            profiles = user.channel_profiles.all()
+        channel_profile = get_object_or_404(profiles, id=profile_id)
         channel = get_object_or_404(Channel, id=channel_id)
         try:
             membership = ChannelProfileMembership.objects.get(
