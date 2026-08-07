@@ -3,8 +3,6 @@ from channels.generic.websocket import AsyncWebsocketConsumer
 from asgiref.sync import sync_to_async
 import regex, logging
 
-from apps.accounts.models import User
-
 logger = logging.getLogger(__name__)
 
 # Connection telemetry on the shared "updates" group. These payloads include
@@ -20,16 +18,35 @@ ADMIN_ONLY_UPDATE_TYPES = frozenset({
 })
 
 
-def user_may_receive_update(user, data):
-    """Return True when *user* is allowed to receive this update payload."""
-    event_type = (data or {}).get("type")
-    if event_type not in ADMIN_ONLY_UPDATE_TYPES:
-        return True
+def user_is_admin(user):
+    """True when *user* is an authenticated admin-level principal."""
+    # Lazy import: consumers is imported from asgi/routing before Django apps
+    # are ready, so accounts.models cannot be loaded at module import time.
+    from apps.accounts.models import User
+
     return (
         user is not None
         and getattr(user, "is_authenticated", False)
         and getattr(user, "user_level", 0) >= User.UserLevel.ADMIN
     )
+
+
+def user_may_receive_update(user, data):
+    """Return True when *user* is allowed to receive this update payload.
+
+    Connection telemetry types are always admin-only. ``system_notification``
+    payloads with ``admin_only: true`` are also restricted (the REST list
+    endpoint already filters those; this keeps the live push path aligned).
+    """
+    data = data or {}
+    event_type = data.get("type")
+    if event_type in ADMIN_ONLY_UPDATE_TYPES:
+        return user_is_admin(user)
+    if event_type == "system_notification":
+        notification = data.get("notification") or {}
+        if notification.get("admin_only"):
+            return user_is_admin(user)
+    return True
 
 
 class MyWebSocketConsumer(AsyncWebsocketConsumer):
@@ -86,12 +103,7 @@ class MyWebSocketConsumer(AsyncWebsocketConsumer):
         data = json.loads(text_data)
 
         if data["type"] == "m3u_profile_test":
-            user = self.scope.get("user")
-            if (
-                not user
-                or not getattr(user, "is_authenticated", False)
-                or getattr(user, "user_level", 0) < User.UserLevel.ADMIN
-            ):
+            if not user_is_admin(self.scope.get("user")):
                 return
 
             from apps.proxy.live_proxy.url_utils import transform_url

@@ -11,6 +11,7 @@ from apps.accounts.models import User
 from dispatcharr.consumers import (
     ADMIN_ONLY_UPDATE_TYPES,
     MyWebSocketConsumer,
+    user_is_admin,
     user_may_receive_update,
 )
 
@@ -89,6 +90,68 @@ class UserMayReceiveUpdateTests(SimpleTestCase):
         self.assertTrue(user_may_receive_update(_user(), None))
         self.assertTrue(user_may_receive_update(_user(), {}))
 
+    def test_admin_only_system_notification_blocked_for_standard_user(self):
+        user = _user(user_level=User.UserLevel.STANDARD)
+        self.assertFalse(
+            user_may_receive_update(
+                user,
+                {
+                    "type": "system_notification",
+                    "notification": {
+                        "notification_key": "admin.only",
+                        "admin_only": True,
+                        "title": "Secret",
+                    },
+                },
+            )
+        )
+
+    def test_public_system_notification_allowed_for_standard_user(self):
+        user = _user(user_level=User.UserLevel.STANDARD)
+        self.assertTrue(
+            user_may_receive_update(
+                user,
+                {
+                    "type": "system_notification",
+                    "notification": {
+                        "notification_key": "public.note",
+                        "admin_only": False,
+                        "title": "Hello",
+                    },
+                },
+            )
+        )
+
+    def test_admin_only_system_notification_allowed_for_admin(self):
+        user = _user(user_level=User.UserLevel.ADMIN)
+        self.assertTrue(
+            user_may_receive_update(
+                user,
+                {
+                    "type": "system_notification",
+                    "notification": {
+                        "notification_key": "admin.only",
+                        "admin_only": True,
+                        "title": "Secret",
+                    },
+                },
+            )
+        )
+
+
+class UserIsAdminTests(SimpleTestCase):
+    def test_admin_user(self):
+        self.assertTrue(user_is_admin(_user(user_level=User.UserLevel.ADMIN)))
+
+    def test_standard_user(self):
+        self.assertFalse(user_is_admin(_user(user_level=User.UserLevel.STANDARD)))
+
+    def test_anonymous_or_missing(self):
+        self.assertFalse(user_is_admin(None))
+        self.assertFalse(
+            user_is_admin(_user(authenticated=False, user_level=User.UserLevel.ADMIN))
+        )
+
 
 class ConsumerUpdateFilteringTests(SimpleTestCase):
     def _consumer(self, user):
@@ -125,6 +188,18 @@ class ConsumerUpdateFilteringTests(SimpleTestCase):
         }
         async_to_sync(consumer.update)(event)
         consumer.send.assert_awaited_once()
+
+    def test_update_drops_admin_only_notification_for_standard_user(self):
+        consumer = self._consumer(_user(user_level=User.UserLevel.STANDARD))
+        event = {
+            "type": "update",
+            "data": {
+                "type": "system_notification",
+                "notification": {"admin_only": True, "title": "Secret"},
+            },
+        }
+        async_to_sync(consumer.update)(event)
+        consumer.send.assert_not_awaited()
 
 
 class ConsumerM3UProfileTestReceiveTests(SimpleTestCase):
