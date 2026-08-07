@@ -6,12 +6,12 @@ from django.views.decorators.csrf import csrf_exempt
 from rest_framework.decorators import api_view, permission_classes, action
 from rest_framework.response import Response
 from rest_framework import viewsets, status, serializers
-from rest_framework.throttling import AnonRateThrottle
 from drf_spectacular.utils import extend_schema, OpenApiParameter, inline_serializer
 from drf_spectacular.types import OpenApiTypes
 import json
 import secrets
 from .permissions import IsAdmin, Authenticated
+from .throttling import LoginRateThrottle
 from dispatcharr.utils import (
     SETUP_ALLOWED_IP_ENV,
     get_client_ip,
@@ -51,10 +51,6 @@ def _setup_forbidden_response(client_ip):
         },
         status=403,
     )
-
-
-class LoginRateThrottle(AnonRateThrottle):
-    scope = "login"
 
 
 class TokenObtainPairView(TokenObtainPairView):
