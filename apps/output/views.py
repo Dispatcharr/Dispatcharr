@@ -121,7 +121,12 @@ def generate_m3u(request, profile_name=None, user=None):
 
     # Check cache for recent identical request (helps with double-GET from browsers)
     from django.core.cache import cache
-    cache_params = f"{profile_name or 'all'}:{user.username if user else 'anonymous'}:{request.GET.urlencode()}"
+
+    request_origin = build_absolute_uri_with_port(request, "")
+    cache_params = (
+        f"{profile_name or 'all'}:{user.username if user else 'anonymous'}"
+        f":{request.GET.urlencode()}:origin={request_origin}"
+    )
     content_cache_key = f"m3u_content:{cache_params}"
 
     cached_content = cache.get(content_cache_key)
@@ -208,7 +213,7 @@ def generate_m3u(request, profile_name=None, user=None):
     xc_username = request.GET.get('username')
     xc_password = request.GET.get('password')
     is_xc_request = user is not None and xc_username and xc_password
-    _base_url = build_absolute_uri_with_port(request, '')
+    _base_url = request_origin
 
     if is_xc_request:
         # This is an XC API request - use XC-style EPG URL
@@ -229,7 +234,8 @@ def generate_m3u(request, profile_name=None, user=None):
             proxy_qs['output_format'] = output_format_param
         proxy_qs_suffix = f"?{urlencode(proxy_qs)}" if proxy_qs else ""
         # Regular request - use standard EPG endpoint
-        epg_base_url = build_absolute_uri_with_port(request, reverse('output:epg_endpoint', args=[profile_name]) if profile_name else reverse('output:epg_endpoint'))
+        epg_path = reverse('output:epg_endpoint', args=[profile_name]) if profile_name else reverse('output:epg_endpoint')
+        epg_base_url = f"{_base_url}{epg_path}"
 
         # Optionally preserve certain query parameters
         preserved_params = ['tvg_id_source', 'cachedlogos', 'days', 'prev_days']

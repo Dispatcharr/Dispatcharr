@@ -1429,3 +1429,71 @@ class GenerateEpgPrevDaysTests(SimpleTestCase):
         cache_key = generate_epg(request, profile_name="test", user=None)
 
         self.assertIn(":p=0:", cache_key)
+
+    @patch("apps.output.epg.stream_cached_response")
+    @patch("apps.output.epg.Channel.objects")
+    def test_epg_cache_key_includes_request_origin(self, _channels, mock_cache):
+        from apps.output.epg import generate_epg
+
+        mock_cache.side_effect = lambda cache_key, _source, **_kwargs: cache_key
+
+        lan_key = generate_epg(
+            self.factory.get("/epg/", HTTP_HOST="192.168.1.10:9191"),
+            profile_name="test",
+            user=None,
+        )
+        public_key = generate_epg(
+            self.factory.get("/epg/", HTTP_HOST="tv.example.com"),
+            profile_name="test",
+            user=None,
+        )
+        same_lan_key = generate_epg(
+            self.factory.get("/epg/", HTTP_HOST="192.168.1.10:9191"),
+            profile_name="test",
+            user=None,
+        )
+
+        self.assertIn("origin=http://192.168.1.10:9191", lan_key)
+        self.assertIn("origin=http://tv.example.com", public_key)
+        self.assertNotEqual(lan_key, public_key)
+        self.assertEqual(lan_key, same_lan_key)
+
+
+class GenerateM3UCacheKeyTests(SimpleTestCase):
+    """M3U shared cache must not reuse absolute URLs built for a different Host."""
+
+    def setUp(self):
+        self.factory = RequestFactory()
+
+    @patch("django.core.cache.cache")
+    def test_m3u_cache_key_includes_request_origin(self, mock_cache):
+        from apps.output.views import generate_m3u
+
+        mock_cache.get.return_value = "#EXTM3U\n"
+
+        generate_m3u(
+            self.factory.get("/m3u/", HTTP_HOST="192.168.1.10:9191"),
+            profile_name="test",
+            user=None,
+        )
+        lan_key = mock_cache.get.call_args[0][0]
+
+        generate_m3u(
+            self.factory.get("/m3u/", HTTP_HOST="tv.example.com"),
+            profile_name="test",
+            user=None,
+        )
+        public_key = mock_cache.get.call_args[0][0]
+
+        generate_m3u(
+            self.factory.get("/m3u/", HTTP_HOST="192.168.1.10:9191"),
+            profile_name="test",
+            user=None,
+        )
+        same_lan_key = mock_cache.get.call_args[0][0]
+
+        self.assertTrue(lan_key.startswith("m3u_content:"))
+        self.assertIn("origin=http://192.168.1.10:9191", lan_key)
+        self.assertIn("origin=http://tv.example.com", public_key)
+        self.assertNotEqual(lan_key, public_key)
+        self.assertEqual(lan_key, same_lan_key)
