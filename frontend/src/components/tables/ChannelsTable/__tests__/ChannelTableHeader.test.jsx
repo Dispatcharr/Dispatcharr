@@ -52,15 +52,13 @@ vi.mock('../../../modals/EPGMatchModal', () => ({
 }));
 
 vi.mock('../../../modals/AddToProfileModal', () => ({
-  default: ({ opened, onClose, channelIds, profiles, excludeProfileId }) =>
+  default: ({ opened, onClose, channelIds, excludeProfileId }) =>
     opened ? (
       <div data-testid="add-to-profile-modal">
         <span data-testid="add-to-profile-channel-ids">
           {JSON.stringify(channelIds)}
         </span>
-        <span data-testid="add-to-profile-exclude-id">
-          {excludeProfileId}
-        </span>
+        <span data-testid="add-to-profile-exclude-id">{excludeProfileId}</span>
         <button onClick={onClose}>Close Add To Profile</button>
       </div>
     ) : null,
@@ -71,7 +69,11 @@ vi.mock('../../../ConfirmationDialog', () => ({
     opened ? (
       <div data-testid="confirmation-dialog">
         <span data-testid="dialog-title">{title}</span>
-        <button data-testid="confirm-btn" onClick={onConfirm} disabled={loading}>
+        <button
+          data-testid="confirm-btn"
+          onClick={onConfirm}
+          disabled={loading}
+        >
           Confirm
         </button>
         <button data-testid="cancel-btn" onClick={onClose}>
@@ -300,8 +302,12 @@ const setupMocks = ({
 describe('ChannelTableHeader', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(ChannelsTableUtils.addChannelProfile).mockResolvedValue(undefined);
-    vi.mocked(ChannelsTableUtils.deleteChannelProfile).mockResolvedValue(undefined);
+    vi.mocked(ChannelsTableUtils.addChannelProfile).mockResolvedValue(
+      undefined
+    );
+    vi.mocked(ChannelsTableUtils.deleteChannelProfile).mockResolvedValue(
+      undefined
+    );
   });
 
   // ── Rendering ──────────────────────────────────────────────────────────────
@@ -316,9 +322,15 @@ describe('ChannelTableHeader', () => {
     it('renders profile options in the select', () => {
       setupMocks();
       render(<ChannelTableHeader {...makeDefaultProps()} />);
-      expect(screen.getByRole('option', { name: 'All Channels' })).toBeInTheDocument();
-      expect(screen.getByRole('option', { name: 'Profile A' })).toBeInTheDocument();
-      expect(screen.getByRole('option', { name: 'Profile B' })).toBeInTheDocument();
+      expect(
+        screen.getByRole('option', { name: 'All Channels' })
+      ).toBeInTheDocument();
+      expect(
+        screen.getByRole('option', { name: 'Profile A' })
+      ).toBeInTheDocument();
+      expect(
+        screen.getByRole('option', { name: 'Profile B' })
+      ).toBeInTheDocument();
     });
 
     it('renders the Edit button', () => {
@@ -466,7 +478,9 @@ describe('ChannelTableHeader', () => {
   describe('edit / delete / add buttons', () => {
     it('Edit button is disabled when no rows are selected', () => {
       setupMocks();
-      render(<ChannelTableHeader {...makeDefaultProps({ selectedTableIds: [] })} />);
+      render(
+        <ChannelTableHeader {...makeDefaultProps({ selectedTableIds: [] })} />
+      );
       expect(screen.getByText('Edit')).toBeDisabled();
     });
 
@@ -504,7 +518,9 @@ describe('ChannelTableHeader', () => {
 
     it('Delete button is disabled when no rows are selected', () => {
       setupMocks();
-      render(<ChannelTableHeader {...makeDefaultProps({ selectedTableIds: [] })} />);
+      render(
+        <ChannelTableHeader {...makeDefaultProps({ selectedTableIds: [] })} />
+      );
       expect(screen.getByText('Delete')).toBeDisabled();
     });
 
@@ -648,7 +664,9 @@ describe('ChannelTableHeader', () => {
 
     it('Assign #s menu item is disabled when no rows are selected', () => {
       setupMocks();
-      render(<ChannelTableHeader {...makeDefaultProps({ selectedTableIds: [] })} />);
+      render(
+        <ChannelTableHeader {...makeDefaultProps({ selectedTableIds: [] })} />
+      );
       expect(screen.getByText('Assign #s').closest('button')).toBeDisabled();
     });
 
@@ -672,7 +690,9 @@ describe('ChannelTableHeader', () => {
       );
       fireEvent.click(screen.getByText('Assign #s'));
       fireEvent.click(screen.getByText('Close Assign'));
-      expect(screen.queryByTestId('assign-numbers-modal')).not.toBeInTheDocument();
+      expect(
+        screen.queryByTestId('assign-numbers-modal')
+      ).not.toBeInTheDocument();
     });
 
     it('opens EPGMatchModal when Auto-Match EPG is clicked', () => {
@@ -704,7 +724,9 @@ describe('ChannelTableHeader', () => {
       render(<ChannelTableHeader {...makeDefaultProps()} />);
       fireEvent.click(screen.getByText('Edit Groups'));
       fireEvent.click(screen.getByText('Close Group Manager'));
-      expect(screen.queryByTestId('group-manager-modal')).not.toBeInTheDocument();
+      expect(
+        screen.queryByTestId('group-manager-modal')
+      ).not.toBeInTheDocument();
     });
   });
 
@@ -773,7 +795,9 @@ describe('ChannelTableHeader', () => {
       // We simulate this via the ConfirmationDialog confirm flow.
       render(<ChannelTableHeader {...makeDefaultProps()} />);
       // Dialog is not open by default
-      expect(screen.queryByTestId('confirmation-dialog')).not.toBeInTheDocument();
+      expect(
+        screen.queryByTestId('confirmation-dialog')
+      ).not.toBeInTheDocument();
     });
 
     it('calls deleteChannelProfile directly when warning is suppressed', async () => {
@@ -782,7 +806,9 @@ describe('ChannelTableHeader', () => {
       render(<ChannelTableHeader {...makeDefaultProps()} />);
       // When warning suppressed, executeDeleteProfile runs immediately
       // (tested indirectly - no dialog shown)
-      expect(screen.queryByTestId('confirmation-dialog')).not.toBeInTheDocument();
+      expect(
+        screen.queryByTestId('confirmation-dialog')
+      ).not.toBeInTheDocument();
     });
 
     it('calls deleteChannelProfile when confirmation dialog is confirmed', async () => {
@@ -817,7 +843,9 @@ describe('ChannelTableHeader', () => {
     it('Unlock for Editing menu item is disabled for non-admin', () => {
       setupMocks({ userLevel: STANDARD });
       render(<ChannelTableHeader {...makeDefaultProps()} />);
-      expect(screen.getByText('Unlock for Editing').closest('button')).toBeDisabled();
+      expect(
+        screen.getByText('Unlock for Editing').closest('button')
+      ).toBeDisabled();
     });
 
     it('Edit Groups is disabled for non-admin', () => {
@@ -829,7 +857,9 @@ describe('ChannelTableHeader', () => {
     it('Auto-Match EPG is disabled for non-admin', () => {
       setupMocks({ userLevel: STANDARD });
       render(<ChannelTableHeader {...makeDefaultProps()} />);
-      expect(screen.getByText('Auto-Match EPG').closest('button')).toBeDisabled();
+      expect(
+        screen.getByText('Auto-Match EPG').closest('button')
+      ).toBeDisabled();
     });
   });
 });

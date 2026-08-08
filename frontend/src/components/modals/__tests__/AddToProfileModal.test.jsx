@@ -100,16 +100,16 @@ describe('AddToProfileModal', () => {
 
     it('excludes the currently active profile from the options', () => {
       render(
-        <AddToProfileModal
-          {...defaultProps({ excludeProfileId: '1' })}
-        />
+        <AddToProfileModal {...defaultProps({ excludeProfileId: '1' })} />
       );
       expect(screen.queryByText('All Channels')).not.toBeInTheDocument();
       expect(screen.getByText('Bo')).toBeInTheDocument();
     });
 
     it('includes other real profiles as options', () => {
-      render(<AddToProfileModal {...defaultProps({ excludeProfileId: '2' })} />);
+      render(
+        <AddToProfileModal {...defaultProps({ excludeProfileId: '2' })} />
+      );
       expect(screen.getByText('All Channels')).toBeInTheDocument();
       expect(screen.queryByText('Bo')).not.toBeInTheDocument();
     });

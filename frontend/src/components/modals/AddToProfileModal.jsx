@@ -29,8 +29,7 @@ const AddToProfileModal = ({
     // not a real ChannelProfile - it can't be a membership target.
     .filter(
       (profile) =>
-        `${profile.id}` !== '0' &&
-        `${profile.id}` !== `${excludeProfileId}`
+        `${profile.id}` !== '0' && `${profile.id}` !== `${excludeProfileId}`
     )
     .map((profile) => ({ label: profile.name, value: `${profile.id}` }));
 
