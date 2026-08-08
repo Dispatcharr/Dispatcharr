@@ -90,6 +90,17 @@ vi.mock('@mantine/core', () => ({
       {children}
     </button>
   ),
+  Checkbox: ({ label, checked, onChange }) => (
+    <label>
+      <input
+        type="checkbox"
+        data-testid="checkbox"
+        checked={checked}
+        onChange={onChange}
+      />
+      {label}
+    </label>
+  ),
   Flex: ({ children }) => <div data-testid="flex">{children}</div>,
   Group: ({ children }) => <div data-testid="group">{children}</div>,
   Menu: Object.assign(
@@ -141,6 +152,7 @@ vi.mock('@mantine/core', () => ({
       ))}
     </select>
   ),
+  Stack: ({ children }) => <div data-testid="stack">{children}</div>,
   Text: ({ children, c }) => (
     <span data-testid="text" data-color={c}>
       {children}
@@ -604,7 +616,7 @@ describe('ChannelTableHeader', () => {
   // ── CreateProfilePopover ───────────────────────────────────────────────────
 
   describe('CreateProfilePopover', () => {
-    it('calls addChannelProfile with the typed name on submit', async () => {
+    it('calls addChannelProfile with the typed name and start_empty: false by default', async () => {
       setupMocks({ userLevel: ADMIN });
       render(<ChannelTableHeader {...makeDefaultProps()} />);
 
@@ -622,6 +634,31 @@ describe('ChannelTableHeader', () => {
       await waitFor(() => {
         expect(ChannelsTableUtils.addChannelProfile).toHaveBeenCalledWith({
           name: 'New Profile',
+          start_empty: false,
+        });
+      });
+    });
+
+    it('calls addChannelProfile with start_empty: true when "Start with no channels" is checked', async () => {
+      setupMocks({ userLevel: ADMIN });
+      render(<ChannelTableHeader {...makeDefaultProps()} />);
+
+      const input = screen.getByTestId('text-input');
+      fireEvent.change(input, { target: { value: 'Empty Profile' } });
+
+      const checkbox = screen.getByTestId('checkbox');
+      fireEvent.click(checkbox);
+
+      const actionIcons = screen.getAllByTestId('action-icon');
+      const submitIcon = actionIcons.find((btn) =>
+        btn.querySelector('[data-testid="icon-circle-check"]')
+      );
+      fireEvent.click(submitIcon);
+
+      await waitFor(() => {
+        expect(ChannelsTableUtils.addChannelProfile).toHaveBeenCalledWith({
+          name: 'Empty Profile',
+          start_empty: true,
         });
       });
     });

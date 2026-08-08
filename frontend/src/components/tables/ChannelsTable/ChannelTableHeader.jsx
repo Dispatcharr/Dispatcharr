@@ -3,6 +3,7 @@ import {
   ActionIcon,
   Box,
   Button,
+  Checkbox,
   Flex,
   Group,
   Menu,
@@ -15,6 +16,7 @@ import {
   PopoverDropdown,
   PopoverTarget,
   Select,
+  Stack,
   Text,
   TextInput,
   Tooltip,
@@ -57,18 +59,21 @@ import {
 const CreateProfilePopover = React.memo(() => {
   const [opened, setOpened] = useState(false);
   const [name, setName] = useState('');
+  const [startEmpty, setStartEmpty] = useState(false);
   const theme = useMantineTheme();
 
   const authUser = useAuthStore((s) => s.user);
 
   const setOpen = () => {
     setName('');
+    setStartEmpty(false);
     setOpened(!opened);
   };
 
   const submit = async () => {
-    await addChannelProfile({ name });
+    await addChannelProfile({ name, start_empty: startEmpty });
     setName('');
+    setStartEmpty(false);
     setOpened(false);
   };
 
@@ -92,23 +97,32 @@ const CreateProfilePopover = React.memo(() => {
       </PopoverTarget>
 
       <PopoverDropdown>
-        <Group>
-          <TextInput
-            placeholder="Profile Name"
-            value={name}
-            onChange={(event) => setName(event.currentTarget.value)}
+        <Stack gap="xs">
+          <Group>
+            <TextInput
+              placeholder="Profile Name"
+              value={name}
+              onChange={(event) => setName(event.currentTarget.value)}
+              size="xs"
+            />
+
+            <ActionIcon
+              variant="transparent"
+              color={theme.tailwind.green[5]}
+              size="sm"
+              onClick={submit}
+            >
+              <CircleCheck />
+            </ActionIcon>
+          </Group>
+
+          <Checkbox
+            label="Start with no channels"
+            checked={startEmpty}
+            onChange={(event) => setStartEmpty(event.currentTarget.checked)}
             size="xs"
           />
-
-          <ActionIcon
-            variant="transparent"
-            color={theme.tailwind.green[5]}
-            size="sm"
-            onClick={submit}
-          >
-            <CircleCheck />
-          </ActionIcon>
-        </Group>
+        </Stack>
       </PopoverDropdown>
     </Popover>
   );

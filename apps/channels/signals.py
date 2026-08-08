@@ -233,7 +233,10 @@ def refresh_epg_programs_for_override(sender, instance, created, **kwargs):
 
 @receiver(post_save, sender=ChannelProfile)
 def create_profile_memberships(sender, instance, created, **kwargs):
-    if created:
+    # A serializer can set instance._start_empty = True (see
+    # ChannelProfileSerializer.create) to request a profile with zero
+    # channels instead of the default "start with everything" behavior.
+    if created and not getattr(instance, "_start_empty", False):
         channels = Channel.objects.all()
         ChannelProfileMembership.objects.bulk_create([
             ChannelProfileMembership(channel_profile=instance, channel=channel)
