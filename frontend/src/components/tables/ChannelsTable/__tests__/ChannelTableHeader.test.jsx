@@ -51,6 +51,21 @@ vi.mock('../../../modals/EPGMatchModal', () => ({
     ) : null,
 }));
 
+vi.mock('../../../modals/AddToProfileModal', () => ({
+  default: ({ opened, onClose, channelIds, profiles, excludeProfileId }) =>
+    opened ? (
+      <div data-testid="add-to-profile-modal">
+        <span data-testid="add-to-profile-channel-ids">
+          {JSON.stringify(channelIds)}
+        </span>
+        <span data-testid="add-to-profile-exclude-id">
+          {excludeProfileId}
+        </span>
+        <button onClick={onClose}>Close Add To Profile</button>
+      </div>
+    ) : null,
+}));
+
 vi.mock('../../../ConfirmationDialog', () => ({
   default: ({ opened, onClose, onConfirm, title, loading }) =>
     opened ? (
@@ -185,6 +200,7 @@ vi.mock('lucide-react', () => ({
   Eye: () => <svg data-testid="icon-eye" />,
   EyeOff: () => <svg data-testid="icon-eye-off" />,
   Filter: () => <svg data-testid="icon-filter" />,
+  FolderPlus: () => <svg data-testid="icon-folder-plus" />,
   Lock: () => <svg data-testid="icon-lock" />,
   LockOpen: () => <svg data-testid="icon-lock-open" />,
   Pin: () => <svg data-testid="icon-pin" />,
@@ -516,6 +532,85 @@ describe('ChannelTableHeader', () => {
       render(<ChannelTableHeader {...makeDefaultProps({ editChannel })} />);
       fireEvent.click(screen.getByText('Add'));
       expect(editChannel).toHaveBeenCalledWith(null, { forceAdd: true });
+    });
+
+    it('Add to Profile... button is disabled when no rows are selected', () => {
+      setupMocks({ userLevel: ADMIN });
+      render(
+        <ChannelTableHeader {...makeDefaultProps({ selectedTableIds: [] })} />
+      );
+      expect(screen.getByText('Add to Profile...')).toBeDisabled();
+    });
+
+    it('Add to Profile... button is enabled when rows are selected', () => {
+      setupMocks({ userLevel: ADMIN });
+      render(
+        <ChannelTableHeader
+          {...makeDefaultProps({ selectedTableIds: ['ch-1'] })}
+        />
+      );
+      expect(screen.getByText('Add to Profile...')).not.toBeDisabled();
+    });
+
+    it('Add to Profile... button is disabled for non-admin users even with selection', () => {
+      setupMocks({ userLevel: STANDARD });
+      render(
+        <ChannelTableHeader
+          {...makeDefaultProps({ selectedTableIds: ['ch-1'] })}
+        />
+      );
+      expect(screen.getByText('Add to Profile...')).toBeDisabled();
+    });
+
+    it('opens AddToProfileModal when Add to Profile... is clicked', () => {
+      setupMocks({ userLevel: ADMIN });
+      render(
+        <ChannelTableHeader
+          {...makeDefaultProps({ selectedTableIds: ['ch-1', 'ch-2'] })}
+        />
+      );
+      fireEvent.click(screen.getByText('Add to Profile...'));
+      expect(screen.getByTestId('add-to-profile-modal')).toBeInTheDocument();
+    });
+
+    it('passes the selected channel ids to AddToProfileModal', () => {
+      setupMocks({ userLevel: ADMIN });
+      render(
+        <ChannelTableHeader
+          {...makeDefaultProps({ selectedTableIds: ['ch-1', 'ch-2'] })}
+        />
+      );
+      fireEvent.click(screen.getByText('Add to Profile...'));
+      expect(
+        screen.getByTestId('add-to-profile-channel-ids')
+      ).toHaveTextContent('["ch-1","ch-2"]');
+    });
+
+    it('passes the active profile id to AddToProfileModal as excludeProfileId', () => {
+      setupMocks({ userLevel: ADMIN, selectedProfileId: '1' });
+      render(
+        <ChannelTableHeader
+          {...makeDefaultProps({ selectedTableIds: ['ch-1'] })}
+        />
+      );
+      fireEvent.click(screen.getByText('Add to Profile...'));
+      expect(screen.getByTestId('add-to-profile-exclude-id')).toHaveTextContent(
+        '1'
+      );
+    });
+
+    it('closes AddToProfileModal when onClose fires', () => {
+      setupMocks({ userLevel: ADMIN });
+      render(
+        <ChannelTableHeader
+          {...makeDefaultProps({ selectedTableIds: ['ch-1'] })}
+        />
+      );
+      fireEvent.click(screen.getByText('Add to Profile...'));
+      fireEvent.click(screen.getByText('Close Add To Profile'));
+      expect(
+        screen.queryByTestId('add-to-profile-modal')
+      ).not.toBeInTheDocument();
     });
   });
 

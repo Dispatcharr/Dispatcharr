@@ -30,6 +30,7 @@ import {
   Eye,
   EyeOff,
   Filter,
+  FolderPlus,
   Lock,
   LockOpen,
   Pin,
@@ -51,6 +52,7 @@ import ConfirmationDialog from '../../ConfirmationDialog';
 import useWarningsStore from '../../../store/warnings';
 import ProfileModal, { renderProfileOption } from '../../modals/ProfileModal';
 import EPGMatchModal from '../../modals/EPGMatchModal';
+import AddToProfileModal from '../../modals/AddToProfileModal';
 import {
   addChannelProfile,
   deleteChannelProfile,
@@ -152,6 +154,7 @@ const ChannelTableHeader = ({
   const [assignNumbersModalOpen, setAssignNumbersModalOpen] = useState(false);
   const [groupManagerOpen, setGroupManagerOpen] = useState(false);
   const [epgMatchModalOpen, setEpgMatchModalOpen] = useState(false);
+  const [addToProfileModalOpen, setAddToProfileModalOpen] = useState(false);
   const [confirmDeleteProfileOpen, setConfirmDeleteProfileOpen] =
     useState(false);
   const [profileToDelete, setProfileToDelete] = useState(null);
@@ -433,6 +436,19 @@ const ChannelTableHeader = ({
           </Button>
 
           <Button
+            leftSection={<FolderPlus size={18} />}
+            variant="default"
+            size="xs"
+            onClick={() => setAddToProfileModalOpen(true)}
+            disabled={
+              selectedTableIds.length == 0 ||
+              authUser.user_level != USER_LEVELS.ADMIN
+            }
+          >
+            Add to Profile...
+          </Button>
+
+          <Button
             leftSection={<SquarePlus size={18} />}
             variant="light"
             size="xs"
@@ -546,6 +562,14 @@ const ChannelTableHeader = ({
         opened={epgMatchModalOpen}
         onClose={() => setEpgMatchModalOpen(false)}
         selectedChannelIds={selectedTableIds}
+      />
+
+      <AddToProfileModal
+        opened={addToProfileModalOpen}
+        onClose={() => setAddToProfileModalOpen(false)}
+        channelIds={selectedTableIds}
+        profiles={profiles}
+        excludeProfileId={selectedProfileId}
       />
 
       <ConfirmationDialog
