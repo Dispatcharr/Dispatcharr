@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.29.0] - 2026-08-09
+
 ### Added
 
 - **VOD movies store and filter `is_adult` like live streams.** XC `get_vod_streams` provider rows (string or int `1`) populate an indexed `Movie.is_adult` field on list sync; a provider row that omits the key leaves an existing flag from another provider untouched, since movies are matched/shared across providers by TMDB/IMDB/name+year. Existing libraries backfill from relation `custom_properties.basic_data.is_adult`. XC `get_vod_streams` / `get_vod_info` and the movies API honor the user's Hide Mature Content setting for non-admins; XC responses emit the real `is_adult` flag instead of always `0`.
