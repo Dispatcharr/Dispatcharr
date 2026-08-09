@@ -175,7 +175,7 @@ const DvrSettingsForm = React.memo(({ active }) => {
           data={[
             { value: 'none', label: 'None (software decode)' },
             { value: 'cuvid', label: 'NVIDIA NVDEC (--cuvid)' },
-            { value: 'qsv', label: 'Intel Quick Sync (--qsv)' },
+            { value: 'hwassist', label: 'Intel iGPU (--hwassist)' },
           ]}
           {...form.getInputProps('comskip_hw_accel')}
           id="comskip_hw_accel"

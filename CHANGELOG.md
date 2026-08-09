@@ -56,6 +56,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Comskip Intel hardware acceleration no longer passes the unsupported `--qsv` flag.** The bundled Comskip build accepts `--hwassist` for hardware-assisted decode, not `--qsv`. The DVR setting is now `hwassist` (UI: Intel iGPU), and any previously saved `qsv` value is treated as `hwassist`. (Fixes #1503)
 - **M3U profile regex preview no longer stalls Daphne on a catastrophic pattern.** The admin `m3u_profile_test` WebSocket path (and shared `transform_url` used for live URL rewrites) ran sync `regex` substitution with no length or time bounds, so a nested/alternation-heavy pattern could block the shared event loop and drop other real-time clients. Preview inputs are capped to the same lengths as saved profile fields (255 for search/replace, 8KB for the sample URL), and both the preview and `transform_url` apply the same short substitution timeout already used by Auto Channel Sync rename/preview.
 - **Schedules Direct Extra Debugging again clears on code 2055 when a cached token skips `/token`.** Token reuse meant refresh, lineup, and poster calls could keep sending `RouteTo: debug` after SD returned 2055, because only `POST /token` turned the toggle off. Authenticated SD requests now detect 2055, disable Extra Schedules Direct Debugging, and retry once without the header; `/token` does the same clear-and-retry.
 - **Direct-link M3U output restores the VLC-style `@` for multicast UDP URLs.** Stream URLs are stored without `@` for FFmpeg compatibility; `?direct=true` playlists now rewrite multicast `udp://` hosts back to `udp://@...` so players like VLC can join the stream. (Fixes #1406) - Thanks [@haroldm](https://github.com/haroldm)
@@ -442,7 +443,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Comskip hardware acceleration setting.** DVR Settings now includes a "Hardware acceleration" option that passes a hardware-decode flag to the comskip binary, reducing CPU load during commercial detection on capable hosts:
   - **None** (default): software decode.
   - **NVIDIA NVDEC (`--cuvid`)**: requires the NVIDIA container toolkit and a supported GPU inside the container.
-  - **Intel Quick Sync (`--qsv`)**: requires an Intel iGPU or ARC GPU with the i915 driver exposed to the container.
+  - **Intel iGPU (`--hwassist`)**: requires an Intel iGPU or ARC GPU with `/dev/dri` exposed to the container. The bundled Comskip build uses `--hwassist` for hardware-assisted decode (it does not accept `--qsv`).
 - **HDHR output profile URL support.** HDHomeRun lineup URLs now support an `output_profile` path segment so HDHR clients (Plex, Channels DVR, Emby, etc.) can request a specific transcode profile without any query-parameter support. URL formats accepted:
   - `/hdhr/output_profile/<id>/lineup.json` - output profile only
   - `/hdhr/<channel_profile>/output_profile/<id>/lineup.json` - channel profile + output profile
