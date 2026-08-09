@@ -126,6 +126,12 @@ class Movie(models.Model):
     tmdb_id = models.CharField(max_length=50, blank=True, null=True, unique=True, help_text="TMDB ID for metadata")
     imdb_id = models.CharField(max_length=50, blank=True, null=True, unique=True, help_text="IMDB ID for metadata")
 
+    is_adult = models.BooleanField(
+        default=False,
+        db_index=True,
+        help_text="Whether this movie contains adult content",
+    )
+
     # Additional metadata and properties
     custom_properties = models.JSONField(blank=True, null=True, help_text='Additional metadata and properties for the movie')
 
