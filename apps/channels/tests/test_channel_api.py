@@ -344,6 +344,53 @@ class ChannelManagerEffectiveValuesTests(TestCase):
         )
 
 
+class EpgIdsMappedToChannelsTests(TestCase):
+    """Programme import must treat ChannelOverride.epg_data as a mapping."""
+
+    def test_includes_override_only_assignment(self):
+        from apps.channels.managers import (
+            epg_ids_mapped_to_channels,
+            is_epg_mapped_to_channel,
+        )
+        from apps.epg.models import EPGSource, EPGData
+
+        group = ChannelGroup.objects.create(name="Mapped Override Group")
+        source = EPGSource.objects.create(name="Mapped Override Src", source_type="xmltv")
+        epg = EPGData.objects.create(
+            name="Override Station",
+            epg_source=source,
+            tvg_id="override.map",
+        )
+        channel = Channel.objects.create(
+            channel_number=1.0,
+            name="Provider",
+            channel_group=group,
+            epg_data=None,
+            auto_created=True,
+        )
+        ChannelOverride.objects.create(channel=channel, epg_data=epg)
+
+        self.assertEqual(epg_ids_mapped_to_channels(epg_source=source), {epg.id})
+        self.assertTrue(is_epg_mapped_to_channel(epg))
+
+    def test_excludes_unmapped_epg(self):
+        from apps.channels.managers import (
+            epg_ids_mapped_to_channels,
+            is_epg_mapped_to_channel,
+        )
+        from apps.epg.models import EPGSource, EPGData
+
+        source = EPGSource.objects.create(name="Unmapped Src", source_type="xmltv")
+        epg = EPGData.objects.create(
+            name="Unmapped Station",
+            epg_source=source,
+            tvg_id="unmapped.map",
+        )
+
+        self.assertEqual(epg_ids_mapped_to_channels(epg_source=source), set())
+        self.assertFalse(is_epg_mapped_to_channel(epg))
+
+
 class SeriesRuleAPITests(TestCase):
     """API tests for series rule CRUD and bulk-remove endpoints."""
 

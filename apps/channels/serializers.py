@@ -23,6 +23,7 @@ from django.urls import reverse
 from rest_framework import serializers
 from django.utils import timezone
 from core.utils import validate_flexible_url, build_absolute_uri_with_port
+from apps.channels.utils import coerce_channel_profile_ids
 
 
 class LogoSerializer(serializers.ModelSerializer):
@@ -218,9 +219,9 @@ class ChannelGroupM3UAccountSerializer(serializers.ModelSerializer):
 
     def to_representation(self, instance):
         data = super().to_representation(instance)
-
-        custom_props = instance.custom_properties or {}
-
+        data["custom_properties"] = coerce_channel_profile_ids(
+            data.get("custom_properties")
+        )
         return data
 
     def validate(self, attrs):

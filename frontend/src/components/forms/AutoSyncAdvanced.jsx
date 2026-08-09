@@ -245,12 +245,15 @@ const AutoSyncAdvanced = ({
     else setCp({ group_override: parseInt(value) });
   };
 
-  const profileValue = cp.channel_profile_ids ?? [];
+  // MultiSelect requires string values; persist ints like sibling ID fields.
+  const profileValue = (cp.channel_profile_ids || []).map(String);
   const updateProfiles = (value) => {
     if (!value || value.length === 0) {
       setCp({}, ['channel_profile_ids']);
     } else {
-      setCp({ channel_profile_ids: value });
+      setCp({
+        channel_profile_ids: value.map((id) => parseInt(id, 10)),
+      });
     }
   };
 

@@ -15,8 +15,8 @@ from apps.vod.models import M3UVODCategoryRelation, VODCategory
 from apps.vod.tasks import refresh_categories, refresh_vod_content
 
 USER_AGENT_PATCH = patch(
-    "apps.m3u.models.M3UAccount.get_user_agent",
-    return_value=MagicMock(user_agent="Test/1.0"),
+    "apps.m3u.models.M3UAccount.get_user_agent_string",
+    return_value="Test/1.0",
 )
 
 

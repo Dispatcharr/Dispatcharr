@@ -1,7 +1,7 @@
 from django.db.models.signals import pre_delete, post_delete, post_save
 from django.dispatch import receiver
 from django.core.exceptions import ValidationError
-from .models import StreamProfile, CoreSettings, NETWORK_ACCESS_KEY
+from .models import StreamProfile, CoreSettings, UserAgent, NETWORK_ACCESS_KEY
 
 @receiver(pre_delete, sender=StreamProfile)
 def prevent_deletion_if_locked(sender, instance, **kwargs):
@@ -13,6 +13,12 @@ def prevent_deletion_if_locked(sender, instance, **kwargs):
 def handle_coresettings_cache_invalidation(sender, instance, **kwargs):
     """Drop Redis group cache whenever a CoreSettings row is saved or deleted."""
     CoreSettings.invalidate_group_cache(instance.key)
+
+@receiver(post_save, sender=UserAgent)
+@receiver(post_delete, sender=UserAgent)
+def handle_user_agent_cache_invalidation(sender, instance, **kwargs):
+    """Drop cached default User-Agent string when any UserAgent row changes."""
+    CoreSettings.invalidate_default_user_agent_cache()
 
 @receiver(post_save, sender=CoreSettings)
 def handle_network_access_update(sender, instance, **kwargs):

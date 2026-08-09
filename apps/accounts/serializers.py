@@ -1,4 +1,5 @@
 import json
+import re
 
 from rest_framework import serializers
 from django.contrib.auth.models import Group, Permission
@@ -12,6 +13,7 @@ VALID_NAV_ITEM_IDS = {
     'stats', 'plugins', 'integrations', 'system', 'settings'
 }
 MAX_CUSTOM_PROPS_SIZE = 102400  # 100KB limit
+SAFE_CREDENTIAL_RE = re.compile(r"^[A-Za-z0-9._@-]+$")
 
 
 def validate_nav_array(value, field_name):
@@ -74,6 +76,13 @@ class UserSerializer(serializers.ModelSerializer):
             "last_name",
         ]
 
+    def validate_username(self, value):
+        if not SAFE_CREDENTIAL_RE.fullmatch(value):
+            raise serializers.ValidationError(
+                "Username may only contain letters, numbers, periods (.), underscores (_), at signs (@), and hyphens (-)"
+            )
+        return value
+
     def validate_custom_properties(self, value):
         """Validate custom_properties structure and size."""
         if value is None:
@@ -98,6 +107,13 @@ class UserSerializer(serializers.ModelSerializer):
         if 'hiddenNav' in value:
             validate_nav_array(value['hiddenNav'], 'hiddenNav')
 
+        xc_password = value.get("xc_password")
+
+        if xc_password and not SAFE_CREDENTIAL_RE.fullmatch(xc_password):
+            raise serializers.ValidationError(
+                "XC password may only contain letters, numbers, periods (.), underscores (_), at signs (@), and hyphens (-)"
+            )
+            
         return value
 
     def create(self, validated_data):

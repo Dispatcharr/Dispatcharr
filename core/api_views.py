@@ -32,6 +32,7 @@ import socket
 import threading
 import requests
 import os
+import time
 from django.core.cache import cache
 from core.tasks import rehash_streams
 from apps.accounts.permissions import (
@@ -290,6 +291,7 @@ class ProxySettingsViewSet(viewsets.ViewSet):
 _IP_CACHE_KEY = "dispatcharr:ip_lookup_result"
 _IP_CACHE_TTL = 3600  # 1 hour
 _IP_LOCK_KEY = "dispatcharr:ip_lookup_lock"
+_IP_VERIFY_INTERVAL = 60  # re-verify the public IP at most once per minute
 
 
 def _perform_ip_lookup():
@@ -347,11 +349,19 @@ def _perform_ip_lookup():
         "country_name": country_name,
         "city": city,
     }
-    cache.set(_IP_CACHE_KEY, result, _IP_CACHE_TTL)
+    # On a failed re-check, keep the last known IP and only bump verified_at
+    # so retries stay rate-limited. Store and push on success, or on the first
+    # lookup (including a negative result, so the frontend skeleton resolves).
+    # verified_at stays cache-only and is omitted from websocket payloads.
+    cached = cache.get(_IP_CACHE_KEY)
+    should_store = public_ip is not None or cached is None
+    payload = result if should_store else cached
+    cache.set(_IP_CACHE_KEY, {**payload, "verified_at": time.time()}, _IP_CACHE_TTL)
     cache.delete(_IP_LOCK_KEY)
 
-    from core.utils import send_websocket_update
-    send_websocket_update("updates", "update", {"type": "ip_lookup_complete", **result})
+    if should_store:
+        from core.utils import send_websocket_update
+        send_websocket_update("updates", "update", {"type": "ip_lookup_complete", **result})
 
 
 @extend_schema(
@@ -379,6 +389,11 @@ def environment(request):
             country_code = cached.get("country_code")
             country_name = cached.get("country_name")
             city = cached.get("city")
+            # Serve cache immediately; re-check in the background when stale
+            # (missing verified_at counts as stale). Websocket push updates clients.
+            stale = time.time() - cached.get("verified_at", 0) > _IP_VERIFY_INTERVAL
+            if stale and cache.add(_IP_LOCK_KEY, True, 30):
+                threading.Thread(target=_perform_ip_lookup, daemon=True).start()
         else:
             if cache.add(_IP_LOCK_KEY, True, 30):
                 threading.Thread(target=_perform_ip_lookup, daemon=True).start()
@@ -512,7 +527,7 @@ class TimezoneListView(APIView):
 # System Events API
 # ─────────────────────────────
 @api_view(['GET'])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAdmin])
 def get_system_events(request):
     """
     Get recent system events (channel start/stop, buffering, client connections, etc.)

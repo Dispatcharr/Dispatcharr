@@ -3,6 +3,8 @@ import threading
 
 from django.core.cache import cache
 
+from core.utils import ensure_custom_properties_dict
+
 logger = logging.getLogger(__name__)
 
 PROVIDER_ARCHIVE_CACHE_TTL_SECONDS = 300
@@ -15,6 +17,30 @@ EPG_LOGO_APPLY_MAX_ERRORS = 100
 lock = threading.Lock()
 # Dictionary to track usage: {account_id: current_usage}
 active_streams_map = {}
+
+
+def coerce_channel_profile_ids(custom_properties):
+    """Ensure channel_profile_ids is a list of ints (UI MultiSelect uses strings).
+
+    ``ensure_custom_properties_dict`` guards against legacy rows where
+    custom_properties was stored as a JSON-encoded string rather than an
+    object; without it a bad row would raise here instead of degrading
+    gracefully.
+    """
+    props = dict(ensure_custom_properties_dict(custom_properties))
+    if "channel_profile_ids" not in props:
+        return props
+    raw = props["channel_profile_ids"]
+    if not isinstance(raw, list):
+        raw = [raw] if raw not in (None, "") else []
+    ids = []
+    for item in raw:
+        try:
+            ids.append(int(item))
+        except (TypeError, ValueError):
+            continue
+    props["channel_profile_ids"] = ids
+    return props
 
 
 def format_channel_number(value, empty=""):
@@ -118,7 +144,7 @@ def get_channel_catchup_streams(channel):
     return list(
         channel.streams.filter(is_catchup=True, m3u_account__is_active=True)
         .order_by("channelstream__order")
-        .select_related("m3u_account")
+        .select_related("m3u_account__user_agent")
     )
 
 

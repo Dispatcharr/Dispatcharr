@@ -16,18 +16,20 @@ from django.db.models import Q
 import os, json, requests, logging, mimetypes, threading, time
 from urllib.parse import urlencode
 from datetime import timedelta
-from django.utils.http import http_date
 from apps.accounts.permissions import (
     Authenticated,
     IsAdmin,
-    IsOwnerOfObject,
     IsStandardUser,
     permission_classes_by_action,
     permission_classes_by_method,
 )
 
-from core.models import UserAgent, CoreSettings
+from core.models import CoreSettings
 from core.utils import RedisClient, safe_upload_path, resolve_safe_local_data_path
+from core.image_proxy import (
+    image_fetch_failures as _logo_fetch_failures,
+    serve_local_or_remote_image,
+)
 from apps.m3u.utils import convert_js_numbered_backreferences
 
 from .models import (
@@ -104,12 +106,6 @@ def _stop_proxy_sessions_for_channel_ids(channel_ids):
 
 
 logger = logging.getLogger(__name__)
-
-# Negative cache for remote logo URLs that failed to fetch.
-# Prevents repeated blocking requests to unreachable hosts (e.g., dead CDNs)
-# from exhausting Daphne workers.  Keyed by URL, value is expiry timestamp.
-_logo_fetch_failures = {}
-_LOGO_FAIL_TTL = 300  # seconds
 
 
 class OrInFilter(django_filters.Filter):
@@ -1382,14 +1378,26 @@ class ChannelViewSet(viewsets.ModelViewSet):
                     to_create = []
                     to_update = []
                     update_field_set = set()
+                    changed_override_epg_ids = set()
+                    override_epg_assignment_changed = False
                     for channel_id, defaults in overrides_to_upsert:
                         existing = existing_overrides.get(channel_id)
                         if existing:
+                            if "epg_data_id" in defaults:
+                                new_epg_id = defaults.get("epg_data_id")
+                                if new_epg_id != existing.epg_data_id:
+                                    override_epg_assignment_changed = True
+                                    if new_epg_id:
+                                        changed_override_epg_ids.add(new_epg_id)
                             for f, v in defaults.items():
                                 setattr(existing, f, v)
                                 update_field_set.add(f)
                             to_update.append(existing)
                         else:
+                            new_epg_id = defaults.get("epg_data_id")
+                            if new_epg_id:
+                                override_epg_assignment_changed = True
+                                changed_override_epg_ids.add(new_epg_id)
                             to_create.append(
                                 ChannelOverride(
                                     channel_id=channel_id, **defaults
@@ -1404,6 +1412,21 @@ class ChannelViewSet(viewsets.ModelViewSet):
                     if to_create:
                         ChannelOverride.objects.bulk_create(
                             to_create, batch_size=200
+                        )
+
+                    # bulk_* bypasses post_save: drop XMLTV chunk cache and
+                    # queue programme import for newly assigned override EPG.
+                    if override_epg_assignment_changed:
+                        from apps.output.streaming_chunk_cache import (
+                            invalidate_epg_chunk_cache,
+                        )
+                        invalidate_epg_chunk_cache()
+                    if changed_override_epg_ids:
+                        from apps.epg.tasks import (
+                            dispatch_program_refresh_for_epg_ids,
+                        )
+                        dispatch_program_refresh_for_epg_ids(
+                            changed_override_epg_ids
                         )
 
                     # Drop override rows that ended up all-null; an empty
@@ -2838,120 +2861,11 @@ class LogoViewSet(viewsets.ModelViewSet):
     def cache(self, request, pk=None):
         """Streams the logo file, whether it's local or remote."""
         logo = self.get_object()
-        logo_url = logo.url
-        if not logo_url:
-            raise Http404("Image not found")
-        if logo_url.startswith("/data"):  # Local file
-            safe_path = resolve_safe_local_data_path(logo_url)
-            if safe_path is None or not os.path.exists(safe_path):
-                raise Http404("Image not found")
-            stat = os.stat(safe_path)
-            # Get proper mime type (first item of the tuple)
-            content_type, _ = mimetypes.guess_type(safe_path)
-            if not content_type:
-                content_type = "image/jpeg"  # Default to a common image type
-
-            # StreamingHttpResponse closes the file when the response finishes.
-            response = StreamingHttpResponse(
-                open(safe_path, "rb"), content_type=content_type
-            )
-            response["Cache-Control"] = "public, max-age=14400"  # Cache in browser for 4 hours
-            response["Last-Modified"] = http_date(stat.st_mtime)
-            response["Content-Disposition"] = 'inline; filename="{}"'.format(
-                os.path.basename(safe_path)
-            )
-            return response
-
-        else:  # Remote image
-            # Skip URLs that recently failed to avoid blocking workers
-            # on unreachable hosts (e.g., dead CDNs referenced by old recordings).
-            fail_expiry = _logo_fetch_failures.get(logo_url)
-            if fail_expiry and time.monotonic() < fail_expiry:
-                raise Http404("Remote image temporarily unavailable")
-
-            try:
-                # Get the default user agent
-                try:
-                    default_user_agent_id = CoreSettings.get_default_user_agent_id()
-                    user_agent_obj = UserAgent.objects.get(id=int(default_user_agent_id))
-                    user_agent = user_agent_obj.user_agent
-                except (CoreSettings.DoesNotExist, UserAgent.DoesNotExist, ValueError):
-                    # Fallback if default not found
-                    from core.utils import dispatcharr_user_agent
-                    user_agent = dispatcharr_user_agent()
-
-                # Hard total timeout (connect + full download) prevents a slow
-                # server dripping bytes from holding a greenlet indefinitely.
-                _LOGO_TOTAL_TIMEOUT = 10  # seconds
-                _LOGO_MAX_BYTES = 5 * 1024 * 1024  # 5 MB
-
-                remote_response = requests.get(
-                    logo_url,
-                    stream=True,
-                    timeout=(3, 5),  # (connect_timeout, read_timeout per chunk)
-                    headers={'User-Agent': user_agent}
-                )
-                if remote_response.status_code == 200:
-                    # Eagerly read the full image with a total time + size cap
-                    # so the greenlet is released quickly.
-                    chunks = []
-                    total = 0
-                    deadline = time.monotonic() + _LOGO_TOTAL_TIMEOUT
-                    for chunk in remote_response.iter_content(chunk_size=8192):
-                        total += len(chunk)
-                        if total > _LOGO_MAX_BYTES:
-                            remote_response.close()
-                            raise Http404("Remote image too large")
-                        if time.monotonic() > deadline:
-                            remote_response.close()
-                            now = time.monotonic()
-                            _logo_fetch_failures[logo_url] = now + _LOGO_FAIL_TTL
-                            raise Http404("Remote image fetch timed out")
-                        chunks.append(chunk)
-                    body = b"".join(chunks)
-
-                    # Full read succeeded, clear any previous failure entry
-                    _logo_fetch_failures.pop(logo_url, None)
-
-                    # Try to get content type from response headers first
-                    content_type = remote_response.headers.get("Content-Type")
-
-                    # If no content type in headers or it's empty, guess based on URL
-                    if not content_type:
-                        content_type, _ = mimetypes.guess_type(logo_url)
-
-                    # If still no content type, default to common image type
-                    if not content_type:
-                        content_type = "image/jpeg"
-
-                    response = HttpResponse(
-                        body,
-                        content_type=content_type,
-                    )
-                    response["Content-Length"] = str(len(body))
-                    if remote_response.headers.get("Cache-Control"):
-                        response["Cache-Control"] = remote_response.headers.get("Cache-Control")
-                    if remote_response.headers.get("Last-Modified"):
-                        response["Last-Modified"] = remote_response.headers.get("Last-Modified")
-                    response["Content-Disposition"] = 'inline; filename="{}"'.format(
-                        os.path.basename(logo_url)
-                    )
-                    return response
-                # Non-200 response — cache the failure and evict stale entries
-                now = time.monotonic()
-                _logo_fetch_failures[logo_url] = now + _LOGO_FAIL_TTL
-                if len(_logo_fetch_failures) > 256:
-                    for k in [k for k, v in _logo_fetch_failures.items() if v <= now]:
-                        _logo_fetch_failures.pop(k, None)
-                raise Http404("Remote image not found")
-            except requests.RequestException as e:
-                now = time.monotonic()
-                _logo_fetch_failures[logo_url] = now + _LOGO_FAIL_TTL
-                if len(_logo_fetch_failures) > 256:
-                    for k in [k for k, v in _logo_fetch_failures.items() if v <= now]:
-                        _logo_fetch_failures.pop(k, None)
-                logger.warning(f"Error fetching logo from {logo_url}: {e}")
-                raise Http404("Error fetching remote image")
+        return serve_local_or_remote_image(
+            logo.url,
+            failure_cache=_logo_fetch_failures,
+            log_label="logo",
+        )
 
 
 class ChannelProfileViewSet(viewsets.ModelViewSet):
@@ -3137,11 +3051,19 @@ class GetChannelStreamStatsAPIView(APIView):
 
 
 class UpdateChannelMembershipAPIView(APIView):
-    permission_classes = [IsOwnerOfObject]
+    permission_classes = [Authenticated]
 
     def patch(self, request, profile_id, channel_id):
         """Enable or disable a channel for a specific group"""
-        channel_profile = get_object_or_404(ChannelProfile, id=profile_id)
+        # Scope the fetch to profiles the caller may touch (admin: all,
+        # otherwise their assigned profiles). Auth is the queryset itself,
+        # so there is no second ownership lookup after get_object_or_404.
+        user = request.user
+        if getattr(user, "user_level", None) == 10:
+            profiles = ChannelProfile.objects.all()
+        else:
+            profiles = user.channel_profiles.all()
+        channel_profile = get_object_or_404(profiles, id=profile_id)
         channel = get_object_or_404(Channel, id=channel_id)
         try:
             membership = ChannelProfileMembership.objects.get(

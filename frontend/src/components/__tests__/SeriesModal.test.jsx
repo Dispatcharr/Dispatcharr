@@ -470,14 +470,24 @@ describe('SeriesModal', () => {
         <SeriesModal series={mockSeries} opened={true} onClose={vi.fn()} />
       );
 
+      await waitFor(() => {
+        expect(mockVODStore.fetchSeriesInfo).toHaveBeenCalledWith(1);
+      });
+      const openFetchCount = mockVODStore.fetchSeriesInfo.mock.calls.length;
+
       let select;
       await waitFor(() => {
         select = screen.getByTestId('select').querySelector('select');
-        fireEvent.change(select, { target: { value: '1' } });
+        fireEvent.change(select, { target: { value: '2' } });
       });
 
       await waitFor(() => {
-        expect(select.value).toBe('1');
+        expect(select.value).toBe('2');
+        expect(mockVODStore.fetchSeriesInfo).toHaveBeenCalledWith(1, 2);
+        // Open effect must not re-fire when selectedProvider changes.
+        expect(mockVODStore.fetchSeriesInfo.mock.calls.length).toBe(
+          openFetchCount + 1
+        );
       });
     });
 
@@ -891,6 +901,30 @@ describe('SeriesModal', () => {
       );
 
       await waitFor(() => {
+        expect(screen.getByText(/Season 1/i)).toBeInTheDocument();
+      });
+    });
+
+    it('should show a Season 0 tab for specials', async () => {
+      const special = {
+        ...mockEpisode,
+        id: 99,
+        season_number: 0,
+        episode_number: 1,
+        name: 'Special',
+      };
+      const seasonOne = { ...mockEpisode, id: 1, season_number: 1 };
+      mockVODStore.fetchSeriesInfo.mockResolvedValue({
+        ...mockDetailedSeries,
+        episodesList: [special, seasonOne],
+      });
+
+      render(
+        <SeriesModal series={mockSeries} opened={true} onClose={vi.fn()} />
+      );
+
+      await waitFor(() => {
+        expect(screen.getByText(/Season 0/i)).toBeInTheDocument();
         expect(screen.getByText(/Season 1/i)).toBeInTheDocument();
       });
     });

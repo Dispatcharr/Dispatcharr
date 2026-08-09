@@ -486,7 +486,7 @@ describe('LogoForm', () => {
       expect(screen.queryByAltText('Logo preview')).not.toBeInTheDocument();
     });
 
-    it('auto-fills name from URL on blur', () => {
+    it('auto-fills name from URL on blur when name is empty', () => {
       render(<LogoForm {...defaultProps()} />);
       fireEvent.change(
         screen.getByPlaceholderText('https://example.com/logo.png'),
@@ -501,6 +501,55 @@ describe('LogoForm', () => {
         }
       );
       expect(LogoUtils.getFilenameWithoutExtension).toHaveBeenCalled();
+      expect(screen.getByPlaceholderText('Enter logo name')).toHaveValue(
+        'my-channel-logo'
+      );
+    });
+
+    it('does not overwrite an existing name when URL blurs', () => {
+      render(<LogoForm {...defaultProps()} />);
+      fireEvent.change(screen.getByPlaceholderText('Enter logo name'), {
+        target: { value: 'custom-name' },
+      });
+      fireEvent.change(
+        screen.getByPlaceholderText('https://example.com/logo.png'),
+        {
+          target: { value: 'https://example.com/source-filename.png' },
+        }
+      );
+      fireEvent.blur(
+        screen.getByPlaceholderText('https://example.com/logo.png'),
+        {
+          target: { value: 'https://example.com/source-filename.png' },
+        }
+      );
+      expect(screen.getByPlaceholderText('Enter logo name')).toHaveValue(
+        'custom-name'
+      );
+      expect(LogoUtils.getFilenameWithoutExtension).not.toHaveBeenCalled();
+    });
+
+    it('does not overwrite name when editing an existing logo and URL blurs', () => {
+      render(
+        <LogoForm
+          {...defaultProps({
+            logo: makeLogo({
+              name: 'custom-name',
+              url: 'https://example.com/source-filename.png',
+            }),
+          })}
+        />
+      );
+      fireEvent.blur(
+        screen.getByPlaceholderText('https://example.com/logo.png'),
+        {
+          target: { value: 'https://example.com/source-filename.png' },
+        }
+      );
+      expect(screen.getByPlaceholderText('Enter logo name')).toHaveValue(
+        'custom-name'
+      );
+      expect(LogoUtils.getFilenameWithoutExtension).not.toHaveBeenCalled();
     });
 
     it('does not throw on blur with invalid URL', () => {

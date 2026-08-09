@@ -14,10 +14,12 @@ import React from 'react';
 import {
   formatDuration,
   getSeasonLabel,
+  vodLogoSrc,
 } from '../../utils/cards/VODCardUtils.js';
 
 const VODCard = ({ vod, onClick }) => {
   const isEpisode = vod.type === 'episode';
+  const posterSrc = vodLogoSrc(vod.logo);
 
   const getDisplayTitle = () => {
     if (isEpisode && vod.series) {
@@ -51,9 +53,9 @@ const VODCard = ({ vod, onClick }) => {
     >
       <CardSection>
         <Box pos="relative" h={300}>
-          {vod.logo?.url ? (
+          {posterSrc ? (
             <Image
-              src={vod.logo.url}
+              src={posterSrc}
               height={300}
               alt={vod.name}
               fit="contain"

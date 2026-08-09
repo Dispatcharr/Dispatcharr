@@ -320,7 +320,9 @@ export const parseSettings = (settings) => {
         : Boolean(dvrSettings.comskip_enabled);
     parsed.comskip_custom_path = dvrSettings.comskip_custom_path;
     parsed.comskip_mode = dvrSettings.comskip_mode || 'cut';
-    parsed.comskip_hw_accel = dvrSettings.comskip_hw_accel || 'none';
+    // Legacy "qsv" never worked with the bundled binary; map to hwassist.
+    const hwAccel = dvrSettings.comskip_hw_accel || 'none';
+    parsed.comskip_hw_accel = hwAccel === 'qsv' ? 'hwassist' : hwAccel;
     parsed.pre_offset_minutes =
       typeof dvrSettings.pre_offset_minutes === 'number'
         ? dvrSettings.pre_offset_minutes

@@ -1,12 +1,11 @@
 from datetime import datetime, timezone
 from django.db import models
 from django.core.exceptions import ValidationError
-from core.models import UserAgent
+from core.models import CoreSettings, UserAgent
 import re
 from django.dispatch import receiver
 from apps.channels.models import StreamProfile
 from django_celery_beat.models import PeriodicTask
-from core.models import CoreSettings, UserAgent
 from core.utils import custom_properties_as_dict
 
 CUSTOM_M3U_ACCOUNT_NAME = "custom"
@@ -116,13 +115,28 @@ class M3UAccount(models.Model):
         return cls.objects.get(name=CUSTOM_M3U_ACCOUNT_NAME, locked=True)
 
     def get_user_agent(self):
-        user_agent = self.user_agent
-        if not user_agent:
-            user_agent = UserAgent.objects.get(
-                id=CoreSettings.get_default_user_agent_id()
-            )
+        """Return the account-assigned UserAgent model, or None for system default.
 
-        return user_agent
+        Returns None when this account has no User-Agent of its own so callers
+        do not pay a Postgres hit for the system default row. For outbound
+        HTTP headers and XC clients, use ``get_user_agent_string()``, which
+        resolves the Redis-cached system default when needed.
+        """
+        if self.user_agent_id:
+            return self.user_agent
+        return None
+
+    def get_user_agent_string(self):
+        """Return the User-Agent string for provider requests.
+
+        Uses this account's configured User-Agent when set; otherwise the
+        Redis-cached system default from ``CoreSettings.get_default_user_agent()``.
+        """
+        if self.user_agent_id:
+            ua = self.user_agent
+            if ua is not None and ua.user_agent:
+                return ua.user_agent
+        return CoreSettings.get_default_user_agent()
 
     def save(self, *args, **kwargs):
         if self.custom_properties is not None and not isinstance(
@@ -268,16 +282,24 @@ class M3UAccountProfile(models.Model):
 
     def save(self, *args, **kwargs):
         """Auto-sync exp_date from custom_properties for XC accounts on every save.
-        For non-XC accounts, exp_date is set directly and left untouched here."""
+        For non-XC accounts, exp_date is set directly and left untouched here.
+
+        Leftover XC user_info on a Standard account must not overwrite a
+        manually set expiration (e.g. after converting XC to Standard).
+        """
         if self.custom_properties is not None and not isinstance(
             self.custom_properties, dict
         ):
             self.custom_properties = custom_properties_as_dict(self.custom_properties)
 
-        parsed = self._parse_exp_date_from_custom_properties()
-        if parsed is not None:
-            # XC account with exp_date in custom_properties — always sync
-            self.exp_date = parsed
+        is_xc = (
+            bool(self.m3u_account_id)
+            and self.m3u_account.account_type == M3UAccount.Types.XC
+        )
+        if is_xc:
+            parsed = self._parse_exp_date_from_custom_properties()
+            if parsed is not None:
+                self.exp_date = parsed
         # else: keep whatever exp_date is already set (manual entry for non-XC)
         super().save(*args, **kwargs)
 
@@ -353,7 +375,19 @@ class M3UAccountProfile(models.Model):
 
 @receiver(models.signals.post_save, sender=M3UAccount)
 def create_profile_for_m3u_account(sender, instance, created, **kwargs):
-    """Automatically create an M3UAccountProfile when M3UAccount is created."""
+    """Create the default profile on account create; keep its max_streams in sync on update.
+
+    Account form Max Streams is enforced via the default profile's max_streams
+    (connection pool / playback). Sync only when max_streams is part of the
+    account save and the value actually changed. Status/last_message saves
+    during M3U refresh must not load or rewrite the default profile, or they
+    can race with XC account-info refresh and clobber exp_date /
+    custom_properties.
+
+    Uses QuerySet.update (not model.save) so we never touch other profile
+    columns and avoid profile.save() side effects (XC exp_date JSON sync,
+    expiration-notification signal).
+    """
     if created:
         M3UAccountProfile.objects.create(
             m3u_account=instance,
@@ -364,11 +398,15 @@ def create_profile_for_m3u_account(sender, instance, created, **kwargs):
             search_pattern="^(.*)$",
             replace_pattern="$1",
         )
-    else:
-        profile = M3UAccountProfile.objects.get(
-            m3u_account=instance,
-            is_default=True,
-        )
+        return
 
-        profile.max_streams = instance.max_streams
-        profile.save()
+    update_fields = kwargs.get("update_fields")
+    if update_fields is not None and "max_streams" not in update_fields:
+        return
+
+    M3UAccountProfile.objects.filter(
+        m3u_account=instance,
+        is_default=True,
+    ).exclude(max_streams=instance.max_streams).update(
+        max_streams=instance.max_streams
+    )

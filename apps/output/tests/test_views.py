@@ -5,7 +5,7 @@ from unittest.mock import patch
 from uuid import uuid4
 from django.db import connection
 from django.test.utils import CaptureQueriesContext
-from apps.channels.models import Channel, ChannelGroup, ChannelProfile, ChannelProfileMembership
+from apps.channels.models import Channel, ChannelGroup, ChannelOverride, ChannelProfile, ChannelProfileMembership
 from apps.epg.models import EPGData, EPGSource
 from apps.accounts.models import User
 from apps.m3u.models import M3UAccount
@@ -295,6 +295,77 @@ class OutputEPGXMLEscapingTest(OutputEndpointTestMixin, TestCase):
 
         self.assertLess(content.find('<title>First</title>'), content.find('<title>Second</title>'))
         self.assertLess(content.find('<title>Second</title>'), content.find('<title>Third</title>'))
+
+    def test_override_epg_change_invalidates_xmltv_chunk_cache(self):
+        """
+        XC reads live ProgramData; XMLTV is chunk-cached. Changing the
+        effective EPG via ChannelOverride must drop that cache so the next
+        /output/epg emits the new station's programmes, not the previous ones.
+        """
+        from django.utils import timezone
+        from apps.channels.models import ChannelOverride
+        from apps.epg.models import ProgramData
+        from django_redis import get_redis_connection
+
+        # This mixin normally bypasses Redis chunk caching; use the real path here.
+        self._epg_cache_patch.stop()
+        try:
+            epg_source = EPGSource.objects.create(name="Cache EPG Src", source_type="xmltv")
+            epg_old = EPGData.objects.create(
+                name="Old Station",
+                epg_source=epg_source,
+                tvg_id="old.station",
+            )
+            epg_new = EPGData.objects.create(
+                name="New Station",
+                epg_source=epg_source,
+                tvg_id="new.station",
+            )
+            channel = self._add_channel(
+                channel_number=149.0,
+                name="Cache Channel",
+                tvg_id="cache.channel",
+                epg_data=epg_old,
+            )
+            now = timezone.now()
+            ProgramData.objects.create(
+                epg=epg_old,
+                start_time=now + timedelta(hours=1),
+                end_time=now + timedelta(hours=2),
+                title="OLD PROGRAMME",
+                tvg_id="old.station",
+            )
+            ProgramData.objects.create(
+                epg=epg_new,
+                start_time=now + timedelta(hours=1),
+                end_time=now + timedelta(hours=2),
+                title="NEW PROGRAMME",
+                tvg_id="new.station",
+            )
+
+            url = self._epg_url("tvg_id_source=channel_number&days=7")
+            before = _response_text(self.client.get(url))
+            self.assertIn('<title>OLD PROGRAMME</title>', before)
+            self.assertNotIn('<title>NEW PROGRAMME</title>', before)
+
+            redis = get_redis_connection("default")
+            cached_before = list(redis.scan_iter(match="epg_content:*", count=200))
+            self.assertGreater(len(cached_before), 0, "XMLTV chunk cache should be warm")
+
+            ChannelOverride.objects.create(channel=channel, epg_data=epg_new)
+
+            cached_after = list(redis.scan_iter(match="epg_content:*", count=200))
+            self.assertEqual(
+                len(cached_after),
+                0,
+                "Override EPG change must invalidate XMLTV chunk cache",
+            )
+
+            after = _response_text(self.client.get(url))
+            self.assertIn('<title>NEW PROGRAMME</title>', after)
+            self.assertNotIn('<title>OLD PROGRAMME</title>', after)
+        finally:
+            self._epg_cache_patch.start()
 
 
 class OutputEPGCustomDummyTest(TestCase):
@@ -792,6 +863,119 @@ class XcVodSeriesRegressionTests(TestCase):
         self.assertEqual(stream["category_id"], str(comedy.id))
         self.assertEqual(stream["category_ids"], [comedy.id])
 
+    def test_vod_streams_stream_icon_falls_back_to_relation_basic_data(self):
+        """No synced VODLogo: fall back to the winning relation's own list-sync icon."""
+        account = self._account(f"acct-{uuid4().hex[:6]}")
+        movie = Movie.objects.create(name="No Logo Movie")
+        M3UMovieRelation.objects.create(
+            m3u_account=account,
+            movie=movie,
+            stream_id="no-logo-1",
+            custom_properties={
+                "basic_data": {"stream_icon": "https://cdn.example.com/icon.jpg"},
+            },
+        )
+
+        stream = xc_get_vod_streams(self.request, self.user)[0]
+
+        self.assertIsNotNone(stream["stream_icon"])
+        self.assertIn("/image/", stream["stream_icon"])
+        self.assertIn("kind=movie_image", stream["stream_icon"])
+
+    def test_vod_streams_stream_icon_prefers_relation_over_synced_logo(self):
+        """Winning relation still beats a shared Movie.logo (last-writer-wins)."""
+        account = self._account(f"acct-{uuid4().hex[:6]}")
+        logo = VODLogo.objects.create(name="Synced", url="http://example.com/synced.png")
+        movie = Movie.objects.create(name="Logo Movie", logo=logo)
+        M3UMovieRelation.objects.create(
+            m3u_account=account,
+            movie=movie,
+            stream_id="logo-1",
+            custom_properties={
+                "basic_data": {"stream_icon": "https://cdn.example.com/icon.jpg"},
+            },
+        )
+
+        stream = xc_get_vod_streams(self.request, self.user)[0]
+
+        self.assertIn("/image/", stream["stream_icon"])
+        self.assertIn("kind=movie_image", stream["stream_icon"])
+        self.assertNotIn(f"/{logo.id}/", stream["stream_icon"])
+
+    def test_vod_streams_stream_icon_ignores_blank_relation_image_keys(self):
+        """basic_data is stored raw, so a blank key must not shadow a populated one."""
+        account = self._account(f"acct-{uuid4().hex[:6]}")
+        logo = VODLogo.objects.create(name="Synced", url="http://example.com/synced.png")
+        movie = Movie.objects.create(name="Blank Key Movie", logo=logo)
+        M3UMovieRelation.objects.create(
+            m3u_account=account,
+            movie=movie,
+            stream_id="blank-key-1",
+            custom_properties={
+                "basic_data": {
+                    "movie_image": "",
+                    "stream_icon": "https://cdn.example.com/icon.jpg",
+                },
+            },
+        )
+
+        stream = xc_get_vod_streams(self.request, self.user)[0]
+
+        self.assertIn("kind=movie_image", stream["stream_icon"])
+        self.assertNotIn(f"/{logo.id}/", stream["stream_icon"])
+
+    def test_vod_streams_stream_icon_ignores_whitespace_only_image_keys(self):
+        account = self._account(f"acct-{uuid4().hex[:6]}")
+        movie = Movie.objects.create(name="Whitespace Key Movie")
+        M3UMovieRelation.objects.create(
+            m3u_account=account,
+            movie=movie,
+            stream_id="ws-key-1",
+            custom_properties={
+                "basic_data": {
+                    "movie_image": "   ",
+                    "stream_icon": "https://cdn.example.com/icon.jpg",
+                },
+            },
+        )
+
+        stream = xc_get_vod_streams(self.request, self.user)[0]
+
+        self.assertIn("kind=movie_image", stream["stream_icon"])
+
+    def test_series_backdrop_skips_empty_detailed_array(self):
+        """Empty detailed_info.backdrop_path must not block basic_data."""
+        account = self._account(f"acct-{uuid4().hex[:6]}")
+        series = Series.objects.create(name="Empty Bd Series")
+        M3USeriesRelation.objects.create(
+            m3u_account=account,
+            series=series,
+            external_series_id="empty-bd-s",
+            custom_properties={
+                "detailed_info": {"backdrop_path": []},
+                "basic_data": {"backdrop_path": "https://cdn.example.com/bd.jpg"},
+            },
+        )
+
+        row = xc_get_series(self.request, self.user)[0]
+
+        self.assertEqual(len(row["backdrop_path"]), 1)
+        self.assertIn("kind=backdrop", row["backdrop_path"][0])
+
+    def test_vod_streams_stream_icon_falls_back_to_logo_without_relation_art(self):
+        account = self._account(f"acct-{uuid4().hex[:6]}")
+        logo = VODLogo.objects.create(name="Synced", url="http://example.com/synced.png")
+        movie = Movie.objects.create(name="Logo Only Movie", logo=logo)
+        M3UMovieRelation.objects.create(
+            m3u_account=account,
+            movie=movie,
+            stream_id="logo-only-1",
+        )
+
+        stream = xc_get_vod_streams(self.request, self.user)[0]
+
+        self.assertIn(f"/{logo.id}/", stream["stream_icon"])
+
     def test_series_response_keys_and_metadata(self):
         account = self._account(f"acct-{uuid4().hex[:6]}")
         logo = VODLogo.objects.create(name="Cover", url="http://example.com/cover.png")
@@ -840,6 +1024,88 @@ class XcVodSeriesRegressionTests(TestCase):
         self.assertEqual(row["category_id"], str(category.id))
         self.assertEqual(row["category_ids"], [category.id])
         self.assertEqual(row["last_modified"], str(int(relation.updated_at.timestamp())))
+
+    def test_series_cover_falls_back_to_relation_basic_data(self):
+        """No synced VODLogo: fall back to the winning relation's own list-sync cover."""
+        account = self._account(f"acct-{uuid4().hex[:6]}")
+        series = Series.objects.create(name="No Logo Series")
+        M3USeriesRelation.objects.create(
+            m3u_account=account,
+            series=series,
+            external_series_id="no-logo-s",
+            custom_properties={
+                "basic_data": {"cover": "https://cdn.example.com/cover.jpg"},
+            },
+        )
+
+        row = xc_get_series(self.request, self.user)[0]
+
+        self.assertIsNotNone(row["cover"])
+        self.assertIn("/image/", row["cover"])
+        self.assertIn("kind=movie_image", row["cover"])
+
+    def test_series_backdrop_prefers_higher_priority_relation_basic_data(self):
+        """Shared Series.custom_properties can be stale; the winning relation's
+        own list-sync backdrop should be preferred when it has one."""
+        low = self._account(f"low-{uuid4().hex[:6]}", priority=1)
+        high = self._account(f"high-{uuid4().hex[:6]}", priority=10)
+        series = Series.objects.create(
+            name="Multi Provider Series",
+            custom_properties={"backdrop_path": ["https://cdn.example.com/stale.jpg"]},
+        )
+        M3USeriesRelation.objects.create(
+            m3u_account=low,
+            series=series,
+            external_series_id="low-s",
+        )
+        M3USeriesRelation.objects.create(
+            m3u_account=high,
+            series=series,
+            external_series_id="high-s",
+            custom_properties={
+                "basic_data": {"backdrop_path": "https://cdn.example.com/fresh.jpg"},
+            },
+        )
+
+        row = xc_get_series(self.request, self.user)[0]
+
+        self.assertEqual(len(row["backdrop_path"]), 1)
+        self.assertIn("/image/", row["backdrop_path"][0])
+        from hashlib import md5
+        expected_v = md5(b"https://cdn.example.com/fresh.jpg").hexdigest()[:8]
+        self.assertIn(f"v={expected_v}", row["backdrop_path"][0])
+
+    def test_series_cover_falls_back_to_logo_without_relation_art(self):
+        account = self._account(f"acct-{uuid4().hex[:6]}")
+        logo = VODLogo.objects.create(name="Cover", url="http://example.com/cover.png")
+        series = Series.objects.create(name="Logo Only Series", logo=logo)
+        M3USeriesRelation.objects.create(
+            m3u_account=account,
+            series=series,
+            external_series_id="logo-only-s",
+        )
+
+        row = xc_get_series(self.request, self.user)[0]
+
+        self.assertIn(f"/{logo.id}/", row["cover"])
+
+    def test_series_cover_prefers_relation_over_synced_logo(self):
+        account = self._account(f"acct-{uuid4().hex[:6]}")
+        logo = VODLogo.objects.create(name="Cover", url="http://example.com/cover.png")
+        series = Series.objects.create(name="Both Series", logo=logo)
+        M3USeriesRelation.objects.create(
+            m3u_account=account,
+            series=series,
+            external_series_id="both-s",
+            custom_properties={
+                "basic_data": {"cover": "https://cdn.example.com/cover.jpg"},
+            },
+        )
+
+        row = xc_get_series(self.request, self.user)[0]
+
+        self.assertIn("/image/", row["cover"])
+        self.assertNotIn(f"/{logo.id}/", row["cover"])
 
     def test_series_null_optional_fields(self):
         account = self._account(f"acct-{uuid4().hex[:6]}")
@@ -1163,3 +1429,132 @@ class GenerateEpgPrevDaysTests(SimpleTestCase):
         cache_key = generate_epg(request, profile_name="test", user=None)
 
         self.assertIn(":p=0:", cache_key)
+
+    @patch("apps.output.epg.stream_cached_response")
+    @patch("apps.output.epg.Channel.objects")
+    def test_epg_cache_key_includes_request_origin(self, _channels, mock_cache):
+        from apps.output.epg import generate_epg
+
+        mock_cache.side_effect = lambda cache_key, _source, **_kwargs: cache_key
+
+        lan_key = generate_epg(
+            self.factory.get("/epg/", HTTP_HOST="192.168.1.10:9191"),
+            profile_name="test",
+            user=None,
+        )
+        public_key = generate_epg(
+            self.factory.get("/epg/", HTTP_HOST="tv.example.com"),
+            profile_name="test",
+            user=None,
+        )
+        same_lan_key = generate_epg(
+            self.factory.get("/epg/", HTTP_HOST="192.168.1.10:9191"),
+            profile_name="test",
+            user=None,
+        )
+
+        self.assertIn("origin=http://192.168.1.10:9191", lan_key)
+        self.assertIn("origin=http://tv.example.com", public_key)
+        self.assertNotEqual(lan_key, public_key)
+        self.assertEqual(lan_key, same_lan_key)
+
+
+class GenerateM3UCacheKeyTests(SimpleTestCase):
+    """M3U shared cache must not reuse absolute URLs built for a different Host."""
+
+    def setUp(self):
+        self.factory = RequestFactory()
+
+    @patch("django.core.cache.cache")
+    def test_m3u_cache_key_includes_request_origin(self, mock_cache):
+        from apps.output.views import generate_m3u
+
+        mock_cache.get.return_value = "#EXTM3U\n"
+
+        generate_m3u(
+            self.factory.get("/m3u/", HTTP_HOST="192.168.1.10:9191"),
+            profile_name="test",
+            user=None,
+        )
+        lan_key = mock_cache.get.call_args[0][0]
+
+        generate_m3u(
+            self.factory.get("/m3u/", HTTP_HOST="tv.example.com"),
+            profile_name="test",
+            user=None,
+        )
+        public_key = mock_cache.get.call_args[0][0]
+
+        generate_m3u(
+            self.factory.get("/m3u/", HTTP_HOST="192.168.1.10:9191"),
+            profile_name="test",
+            user=None,
+        )
+        same_lan_key = mock_cache.get.call_args[0][0]
+
+        self.assertTrue(lan_key.startswith("m3u_content:"))
+        self.assertIn("origin=http://192.168.1.10:9191", lan_key)
+        self.assertIn("origin=http://tv.example.com", public_key)
+        self.assertNotEqual(lan_key, public_key)
+        self.assertEqual(lan_key, same_lan_key)
+
+
+class XcVodStreamsAdultContentTests(TestCase):
+    def setUp(self):
+        self.factory = RequestFactory()
+        self.account = M3UAccount.objects.create(
+            name=f"vod-adult-{uuid4().hex[:6]}",
+            server_url="http://example.com",
+            priority=1,
+            is_active=True,
+        )
+        self.safe = Movie.objects.create(name="Family Movie", is_adult=False)
+        self.adult = Movie.objects.create(name="Mature Movie", is_adult=True)
+        M3UMovieRelation.objects.create(
+            m3u_account=self.account,
+            movie=self.safe,
+            stream_id="safe-1",
+        )
+        M3UMovieRelation.objects.create(
+            m3u_account=self.account,
+            movie=self.adult,
+            stream_id="adult-1",
+        )
+        self.request = self.factory.get("/player_api.php")
+
+    def test_vod_streams_emits_is_adult_flag(self):
+        user = User.objects.create_user(
+            username=f"xc-adult-admin-{uuid4().hex[:8]}",
+            password="pass",
+            user_level=10,
+            custom_properties={"xc_password": "xcpass"},
+        )
+        streams = {s["name"]: s for s in xc_get_vod_streams(self.request, user)}
+        self.assertEqual(streams["Family Movie"]["is_adult"], 0)
+        self.assertEqual(streams["Mature Movie"]["is_adult"], 1)
+
+    def test_hide_adult_content_filters_vod_for_non_admin(self):
+        user = User.objects.create_user(
+            username=f"xc-adult-hide-{uuid4().hex[:8]}",
+            password="pass",
+            user_level=0,
+            custom_properties={
+                "xc_password": "xcpass",
+                "hide_adult_content": True,
+            },
+        )
+        names = {s["name"] for s in xc_get_vod_streams(self.request, user)}
+        self.assertEqual(names, {"Family Movie"})
+
+    def test_admin_still_sees_adult_vod_when_hide_set(self):
+        user = User.objects.create_user(
+            username=f"xc-adult-admin-hide-{uuid4().hex[:8]}",
+            password="pass",
+            user_level=10,
+            custom_properties={
+                "xc_password": "xcpass",
+                "hide_adult_content": True,
+            },
+        )
+        names = {s["name"] for s in xc_get_vod_streams(self.request, user)}
+        self.assertEqual(names, {"Family Movie", "Mature Movie"})

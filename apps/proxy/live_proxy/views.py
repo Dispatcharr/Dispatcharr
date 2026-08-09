@@ -17,12 +17,11 @@ from .server import ProxyServer
 from .channel_status import ChannelStatus, build_live_channel_stats_data
 from .output.ts.generator import create_stream_generator
 from .output.fmp4.generator import create_fmp4_stream_generator
-from .utils import get_client_ip
+from dispatcharr.utils import get_client_ip, network_access_allowed
 from .redis_keys import RedisKeys
-from apps.channels.models import Channel, Stream
-from apps.m3u.models import M3UAccount, M3UAccountProfile
+from apps.channels.models import Channel
 from apps.accounts.models import User
-from core.models import UserAgent, CoreSettings, PROXY_PROFILE_NAME
+from core.models import CoreSettings, PROXY_PROFILE_NAME
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
@@ -31,20 +30,17 @@ from apps.accounts.permissions import (
     permission_classes_by_method,
     permission_classes_by_action,
 )
-from .constants import ChannelState, EventType, StreamType, ChannelMetadataField
+from .constants import ChannelState, ChannelMetadataField
 from .services.channel_service import ChannelService
 from core.utils import send_websocket_update
 from .url_utils import (
     generate_stream_url,
-    transform_url,
     get_stream_info_for_switch,
     get_stream_object,
-    get_alternate_streams,
 )
 from .utils import get_logger
 from uuid import UUID
 import gevent
-from dispatcharr.utils import network_access_allowed
 from apps.proxy.utils import check_user_stream_limits
 
 logger = get_logger()

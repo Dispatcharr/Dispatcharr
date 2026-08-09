@@ -6,6 +6,7 @@ import logging
 import secrets
 import threading
 import time
+from collections import namedtuple
 from urllib.parse import urlencode
 
 import requests
@@ -17,6 +18,7 @@ from django.http import (
     HttpResponseBadRequest,
     HttpResponseForbidden,
     HttpResponseNotFound,
+    HttpResponseRedirect,
     JsonResponse,
     StreamingHttpResponse,
 )
@@ -30,7 +32,11 @@ from apps.accounts.authentication import ApiKeyAuthentication, QueryParamJWTAuth
 from apps.accounts.models import User
 from apps.channels.models import Channel
 from apps.channels.utils import get_channel_catchup_streams, is_catchup_enabled
-from apps.m3u.connection_pool import release_profile_slot, reserve_profile_slot
+from apps.m3u.connection_pool import (
+    pool_has_capacity_for_profile,
+    release_profile_slot,
+    reserve_profile_slot,
+)
 from apps.m3u.models import M3UAccount, M3UAccountProfile
 from apps.m3u.tasks import get_transformed_credentials
 from apps.proxy.live_proxy.config_helper import ConfigHelper
@@ -44,19 +50,21 @@ from apps.timeshift.redis_keys import (
 )
 
 stats_channel_id = make_stats_channel_id
-from apps.proxy.live_proxy.utils import get_client_ip
+from dispatcharr.utils import get_client_ip
 from apps.proxy.utils import (
     _timeshift_stop_channel_id,
     check_user_stream_limits,
     find_ts_sync,
     get_user_active_connections,
 )
-from core.utils import RedisClient, _is_gevent_monkey_patched
+from core.utils import RedisClient, _is_gevent_monkey_patched, dispatcharr_user_agent
 from dispatcharr.utils import network_access_allowed
 
 from .helpers import (
     TimeshiftCredentials,
     build_timeshift_candidate_urls,
+    build_timeshift_redirect_url,
+    client_timeshift_url_layout,
     convert_timestamp_to_provider_tz,
     order_catchup_streams_for_timestamp,
     parse_catchup_timestamp,
@@ -111,10 +119,13 @@ def timeshift_proxy(request, username, password, duration, timestamp, channel_id
         ``channel_id``: Dispatcharr ``Channel.id`` (often with a ``.ts`` suffix).
 
     Session handling (``?session_id=``):
-        First request with no ``session_id`` and no matching pool entry → ``301`` with a
-        minted ``session_id``. Reconnects that omit ``session_id`` but fingerprint-match
-        an in-flight or idle pool entry for the same viewer are served immediately
-        (no redirect). Reuse ``session_id`` for all range/seek requests in a programme.
+        First request with no ``session_id`` and no matching pool entry → if the
+        default stream profile is Redirect, ``302`` to a provider timeshift URL
+        mirroring this request's PATH/QUERY shape (capacity-checked, no session
+        mint); otherwise ``301`` with a minted ``session_id``. Reconnects that
+        omit ``session_id`` but fingerprint-match an in-flight or idle pool
+        entry for the same viewer are served immediately (no redirect). Reuse
+        ``session_id`` for all range/seek requests in a programme.
     """
     return _timeshift_proxy_impl(
         request, username, password, timestamp, channel_id,
@@ -182,8 +193,11 @@ def _timeshift_proxy_impl(
         "time) plus ``Authorization: Bearer``, ``X-API-Key``, or "
         "``?token=<jwt>``. Optionally include a client ``session_id`` for "
         "provider pooling.\n\n"
-        "**``session_id`` without a matching pool:** the server responds with "
-        "**301** and a minted ``session_id`` (direct-auth / first play only).\n\n"
+        "**No ``session_id`` and no pool match:** with the default stream "
+        "profile set to Redirect, the server responds with **302** to a "
+        "capacity-checked provider timeshift URL (PATH layout for this "
+        "native endpoint). Otherwise **301** with a minted ``session_id`` "
+        "(direct-auth / first play only).\n\n"
         "**``session_id`` omitted but pool match:** when the same viewer "
         "reconnects (e.g. IPTV fast-forward) and fingerprint-matches an "
         "existing pool entry, the stream is served on that request with no "
@@ -239,12 +253,27 @@ def _timeshift_proxy_impl(
         301: {
             "description": (
                 "Redirect to the same URL with a server-minted ``session_id`` "
-                "when the client did not supply one and no fingerprint-matched "
-                "pool entry exists (first play / direct-auth only)."
+                "when the client did not supply one, no fingerprint-matched "
+                "pool entry exists, and Redirect is not the default stream "
+                "profile (first play / direct-auth only)."
+            ),
+        },
+        302: {
+            "description": (
+                "Redirect to a provider timeshift URL when Redirect is the "
+                "default stream profile, the client did not supply a "
+                "``session_id``, and no fingerprint-matched pool entry exists. "
+                "No Dispatcharr session is minted."
             ),
         },
         401: {"description": "Missing or expired authentication / session."},
         403: {"description": "Access denied or session/channel mismatch."},
+        503: {
+            "description": (
+                "No capacity or provider URL available (including Redirect "
+                "handoff when every catch-up profile is at capacity)."
+            ),
+        },
     },
     tags=["proxy"],
 )
@@ -375,6 +404,35 @@ def _serve_catchup(request, user, channel, timestamp, client_duration_hint=None)
                 )
             session_id = matched
         else:
+            # No pool match: Redirect hands the client a provider URL (mirroring
+            # their PATH/QUERY shape) instead of minting a Dispatcharr session.
+            # Established session_id requests keep proxying below.
+            from core.models import CoreSettings
+
+            if CoreSettings.is_default_stream_profile_redirect():
+                provider_url = _select_catchup_redirect_url(
+                    catchup_streams,
+                    timestamp=timestamp,
+                    duration_minutes=duration_minutes,
+                    layout=client_timeshift_url_layout(request),
+                    redis_client=redis_client,
+                )
+                if not provider_url:
+                    logger.error(
+                        "Timeshift redirect: no capacity/URL for channel %s",
+                        channel.name,
+                    )
+                    return _finalize_timeshift_response(
+                        HttpResponse("No available stream", status=503)
+                    )
+                logger.info(
+                    "Timeshift redirect: handing off to provider URL for channel %s",
+                    channel.name,
+                )
+                return _finalize_timeshift_response(
+                    HttpResponseRedirect(provider_url)
+                )
+
             logger.debug("Timeshift session redirect: %s (new session)", request.path)
             return _finalize_timeshift_response(_redirect_with_new_session(request))
 
@@ -583,55 +641,25 @@ def _serve_catchup(request, user, channel, timestamp, client_duration_hint=None)
     capacity_blocked = False
     for catchup_stream in catchup_streams:
         m3u_account = catchup_stream.m3u_account
-        if m3u_account is None or m3u_account.account_type != "XC":
-            continue
-        if m3u_account.id in decisive_accounts:
+        if m3u_account is not None and m3u_account.id in decisive_accounts:
             continue
 
-        stream_id_value = (catchup_stream.custom_properties or {}).get("stream_id")
-        if stream_id_value is None:
-            continue
-
-        m3u_profiles = list(m3u_account.profiles.filter(is_active=True))
-        default_profile = next((p for p in m3u_profiles if p.is_default), None)
-        if default_profile is None:
-            logger.debug(
-                "Timeshift: account %s has no active default profile, skipping",
-                m3u_account.id,
-            )
-            continue
-        profile_walk = [default_profile] + [
-            p for p in m3u_profiles if not p.is_default
-        ]
-
-        # Providers index archives in their own timezone (from server_info on auth).
-        provider_tz_name = None
-        _server_info = (default_profile.custom_properties or {}).get("server_info") or {}
-        if isinstance(_server_info, dict):
-            provider_tz_name = _server_info.get("timezone")
-        provider_timestamp = convert_timestamp_to_provider_tz(timestamp, provider_tz_name)
-
-        # Reserve a provider profile slot before connecting (same contract as live/VOD).
-        reserved_profile = None
-        for profile in profile_walk:
-            if redis_client is None:
-                reserved_profile = profile
-                break
-            reserved, _count, reason = reserve_profile_slot(profile, redis_client)
-            if reserved:
-                reserved_profile = profile
-                break
-            logger.info(
-                "Timeshift: profile %s %s on account %s, trying next profile",
-                profile.id, reason or "unavailable", m3u_account.id,
-            )
-        if reserved_profile is None:
+        target, blocked = _prepare_catchup_stream_attempt(
+            catchup_stream,
+            timestamp=timestamp,
+            redis_client=redis_client,
+            reserve=True,
+        )
+        if blocked:
             capacity_blocked = True
-            logger.warning(
-                "Timeshift: all profiles at capacity on account %s for channel %s",
-                m3u_account.id, channel.name,
-            )
+        if target is None:
             continue
+
+        m3u_account = target.m3u_account
+        reserved_profile = target.profile
+        stream_id_value = target.stream_id_value
+        provider_tz_name = target.provider_tz_name
+        provider_timestamp = target.provider_timestamp
 
         if not _create_pool_session(
             redis_client,
@@ -643,7 +671,7 @@ def _serve_catchup(request, user, channel, timestamp, client_duration_hint=None)
             account_id=m3u_account.id,
             profile_id=reserved_profile.id,
             stream_id=stream_id_value,
-            dispatcharr_stream_id=catchup_stream.id,
+            dispatcharr_stream_id=target.catchup_stream.id,
             provider_timestamp=provider_timestamp,
             provider_tz_name=provider_tz_name,
         ):
@@ -686,8 +714,8 @@ def _serve_catchup(request, user, channel, timestamp, client_duration_hint=None)
                 debug=debug,
                 release_cb=release_cb,
                 pool_session_id=effective_session_id,
-                stats_stream_id=catchup_stream.id,
-                stream_stats=catchup_stream.stream_stats,
+                stats_stream_id=target.catchup_stream.id,
+                stream_stats=target.catchup_stream.stream_stats,
             )
         except Exception:
             _discard_pool_session(redis_client, effective_session_id, reserved_profile.id)
@@ -1572,6 +1600,154 @@ def _redirect_with_session(request, session_id):
 
 def _redirect_with_new_session(request):
     return _redirect_with_session(request, mint_session_id())
+
+
+_CatchupProviderTarget = namedtuple(
+    "_CatchupProviderTarget",
+    (
+        "catchup_stream",
+        "m3u_account",
+        "profile",
+        "stream_id_value",
+        "provider_tz_name",
+        "provider_timestamp",
+    ),
+)
+
+
+def _prepare_catchup_stream_attempt(
+    catchup_stream, *, timestamp, redis_client, reserve=True,
+):
+    """Resolve one catch-up stream to a profile and provider timestamp.
+
+    Shared by the proxy failover loop (default ``reserve=True``) and Redirect
+    handoff (``reserve=False``, capacity check only). Defaults to reserving
+    a slot, matching the historical proxy behaviour; Redirect opts out.
+
+    Returns:
+        ``(_CatchupProviderTarget, False)`` on success.
+        ``(None, True)`` when the account is XC-usable but every profile is
+        at capacity (or every reserve failed).
+        ``(None, False)`` when the stream should be skipped (non-XC, missing
+        stream_id, or no active default profile).
+
+    When *reserve* is True, ``target.profile`` holds a reserved slot that the
+    caller must release if the attempt does not keep streaming.
+    """
+    m3u_account = catchup_stream.m3u_account
+    if m3u_account is None or m3u_account.account_type != "XC":
+        return None, False
+
+    stream_id_value = (catchup_stream.custom_properties or {}).get("stream_id")
+    if stream_id_value is None:
+        return None, False
+
+    m3u_profiles = list(m3u_account.profiles.filter(is_active=True))
+    default_profile = next((p for p in m3u_profiles if p.is_default), None)
+    if default_profile is None:
+        logger.debug(
+            "Timeshift: account %s has no active default profile, skipping",
+            m3u_account.id,
+        )
+        return None, False
+    profile_walk = [default_profile] + [
+        p for p in m3u_profiles if not p.is_default
+    ]
+
+    # Providers index archives in their own timezone (from server_info on auth).
+    # Use the default profile's server_info even if a non-default profile wins
+    # the capacity walk (same as the historical proxy path).
+    provider_tz_name = None
+    _server_info = (default_profile.custom_properties or {}).get("server_info") or {}
+    if isinstance(_server_info, dict):
+        provider_tz_name = _server_info.get("timezone")
+    provider_timestamp = convert_timestamp_to_provider_tz(timestamp, provider_tz_name)
+
+    selected_profile = None
+    for profile in profile_walk:
+        if redis_client is None:
+            selected_profile = profile
+            break
+        if reserve:
+            reserved, _count, reason = reserve_profile_slot(profile, redis_client)
+            if reserved:
+                selected_profile = profile
+                break
+            logger.info(
+                "Timeshift: profile %s %s on account %s, trying next profile",
+                profile.id, reason or "unavailable", m3u_account.id,
+            )
+        elif pool_has_capacity_for_profile(profile, redis_client):
+            selected_profile = profile
+            break
+        else:
+            logger.info(
+                "Timeshift: profile %s at capacity on account %s, trying next",
+                profile.id, m3u_account.id,
+            )
+
+    if selected_profile is None:
+        logger.warning(
+            "Timeshift: all profiles at capacity on account %s",
+            m3u_account.id,
+        )
+        return None, True
+
+    return (
+        _CatchupProviderTarget(
+            catchup_stream=catchup_stream,
+            m3u_account=m3u_account,
+            profile=selected_profile,
+            stream_id_value=stream_id_value,
+            provider_tz_name=provider_tz_name,
+            provider_timestamp=provider_timestamp,
+        ),
+        False,
+    )
+
+
+def _select_catchup_redirect_url(
+    catchup_streams, *, timestamp, duration_minutes, layout, redis_client,
+):
+    """Pick a capacity-ok catch-up stream and build one provider URL.
+
+    Uses the same stream/profile walk as the proxy path, but only checks
+    capacity (no slot reserve). URL layout mirrors the client's XC PATH vs
+    QUERY request.
+    """
+    for catchup_stream in catchup_streams:
+        target, _capacity_blocked = _prepare_catchup_stream_attempt(
+            catchup_stream,
+            timestamp=timestamp,
+            redis_client=redis_client,
+            reserve=False,
+        )
+        if target is None:
+            continue
+
+        try:
+            server_url, xc_username, xc_password = get_transformed_credentials(
+                target.m3u_account, target.profile
+            )
+        except Exception as exc:
+            logger.warning(
+                "Timeshift redirect: credentials failed for account %s: %s",
+                target.m3u_account.id, exc,
+            )
+            continue
+        if not server_url:
+            continue
+
+        creds = TimeshiftCredentials(server_url, xc_username, xc_password)
+        return build_timeshift_redirect_url(
+            creds,
+            target.stream_id_value,
+            target.provider_timestamp,
+            duration_minutes,
+            layout,
+        )
+
+    return None
 
 
 def _pool_entry_owned_by_user(entry, user_id):
@@ -2499,9 +2675,9 @@ def _attempt_timeshift_stream(
     )
 
     try:
-        user_agent = m3u_account.get_user_agent().user_agent
-    except AttributeError:
-        user_agent = ""
+        user_agent = m3u_account.get_user_agent_string()
+    except Exception:
+        user_agent = dispatcharr_user_agent()
     _store_pool_provider_user_agent(
         redis_client, pool_session_id, user_agent,
     )
@@ -2575,7 +2751,9 @@ def _stream_reused_session(
 ):
     """Stream an idle pooled session that was just re-reserved for this request."""
     try:
-        m3u_account = M3UAccount.objects.get(id=int(descriptor["account_id"]))
+        m3u_account = M3UAccount.objects.select_related("user_agent").get(
+            id=int(descriptor["account_id"])
+        )
     except (M3UAccount.DoesNotExist, ValueError, TypeError):
         _discard_pool_session(redis_client, session_id, profile.id)
         return None

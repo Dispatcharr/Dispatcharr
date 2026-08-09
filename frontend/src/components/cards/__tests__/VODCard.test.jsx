@@ -5,6 +5,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 vi.mock('../../../utils/cards/VODCardUtils.js', () => ({
   formatDuration: vi.fn((mins) => (mins ? `${mins}m` : null)),
   getSeasonLabel: vi.fn(() => 'S01E02'),
+  vodLogoSrc: vi.fn((logo) => logo?.cache_url || logo?.url || null),
 }));
 
 // ── Mantine core ──────────────────────────────────────────────────────────────
@@ -253,6 +254,24 @@ describe('VODCard', () => {
     it('renders an image when logo.url is present', () => {
       render(<VODCard vod={makeMovie()} onClick={vi.fn()} />);
       expect(screen.getByRole('img')).toBeInTheDocument();
+    });
+
+    it('prefers logo.cache_url over logo.url', () => {
+      render(
+        <VODCard
+          vod={makeMovie({
+            logo: {
+              url: 'http://provider/poster.jpg',
+              cache_url: '/api/vod/vodlogos/1/cache/',
+            },
+          })}
+          onClick={vi.fn()}
+        />
+      );
+      expect(screen.getByRole('img')).toHaveAttribute(
+        'src',
+        '/api/vod/vodlogos/1/cache/'
+      );
     });
 
     it('does not render an img tag when logo is null', () => {

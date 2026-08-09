@@ -2,7 +2,6 @@
 Utilities for handling stream URLs and transformations.
 """
 
-import logging
 import regex
 from typing import Optional, Tuple, List
 from django.db import close_old_connections
@@ -13,9 +12,7 @@ from apps.m3u.connection_pool import (
     get_profile_connection_count,
     profile_available_for_channel_switch,
 )
-from core.models import UserAgent, CoreSettings, StreamProfile
 from .utils import get_logger
-from uuid import UUID
 import requests
 
 logger = get_logger()
@@ -56,7 +53,10 @@ def get_stream_object(id: str):
     except:
         # UUID check failed, assume stream hash
         logger.info(f"Fetching stream hash {id}")
-        return get_object_or_404(Stream, stream_hash=id)
+        return get_object_or_404(
+            Stream.objects.select_related("m3u_account__user_agent"),
+            stream_hash=id,
+        )
 
 def generate_stream_url(
     channel_id: str,
@@ -85,15 +85,15 @@ def generate_stream_url(
                 return None, None, False, None, False, error_reason
 
             try:
-                profile = M3UAccountProfile.objects.get(id=profile_id)
-                m3u_account = stream.m3u_account
+                m3u_profile = M3UAccountProfile.objects.select_related(
+                    "m3u_account__user_agent"
+                ).get(id=profile_id)
+                # Prefer the profile's account so select_related populates the UA.
+                m3u_account = m3u_profile.m3u_account or stream.m3u_account
 
-                stream_user_agent = m3u_account.get_user_agent().user_agent
-                if stream_user_agent is None:
-                    stream_user_agent = UserAgent.objects.get(id=CoreSettings.get_default_user_agent_id())
-                    logger.debug(f"No user agent found for account, using default: {stream_user_agent}")
+                stream_user_agent = m3u_account.get_user_agent_string()
 
-                stream_url = _resolve_live_stream_url(stream, m3u_account, profile)
+                stream_url = _resolve_live_stream_url(stream, m3u_account, m3u_profile)
 
                 stream_profile = stream.get_stream_profile()
                 logger.debug(f"Using stream profile: {stream_profile.name}")
@@ -121,20 +121,13 @@ def generate_stream_url(
 
         # get_stream() allocated a connection slot - ensure it's released on any error
         try:
-            # Look up the Stream and Profile objects
             stream = Stream.objects.get(id=stream_id)
-            profile = M3UAccountProfile.objects.get(id=profile_id)
+            m3u_profile = M3UAccountProfile.objects.select_related(
+                "m3u_account__user_agent"
+            ).get(id=profile_id)
 
-            # Get the M3U account profile for URL pattern
-            m3u_profile = profile
-
-            # Get the appropriate user agent
-            m3u_account = M3UAccount.objects.get(id=m3u_profile.m3u_account.id)
-            stream_user_agent = m3u_account.get_user_agent().user_agent
-
-            if stream_user_agent is None:
-                stream_user_agent = UserAgent.objects.get(id=CoreSettings.get_default_user_agent_id())
-                logger.debug(f"No user agent found for account, using default: {stream_user_agent}")
+            m3u_account = m3u_profile.m3u_account
+            stream_user_agent = m3u_account.get_user_agent_string()
 
             stream_url = _resolve_live_stream_url(stream, m3u_account, m3u_profile)
 
@@ -160,6 +153,11 @@ def generate_stream_url(
     finally:
         close_old_connections()
 
+# Bounds catastrophic backtracking on user-authored profile patterns.
+# Matches the rename / regex-preview timeout used elsewhere.
+URL_TRANSFORM_REGEX_TIMEOUT = 0.1
+
+
 def transform_url(input_url: str, search_pattern: str, replace_pattern: str) -> str:
     """
     Transform a URL using regex pattern replacement.
@@ -178,13 +176,20 @@ def transform_url(input_url: str, search_pattern: str, replace_pattern: str) -> 
         logger.debug(f"  search: {search_pattern}")
 
         # Convert JS-style backreferences in replace pattern: $<name> -> \g<name>, $1 -> \1
+        # Fixed conversion patterns only; timeout is reserved for the user search.
         safe_replace_pattern = regex.sub(r'\$<([^>]+)>', r'\\g<\1>', replace_pattern)
         safe_replace_pattern = regex.sub(r'\$(\d+)', r'\\\1', safe_replace_pattern)
         logger.debug(f"  replace: {replace_pattern}")
         logger.debug(f"  safe replace: {safe_replace_pattern}")
 
-        # Apply the transformation (regex module accepts JS-style (?<name>...) natively)
-        stream_url, match_count = regex.subn(search_pattern, safe_replace_pattern, input_url)
+        # Apply the transformation (regex module accepts JS-style (?<name>...) natively).
+        # timeout bounds ReDoS from nested quantifiers in search_pattern.
+        stream_url, match_count = regex.subn(
+            search_pattern,
+            safe_replace_pattern,
+            input_url,
+            timeout=URL_TRANSFORM_REGEX_TIMEOUT,
+        )
         if match_count == 0:
             logger.warning(f"URL pattern '{search_pattern}' did not match, falling back to original URL: {input_url}")
         else:
@@ -219,7 +224,10 @@ def get_stream_info_for_switch(channel_id: str, target_stream_id: Optional[int] 
             stream_id = target_stream_id
 
             # Get the stream object
-            stream = get_object_or_404(Stream, pk=stream_id)
+            stream = get_object_or_404(
+                Stream.objects.select_related("m3u_account"),
+                pk=stream_id,
+            )
 
             # Find compatible profile for this stream with connection availability check
             m3u_account = stream.m3u_account
@@ -278,12 +286,15 @@ def get_stream_info_for_switch(channel_id: str, target_stream_id: Optional[int] 
                 return {'error': error_reason or 'No stream assigned to channel'}
 
         stream = get_object_or_404(Stream, pk=stream_id)
-        profile = get_object_or_404(M3UAccountProfile, pk=m3u_profile_id)
+        m3u_profile = get_object_or_404(
+            M3UAccountProfile.objects.select_related("m3u_account__user_agent"),
+            pk=m3u_profile_id,
+        )
 
-        m3u_account = M3UAccount.objects.get(id=profile.m3u_account.id)
-        user_agent = m3u_account.get_user_agent().user_agent
+        m3u_account = m3u_profile.m3u_account
+        user_agent = m3u_account.get_user_agent_string()
 
-        stream_url = _resolve_live_stream_url(stream, m3u_account, profile)
+        stream_url = _resolve_live_stream_url(stream, m3u_account, m3u_profile)
 
         stream_profile = channel.get_stream_profile()
         transcode = not (stream_profile.is_proxy() or stream_profile is None)

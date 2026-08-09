@@ -84,7 +84,7 @@ const getSeriesDetails = (response, seriesId) => {
     imdb_id: response.imdb_id || '',
     episode_count: response.episode_count || 0,
     // Additional provider fields
-    backdrop_path: response.custom_properties?.backdrop_path || [],
+    backdrop_path: response.backdrop_path || [],
     release_date: response.release_date || '',
     series_image: response.series_image || null,
     o_name: response.o_name || '',
@@ -111,7 +111,9 @@ const getEpisodeDetails = (episode, seasonNumber, seriesInfo) => {
     },
     type: 'episode',
     uuid: episode.uuid,
-    logo: episode.movie_image ? { url: episode.movie_image } : null,
+    logo: episode.movie_image
+      ? { url: episode.movie_image, cache_url: episode.movie_image }
+      : null,
     air_date: episode.air_date || null,
     movie_image: episode.movie_image || null,
     tmdb_id: episode.tmdb_id || '',

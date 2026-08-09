@@ -134,17 +134,16 @@ export const getFormValidators = (user) => {
   return (values) => ({
     username: !values.username
       ? 'Username is required'
-      : values.user_level == USER_LEVELS.STREAMER &&
-          !values.username.match(/^[a-z0-9]+$/i)
-        ? 'Streamer username must be alphanumeric'
+      : !values.username.match(/^[A-Za-z0-9._@-]+$/)
+        ? 'Username may only contain letters, numbers, periods (.), underscores (_), at signs (@), and hyphens (-)'
         : null,
     password:
       !user && !values.password && values.user_level != USER_LEVELS.STREAMER
         ? 'Password is required'
         : null,
     xc_password:
-      values.xc_password && !values.xc_password.match(/^[a-z0-9]+$/i)
-        ? 'XC password must be alphanumeric'
+      values.xc_password && !values.xc_password.match(/^[A-Za-z0-9._@-]+$/)
+        ? 'XC password may only contain letters, numbers, periods (.), underscores (_), at signs (@), and hyphens (-)'
         : null,
     allowed_ips: (values.allowed_ips || []).some((t) => !isValidNetworkEntry(t))
       ? 'Invalid IP address or CIDR range'
