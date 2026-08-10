@@ -121,7 +121,7 @@ class RedisClient:
     _pubsub_client = None
 
     @classmethod
-    def _init_client(cls, decode_responses=True, max_retries=5, retry_interval=1):
+    def _init_client(cls, decode_responses=True, max_retries=5, retry_interval=1, no_socket_timeout=False, disable_persistence=True):
         retry_count = 0
         while retry_count < max_retries:
             try:
@@ -133,7 +133,7 @@ class RedisClient:
                 redis_user = os.environ.get("REDIS_USER", getattr(settings, 'REDIS_USER', ''))
 
                 # Use standardized settings
-                socket_timeout = getattr(settings, 'REDIS_SOCKET_TIMEOUT', 5)
+                socket_timeout = None if no_socket_timeout else getattr(settings, 'REDIS_SOCKET_TIMEOUT', 5)
                 socket_connect_timeout = getattr(settings, 'REDIS_SOCKET_CONNECT_TIMEOUT', 5)
                 health_check_interval = getattr(settings, 'REDIS_HEALTH_CHECK_INTERVAL', 30)
                 socket_keepalive = getattr(settings, 'REDIS_SOCKET_KEEPALIVE', True)
@@ -161,30 +161,32 @@ class RedisClient:
                 # Validate connection with ping
                 client.ping()
 
-                # Disable persistence on first connection - improves performance
-                # Only try to disable if not in a read-only environment
-                try:
-                    client.config_set('save', '')  # Disable RDB snapshots
-                    client.config_set('appendonly', 'no')  # Disable AOF logging
+                if disable_persistence:
 
-                    # Disable protected mode when in debug mode
-                    if os.environ.get('DISPATCHARR_DEBUG', '').lower() == 'true':
-                        client.config_set('protected-mode', 'no')  # Disable protected mode in debug
-                        logger.warning("Redis protected mode disabled for debug environment")
+                    # Disable persistence on first connection - improves performance
+                    # Only try to disable if not in a read-only environment
+                    try:
+                        client.config_set('save', '')  # Disable RDB snapshots
+                        client.config_set('appendonly', 'no')  # Disable AOF logging
 
-                    logger.trace("Redis persistence disabled for better performance")
-                except redis.exceptions.ResponseError as e:
-                    # Improve error handling for Redis configuration errors
-                    if "OOM" in str(e):
-                        logger.error(f"Redis OOM during configuration: {e}")
-                        # Try to increase maxmemory as an emergency measure
-                        try:
-                            client.config_set('maxmemory', '768mb')
-                            logger.warning("Applied emergency Redis memory increase to 768MB")
-                        except:
-                            pass
-                    else:
-                        logger.error(f"Redis configuration error: {e}")
+                        # Disable protected mode when in debug mode
+                        if os.environ.get('DISPATCHARR_DEBUG', '').lower() == 'true':
+                            client.config_set('protected-mode', 'no')  # Disable protected mode in debug
+                            logger.warning("Redis protected mode disabled for debug environment")
+
+                        logger.trace("Redis persistence disabled for better performance")
+                    except redis.exceptions.ResponseError as e:
+                        # Improve error handling for Redis configuration errors
+                        if "OOM" in str(e):
+                            logger.error(f"Redis OOM during configuration: {e}")
+                            # Try to increase maxmemory as an emergency measure
+                            try:
+                                client.config_set('maxmemory', '768mb')
+                                logger.warning("Applied emergency Redis memory increase to 768MB")
+                            except:
+                                pass
+                        else:
+                            logger.error(f"Redis configuration error: {e}")
 
                 logger.info(f"Connected to Redis at {redis_host}:{redis_port}/{redis_db}")
 
@@ -229,68 +231,9 @@ class RedisClient:
 
     @classmethod
     def get_pubsub_client(cls, max_retries=5, retry_interval=1):
-        """Get Redis client optimized for PubSub operations"""
+        """Get Redis client optimized for PubSub operations (no socket timeout)"""
         if cls._pubsub_client is None:
-            retry_count = 0
-            while retry_count < max_retries:
-                try:
-                    # Get connection parameters from settings or environment
-                    redis_host = os.environ.get("REDIS_HOST", getattr(settings, 'REDIS_HOST', 'localhost'))
-                    redis_port = int(os.environ.get("REDIS_PORT", getattr(settings, 'REDIS_PORT', 6379)))
-                    redis_db = int(os.environ.get("REDIS_DB", getattr(settings, 'REDIS_DB', 0)))
-                    redis_password = os.environ.get("REDIS_PASSWORD", getattr(settings, 'REDIS_PASSWORD', ''))
-                    redis_user = os.environ.get("REDIS_USER", getattr(settings, 'REDIS_USER', ''))
-
-                    # Use standardized settings but without socket timeouts for PubSub
-                    # Important: socket_timeout is None for PubSub operations
-                    socket_connect_timeout = getattr(settings, 'REDIS_SOCKET_CONNECT_TIMEOUT', 5)
-                    socket_keepalive = getattr(settings, 'REDIS_SOCKET_KEEPALIVE', True)
-                    health_check_interval = getattr(settings, 'REDIS_HEALTH_CHECK_INTERVAL', 30)
-                    retry_on_timeout = getattr(settings, 'REDIS_RETRY_ON_TIMEOUT', True)
-
-                    ssl_params = getattr(settings, 'REDIS_SSL_PARAMS', {})
-
-                    # Create Redis client with PubSub-optimized settings - no timeout
-                    client = redis.Redis(
-                        host=redis_host,
-                        port=redis_port,
-                        db=redis_db,
-                        password=redis_password if redis_password else None,
-                        username=redis_user if redis_user else None,
-                        socket_timeout=None,  # Critical: No timeout for PubSub operations
-                        socket_connect_timeout=socket_connect_timeout,
-                        socket_keepalive=socket_keepalive,
-                        health_check_interval=health_check_interval,
-                        retry_on_timeout=retry_on_timeout,
-                        decode_responses=True,
-                        **ssl_params
-                    )
-
-                    # Validate connection with ping
-                    client.ping()
-                    logger.info(f"Connected to Redis for PubSub at {redis_host}:{redis_port}/{redis_db}")
-
-                    # We don't need the keepalive thread anymore since we're using proper PubSub handling
-                    cls._pubsub_client = client
-                    break
-
-                except (ConnectionError, TimeoutError) as e:
-                    retry_count += 1
-                    _tls_hint = _REDIS_TLS_HINT if ssl_params else ""
-                    if retry_count >= max_retries:
-                        logger.error(f"Failed to connect to Redis for PubSub after {max_retries} attempts: {e}{_tls_hint}")
-                        return None
-                    else:
-                        # Use exponential backoff for retries
-                        wait_time = retry_interval * (2 ** (retry_count - 1))
-                        logger.warning(f"Redis PubSub connection failed. Retrying in {wait_time}s... ({retry_count}/{max_retries})")
-                        time.sleep(wait_time)
-
-                except Exception as e:
-                    _tls_hint = _REDIS_TLS_HINT if ssl_params else ""
-                    logger.error(f"Unexpected error connecting to Redis for PubSub: {e}{_tls_hint}")
-                    return None
-
+            cls._pubsub_client = cls._init_client(decode_responses=True, max_retries=max_retries, retry_interval=retry_interval, no_socket_timeout=True, disable_persistence=False)
         return cls._pubsub_client
 
 def acquire_task_lock(task_name, id):
