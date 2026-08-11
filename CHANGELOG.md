@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Schedules Direct guide refresh no longer silently drops channels on transient API failures.** A failed `/schedules/md5` check was treated as "no changes," reporting a false "guide data is up to date" instead of an error, and a failed `/programs` metadata batch wrote a placeholder "No Title" entry instead of retrying. The batched `/schedules/md5`, `/schedules`, and `/programs` requests now retry with backoff on network errors, HTTP errors, and Schedules Direct's own embedded error codes (e.g. `SERVICE_OFFLINE`/`SERVICE_BUSY`) returned with HTTP 200.
+
 ## [0.29.0] - 2026-08-09
 
 ### Added
