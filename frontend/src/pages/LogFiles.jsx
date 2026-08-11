@@ -1,7 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Anchor, Box, Button, Group, Table, Text, Title } from '@mantine/core';
-import { RefreshCcw } from 'lucide-react';
 import API from '../api';
 import { useDateTimeFormat, format } from '../utils/dateTimeUtils.js';
 
@@ -38,13 +37,7 @@ const LogFilesPage = () => {
     <Box p="md" maw={1100} mx="auto">
       <Group justify="space-between" mb="md">
         <Title order={3}>Logs</Title>
-        <Button
-          size="xs"
-          variant="default"
-          leftSection={<RefreshCcw size={14} />}
-          onClick={load}
-          loading={loading}
-        >
+        <Button size="xs" variant="subtle" onClick={load} loading={loading}>
           Refresh
         </Button>
       </Group>

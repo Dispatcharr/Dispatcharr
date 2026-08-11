@@ -13,13 +13,13 @@ import {
   Group,
   Loader,
   Paper,
-  Switch,
+  Select,
   Text,
   Title,
 } from '@mantine/core';
-import { Download, RefreshCcw } from 'lucide-react';
 import { notifications } from '@mantine/notifications';
 import API from '../api';
+import useBrowserStorage from '../hooks/useBrowserStorage';
 
 const COLORS = {
   error: '#ff6b6b', // red
@@ -80,6 +80,27 @@ const RECORD_START = /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}/;
 // Cap on rendered lines: a mixed-severity tail can defeat the run-length grouping (one span per line), so bound the DOM for low-end TV browsers.
 const MAX_RENDER_LINES = 5000;
 
+const REFRESH_OPTIONS = [
+  { value: '0', label: 'Manual' },
+  { value: '5', label: '5s' },
+  { value: '10', label: '10s' },
+  { value: '30', label: '30s' },
+  { value: '60', label: '1m' },
+];
+
+// Newest first flips whole records, so a multi-line record keeps its own line order.
+const reverseRecords = (lines) => {
+  const records = [];
+  for (const line of lines) {
+    if (RECORD_START.test(line) || !records.length) {
+      records.push([line]);
+    } else {
+      records[records.length - 1].push(line);
+    }
+  }
+  return records.reverse().flat();
+};
+
 // Group consecutive same-colour lines into one span each, so a 5 MB file renders a few hundred nodes, not one per line.
 const colorizeLines = (lines) => {
   const chunks = [];
@@ -115,7 +136,20 @@ const LogFileViewPage = () => {
   const [content, setContent] = useState('');
   const [truncated, setTruncated] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [autoRefresh, setAutoRefresh] = useState(false);
+  const [refreshSetting, setRefreshSetting] = useBrowserStorage(
+    'log-viewer-refresh-interval',
+    0
+  );
+  // A stored value outside the options falls back to Manual rather than an empty select.
+  const refreshSeconds = REFRESH_OPTIONS.some(
+    (option) => option.value === String(refreshSetting)
+  )
+    ? refreshSetting
+    : 0;
+  const [newestFirst, setNewestFirst] = useBrowserStorage(
+    'log-viewer-newest-first',
+    true
+  );
   const [loadError, setLoadError] = useState(false);
 
   // Guards the auto-refresh loop: skip a tick mid-flight, and count failures so a persistently-failing tail switches itself off.
@@ -126,11 +160,12 @@ const LogFileViewPage = () => {
   const { chunks, hiddenLines } = useMemo(() => {
     const all = content ? content.split('\n') : [];
     const hidden = Math.max(0, all.length - MAX_RENDER_LINES);
+    const kept = hidden ? all.slice(hidden) : all;
     return {
-      chunks: colorizeLines(hidden ? all.slice(hidden) : all),
+      chunks: colorizeLines(newestFirst ? reverseRecords(kept) : kept),
       hiddenLines: hidden,
     };
-  }, [content]);
+  }, [content, newestFirst]);
 
   // One notice: line-cap wins over the byte-truncation banner since it states what's actually on screen.
   const notice =
@@ -174,7 +209,7 @@ const LogFileViewPage = () => {
 
   // Optional tail: silent polling interval, skipped while hidden/mid-load, gives up after repeated failures.
   useEffect(() => {
-    if (!autoRefresh) return undefined;
+    if (!refreshSeconds) return undefined;
     failuresRef.current = 0;
     const id = setInterval(async () => {
       if (document.hidden || loadingRef.current) return;
@@ -184,7 +219,7 @@ const LogFileViewPage = () => {
       } else {
         failuresRef.current += 1;
         if (failuresRef.current >= 3) {
-          setAutoRefresh(false);
+          setRefreshSetting(0);
           notifications.show({
             title: 'Auto-refresh paused',
             message:
@@ -194,9 +229,9 @@ const LogFileViewPage = () => {
           });
         }
       }
-    }, 5000);
+    }, refreshSeconds * 1000);
     return () => clearInterval(id);
-  }, [autoRefresh, load]);
+  }, [refreshSeconds, setRefreshSetting, load]);
 
   return (
     <Box p="md">
@@ -213,26 +248,41 @@ const LogFileViewPage = () => {
               {notice}
             </Text>
           )}
-          <Switch
+          <Select
             size="xs"
-            label="Auto-refresh"
-            checked={autoRefresh}
-            onChange={(e) => setAutoRefresh(e.currentTarget.checked)}
+            label="Order"
+            value={newestFirst ? 'newest' : 'oldest'}
+            onChange={(value) => setNewestFirst(value === 'newest')}
+            allowDeselect={false}
+            data={[
+              { value: 'newest', label: 'Newest first' },
+              { value: 'oldest', label: 'Newest last' },
+            ]}
+            style={{ width: 130 }}
+          />
+          <Select
+            size="xs"
+            label="Auto Refresh"
+            value={refreshSeconds.toString()}
+            onChange={(value) => setRefreshSetting(parseInt(value))}
+            allowDeselect={false}
+            data={REFRESH_OPTIONS}
+            style={{ width: 120 }}
           />
           <Button
             size="xs"
-            variant="default"
-            leftSection={<RefreshCcw size={14} />}
+            variant="subtle"
             onClick={() => load()}
             loading={loading}
+            style={{ marginTop: 'auto' }}
           >
             Refresh
           </Button>
           <Button
             size="xs"
-            variant="default"
-            leftSection={<Download size={14} />}
+            variant="subtle"
             onClick={() => API.downloadLogFile(name)}
+            style={{ marginTop: 'auto' }}
           >
             Download
           </Button>
@@ -260,7 +310,7 @@ const LogFileViewPage = () => {
             <Text size="sm" c="red">
               Failed to load {name}
             </Text>
-            <Button size="xs" variant="default" onClick={() => load()}>
+            <Button size="xs" variant="subtle" onClick={() => load()}>
               Retry
             </Button>
           </Group>

@@ -30,11 +30,18 @@ vi.mock('@mantine/core', () => ({
   Group: ({ children }) => <div>{children}</div>,
   Loader: () => <div data-testid="loader" />,
   Paper: ({ children }) => <div>{children}</div>,
-  Switch: ({ label, checked, onChange }) => (
-    <label>
-      <input type="checkbox" checked={checked} onChange={onChange} />
-      {label}
-    </label>
+  Select: ({ label, value, onChange, data }) => (
+    <select
+      aria-label={label}
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+    >
+      {data.map((option) => (
+        <option key={option.value} value={option.value}>
+          {option.label}
+        </option>
+      ))}
+    </select>
   ),
   Text: ({ children }) => <span>{children}</span>,
   Title: ({ children }) => <h4>{children}</h4>,
@@ -51,6 +58,8 @@ const renderPage = (name = 'dispatcharr.log') =>
 
 describe('LogFileViewPage', () => {
   beforeEach(() => {
+    // useBrowserStorage persists between cases, so the interval leaks otherwise.
+    localStorage.clear();
     vi.clearAllMocks();
     API.getLogFile.mockResolvedValue({
       content: 'Info|DiskScanService|Scanning disk\n',
@@ -354,7 +363,9 @@ describe('LogFileViewPage', () => {
       expect(API.getLogFile).toHaveBeenCalledTimes(1);
 
       // Enable auto-refresh, then let two intervals elapse while hidden.
-      fireEvent.click(screen.getByRole('checkbox'));
+      fireEvent.change(screen.getByLabelText('Auto Refresh'), {
+        target: { value: '5' },
+      });
       await act(async () => {
         await vi.advanceTimersByTimeAsync(11000);
       });
@@ -370,5 +381,103 @@ describe('LogFileViewPage', () => {
       vi.useRealTimers();
       delete document.hidden;
     }
+  });
+
+  it('renders newest first by default and flips to newest last', async () => {
+    API.getLogFile.mockResolvedValue({
+      content: [
+        '2026-07-15 10:00:00,000 INFO core.tasks alpha',
+        '2026-07-15 10:00:01,000 INFO core.tasks omega',
+      ].join('\n'),
+      truncated: false,
+    });
+    renderPage();
+    await screen.findByText(/alpha/);
+    const before = document.body.textContent;
+    expect(before.indexOf('omega')).toBeLessThan(before.indexOf('alpha'));
+
+    fireEvent.change(screen.getByLabelText('Order'), {
+      target: { value: 'oldest' },
+    });
+    const after = document.body.textContent;
+    expect(after.indexOf('alpha')).toBeLessThan(after.indexOf('omega'));
+  });
+
+  it('does not poll while the interval is zero', async () => {
+    vi.useFakeTimers();
+    try {
+      renderPage();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(API.getLogFile).toHaveBeenCalledTimes(1);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(60000);
+      });
+      expect(API.getLogFile).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('falls back to Manual when the stored interval is not an option', async () => {
+    vi.useFakeTimers();
+    localStorage.setItem('log-viewer-refresh-interval', '7');
+    try {
+      renderPage();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(screen.getByLabelText('Auto Refresh')).toHaveValue('0');
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(60000);
+      });
+      expect(API.getLogFile).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('polls at the chosen interval', async () => {
+    vi.useFakeTimers();
+    try {
+      renderPage();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      fireEvent.change(screen.getByLabelText('Auto Refresh'), {
+        target: { value: '10' },
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(9000);
+      });
+      expect(API.getLogFile).toHaveBeenCalledTimes(1);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1500);
+      });
+      expect(API.getLogFile).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps a multi-line record intact when reversed', async () => {
+    API.getLogFile.mockResolvedValue({
+      content: [
+        '2026-07-15 10:00:00,000 ERROR apps.epg first failure',
+        'continuation of the first record',
+        '2026-07-15 10:00:01,000 ERROR apps.epg second failure',
+      ].join('\n'),
+      truncated: false,
+    });
+    renderPage();
+    await screen.findByText(/second failure/);
+    const text = document.body.textContent;
+    expect(text.indexOf('second failure')).toBeLessThan(
+      text.indexOf('first failure')
+    );
+    expect(text.indexOf('first failure')).toBeLessThan(
+      text.indexOf('continuation of the first record')
+    );
   });
 });
