@@ -15,6 +15,9 @@ import { Ban, Check, ExternalLink, FlaskConical, Pin, PinOff, RefreshCw, Trash2 
 import PluginHeader from '../PluginHeader.jsx';
 import useAuthStore from '../../store/auth.jsx';
 
+// Stable fallback reference: an inline `[]` here causes an infinite render loop under zustand v5.
+const EMPTY_PINNED_PLUGINS = [];
+
 const PluginCard = ({
   plugin,
   onToggleEnabled,
@@ -23,12 +26,9 @@ const PluginCard = ({
 }) => {
   const navigate = useNavigate();
   const [enabled, setEnabled] = useState(!!plugin.enabled);
-  // Select the actual pinned-keys array (not the getPinnedPlugins function
-  // itself) so this component re-renders when it changes; selecting a
-  // stable function reference from the store doesn't subscribe to the data
-  // that function closes over, so the badge never updated until an
-  // unrelated re-render (e.g. a full page refresh) happened to catch it up.
-  const pinnedPlugins = useAuthStore((s) => s.user?.custom_properties?.pinnedPlugins || []);
+  const pinnedPlugins = useAuthStore(
+    (s) => s.user?.custom_properties?.pinnedPlugins || EMPTY_PINNED_PLUGINS
+  );
   const togglePinnedPlugin = useAuthStore((s) => s.togglePinnedPlugin);
   const pinned = pinnedPlugins.includes(plugin.key);
 
