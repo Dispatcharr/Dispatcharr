@@ -45,6 +45,9 @@ import { PluginActionList, PluginActionStatus, PluginTaskList } from '../compone
 import API from '../api';
 import './plugin-detail.css';
 
+// Stable fallback reference, see PluginCard.jsx.
+const EMPTY_PINNED_PLUGINS = [];
+
 /** Section heading with a collapse chevron, only interactive/collapsible
     in single-column mode, where a long section pushes everything below it
     further down; always expanded (and non-clickable) in the two-column
@@ -90,9 +93,9 @@ function PluginDetailForKey({ routeKey: key }) {
   const plugins = usePluginStore((s) => s.plugins);
   const pluginsLoading = usePluginStore((s) => s.loading);
   const installPlugin = usePluginStore((s) => s.installPlugin);
-  // Select the actual pinned-keys array, not the getPinnedPlugins function
-  // itself, so this re-renders when it changes (see PluginCard.jsx).
-  const pinnedPlugins = useAuthStore((s) => s.user?.custom_properties?.pinnedPlugins || []);
+  const pinnedPlugins = useAuthStore(
+    (s) => s.user?.custom_properties?.pinnedPlugins || EMPTY_PINNED_PLUGINS
+  );
   const togglePinnedPlugin = useAuthStore((s) => s.togglePinnedPlugin);
 
   const plugin = plugins.find((p) => p.key === key);
