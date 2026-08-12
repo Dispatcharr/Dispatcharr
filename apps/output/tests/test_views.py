@@ -8,8 +8,13 @@ from django.test.utils import CaptureQueriesContext
 from apps.channels.models import Channel, ChannelGroup, ChannelOverride, ChannelProfile, ChannelProfileMembership
 from apps.epg.models import EPGData, EPGSource
 from apps.accounts.models import User
-from apps.m3u.models import M3UAccount
-from apps.output.views import xc_get_live_streams, xc_get_series, xc_get_vod_streams
+from apps.m3u.models import M3UAccount, M3UAccountProfile
+from apps.output.views import (
+    xc_get_info,
+    xc_get_live_streams,
+    xc_get_series,
+    xc_get_vod_streams,
+)
 from apps.vod.models import (
     M3UMovieRelation,
     M3USeriesRelation,
@@ -19,7 +24,7 @@ from apps.vod.models import (
     VODLogo,
 )
 import xml.etree.ElementTree as ET
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 
 
 def _response_text(response):
@@ -89,6 +94,92 @@ class OutputEndpointTestMixin:
             enabled=True,
         )
         return channel
+
+
+class XcExpirationPassthroughTests(TestCase):
+    def setUp(self):
+        self._active_connections_patch = patch(
+            "apps.output.views.get_user_active_connections",
+            return_value=[],
+        )
+        self._refresh_groups_patch = patch(
+            "apps.m3u.signals.refresh_m3u_groups.delay",
+        )
+        self._expiration_notification_patch = patch(
+            "apps.m3u.tasks.evaluate_profile_expiration_notification",
+        )
+        self._active_connections_patch.start()
+        self._refresh_groups_patch.start()
+        self._expiration_notification_patch.start()
+        self.addCleanup(self._active_connections_patch.stop)
+        self.addCleanup(self._refresh_groups_patch.stop)
+        self.addCleanup(self._expiration_notification_patch.stop)
+        self.factory = RequestFactory()
+        self.user = User.objects.create_user(
+            username=f"xc-exp-{uuid4().hex[:8]}",
+            password="pass",
+            custom_properties={"xc_password": "xcpass"},
+        )
+
+    def _request(self):
+        return self.factory.get(
+            "/player_api.php",
+            {"username": self.user.username, "password": "xcpass"},
+        )
+
+    def _account_with_expiration(self, name, expiration, *, active=True):
+        account = M3UAccount.objects.create(
+            name=name,
+            server_url="http://example.com",
+            is_active=active,
+        )
+        profile = M3UAccountProfile.objects.get(
+            m3u_account=account,
+            is_default=True,
+        )
+        profile.exp_date = expiration
+        profile.save(update_fields=["exp_date"])
+        return profile
+
+    def test_user_info_passes_through_earliest_active_provider_expiration(self):
+        later = datetime(2027, 2, 1, tzinfo=timezone.utc)
+        earlier = datetime(2027, 1, 1, tzinfo=timezone.utc)
+        self._account_with_expiration("Later", later)
+        self._account_with_expiration("Earlier", earlier)
+
+        info = xc_get_info(self._request())
+
+        self.assertEqual(info["user_info"]["exp_date"], str(int(earlier.timestamp())))
+
+    def test_user_info_ignores_inactive_accounts_and_profiles(self):
+        active_expiration = datetime(2027, 3, 1, tzinfo=timezone.utc)
+        inactive_expiration = datetime(2027, 1, 1, tzinfo=timezone.utc)
+        self._account_with_expiration("Active", active_expiration)
+        self._account_with_expiration(
+            "Inactive account",
+            inactive_expiration,
+            active=False,
+        )
+        inactive_profile = self._account_with_expiration(
+            "Inactive profile",
+            inactive_expiration,
+        )
+        inactive_profile.is_active = False
+        inactive_profile.save(update_fields=["is_active"])
+
+        info = xc_get_info(self._request())
+
+        self.assertEqual(
+            info["user_info"]["exp_date"],
+            str(int(active_expiration.timestamp())),
+        )
+
+    @patch("apps.output.views.time.time", return_value=1_800_000_000)
+    def test_user_info_keeps_legacy_fallback_without_known_expiration(self, now):
+        info = xc_get_info(self._request())
+
+        expected = 1_800_000_000 + (90 * 24 * 60 * 60)
+        self.assertEqual(info["user_info"]["exp_date"], str(expected))
 
 
 class OutputM3UTest(OutputEndpointTestMixin, TestCase):

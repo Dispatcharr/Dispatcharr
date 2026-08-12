@@ -3,7 +3,7 @@ import json
 from django.urls import reverse
 from apps.channels.models import Channel, ChannelProfile, ChannelGroup, Stream
 from apps.channels.utils import format_channel_number, is_catchup_enabled
-from django.db.models import Prefetch
+from django.db.models import Min, Prefetch
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 from apps.epg.models import ProgramData
@@ -21,6 +21,7 @@ import logging
 from django.db.models.functions import Lower
 import os
 from apps.m3u.utils import calculate_tuner_count
+from apps.m3u.models import M3UAccountProfile
 from apps.proxy.utils import get_user_active_connections
 import regex
 from core.models import CoreSettings
@@ -400,6 +401,19 @@ def _build_xc_server_info(request, hostname, port):
     }
 
 
+def _xc_expiration_timestamp():
+    """Return the earliest active upstream expiry, with the legacy fallback."""
+    expiration = M3UAccountProfile.objects.filter(
+        is_active=True,
+        m3u_account__is_active=True,
+        exp_date__isnull=False,
+    ).aggregate(earliest=Min("exp_date"))["earliest"]
+
+    if expiration is not None:
+        return str(int(expiration.timestamp()))
+    return str(int(time.time()) + (90 * 24 * 60 * 60))
+
+
 def xc_get_info(request, full=False):
     user = xc_get_user(request)
 
@@ -427,7 +441,7 @@ def xc_get_info(request, full=False):
             "message": "Dispatcharr XC API",
             "auth": 1,
             "status": "Active",
-            "exp_date": str(int(time.time()) + (90 * 24 * 60 * 60)),
+            "exp_date": _xc_expiration_timestamp(),
             "active_cons": str(active_cons),
             "max_connections": str(max_connections),
             "allowed_output_formats": _xc_allowed_output_formats(user),
