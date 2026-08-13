@@ -94,7 +94,7 @@ def migrate_vod_logos_backward(apps, schema_editor):
         if existing_logo:
             # Logo already exists, just map to it
             vod_to_logo_mapping[vod_logo.id] = existing_logo.id
-            print(f"Logo already exists for URL: {vod_logo.url[:50]}... (using existing)")
+            print(f"Logo already exists for VOD logo id {vod_logo.id} (using existing)")
         else:
             # Create new Logo entry
             new_logo = Logo(name=vod_logo.name, url=vod_logo.url)
@@ -113,7 +113,7 @@ def migrate_vod_logos_backward(apps, schema_editor):
                     logo = Logo.objects.get(url=vod_logo.url)
                     vod_to_logo_mapping[vod_logo.id] = logo.id
                 except Logo.DoesNotExist:
-                    print(f"Warning: Could not find Logo for URL: {vod_logo.url[:100]}...")
+                    print(f"Warning: Could not find Logo for VOD logo id {vod_logo.id}")
 
     print(f"Created mapping for {len(vod_to_logo_mapping)} VOD logos -> Logos")
 
