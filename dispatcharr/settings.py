@@ -574,7 +574,7 @@ LOGGING = {
     "disable_existing_loggers": False,
     "formatters": {
         "verbose": {
-            "()": "dispatcharr.display_timezone.DisplayTimezoneFormatter",
+            "()": "core.redaction.RedactingFormatter",  # Mask credentials in rendered log lines
             "format": "{asctime} {levelname} {name} {message}",
             "style": "{",
         },
