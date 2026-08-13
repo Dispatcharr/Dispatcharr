@@ -652,14 +652,35 @@ class PluginManager:
     def update_settings(self, key: str, settings: Dict[str, Any]) -> Dict[str, Any]:
         settings = settings or {}
         lp = self.get_plugin(key)
-        for field_def in (lp.fields if lp else None) or []:
+        fields = (lp.fields if lp else None) or []
+        # Drop (not reject) keys with no matching field. A plugin update can
+        # legitimately remove a settings field, leaving an orphaned key in an
+        # old saved settings blob, and rejecting would break that save.
+        known_ids = {f.get("id") for f in fields if f.get("id")}
+        if known_ids:
+            settings = {k: v for k, v in settings.items() if k in known_ids}
+        for field_def in fields:
             if field_def.get("type") == "table" and field_def.get("id") in settings:
                 self._validate_table_value(field_def, settings[field_def["id"]])
+            elif field_def.get("type") == "multiselect" and field_def.get("id") in settings:
+                self._validate_multiselect_value(field_def, settings[field_def["id"]])
 
         cfg = PluginConfig.objects.get(key=key)
         cfg.settings = settings
         cfg.save(update_fields=["settings", "updated_at"])
         return cfg.settings
+
+    def _validate_multiselect_value(self, field_def: Dict[str, Any], value: Any) -> None:
+        """Validate a submitted 'multiselect' field value against declared options."""
+        field_id = field_def.get("id")
+        if not isinstance(value, list):
+            raise ValueError(f"Field '{field_id}' must be a list of values")
+        allowed = {o.get("value") for o in field_def.get("options") or []}
+        for v in value:
+            if str(v) not in allowed:
+                raise ValueError(
+                    f"Field '{field_id}' contains invalid option '{v}'; must be one of {sorted(allowed)}"
+                )
 
     def run_action(
         self,
