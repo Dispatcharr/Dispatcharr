@@ -1,4 +1,5 @@
 import json
+from core.redaction import redact_provider_text
 import redis
 import logging
 import time
@@ -93,7 +94,7 @@ def custom_properties_as_dict(value):
         except (ValueError, TypeError):
             logger.warning(
                 "custom_properties stored as non-JSON string; ignoring: %r",
-                value[:100],
+                redact_provider_text(value[:100]),
             )
             return {}
         return parsed if isinstance(parsed, dict) else {}
