@@ -41,6 +41,7 @@ export const saveChangedSettings = async (settings, changedSettings) => {
     'epg_match_ignore_custom',
   ];
   const dvrFields = [
+    'library_dir',
     'tv_template',
     'movie_template',
     'tv_fallback_dir',
@@ -309,6 +310,7 @@ export const parseSettings = (settings) => {
   // DVR settings - direct mapping with underscore keys
   const dvrSettings = settings['dvr_settings']?.value;
   if (dvrSettings && typeof dvrSettings === 'object') {
+    parsed.library_dir = dvrSettings.library_dir || '/data/recordings';
     parsed.tv_template = dvrSettings.tv_template;
     parsed.movie_template = dvrSettings.movie_template;
     parsed.tv_fallback_dir = dvrSettings.tv_fallback_dir;

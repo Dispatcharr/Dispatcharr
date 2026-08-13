@@ -13,11 +13,13 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 import requests
 from celery import shared_task
 from django.conf import settings
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import IntegrityError, transaction
 from django.utils import timezone
 
 from apps.m3u.models import M3UAccount
 from apps.media_servers.models import MediaServerIntegration, MediaServerSyncRun
+from apps.media_servers.artwork import delete_media_library_logo_if_unused
 from apps.media_servers.path_security import resolve_import_path
 from apps.media_servers.providers import (
     MediaProviderSession,
@@ -46,7 +48,6 @@ from core.utils import (
 logger = logging.getLogger(__name__)
 
 MEDIA_SERVER_ACCOUNT_PREFIX = 'Media Library'
-MEDIA_SERVER_ACCOUNT_PRIORITY = 1000
 UNCATEGORIZED_NAME = 'Uncategorized'
 STAGE_DISCOVERY = 'discovery'
 STAGE_IMPORT = 'import'
@@ -203,6 +204,7 @@ def ensure_integration_vod_account(integration: MediaServerIntegration) -> M3UAc
     }
     desired_name = _account_name(integration)
     expected_active = bool(integration.enabled and integration.add_to_vod)
+    expected_priority = int(integration.vod_priority)
 
     account = integration.vod_account
     if not account:
@@ -218,7 +220,7 @@ def ensure_integration_vod_account(integration: MediaServerIntegration) -> M3UAc
             is_active=expected_active,
             locked=True,
             refresh_interval=0,
-            priority=MEDIA_SERVER_ACCOUNT_PRIORITY,
+            priority=expected_priority,
             custom_properties=custom_markers,
         )
     else:
@@ -235,8 +237,8 @@ def ensure_integration_vod_account(integration: MediaServerIntegration) -> M3UAc
         if account.refresh_interval != 0:
             account.refresh_interval = 0
             updates.append('refresh_interval')
-        if account.priority != MEDIA_SERVER_ACCOUNT_PRIORITY:
-            account.priority = MEDIA_SERVER_ACCOUNT_PRIORITY
+        if account.priority != expected_priority:
+            account.priority = expected_priority
             updates.append('priority')
         merged_custom_properties = dict(account.custom_properties or {})
         merged_custom_properties.update(custom_markers)
@@ -279,6 +281,32 @@ def _set_if_blank(obj, field: str, value) -> bool:
         setattr(obj, field, value)
         return True
     return False
+
+
+def _set_metadata_field(obj, field: str, value, *, replace: bool) -> bool:
+    if value in (None, '', [], {}):
+        return False
+    current = getattr(obj, field)
+    if current in (None, '', [], {}) or (replace and current != value):
+        setattr(obj, field, value)
+        return True
+    return False
+
+
+def _merge_custom_properties(obj, incoming: dict, *, replace: bool) -> bool:
+    if not isinstance(incoming, dict) or not incoming:
+        return False
+    current = dict(getattr(obj, 'custom_properties', None) or {})
+    merged = dict(current)
+    for key, value in incoming.items():
+        if value in (None, '', [], {}):
+            continue
+        if replace or key not in merged or merged[key] in (None, '', [], {}):
+            merged[key] = value
+    if merged == current:
+        return False
+    obj.custom_properties = merged
+    return True
 
 
 def _first_if_unique(queryset, *, description: str = 'content'):
@@ -360,7 +388,20 @@ def _cache_artwork(
             os.replace(temporary, destination)
             return str(destination)
 
-        resolved = resolve_import_path(source, must_exist=True, require_directory=False)
+        if integration.provider_type == MediaServerIntegration.ProviderTypes.DVR:
+            from .dvr_library import resolve_dvr_library_path
+
+            resolved = resolve_dvr_library_path(
+                source,
+                must_exist=True,
+                require_directory=False,
+            )
+        else:
+            resolved = resolve_import_path(
+                source,
+                must_exist=True,
+                require_directory=False,
+            )
         extension = resolved.suffix.lower()
         if extension not in {'.jpg', '.jpeg', '.png', '.webp'}:
             extension = '.jpg'
@@ -368,7 +409,7 @@ def _cache_artwork(
         shutil.copy2(resolved, temporary)
         os.replace(temporary, destination)
         return str(destination)
-    except (OSError, ValueError, requests.RequestException):
+    except (DjangoValidationError, OSError, ValueError, requests.RequestException):
         try:
             temporary.unlink()
         except FileNotFoundError:
@@ -478,13 +519,12 @@ def _sync_movie(
             tmdb_id=tmdb_id,
             imdb_id=imdb_id,
         )
+    movie = existing or _find_existing_movie(provider_movie)
     logo = _ensure_logo(
         integration,
         title=provider_movie.title,
         poster_url=provider_movie.poster_url,
     )
-
-    movie = existing or _find_existing_movie(provider_movie)
     created = False
     updated = False
 
@@ -501,7 +541,7 @@ def _sync_movie(
                 tmdb_id=tmdb_id,
                 imdb_id=imdb_id,
                 logo=logo,
-                custom_properties={},
+                custom_properties=dict(provider_movie.custom_properties or {}),
             )
             created = True
         except IntegrityError:
@@ -510,17 +550,39 @@ def _sync_movie(
                 raise
 
     if movie and not created:
-        updated |= _set_if_blank(movie, 'name', provider_movie.title)
-        updated |= _set_if_blank(movie, 'description', provider_movie.description or '')
-        updated |= _set_if_blank(movie, 'year', provider_movie.year)
-        updated |= _set_if_blank(movie, 'rating', provider_movie.rating or '')
-        updated |= _set_if_blank(movie, 'genre', ', '.join(provider_movie.genres or []))
+        previous_logo_id = movie.logo_id
+        replace_metadata = bool(provider_movie.replace_metadata)
+        updated |= _set_metadata_field(
+            movie, 'name', provider_movie.title, replace=replace_metadata
+        )
+        updated |= _set_metadata_field(
+            movie, 'description', provider_movie.description or '',
+            replace=replace_metadata,
+        )
+        updated |= _set_metadata_field(
+            movie, 'year', provider_movie.year, replace=replace_metadata
+        )
+        updated |= _set_metadata_field(
+            movie, 'rating', provider_movie.rating or '', replace=replace_metadata
+        )
+        updated |= _set_metadata_field(
+            movie, 'genre', ', '.join(provider_movie.genres or []),
+            replace=replace_metadata,
+        )
         updated |= _set_if_blank(movie, 'tmdb_id', tmdb_id)
         updated |= _set_if_blank(movie, 'imdb_id', imdb_id)
+        updated |= _merge_custom_properties(
+            movie,
+            provider_movie.custom_properties,
+            replace=replace_metadata,
+        )
 
-        if movie.duration_secs in (None, 0) and provider_movie.duration_secs:
-            movie.duration_secs = provider_movie.duration_secs
-            updated = True
+        updated |= _set_metadata_field(
+            movie,
+            'duration_secs',
+            provider_movie.duration_secs,
+            replace=replace_metadata,
+        )
 
         if _should_update_logo(current_logo=movie.logo, next_logo=logo):
             movie.logo = logo
@@ -528,6 +590,12 @@ def _sync_movie(
 
         if updated:
             movie.save()
+        if previous_logo_id and previous_logo_id != movie.logo_id:
+            transaction.on_commit(
+                lambda logo_id=previous_logo_id: (
+                    delete_media_library_logo_if_unused(logo_id)
+                )
+            )
 
     return movie, created, updated
 
@@ -581,13 +649,12 @@ def _sync_series(
             tmdb_id=tmdb_id,
             imdb_id=imdb_id,
         )
+    series = existing or _find_existing_series(provider_series)
     logo = _ensure_logo(
         integration,
         title=provider_series.title,
         poster_url=provider_series.poster_url,
     )
-
-    series = existing or _find_existing_series(provider_series)
     created = False
     updated = False
 
@@ -603,7 +670,7 @@ def _sync_series(
                 tmdb_id=tmdb_id,
                 imdb_id=imdb_id,
                 logo=logo,
-                custom_properties={},
+                custom_properties=dict(provider_series.custom_properties or {}),
             )
             created = True
         except IntegrityError:
@@ -612,13 +679,33 @@ def _sync_series(
                 raise
 
     if series and not created:
-        updated |= _set_if_blank(series, 'name', provider_series.title)
-        updated |= _set_if_blank(series, 'description', provider_series.description or '')
-        updated |= _set_if_blank(series, 'year', provider_series.year)
-        updated |= _set_if_blank(series, 'rating', provider_series.rating or '')
-        updated |= _set_if_blank(series, 'genre', ', '.join(provider_series.genres or []))
+        previous_logo_id = series.logo_id
+        replace_metadata = bool(provider_series.replace_metadata)
+        updated |= _set_metadata_field(
+            series, 'name', provider_series.title, replace=replace_metadata
+        )
+        updated |= _set_metadata_field(
+            series, 'description', provider_series.description or '',
+            replace=replace_metadata,
+        )
+        updated |= _set_metadata_field(
+            series, 'year', provider_series.year, replace=replace_metadata
+        )
+        updated |= _set_metadata_field(
+            series, 'rating', provider_series.rating or '',
+            replace=replace_metadata,
+        )
+        updated |= _set_metadata_field(
+            series, 'genre', ', '.join(provider_series.genres or []),
+            replace=replace_metadata,
+        )
         updated |= _set_if_blank(series, 'tmdb_id', tmdb_id)
         updated |= _set_if_blank(series, 'imdb_id', imdb_id)
+        updated |= _merge_custom_properties(
+            series,
+            provider_series.custom_properties,
+            replace=replace_metadata,
+        )
 
         if _should_update_logo(current_logo=series.logo, next_logo=logo):
             series.logo = logo
@@ -626,6 +713,12 @@ def _sync_series(
 
         if updated:
             series.save()
+        if previous_logo_id and previous_logo_id != series.logo_id:
+            transaction.on_commit(
+                lambda logo_id=previous_logo_id: (
+                    delete_media_library_logo_if_unused(logo_id)
+                )
+            )
 
     return series, created, updated
 
@@ -708,7 +801,7 @@ def _sync_episode(
                 episode_number=provider_episode.episode_number,
                 tmdb_id=tmdb_id,
                 imdb_id=imdb_id,
-                custom_properties={},
+                custom_properties=dict(provider_episode.custom_properties or {}),
             )
             created = True
         except IntegrityError:
@@ -717,11 +810,31 @@ def _sync_episode(
                 raise
 
     if episode and not created:
-        updated |= _set_if_blank(episode, 'name', provider_episode.title)
-        updated |= _set_if_blank(episode, 'description', provider_episode.description or '')
-        updated |= _set_if_blank(episode, 'air_date', _normalize_air_date(provider_episode.air_date))
-        updated |= _set_if_blank(episode, 'rating', provider_episode.rating or '')
-        updated |= _set_if_blank(episode, 'duration_secs', provider_episode.duration_secs)
+        replace_metadata = bool(provider_episode.replace_metadata)
+        updated |= _merge_custom_properties(
+            episode,
+            provider_episode.custom_properties,
+            replace=replace_metadata,
+        )
+        updated |= _set_metadata_field(
+            episode, 'name', provider_episode.title, replace=replace_metadata
+        )
+        updated |= _set_metadata_field(
+            episode, 'description', provider_episode.description or '',
+            replace=replace_metadata,
+        )
+        updated |= _set_metadata_field(
+            episode, 'air_date', _normalize_air_date(provider_episode.air_date),
+            replace=replace_metadata,
+        )
+        updated |= _set_metadata_field(
+            episode, 'rating', provider_episode.rating or '',
+            replace=replace_metadata,
+        )
+        updated |= _set_metadata_field(
+            episode, 'duration_secs', provider_episode.duration_secs,
+            replace=replace_metadata,
+        )
         updated |= _set_if_blank(episode, 'tmdb_id', tmdb_id)
         updated |= _set_if_blank(episode, 'imdb_id', imdb_id)
 
@@ -933,25 +1046,62 @@ def cleanup_integration_vod(integration: MediaServerIntegration) -> None:
     _delete_orphan_series(series_ids)
     _delete_unused_categories(category_ids)
 
-def _remove_stale_relations(
+
+def integration_library_ids(integration: MediaServerIntegration) -> set[str]:
+    """Return library scopes currently represented by this source's VOD relations."""
+    account = integration.vod_account
+    if not account:
+        return set()
+
+    library_ids: set[str] = set()
+    for relation_model in (M3UMovieRelation, M3USeriesRelation, M3UEpisodeRelation):
+        values = relation_model.objects.filter(m3u_account=account).values_list(
+            "custom_properties__provider_library_id",
+            flat=True,
+        )
+        library_ids.update(
+            str(value).strip()
+            for value in values
+            if value is not None and str(value).strip()
+        )
+    return library_ids
+
+
+def remove_integration_library_scopes(
+    integration: MediaServerIntegration,
+    library_ids: set[str],
+) -> dict[str, int]:
+    """Remove all relations belonging to explicitly retired provider scopes."""
+    account = integration.vod_account
+    normalized_ids = {
+        str(value).strip() for value in library_ids if str(value).strip()
+    }
+    if not account or not normalized_ids:
+        return {"movies": 0, "series": 0, "episodes": 0}
+
+    with transaction.atomic():
+        return _remove_relations(
+            account,
+            filters={
+                "custom_properties__provider_library_id__in": sorted(normalized_ids),
+            },
+        )
+
+
+def _remove_relations(
     account: M3UAccount,
     *,
-    scan_started,
-    authoritative_library_ids: set[str],
+    filters: dict,
 ) -> dict[str, int]:
-    common = {
-        'm3u_account': account,
-        'last_seen__lt': scan_started,
-        'custom_properties__provider_library_id__in': sorted(authoritative_library_ids),
-    }
+    common = {"m3u_account": account, **filters}
     movie_relations = list(
-        M3UMovieRelation.objects.filter(**common).values_list('id', 'movie_id')
+        M3UMovieRelation.objects.filter(**common).values_list("id", "movie_id")
     )
     series_relations = list(
-        M3USeriesRelation.objects.filter(**common).values_list('id', 'series_id')
+        M3USeriesRelation.objects.filter(**common).values_list("id", "series_id")
     )
     episode_relations = list(
-        M3UEpisodeRelation.objects.filter(**common).values_list('id', 'episode_id')
+        M3UEpisodeRelation.objects.filter(**common).values_list("id", "episode_id")
     )
 
     movie_ids = [row[1] for row in movie_relations]
@@ -959,11 +1109,17 @@ def _remove_stale_relations(
     episode_ids = [row[1] for row in episode_relations]
 
     if episode_relations:
-        M3UEpisodeRelation.objects.filter(id__in=[row[0] for row in episode_relations]).delete()
+        M3UEpisodeRelation.objects.filter(
+            id__in=[row[0] for row in episode_relations]
+        ).delete()
     if movie_relations:
-        M3UMovieRelation.objects.filter(id__in=[row[0] for row in movie_relations]).delete()
+        M3UMovieRelation.objects.filter(
+            id__in=[row[0] for row in movie_relations]
+        ).delete()
     if series_relations:
-        M3USeriesRelation.objects.filter(id__in=[row[0] for row in series_relations]).delete()
+        M3USeriesRelation.objects.filter(
+            id__in=[row[0] for row in series_relations]
+        ).delete()
 
     if movie_ids:
         Movie.objects.filter(id__in=movie_ids, m3u_relations__isnull=True).delete()
@@ -974,7 +1130,7 @@ def _remove_stale_relations(
     unused_category_relations = []
     for category_relation in M3UVODCategoryRelation.objects.filter(
         m3u_account=account
-    ).select_related('category'):
+    ).select_related("category"):
         category = category_relation.category
         if M3UMovieRelation.objects.filter(
             m3u_account=account,
@@ -986,22 +1142,35 @@ def _remove_stale_relations(
             category=category,
         ).exists():
             continue
-        unused_category_relations.append(
-            (category_relation.id, category.id)
-        )
+        unused_category_relations.append((category_relation.id, category.id))
     if unused_category_relations:
         M3UVODCategoryRelation.objects.filter(
             id__in=[row[0] for row in unused_category_relations]
         ).delete()
-        _delete_unused_categories(
-            [row[1] for row in unused_category_relations]
-        )
+        _delete_unused_categories([row[1] for row in unused_category_relations])
 
     return {
-        'movies': len(movie_relations),
-        'series': len(series_relations),
-        'episodes': len(episode_relations),
+        "movies": len(movie_relations),
+        "series": len(series_relations),
+        "episodes": len(episode_relations),
     }
+
+
+def _remove_stale_relations(
+    account: M3UAccount,
+    *,
+    scan_started,
+    authoritative_library_ids: set[str],
+) -> dict[str, int]:
+    return _remove_relations(
+        account,
+        filters={
+            "last_seen__lt": scan_started,
+            "custom_properties__provider_library_id__in": sorted(
+                authoritative_library_ids
+            ),
+        },
+    )
 
 
 def _mark_remaining_stages(sync_run: MediaServerSyncRun, status: str) -> None:
@@ -1173,6 +1342,16 @@ def sync_media_server_integration(
 
         account = ensure_integration_vod_account(integration)
         category_cache: dict[str, VODCategory] = {}
+
+        if integration.provider_type == MediaServerIntegration.ProviderTypes.DVR:
+            from apps.channels.recording_nfo import backfill_recording_nfos
+
+            nfo_counts = backfill_recording_nfos()
+            if nfo_counts["failed"]:
+                logger.warning(
+                    "Unable to create NFO sidecars for %s completed DVR recordings",
+                    nfo_counts["failed"],
+                )
 
         with get_provider_client(integration) as client:
             check_cancel()
@@ -1564,3 +1743,379 @@ def sync_media_server_integration(
                 'Media library import lock for source %s was already released',
                 integration.id,
             )
+
+
+def _upsert_dvr_movie(
+    integration: MediaServerIntegration,
+    account: M3UAccount,
+    provider_movie: ProviderMovie,
+    *,
+    seen_at,
+    category_cache: dict,
+) -> str:
+    stream_id = f'{integration.provider_type}:{provider_movie.external_id}'
+    existing_relation = M3UMovieRelation.objects.filter(
+        m3u_account=account,
+        stream_id=stream_id,
+    ).select_related('movie').first()
+    category = _ensure_category(
+        integration,
+        account,
+        provider_movie.category_name,
+        category_type='movie',
+        cache=category_cache,
+    )
+    movie, _created, _updated = _sync_movie(
+        integration,
+        provider_movie,
+        existing=existing_relation.movie if existing_relation else None,
+    )
+    M3UMovieRelation.objects.update_or_create(
+        m3u_account=account,
+        stream_id=stream_id,
+        defaults={
+            'movie': movie,
+            'category': category,
+            'container_extension': provider_movie.container_extension,
+            'custom_properties': _movie_relation_custom_properties(
+                integration,
+                provider_movie,
+                logo=movie.logo,
+            ),
+            'last_advanced_refresh': seen_at,
+            'last_seen': seen_at,
+        },
+    )
+    return stream_id
+
+
+def _upsert_dvr_series(
+    integration: MediaServerIntegration,
+    account: M3UAccount,
+    provider_series: ProviderSeries,
+    *,
+    seen_at,
+    category_cache: dict,
+) -> set[str]:
+    series_stream_id = f'{integration.provider_type}:{provider_series.external_id}'
+    existing_relation = M3USeriesRelation.objects.filter(
+        m3u_account=account,
+        external_series_id=series_stream_id,
+    ).select_related('series').first()
+    category = _ensure_category(
+        integration,
+        account,
+        provider_series.category_name,
+        category_type='series',
+        cache=category_cache,
+    )
+    series, _created, _updated = _sync_series(
+        integration,
+        provider_series,
+        existing=existing_relation.series if existing_relation else None,
+    )
+    series_relation, _relation_created = M3USeriesRelation.objects.update_or_create(
+        m3u_account=account,
+        external_series_id=series_stream_id,
+        defaults={
+            'series': series,
+            'category': category,
+            'custom_properties': _series_relation_custom_properties(
+                integration,
+                provider_series,
+                logo=series.logo,
+            ),
+            'last_seen': seen_at,
+            'last_episode_refresh': seen_at,
+        },
+    )
+
+    stream_ids = set()
+    for provider_episode in provider_series.episodes:
+        episode_stream_id = f'{integration.provider_type}:{provider_episode.external_id}'
+        existing_episode_relation = M3UEpisodeRelation.objects.filter(
+            m3u_account=account,
+            stream_id=episode_stream_id,
+        ).select_related('episode').first()
+        episode, _created, _updated = _sync_episode(
+            series,
+            provider_episode,
+            existing=(
+                existing_episode_relation.episode
+                if existing_episode_relation else None
+            ),
+        )
+        M3UEpisodeRelation.objects.update_or_create(
+            m3u_account=account,
+            stream_id=episode_stream_id,
+            defaults={
+                'episode': episode,
+                'series_relation': series_relation,
+                'container_extension': provider_episode.container_extension,
+                'custom_properties': _episode_relation_custom_properties(
+                    integration,
+                    provider_series,
+                    provider_episode,
+                    logo=series.logo,
+                ),
+                'last_seen': seen_at,
+            },
+        )
+        stream_ids.add(episode_stream_id)
+    return stream_ids
+
+
+def _remove_dvr_recording_relations(
+    account: M3UAccount,
+    file_path: str,
+    *,
+    retained_movie_stream_ids: set[str] | None = None,
+    retained_episode_stream_ids: set[str] | None = None,
+    candidate_series_relation_ids: set[int] | None = None,
+) -> dict[str, int]:
+    retained_movie_stream_ids = retained_movie_stream_ids or set()
+    retained_episode_stream_ids = retained_episode_stream_ids or set()
+
+    movie_relations = list(
+        M3UMovieRelation.objects.filter(
+            m3u_account=account,
+            custom_properties__file_path=file_path,
+        ).exclude(stream_id__in=retained_movie_stream_ids).values_list('id', 'movie_id')
+    )
+    episode_relations = list(
+        M3UEpisodeRelation.objects.filter(
+            m3u_account=account,
+            custom_properties__file_path=file_path,
+        ).exclude(stream_id__in=retained_episode_stream_ids).values_list(
+            'id', 'episode_id', 'series_relation_id'
+        )
+    )
+    if movie_relations:
+        M3UMovieRelation.objects.filter(
+            id__in=[row[0] for row in movie_relations]
+        ).delete()
+    if episode_relations:
+        M3UEpisodeRelation.objects.filter(
+            id__in=[row[0] for row in episode_relations]
+        ).delete()
+
+    movie_ids = [row[1] for row in movie_relations]
+    episode_ids = [row[1] for row in episode_relations]
+    if movie_ids:
+        Movie.objects.filter(id__in=movie_ids, m3u_relations__isnull=True).delete()
+    if episode_ids:
+        Episode.objects.filter(id__in=episode_ids, m3u_relations__isnull=True).delete()
+
+    candidate_series_relation_ids = set(candidate_series_relation_ids or set()) | {
+        row[2] for row in episode_relations if row[2] is not None
+    }
+    empty_series_relations = list(
+        M3USeriesRelation.objects.filter(
+            id__in=candidate_series_relation_ids,
+            m3u_account=account,
+            episode_relations__isnull=True,
+        ).values_list('id', 'series_id')
+    )
+    if empty_series_relations:
+        M3USeriesRelation.objects.filter(
+            id__in=[row[0] for row in empty_series_relations]
+        ).delete()
+        _delete_orphan_series([row[1] for row in empty_series_relations])
+
+    return {
+        'movies': len(movie_relations),
+        'episodes': len(episode_relations),
+        'series': len(empty_series_relations),
+    }
+
+
+def _refresh_managed_recording_nfo(recording) -> None:
+    from apps.channels.recording_nfo import write_recording_nfo
+
+    properties = dict(recording.custom_properties or {})
+    file_path = str(properties.get('file_path') or '').strip()
+    expected_nfo = str(Path(file_path).with_suffix('.nfo'))
+    stored_nfo = str(properties.get('nfo_path') or '').strip()
+    managed_nfo = bool(
+        stored_nfo
+        and properties.get('nfo_managed') is not False
+        and Path(stored_nfo).resolve(strict=False)
+        == Path(expected_nfo).resolve(strict=False)
+    )
+    if Path(expected_nfo).is_file() and not managed_nfo:
+        return
+    nfo_path = write_recording_nfo(recording)
+    properties = dict(recording.custom_properties or {})
+    properties.update({'nfo_path': nfo_path, 'nfo_managed': True})
+    recording.custom_properties = properties
+    recording.save(update_fields=['custom_properties'])
+
+
+@shared_task(bind=True, max_retries=120, default_retry_delay=5)
+def sync_dvr_media_library_after_recording(self, recording_id: int):
+    """Upsert one completed DVR recording without rescanning the library."""
+    from apps.channels.models import Recording
+    from apps.media_servers.dvr_library import (
+        ensure_dvr_media_library_source,
+        resolve_dvr_library_path,
+    )
+    from apps.media_servers.providers import DVRClient
+
+    source = ensure_dvr_media_library_source()
+    if not source.enabled or not source.add_to_vod:
+        return 'DVR Media Library is disabled'
+
+    recording = Recording.objects.select_related('channel').filter(id=recording_id).first()
+    if not recording:
+        return f'Recording {recording_id} no longer exists'
+    properties = recording.custom_properties or {}
+    if properties.get('status') != 'completed':
+        return f'Recording {recording_id} is not completed'
+
+    file_path = str(properties.get('file_path') or '').strip()
+    if not file_path:
+        return f'Recording {recording_id} has no output file'
+    try:
+        resolved = resolve_dvr_library_path(file_path, must_exist=True)
+    except Exception as exc:
+        logger.warning(
+            'Completed recording %s is outside the DVR library or unavailable: %s',
+            recording_id,
+            exc,
+        )
+        return f'Recording {recording_id} output is unavailable'
+    if not resolved.is_file():
+        return f'Recording {recording_id} output is not a file'
+
+    redis_lock = RedisClient.get_client().lock(
+        f'media_library_import:{source.id}',
+        timeout=30 * 60,
+        blocking_timeout=0,
+    )
+    if not redis_lock.acquire(blocking=False):
+        raise self.retry(exc=RuntimeError('DVR Media Library import is busy'))
+
+    try:
+        _refresh_managed_recording_nfo(recording)
+        account = ensure_integration_vod_account(source)
+        with DVRClient(source) as client:
+            movies, series_entries = client.inspect_recording(str(resolved))
+        if not movies and not series_entries:
+            raise ValueError('The DVR recording could not be classified as a movie or episode.')
+
+        seen_at = timezone.now()
+        category_cache = {}
+        retained_movies: set[str] = set()
+        retained_episodes: set[str] = set()
+        previous_series_relation_ids = set(
+            M3UEpisodeRelation.objects.filter(
+                m3u_account=account,
+                custom_properties__file_path=str(resolved),
+            ).filter(series_relation_id__isnull=False).values_list(
+                'series_relation_id', flat=True
+            )
+        )
+        with transaction.atomic():
+            for provider_movie in movies:
+                retained_movies.add(
+                    _upsert_dvr_movie(
+                        source,
+                        account,
+                        provider_movie,
+                        seen_at=seen_at,
+                        category_cache=category_cache,
+                    )
+                )
+            for provider_series in series_entries:
+                retained_episodes.update(
+                    _upsert_dvr_series(
+                        source,
+                        account,
+                        provider_series,
+                        seen_at=seen_at,
+                        category_cache=category_cache,
+                    )
+                )
+            removed = _remove_dvr_recording_relations(
+                account,
+                str(resolved),
+                retained_movie_stream_ids=retained_movies,
+                retained_episode_stream_ids=retained_episodes,
+                candidate_series_relation_ids=previous_series_relation_ids,
+            )
+
+        _set_sync_state(
+            source,
+            status=MediaServerIntegration.SyncStatus.SUCCESS,
+            message=f'Recording {recording_id} imported.',
+            update_synced_at=True,
+        )
+        from apps.media_servers.export_tasks import queue_automatic_exports
+
+        queue_automatic_exports.delay(f'dvr-recording:{recording_id}')
+        return (
+            f'DVR recording {recording_id} imported; '
+            f'{len(movies)} movie(s), {sum(len(entry.episodes) for entry in series_entries)} '
+            f'episode(s), {sum(removed.values())} stale relation(s) removed.'
+        )
+    finally:
+        try:
+            redis_lock.release()
+        except Exception:
+            logger.warning('DVR Media Library import lock was already released')
+
+
+@shared_task(bind=True, max_retries=120, default_retry_delay=5)
+def remove_dvr_media_library_recording(self, file_path: str):
+    """Remove normalized VOD relations for one deleted DVR artifact."""
+    from apps.media_servers.dvr_library import (
+        ensure_dvr_media_library_source,
+        resolve_dvr_library_path,
+    )
+
+    source = ensure_dvr_media_library_source()
+    account = source.vod_account
+    if not account:
+        return 'DVR Media Library has no VOD account'
+    try:
+        normalized_path = str(
+            resolve_dvr_library_path(
+                str(file_path),
+                must_exist=False,
+                require_directory=False,
+            )
+        )
+    except Exception:
+        # Relations written by older versions may retain a path that is no
+        # longer resolvable after the recording file has been removed.
+        normalized_path = str(file_path)
+
+    redis_lock = RedisClient.get_client().lock(
+        f'media_library_import:{source.id}',
+        timeout=30 * 60,
+        blocking_timeout=0,
+    )
+    if not redis_lock.acquire(blocking=False):
+        raise self.retry(exc=RuntimeError('DVR Media Library import is busy'))
+    try:
+        with transaction.atomic():
+            removed = _remove_dvr_recording_relations(account, normalized_path)
+        if any(removed.values()):
+            from apps.media_servers.export_tasks import queue_automatic_exports
+
+            queue_automatic_exports.delay('dvr-recording-deleted')
+        return f'{sum(removed.values())} DVR relation(s) removed'
+    finally:
+        try:
+            redis_lock.release()
+        except Exception:
+            logger.warning('DVR Media Library import lock was already released')
+
+
+# Celery autodiscovery imports this module. Import the separately organized
+# export tasks here so workers register them at startup as well.
+from .export_tasks import (  # noqa: E402, F401
+    export_media_library,
+    queue_automatic_exports,
+    refresh_selected_series_and_export,
+)

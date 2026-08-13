@@ -52,6 +52,11 @@ MEDIA_LIBRARY_ARTWORK_ROOT = os.environ.get(
     "/data/logos/media-library",
 )
 
+# DVR paths are chosen by an administrator and may point at any path mounted
+# inside the container. Keep them in an explicit browser scope so the client
+# still cannot provide or broaden the server-side root.
+DVR_FILE_BROWSER_ROOTS = ("/",)
+
 # Reusable safe directory-browser scopes. A browser request supplies only one
 # of these names; the client can never provide or broaden a root. Additional
 # features can add a scope that points at their own explicit root setting.
@@ -67,10 +72,22 @@ SAFE_DIRECTORY_BROWSER_SCOPES = {
     "media-library-export": {
         "label": "allowed export directory",
         "setting_name": "MEDIA_LIBRARY_EXPORT_ROOTS",
+        "allow_create": True,
         "configuration_hint": (
             "Set MEDIA_LIBRARY_EXPORT_ROOTS and mount the same writable "
             "container paths in both the web and Celery services."
         ),
+    },
+    "dvr-library": {
+        "label": "container filesystem",
+        "setting_name": "DVR_FILE_BROWSER_ROOTS",
+        "allow_create": True,
+    },
+    "dvr-comskip": {
+        "label": "container filesystem",
+        "setting_name": "DVR_FILE_BROWSER_ROOTS",
+        "selection_mode": "file",
+        "allowed_extensions": (".ini",),
     },
 }
 
@@ -631,6 +648,13 @@ LOGGING = {
         "django.geventpool": {
             "handlers": ["console"],
             "level": LOG_LEVEL,
+            "propagate": False,
+        },
+        # urllib3 debug output includes complete request paths. XC credentials
+        # are query parameters, so never emit its wire-level request logging.
+        "urllib3": {
+            "handlers": ["console"],
+            "level": "WARNING",
             "propagate": False,
         },
         # Add any other loggers you need to capture TRACE logs from

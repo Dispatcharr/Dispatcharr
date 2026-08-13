@@ -44,7 +44,7 @@ from apps.accounts.permissions import (
     permission_classes_by_action,
 )
 from dispatcharr.utils import get_client_ip
-from .path_browser import browse_directories
+from .path_browser import browse_directories, create_directory
 
 
 logger = logging.getLogger(__name__)
@@ -83,6 +83,34 @@ def browse_safe_directories(request):
                 scope,
                 str(request.query_params.get("path") or ""),
             )
+        )
+    except ValidationError as exc:
+        detail = exc.messages[0] if exc.messages else str(exc)
+        return Response({"detail": detail}, status=400)
+    except PermissionError as exc:
+        return Response({"detail": str(exc)}, status=403)
+
+
+@extend_schema(
+    request=OpenApiTypes.OBJECT,
+    responses={201: OpenApiTypes.OBJECT},
+)
+@api_view(["POST"])
+@permission_classes([IsAdmin])
+def create_safe_directory(request):
+    """Create a folder inside the current path of a writable browser scope."""
+    scope = str(request.data.get("scope") or "").strip()
+    path = str(request.data.get("path") or "").strip()
+    name = str(request.data.get("name") or "").strip()
+    if not scope:
+        return Response(
+            {"detail": "A directory browser scope is required."},
+            status=400,
+        )
+    try:
+        return Response(
+            create_directory(scope, path, name),
+            status=status.HTTP_201_CREATED,
         )
     except ValidationError as exc:
         detail = exc.messages[0] if exc.messages else str(exc)

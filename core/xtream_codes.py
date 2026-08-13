@@ -5,6 +5,23 @@ import json
 
 logger = logging.getLogger(__name__)
 
+SENSITIVE_PARAM_NAMES = {
+    'username',
+    'password',
+    'token',
+    'api_key',
+    'apikey',
+    'auth',
+}
+
+
+def _redact_params(params):
+    """Return request parameters that are safe to include in application logs."""
+    return {
+        key: '[REDACTED]' if str(key).lower() in SENSITIVE_PARAM_NAMES else value
+        for key, value in (params or {}).items()
+    }
+
 
 def normalize_server_url(url):
     """Normalize server URL: strip XC API endpoints and query params, preserve base path."""
@@ -72,7 +89,11 @@ class Client:
         """Make request with detailed error handling"""
         try:
             url = f"{self.server_url}/{endpoint}"
-            logger.debug(f"XC API Request: {url} with params: {params}")
+            logger.debug(
+                "XC API Request: %s with params: %s",
+                url,
+                _redact_params(params),
+            )
 
             response = self.session.get(url, params=params, timeout=60)
             response.raise_for_status()
@@ -112,10 +133,17 @@ class Client:
 
             return data
         except requests.RequestException as e:
-            error_msg = f"XC API Request failed: {str(e)}"
+            # Request exception strings often contain the fully rendered query
+            # string, including XC credentials. Keep both logs and the raised
+            # exception credential-free.
+            error_msg = f"XC API Request failed ({type(e).__name__})"
             logger.error(error_msg)
-            logger.error(f"Request details: URL={url}, Params={params}")
-            raise
+            logger.error(
+                "Request details: URL=%s, Params=%s",
+                url,
+                _redact_params(params),
+            )
+            raise ValueError(error_msg) from None
         except ValueError as e:
             # This could be from JSON parsing or our explicit raises
             logger.error(f"XC API Invalid response: {str(e)}")
@@ -138,10 +166,10 @@ class Client:
 
             if not self.server_info or not self.server_info.get('user_info'):
                 error_msg = "Authentication failed: Invalid response from server"
-                logger.error(f"{error_msg}. Response: {self.server_info}")
+                logger.error(error_msg)
                 raise ValueError(error_msg)
 
-            logger.info(f"XC Authentication successful for user {self.username}")
+            logger.info("XC Authentication successful")
             return self.server_info
         except Exception as e:
             logger.error(f"XC Authentication failed: {str(e)}")

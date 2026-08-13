@@ -64,6 +64,88 @@ class StreamVodDbCleanupTests(SimpleTestCase):
         mock_close.assert_called_once()
         mock_manager.stream_content_with_session.assert_called_once()
 
+    @patch("apps.proxy.vod_proxy.views._media_library_target_for_request")
+    @patch("apps.proxy.vod_proxy.views._get_content_and_relation")
+    @patch("apps.proxy.vod_proxy.views.network_access_allowed", return_value=True)
+    def test_media_library_playback_rejects_remote_import_only_source(
+        self,
+        _network_ok,
+        mock_content,
+        mock_target,
+    ):
+        movie = MagicMock()
+        movie.name = "Imported only"
+        relation = MagicMock()
+        relation.m3u_account.is_active = True
+        relation.m3u_account.custom_properties = {
+            "managed_source": "media_server",
+            "provider": "emby",
+        }
+        relation.custom_properties = {
+            "managed_source": "media_server",
+            "provider": "emby",
+        }
+        mock_content.return_value = (movie, relation, [relation])
+        mock_target.return_value = MagicMock()
+        request = self.factory.get(
+            "/proxy/vod/media-library/target/movie/uuid/session123/",
+            HTTP_USER_AGENT="test-agent",
+        )
+        request.user = MagicMock(is_authenticated=False)
+
+        from apps.proxy.vod_proxy.views import stream_vod
+
+        response = stream_vod(
+            request,
+            content_type="movie",
+            content_id="uuid",
+            session_id="session123",
+            target_public_id="target",
+        )
+
+        self.assertEqual(response.status_code, 503)
+
+    @patch("apps.proxy.vod_proxy.views._media_library_target_for_request")
+    @patch("apps.proxy.vod_proxy.views._get_content_and_relation")
+    @patch("apps.proxy.vod_proxy.views.network_access_allowed", return_value=True)
+    def test_media_library_head_rejects_remote_import_only_source(
+        self,
+        _network_ok,
+        mock_content,
+        mock_target,
+    ):
+        episode = MagicMock()
+        episode.name = "Imported episode"
+        relation = MagicMock()
+        relation.m3u_account.is_active = True
+        relation.m3u_account.custom_properties = {
+            "managed_source": "media_server",
+            "provider": "jellyfin",
+        }
+        relation.custom_properties = {
+            "managed_source": "media_server",
+            "provider": "jellyfin",
+        }
+        mock_content.return_value = (episode, relation, [relation])
+        mock_target.return_value = MagicMock()
+        request = self.factory.head(
+            "/proxy/vod/media-library/target/episode/uuid/session123/",
+            HTTP_USER_AGENT="test-agent",
+        )
+        request.user = MagicMock(is_authenticated=False)
+
+        from apps.proxy.vod_proxy.views import stream_vod
+
+        response = stream_vod(
+            request,
+            content_type="episode",
+            content_id="uuid",
+            session_id="session123",
+            target_public_id="target",
+        )
+
+        self.assertEqual(response.status_code, 503)
+
 
 class BuildVodStatsDbCleanupTests(SimpleTestCase):
     @patch("apps.proxy.vod_proxy.views.close_old_connections")

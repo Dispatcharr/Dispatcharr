@@ -1,7 +1,10 @@
+import os
+import tempfile
+from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 from django.core.cache import cache
-from django.test import TestCase, SimpleTestCase
+from django.test import TestCase, SimpleTestCase, override_settings
 
 from apps.epg.models import EPGSource, EPGSourceIndex
 import core.models as core_models
@@ -13,6 +16,42 @@ from core.models import (
     SYSTEM_SETTINGS_KEY,
     _CACHE_BACKEND_ERROR,
 )
+from core.path_browser import browse_directories
+
+
+class DvrPathBrowserTests(SimpleTestCase):
+    def test_comskip_scope_lists_only_ini_files_and_selects_existing_file(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            ini_file = root / "custom.ini"
+            ini_file.write_text("detect_method=43", encoding="utf-8")
+            (root / "notes.txt").write_text("not a config", encoding="utf-8")
+            (root / "configs").mkdir()
+
+            with override_settings(DVR_FILE_BROWSER_ROOTS=(str(root),)):
+                listing = browse_directories("dvr-comskip", str(root))
+                selected = browse_directories("dvr-comskip", str(ini_file))
+
+        self.assertEqual(
+            [(entry["name"], entry["type"]) for entry in listing["entries"]],
+            [("configs", "directory"), ("custom.ini", "file")],
+        )
+        self.assertEqual(listing["selection_mode"], "file")
+        self.assertEqual(selected["path"], str(root.resolve()))
+        self.assertEqual(selected["selected_path"], str(ini_file.resolve()))
+
+    def test_library_scope_selects_directories_and_allows_folder_creation(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            recordings = root / "recordings"
+            recordings.mkdir()
+
+            with override_settings(DVR_FILE_BROWSER_ROOTS=(str(root),)):
+                listing = browse_directories("dvr-library", str(recordings))
+
+        self.assertEqual(listing["selection_mode"], "directory")
+        self.assertTrue(listing["allows_create"])
+        self.assertEqual(listing["path"], str(recordings.resolve()))
 
 
 class CoreSettingsGroupCacheTests(TestCase):
@@ -521,7 +560,50 @@ class SetDvrSeriesRulesTest(TestCase):
 
 
 class CoreSettingsSerializerDvrTest(TestCase):
-    """Verify the generic settings API sanitizes series_rules on save."""
+    """Verify DVR settings are normalized and sanitized on save."""
+
+    def test_serializer_canonicalizes_absolute_recording_library(self):
+        from core.serializers import CoreSettingsSerializer
+
+        obj, _ = CoreSettings.objects.get_or_create(
+            key=DVR_SETTINGS_KEY,
+            defaults={"name": "DVR Settings", "value": {}},
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            configured = os.path.join(temporary, "recordings", "..", "library")
+            serializer = CoreSettingsSerializer(
+                obj,
+                data={"value": {**obj.value, "library_dir": configured}},
+                partial=True,
+            )
+            serializer.is_valid(raise_exception=True)
+            serializer.save()
+
+            obj.refresh_from_db()
+            self.assertEqual(
+                obj.value["library_dir"],
+                os.path.realpath(configured),
+            )
+
+    def test_serializer_rejects_relative_recording_library(self):
+        from rest_framework import serializers
+
+        from core.serializers import CoreSettingsSerializer
+
+        obj, _ = CoreSettings.objects.get_or_create(
+            key=DVR_SETTINGS_KEY,
+            defaults={"name": "DVR Settings", "value": {}},
+        )
+        serializer = CoreSettingsSerializer(
+            obj,
+            data={"value": {**obj.value, "library_dir": "recordings"}},
+            partial=True,
+        )
+
+        serializer.is_valid(raise_exception=True)
+        with self.assertRaises(serializers.ValidationError) as error:
+            serializer.save()
+        self.assertIn("library_dir", str(error.exception.detail))
 
     def test_serializer_strips_corrupt_series_rules(self):
         """Settings page round-trip must not persist corrupt series_rules."""

@@ -1,5 +1,6 @@
 # apps/channels/signals.py
 
+from django.db import transaction
 from django.db.models.signals import m2m_changed, pre_save, post_save, post_delete
 from django.dispatch import receiver
 from django.utils.timezone import now, is_aware, make_aware
@@ -337,6 +338,14 @@ def schedule_task_on_save(sender, instance, created, **kwargs):
 @receiver(post_delete, sender=Recording)
 def revoke_task_on_delete(sender, instance, **kwargs):
     revoke_task(instance.task_id)
+    properties = instance.custom_properties or {}
+    file_path = str(properties.get("file_path") or "").strip()
+    if file_path:
+        from apps.media_servers.tasks import remove_dvr_media_library_recording
+
+        transaction.on_commit(
+            lambda path=file_path: remove_dvr_media_library_recording.delay(path)
+        )
 
 
 @receiver([post_save, post_delete], sender=ChannelStream)

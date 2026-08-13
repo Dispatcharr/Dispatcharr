@@ -65,6 +65,7 @@ describe('DvrSettingsFormUtils', () => {
       const result = DvrSettingsFormUtils.getDvrSettingsFormInitialValues();
 
       expect(result).toEqual({
+        library_dir: '/data/recordings',
         tv_template: '',
         movie_template: '',
         tv_fallback_template: '',
@@ -90,6 +91,7 @@ describe('DvrSettingsFormUtils', () => {
       const result = DvrSettingsFormUtils.getDvrSettingsFormInitialValues();
 
       expect(typeof result['tv_template']).toBe('string');
+      expect(typeof result['library_dir']).toBe('string');
       expect(typeof result['movie_template']).toBe('string');
       expect(typeof result['tv_fallback_template']).toBe('string');
       expect(typeof result['movie_fallback_template']).toBe('string');

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import ipaddress
 import json
 from urllib.parse import urlsplit
 
@@ -60,6 +59,8 @@ class MediaLibrarySourceSerializer(serializers.ModelSerializer):
     )
     has_api_token = serializers.SerializerMethodField()
     has_password = serializers.SerializerMethodField()
+    system_managed = serializers.SerializerMethodField()
+    library_path = serializers.SerializerMethodField()
     locations = MediaLibraryLocationSerializer(many=True, required=False)
 
     class Meta:
@@ -68,15 +69,15 @@ class MediaLibrarySourceSerializer(serializers.ModelSerializer):
             "id", "name", "provider_type", "base_url", "api_token", "username",
             "password", "clear_api_token", "clear_password", "has_api_token",
             "has_password", "plex_credential_handle", "verify_ssl", "enabled",
-            "add_to_vod", "sync_interval",
+            "add_to_vod", "vod_priority", "sync_interval",
             "include_libraries", "library_content_types", "provider_config",
-            "locations", "sync_task",
+            "locations", "system_managed", "library_path", "sync_task",
             "vod_account", "last_synced_at", "last_sync_status",
             "last_sync_message", "created_at", "updated_at",
         ]
         read_only_fields = [
             "sync_task", "vod_account", "last_synced_at", "last_sync_status",
-            "last_sync_message", "created_at", "updated_at",
+            "last_sync_message", "system_managed", "library_path", "created_at", "updated_at",
         ]
 
     def get_has_api_token(self, obj):
@@ -84,6 +85,16 @@ class MediaLibrarySourceSerializer(serializers.ModelSerializer):
 
     def get_has_password(self, obj):
         return bool(obj.password)
+
+    def get_system_managed(self, obj):
+        return obj.provider_type == MediaLibrarySource.ProviderTypes.DVR
+
+    def get_library_path(self, obj):
+        if obj.provider_type != MediaLibrarySource.ProviderTypes.DVR:
+            return ""
+        from .dvr_library import dvr_library_root
+
+        return str(dvr_library_root())
 
     def validate_include_libraries(self, value):
         if value is None:
@@ -137,6 +148,19 @@ class MediaLibrarySourceSerializer(serializers.ModelSerializer):
         return locations
 
     def validate(self, attrs):
+        provider = attrs.get("provider_type", getattr(self.instance, "provider_type", None))
+        if self.instance and self.instance.provider_type == MediaLibrarySource.ProviderTypes.DVR:
+            forbidden = set(attrs) - {"enabled"}
+            if provider != MediaLibrarySource.ProviderTypes.DVR or forbidden:
+                raise serializers.ValidationError(
+                    "The built-in DVR Media Library can only be enabled or disabled."
+                )
+            return attrs
+        if not self.instance and provider == MediaLibrarySource.ProviderTypes.DVR:
+            raise serializers.ValidationError(
+                {"provider_type": "The DVR Media Library is created automatically."}
+            )
+
         credential_handle = str(attrs.pop("plex_credential_handle", "") or "").strip()
         self._credential_handle = credential_handle
         if credential_handle:
@@ -250,9 +274,17 @@ class MediaLibrarySourceSerializer(serializers.ModelSerializer):
 
     @transaction.atomic
     def update(self, instance, validated_data):
+        previous_provider = instance.provider_type
         locations = validated_data.pop("locations", None)
         source = super().update(instance, validated_data)
         self._save_locations(source, locations)
+        if (
+            previous_provider == MediaLibrarySource.ProviderTypes.LOCAL
+            and source.provider_type != MediaLibrarySource.ProviderTypes.LOCAL
+        ):
+            source.locations.all().delete()
+            source.provider_config = {}
+            source.save(update_fields=["provider_config", "updated_at"])
         if getattr(self, "_credential_handle", ""):
             RedisClient.get_client().delete(
                 f"media_library_plex_auth:{self._credential_handle}"
@@ -279,33 +311,30 @@ class MediaLibraryImportRunSerializer(serializers.ModelSerializer):
 
 
 class MediaLibraryExportTargetSerializer(serializers.ModelSerializer):
+    selected_movie_count = serializers.SerializerMethodField()
+    selected_series_count = serializers.SerializerMethodField()
+
     class Meta:
         model = MediaLibraryExportTarget
         fields = [
-            "id", "public_id", "name", "target_type", "enabled", "output_root",
-            "playback_base_url", "playback_cidrs", "playback_stream_limit",
-            "include_nfo", "auto_export_on_vod_change", "last_exported_at",
+            "id", "public_id", "name", "enabled", "output_root",
+            "playback_base_url", "playback_stream_limit",
+            "include_nfo", "auto_export_on_vod_change", "series_refresh_interval",
+            "selected_movie_count", "selected_series_count", "last_exported_at",
             "last_export_status", "last_export_message", "last_export_summary",
             "created_at", "updated_at",
         ]
         read_only_fields = [
-            "public_id", "last_exported_at", "last_export_status",
-            "last_export_message", "last_export_summary", "created_at", "updated_at",
+            "public_id", "selected_movie_count", "selected_series_count",
+            "last_exported_at", "last_export_status", "last_export_message",
+            "last_export_summary", "created_at", "updated_at",
         ]
 
-    def validate_playback_cidrs(self, value):
-        networks = [entry.strip() for entry in value.split(",") if entry.strip()]
-        if not networks:
-            raise serializers.ValidationError(
-                "At least one explicit playback CIDR is required."
-            )
-        try:
-            return ", ".join(
-                str(ipaddress.ip_network(entry, strict=False))
-                for entry in networks
-            )
-        except ValueError as exc:
-            raise serializers.ValidationError("One or more CIDRs are invalid.") from exc
+    def get_selected_movie_count(self, obj):
+        return obj.selected_movies.count()
+
+    def get_selected_series_count(self, obj):
+        return obj.selected_series.count()
 
     def validate(self, attrs):
         output_root = attrs.get("output_root", getattr(self.instance, "output_root", ""))

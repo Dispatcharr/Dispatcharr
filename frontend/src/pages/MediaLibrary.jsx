@@ -5,13 +5,17 @@ import {
   Box,
   Button,
   Card,
+  Checkbox,
   Divider,
   Flex,
   Group,
+  Image,
   Loader,
+  LoadingOverlay,
   Modal,
   MultiSelect,
   NumberInput,
+  Pagination,
   PasswordInput,
   Select,
   Stack,
@@ -30,14 +34,13 @@ import {
   CircleCheckBig,
   Folder,
   FolderKanban,
-  HardDrive,
-  Pencil,
+  Film,
   RefreshCw,
   RotateCcwKey,
   ScanSearch,
   Server,
   SquarePlus,
-  Trash2,
+  Tv,
 } from 'lucide-react';
 
 import API from '../api';
@@ -62,6 +65,7 @@ const emptySource = {
   verify_ssl: true,
   enabled: true,
   add_to_vod: true,
+  vod_priority: 10000,
   sync_interval: 0,
   sync_interval_value: 0,
   sync_interval_unit: 'hours',
@@ -105,14 +109,13 @@ const formatInterval = (hours) => {
 
 const emptyTarget = {
   name: '',
-  target_type: 'jellyfin',
   enabled: true,
   output_root: '/data/media/strm',
   playback_base_url: '',
-  playback_cidrs: '',
   playback_stream_limit: 0,
   include_nfo: true,
   auto_export_on_vod_change: true,
+  series_refresh_interval: 0,
 };
 
 const errorText = (error) => {
@@ -153,6 +156,7 @@ const providerLabel = (provider) => {
   if (normalized === 'emby') return 'Emby';
   if (normalized === 'jellyfin') return 'Jellyfin';
   if (normalized === 'local') return 'Local';
+  if (normalized === 'dvr') return 'DVR';
   return provider || 'Unknown';
 };
 
@@ -167,14 +171,6 @@ const mediaTypeOptions = [
   { value: 'series', label: 'TV shows' },
   { value: 'mixed', label: 'Movies and TV' },
 ];
-
-function ProviderBadge({ provider }) {
-  return (
-    <Badge variant="light" color="indigo">
-      {providerLabel(provider)}
-    </Badge>
-  );
-}
 
 const providerLogos = {
   plex: plexLogo,
@@ -205,6 +201,8 @@ function ImportProviderLogo({ provider }) {
           alt={`${providerLabel(provider)} logo`}
           style={{ display: 'block', height: 28, width: 28 }}
         />
+      ) : provider === 'dvr' ? (
+        <Tv aria-label="DVR recordings" size={24} />
       ) : (
         <Server aria-label="Local filesystem" size={24} />
       )}
@@ -212,7 +210,27 @@ function ImportProviderLogo({ provider }) {
   );
 }
 
-function SourceEditor({ opened, source, tmdbSettings, onClose, onSaved }) {
+function ExportLogo() {
+  return (
+    <Box
+      w={44}
+      h={44}
+      style={{
+        alignItems: 'center',
+        backgroundColor: '#18181b',
+        border: '1px solid #3f3f46',
+        borderRadius: 8,
+        display: 'flex',
+        flex: '0 0 44px',
+        justifyContent: 'center',
+      }}
+    >
+      <ArrowUpFromLine aria-label="STRM/NFO export" size={24} />
+    </Box>
+  );
+}
+
+export function SourceEditor({ opened, source, tmdbSettings, onClose, onSaved }) {
   const [form, setForm] = useState(emptySource);
   const [saving, setSaving] = useState(false);
   const [libraries, setLibraries] = useState([]);
@@ -827,6 +845,16 @@ function SourceEditor({ opened, source, tmdbSettings, onClose, onSaved }) {
               update('add_to_vod', event.currentTarget.checked)
             }
           />
+          <NumberInput
+            label="VOD priority"
+            description="Priority for VOD provider selection (higher numbers = higher priority). Used when multiple providers offer the same content."
+            min={0}
+            allowDecimal={false}
+            value={form.vod_priority}
+            onChange={(value) =>
+              update('vod_priority', Number(value) || 0)
+            }
+          />
           <Group grow align="end">
             <NumberInput
               label="Automatic import interval"
@@ -889,6 +917,7 @@ export function SourceCard({
   onEdit,
   onDelete,
 }) {
+  const isDvrSource = source.provider_type === 'dvr';
   const scanActive = ['pending', 'queued', 'running'].includes(
     latestRun?.status
   );
@@ -931,7 +960,9 @@ export function SourceCard({
               <Text size="xs" c="dimmed" style={{ overflowWrap: 'anywhere' }}>
                 {source.provider_type === 'local'
                   ? 'Local filesystem import'
-                  : source.base_url}
+                  : isDvrSource
+                    ? source.library_path || 'DVR recording library'
+                    : source.base_url}
               </Text>
             </Stack>
           </Group>
@@ -954,7 +985,9 @@ export function SourceCard({
           <Group gap={8} mb="sm">
             <FolderKanban size={16} />
             <Text size="sm" fw={500}>
-              {Array.isArray(source.include_libraries) &&
+              {isDvrSource
+                ? 'DVR recording library'
+                : Array.isArray(source.include_libraries) &&
               source.include_libraries.length > 0
                 ? `${source.include_libraries.length} selected librar${
                     source.include_libraries.length > 1 ? 'ies' : 'y'
@@ -1087,7 +1120,9 @@ export function SourceCard({
             style={{
               display: 'grid',
               gap: '0.375rem',
-              gridTemplateColumns: '0.9fr 0.95fr 1.3fr 0.75fr 0.9fr',
+              gridTemplateColumns: isDvrSource
+                ? '0.9fr 0.95fr 1.3fr'
+                : '0.9fr 0.95fr 1.3fr 0.75fr 0.9fr',
               width: '100%',
             }}
           >
@@ -1123,6 +1158,274 @@ export function SourceCard({
             >
               View Scan
             </Button>
+            {!isDvrSource && (
+              <>
+                <Button
+                  size="xs"
+                  variant="default"
+                  fullWidth
+                  px={6}
+                  onClick={onEdit}
+                  disabled={busy}
+                >
+                  Edit
+                </Button>
+                <Button
+                  size="xs"
+                  color="red"
+                  variant="outline"
+                  fullWidth
+                  px={6}
+                  onClick={onDelete}
+                  disabled={busy}
+                >
+                  Delete
+                </Button>
+              </>
+            )}
+          </Box>
+        </Box>
+      </Stack>
+    </Card>
+  );
+}
+
+export function ExportCard({
+  target,
+  busy,
+  onToggle,
+  onSync,
+  onEdit,
+  onDelete,
+}) {
+  const summary = target.last_export_summary || {};
+  const hasSummary = Object.keys(summary).length > 0;
+  const exportActive = target.last_export_status === 'running';
+  const metrics = hasSummary
+    ? [
+        [
+          'Media items',
+          (Number(summary.movies_written) || 0) +
+            (Number(summary.episodes_written) || 0),
+        ],
+        ['Movies', summary.movies_written],
+        ['TV series', summary.series_written],
+        ['Episodes', summary.episodes_written],
+        ['STRM files', summary.strm_files_written],
+        ['NFO files', summary.nfo_files_written],
+      ]
+    : [];
+
+  return (
+    <Card
+      data-testid="media-library-export-card"
+      withBorder
+      radius="md"
+      p="md"
+      style={{
+        backgroundColor: '#27272A',
+        borderColor: '#3f3f46',
+        height: '100%',
+      }}
+    >
+      <Stack gap="md" style={{ height: '100%' }}>
+        <Box
+          style={{
+            alignItems: 'start',
+            display: 'grid',
+            gap: '1rem',
+            gridTemplateColumns: 'minmax(0, 1fr) auto',
+          }}
+        >
+          <Group gap="sm" align="flex-start" wrap="nowrap" miw={0}>
+            <ExportLogo />
+            <Stack gap={2} miw={0}>
+              <Text fw={700}>{target.name || 'Dispatcharr Output'}</Text>
+              <Text size="xs" c="dimmed">
+                STRM/NFO export
+              </Text>
+            </Stack>
+          </Group>
+          <Switch
+            label="Enabled"
+            checked={!!target.enabled}
+            onChange={(event) => onToggle(event.currentTarget.checked)}
+            disabled={busy}
+          />
+        </Box>
+
+        <Box
+          p="sm"
+          style={{
+            backgroundColor: '#202023',
+            border: '1px solid #3f3f46',
+            borderRadius: 8,
+          }}
+        >
+          <Group gap={8} mb="sm" wrap="nowrap">
+            <FolderKanban size={16} />
+            <Text size="sm" fw={500} lineClamp={1}>
+              {target.output_root}
+            </Text>
+          </Group>
+          <Group gap={8} mb="sm" wrap="nowrap">
+            <Film size={15} />
+            <Text size="xs" c="dimmed">
+              {target.selected_movie_count || 0} movies ·{' '}
+              {target.selected_series_count || 0} TV series selected
+            </Text>
+          </Group>
+          <Box
+            style={{
+              display: 'grid',
+              gap: '0.75rem',
+              gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+            }}
+          >
+            <Box>
+              <Text size="xs" c="dimmed">
+                Last exported
+              </Text>
+              <Text size="sm">
+                {target.last_exported_at
+                  ? new Date(target.last_exported_at).toLocaleString()
+                  : 'Never'}
+              </Text>
+            </Box>
+            <Box>
+              <Text size="xs" c="dimmed">
+                Automatic rebuild
+              </Text>
+              <Text size="sm">
+                {target.auto_export_on_vod_change ? 'Enabled' : 'Disabled'}
+              </Text>
+            </Box>
+            <Box>
+              <Text size="xs" c="dimmed">
+                TV series refresh
+              </Text>
+              <Text size="sm">
+                {formatInterval(target.series_refresh_interval)}
+              </Text>
+            </Box>
+          </Box>
+        </Box>
+
+        <Box>
+          <Group justify="space-between" mb="xs">
+            <Text size="xs" fw={700} tt="uppercase" c="dimmed">
+              {exportActive ? 'Current export' : 'Latest export'}
+            </Text>
+            {target.last_export_status && (
+              <Text size="xs" c={statusColor(target.last_export_status)}>
+                {target.last_export_status}
+              </Text>
+            )}
+          </Group>
+          {hasSummary ? (
+            <Box
+              data-testid="export-summary"
+              p="sm"
+              style={{
+                backgroundColor: '#202023',
+                border: '1px solid #3f3f46',
+                borderRadius: 8,
+              }}
+            >
+              <Box
+                style={{
+                  display: 'grid',
+                  gap: '0.9rem 1rem',
+                  gridTemplateColumns: 'repeat(3, minmax(0, 1fr))',
+                }}
+              >
+                {metrics.map(([label, value]) => (
+                  <Box key={label}>
+                    <Text
+                      fw={700}
+                      size="lg"
+                      style={{ fontVariantNumeric: 'tabular-nums' }}
+                    >
+                      {(Number(value) || 0).toLocaleString()}
+                    </Text>
+                    <Text size="xs" c="dimmed">
+                      {label}
+                    </Text>
+                  </Box>
+                ))}
+              </Box>
+              {target.last_export_message && (
+                <Text
+                  size="xs"
+                  c={
+                    ['error', 'failed'].includes(target.last_export_status)
+                      ? 'red'
+                      : 'dimmed'
+                  }
+                  mt="sm"
+                  lineClamp={2}
+                >
+                  {target.last_export_message}
+                </Text>
+              )}
+            </Box>
+          ) : (
+            <Box
+              p="sm"
+              style={{
+                backgroundColor: '#202023',
+                border: '1px solid #3f3f46',
+                borderRadius: 8,
+              }}
+            >
+              <Text size="sm" c="dimmed">
+                No exports have run yet.
+              </Text>
+              {target.last_export_message && (
+                <Text
+                  size="xs"
+                  c={
+                    ['error', 'failed'].includes(target.last_export_status)
+                      ? 'red'
+                      : 'dimmed'
+                  }
+                  mt="xs"
+                  lineClamp={2}
+                >
+                  {target.last_export_message}
+                </Text>
+              )}
+            </Box>
+          )}
+        </Box>
+
+        <Box
+          data-testid="export-action-bar"
+          mt="auto"
+          pt="md"
+          style={{ borderTop: '1px solid #3f3f46' }}
+        >
+          <Box
+            data-testid="export-actions-row"
+            style={{
+              display: 'grid',
+              gap: '0.375rem',
+              gridTemplateColumns: '1fr 0.8fr 0.9fr',
+              width: '100%',
+            }}
+          >
+            <Button
+              size="xs"
+              variant="light"
+              fullWidth
+              px={6}
+              leftSection={<RefreshCw size={14} />}
+              loading={busy}
+              disabled={!target.enabled}
+              onClick={onSync}
+            >
+              Sync
+            </Button>
             <Button
               size="xs"
               variant="default"
@@ -1151,87 +1454,343 @@ export function SourceCard({
   );
 }
 
-function ExportCard({ target, busy, onSync, onEdit, onDelete }) {
-  const summary = target.last_export_summary || null;
+export function ExportSelectionEditor({ opened, target, onClose, onChanged }) {
+  const [contentType, setContentType] = useState('movie');
+  const [search, setSearch] = useState('');
+  const [provider, setProvider] = useState(null);
+  const [category, setCategory] = useState(null);
+  const [selectedFilter, setSelectedFilter] = useState('');
+  const [page, setPage] = useState(1);
+  const [catalog, setCatalog] = useState({ results: [], pages: 0, count: 0 });
+  const [options, setOptions] = useState({
+    providers: [],
+    movie_categories: [],
+    series_categories: [],
+  });
+  const [loading, setLoading] = useState(false);
+  const [updating, setUpdating] = useState(false);
+  const [selectionChanged, setSelectionChanged] = useState(false);
+  const [selectedCounts, setSelectedCounts] = useState({ movie: 0, series: 0 });
+
+  useEffect(() => {
+    if (!opened) return;
+    setSelectionChanged(false);
+    setSelectedCounts({
+      movie: Number(target?.selected_movie_count) || 0,
+      series: Number(target?.selected_series_count) || 0,
+    });
+  }, [opened, target?.selected_movie_count, target?.selected_series_count]);
+
+  const load = useCallback(async () => {
+    if (!opened || !target?.id) return;
+    setLoading(true);
+    try {
+      const result = await API.getMediaLibraryExportCatalog(target.id, {
+        content_type: contentType,
+        search,
+        provider,
+        category,
+        selected: selectedFilter,
+        page,
+        page_size: 50,
+      });
+      setCatalog(result);
+    } catch (error) {
+      notifyError('Unable to load VOD selection', error);
+    } finally {
+      setLoading(false);
+    }
+  }, [opened, target?.id, contentType, search, provider, category, selectedFilter, page]);
+
+  useEffect(() => {
+    if (!opened || !target?.id) return;
+    API.getMediaLibraryExportSelectionOptions(target.id)
+      .then(setOptions)
+      .catch((error) => notifyError('Unable to load selection filters', error));
+  }, [opened, target?.id]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(load, 250);
+    return () => window.clearTimeout(timer);
+  }, [load]);
+
+  useEffect(() => {
+    setPage(1);
+    setCategory(null);
+  }, [contentType]);
+
+  const mutate = async (values) => {
+    setUpdating(true);
+    try {
+      const result = await API.updateMediaLibraryExportSelection(target.id, {
+        content_type: contentType,
+        ...values,
+      });
+      const nextCount = Number(result.selected_count) || 0;
+      setSelectedCounts((current) => ({
+        ...current,
+        [contentType]: nextCount,
+      }));
+      setSelectionChanged(true);
+      await load();
+      onChanged?.(contentType, nextCount);
+    } catch (error) {
+      notifyError('Unable to update VOD selection', error);
+    } finally {
+      setUpdating(false);
+    }
+  };
+
+  const hasFilter = Boolean(search || provider || category);
+  const categories =
+    contentType === 'movie'
+      ? options.movie_categories
+      : options.series_categories;
+
+  const finishSelection = async () => {
+    if (selectionChanged && target?.enabled) {
+      setUpdating(true);
+      try {
+        await API.buildMediaLibraryExport(target.id);
+        notifications.show({
+          title: 'Selection saved',
+          message: 'Selected TV series will be refreshed before the export is built.',
+          color: 'green',
+        });
+      } catch (error) {
+        notifyError('Unable to queue the updated export', error);
+      } finally {
+        setUpdating(false);
+      }
+    }
+    onClose();
+  };
+
   return (
-    <Card
-      withBorder
-      radius="md"
-      p="md"
-      style={{ backgroundColor: '#27272A', borderColor: '#3f3f46' }}
+    <Modal
+      opened={opened}
+      onClose={finishSelection}
+      title={`VOD selection · ${target?.name || ''}`}
+      size="90%"
+      zIndex={410}
     >
-      <Stack gap="sm">
-        <Group justify="space-between" align="flex-start">
-          <Stack gap={2}>
-            <Group gap={8}>
-              <HardDrive size={16} />
-              <Text fw={700}>{target.name || 'Dispatcharr Output'}</Text>
-            </Group>
-            <Text size="xs" c="dimmed">
-              Jellyfin/Emby output via STRM + NFO files.
-            </Text>
-          </Stack>
-          <Badge variant="light" color="indigo">
-            Export
-          </Badge>
+      <Stack gap="md">
+        <Tabs value={contentType} onChange={setContentType}>
+          <Tabs.List>
+            <Tabs.Tab value="movie" leftSection={<Film size={15} />}>
+              Movies ({selectedCounts.movie} selected)
+            </Tabs.Tab>
+            <Tabs.Tab value="series" leftSection={<Tv size={15} />}>
+              TV Series ({selectedCounts.series} selected)
+            </Tabs.Tab>
+          </Tabs.List>
+        </Tabs>
+
+        {contentType === 'series' && (
+          <Alert color="yellow" title="Select TV series carefully">
+            Select all is intentionally unavailable for TV series. Dispatcharr
+            must request episode details from the provider for every selected
+            show, and selecting an entire large catalog could trigger provider
+            rate limits or a ban.
+          </Alert>
+        )}
+
+        <Group align="end" wrap="wrap">
+          <TextInput
+            label={contentType === 'movie' ? 'Search movies' : 'Search TV series'}
+            placeholder="Title, description, or genre"
+            value={search}
+            onChange={(event) => {
+              setSearch(event.currentTarget.value);
+              setPage(1);
+            }}
+            style={{ flex: 1, minWidth: 240 }}
+          />
+          <Select
+            label="Provider"
+            placeholder="All providers"
+            data={options.providers}
+            value={provider}
+            onChange={(value) => {
+              setProvider(value);
+              setPage(1);
+            }}
+            clearable
+            searchable
+            comboboxProps={{ zIndex: 430 }}
+            w={220}
+          />
+          <Select
+            label="Category"
+            placeholder="All categories"
+            data={categories}
+            value={category}
+            onChange={(value) => {
+              setCategory(value);
+              setPage(1);
+            }}
+            clearable
+            searchable
+            comboboxProps={{ zIndex: 430 }}
+            w={240}
+          />
+          <Select
+            label="Show"
+            data={[
+              { value: '', label: 'All' },
+              { value: 'true', label: 'Selected' },
+              { value: 'false', label: 'Not selected' },
+            ]}
+            value={selectedFilter}
+            onChange={(value) => {
+              setSelectedFilter(value || '');
+              setPage(1);
+            }}
+            comboboxProps={{ zIndex: 430 }}
+            w={150}
+          />
         </Group>
 
-        <Group gap="xs">
-          <ProviderBadge provider={target.target_type} />
-          <Badge variant="outline" color={target.enabled ? 'green' : 'gray'}>
-            {target.enabled ? 'Enabled' : 'Disabled'}
-          </Badge>
-          <Badge variant="outline" color="blue">
-            STRM/NFO
-          </Badge>
+        <Group justify="space-between">
+          <Text size="sm" c="dimmed">
+            {catalog.count || 0} matching {contentType === 'movie' ? 'movies' : 'series'} ·{' '}
+            {catalog.selected_count || 0} selected
+          </Text>
+          <Group gap="xs">
+            {contentType === 'movie' && (
+              <Button
+                size="xs"
+                variant="light"
+                loading={updating}
+                onClick={() => mutate({ operation: 'select', matching: true })}
+              >
+                Select all movies
+              </Button>
+            )}
+            <Button
+              size="xs"
+              variant="light"
+              disabled={!hasFilter}
+              loading={updating}
+              onClick={() =>
+                mutate({
+                  operation: 'select',
+                  matching: true,
+                  search,
+                  provider,
+                  category,
+                })
+              }
+            >
+              Select filtered
+            </Button>
+            <Button
+              size="xs"
+              variant="default"
+              disabled={!hasFilter}
+              loading={updating}
+              onClick={() =>
+                mutate({
+                  operation: 'deselect',
+                  matching: true,
+                  search,
+                  provider,
+                  category,
+                })
+              }
+            >
+              Deselect filtered
+            </Button>
+            <Button
+              size="xs"
+              variant="default"
+              loading={updating}
+              onClick={() => mutate({ operation: 'clear' })}
+            >
+              Clear {contentType === 'movie' ? 'movies' : 'series'}
+            </Button>
+          </Group>
         </Group>
 
-        <Text size="xs" c="dimmed">
-          Output path: {target.output_root}
-        </Text>
-        {summary ? (
-          <Text size="xs" c="dimmed">
-            Items: {summary.strm_files_written || 0} (Movies:{' '}
-            {summary.movies_written || 0}, Series: {summary.series_written || 0}
-            , Episodes: {summary.episodes_written || 0})
-          </Text>
-        ) : null}
-        {target.last_export_message ? (
-          <Text size="xs" c="dimmed" lineClamp={2}>
-            {target.last_export_message}
-          </Text>
-        ) : null}
-
-        <Flex justify="flex-end" gap="xs" mt="sm" wrap="wrap">
-          <Button
-            size="xs"
-            variant="light"
-            leftSection={<RefreshCw size={14} />}
-            loading={busy}
-            onClick={onSync}
-          >
-            Sync
+        <Box
+          pos="relative"
+          style={{ border: '1px solid #3f3f46', borderRadius: 8, overflowX: 'auto' }}
+        >
+          {loading && <LoadingOverlay visible />}
+          <Table striped highlightOnHover verticalSpacing="xs">
+            <Table.Thead>
+              <Table.Tr>
+                <Table.Th w={52}>Export</Table.Th>
+                <Table.Th>Title</Table.Th>
+                <Table.Th>Category</Table.Th>
+                <Table.Th>Provider</Table.Th>
+              </Table.Tr>
+            </Table.Thead>
+            <Table.Tbody>
+              {(catalog.results || []).map((item) => (
+                <Table.Tr key={item.id}>
+                  <Table.Td>
+                    <Checkbox
+                      aria-label={`Export ${item.name}`}
+                      checked={!!item.selected}
+                      disabled={updating}
+                      onChange={(event) =>
+                        mutate({
+                          operation: event.currentTarget.checked
+                            ? 'select'
+                            : 'deselect',
+                          ids: [item.id],
+                        })
+                      }
+                    />
+                  </Table.Td>
+                  <Table.Td>
+                    <Group gap="sm" wrap="nowrap">
+                      {item.poster ? (
+                        <Image src={item.poster} w={38} h={54} radius="sm" fit="cover" />
+                      ) : (
+                        <Box w={38} h={54} bg="dark.6" style={{ borderRadius: 4 }} />
+                      )}
+                      <Box>
+                        <Text size="sm" fw={600}>{item.name}</Text>
+                        <Text size="xs" c="dimmed">{item.year || 'Year unknown'}</Text>
+                      </Box>
+                    </Group>
+                  </Table.Td>
+                  <Table.Td>
+                    <Text size="xs">
+                      {(item.categories || []).map((entry) => entry[1]).join(', ') || '—'}
+                    </Text>
+                  </Table.Td>
+                  <Table.Td>
+                    <Text size="xs">
+                      {(item.providers || []).map((entry) => entry[1]).join(', ') || '—'}
+                    </Text>
+                  </Table.Td>
+                </Table.Tr>
+              ))}
+              {!loading && !(catalog.results || []).length && (
+                <Table.Tr>
+                  <Table.Td colSpan={4}>
+                    <Text ta="center" c="dimmed" py="lg">No matching VOD content.</Text>
+                  </Table.Td>
+                </Table.Tr>
+              )}
+            </Table.Tbody>
+          </Table>
+        </Box>
+        {(catalog.pages || 0) > 1 && (
+          <Group justify="center">
+            <Pagination value={page} onChange={setPage} total={catalog.pages} />
+          </Group>
+        )}
+        <Group justify="end">
+          <Button loading={updating} onClick={finishSelection}>
+            {selectionChanged && target?.enabled ? 'Apply and build' : 'Done'}
           </Button>
-          <Button
-            size="xs"
-            variant="light"
-            leftSection={<Pencil size={14} />}
-            onClick={onEdit}
-          >
-            Edit
-          </Button>
-          <Button
-            size="xs"
-            color="red"
-            variant="outline"
-            leftSection={<Trash2 size={14} />}
-            onClick={onDelete}
-          >
-            Delete
-          </Button>
-        </Flex>
+        </Group>
       </Stack>
-    </Card>
+    </Modal>
   );
 }
 
@@ -1239,6 +1798,7 @@ function ExportEditor({ opened, target, onClose, onSaved }) {
   const [form, setForm] = useState(emptyTarget);
   const [saving, setSaving] = useState(false);
   const [browserOpen, setBrowserOpen] = useState(false);
+  const [selectionOpen, setSelectionOpen] = useState(false);
   useEffect(() => {
     if (opened)
       setForm(target ? { ...emptyTarget, ...target } : { ...emptyTarget });
@@ -1270,7 +1830,7 @@ function ExportEditor({ opened, target, onClose, onSaved }) {
         opened={opened}
         onClose={onClose}
         title={target ? 'Edit export target' : 'Add export target'}
-        size="lg"
+        size="xl"
       >
         <Stack>
           <TextInput
@@ -1279,19 +1839,10 @@ function ExportEditor({ opened, target, onClose, onSaved }) {
             onChange={(event) => update('name', event.currentTarget.value)}
             required
           />
-          <Select
-            label="Media server"
-            value={form.target_type}
-            onChange={(value) => update('target_type', value)}
-            data={[
-              { value: 'jellyfin', label: 'Jellyfin' },
-              { value: 'emby', label: 'Emby' },
-            ]}
-          />
           <Group align="end" wrap="nowrap">
             <TextInput
               style={{ flex: 1 }}
-              label="Export directory inside Dispatcharr/Celery"
+              label="Export directory"
               value={form.output_root}
               onChange={(event) =>
                 update('output_root', event.currentTarget.value)
@@ -1308,19 +1859,10 @@ function ExportEditor({ opened, target, onClose, onSaved }) {
           </Group>
           <TextInput
             label="Public Dispatcharr base URL"
-            description="The URL Jellyfin/Emby can reach. No credentials are written to STRM files."
+            description="The URL your media server can reach."
             value={form.playback_base_url}
             onChange={(event) =>
               update('playback_base_url', event.currentTarget.value)
-            }
-            required
-          />
-          <TextInput
-            label="Allowed playback CIDRs"
-            description="Required. Comma-separated networks containing the Jellyfin/Emby server."
-            value={form.playback_cidrs}
-            onChange={(event) =>
-              update('playback_cidrs', event.currentTarget.value)
             }
             required
           />
@@ -1351,52 +1893,78 @@ function ExportEditor({ opened, target, onClose, onSaved }) {
               update('auto_export_on_vod_change', event.currentTarget.checked)
             }
           />
-          <Text size="xs" c="dimmed">
-            Example media-server mounts:
-          </Text>
-          <Text
-            component="pre"
-            p="sm"
-            style={{
-              border: '1px solid var(--mantine-color-dark-4)',
-              borderRadius: 6,
-              fontFamily: 'monospace',
-              fontSize: '0.78rem',
-              whiteSpace: 'pre-wrap',
-            }}
-          >
-            {`- "${form.output_root}/Movies:${form.output_root}/Movies:ro"\n- "${form.output_root}/TV Shows:${form.output_root}/TV Shows:ro"`}
-          </Text>
+          <NumberInput
+            label="Selected TV series refresh interval (hours, 0 disables)"
+            description="Refresh episode lists for selected XC series, then rebuild this export."
+            min={0}
+            value={form.series_refresh_interval}
+            onChange={(value) =>
+              update('series_refresh_interval', Number(value) || 0)
+            }
+          />
+          <Divider label="VOD selection" />
+          {target?.id ? (
+            <Group justify="space-between" align="center">
+              <Box>
+                <Text size="sm" fw={600}>
+                  {form.selected_movie_count || 0} movies ·{' '}
+                  {form.selected_series_count || 0} TV series selected
+                </Text>
+                <Text size="xs" c="dimmed">
+                  Choose individual titles or bulk-select movies by provider or category.
+                </Text>
+              </Box>
+              <Button
+                variant="light"
+                leftSection={<Film size={15} />}
+                onClick={() => setSelectionOpen(true)}
+              >
+                Manage VOD selection
+              </Button>
+            </Group>
+          ) : (
+            <Alert color="blue">
+              Save this export target first, then edit it to choose movies and TV series.
+              New targets do not export any VODs until titles are selected.
+            </Alert>
+          )}
           {target?.id && (
             <>
               <Divider label="Advanced" />
               <Group>
-                <Button
-                  size="xs"
-                  variant="light"
-                  leftSection={<RotateCcwKey size={14} />}
-                  onClick={async () => {
-                    if (
-                      !window.confirm(
-                        'Rotate this target playback ID? Existing STRM URLs will stop working until rebuilt.'
-                      )
-                    )
-                      return;
-                    try {
-                      await API.rotateMediaLibraryPlaybackId(target.id);
-                      notifications.show({
-                        title: 'Playback identifier rotated',
-                        message: 'A rebuild has been queued.',
-                        color: 'green',
-                      });
-                      onSaved();
-                    } catch (error) {
-                      notifyError('Unable to rotate playback ID', error);
-                    }
-                  }}
+                <Tooltip
+                  multiline
+                  w={320}
+                  withArrow
+                  label="Revokes existing STRM playback URLs and rebuilds this export with a new identifier. Use this if the old URLs were exposed or should no longer work."
                 >
-                  Rotate playback ID
-                </Button>
+                  <Button
+                    size="xs"
+                    variant="light"
+                    leftSection={<RotateCcwKey size={14} />}
+                    onClick={async () => {
+                      if (
+                        !window.confirm(
+                          'Rotate this target playback ID? Existing STRM URLs will stop working until rebuilt.'
+                        )
+                      )
+                        return;
+                      try {
+                        await API.rotateMediaLibraryPlaybackId(target.id);
+                        notifications.show({
+                          title: 'Playback identifier rotated',
+                          message: 'A rebuild has been queued.',
+                          color: 'green',
+                        });
+                        onSaved();
+                      } catch (error) {
+                        notifyError('Unable to rotate playback ID', error);
+                      }
+                    }}
+                  >
+                    Rotate playback ID
+                  </Button>
+                </Tooltip>
                 <Button
                   size="xs"
                   color="orange"
@@ -1457,6 +2025,25 @@ function ExportEditor({ opened, target, onClose, onSaved }) {
           setBrowserOpen(false);
         }}
       />
+      {target?.id && (
+        <ExportSelectionEditor
+          opened={selectionOpen}
+          target={{
+            ...target,
+            selected_movie_count: form.selected_movie_count,
+            selected_series_count: form.selected_series_count,
+          }}
+          onClose={() => setSelectionOpen(false)}
+          onChanged={(type, count) =>
+            update(
+              type === 'movie'
+                ? 'selected_movie_count'
+                : 'selected_series_count',
+              count
+            )
+          }
+        />
+      )}
     </>
   );
 }
@@ -1623,6 +2210,17 @@ export default function MediaLibrary() {
                   key={`dispatcharr-export-${target.id}`}
                   target={target}
                   busy={busy}
+                  onToggle={async (enabled) => {
+                    try {
+                      await API.saveMediaLibraryExportTarget({
+                        id: target.id,
+                        enabled,
+                      });
+                      refresh();
+                    } catch (error) {
+                      notifyError('Unable to update export target', error);
+                    }
+                  }}
                   onSync={async () => {
                     try {
                       await API.buildMediaLibraryExport(target.id);
@@ -1635,7 +2233,7 @@ export default function MediaLibrary() {
                   onDelete={async () => {
                     if (
                       !window.confirm(
-                        `Delete export target ${target.name}? Generated files are retained.`
+                        `Delete export target ${target.name}? Dispatcharr-managed generated files will be removed.`
                       )
                     )
                       return;
@@ -1887,8 +2485,8 @@ export default function MediaLibrary() {
                 <Text fw={600}>Export VOD to Media Server</Text>
               </Group>
               <Text size="sm" c="dimmed">
-                Export VOD files as STRM/NFO output for Jellyfin or Emby. (Not
-                currently available for Plex.)
+                Export VOD files as standard STRM/NFO output for compatible
+                media servers.
               </Text>
               <Flex justify="flex-end">
                 <Button

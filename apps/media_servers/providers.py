@@ -1,13 +1,18 @@
 import hashlib
 import os
 import xml.etree.ElementTree as ET
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Iterable, Optional
 from urllib.parse import urlencode, urljoin, urlparse
 
 import requests
 
 from apps.media_servers.models import MediaServerIntegration
+from apps.media_servers.dvr_library import (
+    DVR_MEDIA_LIBRARY_LOCATION_ID,
+    dvr_library_root,
+    resolve_dvr_library_path,
+)
 from apps.media_servers.path_security import resolve_import_path
 from apps.media_servers.local_classification import (
     LocalClassificationResult,
@@ -186,6 +191,8 @@ class ProviderMovie:
     local_file_name: Optional[str] = None
     local_file_size: Optional[int] = None
     library_id: str = ''
+    replace_metadata: bool = False
+    custom_properties: dict = field(default_factory=dict)
 
     def __post_init__(self):
         if self.genres is None:
@@ -211,6 +218,8 @@ class ProviderEpisode:
     local_file_name: Optional[str] = None
     local_file_size: Optional[int] = None
     library_id: str = ''
+    replace_metadata: bool = False
+    custom_properties: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -227,6 +236,8 @@ class ProviderSeries:
     imdb_id: Optional[str] = None
     episodes: list[ProviderEpisode] = None
     library_id: str = ''
+    replace_metadata: bool = False
+    custom_properties: dict = field(default_factory=dict)
 
     def __post_init__(self):
         if self.genres is None:
@@ -1315,6 +1326,19 @@ class LocalClient(BaseMediaServerClient):
     def close(self):
         self.session.close()
 
+    def _resolve_path(
+        self,
+        value: str,
+        *,
+        must_exist: bool = False,
+        require_directory: bool = False,
+    ):
+        return resolve_import_path(
+            value,
+            must_exist=must_exist,
+            require_directory=require_directory,
+        )
+
     def _load_locations(self) -> dict[str, dict]:
         typed_locations = (
             list(self.integration.locations.filter(enabled=True).order_by("id"))
@@ -1353,7 +1377,7 @@ class LocalClient(BaseMediaServerClient):
             if not raw_path:
                 continue
             path = str(
-                resolve_import_path(
+                self._resolve_path(
                     raw_path,
                     must_exist=False,
                     require_directory=True,
@@ -1390,7 +1414,7 @@ class LocalClient(BaseMediaServerClient):
             ):
                 dirs.sort()
                 for file_name in sorted(files):
-                    candidate = resolve_import_path(
+                    candidate = self._resolve_path(
                         os.path.join(root, file_name),
                         must_exist=True,
                     )
@@ -1399,7 +1423,7 @@ class LocalClient(BaseMediaServerClient):
             return
         for entry in sorted(os.scandir(base_path), key=lambda item: item.name.lower()):
             if entry.is_file():
-                candidate = resolve_import_path(entry.path, must_exist=True)
+                candidate = self._resolve_path(entry.path, must_exist=True)
                 if candidate.is_file():
                     yield str(candidate)
 
@@ -1485,6 +1509,7 @@ class LocalClient(BaseMediaServerClient):
                     continue
 
                 metadata, _metadata_error = find_movie_nfo_metadata(full_path)
+                nfo_metadata_found = metadata is not None
                 metadata = metadata or {}
                 local_poster, local_backdrop = find_local_artwork_files(
                     os.path.dirname(full_path)
@@ -1539,6 +1564,12 @@ class LocalClient(BaseMediaServerClient):
                     local_file_name=file_name,
                     local_file_size=self._file_size(full_path),
                     library_id=library.id,
+                    replace_metadata=(
+                        nfo_metadata_found or _tmdb_error is None
+                    ),
+                    custom_properties=dict(
+                        metadata.get('custom_properties') or {}
+                    ),
                 )
 
     def iter_series(self, libraries: list[ProviderLibrary]) -> Iterable[ProviderSeries]:
@@ -1574,11 +1605,23 @@ class LocalClient(BaseMediaServerClient):
                 if classification.detected_type != 'episode':
                     continue
 
-                series_title = classification.title or os.path.splitext(file_name)[0]
+                primary_episode_meta, _primary_nfo_error = (
+                    find_episode_nfo_metadata(
+                        full_path,
+                        season_number=classification.season,
+                        episode_number=classification.episode,
+                    )
+                )
+                primary_episode_meta = primary_episode_meta or {}
+                series_title = (
+                    str(primary_episode_meta.get('series_title') or '').strip()
+                    or classification.title
+                    or os.path.splitext(file_name)[0]
+                )
                 series_key = (
                     f'{location["id"]}:'
                     f'{series_title.strip().lower()}:'
-                    f'{classification.year or ""}'
+                    f'{primary_episode_meta.get("series_year") or classification.year or ""}'
                 )
                 provider_series = series_map.get(series_key)
                 if not provider_series:
@@ -1586,6 +1629,15 @@ class LocalClient(BaseMediaServerClient):
                         full_path,
                         base_path=base_path,
                     )
+                    if not series_meta and primary_episode_meta.get('series_title'):
+                        series_meta = {
+                            'title': series_title,
+                            'year': primary_episode_meta.get('series_year'),
+                            'genres': primary_episode_meta.get('genres') or [],
+                            'poster_url': primary_episode_meta.get('poster_url'),
+                            'backdrop_url': primary_episode_meta.get('backdrop_url'),
+                        }
+                    nfo_metadata_found = series_meta is not None
                     series_meta = series_meta or {}
                     local_poster, local_backdrop = _find_artwork_in_parent_dirs(
                         os.path.dirname(full_path),
@@ -1630,6 +1682,12 @@ class LocalClient(BaseMediaServerClient):
                         tmdb_id=str(series_meta.get('tmdb_id') or '').strip() or None,
                         imdb_id=str(series_meta.get('imdb_id') or '').strip() or None,
                         library_id=library.id,
+                        replace_metadata=(
+                            nfo_metadata_found or _tmdb_error is None
+                        ),
+                        custom_properties=dict(
+                            series_meta.get('custom_properties') or {}
+                        ),
                     )
                     series_map[series_key] = provider_series
                     series_episode_ids[series_key] = set()
@@ -1689,11 +1747,22 @@ class LocalClient(BaseMediaServerClient):
                     if external_episode_id in series_episode_ids[series_key]:
                         continue
 
-                    episode_meta, _episode_error = find_episode_nfo_metadata(
-                        full_path,
-                        season_number=classification.season,
-                        episode_number=episode_number,
-                    )
+                    if (
+                        primary_episode_meta
+                        and (
+                            primary_episode_meta.get('episode_number') is None
+                            or primary_episode_meta.get('episode_number') == episode_number
+                        )
+                    ):
+                        episode_meta = dict(primary_episode_meta)
+                        _episode_error = _primary_nfo_error
+                    else:
+                        episode_meta, _episode_error = find_episode_nfo_metadata(
+                            full_path,
+                            season_number=classification.season,
+                            episode_number=episode_number,
+                        )
+                    nfo_metadata_found = episode_meta is not None
                     episode_meta = episode_meta or {}
                     episode_meta, _tmdb_error = enrich_episode_metadata_with_tmdb(
                         episode_meta,
@@ -1730,6 +1799,12 @@ class LocalClient(BaseMediaServerClient):
                             local_file_name=file_name,
                             local_file_size=self._file_size(full_path),
                             library_id=library.id,
+                            replace_metadata=(
+                                nfo_metadata_found or _tmdb_error is None
+                            ),
+                            custom_properties=dict(
+                                episode_meta.get('custom_properties') or {}
+                            ),
                         )
                     )
                     series_episode_ids[series_key].add(external_episode_id)
@@ -1746,6 +1821,69 @@ class LocalClient(BaseMediaServerClient):
                     yield provider_series
 
 
+class DVRClient(LocalClient):
+    """Expose the configured DVR recording library through the local importer."""
+
+    def _load_locations(self) -> dict[str, dict]:
+        path = str(dvr_library_root())
+        return {
+            DVR_MEDIA_LIBRARY_LOCATION_ID: {
+                'id': DVR_MEDIA_LIBRARY_LOCATION_ID,
+                'name': 'DVR recordings',
+                'path': path,
+                'content_type': 'mixed',
+                'include_subdirectories': True,
+            }
+        }
+
+    def _resolve_path(
+        self,
+        value: str,
+        *,
+        must_exist: bool = False,
+        require_directory: bool = False,
+    ):
+        return resolve_dvr_library_path(
+            value,
+            must_exist=must_exist,
+            require_directory=require_directory,
+        )
+
+    def _iter_location_files(self, base_path: str, include_subdirectories: bool):
+        single_path = getattr(self, '_single_recording_path', None)
+        if single_path:
+            resolved = self._resolve_path(single_path, must_exist=True)
+            base = self._resolve_path(
+                base_path,
+                must_exist=True,
+                require_directory=True,
+            )
+            if resolved != base and not resolved.is_relative_to(base):
+                raise ValueError('DVR recording is outside the configured library.')
+            if resolved.is_file():
+                yield str(resolved)
+            return
+        yield from super()._iter_location_files(base_path, include_subdirectories)
+
+    def inspect_recording(self, file_path: str):
+        """Classify and enrich one DVR artifact without walking the library."""
+        self._single_recording_path = str(
+            self._resolve_path(file_path, must_exist=True)
+        )
+        try:
+            libraries = self.list_libraries()
+            return list(self.iter_movies(libraries)), list(self.iter_series(libraries))
+        finally:
+            self._single_recording_path = None
+
+    def ping(self) -> None:
+        try:
+            dvr_library_root().mkdir(parents=True, exist_ok=True)
+            super().ping()
+        except ValueError as exc:
+            raise ValueError('DVR recording library is not configured.') from exc
+
+
 def get_provider_client(integration: MediaServerIntegration) -> BaseMediaServerClient:
     provider = integration.provider_type
     if provider == MediaServerIntegration.ProviderTypes.PLEX:
@@ -1756,4 +1894,6 @@ def get_provider_client(integration: MediaServerIntegration) -> BaseMediaServerC
         return JellyfinClient(integration)
     if provider == MediaServerIntegration.ProviderTypes.LOCAL:
         return LocalClient(integration)
+    if provider == MediaServerIntegration.ProviderTypes.DVR:
+        return DVRClient(integration)
     raise ValueError(f'Unsupported provider type: {provider}')

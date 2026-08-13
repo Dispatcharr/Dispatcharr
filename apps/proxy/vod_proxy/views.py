@@ -6,7 +6,6 @@ Supports M3U profiles for authentication and URL transformation.
 import time
 import random
 import logging
-import ipaddress
 import requests
 from urllib.parse import urlencode, urlsplit
 from django.db import close_old_connections
@@ -30,9 +29,9 @@ from rest_framework_simplejwt.authentication import JWTAuthentication
 from apps.accounts.authentication import ApiKeyAuthentication, QueryParamJWTAuthentication
 from apps.proxy.utils import check_user_stream_limits
 from dispatcharr.utils import network_access_allowed
-from dispatcharr.utils import get_client_ip as get_request_client_ip
 from core.utils import dispatcharr_user_agent
 from apps.media_servers.models import MediaLibraryExportTarget, MediaLibrarySource
+from apps.media_servers.export_policy import safe_export_relations
 from apps.media_servers.path_security import resolve_import_path
 
 logger = logging.getLogger(__name__)
@@ -282,11 +281,7 @@ def _get_stream_url_from_relation(relation):
         if properties.get('managed_source') == 'media_server':
             local_path = str(properties.get('file_path') or '').strip()
             if local_path:
-                resolved = resolve_import_path(
-                    local_path,
-                    must_exist=True,
-                    require_directory=False,
-                )
+                resolved = _resolve_media_library_local_path(relation, local_path)
                 return f'file://{resolved}'
 
             source_url = str(properties.get('source_url') or '').strip()
@@ -329,6 +324,24 @@ def _get_stream_url_from_relation(relation):
         return None
 
 
+def _resolve_media_library_local_path(relation, local_path):
+    properties = relation.custom_properties or {}
+    provider = str(properties.get('provider') or '').strip().lower()
+    if provider == MediaLibrarySource.ProviderTypes.DVR:
+        from apps.media_servers.dvr_library import resolve_dvr_library_path
+
+        return resolve_dvr_library_path(
+            local_path,
+            must_exist=True,
+            require_directory=False,
+        )
+    return resolve_import_path(
+        local_path,
+        must_exist=True,
+        require_directory=False,
+    )
+
+
 def _get_upstream_headers_from_relation(relation):
     properties = relation.custom_properties or {}
     if properties.get('managed_source') != 'media_server':
@@ -358,16 +371,7 @@ def _media_library_target_for_request(request, target_public_id):
     ).first()
     if not target:
         raise Http404('Media library playback target not found')
-    try:
-        client_ip = ipaddress.ip_address(get_request_client_ip(request))
-        networks = [
-            ipaddress.ip_network(value.strip(), strict=False)
-            for value in target.playback_cidrs.split(',')
-            if value.strip()
-        ]
-    except ValueError:
-        return False
-    return target if any(client_ip in network for network in networks) else False
+    return target
 
 def _get_m3u_profile(m3u_account, profile_id, session_id=None):
     """Get appropriate M3U profile for streaming using Redis-based viewer counts
@@ -709,6 +713,15 @@ def stream_vod(
 
         # Get the content object and its relation
         content_obj, relation, candidates = _get_content_and_relation(content_type, content_id, preferred_m3u_account_id, preferred_stream_id)
+        if media_library_target and content_obj:
+            candidates = safe_export_relations(candidates)
+            relation = candidates[0] if candidates else None
+            if not relation:
+                logger.warning(
+                    "[VOD-ERROR] No safe XC or local source is available for "
+                    "media-library playback"
+                )
+                return HttpResponse("No safe source available", status=503)
         if not content_obj or not relation:
             logger.error(f"[VOD-ERROR] Content or relation not found: {content_type} {content_id}")
             raise Http404(f"Content not found: {content_type} {content_id}")
@@ -752,11 +765,7 @@ def stream_vod(
         final_stream_url = _transform_url(stream_url, m3u_profile)
         if final_stream_url and final_stream_url.startswith('file://'):
             local_path = str(
-                resolve_import_path(
-                    final_stream_url[7:],
-                    must_exist=True,
-                    require_directory=False,
-                )
+                _resolve_media_library_local_path(relation, final_stream_url[7:])
             )
             connection_manager = MultiWorkerVODConnectionManager.get_instance()
             close_old_connections()
@@ -882,6 +891,15 @@ def head_vod(
 
         # Get content and relation (same as GET)
         content_obj, relation, candidates = _get_content_and_relation(content_type, content_id, preferred_m3u_account_id, preferred_stream_id)
+        if media_library_target and content_obj:
+            candidates = safe_export_relations(candidates)
+            relation = candidates[0] if candidates else None
+            if not relation:
+                logger.warning(
+                    "[VOD-HEAD] No safe XC or local source is available for "
+                    "media-library playback"
+                )
+                return HttpResponse("No safe source available", status=503)
         if not content_obj or not relation:
             logger.error(f"[VOD-HEAD] Content or relation not found: {content_type} {content_id}")
             return HttpResponse("Content not found", status=404)
@@ -912,11 +930,7 @@ def head_vod(
         final_stream_url = _transform_url(stream_url, m3u_profile)
         if final_stream_url and final_stream_url.startswith('file://'):
             local_path = str(
-                resolve_import_path(
-                    final_stream_url[7:],
-                    must_exist=True,
-                    require_directory=False,
-                )
+                _resolve_media_library_local_path(relation, final_stream_url[7:])
             )
             return MultiWorkerVODConnectionManager.get_instance().head_local_file_with_session(
                 session_id=session_id,

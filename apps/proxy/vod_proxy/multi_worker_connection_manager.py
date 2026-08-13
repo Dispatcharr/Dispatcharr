@@ -1087,14 +1087,27 @@ class MultiWorkerVODConnectionManager:
             )
 
     @staticmethod
-    def _revalidate_local_media_path(file_path: str) -> str:
+    def _revalidate_local_media_path(file_path: str, relation=None) -> str:
+        from apps.media_servers.models import MediaLibrarySource
         from apps.media_servers.path_security import resolve_import_path
 
-        resolved = resolve_import_path(
-            file_path,
-            must_exist=True,
-            require_directory=False,
-        )
+        properties = getattr(relation, "custom_properties", None) or {}
+        if str(properties.get("provider") or "").strip().lower() == (
+            MediaLibrarySource.ProviderTypes.DVR
+        ):
+            from apps.media_servers.dvr_library import resolve_dvr_library_path
+
+            resolved = resolve_dvr_library_path(
+                file_path,
+                must_exist=True,
+                require_directory=False,
+            )
+        else:
+            resolved = resolve_import_path(
+                file_path,
+                must_exist=True,
+                require_directory=False,
+            )
         if not resolved.is_file():
             raise FileNotFoundError("The local media path is not a regular file.")
         return str(resolved)
@@ -1663,7 +1676,7 @@ class MultiWorkerVODConnectionManager:
         active_incremented = False
 
         try:
-            file_path = self._revalidate_local_media_path(file_path)
+            file_path = self._revalidate_local_media_path(file_path, relation)
             if not os.path.isfile(file_path):
                 return HttpResponse("File not found", status=404)
             file_size = os.path.getsize(file_path)
@@ -1783,7 +1796,10 @@ class MultiWorkerVODConnectionManager:
                     if not active_incremented:
                         redis_connection.increment_active_streams()
                     stop_key = get_vod_client_stop_key(session_id)
-                    current_path = self._revalidate_local_media_path(file_path)
+                    current_path = self._revalidate_local_media_path(
+                        file_path,
+                        relation,
+                    )
                     open_flags = os.O_RDONLY
                     if hasattr(os, "O_NOFOLLOW"):
                         open_flags |= os.O_NOFOLLOW
@@ -1873,7 +1889,7 @@ class MultiWorkerVODConnectionManager:
         client_user_agent,
         session_url,
     ):
-        file_path = self._revalidate_local_media_path(file_path)
+        file_path = self._revalidate_local_media_path(file_path, relation)
         if not os.path.isfile(file_path):
             return HttpResponse("File not found", status=404)
         response = HttpResponse()

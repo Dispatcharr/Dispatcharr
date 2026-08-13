@@ -20,6 +20,45 @@ vi.mock('../../../../utils/notificationUtils.js', () => ({
   showNotification: vi.fn(),
 }));
 
+vi.mock('../../../SafeDirectoryBrowser.jsx', () => ({
+  default: ({ opened, scope, onSelect, onUpload }) =>
+    opened ? (
+      <div data-testid={`path-browser-${scope}`}>
+        <button
+          type="button"
+          onClick={() =>
+            onSelect(
+              scope === 'dvr-comskip'
+                ? '/app/docker/comskip.ini'
+                : '/data/recordings'
+            )
+          }
+        >
+          Choose {scope}
+        </button>
+        {onUpload && (
+          <button
+            type="button"
+            onClick={async () => {
+              try {
+                const response = await onUpload(
+                  new File(['content'], 'comskip.ini', {
+                    type: 'text/plain',
+                  })
+                );
+                if (response?.path) onSelect(response.path);
+              } catch {
+                // The real browser displays the upload error in its modal.
+              }
+            }}
+          >
+            Upload from {scope}
+          </button>
+        )}
+      </div>
+    ) : null,
+}));
+
 vi.mock('../../../../utils/forms/settings/DvrSettingsFormUtils.js', () => ({
   getComskipConfig: vi.fn(),
   getDvrSettingsFormInitialValues: vi.fn(),
@@ -34,27 +73,16 @@ vi.mock('@mantine/form', () => ({
 // ── Mantine core ───────────────────────────────────────────────────────────────
 vi.mock('@mantine/core', () => ({
   Alert: ({ title }) => <div data-testid="alert">{title}</div>,
-  Button: ({ children, onClick, disabled, type, variant }) => (
+  Button: ({ children, onClick, disabled, type, variant, ...rest }) => (
     <button
       type={type || 'button'}
       onClick={onClick}
       disabled={disabled}
       data-variant={variant}
+      aria-label={rest['aria-label']}
     >
       {children}
     </button>
-  ),
-  FileInput: ({ placeholder, onChange, disabled }) => (
-    <input
-      data-testid="file-input"
-      type="file"
-      placeholder={placeholder}
-      disabled={disabled}
-      onChange={(e) => {
-        const file = e.target.files?.[0] ?? null;
-        onChange?.(file);
-      }}
-    />
   ),
   Flex: ({ children }) => <div>{children}</div>,
   Group: ({ children }) => <div>{children}</div>,
@@ -129,6 +157,7 @@ import {
 // Helpers
 // ──────────────────────────────────────────────────────────────────────────────
 const mockFormValues = {
+  library_dir: '/data/recordings',
   comskip_enabled: false,
   comskip_custom_path: '',
   comskip_mode: 'cut',
@@ -196,6 +225,13 @@ describe('DvrSettingsForm', () => {
 
   // ── Rendering ──────────────────────────────────────────────────────────────
   describe('rendering', () => {
+    it('renders the recording library directory', async () => {
+      render(<DvrSettingsForm active={true} />);
+      await waitFor(() => {
+        expect(screen.getByTestId('library_dir')).toBeInTheDocument();
+      });
+    });
+
     it('renders the form without crashing', async () => {
       render(<DvrSettingsForm active={true} />);
       await waitFor(() => {
@@ -217,6 +253,36 @@ describe('DvrSettingsForm', () => {
       });
     });
 
+    it('selects the recording library with the directory browser', async () => {
+      render(<DvrSettingsForm active={true} />);
+
+      fireEvent.click(
+        await screen.findByRole('button', {
+          name: 'Browse recording library',
+        })
+      );
+      fireEvent.click(await screen.findByText('Choose dvr-library'));
+
+      expect(formMock.setFieldValue).toHaveBeenCalledWith(
+        'library_dir',
+        '/data/recordings'
+      );
+    });
+
+    it('selects an ini file with the Comskip browser', async () => {
+      render(<DvrSettingsForm active={true} />);
+
+      fireEvent.click(
+        await screen.findByRole('button', { name: 'Browse comskip.ini' })
+      );
+      fireEvent.click(await screen.findByText('Choose dvr-comskip'));
+
+      expect(formMock.setFieldValue).toHaveBeenCalledWith(
+        'comskip_custom_path',
+        '/app/docker/comskip.ini'
+      );
+    });
+
     it('renders the comskip_mode select', async () => {
       render(<DvrSettingsForm active={true} />);
       await waitFor(() => {
@@ -231,18 +297,26 @@ describe('DvrSettingsForm', () => {
       });
     });
 
-    it('renders the file input for comskip.ini upload', async () => {
+    it('does not render a standalone comskip upload control', async () => {
       render(<DvrSettingsForm active={true} />);
       await waitFor(() => {
-        expect(screen.getByTestId('file-input')).toBeInTheDocument();
+        expect(screen.getByTestId('comskip_custom_path')).toBeInTheDocument();
       });
+      expect(
+        screen.queryByText('Upload from dvr-comskip')
+      ).not.toBeInTheDocument();
     });
 
-    it('renders the Upload comskip.ini button', async () => {
+    it('exposes the comskip upload control inside its file browser', async () => {
       render(<DvrSettingsForm active={true} />);
-      await waitFor(() => {
-        expect(screen.getByText('Upload comskip.ini')).toBeInTheDocument();
-      });
+
+      fireEvent.click(
+        await screen.findByRole('button', { name: 'Browse comskip.ini' })
+      );
+
+      expect(
+        await screen.findByText('Upload from dvr-comskip')
+      ).toBeInTheDocument();
     });
 
     it('renders the pre_offset_minutes number input', async () => {
@@ -445,80 +519,25 @@ describe('DvrSettingsForm', () => {
 
   // ── comskip upload ─────────────────────────────────────────────────────────
   describe('comskip upload', () => {
-    it('Upload button is disabled when no file is selected', async () => {
-      render(<DvrSettingsForm active={true} />);
-      await waitFor(() => {
-        expect(screen.getByText('Upload comskip.ini')).toBeDisabled();
-      });
-    });
-
-    it('calls uploadComskipIni with the selected file', async () => {
-      const mockFile = new File(['content'], 'comskip.ini', {
-        type: 'text/plain',
-      });
+    it('uploads and selects comskip.ini from the file browser', async () => {
       vi.mocked(uploadComskipIni).mockResolvedValue({
         path: '/uploaded/comskip.ini',
       });
 
       render(<DvrSettingsForm active={true} />);
-      fireEvent.change(screen.getByTestId('file-input'), {
-        target: { files: [mockFile] },
-      });
+      fireEvent.click(
+        await screen.findByRole('button', { name: 'Browse comskip.ini' })
+      );
+      fireEvent.click(await screen.findByText('Upload from dvr-comskip'));
 
       await waitFor(() => {
-        fireEvent.click(screen.getByText('Upload comskip.ini'));
-      });
-
-      await waitFor(() => {
-        expect(uploadComskipIni).toHaveBeenCalledWith(mockFile);
-      });
-    });
-
-    it('shows success notification after successful upload', async () => {
-      const mockFile = new File(['content'], 'comskip.ini', {
-        type: 'text/plain',
-      });
-      vi.mocked(uploadComskipIni).mockResolvedValue({
-        path: '/uploaded/comskip.ini',
-      });
-
-      render(<DvrSettingsForm active={true} />);
-      fireEvent.change(screen.getByTestId('file-input'), {
-        target: { files: [mockFile] },
-      });
-
-      await waitFor(() => {
-        fireEvent.click(screen.getByText('Upload comskip.ini'));
-      });
-
-      await waitFor(() => {
+        expect(uploadComskipIni).toHaveBeenCalledWith(expect.any(File));
         expect(showNotification).toHaveBeenCalledWith(
           expect.objectContaining({
             title: 'comskip.ini uploaded',
             color: 'green',
           })
         );
-      });
-    });
-
-    it('sets comskip_custom_path form field after successful upload', async () => {
-      const mockFile = new File(['content'], 'comskip.ini', {
-        type: 'text/plain',
-      });
-      vi.mocked(uploadComskipIni).mockResolvedValue({
-        path: '/uploaded/comskip.ini',
-      });
-
-      render(<DvrSettingsForm active={true} />);
-      fireEvent.change(screen.getByTestId('file-input'), {
-        target: { files: [mockFile] },
-      });
-
-      await waitFor(() => {
-        fireEvent.click(screen.getByText('Upload comskip.ini'));
-      });
-
-      await waitFor(() => {
         expect(formMock.setFieldValue).toHaveBeenCalledWith(
           'comskip_custom_path',
           '/uploaded/comskip.ini'
@@ -527,22 +546,16 @@ describe('DvrSettingsForm', () => {
     });
 
     it('handles upload error gracefully', async () => {
-      const mockFile = new File(['content'], 'comskip.ini', {
-        type: 'text/plain',
-      });
       vi.mocked(uploadComskipIni).mockRejectedValue(new Error('upload failed'));
       const consoleSpy = vi
         .spyOn(console, 'error')
         .mockImplementation(() => {});
 
       render(<DvrSettingsForm active={true} />);
-      fireEvent.change(screen.getByTestId('file-input'), {
-        target: { files: [mockFile] },
-      });
-
-      await waitFor(() => {
-        fireEvent.click(screen.getByText('Upload comskip.ini'));
-      });
+      fireEvent.click(
+        await screen.findByRole('button', { name: 'Browse comskip.ini' })
+      );
+      fireEvent.click(await screen.findByText('Upload from dvr-comskip'));
 
       await waitFor(() => {
         expect(consoleSpy).toHaveBeenCalledWith(
@@ -554,9 +567,17 @@ describe('DvrSettingsForm', () => {
       consoleSpy.mockRestore();
     });
 
-    it('does not call uploadComskipIni when no file is selected', async () => {
+    it('does not expose upload in the recording library browser', async () => {
       render(<DvrSettingsForm active={true} />);
-      await waitFor(() => screen.getByTestId('file-input'));
+      fireEvent.click(
+        await screen.findByRole('button', {
+          name: 'Browse recording library',
+        })
+      );
+
+      expect(
+        screen.queryByText('Upload from dvr-library')
+      ).not.toBeInTheDocument();
       expect(uploadComskipIni).not.toHaveBeenCalled();
     });
   });

@@ -11,6 +11,7 @@ import subprocess
 import signal
 import threading
 from collections import deque
+from pathlib import Path
 from zoneinfo import ZoneInfo
 from datetime import datetime, timedelta
 import gc
@@ -1025,8 +1026,7 @@ def _build_output_paths(channel, program, start_time, end_time, recording_id):
     directories unambiguously.
     """
     from core.models import CoreSettings
-    # Root for DVR recordings: fixed to /data/recordings inside the container
-    library_root = '/data/recordings'
+    library_root = CoreSettings.get_dvr_library_dir()
 
     is_movie, season, episode, year, sub_title = _parse_epg_tv_movie_info(program)
     show = _safe_name(program.get('title') if isinstance(program, dict) else channel.name)
@@ -1087,7 +1087,16 @@ def _build_output_paths(channel, program, start_time, end_time, recording_id):
     if rel_path.startswith('./'):
         rel_path = rel_path[2:]
     final_path = rel_path if rel_path.startswith('/') else os.path.join(library_root, rel_path)
-    final_path = os.path.normpath(final_path)
+    final_path = os.path.realpath(os.path.normpath(final_path))
+    resolved_library_root = os.path.realpath(library_root)
+    try:
+        inside_library = os.path.commonpath(
+            (resolved_library_root, final_path)
+        ) == resolved_library_root
+    except ValueError:
+        inside_library = False
+    if not inside_library:
+        raise ValueError("The DVR path template resolves outside the recording library.")
 
     # Avoid overwriting an existing MKV from a different recording.  The HLS
     # working directory is keyed by recording id, so it cannot collide and is
@@ -2435,6 +2444,35 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
             label=f"DVR recording {recording_id}: metadata save",
         )
 
+        if cp.get("status") == "completed":
+            try:
+                from apps.channels.recording_nfo import write_recording_nfo
+
+                nfo_path = write_recording_nfo(recording_obj)
+                if (
+                    cp.get("nfo_path") != nfo_path
+                    or cp.get("nfo_managed") is not True
+                ):
+                    cp["nfo_path"] = nfo_path
+                    cp["nfo_managed"] = True
+
+                    def _save_nfo_path():
+                        recording_obj.custom_properties = cp
+                        recording_obj.save(update_fields=["custom_properties"])
+
+                    _db_retry(
+                        _save_nfo_path,
+                        max_retries=_dvr_db_max_retries,
+                        base_interval=_dvr_db_retry_interval,
+                        label=f"DVR recording {recording_id}: NFO metadata save",
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "Unable to write NFO metadata for completed recording %s: %s",
+                    recording_id,
+                    exc,
+                )
+
         # Notify frontends so the UI refreshes immediately (e.g. "Stopped" → "Completed")
         try:
             async_to_sync(channel_layer.group_send)(
@@ -2449,13 +2487,42 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
     except Exception as e:
         logger.debug(f"Unable to finalize Recording metadata: {e}")
 
-    # Optionally run comskip post-process
+    # A completed recording becomes available through the permanent DVR Media
+    # Library source. When automatic Comskip is enabled, wait for that task to
+    # finish replacing/marking the file so the first import sees final size,
+    # duration, and NFO metadata. Comskip queues the synchronization itself.
     try:
-        from core.models import CoreSettings
-        if CoreSettings.get_dvr_comskip_enabled():
-            comskip_process_recording.delay(recording_id)
-    except Exception:
-        pass
+        final_properties = (
+            Recording.objects.filter(id=recording_id)
+            .values_list("custom_properties", flat=True)
+            .first()
+            or {}
+        )
+        if final_properties.get("status") == "completed":
+            auto_comskip = CoreSettings.get_dvr_comskip_enabled()
+            if auto_comskip:
+                try:
+                    comskip_process_recording.delay(recording_id)
+                except Exception:
+                    # A broker failure must not prevent the completed
+                    # recording from entering the Media Library.
+                    from apps.media_servers.tasks import (
+                        sync_dvr_media_library_after_recording,
+                    )
+
+                    sync_dvr_media_library_after_recording.delay(recording_id)
+            else:
+                from apps.media_servers.tasks import (
+                    sync_dvr_media_library_after_recording,
+                )
+
+                sync_dvr_media_library_after_recording.delay(recording_id)
+    except Exception as exc:
+        logger.warning(
+            "Unable to queue DVR post-processing for recording %s: %s",
+            recording_id,
+            exc,
+        )
 
     # Release the per-recording active lock so a follow-up dispatch (e.g.
     # manual re-record) does not have to wait for TTL expiry.
@@ -2738,8 +2805,153 @@ def recover_recordings_on_startup():
         logger.error(f"Error during DVR recovery: {e}")
         return f"Error: {e}"
 
-@shared_task
-def comskip_process_recording(recording_id: int):
+def _probe_media_duration(path: str) -> float | None:
+    """Return media duration for Comskip post-processing metadata."""
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "default=noprint_wrappers=1:nokey=1",
+                path,
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=True,
+        )
+        duration = float(result.stdout.strip())
+        return duration if duration > 0 else None
+    except Exception:
+        return None
+
+
+def _claim_comskip_processing(
+    recording_id: int,
+    *,
+    allow_running: bool = False,
+) -> str:
+    """Serialize automatic/manual Comskip requests using the recording row."""
+    from django.db import transaction
+    from django.utils import timezone
+    from .models import Recording
+
+    with transaction.atomic():
+        recording = Recording.objects.select_for_update().filter(
+            id=recording_id
+        ).first()
+        if not recording:
+            return "not_found"
+        properties = dict(recording.custom_properties or {})
+        state = properties.get("comskip") or {}
+        if isinstance(state, dict) and state.get("status") == "completed":
+            return "already_processed"
+        if (
+            isinstance(state, dict)
+            and state.get("status") == "running"
+            and not allow_running
+        ):
+            started_at = state.get("started_at")
+            try:
+                started = datetime.fromisoformat(str(started_at))
+                if timezone.is_naive(started):
+                    started = timezone.make_aware(started)
+                if timezone.now() - started < timedelta(hours=24):
+                    return "already_running"
+            except (TypeError, ValueError):
+                return "already_running"
+        properties["comskip"] = {
+            "status": "running",
+            "started_at": timezone.now().isoformat(),
+        }
+        recording.custom_properties = properties
+        recording.save(update_fields=["custom_properties"])
+    return "claimed"
+
+
+def _refresh_dvr_library_after_comskip(recording_id: int) -> None:
+    """Refresh sidecar and normalized VOD only after Comskip is terminal."""
+    from django.db import transaction
+    from .models import Recording
+
+    recording = Recording.objects.select_related("channel").filter(
+        id=recording_id
+    ).first()
+    if not recording:
+        return
+    properties = recording.custom_properties or {}
+    file_path = str(properties.get("file_path") or "").strip()
+    if properties.get("status") != "completed":
+        return
+    try:
+        from apps.media_servers.dvr_library import resolve_dvr_library_path
+
+        resolved_file = resolve_dvr_library_path(
+            file_path,
+            must_exist=True,
+            require_directory=False,
+        )
+        if not resolved_file.is_file():
+            return
+        file_path = str(resolved_file)
+    except Exception as exc:
+        logger.warning(
+            "Unable to validate DVR artifact after Comskip for recording %s: %s",
+            recording_id,
+            exc,
+        )
+        return
+
+    # Probe only the finished DVR artifact. This is not library-wide media
+    # analysis; Comskip already depends on ffprobe for its cut timeline.
+    duration = _probe_media_duration(file_path)
+    file_size = os.path.getsize(file_path)
+    if duration is not None or properties.get("file_size_bytes") != file_size:
+        with transaction.atomic():
+            current = Recording.objects.select_for_update().get(id=recording_id)
+            current_properties = dict(current.custom_properties or {})
+            if duration is not None:
+                current_properties["duration_secs"] = max(1, round(duration))
+            current_properties["file_size_bytes"] = file_size
+            current.custom_properties = current_properties
+            current.save(update_fields=["custom_properties"])
+        recording.refresh_from_db()
+
+    try:
+        from apps.channels.recording_nfo import write_recording_nfo
+
+        nfo_path = write_recording_nfo(recording)
+        with transaction.atomic():
+            current = Recording.objects.select_for_update().get(id=recording_id)
+            current_properties = dict(current.custom_properties or {})
+            current_properties["nfo_path"] = nfo_path
+            current_properties["nfo_managed"] = True
+            current.custom_properties = current_properties
+            current.save(update_fields=["custom_properties"])
+    except Exception as exc:
+        logger.warning(
+            "Unable to refresh NFO after Comskip for recording %s: %s",
+            recording_id,
+            exc,
+        )
+
+    try:
+        from apps.media_servers.tasks import sync_dvr_media_library_after_recording
+
+        sync_dvr_media_library_after_recording.delay(recording_id)
+    except Exception as exc:
+        logger.warning(
+            "Unable to queue DVR Media Library sync after Comskip for recording %s: %s",
+            recording_id,
+            exc,
+        )
+
+
+def _comskip_process_recording(recording_id: int):
     """Run comskip on the MKV to remove commercials and replace the file in place.
     Safe to call even if comskip is not installed; stores status in custom_properties.comskip.
     """
@@ -2765,15 +2977,28 @@ def comskip_process_recording(recording_id: int):
     cp = rec.custom_properties.copy() if isinstance(rec.custom_properties, dict) else {}
 
     def _persist_custom_properties():
-        """Persist updated custom_properties without raising if the row disappeared."""
+        """Merge Comskip-owned fields without clobbering concurrent updates."""
+        nonlocal cp
         try:
-            updated = Recording.objects.filter(pk=recording_id).update(custom_properties=cp)
-            if not updated:
-                logger.warning(
-                    "Recording %s vanished before comskip status could be saved",
-                    recording_id,
-                )
-                return False
+            from django.db import transaction
+
+            with transaction.atomic():
+                current = Recording.objects.select_for_update().filter(
+                    pk=recording_id
+                ).first()
+                if not current:
+                    logger.warning(
+                        "Recording %s vanished before comskip status could be saved",
+                        recording_id,
+                    )
+                    return False
+                merged = dict(current.custom_properties or {})
+                for key in ("comskip", "duration_secs", "file_size_bytes"):
+                    if key in cp:
+                        merged[key] = cp[key]
+                current.custom_properties = merged
+                current.save(update_fields=["custom_properties"])
+                cp = merged
         except DatabaseError as db_err:
             logger.warning(
                 "Failed to persist comskip status for recording %s: %s",
@@ -2790,7 +3015,21 @@ def comskip_process_recording(recording_id: int):
             return False
         return True
     file_path = (cp or {}).get("file_path")
-    if not file_path or not os.path.exists(file_path):
+    try:
+        from apps.media_servers.dvr_library import resolve_dvr_library_path
+
+        resolved_file = resolve_dvr_library_path(
+            file_path,
+            must_exist=True,
+            require_directory=False,
+        )
+        if not resolved_file.is_file():
+            raise FileNotFoundError("The recording path is not a regular file.")
+        file_path = str(resolved_file)
+    except Exception:
+        cp["comskip"] = {"status": "error", "reason": "recording_file_missing"}
+        _persist_custom_properties()
+        _ws('error', {"reason": "recording_file_missing"})
         return "no_file"
 
     if isinstance(cp.get("comskip"), dict) and cp["comskip"].get("status") == "completed":
@@ -2842,6 +3081,10 @@ def comskip_process_recording(recording_id: int):
         if result.returncode == 1:
             # No commercials detected — not an error.
             cp["comskip"] = {"status": "completed", "skipped": True}
+            detected_duration = _probe_media_duration(file_path)
+            if detected_duration is not None:
+                cp["duration_secs"] = max(1, round(detected_duration))
+            cp["file_size_bytes"] = os.path.getsize(file_path)
             if selected_ini:
                 cp["comskip"]["ini_path"] = selected_ini
             _persist_custom_properties()
@@ -2880,23 +3123,14 @@ def comskip_process_recording(recording_id: int):
         _ws('error', {"reason": "edl_not_found"})
         return "no_edl"
 
-    # Duration via ffprobe
-    def _ffprobe_duration(path):
-        try:
-            p = subprocess.run([
-                "ffprobe", "-v", "error", "-show_entries", "format=duration",
-                "-of", "default=noprint_wrappers=1:nokey=1", path
-            ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True)
-            return float(p.stdout.strip())
-        except Exception:
-            return None
-
-    duration = _ffprobe_duration(file_path)
+    duration = _probe_media_duration(file_path)
     if duration is None:
         cp["comskip"] = {"status": "error", "reason": "duration_unknown"}
         _persist_custom_properties()
         _ws('error', {"reason": "duration_unknown"})
         return "no_duration"
+    cp["duration_secs"] = max(1, round(duration))
+    cp["file_size_bytes"] = os.path.getsize(file_path)
 
     commercials = []
     try:
@@ -2948,10 +3182,17 @@ def comskip_process_recording(recording_id: int):
         return "ok"
 
     workdir = os.path.dirname(file_path)
+    for stale_workspace in Path(workdir).glob(f".comskip_{recording_id}_*"):
+        if stale_workspace.is_dir():
+            shutil.rmtree(stale_workspace, ignore_errors=True)
+    temporary_dir = tempfile.mkdtemp(
+        prefix=f".comskip_{recording_id}_",
+        dir=workdir,
+    )
     parts = []
     try:
         for idx, (s, e) in enumerate(keep):
-            seg = os.path.join(workdir, f"segment_{idx:03d}.mkv")
+            seg = os.path.join(temporary_dir, f"segment_{idx:03d}.mkv")
             dur = max(0.0, e - s)
             if dur <= 0.01:
                 continue
@@ -2964,39 +3205,44 @@ def comskip_process_recording(recording_id: int):
         if not parts:
             raise RuntimeError("no_parts")
 
-        list_path = os.path.join(workdir, "concat_list.txt")
+        list_path = os.path.join(temporary_dir, "concat_list.txt")
         with open(list_path, "w") as lf:
             for pth in parts:
                 escaped = pth.replace("'", "'\\''")
                 lf.write(f"file '{escaped}'\n")
 
-        output_path = os.path.join(workdir, f"{os.path.splitext(os.path.basename(file_path))[0]}.cut.mkv")
+        output_path = os.path.join(temporary_dir, "output.mkv")
         subprocess.run([
             "ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", list_path, "-c", "copy", output_path
         ], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
-        try:
-            os.replace(output_path, file_path)
-        except Exception:
-            shutil.copy(output_path, file_path)
+        # The workspace is beneath the recording directory, so replacement is
+        # on the same filesystem and atomic. Existing playback file handles
+        # continue reading the old inode while new sessions see the cut file.
+        os.replace(output_path, file_path)
 
-        try:
-            os.remove(list_path)
-        except Exception:
-            pass
-        for pth in parts:
-            try: os.remove(pth)
-            except Exception: pass
         try:
             os.remove(edl_path)
         except Exception:
             pass
 
+        final_duration = _probe_media_duration(file_path)
+        if final_duration is not None:
+            cp["duration_secs"] = max(1, round(final_duration))
+        else:
+            cp["duration_secs"] = max(
+                1,
+                round(sum(max(0.0, end - start) for start, end in keep)),
+            )
+        cp["file_size_bytes"] = os.path.getsize(file_path)
+
         cp["comskip"] = {
             "status": "completed",
+            "mode": "cut",
             "edl": os.path.basename(edl_path),
             "segments_kept": len(parts),
             "commercials": len(commercials),
+            "duration_secs": cp["duration_secs"],
         }
         if selected_ini:
             cp["comskip"]["ini_path"] = selected_ini
@@ -3008,6 +3254,62 @@ def comskip_process_recording(recording_id: int):
         _persist_custom_properties()
         _ws('error', {"reason": str(e)})
         return f"error:{e}"
+    finally:
+        shutil.rmtree(temporary_dir, ignore_errors=True)
+
+
+@shared_task(bind=True, acks_late=True, reject_on_worker_lost=True)
+def comskip_process_recording(self, recording_id: int):
+    """Serialize Comskip and synchronize the DVR library after it terminates."""
+    delivery_info = getattr(self.request, "delivery_info", None) or {}
+    claim = _claim_comskip_processing(
+        recording_id,
+        allow_running=bool(delivery_info.get("redelivered")),
+    )
+    if claim != "claimed":
+        # A worker may be lost after the cut was persisted but before the DVR
+        # library refresh was queued. Do not cut the completed file twice, but
+        # do finish the idempotent NFO/VOD publication step.
+        if claim == "already_processed":
+            _refresh_dvr_library_after_comskip(recording_id)
+        return claim
+
+    result = "comskip_failed"
+    try:
+        result = _comskip_process_recording(recording_id)
+        return result
+    except Exception as exc:
+        logger.exception(
+            "Unexpected Comskip failure for recording %s",
+            recording_id,
+        )
+        try:
+            from .models import Recording
+            from django.db import transaction
+
+            with transaction.atomic():
+                recording = Recording.objects.select_for_update().filter(
+                    id=recording_id
+                ).first()
+                if recording:
+                    properties = dict(recording.custom_properties or {})
+                    properties["comskip"] = {
+                        "status": "error",
+                        "reason": str(exc),
+                    }
+                    recording.custom_properties = properties
+                    recording.save(update_fields=["custom_properties"])
+        except Exception:
+            pass
+        return result
+    finally:
+        # Failed/skipped Comskip still leaves the original completed file
+        # importable. Successful cuts need this step to replace stale duration,
+        # size, and NFO metadata in the normalized VOD record.
+        if result not in {"not_found", "no_file", "already_processed"}:
+            _refresh_dvr_library_after_comskip(recording_id)
+
+
 def _resolve_poster_for_program(channel_name, program, channel_logo_id=None):
     """Resolve poster URL and/or Logo id for a recording program.
 
@@ -3071,7 +3373,6 @@ def _resolve_poster_for_program(channel_name, program, channel_logo_id=None):
     # Stage 3: TMDB/OMDb (keyed APIs)
     if not poster_url and not poster_logo_id and _title and not _title_is_channel_name:
         try:
-            tmdb_key = os.environ.get('TMDB_API_KEY')
             omdb_key = os.environ.get('OMDB_API_KEY')
             title = _title
             year = None
@@ -3084,38 +3385,48 @@ def _resolve_poster_for_program(channel_name, program, channel_logo_id=None):
                     year = str(d)[:4]
                 imdb_id = epg_props.get('imdb.com_id')
 
-            # TMDB: by IMDb ID
-            if not poster_url and tmdb_key and imdb_id:
+            # Use the Media Library TMDB setting as well as the environment
+            # fallback. The shared enrichment client rejects ambiguous title
+            # matches and never returns errors containing the configured key.
+            if not poster_url:
                 try:
-                    url = f"https://api.themoviedb.org/3/find/{quote(imdb_id)}?api_key={tmdb_key}&external_source=imdb_id"
-                    resp = requests.get(url, timeout=5)
-                    if resp.ok:
-                        data = resp.json() or {}
-                        picks = []
-                        for k in ('movie_results', 'tv_results', 'tv_episode_results', 'tv_season_results'):
-                            picks.extend(data.get(k) or [])
-                        for item in picks:
-                            if item.get('poster_path'):
-                                poster_url = f"https://image.tmdb.org/t/p/w780{item['poster_path']}"
-                                break
-                except Exception:
-                    pass
+                    from apps.media_servers.local_metadata import (
+                        enrich_movie_metadata_with_tmdb,
+                        enrich_series_metadata_with_tmdb,
+                        has_tmdb_api_key,
+                    )
 
-            # TMDB: by title (and year if available)
-            if not poster_url and tmdb_key and title:
-                try:
-                    q = quote(title)
-                    extra = f"&year={year}" if year else ""
-                    url = f"https://api.themoviedb.org/3/search/multi?api_key={tmdb_key}&query={q}{extra}"
-                    resp = requests.get(url, timeout=5)
-                    if resp.ok:
-                        data = resp.json() or {}
-                        results = data.get('results') or []
-                        results.sort(key=lambda x: float(x.get('popularity') or 0), reverse=True)
-                        for item in results:
-                            if item.get('poster_path'):
-                                poster_url = f"https://image.tmdb.org/t/p/w780{item['poster_path']}"
-                                break
+                    if has_tmdb_api_key():
+                        categories = {
+                            str(value).strip().lower()
+                            for value in (epg_props or {}).get('categories', [])
+                            if str(value).strip()
+                        }
+                        is_movie = bool(categories.intersection({'movie', 'film'}))
+                        seed = {
+                            'title': title,
+                            'imdb_id': imdb_id,
+                        }
+                        if is_movie:
+                            metadata, _tmdb_error = enrich_movie_metadata_with_tmdb(
+                                seed,
+                                title=title,
+                                year=int(year) if year and year.isdigit() else None,
+                                prefer_existing=True,
+                            )
+                        else:
+                            # An episode air year is not necessarily the
+                            # series premiere year, so title-only matching is
+                            # safer unless the source supplies a series ID.
+                            metadata, _tmdb_error = enrich_series_metadata_with_tmdb(
+                                seed,
+                                title=title,
+                                year=None,
+                                prefer_existing=True,
+                            )
+                        poster_url = str(
+                            metadata.get('poster_url') or ''
+                        ).strip() or None
                 except Exception:
                     pass
 

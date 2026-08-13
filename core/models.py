@@ -2,6 +2,7 @@
 
 import logging
 import time
+from pathlib import Path
 from shlex import split as shlex_split
 
 from django.conf import settings
@@ -554,6 +555,7 @@ class CoreSettings(models.Model):
     def get_dvr_settings(cls):
         """Get all DVR-related settings."""
         return cls._get_group(DVR_SETTINGS_KEY, {
+            "library_dir": "/data/recordings",
             "tv_template": "TV_Shows/{show}/S{season:02d}E{episode:02d}.mkv",
             "movie_template": "Movies/{title} ({year}).mkv",
             "tv_fallback_dir": "TV_Shows",
@@ -567,6 +569,17 @@ class CoreSettings(models.Model):
             "post_offset_minutes": 0,
             "series_rules": [],
         })
+
+    @classmethod
+    def get_dvr_library_dir(cls):
+        value = str(
+            cls.get_dvr_settings().get("library_dir", "/data/recordings")
+            or "/data/recordings"
+        ).strip()
+        path = Path(value).expanduser()
+        if not path.is_absolute():
+            path = Path("/data/recordings")
+        return str(path.resolve(strict=False))
 
     @classmethod
     def get_dvr_tv_template(cls):

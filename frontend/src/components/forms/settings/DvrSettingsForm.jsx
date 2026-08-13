@@ -9,7 +9,6 @@ import { showNotification } from '../../../utils/notificationUtils.js';
 import {
   Alert,
   Button,
-  FileInput,
   Flex,
   Group,
   NumberInput,
@@ -25,16 +24,17 @@ import {
   uploadComskipIni,
 } from '../../../utils/forms/settings/DvrSettingsFormUtils.js';
 import { useForm } from '@mantine/form';
+import { FolderOpen } from 'lucide-react';
+import SafeDirectoryBrowser from '../../SafeDirectoryBrowser.jsx';
 
 const DvrSettingsForm = React.memo(({ active }) => {
   const settings = useSettingsStore((s) => s.settings);
   const [saved, setSaved] = useState(false);
-  const [comskipFile, setComskipFile] = useState(null);
-  const [comskipUploadLoading, setComskipUploadLoading] = useState(false);
   const [comskipConfig, setComskipConfig] = useState({
     path: '',
     exists: false,
   });
+  const [pathBrowser, setPathBrowser] = useState(null);
   const isSavingRef = useRef(false);
 
   const form = useForm({
@@ -81,14 +81,9 @@ const DvrSettingsForm = React.memo(({ active }) => {
     loadComskipConfig();
   }, []);
 
-  const onComskipUpload = async () => {
-    if (!comskipFile) {
-      return;
-    }
-
-    setComskipUploadLoading(true);
+  const onComskipUpload = async (file) => {
     try {
-      const response = await uploadComskipIni(comskipFile);
+      const response = await uploadComskipIni(file);
       if (response?.path) {
         showNotification({
           title: 'comskip.ini uploaded',
@@ -96,7 +91,6 @@ const DvrSettingsForm = React.memo(({ active }) => {
           autoClose: 3000,
           color: 'green',
         });
-        form.setFieldValue('comskip_custom_path', response.path);
         useSettingsStore.getState().updateSetting({
           ...(settings['comskip_custom_path'] || {
             key: 'comskip_custom_path',
@@ -104,13 +98,11 @@ const DvrSettingsForm = React.memo(({ active }) => {
           }),
           value: response.path,
         });
-        setComskipConfig({ path: response.path, exists: true });
       }
+      return response;
     } catch (error) {
       console.error('Failed to upload comskip.ini', error);
-    } finally {
-      setComskipUploadLoading(false);
-      setComskipFile(null);
+      throw error;
     }
   };
 
@@ -141,134 +133,177 @@ const DvrSettingsForm = React.memo(({ active }) => {
     }
   };
 
+  const browserField =
+    pathBrowser === 'comskip' ? 'comskip_custom_path' : 'library_dir';
+  const browserInitialPath = form.getValues()[browserField] || '';
+
+  const selectBrowserPath = (path) => {
+    form.setFieldValue(browserField, path);
+    if (browserField === 'comskip_custom_path') {
+      setComskipConfig({ path, exists: true });
+    }
+    setPathBrowser(null);
+  };
+
   return (
-    <form onSubmit={form.onSubmit(onSubmit)}>
-      <Stack gap="sm">
-        {saved && (
-          <Alert variant="light" color="green" title="Saved Successfully" />
-        )}
-        <Switch
-          label="Enable Comskip (commercial detection after recording)"
-          {...form.getInputProps('comskip_enabled', {
-            type: 'checkbox',
-          })}
-          id="comskip_enabled"
-          name="comskip_enabled"
-        />
-        <Select
-          label="Comskip mode"
-          description="Cut: permanently removes commercials from the file. Mark: keeps the file intact and writes an EDL file for players that support EDL-based commercial skipping."
-          data={[
-            { value: 'cut', label: 'Cut (remove commercials from file)' },
-            {
-              value: 'mark',
-              label: 'Mark (store timestamps, keep file intact)',
-            },
-          ]}
-          {...form.getInputProps('comskip_mode')}
-          id="comskip_mode"
-          name="comskip_mode"
-        />
-        <Select
-          label="Hardware acceleration"
-          description="Offloads video decoding to a hardware decoder. Requires the corresponding driver/device to be available inside the container."
-          data={[
-            { value: 'none', label: 'None (software decode)' },
-            { value: 'cuvid', label: 'NVIDIA NVDEC (--cuvid)' },
-            { value: 'qsv', label: 'Intel Quick Sync (--qsv)' },
-          ]}
-          {...form.getInputProps('comskip_hw_accel')}
-          id="comskip_hw_accel"
-          name="comskip_hw_accel"
-        />
-        <TextInput
-          label="Custom comskip.ini path"
-          description="Leave blank to use the built-in defaults."
-          placeholder="/app/docker/comskip.ini"
-          {...form.getInputProps('comskip_custom_path')}
-          id="comskip_custom_path"
-          name="comskip_custom_path"
-        />
-        <Group align="flex-end" gap="sm">
-          <FileInput
-            placeholder="Select comskip.ini"
-            accept=".ini"
-            value={comskipFile}
-            onChange={setComskipFile}
-            clearable
-            disabled={comskipUploadLoading}
-            flex={1}
+    <>
+      <form onSubmit={form.onSubmit(onSubmit)}>
+        <Stack gap="sm">
+          {saved && (
+            <Alert variant="light" color="green" title="Saved Successfully" />
+          )}
+          <Group align="flex-end" gap="sm" wrap="nowrap">
+            <TextInput
+              label="Recording library directory"
+              description="Completed DVR recordings are saved here and synchronized by the built-in Media Library."
+              placeholder="/data/recordings"
+              {...form.getInputProps('library_dir')}
+              id="library_dir"
+              name="library_dir"
+              style={{ flex: 1 }}
+            />
+            <Button
+              type="button"
+              variant="light"
+              leftSection={<FolderOpen size={16} />}
+              onClick={() => setPathBrowser('library')}
+              aria-label="Browse recording library"
+            >
+              Browse
+            </Button>
+          </Group>
+          <Switch
+            label="Enable Comskip (commercial detection after recording)"
+            {...form.getInputProps('comskip_enabled', {
+              type: 'checkbox',
+            })}
+            id="comskip_enabled"
+            name="comskip_enabled"
           />
-          <Button
-            variant="light"
-            onClick={onComskipUpload}
-            disabled={!comskipFile || comskipUploadLoading}
-          >
-            {comskipUploadLoading ? 'Uploading...' : 'Upload comskip.ini'}
-          </Button>
-        </Group>
-        <Text size="xs" c="dimmed">
-          {comskipConfig.exists && comskipConfig.path
-            ? `Using ${comskipConfig.path}`
-            : 'No custom comskip.ini uploaded.'}
-        </Text>
-        <NumberInput
-          label="Start early (minutes)"
-          description="Begin recording this many minutes before the scheduled start."
-          min={0}
-          step={1}
-          {...form.getInputProps('pre_offset_minutes')}
-          id="pre_offset_minutes"
-          name="pre_offset_minutes"
-        />
-        <NumberInput
-          label="End late (minutes)"
-          description="Continue recording this many minutes after the scheduled end."
-          min={0}
-          step={1}
-          {...form.getInputProps('post_offset_minutes')}
-          id="post_offset_minutes"
-          name="post_offset_minutes"
-        />
-        <TextInput
-          label="TV Path Template"
-          description="Supports {show}, {season}, {episode}, {sub_title}, {channel}, {year}, {start}, {end}. Use format specifiers like {season:02d}. Relative paths are under your library dir."
-          placeholder="TV_Shows/{show}/S{season:02d}E{episode:02d}.mkv"
-          {...form.getInputProps('tv_template')}
-          id="tv_template"
-          name="tv_template"
-        />
-        <TextInput
-          label="TV Fallback Template"
-          description="Template used when an episode has no season/episode. Supports {show}, {start}, {end}, {channel}, {year}."
-          placeholder="TV_Shows/{show}/{start}.mkv"
-          {...form.getInputProps('tv_fallback_template')}
-          id="tv_fallback_template"
-          name="tv_fallback_template"
-        />
-        <TextInput
-          label="Movie Path Template"
-          description="Supports {title}, {year}, {channel}, {start}, {end}. Relative paths are under your library dir."
-          placeholder="Movies/{title} ({year}).mkv"
-          {...form.getInputProps('movie_template')}
-          id="movie_template"
-          name="movie_template"
-        />
-        <TextInput
-          label="Movie Fallback Template"
-          description="Template used when movie metadata is incomplete. Supports {start}, {end}, {channel}."
-          placeholder="Movies/{start}.mkv"
-          {...form.getInputProps('movie_fallback_template')}
-          id="movie_fallback_template"
-          name="movie_fallback_template"
-        />
-        <Flex mih={50} gap="xs" justify="flex-end" align="flex-end">
-          <Button type="submit" variant="default">
-            Save
-          </Button>
-        </Flex>
-      </Stack>
-    </form>
+          <Select
+            label="Comskip mode"
+            description="Cut: permanently removes commercials from the file. Mark: keeps the file intact and writes an EDL file for players that support EDL-based commercial skipping."
+            data={[
+              { value: 'cut', label: 'Cut (remove commercials from file)' },
+              {
+                value: 'mark',
+                label: 'Mark (store timestamps, keep file intact)',
+              },
+            ]}
+            {...form.getInputProps('comskip_mode')}
+            id="comskip_mode"
+            name="comskip_mode"
+          />
+          <Select
+            label="Hardware acceleration"
+            description="Offloads video decoding to a hardware decoder. Requires the corresponding driver/device to be available inside the container."
+            data={[
+              { value: 'none', label: 'None (software decode)' },
+              { value: 'cuvid', label: 'NVIDIA NVDEC (--cuvid)' },
+              { value: 'qsv', label: 'Intel Quick Sync (--qsv)' },
+            ]}
+            {...form.getInputProps('comskip_hw_accel')}
+            id="comskip_hw_accel"
+            name="comskip_hw_accel"
+          />
+          <Group align="flex-end" gap="sm" wrap="nowrap">
+            <TextInput
+              label="Custom comskip.ini path"
+              description="Leave blank to use the built-in defaults."
+              placeholder="/app/docker/comskip.ini"
+              {...form.getInputProps('comskip_custom_path')}
+              id="comskip_custom_path"
+              name="comskip_custom_path"
+              style={{ flex: 1 }}
+            />
+            <Button
+              type="button"
+              variant="light"
+              leftSection={<FolderOpen size={16} />}
+              onClick={() => setPathBrowser('comskip')}
+              aria-label="Browse comskip.ini"
+            >
+              Browse
+            </Button>
+          </Group>
+          <Text size="xs" c="dimmed">
+            {comskipConfig.exists && comskipConfig.path
+              ? `Using ${comskipConfig.path}`
+              : 'No custom comskip.ini uploaded.'}
+          </Text>
+          <NumberInput
+            label="Start early (minutes)"
+            description="Begin recording this many minutes before the scheduled start."
+            min={0}
+            step={1}
+            {...form.getInputProps('pre_offset_minutes')}
+            id="pre_offset_minutes"
+            name="pre_offset_minutes"
+          />
+          <NumberInput
+            label="End late (minutes)"
+            description="Continue recording this many minutes after the scheduled end."
+            min={0}
+            step={1}
+            {...form.getInputProps('post_offset_minutes')}
+            id="post_offset_minutes"
+            name="post_offset_minutes"
+          />
+          <TextInput
+            label="TV Path Template"
+            description="Supports {show}, {season}, {episode}, {sub_title}, {channel}, {year}, {start}, {end}. Use format specifiers like {season:02d}. Relative paths are under your library dir."
+            placeholder="TV_Shows/{show}/S{season:02d}E{episode:02d}.mkv"
+            {...form.getInputProps('tv_template')}
+            id="tv_template"
+            name="tv_template"
+          />
+          <TextInput
+            label="TV Fallback Template"
+            description="Template used when an episode has no season/episode. Supports {show}, {start}, {end}, {channel}, {year}."
+            placeholder="TV_Shows/{show}/{start}.mkv"
+            {...form.getInputProps('tv_fallback_template')}
+            id="tv_fallback_template"
+            name="tv_fallback_template"
+          />
+          <TextInput
+            label="Movie Path Template"
+            description="Supports {title}, {year}, {channel}, {start}, {end}. Relative paths are under your library dir."
+            placeholder="Movies/{title} ({year}).mkv"
+            {...form.getInputProps('movie_template')}
+            id="movie_template"
+            name="movie_template"
+          />
+          <TextInput
+            label="Movie Fallback Template"
+            description="Template used when movie metadata is incomplete. Supports {start}, {end}, {channel}."
+            placeholder="Movies/{start}.mkv"
+            {...form.getInputProps('movie_fallback_template')}
+            id="movie_fallback_template"
+            name="movie_fallback_template"
+          />
+          <Flex mih={50} gap="xs" justify="flex-end" align="flex-end">
+            <Button type="submit" variant="default">
+              Save
+            </Button>
+          </Flex>
+        </Stack>
+      </form>
+      <SafeDirectoryBrowser
+        opened={pathBrowser !== null}
+        onClose={() => setPathBrowser(null)}
+        onSelect={selectBrowserPath}
+        scope={pathBrowser === 'comskip' ? 'dvr-comskip' : 'dvr-library'}
+        initialPath={browserInitialPath}
+        onUpload={pathBrowser === 'comskip' ? onComskipUpload : undefined}
+        uploadAccept=".ini"
+        uploadLabel="Upload comskip.ini"
+        title={
+          pathBrowser === 'comskip'
+            ? 'Select comskip.ini'
+            : 'Select recording library directory'
+        }
+      />
+    </>
   );
 });
 

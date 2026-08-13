@@ -24,6 +24,7 @@ class MediaLibrarySource(models.Model):
         EMBY = "emby", "Emby"
         JELLYFIN = "jellyfin", "Jellyfin"
         LOCAL = "local", "Local"
+        DVR = "dvr", "DVR recordings"
 
     class SyncStatus(models.TextChoices):
         IDLE = "idle", "Idle"
@@ -40,6 +41,13 @@ class MediaLibrarySource(models.Model):
     verify_ssl = models.BooleanField(default=True)
     enabled = models.BooleanField(default=True)
     add_to_vod = models.BooleanField(default=True)
+    vod_priority = models.PositiveIntegerField(
+        default=10000,
+        help_text=(
+            "Priority for VOD provider selection (higher numbers = higher "
+            "priority). Used when multiple providers offer the same content."
+        ),
+    )
     sync_interval = models.PositiveIntegerField(
         default=0,
         help_text="Automatic synchronization interval in hours; zero disables it.",
@@ -260,10 +268,6 @@ class MediaLibraryImportRun(models.Model):
 
 
 class MediaLibraryExportTarget(models.Model):
-    class TargetTypes(models.TextChoices):
-        JELLYFIN = "jellyfin", "Jellyfin"
-        EMBY = "emby", "Emby"
-
     class ExportStatus(models.TextChoices):
         IDLE = "idle", "Idle"
         RUNNING = "running", "Running"
@@ -272,23 +276,39 @@ class MediaLibraryExportTarget(models.Model):
 
     public_id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
     name = models.CharField(max_length=255, unique=True)
-    target_type = models.CharField(
-        max_length=16,
-        choices=TargetTypes.choices,
-        default=TargetTypes.JELLYFIN,
-    )
     enabled = models.BooleanField(default=True)
     output_root = models.TextField(unique=True)
     playback_base_url = models.URLField(max_length=1000)
-    playback_cidrs = models.TextField(
-        help_text="Comma-separated CIDRs allowed to use this target's STRM URLs."
-    )
     playback_stream_limit = models.PositiveIntegerField(
         default=0,
         help_text="Maximum concurrent streams for this target; zero is unlimited.",
     )
     include_nfo = models.BooleanField(default=True)
     auto_export_on_vod_change = models.BooleanField(default=True)
+    series_refresh_interval = models.PositiveIntegerField(
+        default=0,
+        help_text=(
+            "Refresh selected XC series episode data at this interval in hours; "
+            "zero disables scheduled refreshes."
+        ),
+    )
+    series_refresh_task = models.ForeignKey(
+        "django_celery_beat.PeriodicTask",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="media_library_export_targets",
+    )
+    selected_movies = models.ManyToManyField(
+        "vod.Movie",
+        blank=True,
+        related_name="media_library_export_targets",
+    )
+    selected_series = models.ManyToManyField(
+        "vod.Series",
+        blank=True,
+        related_name="media_library_export_targets",
+    )
     last_exported_at = models.DateTimeField(null=True, blank=True)
     last_export_status = models.CharField(
         max_length=16,
@@ -345,19 +365,6 @@ class MediaLibraryExportTarget(models.Model):
                     )
                 }
             )
-        if not self.playback_cidrs.strip():
-            raise ValidationError({"playback_cidrs": "At least one explicit CIDR is required."})
-        import ipaddress
-
-        invalid = []
-        for raw in self.playback_cidrs.split(","):
-            try:
-                ipaddress.ip_network(raw.strip(), strict=False)
-            except ValueError:
-                invalid.append(raw.strip())
-        if invalid:
-            raise ValidationError({"playback_cidrs": f"Invalid CIDRs: {', '.join(invalid)}"})
-
     def save(self, *args, **kwargs):
         self.full_clean()
         return super().save(*args, **kwargs)

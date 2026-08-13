@@ -1,6 +1,7 @@
 # core/serializers.py
 import json
 import ipaddress
+from pathlib import Path
 
 from rest_framework import serializers
 from .models import CoreSettings, UserAgent, StreamProfile, OutputProfile, DVR_SETTINGS_KEY, NETWORK_ACCESS_KEY
@@ -75,13 +76,29 @@ class CoreSettingsSerializer(serializers.ModelSerializer):
         # corrupted non-dict entries from persisting.
         if instance.key == DVR_SETTINGS_KEY:
             value = validated_data.get("value")
-            if isinstance(value, dict) and "series_rules" in value:
-                rules = value["series_rules"]
-                value["series_rules"] = (
-                    [r for r in rules if isinstance(r, dict)]
-                    if isinstance(rules, list)
-                    else []
-                )
+            if isinstance(value, dict):
+                if "library_dir" in value:
+                    raw_library_dir = str(value.get("library_dir") or "").strip()
+                    library_dir = Path(raw_library_dir).expanduser()
+                    if not raw_library_dir or not library_dir.is_absolute():
+                        raise serializers.ValidationError(
+                            {"value": {"library_dir": "Use an absolute container path."}}
+                        )
+                    try:
+                        value["library_dir"] = str(
+                            library_dir.resolve(strict=False)
+                        )
+                    except (OSError, RuntimeError) as exc:
+                        raise serializers.ValidationError(
+                            {"value": {"library_dir": f"Unable to resolve path: {exc}"}}
+                        ) from exc
+                if "series_rules" in value:
+                    rules = value["series_rules"]
+                    value["series_rules"] = (
+                        [r for r in rules if isinstance(r, dict)]
+                        if isinstance(rules, list)
+                        else []
+                    )
 
         result = super().update(instance, validated_data)
 

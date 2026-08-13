@@ -4055,6 +4055,13 @@ export default class API {
     return request(`${host}/api/core/directories/browse/?${params.toString()}`);
   }
 
+  static createSafeDirectory(scope, path, name) {
+    return request(`${host}/api/core/directories/create/`, {
+      method: 'POST',
+      body: { scope, path, name },
+    });
+  }
+
   static startPlexMediaLibraryAuth() {
     return request(`${host}/api/media-library/sources/plex-auth/start/`, {
       method: 'POST',
@@ -4149,6 +4156,31 @@ export default class API {
     return request(`${host}/api/media-library/export-targets/${id}/export/`, {
       method: 'POST',
     });
+  }
+
+  static getMediaLibraryExportSelectionOptions(id) {
+    return request(
+      `${host}/api/media-library/export-targets/${id}/selection-options/`
+    );
+  }
+
+  static getMediaLibraryExportCatalog(id, params = {}) {
+    const query = new URLSearchParams();
+    Object.entries(params).forEach(([key, value]) => {
+      if (value !== undefined && value !== null && value !== '') {
+        query.set(key, String(value));
+      }
+    });
+    return request(
+      `${host}/api/media-library/export-targets/${id}/selection-catalog/?${query.toString()}`
+    );
+  }
+
+  static updateMediaLibraryExportSelection(id, values) {
+    return request(
+      `${host}/api/media-library/export-targets/${id}/selection/`,
+      { method: 'POST', body: values }
+    );
   }
 
   static rotateMediaLibraryPlaybackId(id) {

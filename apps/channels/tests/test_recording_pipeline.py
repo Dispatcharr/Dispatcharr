@@ -9,7 +9,11 @@ Covers:
 """
 import os
 import datetime as dt
+import tempfile
+import xml.etree.ElementTree as ET
 from datetime import timedelta
+from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from django.test import TestCase
@@ -71,6 +75,30 @@ class CollisionAvoidanceTests(TestCase):
     def _call(self, channel, program, start, end, recording_id=1):
         from apps.channels.tasks import _build_output_paths
         return _build_output_paths(channel, program, start, end, recording_id)
+
+    @patch("apps.channels.tasks.CoreSettings.get_dvr_tv_fallback_template",
+           return_value="TV/{show}/{start}.mkv")
+    @patch("apps.channels.tasks.CoreSettings.get_dvr_tv_template",
+           return_value="TV/{show}/S{season:02d}E{episode:02d}.mkv")
+    def test_recording_paths_use_configured_dvr_library_directory(self, _tv, _fb):
+        channel = MagicMock(name="TestCh")
+        channel.name = "TestCh"
+        now = COLLISION_TEST_START
+
+        with tempfile.TemporaryDirectory() as temporary, patch(
+            "apps.channels.tasks.CoreSettings.get_dvr_library_dir",
+            return_value=temporary,
+        ):
+            final, hls_dir, _filename = self._call(
+                channel,
+                {"title": "My Show"},
+                now,
+                now + timedelta(hours=1),
+            )
+
+            root = Path(temporary).resolve()
+            self.assertTrue(Path(final).resolve().is_relative_to(root))
+            self.assertTrue(Path(hls_dir).resolve().is_relative_to(root))
 
     @patch("apps.channels.tasks.CoreSettings.get_dvr_tv_fallback_template",
            return_value="TV/{show}/{start}.mkv")
@@ -201,6 +229,306 @@ class CollisionAvoidanceTests(TestCase):
         self.assertTrue(_path_has_collision_suffix(final, 3), "Should increment to _3 when base and _2 MKVs are occupied")
 
 
+class RecordingNfoTests(TestCase):
+    def test_episode_nfo_contains_available_epg_metadata(self):
+        from apps.channels.recording_nfo import build_recording_nfo_xml
+
+        xml = build_recording_nfo_xml(
+            program={
+                "title": "Actual Show",
+                "sub_title": "The Sixth Episode",
+                "description": "Recorded episode description.",
+                "program_id": "EP123456789",
+            },
+            epg_properties={
+                "season": 2,
+                "episode": 6,
+                "date": "2026-08-01",
+                "categories": ["Drama", "Mystery"],
+                "rating": "TV-14",
+                "star_ratings": [{"value": "8.5/10", "system": "IMDb"}],
+                "country": "US",
+                "language": "en",
+                "credits": {
+                    "director": ["Director Name"],
+                    "writer": ["Writer Name"],
+                    "actor": [{"name": "Actor Name", "role": "Lead"}],
+                },
+            },
+            recording_properties={},
+            channel_name="Example Network",
+            start_time=COLLISION_TEST_START,
+            end_time=COLLISION_TEST_START + timedelta(hours=1),
+        )
+
+        root = ET.fromstring(xml)
+        self.assertEqual(root.tag, "episodedetails")
+        self.assertEqual(root.findtext("showtitle"), "Actual Show")
+        self.assertEqual(root.findtext("title"), "The Sixth Episode")
+        self.assertEqual(root.findtext("plot"), "Recorded episode description.")
+        self.assertEqual(root.findtext("season"), "2")
+        self.assertEqual(root.findtext("episode"), "6")
+        self.assertEqual(root.findtext("aired"), "2026-08-01")
+        self.assertIsNone(root.findtext("showyear"))
+        self.assertEqual(root.findtext("rating"), "8.5")
+        self.assertEqual(root.findtext("mpaa"), "TV-14")
+        self.assertEqual(
+            [node.text for node in root.findall("genre")],
+            ["Drama", "Mystery"],
+        )
+        self.assertEqual(root.findtext("director"), "Director Name")
+        self.assertEqual(root.findtext("credits"), "Writer Name")
+        self.assertEqual(root.findtext("actor/name"), "Actor Name")
+        self.assertEqual(root.findtext("actor/role"), "Lead")
+
+    def test_completed_recording_nfo_is_written_beside_video(self):
+        from apps.channels.recording_nfo import write_recording_nfo
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            video = root / "Shows" / "Actual Show S02E06.mkv"
+            video.parent.mkdir()
+            video.write_bytes(b"recording")
+            recording = SimpleNamespace(
+                custom_properties={
+                    "file_path": str(video),
+                    "season": 2,
+                    "episode": 6,
+                    "duration_secs": 733,
+                    "poster_url": "https://image.tmdb.org/t/p/original/show.jpg",
+                    "program": {
+                        "title": "Actual Show",
+                        "sub_title": "The Sixth Episode",
+                        "description": "Recorded episode description.",
+                    },
+                },
+                channel=SimpleNamespace(name="Example Network"),
+                start_time=COLLISION_TEST_START,
+                end_time=COLLISION_TEST_START + timedelta(hours=1),
+            )
+
+            with patch(
+                "apps.media_servers.dvr_library.CoreSettings.get_dvr_library_dir",
+                return_value=str(root),
+            ):
+                nfo_path = write_recording_nfo(recording)
+
+            self.assertEqual(nfo_path, str(video.with_suffix(".nfo")))
+            self.assertTrue(video.with_suffix(".nfo").is_file())
+            parsed = ET.parse(nfo_path).getroot()
+            self.assertEqual(parsed.findtext("showtitle"), "Actual Show")
+            self.assertEqual(parsed.findtext("season"), "2")
+            self.assertEqual(parsed.findtext("episode"), "6")
+            self.assertEqual(parsed.findtext("durationinseconds"), "733")
+            self.assertEqual(
+                parsed.findtext("thumb"),
+                "https://image.tmdb.org/t/p/original/show.jpg",
+            )
+
+    @patch("apps.channels.models.Recording.objects.filter")
+    def test_dvr_sync_backfills_missing_recording_nfo(self, recordings_filter):
+        from apps.channels.recording_nfo import backfill_recording_nfos
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            video = root / "TV_Shows" / "Actual Show" / "S02E06.mkv"
+            video.parent.mkdir(parents=True)
+            video.write_bytes(b"recording")
+            recording = SimpleNamespace(
+                custom_properties={
+                    "status": "completed",
+                    "file_path": str(video),
+                    "season": 2,
+                    "episode": 6,
+                    "program": {
+                        "title": "Actual Show",
+                        "sub_title": "The Sixth Episode",
+                    },
+                },
+                channel=SimpleNamespace(name="Example Network"),
+                start_time=COLLISION_TEST_START,
+                end_time=COLLISION_TEST_START + timedelta(hours=1),
+                save=MagicMock(),
+            )
+            recordings_filter.return_value.select_related.return_value.iterator.return_value = [
+                recording
+            ]
+
+            with patch(
+                "apps.media_servers.dvr_library.CoreSettings.get_dvr_library_dir",
+                return_value=str(root),
+            ):
+                result = backfill_recording_nfos()
+
+            self.assertEqual(result, {"written": 1, "existing": 0, "failed": 0})
+            self.assertTrue(video.with_suffix(".nfo").is_file())
+            self.assertEqual(
+                recording.custom_properties["nfo_path"],
+                str(video.with_suffix(".nfo")),
+            )
+            self.assertTrue(recording.custom_properties["nfo_managed"])
+            recording.save.assert_called_once_with(
+                update_fields=["custom_properties"]
+            )
+
+    @patch("apps.channels.models.Recording.objects.filter")
+    def test_dvr_sync_refreshes_managed_nfo_with_recording_poster(
+        self,
+        recordings_filter,
+    ):
+        from apps.channels.recording_nfo import backfill_recording_nfos
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            video = root / "TV_Shows" / "Actual Show" / "S02E06.mkv"
+            video.parent.mkdir(parents=True)
+            video.write_bytes(b"recording")
+            nfo = video.with_suffix(".nfo")
+            nfo.write_text(
+                "<episodedetails><showtitle>Old</showtitle></episodedetails>",
+                encoding="utf-8",
+            )
+            recording = SimpleNamespace(
+                custom_properties={
+                    "status": "completed",
+                    "file_path": str(video),
+                    "nfo_path": str(nfo),
+                    "season": 2,
+                    "episode": 6,
+                    "poster_url": (
+                        "https://image.tmdb.org/t/p/original/show.jpg"
+                    ),
+                    "program": {"title": "Actual Show"},
+                },
+                channel=SimpleNamespace(name="Example Network"),
+                start_time=COLLISION_TEST_START,
+                end_time=COLLISION_TEST_START + timedelta(hours=1),
+                save=MagicMock(),
+            )
+            recordings_filter.return_value.select_related.return_value.iterator.return_value = [
+                recording
+            ]
+
+            with patch(
+                "apps.media_servers.dvr_library.CoreSettings.get_dvr_library_dir",
+                return_value=str(root),
+            ):
+                result = backfill_recording_nfos()
+
+            self.assertEqual(result, {"written": 1, "existing": 0, "failed": 0})
+            parsed = ET.parse(nfo).getroot()
+            self.assertEqual(parsed.findtext("showtitle"), "Actual Show")
+            self.assertEqual(
+                parsed.findtext("thumb"),
+                "https://image.tmdb.org/t/p/original/show.jpg",
+            )
+            self.assertTrue(recording.custom_properties["nfo_managed"])
+            recording.save.assert_called_once_with(
+                update_fields=["custom_properties"]
+            )
+
+    @patch("apps.channels.models.Recording.objects.filter")
+    def test_dvr_sync_repairs_pre_fix_comskip_duration(
+        self,
+        recordings_filter,
+    ):
+        from apps.channels.recording_nfo import backfill_recording_nfos
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            video = root / "TV_Shows" / "Actual Show" / "S02E06.mkv"
+            video.parent.mkdir(parents=True)
+            video.write_bytes(b"post-comskip-recording")
+            nfo = video.with_suffix(".nfo")
+            nfo.write_text(
+                "<episodedetails><showtitle>Old</showtitle></episodedetails>",
+                encoding="utf-8",
+            )
+            recording = SimpleNamespace(
+                custom_properties={
+                    "status": "completed",
+                    "file_path": str(video),
+                    "file_size_bytes": 999999,
+                    "nfo_path": str(nfo),
+                    "nfo_managed": True,
+                    "season": 2,
+                    "episode": 6,
+                    "program": {"title": "Actual Show"},
+                    "comskip": {"status": "completed", "mode": "cut"},
+                },
+                channel=SimpleNamespace(name="Example Network"),
+                start_time=COLLISION_TEST_START,
+                end_time=COLLISION_TEST_START + timedelta(hours=1),
+                save=MagicMock(),
+            )
+            recordings_filter.return_value.select_related.return_value.iterator.return_value = [
+                recording
+            ]
+
+            with patch(
+                "apps.media_servers.dvr_library.CoreSettings.get_dvr_library_dir",
+                return_value=str(root),
+            ), patch(
+                "apps.channels.recording_nfo.subprocess.run",
+                return_value=SimpleNamespace(stdout="733.4\n", stderr=""),
+            ) as probe:
+                result = backfill_recording_nfos()
+
+            self.assertEqual(result, {"written": 1, "existing": 0, "failed": 0})
+            self.assertEqual(recording.custom_properties["duration_secs"], 733)
+            self.assertEqual(
+                recording.custom_properties["file_size_bytes"],
+                len(b"post-comskip-recording"),
+            )
+            parsed = ET.parse(nfo).getroot()
+            self.assertEqual(parsed.findtext("durationinseconds"), "733")
+            probe.assert_called_once()
+            recording.save.assert_called_once_with(
+                update_fields=["custom_properties"]
+            )
+
+    @patch("apps.channels.models.Recording.objects.filter")
+    def test_dvr_sync_preserves_unmanaged_existing_nfo(self, recordings_filter):
+        from apps.channels.recording_nfo import backfill_recording_nfos
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            video = root / "Movies" / "Operator Movie.mkv"
+            video.parent.mkdir(parents=True)
+            video.write_bytes(b"recording")
+            nfo = video.with_suffix(".nfo")
+            original = "<movie><title>Operator metadata</title></movie>"
+            nfo.write_text(original, encoding="utf-8")
+            recording = SimpleNamespace(
+                custom_properties={
+                    "status": "completed",
+                    "file_path": str(video),
+                    "program": {"title": "Database title"},
+                },
+                channel=SimpleNamespace(name="Example Network"),
+                start_time=COLLISION_TEST_START,
+                end_time=COLLISION_TEST_START + timedelta(hours=1),
+                save=MagicMock(),
+            )
+            recordings_filter.return_value.select_related.return_value.iterator.return_value = [
+                recording
+            ]
+
+            with patch(
+                "apps.media_servers.dvr_library.CoreSettings.get_dvr_library_dir",
+                return_value=str(root),
+            ):
+                result = backfill_recording_nfos()
+
+            self.assertEqual(result, {"written": 0, "existing": 1, "failed": 0})
+            self.assertEqual(nfo.read_text(encoding="utf-8"), original)
+            self.assertEqual(recording.custom_properties["nfo_path"], str(nfo))
+            self.assertFalse(recording.custom_properties["nfo_managed"])
+            recording.save.assert_called_once_with(
+                update_fields=["custom_properties"]
+            )
+
+
 # =========================================================================
 # 2. Logo guard — _resolve_poster_for_program
 # =========================================================================
@@ -234,8 +562,12 @@ class LogoGuardTests(TestCase):
         mock_get.assert_not_called()
         self.assertEqual(logo_id, 99)
 
+    @patch(
+        "apps.media_servers.local_metadata.has_tmdb_api_key",
+        return_value=False,
+    )
     @patch("apps.channels.tasks.requests.get")
-    def test_real_title_still_searched(self, mock_get):
+    def test_real_title_still_searched(self, mock_get, _has_tmdb_key):
         """Title = 'Breaking Bad' on channel 'AMC' → should try external APIs."""
         # Mock TVMaze returning a result
         mock_resp = MagicMock(ok=True, status_code=200)
@@ -285,6 +617,90 @@ class LogoGuardTests(TestCase):
         # EPG icon should still be used (Stage 1 doesn't depend on title guard)
         self.assertEqual(url, "https://epg-cdn.com/test-icon.png")
         mock_get.assert_not_called()
+
+    @patch("apps.channels.tasks.requests.get")
+    @patch(
+        "apps.media_servers.local_metadata.enrich_series_metadata_with_tmdb",
+        return_value=(
+            {"poster_url": "https://image.tmdb.org/t/p/original/show.jpg"},
+            None,
+        ),
+    )
+    @patch(
+        "apps.media_servers.local_metadata.has_tmdb_api_key",
+        return_value=True,
+    )
+    def test_media_library_tmdb_setting_resolves_show_poster(
+        self,
+        _has_key,
+        enrich_series,
+        fallback_request,
+    ):
+        logo_id, url = self._call(
+            "AMC",
+            {"title": "Breaking Bad"},
+        )
+
+        enrich_series.assert_called_once_with(
+            {"title": "Breaking Bad", "imdb_id": None},
+            title="Breaking Bad",
+            year=None,
+            prefer_existing=True,
+        )
+        fallback_request.assert_not_called()
+        self.assertIsNotNone(logo_id)
+        self.assertEqual(
+            url,
+            "https://image.tmdb.org/t/p/original/show.jpg",
+        )
+
+    @patch("apps.channels.tasks.requests.get")
+    @patch(
+        "apps.media_servers.local_metadata.enrich_movie_metadata_with_tmdb",
+        return_value=(
+            {"poster_url": "https://image.tmdb.org/t/p/original/movie.jpg"},
+            None,
+        ),
+    )
+    @patch(
+        "apps.media_servers.local_metadata.has_tmdb_api_key",
+        return_value=True,
+    )
+    def test_media_library_tmdb_setting_resolves_movie_poster(
+        self,
+        _has_key,
+        enrich_movie,
+        fallback_request,
+    ):
+        from apps.epg.models import ProgramData, EPGSource, EPGData
+
+        epg_source = EPGSource.objects.create(source_type="xmltv", name="Movie EPG")
+        epg_data = EPGData.objects.create(tvg_id="movies.test", epg_source=epg_source)
+        program_data = ProgramData.objects.create(
+            epg=epg_data,
+            title="Arrival",
+            start_time=timezone.now() - timedelta(hours=1),
+            end_time=timezone.now() + timedelta(hours=1),
+            custom_properties={"categories": ["Movie"], "date": "2016"},
+        )
+
+        logo_id, url = self._call(
+            "Movie Channel",
+            {"id": program_data.id, "title": "Arrival"},
+        )
+
+        enrich_movie.assert_called_once_with(
+            {"title": "Arrival", "imdb_id": None},
+            title="Arrival",
+            year=2016,
+            prefer_existing=True,
+        )
+        fallback_request.assert_not_called()
+        self.assertIsNotNone(logo_id)
+        self.assertEqual(
+            url,
+            "https://image.tmdb.org/t/p/original/movie.jpg",
+        )
 
 
 # =========================================================================
@@ -367,6 +783,48 @@ class RecordingStatusLifecycleTests(TestCase):
         self.assertIn(response.status_code, [200, 204])
         self.assertFalse(Recording.objects.filter(id=rec_id).exists())
 
+    def test_completed_recording_metadata_edit_queues_single_item_refresh(self):
+        from apps.channels.api_views import RecordingViewSet
+
+        rec = _make_recording(
+            self.channel,
+            custom_properties={
+                "status": "completed",
+                "file_path": "/data/recordings/edited.mkv",
+                "program": {"title": "Original"},
+            },
+        )
+        request = self.factory.post(
+            f"/api/channels/recordings/{rec.id}/update-metadata/",
+            {"title": "Edited"},
+            format="json",
+        )
+        force_authenticate(request, user=self.user)
+        view = RecordingViewSet.as_view({"post": "update_metadata"})
+
+        with patch(
+            "apps.media_servers.tasks.sync_dvr_media_library_after_recording.delay"
+        ) as queued, self.captureOnCommitCallbacks(execute=True):
+            response = view(request, pk=rec.id)
+
+        self.assertEqual(response.status_code, 200)
+        queued.assert_called_once_with(rec.id)
+
+    def test_recording_delete_signal_queues_single_file_relation_cleanup(self):
+        rec = _make_recording(
+            self.channel,
+            custom_properties={
+                "status": "completed",
+                "file_path": "/data/recordings/deleted.mkv",
+            },
+        )
+        with patch("apps.channels.signals.revoke_task"), patch(
+            "apps.media_servers.tasks.remove_dvr_media_library_recording.delay"
+        ) as queued, self.captureOnCommitCallbacks(execute=True):
+            rec.delete()
+
+        queued.assert_called_once_with("/data/recordings/deleted.mkv")
+
 
 # =========================================================================
 # 4. Concat flags — error-tolerant ffmpeg
@@ -405,12 +863,213 @@ class ConcatFlagsTests(TestCase):
         source = inspect.getsource(run_recording)
         self.assertIn("_dvr_build_hls_concat_cmd", source)
 
+    def test_completed_recording_queues_media_library_sync(self):
+        import inspect
+        from apps.channels.tasks import run_recording
+
+        source = inspect.getsource(run_recording)
+        self.assertIn("sync_dvr_media_library_after_recording.delay", source)
+        self.assertLess(
+            source.index("comskip_process_recording.delay"),
+            source.index(
+                "sync_dvr_media_library_after_recording.delay(recording_id)"
+            ),
+        )
+
     def test_recover_recordings_uses_hls_concat_helper(self):
         import inspect
         from apps.channels.tasks import recover_recordings_on_startup
 
         source = inspect.getsource(recover_recordings_on_startup)
         self.assertIn("_dvr_build_hls_concat_cmd", source)
+
+
+class ComskipMediaLibraryRefreshTests(TestCase):
+    def test_running_comskip_cannot_be_claimed_twice(self):
+        from apps.channels.tasks import _claim_comskip_processing
+
+        recording = _make_recording(
+            _make_channel("Comskip Lock", 301),
+            custom_properties={
+                "status": "completed",
+                "comskip": {
+                    "status": "running",
+                    "started_at": timezone.now().isoformat(),
+                },
+            },
+        )
+
+        self.assertEqual(
+            _claim_comskip_processing(recording.id),
+            "already_running",
+        )
+
+    def test_successful_cut_persists_final_duration_and_refreshes_library(self):
+        from apps.channels.tasks import comskip_process_recording
+
+        with tempfile.TemporaryDirectory() as temporary:
+            video = Path(temporary) / "recording.mkv"
+            video.write_bytes(b"original-recording")
+            recording = _make_recording(
+                _make_channel("Comskip Cut", 302),
+                custom_properties={
+                    "status": "completed",
+                    "file_path": str(video),
+                },
+            )
+            probe_results = iter(("10.0", "8.0"))
+
+            def fake_run(command, **_kwargs):
+                executable = os.path.basename(command[0])
+                if executable == "comskip":
+                    video.with_suffix(".edl").write_text(
+                        "2.0 4.0 0\n",
+                        encoding="utf-8",
+                    )
+                    return SimpleNamespace(returncode=0, stdout="", stderr="")
+                if executable == "ffprobe":
+                    return SimpleNamespace(
+                        returncode=0,
+                        stdout=next(probe_results),
+                        stderr="",
+                    )
+                output = Path(command[-1])
+                output.write_bytes(b"processed")
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+            with patch("apps.channels.tasks.shutil.which", return_value="/usr/bin/comskip"), patch(
+                "apps.media_servers.dvr_library.CoreSettings.get_dvr_library_dir",
+                return_value=temporary,
+            ), patch(
+                "apps.channels.tasks.CoreSettings.get_dvr_comskip_mode",
+                return_value="cut",
+            ), patch(
+                "apps.channels.tasks.CoreSettings.get_dvr_comskip_hw_accel",
+                return_value="none",
+            ), patch(
+                "apps.channels.tasks.CoreSettings.get_dvr_comskip_custom_path",
+                return_value="",
+            ), patch(
+                "apps.channels.tasks.subprocess.run",
+                side_effect=fake_run,
+            ), patch(
+                "apps.channels.tasks._refresh_dvr_library_after_comskip"
+            ) as refresh_library:
+                result = comskip_process_recording.run(recording.id)
+
+            self.assertEqual(result, "ok")
+            recording.refresh_from_db()
+            properties = recording.custom_properties
+            self.assertEqual(properties["duration_secs"], 8)
+            self.assertEqual(properties["file_size_bytes"], len(b"processed"))
+            self.assertEqual(properties["comskip"]["status"], "completed")
+            self.assertEqual(properties["comskip"]["mode"], "cut")
+            self.assertEqual(properties["comskip"]["duration_secs"], 8)
+            refresh_library.assert_called_once_with(recording.id)
+            self.assertFalse(
+                any(
+                    path.name.startswith(f".comskip_{recording.id}_")
+                    for path in Path(temporary).iterdir()
+                )
+            )
+
+    def test_missing_comskip_still_imports_completed_recording(self):
+        from apps.channels.tasks import comskip_process_recording
+
+        with tempfile.TemporaryDirectory() as temporary:
+            video = Path(temporary) / "recording.mkv"
+            video.write_bytes(b"recording")
+            recording = _make_recording(
+                _make_channel("Comskip Missing", 303),
+                custom_properties={
+                    "status": "completed",
+                    "file_path": str(video),
+                },
+            )
+
+            with patch(
+                "apps.media_servers.dvr_library.CoreSettings.get_dvr_library_dir",
+                return_value=temporary,
+            ), patch(
+                "apps.channels.tasks.shutil.which",
+                return_value=None,
+            ), patch(
+                "apps.channels.tasks._refresh_dvr_library_after_comskip"
+            ) as refresh_library:
+                result = comskip_process_recording.run(recording.id)
+
+            self.assertEqual(result, "comskip_missing")
+            recording.refresh_from_db()
+            self.assertEqual(
+                recording.custom_properties["comskip"]["status"],
+                "skipped",
+            )
+            refresh_library.assert_called_once_with(recording.id)
+
+    def test_completed_redelivery_finishes_library_refresh_without_recut(self):
+        from apps.channels.tasks import comskip_process_recording
+
+        recording = _make_recording(
+            _make_channel("Comskip Redelivery", 304),
+            custom_properties={
+                "status": "completed",
+                "comskip": {"status": "completed", "mode": "cut"},
+            },
+        )
+
+        with patch(
+            "apps.channels.tasks._refresh_dvr_library_after_comskip"
+        ) as refresh_library, patch(
+            "apps.channels.tasks._comskip_process_recording"
+        ) as process_recording:
+            result = comskip_process_recording.run(recording.id)
+
+        self.assertEqual(result, "already_processed")
+        process_recording.assert_not_called()
+        refresh_library.assert_called_once_with(recording.id)
+
+    def test_terminal_comskip_refresh_writes_exact_nfo_and_queues_vod_sync(self):
+        from apps.channels.tasks import _refresh_dvr_library_after_comskip
+
+        with tempfile.TemporaryDirectory() as temporary:
+            video = Path(temporary) / "Shows" / "Example S01E02.mkv"
+            video.parent.mkdir()
+            video.write_bytes(b"final-cut")
+            recording = _make_recording(
+                _make_channel("Comskip Publish", 305),
+                custom_properties={
+                    "status": "completed",
+                    "file_path": str(video),
+                    "season": 1,
+                    "episode": 2,
+                    "program": {
+                        "title": "Example",
+                        "sub_title": "Second Episode",
+                    },
+                    "comskip": {"status": "completed", "mode": "cut"},
+                },
+            )
+
+            with patch(
+                "apps.media_servers.dvr_library.CoreSettings.get_dvr_library_dir",
+                return_value=temporary,
+            ), patch(
+                "apps.channels.tasks._probe_media_duration",
+                return_value=733.4,
+            ), patch(
+                "apps.media_servers.tasks."
+                "sync_dvr_media_library_after_recording.delay"
+            ) as queued:
+                _refresh_dvr_library_after_comskip(recording.id)
+
+            recording.refresh_from_db()
+            properties = recording.custom_properties
+            self.assertEqual(properties["duration_secs"], 733)
+            self.assertEqual(properties["file_size_bytes"], len(b"final-cut"))
+            self.assertTrue(properties["nfo_managed"])
+            parsed = ET.parse(properties["nfo_path"]).getroot()
+            self.assertEqual(parsed.findtext("durationinseconds"), "733")
+            queued.assert_called_once_with(recording.id)
 
 
 # =========================================================================

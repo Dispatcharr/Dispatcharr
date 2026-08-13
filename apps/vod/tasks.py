@@ -98,6 +98,25 @@ def refresh_vod_content(account_id):
             # Refresh series with batch processing (pass scan start time)
             refresh_series(client, account, series_categories, relations, scan_start_time=start_time)
 
+            # XC's get_series response contains show-level metadata only.  Episode
+            # stream IDs live behind get_series_info and are required for playback
+            # (including STRM exports), so materialize due episode relations before
+            # this authoritative VOD refresh is considered complete.
+            episode_result = refresh_due_series_episodes(
+                account,
+                client=client,
+                scan_start_time=start_time,
+            )
+            logger.info(
+                "Episode discovery completed for account %s: %s",
+                account.name,
+                episode_result,
+            )
+            if int((episode_result or {}).get("failed") or 0) > 0:
+                raise RuntimeError(
+                    f"{episode_result['failed']} series episode refresh(es) failed"
+                )
+
         end_time = timezone.now()
         duration = (end_time - start_time).total_seconds()
 
@@ -1314,46 +1333,63 @@ def parse_date(date_string):
 
 # Episode processing and other advanced features
 
-def refresh_series_episodes(account, series, external_series_id, episodes_data=None):
-    """Refresh episodes for a series - only called on-demand"""
+def refresh_series_episodes(
+    account,
+    series,
+    external_series_id,
+    episodes_data=None,
+    *,
+    client=None,
+):
+    """Refresh episodes for one XC series, optionally reusing an open client."""
     try:
-        if not episodes_data:
+        if episodes_data is None:
             # Fetch detailed series info including episodes
-            with XtreamCodesClient(
-                account.server_url,
-                account.username,
-                account.password,
-                account.get_user_agent_string()
-            ) as client:
+            if client is None:
+                with XtreamCodesClient(
+                    account.server_url,
+                    account.username,
+                    account.password,
+                    account.get_user_agent_string()
+                ) as standalone_client:
+                    series_info = standalone_client.get_series_info(external_series_id)
+            else:
                 series_info = client.get_series_info(external_series_id)
-                if series_info:
-                    # Update series with detailed info
-                    info = series_info.get('info', {})
-                    if info:
-                        # Only update fields if new value is non-empty and either no existing value or existing value is empty
-                        updated = False
-                        if should_update_field(series.description, info.get('plot')):
-                            series.description = extract_string_from_array_or_string(info.get('plot'))
-                            updated = True
-                        normalized_rating = normalize_rating(info.get('rating'))
-                        if normalized_rating and (not series.rating or not str(series.rating).strip()):
-                            series.rating = normalized_rating
-                            updated = True
-                        if should_update_field(series.genre, info.get('genre')):
-                            series.genre = extract_string_from_array_or_string(info.get('genre'))
-                            updated = True
 
-                        year = extract_year_from_data(info)
-                        if year and not series.year:
-                            series.year = year
-                            updated = True
+            if series_info:
+                # Update series with detailed info
+                info = series_info.get('info', {})
+                if info:
+                    # Only update fields if new value is non-empty and either no existing value or existing value is empty
+                    updated = False
+                    if should_update_field(series.description, info.get('plot')):
+                        series.description = extract_string_from_array_or_string(info.get('plot'))
+                        updated = True
+                    normalized_rating = normalize_rating(info.get('rating'))
+                    if normalized_rating and (not series.rating or not str(series.rating).strip()):
+                        series.rating = normalized_rating
+                        updated = True
+                    if should_update_field(series.genre, info.get('genre')):
+                        series.genre = extract_string_from_array_or_string(info.get('genre'))
+                        updated = True
 
-                        if updated:
-                            series.save()
+                    year = extract_year_from_data(info)
+                    if year and not series.year:
+                        series.year = year
+                        updated = True
 
-                    episodes_data = series_info.get('episodes', {})
-                else:
-                    episodes_data = {}
+                    if updated:
+                        series.save()
+
+                episodes_data = series_info.get('episodes', {})
+            else:
+                return False
+
+        if not episodes_data:
+            # An empty response is not sufficient proof that every previously
+            # known episode disappeared. Preserve existing relations and let
+            # the caller report the refresh as unsuccessful.
+            return False
 
         # Fetch the series relation once — used both to pass into batch_process_episodes
         # (so episode relations get the FK set) and to update metadata afterwards.
@@ -1363,7 +1399,14 @@ def refresh_series_episodes(account, series, external_series_id, episodes_data=N
         ).first()
 
         # Process all episodes in batch
-        batch_process_episodes(account, series, episodes_data, series_relation=series_relation)
+        processed = batch_process_episodes(
+            account,
+            series,
+            episodes_data,
+            series_relation=series_relation,
+        )
+        if not processed:
+            return False
 
         if series_relation:
             custom_props = series_relation.custom_properties or {}
@@ -1373,8 +1416,11 @@ def refresh_series_episodes(account, series, external_series_id, episodes_data=N
             series_relation.last_episode_refresh = timezone.now()
             series_relation.save()
 
+        return True
+
     except Exception as e:
         logger.error(f"Error refreshing episodes for series {series.name}: {str(e)}")
+        return False
 
 
 def batch_process_episodes(account, series, episodes_data, scan_start_time=None, series_relation=None):
@@ -1391,7 +1437,7 @@ def batch_process_episodes(account, series, episodes_data, scan_start_time=None,
     came from this specific provider query.
     """
     if not episodes_data:
-        return
+        return False
 
     # XC panels encode seasons as a PHP array keyed by season number. When keys are
     # contiguous from 0 (common with Season 0 specials), json_encode emits a JSON
@@ -1406,7 +1452,7 @@ def batch_process_episodes(account, series, episodes_data, scan_start_time=None,
             f"Unexpected episodes_data type {type(episodes_data).__name__} "
             f"for series {series.name}; skipping"
         )
-        return
+        return False
 
     # Flatten episodes data
     all_episodes_data = []
@@ -1420,7 +1466,7 @@ def batch_process_episodes(account, series, episodes_data, scan_start_time=None,
             all_episodes_data.append(episode_data)
 
     if not all_episodes_data:
-        return
+        return False
 
     logger.info(f"Batch processing {len(all_episodes_data)} episodes for series {series.name}")
 
@@ -1666,62 +1712,124 @@ def batch_process_episodes(account, series, episodes_data, scan_start_time=None,
 
     logger.info(f"Batch processed episodes: {len(episodes_to_create)} new, {len(episodes_to_update)} updated, "
                 f"{len(relations_to_create)} new relations, {len(relations_to_update)} updated relations")
+    return True
+
+
+def refresh_due_series_episodes(
+    account,
+    *,
+    client=None,
+    series_ids=None,
+    scan_start_time=None,
+    progress_callback=None,
+):
+    """Materialize episode streams for current, never-fetched, or stale XC series."""
+    if account.account_type != M3UAccount.Types.XC:
+        logger.warning(f"Episode refresh called for non-XC account {account.id}")
+        return {
+            "total": 0,
+            "refreshed": 0,
+            "failed": 0,
+            "failed_series": [],
+        }
+
+    series_relations = M3USeriesRelation.objects.filter(
+        m3u_account=account,
+    )
+    if series_ids is not None:
+        series_relations = series_relations.filter(series__id__in=series_ids)
+    else:
+        cutoff_time = timezone.now() - timezone.timedelta(hours=24)
+        series_relations = series_relations.filter(
+            Q(last_episode_refresh__isnull=True)
+            | Q(last_episode_refresh__lt=cutoff_time)
+        )
+    if scan_start_time is not None:
+        # During a full VOD refresh, only query relations confirmed by this
+        # authoritative provider response. Stale relations are cleaned up later.
+        series_relations = series_relations.filter(last_seen__gte=scan_start_time)
+
+    series_relations = series_relations.select_related('series').order_by('id')
+    total = series_relations.count()
+    logger.info(f"Refreshing episode streams for {total} series")
+
+    def run(active_client):
+        refreshed_count = 0
+        failed_count = 0
+        failed_series = []
+        for index, relation in enumerate(
+            series_relations.iterator(chunk_size=100),
+            start=1,
+        ):
+            if progress_callback:
+                progress_callback()
+            refreshed = refresh_series_episodes(
+                account,
+                relation.series,
+                relation.external_series_id,
+                client=active_client,
+            )
+            if refreshed:
+                refreshed_count += 1
+            else:
+                failed_count += 1
+                if len(failed_series) < 100:
+                    failed_series.append(
+                        {
+                            "id": relation.series_id,
+                            "name": relation.series.name,
+                            "external_series_id": relation.external_series_id,
+                        }
+                    )
+            if index % 100 == 0 or index == total:
+                logger.info(
+                    "Episode discovery progress for account %s: %s/%s",
+                    account.name,
+                    index,
+                    total,
+                )
+        return {
+            "total": total,
+            "refreshed": refreshed_count,
+            "failed": failed_count,
+            "failed_series": failed_series,
+        }
+
+    if client is not None:
+        return run(client)
+
+    with XtreamCodesClient(
+        account.server_url,
+        account.username,
+        account.password,
+        account.get_user_agent_string()
+    ) as standalone_client:
+        return run(standalone_client)
 
 
 @shared_task
 def batch_refresh_series_episodes(account_id, series_ids=None):
-    """
-    Batch refresh episodes for multiple series.
-    If series_ids is None, refresh all series that haven't been refreshed recently.
-    """
+    """Batch refresh episode streams for one XC account."""
     try:
-        account = M3UAccount.objects.select_related("user_agent").get(id=account_id, is_active=True)
-
-        if account.account_type != M3UAccount.Types.XC:
-            logger.warning(f"Episode refresh called for non-XC account {account_id}")
-            return "Episode refresh only available for XtreamCodes accounts"
-
-        # Determine which series to refresh
-        if series_ids:
-            series_relations = M3USeriesRelation.objects.filter(
-                m3u_account=account,
-                series__id__in=series_ids
-            ).select_related('series')
-        else:
-            # Refresh series that haven't been refreshed in the last 24 hours
-            cutoff_time = timezone.now() - timezone.timedelta(hours=24)
-            series_relations = M3USeriesRelation.objects.filter(
-                m3u_account=account,
-                last_episode_refresh__lt=cutoff_time
-            ).select_related('series')
-
-        logger.info(f"Batch refreshing episodes for {series_relations.count()} series")
-
-        with XtreamCodesClient(
-            account.server_url,
-            account.username,
-            account.password,
-            account.get_user_agent_string()
-        ) as client:
-
-            refreshed_count = 0
-            for relation in series_relations:
-                try:
-                    refresh_series_episodes(
-                        account,
-                        relation.series,
-                        relation.external_series_id
-                    )
-                    refreshed_count += 1
-                except Exception as e:
-                    logger.error(f"Error refreshing episodes for series {relation.series.name}: {str(e)}")
-
-        logger.info(f"Batch episode refresh completed for {refreshed_count} series")
-        return f"Batch episode refresh completed for {refreshed_count} series"
-
+        account = M3UAccount.objects.select_related("user_agent").get(
+            id=account_id,
+            is_active=True,
+        )
+        result = refresh_due_series_episodes(account, series_ids=series_ids)
+        logger.info(
+            "Batch episode refresh completed for account %s: %s",
+            account.name,
+            result,
+        )
+        return result
     except Exception as e:
         logger.error(f"Error in batch episode refresh for account {account_id}: {str(e)}")
-        return f"Batch episode refresh failed: {str(e)}"
+        return {
+            "total": 0,
+            "refreshed": 0,
+            "failed": 0,
+            "error": str(e),
+        }
 
 
 @shared_task
@@ -1859,6 +1967,12 @@ def handle_movie_id_conflicts(current_movie, relation, tmdb_id_to_set, imdb_id_t
     if existing_relations.exists():
         logger.info(f"Transferring {existing_relations.count()} relations from existing movie {existing_movie.id} to current movie {current_movie.id}")
         existing_relations.update(movie=current_movie)
+
+    # Media Library export selections are attached to normalized rows rather
+    # than provider relations. Preserve them before deleting the duplicate.
+    export_targets = list(existing_movie.media_library_export_targets.all())
+    for export_target in export_targets:
+        export_target.selected_movies.add(current_movie)
 
     # Now safe to delete the existing movie since all its relations have been transferred
     logger.info(f"Deleting existing movie {existing_movie.id} '{existing_movie.name}' after merging data and transferring relations")
@@ -2012,6 +2126,10 @@ def handle_series_id_conflicts(current_series, relation, tmdb_id_to_set, imdb_id
     if existing_relations.exists():
         logger.info(f"Transferring {existing_relations.count()} relations from existing series {existing_series.id} to current series {current_series.id}")
         existing_relations.update(series=current_series)
+
+    export_targets = list(existing_series.media_library_export_targets.all())
+    for export_target in export_targets:
+        export_target.selected_series.add(current_series)
 
     # Now safe to delete the existing series since all its relations have been transferred
     logger.info(f"Deleting existing series {existing_series.id} '{existing_series.name}' after merging data and transferring relations")

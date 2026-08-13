@@ -11,6 +11,7 @@ from typing import Any, Iterable, Optional
 from django.db.models import Prefetch
 from django.urls import reverse
 
+from apps.media_servers.export_policy import export_relation_groups
 from apps.media_servers.path_security import is_beneath, resolve_export_path
 
 from apps.vod.models import (
@@ -141,10 +142,23 @@ def _add_genres(parent: ET.Element, raw_genre: Any) -> None:
 
 
 def _add_actors(parent: ET.Element, actors_value: Any) -> None:
-    actors = _as_text_list(actors_value)
-    for actor_name in actors:
-        actor_node = ET.SubElement(parent, "actor")
-        _add_text(actor_node, "name", actor_name)
+    raw_actors = actors_value if isinstance(actors_value, (list, tuple, set)) else [actors_value]
+    for actor in raw_actors:
+        if isinstance(actor, dict):
+            actor_entries = [
+                (
+                    _first_non_empty(actor.get("name"), actor.get("title")),
+                    actor.get("role"),
+                )
+            ]
+        else:
+            actor_entries = [(name, None) for name in _as_text_list(actor)]
+        for actor_name, role in actor_entries:
+            if not _stringify(actor_name):
+                continue
+            actor_node = ET.SubElement(parent, "actor")
+            _add_text(actor_node, "name", actor_name)
+            _add_text(actor_node, "role", role)
 
 
 def _add_unique_ids(parent: ET.Element, imdb_id: Any, tmdb_id: Any) -> None:
@@ -158,6 +172,23 @@ def _add_unique_ids(parent: ET.Element, imdb_id: Any, tmdb_id: Any) -> None:
         node = ET.SubElement(parent, "uniqueid", {"type": "tmdb", "default": "false"})
         node.text = tmdb_text
         _add_text(parent, "tmdbid", tmdb_text)
+
+
+def _add_additional_unique_ids(parent: ET.Element, properties: dict) -> None:
+    identifiers = _read_dict(properties.get("unique_ids"))
+    for identifier_type, value in identifiers.items():
+        normalized_type = _stringify(identifier_type).lower()
+        normalized_value = _stringify(value)
+        if not normalized_type or not normalized_value:
+            continue
+        if normalized_type in {"imdb", "imdb_id", "tmdb", "themoviedb"}:
+            continue
+        node = ET.SubElement(
+            parent,
+            "uniqueid",
+            {"type": normalized_type, "default": "false"},
+        )
+        node.text = normalized_value
 
 
 def _to_xml_text(root: ET.Element) -> str:
@@ -236,6 +267,7 @@ def _build_movie_nfo(
     _add_text(root, "director", director)
     _add_text(root, "credits", writer)
     _add_text(root, "country", country)
+    _add_text(root, "language", movie_props.get("language"))
     _add_text(root, "studio", studio)
     _add_text(root, "trailer", trailer)
     _add_text(root, "mpaa", mpaa)
@@ -248,6 +280,7 @@ def _build_movie_nfo(
         fanart = ET.SubElement(root, "fanart")
         _add_text(fanart, "thumb", backdrop_values[0])
     _add_unique_ids(root, movie.imdb_id, movie.tmdb_id)
+    _add_additional_unique_ids(root, movie_props)
     return _to_xml_text(root)
 
 
@@ -313,6 +346,7 @@ def _build_tvshow_nfo(
     _add_text(root, "trailer", trailer)
     _add_text(root, "studio", studio)
     _add_text(root, "country", country)
+    _add_text(root, "language", series_props.get("language"))
     _add_text(root, "status", status)
     _add_text(root, "runtime", episode_runtime)
     _add_text(root, "thumb", poster)
@@ -322,6 +356,7 @@ def _build_tvshow_nfo(
         fanart = ET.SubElement(root, "fanart")
         _add_text(fanart, "thumb", backdrop_values[0])
     _add_unique_ids(root, series.imdb_id, series.tmdb_id)
+    _add_additional_unique_ids(root, series_props)
     return _to_xml_text(root)
 
 
@@ -383,9 +418,14 @@ def _build_episode_nfo(
     _add_text(root, "runtime", runtime)
     _add_text(root, "director", director)
     _add_text(root, "credits", writer)
+    _add_text(root, "mpaa", _first_non_empty(episode_props.get("age"), episode_props.get("mpaa")))
+    _add_text(root, "studio", episode_props.get("studio"))
+    _add_text(root, "country", episode_props.get("country"))
+    _add_text(root, "language", episode_props.get("language"))
     _add_text(root, "thumb", poster)
     _add_actors(root, cast)
     _add_unique_ids(root, episode.imdb_id, episode.tmdb_id)
+    _add_additional_unique_ids(root, episode_props)
     return _to_xml_text(root)
 
 
@@ -499,6 +539,18 @@ def remove_managed_export_files(target) -> dict:
     """Remove only files owned by this target's completed export manifest."""
     root = resolve_export_path(
         target.output_root,
+        must_exist=False,
+        require_directory=True,
+    )
+    if not root.exists():
+        return {
+            "output_root": str(root),
+            "managed_files_deleted": 0,
+            "managed_files_missing": 0,
+            "output_root_missing": True,
+        }
+    root = resolve_export_path(
+        str(root),
         must_exist=True,
         require_directory=True,
     )
@@ -539,27 +591,23 @@ def build_strm_nfo_snapshot(target, *, cancel_check=None) -> dict:
     root.mkdir(parents=True, exist_ok=True)
     root = resolve_export_path(str(root), must_exist=True, require_directory=True)
 
-    movie_relations_qs = M3UMovieRelation.objects.select_related("m3u_account").filter(
-        m3u_account__is_active=True
-    )
+    movie_relations_qs = M3UMovieRelation.objects.select_related("m3u_account")
     movies_qs = (
-        Movie.objects.filter(m3u_relations__m3u_account__is_active=True)
+        target.selected_movies.filter(m3u_relations__m3u_account__is_active=True)
         .distinct()
         .select_related("logo")
         .prefetch_related(Prefetch("m3u_relations", queryset=movie_relations_qs))
         .order_by("name", "year", "id")
     )
-    series_relations_qs = M3USeriesRelation.objects.select_related("m3u_account").filter(
-        m3u_account__is_active=True
-    )
-    episode_relations_qs = M3UEpisodeRelation.objects.select_related("m3u_account").filter(
-        m3u_account__is_active=True
-    )
+    series_relations_qs = M3USeriesRelation.objects.select_related("m3u_account")
+    episode_relations_qs = M3UEpisodeRelation.objects.select_related("m3u_account")
     episodes_qs = Episode.objects.prefetch_related(
         Prefetch("m3u_relations", queryset=episode_relations_qs)
     ).order_by("season_number", "episode_number", "id")
     series_qs = (
-        Series.objects.filter(episodes__m3u_relations__m3u_account__is_active=True)
+        target.selected_series.filter(
+            episodes__m3u_relations__m3u_account__is_active=True
+        )
         .distinct()
         .select_related("logo")
         .prefetch_related(
@@ -572,13 +620,22 @@ def build_strm_nfo_snapshot(target, *, cancel_check=None) -> dict:
     desired: dict[str, str] = {}
     used_show_roots: set[str] = set()
     movies_written = series_written = episodes_written = 0
+    movies_skipped_existing = episodes_skipped_existing = 0
+    movies_skipped_no_safe_source = episodes_skipped_no_safe_source = 0
     nfo_written = strm_written = 0
 
     for movie in movies_qs:
         if cancel_check:
             cancel_check()
-        relation = _best_relation(_relation_list(movie.m3u_relations))
+        safe_relations, remote_import_relations = export_relation_groups(
+            _relation_list(movie.m3u_relations)
+        )
+        if remote_import_relations:
+            movies_skipped_existing += 1
+            continue
+        relation = _best_relation(safe_relations)
         if not relation:
+            movies_skipped_no_safe_source += 1
             continue
         movie_name = _movie_display_name(movie)
         base = Path("Movies") / movie_name / movie_name
@@ -601,7 +658,10 @@ def build_strm_nfo_snapshot(target, *, cancel_check=None) -> dict:
     for series in series_qs:
         if cancel_check:
             cancel_check()
-        series_relation = _best_relation(_relation_list(series.m3u_relations))
+        safe_series_relations, _remote_series_relations = (
+            export_relation_groups(_relation_list(series.m3u_relations))
+        )
+        series_relation = _best_relation(safe_series_relations)
         series_name = _sanitize_filename(series.name, fallback=f"Series-{series.id}")
         show_root = Path("TV Shows") / series_name
         if show_root.as_posix() in used_show_roots:
@@ -614,8 +674,17 @@ def build_strm_nfo_snapshot(target, *, cancel_check=None) -> dict:
         for episode in _relation_list(series.episodes):
             if cancel_check:
                 cancel_check()
-            episode_relation = _best_relation(_relation_list(episode.m3u_relations))
+            safe_episode_relations, remote_episode_relations = (
+                export_relation_groups(
+                    _relation_list(episode.m3u_relations)
+                )
+            )
+            if remote_episode_relations:
+                episodes_skipped_existing += 1
+                continue
+            episode_relation = _best_relation(safe_episode_relations)
             if not episode_relation:
+                episodes_skipped_no_safe_source += 1
                 continue
             season_num = _safe_int(episode.season_number) or 0
             episode_num = _safe_int(episode.episode_number) or 0
@@ -674,6 +743,10 @@ def build_strm_nfo_snapshot(target, *, cancel_check=None) -> dict:
         "movies_written": movies_written,
         "series_written": series_written,
         "episodes_written": episodes_written,
+        "movies_skipped_existing": movies_skipped_existing,
+        "episodes_skipped_existing": episodes_skipped_existing,
+        "movies_skipped_no_safe_source": movies_skipped_no_safe_source,
+        "episodes_skipped_no_safe_source": episodes_skipped_no_safe_source,
         "strm_files_written": strm_written,
         "nfo_files_written": nfo_written,
         "total_files_written": strm_written + nfo_written,

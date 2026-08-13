@@ -125,14 +125,57 @@ class EmptyVODCategoriesGuardTests(TransactionTestCase):
             {},
         ]
 
-        with patch("apps.vod.tasks.XtreamCodesClient") as mock_client_cls:
+        with (
+            patch("apps.vod.tasks.XtreamCodesClient") as mock_client_cls,
+            patch(
+                "apps.vod.tasks.refresh_due_series_episodes",
+                return_value={"total": 0, "refreshed": 0, "failed": 0},
+            ) as mock_episode_refresh,
+        ):
             mock_client_cls.return_value.__enter__.return_value = mock_client
             result = refresh_vod_content(account.id)
 
         self.assertIn("completed", result)
         mock_refresh_movies.assert_called_once()
         mock_refresh_series.assert_called_once()
+        mock_episode_refresh.assert_called_once()
+        self.assertEqual(mock_episode_refresh.call_args.args[0], account)
+        self.assertIs(mock_episode_refresh.call_args.kwargs["client"], mock_client)
         mock_cleanup.assert_called_once()
         self.assertTrue(
             M3UVODCategoryRelation.objects.filter(pk=relation.pk, enabled=True).exists()
         )
+
+    @patch("apps.vod.tasks.batch_create_categories")
+    @patch("apps.m3u.tasks.send_m3u_update")
+    @patch("apps.vod.tasks.cleanup_orphaned_vod_content")
+    @patch("apps.vod.tasks.refresh_series")
+    @patch("apps.vod.tasks.refresh_movies")
+    @USER_AGENT_PATCH
+    def test_failed_episode_discovery_reports_refresh_failure_before_cleanup(
+        self,
+        _mock_user_agent,
+        _mock_refresh_movies,
+        _mock_refresh_series,
+        mock_cleanup,
+        _mock_ws,
+        mock_batch_create,
+    ):
+        account, category, _relation = self._setup_xc_account_with_movie_category()
+        mock_client = MagicMock()
+        mock_client.get_vod_categories.return_value = [
+            {"category_id": "1", "category_name": "NETFLIX MOVIES"},
+        ]
+        mock_client.get_series_categories.return_value = []
+        mock_batch_create.side_effect = [{category.name: category}, {}]
+
+        with patch("apps.vod.tasks.XtreamCodesClient") as mock_client_cls, patch(
+            "apps.vod.tasks.refresh_due_series_episodes",
+            return_value={"total": 1, "refreshed": 0, "failed": 1},
+        ):
+            mock_client_cls.return_value.__enter__.return_value = mock_client
+            result = refresh_vod_content(account.id)
+
+        self.assertIn("VOD refresh failed", result)
+        self.assertIn("episode refresh", result)
+        mock_cleanup.assert_not_called()

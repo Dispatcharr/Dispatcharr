@@ -3727,6 +3727,15 @@ class RecordingViewSet(viewsets.ModelViewSet):
         instance.custom_properties = cp
         instance.save(update_fields=["custom_properties"])
 
+        if cp.get("status") == "completed" and cp.get("file_path"):
+            from apps.media_servers.tasks import sync_dvr_media_library_after_recording
+
+            transaction.on_commit(
+                lambda recording_id=instance.id: (
+                    sync_dvr_media_library_after_recording.delay(recording_id)
+                )
+            )
+
         try:
             from core.utils import send_websocket_update
             send_websocket_update('updates', 'update', {
@@ -3805,6 +3814,9 @@ class RecordingViewSet(viewsets.ModelViewSet):
         cp = instance.custom_properties or {}
         rec_status = cp.get("status", "")
         file_path = cp.get("file_path")
+        nfo_path = cp.get("nfo_path")
+        if not nfo_path and file_path:
+            nfo_path = os.path.splitext(file_path)[0] + ".nfo"
         hls_dir = cp.get("_hls_dir")
         channel_uuid = str(instance.channel.uuid)
 
@@ -3825,16 +3837,19 @@ class RecordingViewSet(viewsets.ModelViewSet):
             pass
 
         # 3. Defer slow teardown to a background thread
-        library_dir = '/data'
-        allowed_roots = ['/data/', library_dir.rstrip('/') + '/']
+        from apps.media_servers.dvr_library import resolve_dvr_library_path
+        from core.models import CoreSettings
+
+        recordings_root = os.path.realpath(CoreSettings.get_dvr_library_dir())
 
         def _safe_remove(path: str):
             if not path or not isinstance(path, str):
                 return
             try:
-                if any(path.startswith(root) for root in allowed_roots) and os.path.exists(path):
-                    os.remove(path)
-                    logger.info(f"Deleted recording artifact: {path}")
+                resolved = resolve_dvr_library_path(path, must_exist=False)
+                if resolved.is_file():
+                    os.remove(resolved)
+                    logger.info(f"Deleted recording artifact: {resolved}")
             except Exception as ex:
                 logger.warning(f"Failed to delete recording artifact {path}: {ex}")
 
@@ -3843,14 +3858,18 @@ class RecordingViewSet(viewsets.ModelViewSet):
                 return
             try:
                 import shutil as _shutil
-                if any(path.startswith(root) for root in allowed_roots) and os.path.isdir(path):
-                    _shutil.rmtree(path)
-                    logger.info(f"Deleted recording HLS directory: {path}")
+                resolved = resolve_dvr_library_path(
+                    path,
+                    must_exist=False,
+                    require_directory=True,
+                )
+                if resolved.is_dir():
+                    _shutil.rmtree(resolved)
+                    logger.info(f"Deleted recording HLS directory: {resolved}")
             except Exception as ex:
                 logger.warning(f"Failed to delete HLS directory {path}: {ex}")
 
         # Clean up empty parent directories up to the recordings root to prevent orphaned folders from accumulating over time.
-        recordings_root = os.path.normpath('/data/recordings')
 
         def _prune_empty_parents(path: str):
             if not path or not isinstance(path, str):
@@ -3890,6 +3909,7 @@ class RecordingViewSet(viewsets.ModelViewSet):
             # Best-effort file cleanup in case run_recording already exited
             # before the DB delete.
             _safe_remove(file_path)
+            _safe_remove(nfo_path)
             _safe_rmtree(hls_dir)
 
             # If removing the file/HLS dir leaves the show/season folder

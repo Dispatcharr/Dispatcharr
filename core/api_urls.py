@@ -14,6 +14,7 @@ from .api_views import (
     TimezoneListView,
     get_system_events,
     browse_safe_directories,
+    create_safe_directory,
 )
 
 router = DefaultRouter()
@@ -29,5 +30,6 @@ urlpatterns = [
     path('timezones/', TimezoneListView.as_view(), name='timezones'),
     path('system-events/', get_system_events, name='system_events'),
     path('directories/browse/', browse_safe_directories, name='browse_safe_directories'),
+    path('directories/create/', create_safe_directory, name='create_safe_directory'),
     path('', include(router.urls)),
 ]

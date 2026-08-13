@@ -1,4 +1,5 @@
 import os
+import re
 import xml.etree.ElementTree as ET
 from typing import Any, Optional
 
@@ -607,17 +608,23 @@ def _nfo_list(root: ET.Element, tag: str) -> list[str]:
     return results
 
 
-def _nfo_unique_ids(root: ET.Element) -> tuple[Optional[str], Optional[str]]:
-    imdb_id = None
-    tmdb_id = None
-
+def _nfo_unique_id_map(root: ET.Element) -> dict[str, str]:
+    identifiers: dict[str, str] = {}
     for node in root.iter():
         if _normalize_xml_tag(node.tag) != 'uniqueid':
             continue
         value = _safe_xml_text(node)
-        if not value:
-            continue
         id_type = str((node.attrib or {}).get('type') or '').strip().lower()
+        if value and id_type and id_type not in identifiers:
+            identifiers[id_type] = value
+    return identifiers
+
+
+def _nfo_unique_ids(root: ET.Element) -> tuple[Optional[str], Optional[str]]:
+    imdb_id = None
+    tmdb_id = None
+
+    for id_type, value in _nfo_unique_id_map(root).items():
         if id_type in {'imdb', 'imdb_id'} and not imdb_id:
             imdb_id = value
         elif id_type in {'tmdb', 'themoviedb'} and not tmdb_id:
@@ -654,6 +661,11 @@ def _nfo_rating(root: ET.Element) -> Optional[str]:
 
 
 def _nfo_runtime_secs(root: ET.Element) -> Optional[int]:
+    exact_seconds = _parse_xml_int(
+        _find_child_text(root, 'durationinseconds', 'duration_seconds')
+    )
+    if exact_seconds and exact_seconds > 0:
+        return int(exact_seconds)
     runtime = _find_child_text(root, 'runtime')
     minutes = _parse_xml_int(runtime)
     if minutes and minutes > 0:
@@ -696,15 +708,17 @@ def _extract_nfo_root_xml(payload: str) -> Optional[str]:
     if not cleaned:
         return None
     lower = cleaned.lower()
+    roots = []
     for tag in ('movie', 'tvshow', 'episodedetails', 'episode'):
         start = lower.find(f'<{tag}')
         if start == -1:
             continue
-        end = lower.find(f'</{tag}>', start)
-        if end == -1:
+        end = lower.rfind(f'</{tag}>')
+        if end == -1 or end < start:
             continue
-        end += len(f'</{tag}>')
-        return cleaned[start:end]
+        roots.append((start, end + len(f'</{tag}>')))
+    if roots:
+        return cleaned[min(entry[0] for entry in roots):max(entry[1] for entry in roots)]
     return cleaned
 
 
@@ -724,7 +738,13 @@ def _parse_nfo_roots(nfo_path: str) -> tuple[list[ET.Element], Optional[str]]:
         root = ET.fromstring(xml_payload)
         roots.append(root)
     except ET.ParseError:
-        wrapped = f'<root>{xml_payload}</root>'
+        wrapped_payload = re.sub(
+            r'<\?xml[^>]*\?>',
+            '',
+            xml_payload,
+            flags=re.IGNORECASE,
+        )
+        wrapped = f'<root>{wrapped_payload}</root>'
         try:
             wrapper = ET.fromstring(wrapped)
         except ET.ParseError as exc:
@@ -822,6 +842,38 @@ def _build_metadata_payload(root: ET.Element, *, directory: str, fallback_title:
     poster = _resolve_artwork_path(poster, directory=directory)
     backdrop = _resolve_artwork_path(backdrop, directory=directory)
     runtime_secs = _nfo_runtime_secs(root)
+    actors = []
+    for node in root.iter():
+        if _normalize_xml_tag(node.tag) != 'actor':
+            continue
+        name = _find_child_text(node, 'name') or _safe_xml_text(node)
+        role = _find_child_text(node, 'role')
+        if name:
+            actor = {'name': name}
+            if role:
+                actor['role'] = role
+            actors.append(actor)
+
+    directors = _nfo_list(root, 'director')
+    writers = _nfo_list(root, 'credits')
+    custom_properties = {
+        'director': ', '.join(directors),
+        'credits': ', '.join(writers),
+        'writer': ', '.join(writers),
+        'actors': actors,
+        'cast': actors,
+        'age': _find_child_text(root, 'mpaa'),
+        'mpaa': _find_child_text(root, 'mpaa'),
+        'studio': _find_child_text(root, 'studio'),
+        'country': _find_child_text(root, 'country'),
+        'language': _find_child_text(root, 'language'),
+        'unique_ids': _nfo_unique_id_map(root),
+    }
+    custom_properties = {
+        key: value
+        for key, value in custom_properties.items()
+        if value not in (None, '', [], {})
+    }
 
     local_poster, local_backdrop = find_local_artwork_files(directory)
     if local_poster:
@@ -840,6 +892,7 @@ def _build_metadata_payload(root: ET.Element, *, directory: str, fallback_title:
         'tmdb_id': tmdb_id,
         'imdb_id': imdb_id,
         'duration_secs': runtime_secs,
+        'custom_properties': custom_properties,
     }
 
 
@@ -944,10 +997,15 @@ def find_episode_nfo_metadata(
             continue
         selected = root
         break
-    if selected is None:
+    if selected is None and season_number is None and episode_number is None:
         selected = candidates[0]
+    if selected is None:
+        return None, 'Episode NFO did not contain the requested season and episode.'
 
     payload = _build_metadata_payload(selected, directory=directory, fallback_title=base_name)
     payload['season_number'] = _parse_xml_int(_find_child_text(selected, 'season', 'displayseason'))
     payload['episode_number'] = _parse_xml_int(_find_child_text(selected, 'episode', 'displayepisode'))
+    payload['series_title'] = _find_child_text(selected, 'showtitle')
+    payload['series_year'] = _parse_xml_int(_find_child_text(selected, 'showyear'))
+    payload['air_date'] = _find_child_text(selected, 'aired', 'premiered')
     return payload, None
