@@ -34,6 +34,40 @@ class ReportProgressTests(SimpleTestCase):
         })
         mock_record.assert_called_once_with("my-plugin", "task-1", 50, "halfway")
 
+    def test_rapid_calls_within_min_interval_are_throttled(self):
+        pm = PluginManager()
+        report_progress = pm._make_progress_reporter("my-plugin", task_id="task-1")
+        with patch("core.utils.send_websocket_update") as mock_send, patch(
+            "apps.plugins.task_history.record_task_progress"
+        ):
+            report_progress(10)
+            report_progress(11)  # too soon, too small a jump: dropped
+            report_progress(12)
+
+        self.assertEqual(mock_send.call_count, 1)
+
+    def test_completion_call_always_sends(self):
+        pm = PluginManager()
+        report_progress = pm._make_progress_reporter("my-plugin", task_id="task-1")
+        with patch("core.utils.send_websocket_update") as mock_send, patch(
+            "apps.plugins.task_history.record_task_progress"
+        ):
+            report_progress(10)
+            report_progress(100)
+
+        self.assertEqual(mock_send.call_count, 2)
+
+    def test_large_percent_jump_always_sends(self):
+        pm = PluginManager()
+        report_progress = pm._make_progress_reporter("my-plugin", task_id="task-1")
+        with patch("core.utils.send_websocket_update") as mock_send, patch(
+            "apps.plugins.task_history.record_task_progress"
+        ):
+            report_progress(10)
+            report_progress(50)
+
+        self.assertEqual(mock_send.call_count, 2)
+
 
 class DispatchTaskTests(SimpleTestCase):
     def _lp(self, capabilities=("background_tasks",)):

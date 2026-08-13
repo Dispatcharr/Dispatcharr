@@ -88,6 +88,12 @@ class PluginManager:
     LEADER_LEASE_TTL = 30
     LEADER_RENEW_INTERVAL = 10
 
+    # Minimum seconds between report_progress writes for a given task, unless
+    # it's the completion call or percent jumped a lot, avoiding a plugin's
+    # tight progress loop hammering the websocket + several Redis calls.
+    PROGRESS_MIN_INTERVAL = 0.3
+    PROGRESS_MIN_PERCENT_JUMP = 10
+
     @classmethod
     def get(cls) -> "PluginManager":
         if not cls._instance:
@@ -1238,10 +1244,30 @@ class PluginManager:
         }
 
     def _make_progress_reporter(self, plugin_key: str, task_id: Optional[str]):
-        """No-op when task_id is None, so plugins can call it unconditionally."""
+        """No-op when task_id is None, so plugins can call it unconditionally.
+
+        Throttled: at most one send per PROGRESS_MIN_INTERVAL seconds, unless
+        this is the completion call (percent >= 100) or percent moved by at
+        least PROGRESS_MIN_PERCENT_JUMP since the last sent update; either
+        of those always goes through.
+        """
+        state = {"last_sent_at": 0.0, "last_percent": None}
+
         def report_progress(percent, message=None):
             if task_id is None:
                 return
+            now = time.time()
+            is_complete = percent is not None and percent >= 100
+            jumped = (
+                state["last_percent"] is None
+                or percent is None
+                or abs(percent - state["last_percent"]) >= self.PROGRESS_MIN_PERCENT_JUMP
+            )
+            if not is_complete and not jumped and (now - state["last_sent_at"]) < self.PROGRESS_MIN_INTERVAL:
+                return
+            state["last_sent_at"] = now
+            state["last_percent"] = percent
+
             from core.utils import send_websocket_update
             from .task_history import record_task_progress
             send_websocket_update("updates", "update", {
