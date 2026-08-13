@@ -158,6 +158,23 @@ class LeaderElectionTransitionTests(SimpleTestCase):
         self.assertEqual(instance.on_leader_lost.call_count, 1)
 
 
+class LeadershipContextTests(SimpleTestCase):
+    def test_context_includes_dispatch_task_and_report_progress(self):
+        pm = PluginManager()
+        lp, _instance = _plugin_with_leader_hooks("svc")
+        lp.cached_settings = {"foo": "bar"}
+        lp.actions = [{"id": "do_thing"}]
+
+        context = pm._build_leadership_context(lp)
+
+        self.assertEqual(context["settings"], {"foo": "bar"})
+        self.assertEqual(context["actions"], {"do_thing": {"id": "do_thing"}})
+        self.assertTrue(callable(context["dispatch_task"]))
+        self.assertTrue(callable(context["report_progress"]))
+        # No active task, so this must be a safe no-op, not an error.
+        context["report_progress"](50)
+
+
 class LeadershipTickTests(SimpleTestCase):
     def test_plugin_without_hook_is_never_touched(self):
         pm = PluginManager()
