@@ -168,6 +168,36 @@ def redact_text(value):
     return _apply(value)
 
 
+_ANY_URL = re.compile(r"(?i)https?://[^\s'\"]+")
+
+
+def redact_provider_url(url, token="[provider_host]"):
+    """Mask the host of a URL known to belong to a provider; the rest is swept as text."""
+    if not isinstance(url, str) or "://" not in url:
+        return redact_text(url)
+    scheme, rest = url.split("://", 1)
+    authority, sep, tail = rest.partition("/")
+    if "@" in authority:
+        authority = authority.rsplit("@", 1)[0] + "@" + token
+    else:
+        authority = token
+    return redact_text(f"{scheme}://{authority}{sep}{tail}")
+
+
+def redact_provider_text(text, token="[provider_host]"):
+    """Sweep text whose URLs are all provider material; unshaped URLs reduce to the token host."""
+    result = redact_text(text)
+    if not isinstance(result, str):
+        return result
+    # A '[' means the pattern battery already masked it; reduce only unshaped URLs.
+    return _ANY_URL.sub(
+        lambda m: m.group(0)
+        if "[" in m.group(0)
+        else f"{m.group(0).split('://', 1)[0]}://{token}/...",
+        result,
+    )
+
+
 def _passthrough(stdin, stdout):
     """Mask stdin onto stdout line by line, for when the collector cannot run."""
     for raw in iter(lambda: stdin.readline(256 * 1024), b""):
