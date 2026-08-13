@@ -232,6 +232,45 @@ class LeadershipTickTests(SimpleTestCase):
         instance.on_leader_acquired.assert_called_once()
         self.assertEqual(pm._leadership_state["svc"], "leader")
 
+    def test_disabled_plugin_loses_leadership_without_waiting_for_ttl(self):
+        """A plugin disabled elsewhere bumps the reload token; the tick loop
+        must notice, drop it from the registry via a rediscovery, and fire
+        on_leader_lost against the still-valid old instance."""
+        pm = PluginManager()
+        lp, instance = _plugin_with_leader_hooks("svc")
+        pm._registry = {"svc": lp}
+        pm._leadership_state["svc"] = "leader"
+        pm._last_reload_token = 0.0
+        pm._get_reload_token = MagicMock(return_value=1.0)
+        pm.release_leadership = MagicMock()
+
+        def fake_discover(**kwargs):
+            pm._registry = {}
+            return pm._registry
+
+        pm.discover_plugins = MagicMock(side_effect=fake_discover)
+
+        pm._leadership_tick()
+
+        instance.on_leader_lost.assert_called_once()
+        self.assertEqual(pm._leadership_state["svc"], "follower")
+        pm.release_leadership.assert_called_once_with("svc")
+
+    def test_unchanged_reload_token_skips_rediscovery(self):
+        pm = PluginManager()
+        lp, instance = _plugin_with_leader_hooks("svc")
+        pm._registry = {"svc": lp}
+        pm._leadership_state["svc"] = "leader"
+        pm._last_reload_token = 1.0
+        pm._get_reload_token = MagicMock(return_value=1.0)
+        pm.discover_plugins = MagicMock()
+        pm.extend_leadership = MagicMock(return_value=True)
+
+        pm._leadership_tick()
+
+        pm.discover_plugins.assert_not_called()
+        instance.on_leader_lost.assert_not_called()
+
     def test_one_plugin_exception_does_not_stop_others(self):
         pm = PluginManager()
         broken_lp, broken_instance = _plugin_with_leader_hooks("broken")

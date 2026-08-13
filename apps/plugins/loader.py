@@ -910,7 +910,31 @@ class PluginManager:
 
     def _leadership_tick(self) -> None:
         with self._lock:
+            pre_refresh_registry = dict(self._registry)
+
+        # Cheap mtime check; only rescans if disable/reload bumped the token,
+        # so the leader (often a different process than the one serving the
+        # disable request) notices without waiting on lease TTL expiry.
+        if self._get_reload_token() > self._last_reload_token:
+            self.discover_plugins(sync_db=False, force_reload=False, use_cache=True)
+
+        with self._lock:
             registry_snapshot = list(self._registry.items())
+
+        live_keys = {key for key, lp in registry_snapshot if lp.instance}
+        with self._leadership_lock:
+            leader_keys = [k for k, v in self._leadership_state.items() if v == "leader"]
+        for key in leader_keys:
+            if key in live_keys:
+                continue
+            # Use the pre-refresh lp: a disabled/removed plugin's current
+            # entry is an instance-less placeholder.
+            try:
+                self._transition_to_follower(key, pre_refresh_registry.get(key))
+                self.release_leadership(key)
+            except Exception:
+                logger.exception("Leader election teardown failed for plugin '%s'", key)
+
         for key, lp in registry_snapshot:
             if not lp.instance:
                 continue
