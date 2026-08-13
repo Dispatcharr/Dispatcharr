@@ -34,7 +34,7 @@ import {
 } from '../PluginWarnings.jsx';
 import ConfirmationDialog from '../ConfirmationDialog.jsx';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { usePluginStore } from '../../store/plugins';
+import { usePluginStore, needsCapabilityAck } from '../../store/plugins';
 import PluginDetailPanel from '../PluginDetailPanel.jsx';
 import {
   buildCompatibilityTooltip,
@@ -320,7 +320,7 @@ const AvailablePluginCard = ({
   const handleDismissRestart = async (andNavigate = false) => {
     if (enableNow && installedKey) {
       const proceed =
-        installedPlugin?.ever_enabled ||
+        !needsCapabilityAck(installedPlugin) ||
         (await usePluginStore
           .getState()
           .requestEnableConfirmation(installedPlugin || { key: installedKey }));

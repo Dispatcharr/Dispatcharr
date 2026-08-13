@@ -45,6 +45,8 @@ describe('PluginCard', () => {
     version: '1.0.0',
     enabled: true,
     ever_enabled: true,
+    capabilities: [{ id: 'background_tasks', label: 'Run background tasks' }],
+    acknowledged_capabilities: ['background_tasks'],
     author: 'Test Author',
     help_url: 'https://example.com/help',
     logo_url: 'https://example.com/logo.png',
@@ -150,7 +152,12 @@ describe('PluginCard', () => {
   });
 
   it('requires trust for first-time enable', async () => {
-    const firstTimePlugin = { ...mockPlugin, enabled: false, ever_enabled: false };
+    const firstTimePlugin = {
+      ...mockPlugin,
+      enabled: false,
+      ever_enabled: false,
+      acknowledged_capabilities: [],
+    };
     defaultProps.onRequireTrust.mockResolvedValue(true);
     defaultProps.onToggleEnabled.mockResolvedValue({ success: true });
 
@@ -164,7 +171,12 @@ describe('PluginCard', () => {
   });
 
   it('does not enable if trust is denied', async () => {
-    const firstTimePlugin = { ...mockPlugin, enabled: false, ever_enabled: false };
+    const firstTimePlugin = {
+      ...mockPlugin,
+      enabled: false,
+      ever_enabled: false,
+      acknowledged_capabilities: [],
+    };
     defaultProps.onRequireTrust.mockResolvedValue(false);
 
     renderCard({ plugin: firstTimePlugin });
@@ -173,6 +185,29 @@ describe('PluginCard', () => {
     await waitFor(() => {
       expect(defaultProps.onRequireTrust).toHaveBeenCalled();
       expect(defaultProps.onToggleEnabled).not.toHaveBeenCalled();
+    });
+  });
+
+  it('requires trust again when an already-enabled plugin adds a capability', async () => {
+    const updatedPlugin = {
+      ...mockPlugin,
+      enabled: false,
+      ever_enabled: true,
+      capabilities: [
+        { id: 'background_tasks', label: 'Run background tasks' },
+        { id: 'persistent_service', label: 'Run a persistent background service' },
+      ],
+      acknowledged_capabilities: ['background_tasks'],
+    };
+    defaultProps.onRequireTrust.mockResolvedValue(true);
+    defaultProps.onToggleEnabled.mockResolvedValue({ success: true });
+
+    renderCard({ plugin: updatedPlugin });
+    fireEvent.click(screen.getByRole('checkbox'));
+
+    await waitFor(() => {
+      expect(defaultProps.onRequireTrust).toHaveBeenCalledWith(updatedPlugin);
+      expect(defaultProps.onToggleEnabled).toHaveBeenCalledWith('test-plugin', true);
     });
   });
 
