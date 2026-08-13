@@ -4,6 +4,7 @@ import threading
 import time
 import socket
 import requests
+from core.redaction import redact_provider_text
 import subprocess
 import gevent
 import re
@@ -1089,7 +1090,7 @@ class StreamManager:
             if any(keyword in content_lower for keyword in ['error', 'failed', 'cannot', 'invalid', 'corrupt']):
                 logger.error(f"Stream process error for channel {self.channel_id}: {content}")
             elif any(keyword in content_lower for keyword in ['warning', 'deprecated', 'ignoring']):
-                logger.warning(f"Stream process warning for channel {self.channel_id}: {content}")
+                logger.warning(f"Stream process warning for channel {self.channel_id}: {redact_provider_text(content)}")
             elif content.startswith('frame=') or 'fps=' in content or 'speed=' in content:
                 # Stats lines - log at trace level to avoid spam
                 logger.trace(f"Stream stats for channel {self.channel_id}: {content}")
