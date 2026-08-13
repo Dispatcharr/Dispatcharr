@@ -851,9 +851,14 @@ class PluginManager:
         # lookup, since the tick loop runs in every process and must not touch
         # the DB every LEADER_RENEW_INTERVAL seconds. Uses the settings
         # snapshot taken at discovery time instead (see LoadedPlugin.cached_settings).
+        # report_progress is a no-op here (no task_id), since there's no active
+        # task backing a persistent service's calls.
         return {
             "settings": lp.cached_settings,
             "logger": logger,
+            "actions": {a.get("id"): a for a in (lp.actions or [])},
+            "report_progress": self._make_progress_reporter(lp.key, task_id=None),
+            "dispatch_task": self._make_task_dispatcher(lp),
         }
 
     def _transition_to_leader(self, key: str, lp: LoadedPlugin) -> None:
