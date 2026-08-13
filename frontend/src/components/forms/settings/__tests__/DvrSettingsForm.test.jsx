@@ -295,6 +295,12 @@ describe('DvrSettingsForm', () => {
       await waitFor(() => {
         expect(screen.getByTestId('comskip_hw_accel')).toBeInTheDocument();
       });
+      expect(
+        screen.getByRole('option', { name: 'Hardware assist (--hwassist)' })
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByRole('option', { name: 'Intel Quick Sync (--qsv)' })
+      ).not.toBeInTheDocument();
     });
 
     it('does not render a standalone comskip upload control', async () => {

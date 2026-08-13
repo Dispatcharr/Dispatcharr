@@ -8,13 +8,14 @@ from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 from apps.epg.models import ProgramData
 from apps.accounts.models import User
-from dispatcharr.utils import network_access_allowed
+from dispatcharr.utils import get_client_ip, network_access_allowed
 from django.utils import timezone as django_timezone
 from django.shortcuts import get_object_or_404
 from datetime import datetime, timedelta, timezone as dt_timezone
 import html
 import time
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
+from ipaddress import ip_address
 import base64
 import logging
 from django.db.models.functions import Lower
@@ -43,15 +44,8 @@ def get_client_identifier(request):
     Returns:
         tuple: (client_id_hash, client_ip, user_agent)
     """
-    # Get client IP (handle proxies)
-    x_forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')
-    if x_forwarded_for:
-        client_ip = x_forwarded_for.split(',')[0].strip()
-    else:
-        client_ip = request.META.get('REMOTE_ADDR', 'unknown')
-
-    # Get user agent
-    user_agent = request.META.get('HTTP_USER_AGENT', 'unknown')
+    client_ip = get_client_ip(request) or "unknown"
+    user_agent = request.META.get("HTTP_USER_AGENT", "unknown")
 
     # Create a hash for a shorter cache key
     client_str = f"{client_ip}:{user_agent}"
@@ -64,7 +58,7 @@ def m3u_endpoint(request, profile_name=None, user=None):
     if not network_access_allowed(request, "M3U_EPG"):
         # Log blocked M3U download
         from core.utils import log_system_event
-        client_ip = request.META.get('REMOTE_ADDR', 'unknown')
+        client_ip = get_client_ip(request) or "unknown"
         user_agent = request.META.get('HTTP_USER_AGENT', 'unknown')
         log_system_event(
             event_type='m3u_blocked',
@@ -89,7 +83,7 @@ def epg_endpoint(request, profile_name=None, user=None):
     if not network_access_allowed(request, "M3U_EPG"):
         # Log blocked EPG download
         from core.utils import log_system_event
-        client_ip = request.META.get('REMOTE_ADDR', 'unknown')
+        client_ip = get_client_ip(request) or "unknown"
         user_agent = request.META.get('HTTP_USER_AGENT', 'unknown')
         log_system_event(
             event_type='epg_blocked',
@@ -127,7 +121,12 @@ def generate_m3u(request, profile_name=None, user=None):
 
     # Check cache for recent identical request (helps with double-GET from browsers)
     from django.core.cache import cache
-    cache_params = f"{profile_name or 'all'}:{user.username if user else 'anonymous'}:{request.GET.urlencode()}"
+
+    request_origin = build_absolute_uri_with_port(request, "")
+    cache_params = (
+        f"{profile_name or 'all'}:{user.username if user else 'anonymous'}"
+        f":{request.GET.urlencode()}:origin={request_origin}"
+    )
     content_cache_key = f"m3u_content:{cache_params}"
 
     cached_content = cache.get(content_cache_key)
@@ -214,7 +213,7 @@ def generate_m3u(request, profile_name=None, user=None):
     xc_username = request.GET.get('username')
     xc_password = request.GET.get('password')
     is_xc_request = user is not None and xc_username and xc_password
-    _base_url = build_absolute_uri_with_port(request, '')
+    _base_url = request_origin
 
     if is_xc_request:
         # This is an XC API request - use XC-style EPG URL
@@ -235,7 +234,8 @@ def generate_m3u(request, profile_name=None, user=None):
             proxy_qs['output_format'] = output_format_param
         proxy_qs_suffix = f"?{urlencode(proxy_qs)}" if proxy_qs else ""
         # Regular request - use standard EPG endpoint
-        epg_base_url = build_absolute_uri_with_port(request, reverse('output:epg_endpoint', args=[profile_name]) if profile_name else reverse('output:epg_endpoint'))
+        epg_path = reverse('output:epg_endpoint', args=[profile_name]) if profile_name else reverse('output:epg_endpoint')
+        epg_base_url = f"{_base_url}{epg_path}"
 
         # Optionally preserve certain query parameters
         preserved_params = ['tvg_id_source', 'cachedlogos', 'days', 'prev_days']
@@ -316,6 +316,13 @@ def generate_m3u(request, profile_name=None, user=None):
             if first_stream and first_stream.url:
                 # Use the direct stream URL
                 stream_url = first_stream.url
+                # Restore VLC-style @ for multicast UDP
+                if stream_url.startswith("udp://") and "udp://@" not in stream_url:
+                    try:
+                        if ip_address(urlparse(stream_url).hostname).is_multicast:
+                            stream_url = stream_url.replace("udp://", "udp://@", 1)
+                    except ValueError:
+                        pass
             else:
                 # Fall back to proxy URL if no direct URL available
                 stream_url = f"{_stream_url_prefix}{channel.uuid}"
@@ -489,7 +496,7 @@ def xc_get(request):
     if not network_access_allowed(request, 'XC_API'):
         # Log blocked M3U download
         from core.utils import log_system_event
-        client_ip = request.META.get('REMOTE_ADDR', 'unknown')
+        client_ip = get_client_ip(request) or "unknown"
         user_agent = request.META.get('HTTP_USER_AGENT', 'unknown')
         log_system_event(
             event_type='m3u_blocked',
@@ -506,7 +513,7 @@ def xc_get(request):
     if user is None:
         # Log blocked M3U download due to invalid credentials
         from core.utils import log_system_event
-        client_ip = request.META.get('REMOTE_ADDR', 'unknown')
+        client_ip = get_client_ip(request) or "unknown"
         user_agent = request.META.get('HTTP_USER_AGENT', 'unknown')
         log_system_event(
             event_type='m3u_blocked',
@@ -524,7 +531,7 @@ def xc_xmltv(request):
     if not network_access_allowed(request, 'XC_API'):
         # Log blocked EPG download
         from core.utils import log_system_event
-        client_ip = request.META.get('REMOTE_ADDR', 'unknown')
+        client_ip = get_client_ip(request) or "unknown"
         user_agent = request.META.get('HTTP_USER_AGENT', 'unknown')
         log_system_event(
             event_type='epg_blocked',
@@ -540,7 +547,7 @@ def xc_xmltv(request):
     if user is None:
         # Log blocked EPG download due to invalid credentials
         from core.utils import log_system_event
-        client_ip = request.META.get('REMOTE_ADDR', 'unknown')
+        client_ip = get_client_ip(request) or "unknown"
         user_agent = request.META.get('HTTP_USER_AGENT', 'unknown')
         log_system_event(
             event_type='epg_blocked',
@@ -992,7 +999,7 @@ XC_MOVIE_VALUE_FIELDS = (
     'id', 'movie_id', 'category_id', 'container_extension',
     'movie__id', 'movie__name', 'movie__rating', 'movie__created_at',
     'movie__tmdb_id', 'movie__imdb_id', 'movie__description', 'movie__genre',
-    'movie__year', 'movie__custom_properties', 'movie__logo_id',
+    'movie__year', 'movie__is_adult', 'movie__custom_properties', 'movie__logo_id',
     # Lean relation-artwork extracts (see _xc_annotate_relation_artwork).
     'rel_movie_image', 'rel_backdrop',
 )
@@ -1186,6 +1193,9 @@ def xc_get_vod_streams(request, user, category_id=None):
     rel_filters = {"m3u_account__is_active": True}
     if category_id:
         rel_filters["category_id"] = category_id
+    # Non-admins with Hide Mature Content skip adult VODs.
+    if user.user_level < 10 and (user.custom_properties or {}).get('hide_adult_content', False):
+        rel_filters["movie__is_adult"] = False
 
     relations = _xc_fetch_priority_distinct_relations(
         manager=M3UMovieRelation.objects,
@@ -1226,7 +1236,7 @@ def xc_get_vod_streams(request, user, category_id=None):
             "rating": rating or "0",
             "rating_5based": round(float(rating or 0) / 2, 2) if rating else 0,
             "added": str(int(row['movie__created_at'].timestamp())),
-            "is_adult": 0,
+            "is_adult": int(bool(row['movie__is_adult'])),
             "tmdb_id": row['movie__tmdb_id'] or "",
             "imdb_id": row['movie__imdb_id'] or "",
             "trailer": custom_props.get('youtube_trailer') or "",
@@ -1610,6 +1620,8 @@ def xc_get_vod_info(request, user, vod_id):
 
     # All authenticated users get access to VOD from all active M3U accounts
     filters = {"movie_id": vod_id, "m3u_account__is_active": True}
+    if user.user_level < 10 and (user.custom_properties or {}).get('hide_adult_content', False):
+        filters["movie__is_adult"] = False
 
     try:
         # Order by account priority to get the best relation when multiple exist
@@ -1761,77 +1773,6 @@ def xc_get_vod_info(request, user, vod_id):
     }
 
     return info
-
-
-def xc_movie_stream(request, username, password, stream_id, extension):
-    """Handle XtreamCodes movie streaming requests"""
-    from apps.vod.models import M3UMovieRelation
-
-    user = get_object_or_404(User, username=username)
-
-    custom_properties = user.custom_properties or {}
-
-    if "xc_password" not in custom_properties:
-        return JsonResponse({"error": "Invalid credentials"}, status=401)
-
-    if custom_properties["xc_password"] != password:
-        return JsonResponse({"error": "Invalid credentials"}, status=401)
-
-    # All authenticated users get access to VOD from all active M3U accounts
-    filters = {"movie_id": stream_id, "m3u_account__is_active": True}
-
-    try:
-        # Order by account priority to get the best relation when multiple exist
-        movie_relation = M3UMovieRelation.objects.select_related('movie').filter(**filters).order_by('-m3u_account__priority', 'id').first()
-        if not movie_relation:
-            return JsonResponse({"error": "Movie not found"}, status=404)
-    except (M3UMovieRelation.DoesNotExist, M3UMovieRelation.MultipleObjectsReturned):
-        return JsonResponse({"error": "Movie not found"}, status=404)
-
-    # Redirect to the VOD proxy endpoint
-    from django.http import HttpResponseRedirect
-    from django.urls import reverse
-
-    vod_url = reverse('proxy:vod_proxy:vod_stream', kwargs={
-        'content_type': 'movie',
-        'content_id': movie_relation.movie.uuid
-    })
-
-    return HttpResponseRedirect(vod_url)
-
-
-def xc_series_stream(request, username, password, stream_id, extension):
-    """Handle XtreamCodes series/episode streaming requests"""
-    from apps.vod.models import M3UEpisodeRelation
-
-    user = get_object_or_404(User, username=username)
-
-    custom_properties = user.custom_properties or {}
-
-    if "xc_password" not in custom_properties:
-        return JsonResponse({"error": "Invalid credentials"}, status=401)
-
-    if custom_properties["xc_password"] != password:
-        return JsonResponse({"error": "Invalid credentials"}, status=401)
-
-    # All authenticated users get access to series/episodes from all active M3U accounts
-    filters = {"episode_id": stream_id, "m3u_account__is_active": True}
-
-    try:
-        episode_relation = M3UEpisodeRelation.objects.select_related('episode').filter(**filters).order_by('-m3u_account__priority', 'id').first()
-    except M3UEpisodeRelation.DoesNotExist:
-        return JsonResponse({"error": "Episode not found"}, status=404)
-
-    # Redirect to the VOD proxy endpoint
-    from django.http import HttpResponseRedirect
-    from django.urls import reverse
-
-    vod_url = reverse('proxy:vod_proxy:vod_stream', kwargs={
-        'content_type': 'episode',
-        'content_id': episode_relation.episode.uuid
-    })
-
-    return HttpResponseRedirect(vod_url)
 
 
 def format_duration_hms(seconds):

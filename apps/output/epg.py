@@ -1113,9 +1113,12 @@ def generate_epg(request, profile_name=None, user=None, *, xc_catchup_prev_days=
             prev_days = 0
     use_cached_logos = request.GET.get('cachedlogos', 'true').lower() != 'false'
     tvg_id_source = request.GET.get('tvg_id_source', 'channel_number').lower()
+
+    request_origin = build_absolute_uri_with_port(request, "")
     cache_params = (
         f"{profile_name or 'all'}:{user.username if user else 'anonymous'}"
         f":d={num_days}:p={prev_days}:logos={use_cached_logos}:tvgid={tvg_id_source}"
+        f":origin={request_origin}"
     )
     content_cache_key = f"epg_content:{cache_params}"
 
@@ -1215,7 +1218,7 @@ def generate_epg(request, profile_name=None, user=None, *, xc_catchup_prev_days=
                 used_numbers.add(candidate)
 
         # Host/port/scheme are constant per request; precompute logo URL prefix once.
-        _base_url = build_absolute_uri_with_port(request, "")
+        _base_url = request_origin
         _sample_logo_path = reverse("api:channels:logo-cache", args=[0])
         _logo_prefix_raw, _, _logo_suffix_raw = _sample_logo_path.partition("/0/")
         _logo_url_prefix = _base_url + _logo_prefix_raw + "/"
@@ -1380,7 +1383,7 @@ def generate_epg(request, profile_name=None, user=None, *, xc_catchup_prev_days=
             chunk_size = _EPG_PROGRAM_DB_CHUNK_SIZE
             last_epg_id = 0
             last_id = 0
-            _poster_site_origin = build_absolute_uri_with_port(request, '')
+            _poster_site_origin = request_origin
 
             def flush_pending():
                 nonlocal program_batch, pending

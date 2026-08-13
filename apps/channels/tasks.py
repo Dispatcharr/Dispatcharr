@@ -2951,6 +2951,22 @@ def _refresh_dvr_library_after_comskip(recording_id: int) -> None:
         )
 
 
+# Setting value -> CLI flag for the bundled Comskip donator build.
+# "qsv" is a legacy alias; that build has no --qsv option.
+_COMSKIP_HW_ACCEL_FLAGS = {
+    "cuvid": "--cuvid",
+    "hwassist": "--hwassist",
+    "qsv": "--hwassist",
+}
+
+
+def _comskip_hw_accel_flag(hw_accel: str) -> str | None:
+    """Return the Comskip CLI flag for a DVR hardware-accel setting, or None."""
+    if not hw_accel or hw_accel == "none":
+        return None
+    return _COMSKIP_HW_ACCEL_FLAGS.get(hw_accel)
+
+
 def _comskip_process_recording(recording_id: int):
     """Run comskip on the MKV to remove commercials and replace the file in place.
     Safe to call even if comskip is not installed; stores status in custom_properties.comskip.
@@ -3050,10 +3066,10 @@ def _comskip_process_recording(recording_id: int):
 
     try:
         comskip_mode = CoreSettings.get_dvr_comskip_mode()
-        hw_accel = CoreSettings.get_dvr_comskip_hw_accel()
+        hw_flag = _comskip_hw_accel_flag(CoreSettings.get_dvr_comskip_hw_accel())
         cmd = [comskip_bin, "--output", os.path.dirname(file_path)]
-        if hw_accel != "none":
-            cmd.insert(1, f"--{hw_accel}")
+        if hw_flag:
+            cmd.insert(1, hw_flag)
         # Prefer user-specified INI, fall back to known defaults
         ini_candidates = []
         try:

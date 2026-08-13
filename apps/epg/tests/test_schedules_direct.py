@@ -8,12 +8,14 @@ Covers:
 - fetch_schedules_direct: SHA1 password hashing and token exchange
 - fetch_schedules_direct: graceful error handling on auth failure
 - fetch_schedules_direct: schedule MD5 delta, backfill, and cache invalidation
+- fetch_schedules_direct: batch request retry/backoff and failure handling
 - parse_schedules_direct_time: correct UTC parsing
 - fetch_sd_guide_for_epg: per-channel guide fetch on map
 - EPG signals: SD sources queue guide fetch when a channel is mapped
 """
 
 import hashlib
+import json
 import time
 from datetime import date, datetime, timedelta, timezone as dt_timezone
 from unittest.mock import MagicMock, patch
@@ -1088,6 +1090,347 @@ class SDScheduleDeltaIntegrationTests(TestCase):
             {'EP0001'},
         )
         self.assertEqual(needed, set())
+
+
+# ---------------------------------------------------------------------------
+# Batch request retry/backoff and failure handling
+# ---------------------------------------------------------------------------
+
+class SDBatchFailureHandlingTests(TestCase):
+    """
+    _sd_req_with_retry must retry transient failures (network errors and SD's
+    own embedded JSON error codes on HTTP 200), and a batch that still fails
+    after retries must not be mistaken for "nothing changed" or silently
+    produce placeholder guide data.
+    """
+
+    MAPPED_STATION = '10001'
+
+    def _make_sd_source(self):
+        return EPGSource.objects.create(
+            name='SD Batch Failure',
+            source_type='schedules_direct',
+            username='sduser',
+            password='sdpass',
+        )
+
+    def _lineup_get_side_effect(self, url, **kwargs):
+        if url.endswith('/status'):
+            return MagicMock(
+                status_code=200,
+                json=MagicMock(return_value={'systemStatus': [{'status': 'Online'}]}),
+            )
+        if url.endswith('/lineups'):
+            return MagicMock(
+                status_code=200,
+                json=MagicMock(return_value={'lineups': [{'lineupID': 'USA-TEST-X'}]}),
+            )
+        if '/lineups/USA-TEST-X' in url:
+            return MagicMock(
+                status_code=200,
+                json=MagicMock(return_value={
+                    'stations': [{
+                        'stationID': self.MAPPED_STATION,
+                        'name': 'Mapped Station',
+                        'callsign': 'MAP',
+                    }],
+                }),
+            )
+        raise AssertionError(f'Unexpected GET URL: {url}')
+
+    def _build_date_list(self, days=3):
+        today = date.today()
+        return [(today + timedelta(days=i)).strftime('%Y-%m-%d') for i in range(days)]
+
+    def _seed_full_window_program_data(self, epg, days=3):
+        today = date.today()
+        for i in range(days):
+            day = today + timedelta(days=i)
+            start = datetime(day.year, day.month, day.day, 12, 0, tzinfo=dt_timezone.utc)
+            ProgramData.objects.create(
+                epg=epg,
+                start_time=start,
+                end_time=start + timedelta(hours=1),
+                title='Show',
+                tvg_id=epg.tvg_id,
+            )
+
+    @staticmethod
+    def _json_mock(payload, status_code=200):
+        """A response mock that both response.json() and sd_parse_response_payload
+        (which sniffs Content-Type/body to decide whether to look for an
+        embedded SD error code) will recognize as a real JSON body."""
+        return MagicMock(
+            status_code=status_code,
+            json=MagicMock(return_value=payload),
+            content=json.dumps(payload).encode('utf-8'),
+            headers={'Content-Type': 'application/json'},
+        )
+
+    @patch('apps.epg.tasks.SD_DAYS_TO_FETCH', 3)
+    @patch('apps.epg.sd_tasks.time.sleep')
+    @patch('apps.epg.sd_tasks.send_epg_update')
+    @patch('apps.epg.sd_tasks.requests.get')
+    @patch('apps.epg.sd_tasks.requests.post')
+    def test_md5_fetch_failure_sets_error_instead_of_false_success(
+        self, mock_post, mock_get, mock_send_epg_update, mock_sleep,
+    ):
+        """Every /schedules/md5 attempt failing must not fall through to the
+        "no schedule changes detected" success path."""
+        import requests as req_lib
+        from apps.epg.tasks import fetch_schedules_direct
+
+        source = self._make_sd_source()
+        mapped_epg = EPGData.objects.create(
+            tvg_id=self.MAPPED_STATION,
+            name='Mapped',
+            epg_source=source,
+        )
+        Channel.objects.create(name='Mapped Ch', epg_data=mapped_epg)
+        mock_get.side_effect = self._lineup_get_side_effect
+
+        def post_side_effect(url, **kwargs):
+            if url.endswith('/token'):
+                return self._json_mock({'code': 0, 'token': 'tok'})
+            if url.endswith('/schedules/md5'):
+                raise req_lib.exceptions.ConnectionError('SD unreachable')
+            raise AssertionError(f'Unexpected POST URL: {url}')
+
+        mock_post.side_effect = post_side_effect
+
+        fetch_schedules_direct(source, force=True)
+
+        md5_calls = [c for c in mock_post.call_args_list if c[0][0].endswith('/schedules/md5')]
+        self.assertEqual(len(md5_calls), 3)  # retried twice, then gave up
+
+        source.refresh_from_db()
+        self.assertEqual(source.status, EPGSource.STATUS_ERROR)
+        self.assertIn('not refreshed this cycle', source.last_message.lower())
+
+    @patch('apps.epg.tasks.SD_DAYS_TO_FETCH', 3)
+    @patch('apps.epg.sd_tasks.time.sleep')
+    @patch('apps.epg.sd_tasks.send_epg_update')
+    @patch('apps.epg.sd_tasks.requests.get')
+    @patch('apps.epg.sd_tasks.requests.post')
+    def test_md5_fetch_retries_and_recovers_from_transient_errors(
+        self, mock_post, mock_get, mock_send_epg_update, mock_sleep,
+    ):
+        """A blip on the first two attempts must not fail the refresh if the
+        third attempt succeeds."""
+        import requests as req_lib
+        from apps.epg.tasks import fetch_schedules_direct
+
+        source = self._make_sd_source()
+        mapped_epg = EPGData.objects.create(
+            tvg_id=self.MAPPED_STATION,
+            name='Mapped',
+            epg_source=source,
+        )
+        Channel.objects.create(name='Mapped Ch', epg_data=mapped_epg)
+
+        date_list = self._build_date_list(3)
+        self._seed_full_window_program_data(mapped_epg, days=3)
+        today = date.today()
+        for i, ds in enumerate(date_list):
+            SDScheduleMD5.objects.create(
+                epg_source=source,
+                station_id=self.MAPPED_STATION,
+                date=today + timedelta(days=i),
+                md5=f'md5-{ds}',
+                last_modified=timezone.now(),
+            )
+        mock_get.side_effect = self._lineup_get_side_effect
+
+        md5_attempts = {'count': 0}
+        good_payload = {
+            self.MAPPED_STATION: {
+                ds: {'code': 0, 'md5': f'md5-{ds}', 'lastModified': '2026-06-11T00:00:00Z'}
+                for ds in date_list
+            },
+        }
+
+        def post_side_effect(url, **kwargs):
+            if url.endswith('/token'):
+                return self._json_mock({'code': 0, 'token': 'tok'})
+            if url.endswith('/schedules/md5'):
+                md5_attempts['count'] += 1
+                if md5_attempts['count'] < 3:
+                    raise req_lib.exceptions.ConnectionError('transient blip')
+                return self._json_mock(good_payload)
+            raise AssertionError(f'Unexpected POST URL: {url}')
+
+        mock_post.side_effect = post_side_effect
+
+        fetch_schedules_direct(source, force=True)
+
+        self.assertEqual(md5_attempts['count'], 3)
+        source.refresh_from_db()
+        self.assertEqual(source.status, EPGSource.STATUS_SUCCESS)
+
+    @patch('apps.epg.tasks.SD_DAYS_TO_FETCH', 3)
+    @patch('apps.epg.sd_tasks.time.sleep')
+    @patch('apps.epg.sd_tasks.send_epg_update')
+    @patch('apps.epg.sd_tasks.requests.get')
+    @patch('apps.epg.sd_tasks.requests.post')
+    def test_md5_embedded_service_offline_code_retries_then_succeeds(
+        self, mock_post, mock_get, mock_send_epg_update, mock_sleep,
+    ):
+        """SD's embedded {"code": 3000} (SERVICE_OFFLINE) on an HTTP 200
+        response must be retried like a network error, not treated as data."""
+        from apps.epg.tasks import fetch_schedules_direct
+
+        source = self._make_sd_source()
+        mapped_epg = EPGData.objects.create(
+            tvg_id=self.MAPPED_STATION,
+            name='Mapped',
+            epg_source=source,
+        )
+        Channel.objects.create(name='Mapped Ch', epg_data=mapped_epg)
+
+        date_list = self._build_date_list(3)
+        self._seed_full_window_program_data(mapped_epg, days=3)
+        today = date.today()
+        for i, ds in enumerate(date_list):
+            SDScheduleMD5.objects.create(
+                epg_source=source,
+                station_id=self.MAPPED_STATION,
+                date=today + timedelta(days=i),
+                md5=f'md5-{ds}',
+                last_modified=timezone.now(),
+            )
+        mock_get.side_effect = self._lineup_get_side_effect
+
+        md5_attempts = {'count': 0}
+        good_payload = {
+            self.MAPPED_STATION: {
+                ds: {'code': 0, 'md5': f'md5-{ds}', 'lastModified': '2026-06-11T00:00:00Z'}
+                for ds in date_list
+            },
+        }
+
+        def post_side_effect(url, **kwargs):
+            if url.endswith('/token'):
+                return self._json_mock({'code': 0, 'token': 'tok'})
+            if url.endswith('/schedules/md5'):
+                md5_attempts['count'] += 1
+                if md5_attempts['count'] < 3:
+                    return self._json_mock({
+                        'code': 3000,
+                        'message': 'Server offline for maintenance.',
+                    })
+                return self._json_mock(good_payload)
+            raise AssertionError(f'Unexpected POST URL: {url}')
+
+        mock_post.side_effect = post_side_effect
+
+        fetch_schedules_direct(source, force=True)
+
+        self.assertEqual(md5_attempts['count'], 3)
+        source.refresh_from_db()
+        self.assertEqual(source.status, EPGSource.STATUS_SUCCESS)
+
+    @patch('apps.epg.tasks.SD_DAYS_TO_FETCH', 3)
+    @patch('apps.epg.sd_tasks.time.sleep')
+    @patch('apps.epg.sd_tasks.send_epg_update')
+    @patch('apps.epg.sd_tasks.requests.get')
+    @patch('apps.epg.sd_tasks.requests.post')
+    def test_md5_embedded_non_retryable_code_fails_without_extra_attempts(
+        self, mock_post, mock_get, mock_send_epg_update, mock_sleep,
+    ):
+        """A non-soft embedded error code (e.g. 4001 ACCOUNT_EXPIRED) must not
+        waste retries, retrying it won't fix an account problem."""
+        from apps.epg.tasks import fetch_schedules_direct
+
+        source = self._make_sd_source()
+        mapped_epg = EPGData.objects.create(
+            tvg_id=self.MAPPED_STATION,
+            name='Mapped',
+            epg_source=source,
+        )
+        Channel.objects.create(name='Mapped Ch', epg_data=mapped_epg)
+        mock_get.side_effect = self._lineup_get_side_effect
+
+        md5_attempts = {'count': 0}
+
+        def post_side_effect(url, **kwargs):
+            if url.endswith('/token'):
+                return self._json_mock({'code': 0, 'token': 'tok'})
+            if url.endswith('/schedules/md5'):
+                md5_attempts['count'] += 1
+                return self._json_mock({'code': 4001, 'message': 'Account expired.'})
+            raise AssertionError(f'Unexpected POST URL: {url}')
+
+        mock_post.side_effect = post_side_effect
+
+        fetch_schedules_direct(source, force=True)
+
+        self.assertEqual(md5_attempts['count'], 1)
+        source.refresh_from_db()
+        self.assertEqual(source.status, EPGSource.STATUS_ERROR)
+
+    @patch('apps.epg.tasks.SD_DAYS_TO_FETCH', 3)
+    @patch('apps.epg.sd_tasks.time.sleep')
+    @patch('apps.epg.sd_tasks.send_epg_update')
+    @patch('apps.epg.sd_tasks.requests.get')
+    @patch('apps.epg.sd_tasks.requests.post')
+    def test_program_metadata_failure_skips_row_instead_of_placeholder(
+        self, mock_post, mock_get, mock_send_epg_update, mock_sleep,
+    ):
+        """A /programs batch that fails for a brand-new program (no prior
+        ProgramData to fall back on) must not write a "No Title" placeholder."""
+        import requests as req_lib
+        from apps.epg.tasks import fetch_schedules_direct
+
+        source = self._make_sd_source()
+        mapped_epg = EPGData.objects.create(
+            tvg_id=self.MAPPED_STATION,
+            name='Mapped',
+            epg_source=source,
+        )
+        Channel.objects.create(name='Mapped Ch', epg_data=mapped_epg)
+
+        date_list = self._build_date_list(3)
+        mock_get.side_effect = self._lineup_get_side_effect
+
+        schedule_payload = [{
+            'stationID': self.MAPPED_STATION,
+            'metadata': {
+                'startDate': date_list[0],
+                'md5': 'md5-' + date_list[0],
+                'modified': '2026-06-11T00:00:00Z',
+            },
+            'programs': [{
+                'programID': 'EP000000000099',
+                'airDateTime': f'{date_list[0]}T12:00:00Z',
+                'duration': 3600,
+                'md5': 'prog-md5-99',
+            }],
+        }]
+
+        def post_side_effect(url, **kwargs):
+            if url.endswith('/token'):
+                return self._json_mock({'code': 0, 'token': 'tok'})
+            if url.endswith('/schedules/md5'):
+                return self._json_mock({
+                    self.MAPPED_STATION: {
+                        ds: {'code': 0, 'md5': f'md5-{ds}', 'lastModified': '2026-06-11T00:00:00Z'}
+                        for ds in date_list
+                    },
+                })
+            if url.endswith('/schedules'):
+                return self._json_mock(schedule_payload)
+            if url.endswith('/programs'):
+                raise req_lib.exceptions.ConnectionError('SD unreachable')
+            raise AssertionError(f'Unexpected POST URL: {url}')
+
+        mock_post.side_effect = post_side_effect
+
+        fetch_schedules_direct(source, force=True)
+
+        self.assertEqual(ProgramData.objects.filter(epg=mapped_epg).count(), 0)
+        self.assertFalse(
+            ProgramData.objects.filter(epg=mapped_epg, title='No Title').exists()
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -2195,22 +2538,104 @@ class SDPosterProxyErrorHandlingTests(TestCase):
     @patch('requests.get')
     @patch('requests.post')
     def test_2055_disables_extra_debugging_on_auth(self, mock_post, mock_get):
+        """2055 on /token must clear the toggle and retry auth without RouteTo."""
         self.source.custom_properties = {'sd_extra_debugging': True}
         self.source.save(update_fields=['custom_properties'])
 
-        mock_post.return_value = self._json_response(200, {
+        rejected = self._json_response(400, {
             'response': 'INVALID_PARAMETER:DEBUG',
             'code': 2055,
             'message': 'Unexpected debug connection from client.',
         })
+        mock_post.side_effect = [rejected, self._auth_ok()]
+        img = MagicMock()
+        img.status_code = 200
+        img.headers = {'Content-Type': 'image/jpeg'}
+        img.content = b'\xff\xd8\xffjpeg-bytes'
+        img.json = MagicMock(side_effect=ValueError('not json'))
+        mock_get.return_value = img
 
         resp = self.client.get(self.url)
-        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.status_code, 200)
         self.source.refresh_from_db()
         self.assertFalse(self.source.custom_properties.get('sd_extra_debugging'))
-        mock_get.assert_not_called()
-        auth_headers = mock_post.call_args.kwargs.get('headers') or mock_post.call_args[1].get('headers')
-        self.assertEqual(auth_headers.get('RouteTo'), 'debug')
+        self.assertEqual(mock_post.call_count, 2)
+        first_headers = (
+            mock_post.call_args_list[0].kwargs.get('headers')
+            or mock_post.call_args_list[0][1].get('headers')
+        )
+        second_headers = (
+            mock_post.call_args_list[1].kwargs.get('headers')
+            or mock_post.call_args_list[1][1].get('headers')
+        )
+        self.assertEqual(first_headers.get('RouteTo'), 'debug')
+        self.assertNotIn('RouteTo', second_headers)
+        mock_get.assert_called_once()
+
+    @patch('apps.epg.sd_utils.requests.get')
+    @patch('apps.epg.sd_utils.requests.post')
+    def test_2055_on_authorized_request_with_cached_token(
+        self, mock_post, mock_get
+    ):
+        """Cached tokens skip /token; 2055 on later calls must still clear debug."""
+        from apps.epg.sd_utils import (
+            sd_authorized_request,
+            sd_clear_cached_token,
+            sd_set_cached_token,
+        )
+
+        self.source.custom_properties = {'sd_extra_debugging': True}
+        self.source.save(update_fields=['custom_properties'])
+        sd_clear_cached_token(self.source.id)
+        sd_set_cached_token(
+            self.source.id, 'cached-tok', time.time() + 3600,
+            username='sduser', password='sdpass',
+        )
+
+        rejected = MagicMock(
+            status_code=400,
+            headers={'Content-Type': 'application/json'},
+            content=(
+                b'{"response":"INVALID_PARAMETER:DEBUG","code":2055,'
+                b'"message":"Unexpected debug connection from client."}'
+            ),
+        )
+        rejected.json = MagicMock(return_value={
+            'response': 'INVALID_PARAMETER:DEBUG',
+            'code': 2055,
+            'message': 'Unexpected debug connection from client.',
+        })
+        ok = MagicMock(
+            status_code=200,
+            headers={'Content-Type': 'application/json'},
+            content=b'{"lineups":[]}',
+        )
+        ok.json = MagicMock(return_value={'lineups': []})
+        mock_get.side_effect = [rejected, ok]
+
+        resp, token = sd_authorized_request(
+            'GET',
+            'https://json.schedulesdirect.org/20141201/lineups',
+            source=self.source,
+            token='cached-tok',
+            timeout=15,
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(token, 'cached-tok')
+        self.source.refresh_from_db()
+        self.assertFalse(self.source.custom_properties.get('sd_extra_debugging'))
+        mock_post.assert_not_called()
+        self.assertEqual(mock_get.call_count, 2)
+        first_headers = (
+            mock_get.call_args_list[0].kwargs.get('headers')
+            or mock_get.call_args_list[0][1].get('headers')
+        )
+        second_headers = (
+            mock_get.call_args_list[1].kwargs.get('headers')
+            or mock_get.call_args_list[1][1].get('headers')
+        )
+        self.assertEqual(first_headers.get('RouteTo'), 'debug')
+        self.assertNotIn('RouteTo', second_headers)
 
     @patch('requests.get')
     @patch('requests.post')

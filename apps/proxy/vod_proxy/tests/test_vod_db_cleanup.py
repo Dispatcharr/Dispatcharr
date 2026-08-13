@@ -12,31 +12,32 @@ class StreamVodDbCleanupTests(SimpleTestCase):
 
     @patch("apps.proxy.vod_proxy.views.close_old_connections")
     @patch("apps.proxy.vod_proxy.views.MultiWorkerVODConnectionManager")
-    @patch("apps.proxy.vod_proxy.views._transform_url", return_value="http://example.com/movie.mp4")
-    @patch("apps.proxy.vod_proxy.views._get_m3u_profile")
-    @patch("apps.proxy.vod_proxy.views._get_stream_url_from_relation", return_value="http://upstream/movie.mp4")
-    @patch("apps.proxy.vod_proxy.views._get_content_and_relation")
+    @patch("apps.proxy.vod_proxy.views._select_vod_stream")
+    @patch(
+        "core.models.CoreSettings.is_default_stream_profile_redirect",
+        return_value=False,
+    )
     @patch("apps.proxy.vod_proxy.views.network_access_allowed", return_value=True)
     def test_stream_vod_closes_db_before_streaming_response(
         self,
         _network_ok,
-        mock_content,
-        _stream_url,
-        mock_profile,
-        _transform,
+        _is_redirect,
+        mock_select,
         mock_manager_cls,
         mock_close,
     ):
         movie = MagicMock()
         movie.name = "Test Movie"
-        relation = MagicMock()
-        relation.m3u_account.name = "Provider"
-        mock_content.return_value = (movie, relation, [relation])
-
         profile = MagicMock()
         profile.id = 1
         profile.max_streams = 5
-        mock_profile.return_value = (profile, 0)
+        mock_select.return_value = {
+            "content_obj": movie,
+            "m3u_account": MagicMock(name="Provider"),
+            "m3u_profile": profile,
+            "current_connections": 0,
+            "final_stream_url": "http://example.com/movie.mp4",
+        }
 
         mock_manager = MagicMock()
         mock_manager.stream_content_with_session.return_value = StreamingHttpResponse(
