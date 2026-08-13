@@ -1,6 +1,16 @@
 import { create } from 'zustand';
 import API from '../api';
 
+// True if the plugin declares a capability the user hasn't acknowledged yet
+// (via the enable confirmation dialog), covering both a brand-new plugin and
+// an already-enabled one that added a capability in an update. Unknown
+// plugin data (null/undefined) defaults to needing confirmation.
+export function needsCapabilityAck(plugin) {
+  if (!plugin) return true;
+  const acked = new Set(plugin.acknowledged_capabilities || []);
+  return (plugin.capabilities || []).some((c) => !acked.has(c.id));
+}
+
 export const usePluginStore = create((set, get) => ({
   plugins: [],
   loading: false,

@@ -829,6 +829,13 @@ class PluginEnabledAPIView(PluginAuthMixin, APIView):
                     status=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 )
             pm.discover_plugins(force_reload=True)
+            if cfg.enabled:
+                lp = pm.get_plugin(key)
+                effective = list(lp.capabilities or []) if lp else []
+                acknowledged = sorted(set(cfg.acknowledged_capabilities or []) | set(effective))
+                if acknowledged != (cfg.acknowledged_capabilities or []):
+                    cfg.acknowledged_capabilities = acknowledged
+                    cfg.save(update_fields=["acknowledged_capabilities", "updated_at"])
             plugin_entry = None
             try:
                 plugin_entry = next((p for p in pm.list_plugins() if p.get("key") == key), None)

@@ -12,7 +12,14 @@ vi.mock('react-router-dom', () => ({
 vi.mock('../../../store/plugins', () => {
   const mockUsePluginStore = vi.fn();
   mockUsePluginStore.getState = vi.fn();
-  return { usePluginStore: mockUsePluginStore };
+  return {
+    usePluginStore: mockUsePluginStore,
+    needsCapabilityAck: (plugin) => {
+      if (!plugin) return true;
+      const acked = new Set(plugin.acknowledged_capabilities || []);
+      return (plugin.capabilities || []).some((c) => !acked.has(c.id));
+    },
+  };
 });
 
 // ── PluginWarnings ─────────────────────────────────────────────────────────────

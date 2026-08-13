@@ -21,7 +21,7 @@ import {
 } from '@mantine/core';
 import { ArrowLeft, ChevronDown, Pin, PinOff, RefreshCw, RotateCw, Trash2 } from 'lucide-react';
 import { showNotification } from '../utils/notificationUtils.js';
-import { usePluginStore } from '../store/plugins.jsx';
+import { usePluginStore, needsCapabilityAck } from '../store/plugins.jsx';
 import useSettingsStore from '../store/settings.jsx';
 import useAuthStore from '../store/auth.jsx';
 import {
@@ -336,7 +336,7 @@ function PluginDetailForKey({ routeKey: key }) {
   };
 
   const handleEnableChange = async (next) => {
-    if (next && !plugin.ever_enabled) {
+    if (next && needsCapabilityAck(plugin)) {
       const ok = await usePluginStore.getState().requestEnableConfirmation(plugin);
       if (!ok) return;
     }

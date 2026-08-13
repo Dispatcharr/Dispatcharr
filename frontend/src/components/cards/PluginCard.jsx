@@ -14,6 +14,7 @@ import {
 import { Ban, Check, ExternalLink, FlaskConical, Pin, PinOff, RefreshCw, Trash2 } from 'lucide-react';
 import PluginHeader from '../PluginHeader.jsx';
 import useAuthStore from '../../store/auth.jsx';
+import { needsCapabilityAck } from '../../store/plugins.jsx';
 
 // Stable fallback reference: an inline `[]` here causes an infinite render loop under zustand v5.
 const EMPTY_PINNED_PLUGINS = [];
@@ -44,7 +45,7 @@ const PluginCard = ({
   const handleEnableChange = () => {
     return async (e) => {
       const next = e.currentTarget.checked;
-      if (next && !plugin.ever_enabled && onRequireTrust) {
+      if (next && needsCapabilityAck(plugin) && onRequireTrust) {
         const ok = await onRequireTrust(plugin);
         if (!ok) {
           setEnabled(false);
