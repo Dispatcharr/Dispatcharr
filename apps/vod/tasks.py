@@ -1,4 +1,5 @@
 from celery import shared_task, current_app, group
+from core.redaction import redact_provider_text
 from django.utils import timezone
 from django.db import transaction, IntegrityError
 from django.db.models import Q
@@ -580,7 +581,7 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
             existing_logos.update(newly_created)
             logger.info(f"Created {len(newly_created)} new VOD logos for movies")
         except Exception as e:
-            logger.warning(f"Failed to create VOD logos: {e}")
+            logger.warning(f"Failed to create VOD logos: {redact_provider_text(str(e), '[image_host]')}")
 
     # Get existing movies based on our keys
     existing_movies = {}
@@ -953,7 +954,7 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
             existing_logos.update(newly_created)
             logger.info(f"Created {len(newly_created)} new VOD logos for series")
         except Exception as e:
-            logger.warning(f"Failed to create VOD logos: {e}")
+            logger.warning(f"Failed to create VOD logos: {redact_provider_text(str(e), '[image_host]')}")
 
     # Get existing series based on our keys - same pattern as movies
     existing_series = {}

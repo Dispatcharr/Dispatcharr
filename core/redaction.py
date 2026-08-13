@@ -24,6 +24,36 @@ _SENSITIVE_KEY_RE = re.compile(
 _CAMEL_BOUNDARY_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
 
 
+_ANY_URL = re.compile(r"(?i)https?://[^\s'\"]+")
+
+
+def redact_provider_url(url, token="[provider_host]"):
+    """Mask the host of a URL known to belong to a provider; the rest is swept as text."""
+    if not isinstance(url, str) or "://" not in url:
+        return redact_text(url)
+    scheme, rest = url.split("://", 1)
+    authority, sep, tail = rest.partition("/")
+    if "@" in authority:
+        authority = authority.rsplit("@", 1)[0] + "@" + token
+    else:
+        authority = token
+    return redact_text(f"{scheme}://{authority}{sep}{tail}")
+
+
+def redact_provider_text(text, token="[provider_host]"):
+    """Sweep text whose URLs are all provider material; unshaped URLs reduce to the token host."""
+    result = redact_text(text)
+    if not isinstance(result, str):
+        return result
+    # A '[' means the pattern battery already masked it; reduce only unshaped URLs.
+    return _ANY_URL.sub(
+        lambda m: m.group(0)
+        if "[" in m.group(0)
+        else f"{m.group(0).split('://', 1)[0]}://{token}/...",
+        result,
+    )
+
+
 def redact_url(url):
     """Reduce *url* to scheme://host/...; non-URL input passes through."""
     if not isinstance(url, str) or "://" not in url:
