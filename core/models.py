@@ -206,6 +206,7 @@ NETWORK_ACCESS_KEY = "network_access"
 SYSTEM_SETTINGS_KEY = "system_settings"
 EPG_SETTINGS_KEY = "epg_settings"
 USER_LIMITS_SETTINGS_KEY = "user_limit_settings"
+MAC_PANEL_SETTINGS_KEY = "mac_panel_settings"
 
 # Redis cache for CoreSettings JSON groups. Primary invalidation is post_save /
 # post_delete; TTL is a safety net if a writer bypasses signals.
@@ -714,6 +715,29 @@ class CoreSettings(models.Model):
     def get_network_access_settings(cls):
         """CIDR allowlists per endpoint type (UI, STREAMS, XC_API, M3U_EPG, ...)."""
         return cls._get_group(NETWORK_ACCESS_KEY, {})
+
+    # MAC-Panel Settings
+    @classmethod
+    def get_mac_panel_settings(cls):
+        """Get MAC-panel credential-push settings.
+
+        ``public_url`` is written into pushed playlists' ``playlist_url`` —
+        it can't be reliably derived from an admin API request (that request
+        comes from the admin's browser, not the customer's device), so it
+        must be configured explicitly. Empty string means "not configured";
+        callers should fall back to ``core.utils.build_absolute_uri_with_port``
+        and surface a warning that the fallback may not match what customer
+        devices can actually reach.
+        """
+        return cls._get_group(MAC_PANEL_SETTINGS_KEY, {
+            "public_url": "",
+        })
+
+    @classmethod
+    def set_mac_panel_public_url(cls, value: str):
+        value = (value or "").strip().rstrip("/")
+        cls._update_group(MAC_PANEL_SETTINGS_KEY, "MAC Panel Settings", {"public_url": value})
+        return value
 
     # System Settings
     @classmethod

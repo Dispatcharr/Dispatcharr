@@ -9,6 +9,7 @@ import {
   Palette,
   Settings2,
   SlidersHorizontal,
+  Smartphone,
   Tv,
   Users,
   Video,
@@ -26,6 +27,7 @@ const NetworkAccessForm = lazy(() => import('../components/forms/settings/Networ
 const SystemSettingsForm = lazy(() => import('../components/forms/settings/SystemSettingsForm.jsx'));
 const UserLimitsForm = lazy(() => import('../components/forms/settings/UserLimitsForm.jsx'));
 const BackupManager = lazy(() => import('../components/backups/BackupManager.jsx'));
+const MacPanelSettingsForm = lazy(() => import('../components/forms/settings/MacPanelSettingsForm.jsx'));
 
 // Component lives on each section so it can never drift out of sync with the
 // id used for routing/lookup (previously a separate COMPONENT_MAP keyed by
@@ -83,6 +85,14 @@ export const SETTINGS_GROUPS = [
     adminOnly: true,
     sections: [
       { id: 'backups', label: 'Backup & Restore', icon: DatabaseBackup, Component: BackupManager },
+    ],
+  },
+  {
+    id: 'mac-panel',
+    label: 'MAC Panel',
+    adminOnly: true,
+    sections: [
+      { id: 'mac-panel-settings', label: 'MAC Panel', icon: Smartphone, Component: MacPanelSettingsForm },
     ],
   },
 ];

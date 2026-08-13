@@ -1,12 +1,13 @@
 import React, { useMemo, useCallback, useState } from 'react';
 import API from '../../api';
 import UserForm from '../forms/User';
+import MacDevicesForm from '../forms/MacDevices';
 import useUsersStore from '../../store/users';
 import useChannelsStore from '../../store/channels';
 import useAuthStore from '../../store/auth';
 import { USER_LEVELS, USER_LEVEL_LABELS } from '../../constants';
 import useWarningsStore from '../../store/warnings';
-import { SquarePlus, SquareMinus, SquarePen, Eye, EyeOff } from 'lucide-react';
+import { SquarePlus, SquareMinus, SquarePen, Eye, EyeOff, Smartphone } from 'lucide-react';
 import {
   ActionIcon,
   Box,
@@ -70,7 +71,7 @@ const XCPasswordCell = ({ getValue }) => {
   );
 };
 
-const UserRowActions = ({ theme, row, editUser, handleDeleteUser }) => {
+const UserRowActions = ({ theme, row, editUser, handleDeleteUser, openMacDevices }) => {
   const [tableSize, _] = useLocalStorage('table-size', 'default');
   const authUser = useAuthStore((s) => s.user);
 
@@ -81,6 +82,10 @@ const UserRowActions = ({ theme, row, editUser, handleDeleteUser }) => {
   const onDelete = useCallback(() => {
     handleDeleteUser(row.original.id);
   }, [row.original.id, handleDeleteUser]);
+
+  const onOpenMacDevices = useCallback(() => {
+    openMacDevices(row.original);
+  }, [row.original, openMacDevices]);
 
   const iconSize =
     tableSize == 'default' ? 'sm' : tableSize == 'compact' ? 'xs' : 'md';
@@ -95,6 +100,17 @@ const UserRowActions = ({ theme, row, editUser, handleDeleteUser }) => {
         disabled={authUser.user_level !== USER_LEVELS.ADMIN}
       >
         <SquarePen size="18" />
+      </ActionIcon>
+
+      <ActionIcon
+        size={iconSize}
+        variant="transparent"
+        color={theme.tailwind.blue[5]}
+        onClick={onOpenMacDevices}
+        disabled={authUser.user_level !== USER_LEVELS.ADMIN}
+        title="MAC devices"
+      >
+        <Smartphone size="18" />
       </ActionIcon>
 
       <ActionIcon
@@ -136,6 +152,8 @@ const UsersTable = () => {
   const [userToDelete, setUserToDelete] = useState(null);
   const [isLoading, setIsLoading] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [macDevicesUser, setMacDevicesUser] = useState(null);
+  const [macDevicesModalOpen, setMacDevicesModalOpen] = useState(false);
 
   const executeDeleteUser = useCallback(async (id) => {
     setIsLoading(true);
@@ -152,6 +170,11 @@ const UsersTable = () => {
   const editUser = useCallback(async (user = null) => {
     setSelectedUser(user);
     setUserModalOpen(true);
+  }, []);
+
+  const openMacDevices = useCallback((user) => {
+    setMacDevicesUser(user);
+    setMacDevicesModalOpen(true);
   }, []);
 
   const handleDeleteUser = useCallback(
@@ -321,11 +344,12 @@ const UsersTable = () => {
             row={row}
             editUser={editUser}
             handleDeleteUser={handleDeleteUser}
+            openMacDevices={openMacDevices}
           />
         ),
       },
     ],
-    [theme, editUser, handleDeleteUser, fullDateFormat, fullDateTimeFormat]
+    [theme, editUser, handleDeleteUser, openMacDevices, fullDateFormat, fullDateTimeFormat]
   );
 
   const closeUserForm = () => {
@@ -452,6 +476,12 @@ const UsersTable = () => {
         user={selectedUser}
         isOpen={userModalOpen}
         onClose={closeUserForm}
+      />
+
+      <MacDevicesForm
+        user={macDevicesUser}
+        isOpen={macDevicesModalOpen}
+        onClose={() => setMacDevicesModalOpen(false)}
       />
 
       <ConfirmationDialog

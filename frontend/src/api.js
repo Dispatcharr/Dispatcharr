@@ -15,6 +15,7 @@ import useChannelsTableStore from './store/channelsTable';
 import useStreamsTableStore from './store/streamsTable';
 import useUsersStore from './store/users';
 import useConnectStore from './store/connect';
+import useMacDevicesStore from './store/macDevices';
 import Limiter, { formatApiError } from './utils';
 
 // If needed, you can set a base host or keep it empty if relative requests
@@ -3509,6 +3510,90 @@ export default class API {
       useUsersStore.getState().removeUser(id);
     } catch (e) {
       errorNotification('Failed to delete user', e);
+    }
+  }
+
+  // MAC-panel devices ---------------------------------------------------
+
+  static async getMacDevices(userId) {
+    try {
+      const qs = userId ? `?user=${userId}` : '';
+      const response = await request(`${host}/api/mac-panel/devices/${qs}`);
+      useMacDevicesStore.getState().setDevices(response);
+      return response;
+    } catch (e) {
+      errorNotification('Failed to fetch MAC devices', e);
+    }
+  }
+
+  static async createMacDevice(data) {
+    try {
+      const response = await request(`${host}/api/mac-panel/devices/`, {
+        method: 'POST',
+        body: data,
+      });
+      useMacDevicesStore.getState().addDevice(response);
+      return response;
+    } catch (e) {
+      errorNotification('Failed to add MAC device', e);
+    }
+  }
+
+  static async updateMacDevice(id, data) {
+    try {
+      const response = await request(`${host}/api/mac-panel/devices/${id}/`, {
+        method: 'PATCH',
+        body: data,
+      });
+      useMacDevicesStore.getState().updateDevice(response);
+      return response;
+    } catch (e) {
+      errorNotification('Failed to update MAC device', e);
+    }
+  }
+
+  static async deleteMacDevice(id) {
+    try {
+      await request(`${host}/api/mac-panel/devices/${id}/`, {
+        method: 'DELETE',
+      });
+      useMacDevicesStore.getState().removeDevice(id);
+    } catch (e) {
+      errorNotification('Failed to delete MAC device', e);
+    }
+  }
+
+  static async getMacPanelCaptcha(deviceId) {
+    try {
+      return await request(
+        `${host}/api/mac-panel/devices/${deviceId}/captcha/`,
+        { method: 'POST' }
+      );
+    } catch (e) {
+      errorNotification('Failed to load captcha', e);
+    }
+  }
+
+  // Pushing credentials can legitimately need a captcha (HTTP 428) — that is
+  // not an error, so it is returned to the caller instead of triggering the
+  // generic error notification. Only genuine failures go through
+  // errorNotification.
+  static async pushMacDevice(deviceId, { captcha, captcha_token } = {}) {
+    const body = {};
+    if (captcha) body.captcha = captcha;
+    if (captcha_token) body.captcha_token = captcha_token;
+
+    try {
+      const response = await request(
+        `${host}/api/mac-panel/devices/${deviceId}/push/`,
+        { method: 'POST', body }
+      );
+      return response;
+    } catch (e) {
+      if (e && e.status === 428) {
+        return { captchaRequired: true };
+      }
+      errorNotification('Failed to push credentials', e);
     }
   }
 

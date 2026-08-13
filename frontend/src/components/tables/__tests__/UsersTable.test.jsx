@@ -14,6 +14,7 @@ vi.mock('../../../store/users', () => ({ default: vi.fn() }));
 vi.mock('../../../store/channels', () => ({ default: vi.fn() }));
 vi.mock('../../../store/auth', () => ({ default: vi.fn() }));
 vi.mock('../../../store/warnings', () => ({ default: vi.fn() }));
+vi.mock('../../../store/macDevices', () => ({ default: vi.fn(() => []) }));
 
 // ── Hook mocks ─────────────────────────────────────────────────────────────────
 vi.mock('../../../hooks/useLocalStorage', () => ({
@@ -33,6 +34,18 @@ vi.mock('../../forms/User', () => ({
       <div data-testid="user-form">
         <span data-testid="form-user-name">{user?.username ?? 'new'}</span>
         <button data-testid="form-close" onClick={onClose}>
+          Close
+        </button>
+      </div>
+    ) : null,
+}));
+
+vi.mock('../../forms/MacDevices', () => ({
+  default: ({ isOpen, onClose, user }) =>
+    isOpen ? (
+      <div data-testid="mac-devices-form">
+        <span data-testid="mac-devices-form-user">{user?.username ?? ''}</span>
+        <button data-testid="mac-devices-form-close" onClick={onClose}>
           Close
         </button>
       </div>
@@ -103,6 +116,7 @@ vi.mock('@mantine/core', () => ({
       yellow: { 3: '#fde047' },
       red: { 6: '#dc2626' },
       green: { 5: '#22c55e' },
+      blue: { 5: '#3b82f6' },
     },
   })),
 }));
@@ -114,6 +128,7 @@ vi.mock('lucide-react', () => ({
   SquareMinus: () => <svg data-testid="icon-square-minus" />,
   SquarePen: () => <svg data-testid="icon-square-pen" />,
   SquarePlus: () => <svg data-testid="icon-square-plus" />,
+  Smartphone: () => <svg data-testid="icon-smartphone" />,
 }));
 
 // ── Imports after mocks ────────────────────────────────────────────────────────
@@ -344,6 +359,52 @@ describe('UsersTable', () => {
         actionsCol.cell({ row: { original: user } })
       );
       expect(getByTestId('icon-square-pen').closest('button')).not.toBeDisabled();
+    });
+  });
+
+  // ── MAC devices via actions column ─────────────────────────────────────────
+
+  describe('MAC devices via actions column', () => {
+    it('opens the MAC devices modal for the row user when icon is clicked', () => {
+      const user = makeUser({ username: 'janedoe' });
+      setupMocks({ users: [user] });
+      render(<UsersTable />);
+
+      const actionsCol = getActionsCell();
+      const { getByTestId } = render(
+        actionsCol.cell({ row: { original: user } })
+      );
+      fireEvent.click(getByTestId('icon-smartphone').closest('button'));
+
+      expect(screen.getByTestId('mac-devices-form')).toBeInTheDocument();
+      expect(screen.getByTestId('mac-devices-form-user')).toHaveTextContent('janedoe');
+    });
+
+    it('closes the modal when onClose is called', () => {
+      const user = makeUser({ username: 'janedoe' });
+      setupMocks({ users: [user] });
+      render(<UsersTable />);
+
+      const actionsCol = getActionsCell();
+      const { getByTestId } = render(
+        actionsCol.cell({ row: { original: user } })
+      );
+      fireEvent.click(getByTestId('icon-smartphone').closest('button'));
+      fireEvent.click(screen.getByTestId('mac-devices-form-close'));
+
+      expect(screen.queryByTestId('mac-devices-form')).not.toBeInTheDocument();
+    });
+
+    it('is disabled for non-admin auth user', () => {
+      const user = makeUser({ id: 5 });
+      setupMocks({ users: [user], authUser: makeUser({ id: 99, user_level: USER_LEVELS.STANDARD }) });
+      render(<UsersTable />);
+
+      const actionsCol = getActionsCell();
+      const { getByTestId } = render(
+        actionsCol.cell({ row: { original: user } })
+      );
+      expect(getByTestId('icon-smartphone').closest('button')).toBeDisabled();
     });
   });
 

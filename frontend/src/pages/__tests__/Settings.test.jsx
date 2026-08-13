@@ -61,6 +61,11 @@ vi.mock('../../components/forms/settings/UserLimitsForm', () => ({
     <div data-testid="user-limits-form">UserLimitsForm {active ? 'active' : 'inactive'}</div>
   ),
 }));
+vi.mock('../../components/forms/settings/MacPanelSettingsForm', () => ({
+  default: ({ active }) => (
+    <div data-testid="mac-panel-settings-form">MacPanelSettingsForm {active ? 'active' : 'inactive'}</div>
+  ),
+}));
 vi.mock('../../components/ErrorBoundary', () => ({
   default: ({ children }) => <div data-testid="error-boundary">{children}</div>,
 }));
@@ -171,6 +176,14 @@ describe('SettingsPage', () => {
       await waitFor(() => {
         expect(screen.getByTestId('system-settings-form')).toBeInTheDocument();
       });
+    });
+
+    it('renders mac-panel-settings section via hash', async () => {
+      renderWithRouter(<SettingsPage />, { initialEntries: ['/settings#mac-panel-settings'] });
+      await waitFor(() => {
+        expect(screen.getByTestId('mac-panel-settings-form')).toBeInTheDocument();
+      });
+      expect(screen.getByText('MAC Panel')).toBeInTheDocument();
     });
 
     it('passes active=true to rendered component', async () => {
