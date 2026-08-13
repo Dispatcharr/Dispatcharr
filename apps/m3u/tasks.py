@@ -3,7 +3,7 @@ import logging
 import re
 import regex
 import requests
-from core.redaction import redact_provider_text, redact_provider_url
+from core.redaction import redact_provider_text, redact_provider_url, redact_text
 import os
 import gc
 import gzip, zipfile
@@ -719,10 +719,7 @@ def check_field_lengths(streams_to_create):
     for stream in streams_to_create:
         for field, value in stream.__dict__.items():
             if isinstance(value, str) and len(value) > 255:
-                print(f"{field} --- {value}")
-
-        print("")
-        print("")
+                logger.debug("%s --- %s", field, redact_text(value))
 
 
 @shared_task
