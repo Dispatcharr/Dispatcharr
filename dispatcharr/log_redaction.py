@@ -11,7 +11,7 @@ import re
 _KEY_ALT = (
     r"username|user|password|passwd|pass|secret|signature|sig|"
     r"authorization|auth[_-]?token|bearer|"
-    r"x[_-]api[_-]key|api[_-]?key|apikey|token"
+    r"x[_-]api[_-]key|api[_-]?key|apikey|token|cookie"
 )
 
 # Compound-key prefix ("xc_password"); the trailing delimiter keeps "compass" out.
@@ -64,11 +64,25 @@ _URL_LABEL = re.compile(
 # The shape requests exception text uses: HTTPSConnectionPool(host='...', port=443).
 _HOST_KV = re.compile(r"(?i)\bhost=(['\"])[^'\"\s]+\1")
 
-# Every pattern needs a scheme, a stream path, host=, or a credential-shaped key
-# name, so one scan gates the battery: a shape missing here never reaches it.
+# The same sensitive keys with a LIST value ('token': ['x']), the dict(QueryDict) shape.
+_DICT_LIST_KV = re.compile(
+    rf"(?ix)(?P<q>['\"])(?P<key>{_KEY_PREFIX}(?:{_KEY_ALT}))(?P=q)(?P<sep>\s*:\s*)"
+    r"\[(?P<body>[^\]]*)\]"
+)
+
+# Bare hostnames in DNS/timeout failure prose, which no key or URL shape catches.
+_RESOLVE_PROSE = re.compile(
+    r"(?i)\b((?:failed to resolve|could not resolve hostname)\s+')[^'\s]+(')"
+)
+_TIMEOUT_PROSE = re.compile(r"(?i)\b(connection to )[^\s']+( timed out)")
+
+# Every pattern needs a scheme, a stream path, host=, a credential-shaped key
+# name or the failure prose, so one scan gates the battery: a shape missing
+# here never reaches it.
 _TRIGGER = re.compile(
     rf"(?i)://|/(?:live|movie|series|timeshift)/|\bhost="
     rf"|\b{_KEY_PREFIX}(?:{_KEY_ALT}|url)\b"
+    rf"|resolve|timed out"
 )
 
 
@@ -76,6 +90,15 @@ def _redact_dict_kv(match):
     q, vq = match.group("q"), match.group("vq")
     key = match.group("key")
     return f"{q}{key}{q}{match.group('sep')}{vq}[{key.lower()}]{vq}"
+
+
+def _redact_dict_list_kv(match):
+    # A '[' in the body means it was already masked; leave it (idempotency).
+    if "[" in match.group("body"):
+        return match.group(0)
+    q = match.group("q")
+    key = match.group("key")
+    return f"{q}{key}{q}{match.group('sep')}[{q}[{key.lower()}]{q}]"
 
 
 def _redact_url_label(match):
@@ -110,8 +133,11 @@ def _apply(value):
     result = _KV_ASSIGN.sub(
         lambda m: f"{m.group(1)}{m.group(2)}[{m.group(1).lower()}]", result
     )
+    result = _DICT_LIST_KV.sub(_redact_dict_list_kv, result)
     result = _URL_LABEL.sub(_redact_url_label, result)
     result = _HOST_KV.sub(lambda m: f"host={m.group(1)}[host]{m.group(1)}", result)
+    result = _RESOLVE_PROSE.sub(r"\1[host]\2", result)
+    result = _TIMEOUT_PROSE.sub(r"\1[host]\2", result)
     return result
 
 

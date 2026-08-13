@@ -229,6 +229,7 @@ class TriggerScanTests(SimpleTestCase):
         "username", "user", "password", "passwd", "pass", "secret", "signature",
         "sig", "authorization", "auth_token", "auth-token", "authtoken", "bearer",
         "x_api_key", "x-api-key", "api_key", "api-key", "apikey", "token", "url",
+        "cookie",
     )
     PREFIXES = ("", "xc_", "account.", "provider-", "a.b_")
     CONTEXTS = (
@@ -271,6 +272,23 @@ class TriggerScanTests(SimpleTestCase):
                     )
         # Agreement on lines nothing masks would prove nothing.
         self.assertGreater(masked, total * 0.9)
+
+    def test_failure_prose_reaches_the_battery(self):
+        # These carry no key, no scheme and no stream path: the trigger scan is
+        # the only thing standing between them and an unmasked hostname.
+        for body in (
+            "Failed to resolve 'portal.example'",
+            "could not resolve hostname 'portal.example'",
+            "connection to portal.example timed out",
+        ):
+            self.assertTrue(
+                self.assert_gate_agrees(
+                    f"2026-08-18 01:00:00,100 ERROR apps.m3u.tasks {body}"
+                ),
+                body,
+            )
+            # Bare, as redact_text() is also called on strings that are not log lines.
+            self.assertTrue(self.assert_gate_agrees(body), body)
 
     def test_url_and_stream_path_shapes_reach_the_battery(self):
         for body in (

@@ -17,7 +17,7 @@ from dispatcharr.log_redaction import redact_text
 # Keys whose values are masked in a mapping, matched as whole delimiter-bounded words.
 _SENSITIVE_KEY_RE = re.compile(
     r"(?:^|_)(?:passphrase|password|passwd|pass|secret|token|api_?key|apikey|"
-    r"authorization|auth_?token|bearer|creds|credential|url)s?(?:$|_)"
+    r"authorization|auth_?token|bearer|creds|credential|cookie|url)s?(?:$|_)"
     r"|(?:^|_)(?:signature|sig)s?$",
     re.IGNORECASE,
 )

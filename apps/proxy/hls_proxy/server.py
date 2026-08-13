@@ -1083,6 +1083,12 @@ if __name__ == '__main__':
         format='%(asctime)s - %(levelname)s - %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S'
     )
+    # Standalone mode has no Django logging config; mask credentials here too.
+    from core.redaction import RedactingFormatter
+    for _handler in logging.getLogger().handlers:
+        _handler.setFormatter(
+            RedactingFormatter('%(asctime)s - %(levelname)s - %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
+        )
     
     try:
         # Initialize proxy server
