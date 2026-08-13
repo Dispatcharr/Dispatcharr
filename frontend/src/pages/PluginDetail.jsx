@@ -737,7 +737,7 @@ function PluginDetailForKey({ routeKey: key }) {
               >
                 Discard
               </Button>
-              <Button loading={saving} onClick={saveSettings} size="xs">
+              <Button loading={saving} onClick={() => saveSettings()} size="xs">
                 Save
               </Button>
             </Group>
