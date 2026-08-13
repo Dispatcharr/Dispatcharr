@@ -3,6 +3,7 @@
 import hmac
 import json
 import logging
+from core.redaction import redact_provider_url
 import secrets
 import threading
 import time
@@ -3250,13 +3251,13 @@ def _stream_from_provider(
             if cached_final:
                 logger.warning(
                     "Timeshift cached CDN unreachable (%s): %s; falling back to portal",
-                    _redact_url(url), type(exc).__name__,
+                    redact_provider_url(url), type(exc).__name__,
                 )
                 _clear_pool_final_url(redis_client, pool_session_id)
                 continue
             logger.error(
                 "Timeshift provider unreachable (%s): %s",
-                _redact_url(url), type(exc).__name__,
+                redact_provider_url(url), type(exc).__name__,
             )
             return _finalize_timeshift_response(
                 HttpResponseBadRequest("Provider connection error")

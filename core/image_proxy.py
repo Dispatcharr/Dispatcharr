@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import mimetypes
+from core.redaction import redact_provider_url
 import os
 import time
 from urllib.parse import urljoin
@@ -116,7 +117,7 @@ def _fetch_remote_image(
             validate_outbound_http_url(current_url, allow_private=True, allow_loopback=False)
         except ValueError as exc:
             _remember_fetch_failure(url, failure_cache, fail_ttl)
-            logger.warning("Blocked unsafe remote image URL %s: %s", current_url, exc)
+            logger.warning("Blocked unsafe remote image URL %s: %s", redact_provider_url(current_url, '[image_host]'), exc)
             raise Http404("Remote image not allowed") from exc
 
         remote_response = requests.get(
@@ -249,5 +250,5 @@ def serve_local_or_remote_image(
         raise
     except requests.exceptions.RequestException as e:
         _remember_fetch_failure(url, failure_cache, fail_ttl)
-        logger.warning("Error fetching remote %s %s: %s", log_label, url, e)
+        logger.warning("Error fetching remote %s %s: %s", log_label, redact_provider_url(url, '[image_host]'), e)
         raise Http404("Error fetching remote image") from e
