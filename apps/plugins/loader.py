@@ -1255,13 +1255,19 @@ class PluginManager:
                     "'background_tasks' capability in plugin.json. Add "
                     '"capabilities": ["background_tasks"] to the manifest to allow this.'
                 )
+            action_def = next(
+                (a for a in (lp.actions or []) if isinstance(a, dict) and a.get("id") == action_id), None
+            )
+            if action_def is None:
+                raise ValueError(
+                    f"Plugin '{lp.key}' called dispatch_task() with unknown action_id "
+                    f"'{action_id}'. It must match an \"id\" declared in plugin.json's "
+                    "\"actions\" list."
+                )
             from .tasks import run_plugin_action_task
             from .task_history import record_task_started
             async_result = run_plugin_action_task.apply_async(
                 args=[lp.key, action_id, params or {}], queue="plugins",
-            )
-            action_def = next(
-                (a for a in (lp.actions or []) if isinstance(a, dict) and a.get("id") == action_id), {}
             )
             record_task_started(lp.key, async_result.id, action_id, action_def.get("label", action_id))
             return async_result.id
