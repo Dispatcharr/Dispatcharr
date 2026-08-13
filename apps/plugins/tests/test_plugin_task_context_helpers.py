@@ -72,6 +72,16 @@ class DispatchTaskTests(SimpleTestCase):
         )
         mock_record.assert_called_once_with("my-plugin", "task-2", "do_work", "Do Work")
 
+    def test_raises_value_error_for_unknown_action_id(self):
+        pm = PluginManager()
+        dispatch_task = pm._make_task_dispatcher(self._lp())
+
+        with patch("apps.plugins.tasks.run_plugin_action_task.apply_async") as mock_apply_async:
+            with self.assertRaises(ValueError):
+                dispatch_task("no_such_action")
+
+        mock_apply_async.assert_not_called()
+
     def test_default_params_is_empty_dict(self):
         pm = PluginManager()
         dispatch_task = pm._make_task_dispatcher(self._lp())
