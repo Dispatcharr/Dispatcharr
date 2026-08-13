@@ -35,7 +35,6 @@ services:
       #- UWSGI_NICE_LEVEL=-5   # uWSGI/FFmpeg/Streaming (default: 0, recommended: -5 for high priority)
       #- CELERY_NICE_LEVEL=5   # Celery/EPG/Background tasks (default: 5, low priority)
       #- CELERY_PLUGINS_CONCURRENCY=10   # Dedicated plugins worker thread count (default: 10)
-      #- CELERY_PLUGIN_WORKER_MAX_MEMORY_PER_CHILD=262144   # KB, plugins worker only (default: 256MB)
     #
     # Uncomment to enable high priority for streaming (required if UWSGI_NICE_LEVEL < 0)
     #cap_add:

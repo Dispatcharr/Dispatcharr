@@ -71,14 +71,12 @@ fi
 # DVR worker: thread pool for the long-running, I/O-bound run_recording task.
 nice -n "$NICE_LEVEL" celery -A dispatcharr worker -Q dvr -n dvr@%h --pool=threads --concurrency=20 -l info &
 
-# Plugins worker: isolated queue, deprioritized and memory-capped below the
-# other workers so plugin code can't degrade the rest of the app. Only
-# actually started if an enabled plugin needs it, see
-# docker/plugins-worker-guard.sh and
+# Plugins worker: isolated queue, deprioritized below the other workers so
+# plugin code can't degrade the rest of the app. Only actually started if an
+# enabled plugin needs it, see docker/plugins-worker-guard.sh and
 # apps/plugins/management/commands/plugins_worker_needed.py.
 export CELERY_PLUGINS_NICE_LEVEL="${CELERY_PLUGINS_NICE_LEVEL:-$((NICE_LEVEL + 5))}"
 export CELERY_PLUGINS_CONCURRENCY="${CELERY_PLUGINS_CONCURRENCY:-10}"
-export CELERY_PLUGIN_WORKER_MAX_MEMORY_PER_CHILD="${CELERY_PLUGIN_WORKER_MAX_MEMORY_PER_CHILD:-262144}"
 /app/docker/plugins-worker-guard.sh &
 
 # Default prefork worker: every queue except `dvr`/`plugins`.

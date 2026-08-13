@@ -17,12 +17,10 @@ MODE="${CELERY_PLUGINS_WORKER:-auto}"   # auto | always | never
 
 NICE_LEVEL="${CELERY_PLUGINS_NICE_LEVEL:-10}"
 CONCURRENCY="${CELERY_PLUGINS_CONCURRENCY:-10}"
-MAX_MEMORY_PER_CHILD="${CELERY_PLUGIN_WORKER_MAX_MEMORY_PER_CHILD:-262144}"
 
 start_worker() {
     exec nice -n "$NICE_LEVEL" celery -A dispatcharr worker -Q plugins -n plugins@%h \
-        --pool=threads --concurrency="$CONCURRENCY" \
-        --max-memory-per-child="$MAX_MEMORY_PER_CHILD" -l info
+        --pool=threads --concurrency="$CONCURRENCY" -l info
 }
 
 case "$MODE" in
