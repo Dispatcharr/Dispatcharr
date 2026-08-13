@@ -35,7 +35,14 @@ const enableConfirmDefaults = {
   resolveEnableConfirmation: vi.fn(),
 };
 
-vi.mock('../../store/plugins');
+vi.mock('../../store/plugins', () => ({
+  usePluginStore: Object.assign(vi.fn(), { getState: vi.fn() }),
+  needsCapabilityAck: (plugin) => {
+    if (!plugin) return true;
+    const acked = new Set(plugin.acknowledged_capabilities || []);
+    return (plugin.capabilities || []).some((c) => !acked.has(c.id));
+  },
+}));
 vi.mock('../../store/settings');
 vi.mock('../../store/auth');
 

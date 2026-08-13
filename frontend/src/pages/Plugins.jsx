@@ -29,7 +29,7 @@ import {
   showNotification,
   updateNotification,
 } from '../utils/notificationUtils.js';
-import { usePluginStore } from '../store/plugins.jsx';
+import { usePluginStore, needsCapabilityAck } from '../store/plugins.jsx';
 import {
   deletePluginByKey,
   importPlugin,
@@ -351,7 +351,7 @@ export default function PluginsPage() {
     return async () => {
       if (!imported) return;
 
-      const proceed = imported.ever_enabled || (await requireTrust(imported));
+      const proceed = !needsCapabilityAck(imported) || (await requireTrust(imported));
       if (proceed) {
         const resp = await setPluginEnabled(imported.key, true);
         if (resp?.success) {

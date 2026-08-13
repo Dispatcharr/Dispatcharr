@@ -11,6 +11,11 @@ class PluginConfig(models.Model):
     enabled = models.BooleanField(default=False)
     # Tracks whether this plugin has ever been enabled at least once
     ever_enabled = models.BooleanField(default=False)
+    # Capability ids the user has acknowledged (via the enable confirmation
+    # dialog) for this plugin. Compared against the plugin's current
+    # effective capabilities to decide whether to re-prompt after an update
+    # adds a new one; ever_enabled alone can't tell them apart.
+    acknowledged_capabilities = models.JSONField(default=list, blank=True)
     settings = models.JSONField(default=dict, blank=True)
 
     # Managed plugin fields (populated when installed from a repo)

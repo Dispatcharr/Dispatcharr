@@ -14,7 +14,14 @@ import {
 } from '../../utils/pages/PluginsUtils';
 import { usePluginStore } from '../../store/plugins';
 
-vi.mock('../../store/plugins');
+vi.mock('../../store/plugins', () => ({
+  usePluginStore: Object.assign(vi.fn(), { getState: vi.fn() }),
+  needsCapabilityAck: (plugin) => {
+    if (!plugin) return true;
+    const acked = new Set(plugin.acknowledged_capabilities || []);
+    return (plugin.capabilities || []).some((c) => !acked.has(c.id));
+  },
+}));
 
 vi.mock('../../utils/pages/PluginsUtils', () => ({
   deletePluginByKey: vi.fn(),
@@ -503,6 +510,8 @@ describe('PluginsPage', () => {
       description: 'New Description',
       ever_enabled: false,
       enabled: false,
+      capabilities: [{ id: 'background_tasks', label: 'Run background tasks' }],
+      acknowledged_capabilities: [],
     };
 
     const importAndToggleEnableNow = async () => {
