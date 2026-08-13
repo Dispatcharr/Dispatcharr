@@ -47,6 +47,7 @@ class PluginsConfig(AppConfig):
             post_migrate.connect(
                 _post_migrate_discover,
                 dispatch_uid="apps.plugins.post_migrate_discover",
+                weak=False,
             )
 
             from dispatcharr.app_initialization import should_skip_initialization
