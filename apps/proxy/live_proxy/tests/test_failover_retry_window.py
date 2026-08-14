@@ -187,6 +187,17 @@ class FailoverRotationCooldownTests(TestCase):
         self.assertEqual(sm._failover_rotation_passes, 0)
         self.assertIsNone(sm._rotation_cooldown_until)
 
+    def test_manual_reset_clears_tried_and_rotation_state(self):
+        sm = _make_manager(
+            tried_stream_ids={100, 200, 300},
+            _failover_rotation_passes=7,
+            _rotation_cooldown_until=time.time() + 10,
+        )
+        sm.reset_failover_rotation_state()
+        self.assertEqual(sm.tried_stream_ids, set())
+        self.assertEqual(sm._failover_rotation_passes, 0)
+        self.assertIsNone(sm._rotation_cooldown_until)
+
 
 class FailoverConfigDefaultsTests(SimpleTestCase):
     def test_retry_window_default(self):

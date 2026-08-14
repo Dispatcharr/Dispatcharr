@@ -878,19 +878,6 @@ def change_stream(request, channel_id):
             channel_id, new_url, user_agent, stream_id, m3u_profile_id, stream_name=stream_name
         )
 
-        # Get the stream manager before updating URL
-        stream_manager = proxy_server.stream_managers.get(channel_id)
-
-        # If we have a stream manager, reset its tried_stream_ids when manually changing streams
-        if stream_manager:
-            # Reset tried streams when manually switching URL via API
-            stream_manager.tried_stream_ids = set()
-            stream_manager._failover_rotation_passes = 0
-            stream_manager._rotation_cooldown_until = None
-            logger.debug(
-                f"Reset tried stream IDs for channel {channel_id} during manual stream change"
-            )
-
         if result.get("status") == "error":
             return JsonResponse(
                 {
