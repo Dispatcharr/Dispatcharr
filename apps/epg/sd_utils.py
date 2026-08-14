@@ -444,13 +444,18 @@ def sd_obtain_token(source, username=None, password=None, *, timeout=30):
         )
 
     sha1_password = hashlib.sha1(password.encode('utf-8')).hexdigest()
-    try:
-        response = requests.post(
+    token_body = {'username': username, 'password': sha1_password}
+
+    def _post_token():
+        return requests.post(
             f"{SD_BASE_URL}/token",
-            json={'username': username, 'password': sha1_password},
+            json=token_body,
             headers=sd_headers_for_source(source),
             timeout=timeout,
         )
+
+    try:
+        response = _post_token()
     except requests.exceptions.RequestException as exc:
         return SDTokenAuthResult(
             ok=False,
@@ -462,13 +467,29 @@ def sd_obtain_token(source, username=None, password=None, *, timeout=30):
     except ValueError:
         auth_data = {}
 
+    # Unexpected RouteTo:debug: clear the toggle and retry once without it.
     if sd_handle_2055(source, auth_data):
-        return SDTokenAuthResult(
-            ok=False,
-            code=SD_CODE_INVALID_DEBUG,
-            message=_DEBUG_REJECTED_MESSAGE,
-            debug_rejected=True,
-        )
+        try:
+            response = _post_token()
+        except requests.exceptions.RequestException as exc:
+            return SDTokenAuthResult(
+                ok=False,
+                message=(
+                    f'Network error authenticating with Schedules Direct '
+                    f'after disabling debug routing: {exc}'
+                ),
+            )
+        try:
+            auth_data = response.json()
+        except ValueError:
+            auth_data = {}
+        if sd_handle_2055(source, auth_data):
+            return SDTokenAuthResult(
+                ok=False,
+                code=SD_CODE_INVALID_DEBUG,
+                message=_DEBUG_REJECTED_MESSAGE,
+                debug_rejected=True,
+            )
 
     # Honor JSON ``code`` before raise_for_status. SD error semantics are in
     # the body; HTTP status alone is not reliable for auth failures.
@@ -544,6 +565,11 @@ def sd_authorized_request(
     On HTTP 401/403 (SD documents TOKEN_EXPIRED as 403 + code 4006), clears the
     Redis token cache, obtains a fresh token, and retries the request once.
 
+    On JSON code 2055 (unexpected ``RouteTo: debug``), disables Extra Schedules
+    Direct Debugging and retries once without that header. This matters when a
+    cached token skips ``POST /token``, where 2055 was previously the only place
+    we cleared the toggle.
+
     Returns ``(response, token)`` where ``token`` may have been refreshed.
     """
     method_upper = (method or 'GET').upper()
@@ -569,6 +595,13 @@ def sd_authorized_request(
         )
 
     response = _once(token)
+
+    # SD returns HTTP 400 + code 2055 when RouteTo:debug is not authorized.
+    # Disable the toggle and retry once so we stop sending the header.
+    _err_code, err_data = sd_parse_response_payload(response)
+    if err_data is not None and sd_handle_2055(source, err_data):
+        response = _once(token)
+
     if response.status_code not in (401, 403):
         return response, token
 
@@ -591,6 +624,10 @@ def sd_authorized_request(
         return response, token
 
     retry_response = _once(auth.token)
+    # Fresh token request can also return 2055 if debug was still on.
+    _err_code, err_data = sd_parse_response_payload(retry_response)
+    if err_data is not None and sd_handle_2055(source, err_data):
+        retry_response = _once(auth.token)
     return retry_response, auth.token
 
 

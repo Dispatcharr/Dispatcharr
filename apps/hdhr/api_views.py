@@ -12,12 +12,6 @@ from django.db import models
 from apps.channels.models import Channel, ChannelProfile, Stream
 from .models import HDHRDevice
 from .serializers import HDHRDeviceSerializer
-from django.contrib.auth.decorators import login_required
-from django.shortcuts import render
-from django.views import View
-from django.utils.decorators import method_decorator
-from django.contrib.auth.decorators import login_required
-from django.views.decorators.csrf import csrf_exempt
 from dispatcharr.utils import network_access_allowed
 from core.utils import build_absolute_uri_with_port
 
@@ -33,13 +27,6 @@ def _hdhr_network_check(request):
     if not network_access_allowed(request, "M3U_EPG"):
         return JsonResponse({"error": "Forbidden"}, status=403)
     return None
-
-
-@login_required
-def hdhr_dashboard_view(request):
-    """Render the HDHR management page."""
-    hdhr_devices = HDHRDevice.objects.all()
-    return render(request, "hdhr/hdhr.html", {"hdhr_devices": hdhr_devices})
 
 
 # 🔹 1) HDHomeRun Device API

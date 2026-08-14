@@ -22,6 +22,18 @@ def convert_js_numbered_backreferences(replacement):
     return regex.sub(r"\$(\d+)", r"\\\1", replacement)
 
 
+def parse_is_adult(value):
+    """Return True when a provider adult flag is 1 or \"1\".
+
+    XC providers send is_adult as an int or string. Invalid values
+    (None, \"None\", empty) are treated as non-adult.
+    """
+    try:
+        return int(value) == 1
+    except (TypeError, ValueError):
+        return False
+
+
 def normalize_stream_url(url):
     """
     Normalize stream URLs for compatibility with FFmpeg.
