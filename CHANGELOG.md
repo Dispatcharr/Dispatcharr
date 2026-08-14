@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **M3U stream names and EPG channel display names now use the shared `truncate_with_warning` helper introduced for logo names.** Behaviour is unchanged for M3U streams and XMLTV (still warn + clamp to the model field limit). Schedules Direct station display names that exceed `EPGData.name` (512 characters) now log the same style of warning when truncated instead of slicing silently.
+
 ### Fixed
 
 - **Bulk channel creation and VOD import no longer fail when provider-supplied logo names exceed 255 characters.** Oversized M3U / EPG / VOD titles are truncated on ingest via a shared helper enforced in model `save`, `bulk_create`, and the logo serializers, matching how stream names are already clamped. (Fixes #1470)
