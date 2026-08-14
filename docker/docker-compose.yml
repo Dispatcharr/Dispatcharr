@@ -177,8 +177,6 @@ services:
 
       # Process Priority Configuration (Optional)
       #- CELERY_NICE_LEVEL=5  # Celery/EPG/Background tasks (default: 5, low priority; Range: -20 to 19)
-      #- CELERY_PLUGINS_CONCURRENCY=10   # Dedicated plugins worker thread count (default: 10)
-      #- CELERY_PLUGIN_WORKER_MAX_MEMORY_PER_CHILD=262144   # KB, plugins worker only (default: 256MB)
 
       # Celery prefork autoscale (Optional, tune memory vs throughput; range: 1-20)
       #- CELERY_MAX_WORKERS=6  # Max prefork workers (default: 6)
