@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Live proxy failover wraps back to the first stream after a cooldown instead of sticking on the last backup.** After every assigned stream had been tried once, automatic failover stopped and left the session on the final URL. Once a channel has connected at least once, exhausting the list now arms a 60s cooldown (`FAILOVER_ROTATION_COOLDOWN`), then continues rotation from the stream after the current one (wrapping to the first). Full-list wraps are capped by the existing `MAX_STREAM_SWITCHES` limit (10) and clear after stable playback or a manual next-stream switch. Cold start still fails fast with no wrap. The cooldown is timestamp-based so buffering-timeout failover (stderr reader thread) never blocks on the wait. (Fixes #310)
 - **Schedules Direct guide refresh no longer silently drops channels on transient API failures.** A failed `/schedules/md5` check was treated as "no changes," reporting a false "guide data is up to date" instead of an error, and a failed `/programs` metadata batch wrote a placeholder "No Title" entry instead of retrying. The batched `/schedules/md5`, `/schedules`, and `/programs` requests now retry with backoff on network errors, HTTP errors, and Schedules Direct's own embedded error codes (e.g. `SERVICE_OFFLINE`/`SERVICE_BUSY`) returned with HTTP 200.
 
 ## [0.29.0] - 2026-08-09
