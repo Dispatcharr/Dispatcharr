@@ -22,11 +22,12 @@ from django.db import connection, transaction
 from django.urls import reverse
 from rest_framework import serializers
 from django.utils import timezone
-from core.utils import validate_flexible_url, build_absolute_uri_with_port
+from core.utils import validate_flexible_url, build_absolute_uri_with_port, truncate_with_warning
 from apps.channels.utils import coerce_channel_profile_ids
 
 
 class LogoSerializer(serializers.ModelSerializer):
+    name = serializers.CharField()
     cache_url = serializers.SerializerMethodField()
     channel_count = serializers.SerializerMethodField()
     is_used = serializers.SerializerMethodField()
@@ -35,6 +36,13 @@ class LogoSerializer(serializers.ModelSerializer):
     class Meta:
         model = Logo
         fields = ["id", "name", "url", "cache_url", "channel_count", "is_used", "channel_names"]
+
+    def validate_name(self, value):
+        return truncate_with_warning(
+            value,
+            max_length=Logo._meta.get_field("name").max_length,
+            label="Logo name",
+        )
 
     def validate_url(self, value):
         """Validate that the URL is unique for creation or update"""

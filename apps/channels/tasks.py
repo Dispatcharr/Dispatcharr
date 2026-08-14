@@ -3209,7 +3209,17 @@ def _resolve_poster_for_program(channel_name, program, channel_logo_id=None):
     if not poster_logo_id and not poster_url and _title and not _title_is_channel_name:
         try:
             from .models import Logo
-            existing = Logo.objects.filter(name__iexact=_title).first()
+            from core.utils import truncate_with_warning
+
+            # Match the same clamp used when Logo.name is stored so titles
+            # longer than varchar(255) still hit a previously truncated row.
+            existing = Logo.objects.filter(
+                name__iexact=truncate_with_warning(
+                    _title,
+                    max_length=Logo._meta.get_field("name").max_length,
+                    label="Logo name",
+                )
+            ).first()
             if existing:
                 poster_logo_id = existing.id
                 poster_url = existing.url

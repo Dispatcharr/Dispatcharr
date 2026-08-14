@@ -2,8 +2,16 @@ import API from '../../api.js';
 import { yupResolver } from '@hookform/resolvers/yup';
 import * as Yup from 'yup';
 
+// Matches Logo.name CharField(max_length=255) on the backend.
+export const LOGO_NAME_MAX_LENGTH = 255;
+
 const schema = Yup.object({
-  name: Yup.string().required('Name is required'),
+  name: Yup.string()
+    .required('Name is required')
+    .max(
+      LOGO_NAME_MAX_LENGTH,
+      `Name must be ${LOGO_NAME_MAX_LENGTH} characters or fewer`
+    ),
   url: Yup.string()
     .required('URL is required')
     .test(

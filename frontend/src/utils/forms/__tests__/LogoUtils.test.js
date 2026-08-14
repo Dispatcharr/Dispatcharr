@@ -9,6 +9,7 @@ import {
   validateFileSize,
   releaseUrl,
   getFilenameWithoutExtension,
+  LOGO_NAME_MAX_LENGTH,
 } from '../LogoUtils.js';
 
 // ── API mock ───────────────────────────────────────────────────────────────────
@@ -212,6 +213,32 @@ describe('LogoUtils', () => {
       await expect(
         schema.validate({ name: '', url: 'https://example.com/logo.png' })
       ).rejects.toThrow('Name is required');
+    });
+
+    it('schema rejects a name longer than LOGO_NAME_MAX_LENGTH', async () => {
+      getResolver();
+      const [schema] = vi.mocked(yupResolver).mock.calls[0];
+
+      await expect(
+        schema.validate({
+          name: 'n'.repeat(LOGO_NAME_MAX_LENGTH + 1),
+          url: 'https://example.com/logo.png',
+        })
+      ).rejects.toThrow(
+        `Name must be ${LOGO_NAME_MAX_LENGTH} characters or fewer`
+      );
+    });
+
+    it('schema accepts a name at exactly LOGO_NAME_MAX_LENGTH', async () => {
+      getResolver();
+      const [schema] = vi.mocked(yupResolver).mock.calls[0];
+
+      await expect(
+        schema.validate({
+          name: 'n'.repeat(LOGO_NAME_MAX_LENGTH),
+          url: 'https://example.com/logo.png',
+        })
+      ).resolves.not.toThrow();
     });
 
     it('schema rejects missing url', async () => {
