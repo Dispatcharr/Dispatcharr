@@ -1,4 +1,5 @@
 from rest_framework import serializers
+from core.utils import truncate_with_warning
 from .image_proxy import vodlogo_cache_url
 from .models import (
     Series, VODCategory, Movie, Episode, VODLogo,
@@ -8,6 +9,7 @@ from apps.m3u.serializers import M3UAccountSerializer
 
 
 class VODLogoSerializer(serializers.ModelSerializer):
+    name = serializers.CharField()
     cache_url = serializers.SerializerMethodField()
     movie_count = serializers.SerializerMethodField()
     series_count = serializers.SerializerMethodField()
@@ -17,6 +19,13 @@ class VODLogoSerializer(serializers.ModelSerializer):
     class Meta:
         model = VODLogo
         fields = ["id", "name", "url", "cache_url", "movie_count", "series_count", "is_used", "item_names"]
+
+    def validate_name(self, value):
+        return truncate_with_warning(
+            value,
+            max_length=VODLogo._meta.get_field("name").max_length,
+            label="Logo name",
+        )
 
     def validate_url(self, value):
         """Validate that the URL is unique for creation or update"""

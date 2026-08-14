@@ -26,6 +26,7 @@ import {
   getResolver,
   getUpdateLogoErrorMessage,
   getUploadErrorMessage,
+  LOGO_NAME_MAX_LENGTH,
   releaseUrl,
   updateLogo,
   uploadLogo,
@@ -322,6 +323,7 @@ const LogoForm = ({ logo = null, isOpen, onClose, onSuccess }) => {
           <TextInput
             label="Name"
             placeholder="Enter logo name"
+            maxLength={LOGO_NAME_MAX_LENGTH}
             {...register('name')}
             error={errors.name?.message}
           />
