@@ -5,5 +5,6 @@ export const getSystemSettingsFormInitialValues = () => {
     auto_import_mapped_files: true,
     enable_ip_lookup: true,
     catchup_enabled: true,
+    celery_max_workers: 8,
   };
 };

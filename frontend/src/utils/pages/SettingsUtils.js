@@ -69,6 +69,7 @@ export const saveChangedSettings = async (settings, changedSettings) => {
     'auto_import_mapped_files',
     'enable_ip_lookup',
     'catchup_enabled',
+    'celery_max_workers',
   ];
 
   for (const formKey in changedSettings) {
@@ -126,6 +127,7 @@ export const saveChangedSettings = async (settings, changedSettings) => {
       'retention_count',
       'schedule_day_of_week',
       'max_system_events',
+      'celery_max_workers',
     ];
     if (numericFields.includes(formKey) && value != null) {
       value = typeof value === 'number' ? value : parseInt(value, 10);
@@ -379,6 +381,10 @@ export const parseSettings = (settings) => {
       typeof systemSettings.catchup_enabled === 'boolean'
         ? systemSettings.catchup_enabled
         : true;
+    parsed.celery_max_workers =
+      typeof systemSettings.celery_max_workers === 'number'
+        ? systemSettings.celery_max_workers
+        : parseInt(systemSettings.celery_max_workers, 10) || 8;
   }
 
   // Proxy and network access are already grouped objects

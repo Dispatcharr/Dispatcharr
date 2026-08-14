@@ -32,8 +32,8 @@ def read_plugin_manifest(path: str) -> tuple[Optional[Dict[str, Any]], bool]:
     """Read and parse <path>/plugin.json, if present.
 
     Module-level (no PluginManager instance needed) so lightweight tooling
-    (e.g. the plugins_worker_needed management command) can read
-    manifests without booting the full plugin discovery/leadership machinery.
+    can read manifests without booting the full plugin discovery/leadership
+    machinery.
     """
     manifest_path = os.path.join(path, "plugin.json")
     if not os.path.isfile(manifest_path):

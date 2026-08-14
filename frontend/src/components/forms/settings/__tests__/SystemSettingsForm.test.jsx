@@ -30,6 +30,25 @@ vi.mock('../ConnectionSecurityPanel.jsx', () => ({
   ),
 }));
 
+vi.mock('../../../ConfirmationDialog.jsx', () => ({
+  default: ({ opened, onConfirm, onClose, title }) =>
+    opened ? (
+      <div data-testid="restart-confirm-dialog">
+        <span>{title}</span>
+        <button data-testid="restart-confirm-button" onClick={onConfirm}>
+          Confirm
+        </button>
+        <button data-testid="restart-cancel-button" onClick={onClose}>
+          Cancel
+        </button>
+      </div>
+    ) : null,
+}));
+
+vi.mock('../../../PluginWarnings.jsx', () => ({
+  PluginRestartWarning: ({ children }) => <div>{children}</div>,
+}));
+
 // ── Mantine form ───────────────────────────────────────────────────────────────
 vi.mock('@mantine/form', () => ({
   useForm: vi.fn(),
@@ -169,7 +188,7 @@ describe('SystemSettingsForm', () => {
     it('renders the NumberInput for max_system_events', () => {
       setupMocks();
       render(<SystemSettingsForm active={true} />);
-      expect(screen.getByTestId('number-input')).toBeInTheDocument();
+      expect(screen.getAllByTestId('number-input')[0]).toBeInTheDocument();
     });
 
     it('renders the NumberInput label', () => {
@@ -240,7 +259,7 @@ describe('SystemSettingsForm', () => {
     it('renders NumberInput with value from form values', () => {
       setupMocks({ settings: makeSettings({ max_system_events: 250 }) });
       render(<SystemSettingsForm active={true} />);
-      expect(screen.getByTestId('number-input')).toHaveValue(250);
+      expect(screen.getAllByTestId('number-input')[0]).toHaveValue(250);
     });
 
     it('falls back to 100 when max_system_events is 0/falsy', () => {
@@ -272,7 +291,7 @@ describe('SystemSettingsForm', () => {
       vi.mocked(saveChangedSettings).mockResolvedValue(undefined);
 
       render(<SystemSettingsForm active={true} />);
-      expect(screen.getByTestId('number-input')).toHaveValue(100);
+      expect(screen.getAllByTestId('number-input')[0]).toHaveValue(100);
     });
   });
 
@@ -339,7 +358,7 @@ describe('SystemSettingsForm', () => {
     it('calls form.setFieldValue when NumberInput changes', () => {
       const { formMock } = setupMocks();
       render(<SystemSettingsForm active={true} />);
-      fireEvent.change(screen.getByTestId('number-input'), {
+      fireEvent.change(screen.getAllByTestId('number-input')[0], {
         target: { value: '200' },
       });
       expect(formMock.setFieldValue).toHaveBeenCalledWith(
@@ -417,6 +436,74 @@ describe('SystemSettingsForm', () => {
         );
       });
       consoleSpy.mockRestore();
+    });
+  });
+
+  // ── Restart-required confirmation ─────────────────────────────────────────
+
+  describe('restart confirmation for worker scale changes', () => {
+    it('shows restart dialog instead of saving immediately when a celery scale field changed', () => {
+      setupMocks();
+      vi.mocked(getChangedSettings).mockReturnValue({
+        celery_max_workers: 10,
+      });
+
+      render(<SystemSettingsForm active={true} />);
+      fireEvent.click(screen.getByText('Save'));
+
+      expect(screen.getByTestId('restart-confirm-dialog')).toBeInTheDocument();
+      expect(saveChangedSettings).not.toHaveBeenCalled();
+    });
+
+    it('saves after confirming the restart dialog', async () => {
+      setupMocks();
+      vi.mocked(getChangedSettings).mockReturnValue({
+        celery_max_workers: 12,
+      });
+
+      render(<SystemSettingsForm active={true} />);
+      fireEvent.click(screen.getByText('Save'));
+      fireEvent.click(screen.getByTestId('restart-confirm-button'));
+
+      await waitFor(() => {
+        expect(saveChangedSettings).toHaveBeenCalled();
+      });
+      expect(
+        screen.queryByTestId('restart-confirm-dialog')
+      ).not.toBeInTheDocument();
+    });
+
+    it('does not save when the restart dialog is cancelled', () => {
+      setupMocks();
+      vi.mocked(getChangedSettings).mockReturnValue({
+        celery_max_workers: 10,
+      });
+
+      render(<SystemSettingsForm active={true} />);
+      fireEvent.click(screen.getByText('Save'));
+      fireEvent.click(screen.getByTestId('restart-cancel-button'));
+
+      expect(saveChangedSettings).not.toHaveBeenCalled();
+      expect(
+        screen.queryByTestId('restart-confirm-dialog')
+      ).not.toBeInTheDocument();
+    });
+
+    it('does not show restart dialog when only unrelated fields changed', async () => {
+      setupMocks();
+      vi.mocked(getChangedSettings).mockReturnValue({
+        max_system_events: 200,
+      });
+
+      render(<SystemSettingsForm active={true} />);
+      fireEvent.click(screen.getByText('Save'));
+
+      await waitFor(() => {
+        expect(saveChangedSettings).toHaveBeenCalled();
+      });
+      expect(
+        screen.queryByTestId('restart-confirm-dialog')
+      ).not.toBeInTheDocument();
     });
   });
 

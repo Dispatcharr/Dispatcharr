@@ -54,8 +54,8 @@ class DescribeCapabilitiesTests(SimpleTestCase):
         self.assertEqual(result, [{
             "id": "background_tasks",
             "label": "Run background tasks",
-            "description": "Uses a dedicated Celery worker to run long-running or scheduled work.",
-            "requires_restart": True,
+            "description": "Runs long-running or scheduled work on Dispatcharr's shared background task queue.",
+            "requires_restart": False,
         }])
 
     def test_persistent_service_capability_does_not_require_restart(self):

@@ -3,9 +3,8 @@
 Single source of truth for what a plugin can declare it needs (e.g.
 ``background_tasks``) and what manifest schema version it was written
 against. Pure/stdlib only, with no Django or DB dependency, so it can be
-imported by both ``PluginManager`` and lightweight standalone tooling (e.g.
-the ``plugins_worker_needed`` management command) without pulling in Celery
-or triggering ``PluginManager``'s discovery/leadership machinery.
+imported by lightweight standalone tooling without pulling in Celery or
+triggering ``PluginManager``'s discovery/leadership machinery.
 """
 from typing import Any, Dict, List
 
@@ -13,15 +12,14 @@ from .version_utils import compare_versions
 
 # Each capability a plugin can declare in its manifest's "capabilities" list.
 # `requires_restart` marks capabilities that bind to infrastructure only
-# started at container boot (e.g. the dedicated `plugins` Celery worker).
-# Granting one of these to a plugin doesn't take effect until the
-# celery/AIO container is restarted, unlike most future capabilities which
-# are expected to be pure runtime permission checks.
+# started at container boot. Granting one of these to a plugin doesn't take
+# effect until the celery/AIO container is restarted, unlike most other
+# capabilities which are expected to be pure runtime permission checks.
 KNOWN_CAPABILITIES: Dict[str, Dict[str, Any]] = {
     "background_tasks": {
         "label": "Run background tasks",
-        "description": "Uses a dedicated Celery worker to run long-running or scheduled work.",
-        "requires_restart": True,
+        "description": "Runs long-running or scheduled work on Dispatcharr's shared background task queue.",
+        "requires_restart": False,
     },
     "persistent_service": {
         "label": "Run a persistent background service",

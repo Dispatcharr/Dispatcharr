@@ -579,15 +579,7 @@ class PluginRunAPIView(PluginAuthMixin, APIView):
         if is_async_action:
             return self._dispatch_async(key, action, params, action_def.get("label", action))
 
-        from core.models import CoreSettings
-        if CoreSettings.get_plugin_dedicated_worker_enabled():
-            return self._run_via_dedicated_worker(key, action, params)
-
-        try:
-            result = pm.run_action(key, action, params)
-            return self._response_for_result(result)
-        except Exception as e:
-            return self._error_response(e)
+        return self._run_via_worker(key, action, params)
 
     def _error_response(self, exc):
         if isinstance(exc, PermissionError):
@@ -609,7 +601,7 @@ class PluginRunAPIView(PluginAuthMixin, APIView):
         record_task_started(key, async_result.id, action, action_label)
         return Response({"success": True, "status": "started", "task_id": async_result.id})
 
-    def _run_via_dedicated_worker(self, key, action, params):
+    def _run_via_worker(self, key, action, params):
         from celery.exceptions import TimeoutError as CeleryTimeoutError
         from .tasks import run_plugin_action_task
 
@@ -619,7 +611,7 @@ class PluginRunAPIView(PluginAuthMixin, APIView):
             # result backend ~100+ times over the full timeout window.
             result = async_result.get(timeout=PLUGIN_RUN_SYNC_TIMEOUT, interval=1)
         except CeleryTimeoutError:
-            # Task keeps running on the plugins worker; this just stops waiting.
+            # Task keeps running on the worker; this just stops waiting.
             return Response(
                 {
                     "success": False,

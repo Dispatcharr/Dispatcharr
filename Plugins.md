@@ -180,8 +180,8 @@ If `plugin.json` is missing or invalid, the plugin is treated as **legacy**:
 - `capabilities` (list of strings, optional): a self-declared list of what your plugin needs. Currently supported:
   - `background_tasks`: your plugin uses `context["dispatch_task"]` and/or a manifest action with `"async": true` (see "Long-Running Actions" below). Declaring it explicitly isn't required if you already set `async: true` on an action (that implies it), but is required if you *only* call `dispatch_task()` at runtime without any `async` action, since that usage can't be detected from the manifest alone.
   - Unknown/future capability ids are ignored gracefully by older Dispatcharr builds; the registry is intentionally extensible.
-- Declaring `background_tasks` shows users an itemized capability prompt the first time they enable your plugin, and is also what decides whether the dedicated `plugins` Celery worker gets started at container boot (see the deployment note below).
-- **`context["dispatch_task"]` is enforced:** calling it without the plugin having the `background_tasks` capability (declared directly, or implied by any `async: true` action) raises a `PermissionError`, surfaced to the caller as a 403. This prevents a plugin from quietly piggybacking on another plugin's already-running `plugins` worker without declaring that it needs one. Manifest `async: true` actions never hit this check, since the capability is always inferred for them automatically.
+- Declaring `background_tasks` shows users an itemized capability prompt the first time they enable your plugin.
+- **`context["dispatch_task"]` is enforced:** calling it without the plugin having the `background_tasks` capability (declared directly, or implied by any `async: true` action) raises a `PermissionError`, surfaced to the caller as a 403. This prevents a plugin from quietly using Dispatcharr's background task queue without declaring that it needs to. Manifest `async: true` actions never hit this check, since the capability is always inferred for them automatically.
 
 ---
 
@@ -377,7 +377,7 @@ Clicking an action calls your plugin’s `run(action, params, context)` and show
 
 The manual Run button and event hooks normally call `run()` inline and wait for it to return, so anything slower than a typical reverse-proxy timeout (60-120s) fails. Two ways to avoid that:
 
-**1. Mark the action `async` in its manifest.** The button dispatches immediately and returns; your `run()` executes on a dedicated Celery worker instead of the request:
+**1. Mark the action `async` in its manifest.** The button dispatches immediately and returns; your `run()` executes on a Celery worker instead of the request:
 ```python
 actions = [
     {"id": "bulk_match", "label": "Match All Streams", "async": True},
@@ -391,17 +391,17 @@ def run(self, action, params, context):
         task_id = context["dispatch_task"]("do_scan", params)
         return {"status": "started", "task_id": task_id}
     if action == "do_scan":
-        # runs on the plugins worker when reached via dispatch_task
+        # runs on a Celery worker when reached via dispatch_task
         ...
 ```
 
 Either way, call `context["report_progress"](percent, message)` from inside the dispatched action to push progress to the UI. It's a no-op when your action isn't running async, so it's safe to call unconditionally.
 
-Event hooks and non-async manual actions can also be routed through the same dedicated worker without any manifest changes, via a system-wide "Dedicated Plugin Worker" setting (off by default). Turning it on doesn't change your action's `run()` contract, only where it executes.
+Event hooks and non-async manual actions always run through Celery too (queued and awaited synchronously for manual actions, fire-and-forget for event hooks). There's no separate opt-in setting for this anymore, and no inline-in-request-process execution path.
 
-**Deployment note:** `async` actions and `dispatch_task` always target the `plugins` Celery queue, which ships in both the AIO image and the standard split-container `docker-compose.yml`. If you run a custom-mounted `entrypoint.celery.sh` or `uwsgi.ini` that predates this queue, add a `plugins` worker yourself (mirror the existing `dvr` worker line) or these dispatch paths will queue work that never runs.
+**Deployment note:** `async` actions and `dispatch_task` target the `plugins` Celery queue, which is serviced by the same worker that handles everything else (`-Q celery,plugins`) in both the AIO image and the standard split-container `docker-compose.yml`. If you run a custom-mounted `entrypoint.celery.sh` or `uwsgi.ini`, make sure your worker(s) consume the `plugins` queue too, or these dispatch paths will queue work that never runs.
 
-**The `plugins` worker is only started when needed.** At container startup, Dispatcharr checks whether any *enabled* plugin declares the `background_tasks` capability (directly, or implicitly via an `async: true` action) and only spawns the `plugins` Celery worker if so. See `docker/plugins-worker-guard.sh` and `apps/plugins/management/commands/plugins_worker_needed.py`. This detection runs once at boot, not continuously: **enabling a plugin that newly needs background tasks requires restarting the Celery/AIO container** for the worker to actually start, in addition to enabling the plugin itself. Operators can override the auto-detection with the `CELERY_PLUGINS_WORKER` environment variable (`auto` default / `always` / `never`).
+**The default worker's concurrency ceiling is configurable.** The `celery_max_workers` system setting (default 8) controls the `--autoscale` ceiling for the shared worker that handles both core tasks and plugin tasks; see `apps/plugins/management/commands/celery_worker_max.py`. It's read once at container startup, not watched continuously: **changing it requires restarting the Celery/AIO container** to take effect.
 
 ### Action Confirmation (Modal)
 Developers can request a confirmation modal per action using the `confirm` key on the action. Options:

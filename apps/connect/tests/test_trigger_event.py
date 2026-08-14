@@ -16,6 +16,9 @@ These tests guard against regression by:
    is still dispatched.
 2. Sanity-checking that actions without a matching `events` entry are
    not dispatched.
+
+Event-triggered actions are always dispatched via Celery (queue="plugins"),
+fire-and-forget, never run inline.
 """
 from unittest.mock import MagicMock, patch
 
@@ -52,13 +55,13 @@ class TriggerEventDispatchTests(SimpleTestCase):
         ), patch(
             "apps.plugins.models.PluginConfig"
         ) as mock_cfg, patch(
-            "core.models.CoreSettings.get_plugin_dedicated_worker_enabled", return_value=False
-        ):
+            "apps.plugins.tasks.run_plugin_action_task.apply_async"
+        ) as mock_apply_async:
             mock_cfg.objects.filter.return_value = enabled_qs
             from apps.connect.utils import trigger_event
 
             trigger_event(event_name, payload)
-        return pm
+        return pm, mock_apply_async
 
     def test_disabled_plugin_does_not_abort_dispatch_for_later_enabled_plugin(self):
         """Enabled handlers still run when other plugins are disabled in DB."""
@@ -66,14 +69,13 @@ class TriggerEventDispatchTests(SimpleTestCase):
             ("enabled-plugin", "on_event"),
         ]
 
-        pm = self._run_trigger_event(
+        pm, mock_apply_async = self._run_trigger_event(
             handlers, "channel_start", {"channel_name": "TEST"}
         )
 
-        pm.run_action.assert_called_once_with(
-            "enabled-plugin",
-            "on_event",
-            {"event": "channel_start", "payload": {"channel_name": "TEST"}},
+        mock_apply_async.assert_called_once_with(
+            args=["enabled-plugin", "on_event", {"event": "channel_start", "payload": {"channel_name": "TEST"}}],
+            queue="plugins",
         )
 
     def test_skips_handlers_for_disabled_plugins(self):
@@ -82,26 +84,25 @@ class TriggerEventDispatchTests(SimpleTestCase):
             ("enabled-plugin", "on_event"),
         ]
 
-        pm = self._run_trigger_event(
+        pm, mock_apply_async = self._run_trigger_event(
             handlers,
             "channel_start",
             {"channel_name": "TEST"},
             enabled_keys=["enabled-plugin"],
         )
 
-        pm.run_action.assert_called_once_with(
-            "enabled-plugin",
-            "on_event",
-            {"event": "channel_start", "payload": {"channel_name": "TEST"}},
+        mock_apply_async.assert_called_once_with(
+            args=["enabled-plugin", "on_event", {"event": "channel_start", "payload": {"channel_name": "TEST"}}],
+            queue="plugins",
         )
 
     def test_action_without_matching_event_is_not_dispatched(self):
-        """When no handlers are registered for the event, run_action is not called."""
-        pm = self._run_trigger_event(
+        """When no handlers are registered for the event, nothing is dispatched."""
+        pm, mock_apply_async = self._run_trigger_event(
             [], "channel_start", {"channel_name": "TEST"}
         )
 
-        pm.run_action.assert_not_called()
+        mock_apply_async.assert_not_called()
 
     def test_no_plugin_config_query_when_no_handlers(self):
         pm = MagicMock()
@@ -128,7 +129,6 @@ class TriggerEventDispatchTests(SimpleTestCase):
 
         pm = MagicMock()
         pm.iter_actions_for_event.return_value = handlers
-        pm.run_action.side_effect = [RuntimeError("boom"), {"status": "ok"}]
 
         enabled_qs = MagicMock()
         enabled_qs.values_list.return_value = ["failing-plugin", "working-plugin"]
@@ -141,21 +141,20 @@ class TriggerEventDispatchTests(SimpleTestCase):
         ), patch(
             "apps.plugins.models.PluginConfig"
         ) as mock_cfg, patch(
-            "core.models.CoreSettings.get_plugin_dedicated_worker_enabled", return_value=False
-        ):
+            "apps.plugins.tasks.run_plugin_action_task.apply_async",
+            side_effect=[RuntimeError("boom"), MagicMock()],
+        ) as mock_apply_async:
             mock_cfg.objects.filter.return_value = enabled_qs
             from apps.connect.utils import trigger_event
 
             trigger_event("channel_start", {"channel_name": "TEST"})
 
-        self.assertEqual(pm.run_action.call_count, 2)
-        pm.run_action.assert_any_call(
-            "failing-plugin",
-            "on_event",
-            {"event": "channel_start", "payload": {"channel_name": "TEST"}},
+        self.assertEqual(mock_apply_async.call_count, 2)
+        mock_apply_async.assert_any_call(
+            args=["failing-plugin", "on_event", {"event": "channel_start", "payload": {"channel_name": "TEST"}}],
+            queue="plugins",
         )
-        pm.run_action.assert_any_call(
-            "working-plugin",
-            "on_event",
-            {"event": "channel_start", "payload": {"channel_name": "TEST"}},
+        mock_apply_async.assert_any_call(
+            args=["working-plugin", "on_event", {"event": "channel_start", "payload": {"channel_name": "TEST"}}],
+            queue="plugins",
         )

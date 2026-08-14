@@ -165,7 +165,6 @@ services:
 
       # Process Priority Configuration (Optional)
       #- CELERY_NICE_LEVEL=5  # Celery/EPG/Background tasks (default: 5, low priority; Range: -20 to 19)
-      #- CELERY_PLUGINS_CONCURRENCY=10   # Dedicated plugins worker thread count (default: 10)
 
       # Legacy CPU Support (Optional)
       # Uncomment to enable legacy NumPy build for older CPUs (circa 2009)

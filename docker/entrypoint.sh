@@ -127,11 +127,6 @@ CELERY_NICE_ABSOLUTE=${CELERY_NICE_LEVEL:-5}
 # Celery is spawned by uWSGI, so we need to add the offset to reach the desired absolute value
 export CELERY_NICE_LEVEL=$((CELERY_NICE_ABSOLUTE - UWSGI_NICE_LEVEL))
 
-# Plugins worker: deprioritized below Celery's own nice value. Defaults
-# applied here since uwsgi.ini's $(VAR) substitution has no inline default.
-export CELERY_PLUGINS_NICE_LEVEL=$((CELERY_NICE_ABSOLUTE + 5 - UWSGI_NICE_LEVEL))
-export CELERY_PLUGINS_CONCURRENCY=${CELERY_PLUGINS_CONCURRENCY:-10}
-
 # Set LIBVA_DRIVER_NAME if user has specified it
 if [ -v LIBVA_DRIVER_NAME ]; then
     export LIBVA_DRIVER_NAME
@@ -186,7 +181,6 @@ variables=(
     REDIS_HOST REDIS_PORT REDIS_DB REDIS_PASSWORD REDIS_USER POSTGRES_DIR DISPATCHARR_PORT
     DISPATCHARR_VERSION DISPATCHARR_TIMESTAMP LIBVA_DRIVERS_PATH LIBVA_DRIVER_NAME LD_LIBRARY_PATH
     CELERY_NICE_LEVEL UWSGI_NICE_LEVEL DJANGO_SECRET_KEY
-    CELERY_PLUGINS_NICE_LEVEL CELERY_PLUGINS_CONCURRENCY
 )
 
 # Optional variables, only propagate when set to avoid noisy warnings
@@ -334,6 +328,25 @@ fi
 # Run Django commands as non-root user to prevent permission issues
 su - "$POSTGRES_USER" -c "cd /app && python manage.py migrate --noinput"
 su - "$POSTGRES_USER" -c "cd /app && python manage.py collectstatic --noinput"
+
+# Default worker's autoscale ceiling, configurable via the
+# celery_max_workers system setting. Computed here (rather than left to
+# uwsgi.ini) since uwsgi.ini's $(VAR) substitution has no inline default.
+# See apps/plugins/management/commands/celery_worker_max.py.
+#
+# `tail -n 1` guards against any stray stdout noise from Django/Celery app
+# initialization ending up embedded in the captured value; falls back to 8
+# if the result still isn't a plain integer.
+CELERY_AUTOSCALE_MAX="$(su - "$POSTGRES_USER" -c "cd /app && python manage.py celery_worker_max" | tail -n 1 | tr -d '[:space:]')"
+case "$CELERY_AUTOSCALE_MAX" in
+    ''|*[!0-9]*)
+        echo "Warning: celery_worker_max produced non-numeric output ('$CELERY_AUTOSCALE_MAX'); defaulting to 8."
+        CELERY_AUTOSCALE_MAX=8
+        ;;
+esac
+export CELERY_AUTOSCALE_MAX
+sed -i "/^CELERY_AUTOSCALE_MAX=/d" /etc/environment
+echo "CELERY_AUTOSCALE_MAX='$CELERY_AUTOSCALE_MAX'" >> /etc/environment
 
 # Select proper uwsgi config based on environment
 if [ "$DISPATCHARR_ENV" = "dev" ] && [ "$DISPATCHARR_DEBUG" != "true" ]; then
