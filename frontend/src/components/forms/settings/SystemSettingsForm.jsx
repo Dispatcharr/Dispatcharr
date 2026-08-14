@@ -17,11 +17,14 @@ import {
   Switch,
 } from '@mantine/core';
 import ConnectionSecurityPanel from './ConnectionSecurityPanel.jsx';
+import ConfirmationDialog from '../../ConfirmationDialog.jsx';
+import { PluginRestartWarning } from '../../PluginWarnings.jsx';
 import { useForm } from '@mantine/form';
 import { getSystemSettingsFormInitialValues } from '../../../utils/forms/settings/SystemSettingsFormUtils.js';
 import { REGION_CHOICES } from '../../../constants.js';
 
 const SYSTEM_GROUP = 'system_settings';
+const CELERY_SCALE_FIELDS = ['celery_max_workers'];
 
 const SystemSettingsForm = React.memo(({ active }) => {
   const settings = useSettingsStore((s) => s.settings);
@@ -32,6 +35,9 @@ const SystemSettingsForm = React.memo(({ active }) => {
   );
 
   const [saved, setSaved] = useState(false);
+  const { isSavingRef, runSave } = useSettingsSaveGuard();
+  const [pendingChanges, setPendingChanges] = useState(null);
+  const [restartConfirmOpen, setRestartConfirmOpen] = useState(false);
   const { isSavingRef, runSave } = useSettingsSaveGuard();
 
   const form = useForm({
@@ -49,15 +55,8 @@ const SystemSettingsForm = React.memo(({ active }) => {
     }
   }, [settings]);
 
-  const onSubmit = async () => {
+  const applyChanges = async (changedSettings) => {
     setSaved(false);
-
-    const changedSettings = getChangedGroupSettings(
-      form.getValues(),
-      settings,
-      SYSTEM_GROUP
-    );
-
     try {
       await runSave(async () => {
         await saveGroupSettings(settings, SYSTEM_GROUP, changedSettings);
@@ -71,6 +70,30 @@ const SystemSettingsForm = React.memo(({ active }) => {
       // Error notifications are already shown by API functions
       // Just don't show the success message
       console.error('Error saving settings:', error);
+    }
+  };
+
+  const onSubmit = async () => {
+    const changedSettings = getChangedGroupSettings(
+      form.getValues(),
+      settings,
+      SYSTEM_GROUP
+    );
+
+    if (CELERY_SCALE_FIELDS.some((field) => field in changedSettings)) {
+      setPendingChanges(changedSettings);
+      setRestartConfirmOpen(true);
+      return;
+    }
+
+    await applyChanges(changedSettings);
+  };
+
+  const onConfirmRestart = async () => {
+    setRestartConfirmOpen(false);
+    if (pendingChanges) {
+      await applyChanges(pendingChanges);
+      setPendingChanges(null);
     }
   };
 
@@ -155,6 +178,18 @@ const SystemSettingsForm = React.memo(({ active }) => {
         {...form.getInputProps('catchup_enabled', { type: 'checkbox' })}
         id="catchup_enabled"
       />
+      <Divider my="md" label="Background Task Workers" labelPosition="left" />
+      <NumberInput
+        label="Worker Max Concurrency"
+        description="Autoscale ceiling for the background task worker (handles core tasks and plugin tasks alike). Requires a restart to take effect."
+        value={form.values['celery_max_workers'] || 8}
+        onChange={(value) => {
+          form.setFieldValue('celery_max_workers', value);
+        }}
+        min={1}
+        max={64}
+        step={1}
+      />
       {isModular && (
         <>
           <Divider my="md" label="Connection Security" labelPosition="left" />
@@ -170,6 +205,23 @@ const SystemSettingsForm = React.memo(({ active }) => {
           Save
         </Button>
       </Flex>
+      <ConfirmationDialog
+        opened={restartConfirmOpen}
+        onClose={() => {
+          setRestartConfirmOpen(false);
+          setPendingChanges(null);
+        }}
+        onConfirm={onConfirmRestart}
+        title="Restart Required"
+        message={
+          <PluginRestartWarning>
+            Worker concurrency changes only take effect after restarting the
+            container. Save anyway?
+          </PluginRestartWarning>
+        }
+        confirmLabel="Save"
+        confirmColor="blue"
+      />
     </Stack>
   );
 });

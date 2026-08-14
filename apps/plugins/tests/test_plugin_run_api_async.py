@@ -1,5 +1,5 @@
-"""PluginRunAPIView's three dispatch paths: legacy inline, per-action async
-manifest flag, and the toggle-on synchronous-but-dedicated-worker path."""
+"""PluginRunAPIView's two dispatch paths: per-action async manifest flag
+(fire-and-forget) and synchronous actions (queued and awaited)."""
 
 from unittest.mock import MagicMock, patch
 
@@ -49,16 +49,7 @@ class PluginRunAPIViewAsyncTests(TestCase):
         force_authenticate(request, user=self.admin)
         return PluginRunAPIView.as_view()(request, key=self.plugin.key)
 
-    @patch("core.models.CoreSettings.get_plugin_dedicated_worker_enabled", return_value=False)
-    def test_legacy_action_runs_inline_when_toggle_off(self, _mock_toggle):
-        with patch.object(self.pm, "run_action", return_value={"status": "ok"}) as mock_run:
-            response = self._post("quick")
-
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.data, {"success": True, "result": {"status": "ok"}})
-        mock_run.assert_called_once_with("my-plugin", "quick", {})
-
-    def test_async_manifest_action_dispatches_without_waiting_regardless_of_toggle(self):
+    def test_async_manifest_action_dispatches_without_waiting(self):
         async_result = MagicMock(id="task-123")
         with patch(
             "apps.plugins.tasks.run_plugin_action_task.apply_async", return_value=async_result
@@ -72,10 +63,7 @@ class PluginRunAPIViewAsyncTests(TestCase):
         mock_apply_async.assert_called_once_with(args=["my-plugin", "slow", {}], queue="plugins")
         mock_run.assert_not_called()
 
-    @patch("core.models.CoreSettings.get_plugin_dedicated_worker_enabled", return_value=True)
-    def test_toggle_on_non_async_action_blocks_for_result_with_unchanged_response_shape(
-        self, _mock_toggle
-    ):
+    def test_non_async_action_blocks_for_result(self):
         async_result = MagicMock(id="task-456")
         async_result.get.return_value = {"status": "ok", "processed": 5}
         with patch(
@@ -90,8 +78,7 @@ class PluginRunAPIViewAsyncTests(TestCase):
         mock_apply_async.assert_called_once_with(args=["my-plugin", "quick", {}], queue="plugins")
         async_result.get.assert_called_once()
 
-    @patch("core.models.CoreSettings.get_plugin_dedicated_worker_enabled", return_value=True)
-    def test_toggle_on_timeout_returns_504_with_task_id(self, _mock_toggle):
+    def test_non_async_action_timeout_returns_504_with_task_id(self):
         from celery.exceptions import TimeoutError as CeleryTimeoutError
 
         async_result = MagicMock(id="task-789")
@@ -105,15 +92,16 @@ class PluginRunAPIViewAsyncTests(TestCase):
         self.assertFalse(response.data["success"])
         self.assertEqual(response.data["task_id"], "task-789")
 
-    def test_plugin_self_dispatched_started_result_is_normalized(self):
+    def test_started_result_is_normalized(self):
         """A plugin can call context['dispatch_task'] itself from a
         non-async-flagged action's run() and return {"status": "started",
         "task_id": ...}: the view must flatten this the same as the
         manifest-flag path, not wrap it under "result"."""
-        with patch("core.models.CoreSettings.get_plugin_dedicated_worker_enabled", return_value=False), \
-             patch.object(
-                 self.pm, "run_action", return_value={"status": "started", "task_id": "self-1"}
-             ):
+        async_result = MagicMock(id="task-999")
+        async_result.get.return_value = {"status": "started", "task_id": "self-1"}
+        with patch(
+            "apps.plugins.tasks.run_plugin_action_task.apply_async", return_value=async_result
+        ):
             response = self._post("quick")
 
         self.assertEqual(response.data, {"success": True, "status": "started", "task_id": "self-1"})

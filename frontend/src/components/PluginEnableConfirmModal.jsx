@@ -1,10 +1,9 @@
 import React from 'react';
-import { List, Stack, Text } from '@mantine/core';
+import { Divider, List, Stack, Text } from '@mantine/core';
 import { ShieldCheck } from 'lucide-react';
 import ConfirmationDialog from './ConfirmationDialog.jsx';
 import { usePluginStore } from '../store/plugins.jsx';
 import {
-  PluginRestartWarning,
   PluginSecurityWarning,
   PluginSupportDisclaimer,
   PluginWarningBox,
@@ -62,14 +61,18 @@ export default function PluginEnableConfirmModal() {
                   </List.Item>
                 ))}
               </List>
+              {requiresRestart && (
+                <>
+                  <Divider my={8} />
+                  <Text size="xs">
+                    Enabling background tasks for this plugin requires a full
+                    server restart to take effect. Enabling the plugin alone
+                    is not enough; restart the Dispatcharr container after
+                    enabling.
+                  </Text>
+                </>
+              )}
             </PluginWarningBox>
-          )}
-          {requiresRestart && (
-            <PluginRestartWarning>
-              Enabling background tasks for this plugin requires a full
-              server restart to take effect. Enabling the plugin alone is not
-              enough; restart the Dispatcharr container after enabling.
-            </PluginRestartWarning>
           )}
           <PluginSupportDisclaimer />
         </Stack>

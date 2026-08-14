@@ -84,6 +84,7 @@ const GROUP_CONFIG = {
       auto_import_mapped_files: { type: 'bool', default: true },
       enable_ip_lookup: { type: 'bool', default: true },
       catchup_enabled: { type: 'bool', default: true },
+      celery_max_workers: { type: 'int', default: 8 },
     },
   },
 };
