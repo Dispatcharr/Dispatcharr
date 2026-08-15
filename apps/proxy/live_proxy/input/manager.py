@@ -91,6 +91,11 @@ class StreamManager:
         self.current_stream_id = stream_id
         self.tried_stream_ids = set()
 
+        # Full-list exhaustion wraps (capped by MAX_STREAM_SWITCHES).
+        self._failover_rotation_passes = 0
+        self._rotation_cooldown_until = None
+        self._had_successful_connection = False
+
         if stream_id:
             self.tried_stream_ids.add(stream_id)
             logger.info(f"Initialized stream manager for channel {buffer.channel_id} with stream ID {stream_id}")
@@ -197,6 +202,52 @@ class StreamManager:
             self.tried_stream_ids = {self.current_stream_id}
         else:
             self.tried_stream_ids.clear()
+        self._failover_rotation_passes = 0
+        self._rotation_cooldown_until = None
+
+    def _sleep_interruptible(self, seconds):
+        """Sleep in short slices so stop/shutdown can abort a cooldown wait."""
+        deadline = time.time() + seconds
+        while time.time() < deadline:
+            if not self.running or self.stop_requested:
+                return False
+            gevent.sleep(min(0.5, max(0.0, deadline - time.time())))
+        return self.running and not self.stop_requested
+
+    def _rotation_cooldown_remaining(self):
+        """Seconds left on an armed rotation cooldown, or None if none is pending."""
+        cooldown_until = getattr(self, '_rotation_cooldown_until', None)
+        if cooldown_until is None:
+            return None
+        return max(0.0, cooldown_until - time.time())
+
+    def _try_next_stream_with_cooldown(self):
+        """Try next stream; if a wrap cooldown was armed, wait here then retry once.
+
+        Only call from the stream manager run loop. Do not call from the stderr
+        reader / buffering-timeout path, which must stay non-blocking.
+        """
+        if self._try_next_stream():
+            return True
+
+        remaining = self._rotation_cooldown_remaining()
+        if remaining is None:
+            return False
+
+        stream_before = self.current_stream_id
+        if remaining > 0:
+            logger.warning(
+                f"Waiting {remaining:.1f}s before wrapping failover for channel "
+                f"{self.channel_id}"
+            )
+            if not self._sleep_interruptible(remaining):
+                return False
+
+        # Buffering-timeout (stderr thread) may already have wrapped while we slept.
+        if self.current_stream_id != stream_before:
+            return True
+
+        return self._try_next_stream()
 
     def _wait_for_existing_processes_to_close(self, timeout=5.0):
         """Wait for existing processes/connections to fully close before establishing new ones"""
@@ -424,7 +475,7 @@ class StreamManager:
                     logger.info(f"Health monitor requested stream switch for channel {self.channel_id}")
                     self.needs_stream_switch = False
 
-                    if self._try_next_stream():
+                    if self._try_next_stream_with_cooldown():
                         logger.info(f"Health-requested stream switch successful for channel {self.channel_id}")
                         stream_switch_attempts += 1
                         self._clear_connection_failure_history()
@@ -476,6 +527,7 @@ class StreamManager:
                         if connection_result:
                             # Store connection start time to measure success duration
                             connection_start_time = time.time()
+                            self._had_successful_connection = True
 
                             # Log reconnection event if this is a retry (not first attempt)
                             if self.retry_count > 0:
@@ -592,8 +644,8 @@ class StreamManager:
                 if url_failed and self.running:
                     logger.info(f"URL {self.url} failed after {self.retry_count} attempts, trying next stream for channel: {self.channel_id}")
 
-                    # Try to switch to next stream
-                    switch_result = self._try_next_stream()
+                    # Try to switch to next stream (wait out wrap cooldown in this thread)
+                    switch_result = self._try_next_stream_with_cooldown()
                     if switch_result:
                         # Successfully switched to a new stream, continue with the new URL
                         stream_switch_attempts += 1
@@ -1648,28 +1700,11 @@ class StreamManager:
             self.reconnecting = False
             return False
 
-    def _attempt_health_recovery(self):
-        """Attempt to recover stream health by switching to another stream"""
-        try:
-            logger.info(f"Attempting health recovery for channel {self.channel_id}")
-
-            # Don't try to switch if we're already in the process of switching URLs
-            if self.url_switching:
-                logger.info(f"URL switching already in progress, skipping health recovery for channel {self.channel_id}")
-                return
-
-            # Try to switch to next stream
-            switch_result = self._try_next_stream()
-            if switch_result:
-                logger.info(f"Health recovery successful - switched to new stream for channel {self.channel_id}")
-                return True
-            else:
-                logger.warning(f"Health recovery failed - no alternative streams available for channel {self.channel_id}")
-                return False
-
-        except Exception as e:
-            logger.error(f"Error in health recovery attempt for channel {self.channel_id}: {e}", exc_info=True)
-            return False
+    def reset_failover_rotation_state(self):
+        """Clear tried-stream / wrap bookkeeping after a manual stream change."""
+        self.tried_stream_ids = set()
+        self._failover_rotation_passes = 0
+        self._rotation_cooldown_until = None
 
     def _close_connection(self):
         """Close HTTP connection resources"""
@@ -2007,10 +2042,64 @@ class StreamManager:
                 logger.warning(f"No untried streams available for channel {self.channel_id}, tried: {self.tried_stream_ids}")
 
             if not untried_streams:
-                # Check if we have streams but they've all been tried
-                if alternate_streams and len(self.tried_stream_ids) > 0:
-                    logger.warning(f"All {len(alternate_streams)} alternate streams have been tried for channel {self.channel_id}")
-                return False
+                if not alternate_streams:
+                    return False
+
+                # Cold start: keep fail-fast behavior before any successful connect.
+                if not getattr(self, '_had_successful_connection', False):
+                    logger.warning(
+                        f"All alternate streams tried during startup for channel "
+                        f"{self.channel_id}; not wrapping"
+                    )
+                    return False
+
+                max_switches = ConfigHelper.max_stream_switches()
+                rotation_passes = getattr(self, '_failover_rotation_passes', 0)
+                if rotation_passes >= max_switches:
+                    logger.warning(
+                        f"All alternate streams exhausted and rotation limit "
+                        f"({max_switches}) reached for channel {self.channel_id}"
+                    )
+                    return False
+
+                now = time.time()
+                cooldown_until = getattr(self, '_rotation_cooldown_until', None)
+                if cooldown_until is None:
+                    cooldown = ConfigHelper.failover_rotation_cooldown()
+                    self._failover_rotation_passes = rotation_passes + 1
+                    self._rotation_cooldown_until = now + cooldown
+                    logger.warning(
+                        f"All streams tried for channel {self.channel_id}; "
+                        f"arming {cooldown}s wrap cooldown "
+                        f"(rotation pass {self._failover_rotation_passes}/{max_switches})"
+                    )
+                    return False
+
+                if now < cooldown_until:
+                    return False
+
+                # Cooldown elapsed: allow another pass after the current stream (wraps).
+                self._rotation_cooldown_until = None
+                if self.current_stream_id:
+                    self.tried_stream_ids = {self.current_stream_id}
+                else:
+                    self.tried_stream_ids.clear()
+
+                untried_streams = [
+                    s for s in alternate_streams
+                    if s['stream_id'] not in self.tried_stream_ids
+                ]
+                if not untried_streams:
+                    logger.warning(
+                        f"No streams available to wrap to for channel {self.channel_id}"
+                    )
+                    return False
+
+                ids_to_try = ', '.join([str(s['stream_id']) for s in untried_streams])
+                logger.info(
+                    f"Wrapping failover for channel {self.channel_id}; "
+                    f"next untried streams: [{ids_to_try}]"
+                )
 
             for next_stream in untried_streams:
                 stream_id = next_stream['stream_id']

@@ -36,6 +36,7 @@ from core.utils import (
     log_system_event,
     release_task_lock,
     TaskLockRenewer,
+    truncate_with_warning,
 )
 
 logger = logging.getLogger(__name__)
@@ -1011,7 +1012,11 @@ def fetch_schedules_direct(
         name_max_length = EPGData._meta.get_field('name').max_length
 
         for sid, info in station_map.items():
-            display_name = (info['name'] or sid)[:name_max_length]
+            display_name = truncate_with_warning(
+                info['name'] or sid,
+                max_length=name_max_length,
+                label="EPG display name",
+            )
             logo = info['logo_url']
             if logo and len(logo) > icon_max_length:
                 logo = None
@@ -1497,6 +1502,7 @@ def fetch_schedules_direct(
     all_programs_to_create = []
     total_programs = 0
     skipped_unmapped = 0
+    title_max_length = ProgramData._meta.get_field('title').max_length
 
     for sid, airings in schedules_by_station.items():
         if sid not in mapped_tvg_ids:
@@ -1541,7 +1547,7 @@ def fetch_schedules_direct(
                 title = titles[0].get('title120', '') if titles else ''
                 if not title:
                     title = meta.get('episodeTitle150', '') or 'No Title'
-            title = title[:255]
+            title = title[:title_max_length]
 
             if not cached_prog:
                 descriptions = meta.get('descriptions', {})
