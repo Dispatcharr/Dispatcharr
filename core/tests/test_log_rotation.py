@@ -180,6 +180,15 @@ class ClampIntTests(TestCase):
             self.assertEqual(tasks._clamped_int(v, 5, 1, 50), _clamp_int(v, 5, 1, 50))
 
 
+# locmem cache: isolates this test's settings write from the shared Redis-backed group cache.
+@override_settings(
+    CACHES={
+        "default": {
+            "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+            "LOCATION": "log-rotation-tests",
+        }
+    }
+)
 class SystemSettingsCoercionTests(TestCase):
     def test_update_coerces_log_settings(self):
         # A raw API payload with garbage log settings must persist as clamped ints, so the rotator never reads back garbage.
