@@ -358,12 +358,26 @@ if [ "$DISPATCHARR_DEBUG" != "true" ]; then
     uwsgi_args+=" --disable-logging"
 fi
 
+# Open-file limit for the whole worker tree (default: 65536).
+# `su -` below opens a PAM session, and /etc/pam.d/su loads pam_limits.so, which
+# resets RLIMIT_NOFILE to 1024 for that session. That happens after Docker has
+# applied the container's limits, so a `ulimits: nofile:` entry in the compose
+# file never reaches uwsgi, its attach-daemons (daphne, celery, redis) or any
+# ffmpeg they spawn. daphne holds descriptors for proxied streams and websockets,
+# so a busy instance exhausts 1024 and then fails every new stream with
+# "[Errno 24] Too many open files" while the web UI still answers normally.
+# Raising the soft limit toward the inherited hard limit needs no privileges, so
+# this works after the drop to $POSTGRES_USER. If the value exceeds the hard
+# limit the ulimit call fails, and we keep the inherited limit rather than
+# aborting startup (entrypoint.sh runs under `set -e`).
+UWSGI_MAX_FD="${UWSGI_MAX_FD:-65536}"
+
 # Launch uwsgi with configurable nice level (default: 0 for normal priority)
 # Users can override via UWSGI_NICE_LEVEL environment variable in docker-compose
 # Start with nice as root, then use setpriv to drop privileges to dispatch user
 # This preserves both the nice value and environment variables
-nice -n "$UWSGI_NICE_LEVEL" su - "$POSTGRES_USER" -c "cd /app && exec $VIRTUAL_ENV/bin/uwsgi $uwsgi_args" & uwsgi_pid=$!
-echo "✅ uwsgi started with PID $uwsgi_pid (nice $UWSGI_NICE_LEVEL)"
+nice -n "$UWSGI_NICE_LEVEL" su - "$POSTGRES_USER" -c "ulimit -n $UWSGI_MAX_FD 2>/dev/null || true; cd /app && exec $VIRTUAL_ENV/bin/uwsgi $uwsgi_args" & uwsgi_pid=$!
+echo "✅ uwsgi started with PID $uwsgi_pid (nice $UWSGI_NICE_LEVEL, nofile $UWSGI_MAX_FD)"
 pids+=("$uwsgi_pid"); pid_names[$uwsgi_pid]="uwsgi"
 
 # Wait for services to fully initialize before checking hardware
