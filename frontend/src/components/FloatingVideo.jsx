@@ -146,6 +146,9 @@ export default function FloatingVideo() {
   // Ref kept in sync with videoSize state for use inside event handlers
   // where closures over state would be stale.
   const videoSizeRef = useRef(null);
+  // mpegts.js live-player reconnect bookkeeping (see initializeLivePlayer).
+  const reconnectAttemptsRef = useRef(0);
+  const reconnectTimeoutRef = useRef(null);
 
   const [isLoading, setIsLoading] = useState(false);
   const [loadError, setLoadError] = useState(null);
@@ -180,6 +183,9 @@ export default function FloatingVideo() {
   const VISIBLE_MARGIN = 48; // keep part of the window visible when dragging
   const HEADER_HEIGHT = 38; // height of the close button header area
   const ERROR_HEIGHT = 45; // approximate height of error message area when displayed
+  const MAX_LIVE_RECONNECT_ATTEMPTS = 5;
+  const LIVE_RECONNECT_BASE_DELAY_MS = 1000;
+  const LIVE_RECONNECT_MAX_DELAY_MS = 10000;
 
   // Safely destroy the mpegts player to prevent errors
   const safeDestroyPlayer = () => {
@@ -221,6 +227,12 @@ export default function FloatingVideo() {
     if (overlayTimeoutRef.current) {
       clearTimeout(overlayTimeoutRef.current);
       overlayTimeoutRef.current = null;
+    }
+
+    // Clear any pending live-player reconnect attempt
+    if (reconnectTimeoutRef.current) {
+      clearTimeout(reconnectTimeoutRef.current);
+      reconnectTimeoutRef.current = null;
     }
   };
 
@@ -505,18 +517,52 @@ export default function FloatingVideo() {
 
       player.on(mpegts.Events.LOADING_COMPLETE, () => {
         setIsLoading(false);
+        // Data is flowing again -- give future errors a fresh retry budget.
+        reconnectAttemptsRef.current = 0;
       });
 
       player.on(mpegts.Events.METADATA_ARRIVED, () => {
         setIsLoading(false);
+        reconnectAttemptsRef.current = 0;
       });
 
       player.on(mpegts.Events.ERROR, (errorType, errorDetail) => {
         setIsLoading(false);
 
-        if (errorType !== 'NetworkError' || !errorDetail?.includes('aborted')) {
-          console.error('Player error:', errorType, errorDetail);
+        if (errorType === 'NetworkError' && errorDetail?.includes('aborted')) {
+          return;
+        }
 
+        console.error('Player error:', errorType, errorDetail);
+
+        // Only retry NetworkError -- it's the one error class that's actually
+        // transient (dropped connection, backend hiccup the backend itself
+        // recovers from). MediaError (unsupported codec) and other error
+        // types are deterministic: retrying would just fail identically
+        // every time and delay showing the user an actionable message.
+        //
+        // Unlike hls.js (startLoad()/recoverMediaError()), mpegts.js has no
+        // partial-recovery API -- a fatal error leaves the underlying player
+        // unusable, so the only way to self-heal is a full destroy + rebuild.
+        if (
+          errorType === 'NetworkError' &&
+          reconnectAttemptsRef.current < MAX_LIVE_RECONNECT_ATTEMPTS
+        ) {
+          reconnectAttemptsRef.current += 1;
+          const attempt = reconnectAttemptsRef.current;
+          const delay = Math.min(
+            LIVE_RECONNECT_BASE_DELAY_MS * 2 ** (attempt - 1),
+            LIVE_RECONNECT_MAX_DELAY_MS
+          );
+          setLoadError(
+            `Connection lost, reconnecting... (attempt ${attempt}/${MAX_LIVE_RECONNECT_ATTEMPTS})`
+          );
+          reconnectTimeoutRef.current = setTimeout(() => {
+            reconnectTimeoutRef.current = null;
+            safeDestroyPlayer();
+            initializeLivePlayer();
+          }, delay);
+        } else {
           setLoadError(getLivePlayerErrorMessage(errorType, errorDetail));
         }
       });
@@ -562,6 +608,9 @@ export default function FloatingVideo() {
 
     // Clean up any existing player
     safeDestroyPlayer();
+    // Fresh stream selection -- give it a full reconnect budget, independent
+    // of whatever a previously viewed channel had used up.
+    reconnectAttemptsRef.current = 0;
 
     // Initialize the appropriate player based on content type
     if (contentType === 'vod') {

@@ -1,4 +1,10 @@
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import {
+  render,
+  screen,
+  fireEvent,
+  waitFor,
+  act,
+} from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import FloatingVideo from '../FloatingVideo';
 import useVideoStore from '../../store/useVideoStore';
@@ -246,6 +252,170 @@ describe('FloatingVideo', () => {
       await mediaInfoCallback();
 
       expect(mockPlayer.play).toHaveBeenCalled();
+    });
+  });
+
+  describe('Live stream reconnect', () => {
+    beforeEach(() => {
+      useVideoStore.mockImplementation((selector) => {
+        const state = {
+          isVisible: true,
+          streamUrl: 'http://example.com/stream.ts',
+          contentType: 'live',
+          metadata: null,
+          hideVideo: mockHideVideo,
+        };
+        return selector ? selector(state) : state;
+      });
+    });
+
+    // The mock always returns the same mockPlayer instance across
+    // destroy+recreate cycles, so mockPlayer.on.mock.calls accumulates every
+    // registration made so far. Grab the most recently registered handler --
+    // the one bound to the currently "live" player -- not the first.
+    const getErrorCallback = () =>
+      mockPlayer.on.mock.calls
+        .filter((call) => call[0] === mpegts.Events.ERROR)
+        .at(-1)?.[1];
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('should destroy and recreate the player after a NetworkError, with backoff', async () => {
+      vi.useFakeTimers();
+      render(<FloatingVideo />);
+
+      expect(mpegts.createPlayer).toHaveBeenCalledTimes(1);
+
+      const errorCallback = getErrorCallback();
+      act(() => {
+        errorCallback('NetworkError', 'connection lost');
+      });
+
+      expect(
+        screen.getByText(/reconnecting\.\.\. \(attempt 1\/5\)/i)
+      ).toBeInTheDocument();
+      expect(mockPlayer.destroy).not.toHaveBeenCalled();
+
+      // First retry fires after the base delay (1000ms), not immediately.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(999);
+      });
+      expect(mpegts.createPlayer).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1);
+      });
+      expect(mockPlayer.destroy).toHaveBeenCalledTimes(1);
+      expect(mpegts.createPlayer).toHaveBeenCalledTimes(2);
+    });
+
+    it('should give up after 5 NetworkError attempts and show a permanent error', async () => {
+      vi.useFakeTimers();
+      render(<FloatingVideo />);
+
+      const delays = [1000, 2000, 4000, 8000, 10000];
+      for (let i = 0; i < delays.length; i++) {
+        const errorCallback = getErrorCallback();
+        act(() => {
+          errorCallback('NetworkError', 'connection lost');
+        });
+        expect(
+          screen.getByText(new RegExp(`attempt ${i + 1}/5`, 'i'))
+        ).toBeInTheDocument();
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(delays[i]);
+        });
+      }
+
+      // All 5 attempts used -- the 6th NetworkError should not schedule
+      // another retry and should surface the real error message instead.
+      const finalErrorCallback = getErrorCallback();
+      act(() => {
+        finalErrorCallback('NetworkError', 'connection lost');
+      });
+
+      expect(
+        screen.getByText(/NetworkError - connection lost/i)
+      ).toBeInTheDocument();
+      expect(screen.queryByText(/reconnecting/i)).not.toBeInTheDocument();
+    });
+
+    it('should not retry a MediaError (non-transient, retrying would not help)', async () => {
+      vi.useFakeTimers();
+      render(<FloatingVideo />);
+
+      const errorCallback = getErrorCallback();
+      act(() => {
+        errorCallback('MediaError', 'AC3 codec not supported');
+      });
+
+      expect(
+        screen.getByText(/Audio codec not supported/i)
+      ).toBeInTheDocument();
+      expect(screen.queryByText(/reconnecting/i)).not.toBeInTheDocument();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(15000);
+      });
+      expect(mpegts.createPlayer).toHaveBeenCalledTimes(1);
+    });
+
+    it('should reset the retry budget after the stream recovers', async () => {
+      vi.useFakeTimers();
+      render(<FloatingVideo />);
+
+      let errorCallback = getErrorCallback();
+      act(() => {
+        errorCallback('NetworkError', 'connection lost');
+      });
+      expect(screen.getByText(/attempt 1\/5/i)).toBeInTheDocument();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+      });
+      expect(mpegts.createPlayer).toHaveBeenCalledTimes(2);
+
+      // Stream recovers -- LOADING_COMPLETE resets the attempt counter.
+      const loadingCompleteCallback = mockPlayer.on.mock.calls
+        .filter((call) => call[0] === mpegts.Events.LOADING_COMPLETE)
+        .at(-1)?.[1];
+      act(() => {
+        loadingCompleteCallback();
+      });
+
+      // A subsequent error should again start at attempt 1, not 2.
+      errorCallback = getErrorCallback();
+      act(() => {
+        errorCallback('NetworkError', 'connection lost');
+      });
+      expect(screen.getByText(/attempt 1\/5/i)).toBeInTheDocument();
+    });
+
+    it('should not fire a queued reconnect after the player is closed', async () => {
+      vi.useFakeTimers();
+      render(<FloatingVideo />);
+
+      const errorCallback = getErrorCallback();
+      act(() => {
+        errorCallback('NetworkError', 'connection lost');
+      });
+      expect(screen.getByText(/attempt 1\/5/i)).toBeInTheDocument();
+
+      fireEvent.click(screen.getByTestId('close-button'));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(50); // handleClose's setTimeout(hideVideo, 50)
+      });
+
+      const createPlayerCallsAfterClose = mpegts.createPlayer.mock.calls.length;
+
+      // Advance well past the scheduled reconnect delay -- it must not fire.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10000);
+      });
+      expect(mpegts.createPlayer).toHaveBeenCalledTimes(
+        createPlayerCallsAfterClose
+      );
     });
   });
 
