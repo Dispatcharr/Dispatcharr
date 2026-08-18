@@ -102,4 +102,9 @@ RUN curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | gpg --dearmo
 # Create render group for hardware acceleration support with GID 109
 RUN groupadd -r -g 109 render || true
 
+# /etc/localtime as a regular file, not a symlink to Etc/UTC. Bind-mounting
+# the host's /etc/localtime then overlays this path instead of following the
+# symlink and replacing the IANA UTC zone with the host timezone.
+RUN rm -f /etc/localtime && cp -a /usr/share/zoneinfo/Etc/UTC /etc/localtime
+
 ENTRYPOINT ["/app/docker/entrypoint.sh"]
