@@ -4145,7 +4145,11 @@ class SeriesRulesAPIView(APIView):
                 return False
             if epg_source_id is None:
                 return True
-            return parse_optional_epg_source_id(r.get("epg_source_id")) == epg_source_id
+            # Recordings carry program.epg_source_id even when the rule does
+            # not. A DVR "entire series" delete forwards that id and must
+            # still match the unsourced rule.
+            rule_source = parse_optional_epg_source_id(r.get("epg_source_id"))
+            return rule_source is None or rule_source == epg_source_id
 
         deleted_rule = next((r for r in rules if _matches(r)), None)
         remaining = [r for r in rules if not _matches(r)]

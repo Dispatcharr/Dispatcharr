@@ -513,6 +513,17 @@ class SeriesRuleAPITests(TestCase):
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
         self.assertEqual(resp.data["rules"], [])
 
+    def test_delete_with_epg_source_id_removes_legacy_unsourced_rule(self):
+        """DVR card deletes pass program.epg_source_id even when the rule has none."""
+        self.client.post(self.rules_url, {
+            "tvg_id": "ch.1", "title": "Show A", "mode": "all",
+        }, format="json")
+        resp = self.client.delete(
+            self.rules_url + "?tvg_id=ch.1&title=Show+A&epg_source_id=11"
+        )
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(resp.data["rules"], [])
+
     def test_delete_with_epg_source_id_leaves_other_source(self):
         self.client.post(self.rules_url, {
             "tvg_id": "ch.1", "title": "Show A", "mode": "all",
