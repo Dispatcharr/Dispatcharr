@@ -62,6 +62,9 @@ def list_log_files(request):
     except OSError:
         names = []
     for name in names:
+        # Only the log family: the collector keeps its control files here too.
+        if not name.startswith("dispatcharr.log"):
+            continue
         # Resolve through the same realpath-containment gate as view/download, so a symlink escaping the dir is never even listed.
         path = _resolve(name)
         if path is None:

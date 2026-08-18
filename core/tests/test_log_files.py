@@ -37,6 +37,10 @@ class LogFilesEndpointTests(TestCase):
         self.client.force_authenticate(self.admin)
 
     def test_lists_log_files_with_metadata(self):
+        # The collector's control files share the directory but are not logs.
+        for extra in ("collector.conf", "collector.pid"):
+            with open(os.path.join(self.log_dir, extra), "w") as f:
+                f.write("x")
         response = self.client.get("/api/core/logs/")
         self.assertEqual(response.status_code, 200)
         payload = response.json()
