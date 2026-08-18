@@ -298,7 +298,7 @@ def schedule_recording_task(instance, eta=None):
             run_recording.apply_async(args=task_args, task_id=immediate_task_id)
 
         # Drop a leftover Beat row so a previous future schedule cannot also fire.
-        _delete_periodic_task_named(_dvr_task_name(instance.id))
+        _delete_periodic_task_named(task_name)
         transaction.on_commit(_dispatch)
         return immediate_task_id
 
