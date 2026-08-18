@@ -457,6 +457,39 @@ class SeriesRuleAPITests(TestCase):
         self.assertEqual(len(resp.data["rules"]), 1)
         self.assertEqual(resp.data["rules"][0]["mode"], "new")
 
+    def test_create_rule_stores_epg_source_id(self):
+        resp = self.client.post(self.rules_url, {
+            "tvg_id": "ch.1", "title": "Show A", "mode": "all",
+            "epg_source_id": 11,
+        }, format="json")
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(resp.data["rules"][0]["epg_source_id"], 11)
+
+    def test_saving_sourced_rule_upgrades_legacy_unsourced_rule(self):
+        """Re-saving a legacy (tvg_id, title) rule with epg_source_id updates it."""
+        self.client.post(self.rules_url, {
+            "tvg_id": "ch.1", "title": "Show A", "mode": "all",
+        }, format="json")
+        self.client.post(self.rules_url, {
+            "tvg_id": "ch.1", "title": "Show A", "mode": "all",
+            "epg_source_id": 11,
+        }, format="json")
+        resp = self.client.get(self.rules_url)
+        self.assertEqual(len(resp.data["rules"]), 1)
+        self.assertEqual(resp.data["rules"][0]["epg_source_id"], 11)
+
+    def test_two_sources_same_title_are_distinct_rules(self):
+        self.client.post(self.rules_url, {
+            "tvg_id": "ch.1", "title": "Show A", "mode": "all",
+            "epg_source_id": 11,
+        }, format="json")
+        self.client.post(self.rules_url, {
+            "tvg_id": "ch.1", "title": "Show A", "mode": "all",
+            "epg_source_id": 12,
+        }, format="json")
+        resp = self.client.get(self.rules_url)
+        self.assertEqual(len(resp.data["rules"]), 2)
+
     # --- DELETE (query params) ---
 
     def test_delete_rule_by_tvg_id_and_title(self):
@@ -479,6 +512,112 @@ class SeriesRuleAPITests(TestCase):
         )
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
         self.assertEqual(resp.data["rules"], [])
+
+    def test_delete_with_epg_source_id_leaves_other_source(self):
+        self.client.post(self.rules_url, {
+            "tvg_id": "ch.1", "title": "Show A", "mode": "all",
+            "epg_source_id": 11,
+        }, format="json")
+        self.client.post(self.rules_url, {
+            "tvg_id": "ch.1", "title": "Show A", "mode": "all",
+            "epg_source_id": 12,
+        }, format="json")
+        resp = self.client.delete(
+            self.rules_url + "?tvg_id=ch.1&title=Show+A&epg_source_id=11"
+        )
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(resp.data["rules"]), 1)
+        self.assertEqual(resp.data["rules"][0]["epg_source_id"], 12)
+
+    def test_delete_sourced_rule_leaves_other_source_recordings(self):
+        """Deleting one sourced rule does not remove the other source's upcoming list."""
+        from apps.channels.models import Recording
+
+        group = ChannelGroup.objects.create(name="G-src")
+        channel = Channel.objects.create(
+            channel_number=11, name="ChSrc", channel_group=group
+        )
+        now = timezone.now()
+        keep = Recording.objects.create(
+            channel=channel,
+            start_time=now + timedelta(hours=1),
+            end_time=now + timedelta(hours=2),
+            custom_properties={
+                "program": {
+                    "tvg_id": "ch.1",
+                    "title": "Show A",
+                    "epg_source_id": 12,
+                }
+            },
+        )
+        Recording.objects.create(
+            channel=channel,
+            start_time=now + timedelta(hours=3),
+            end_time=now + timedelta(hours=4),
+            custom_properties={
+                "program": {
+                    "tvg_id": "ch.1",
+                    "title": "Show A",
+                    "epg_source_id": 11,
+                }
+            },
+        )
+        self.client.post(self.rules_url, {
+            "tvg_id": "ch.1", "title": "Show A", "mode": "all",
+            "epg_source_id": 11,
+        }, format="json")
+        self.client.post(self.rules_url, {
+            "tvg_id": "ch.1", "title": "Show A", "mode": "all",
+            "epg_source_id": 12,
+        }, format="json")
+        resp = self.client.delete(
+            self.rules_url + "?tvg_id=ch.1&title=Show+A&epg_source_id=11"
+        )
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(resp.data["removed"], 1)
+        self.assertEqual(list(Recording.objects.values_list("id", flat=True)), [keep.id])
+
+    def test_bulk_remove_sourced_leaves_other_source_recordings(self):
+        from apps.channels.models import Recording
+
+        group = ChannelGroup.objects.create(name="G-bulk-src")
+        channel = Channel.objects.create(
+            channel_number=12, name="ChBulkSrc", channel_group=group
+        )
+        now = timezone.now()
+        keep = Recording.objects.create(
+            channel=channel,
+            start_time=now + timedelta(hours=1),
+            end_time=now + timedelta(hours=2),
+            custom_properties={
+                "program": {
+                    "tvg_id": "ch.1",
+                    "title": "Show A",
+                    "epg_source_id": 12,
+                }
+            },
+        )
+        Recording.objects.create(
+            channel=channel,
+            start_time=now + timedelta(hours=3),
+            end_time=now + timedelta(hours=4),
+            custom_properties={
+                "program": {
+                    "tvg_id": "ch.1",
+                    "title": "Show A",
+                    "epg_source_id": 11,
+                }
+            },
+        )
+        resp = self.client.post(self.bulk_remove_url, {
+            "tvg_id": "ch.1",
+            "title": "Show A",
+            "scope": "title",
+            "epg_source_id": 11,
+        }, format="json")
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(resp.data["removed"], 1)
+        self.assertEqual(list(Recording.objects.values_list("id", flat=True)), [keep.id])
 
     def test_delete_only_removes_matching_rule(self):
         """Delete by (tvg_id, title) leaves other rules intact."""
