@@ -23,11 +23,16 @@ from core.utils import (
     natural_sort_key,
     log_system_event,
     ensure_custom_properties_dict,
+    truncate_with_warning,
 )
 from core.models import CoreSettings
 from core.xtream_codes import Client as XCClient
 from core.utils import send_websocket_update
-from .utils import convert_js_numbered_backreferences, normalize_stream_url
+from .utils import (
+    convert_js_numbered_backreferences,
+    normalize_stream_url,
+    parse_is_adult,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -580,13 +585,6 @@ def get_case_insensitive_attr(attributes, key, default=""):
         if attr_key.lower() == key.lower():
             return attr_value
     return default
-
-
-def parse_is_adult(value):
-    try:
-        return int(value) == 1
-    except (TypeError, ValueError):
-        return False
 
 
 def parse_extinf_line(line: str) -> dict:
@@ -1320,10 +1318,9 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys, compiled_filt
                 logger.warning(f"Skipping stream '{name}': URL too long ({len(url)} characters, max 4096)")
                 continue
 
-            # Truncate name if it exceeds the model field limit
-            if name and len(name) > name_max_length:
-                logger.warning(f"Stream name too long ({len(name)} > {name_max_length}), truncating: {name[:80]}...")
-                name = name[:name_max_length]
+            name = truncate_with_warning(
+                name, max_length=name_max_length, label="Stream name"
+            )
 
             tvg_id, tvg_logo = get_case_insensitive_attr(
                 stream_info["attributes"], "tvg-id", ""

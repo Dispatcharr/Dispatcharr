@@ -527,7 +527,7 @@ class TimezoneListView(APIView):
 # System Events API
 # ─────────────────────────────
 @api_view(['GET'])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAdmin])
 def get_system_events(request):
     """
     Get recent system events (channel start/stop, buffering, client connections, etc.)

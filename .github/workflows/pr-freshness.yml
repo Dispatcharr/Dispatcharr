@@ -1,0 +1,41 @@
+on:
+  schedule:
+    - cron: '0 16 */2 * *'
+  workflow_dispatch:
+
+jobs:
+  freshness:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/create-github-app-token@v1
+        id: app-token
+        with:
+          app-id: ${{ secrets.BOT_APP_ID }}
+          private-key: ${{ secrets.BOT_PRIVATE_KEY }}
+
+      - uses: Dispatcharr/repo-bot/actions/pr-freshness@v1
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          days-before-stale: 7
+          days-before-close: 7
+          check-conflicts: true
+          check-changes-requested: true
+          check-maintainer-responded-stale: true
+          enforcement: close
+          bypass-for-members: true
+          stale-message: |
+            ## PR needs attention
+
+            This PR has not received an update after: {reasons}.
+
+            > **To keep this PR open:**
+            > 1. Address the outstanding feedback or merge conflicts
+            > 2. Push an update or leave a comment within {days-before-close} days
+          close-message: |
+            ## PR closed due to inactivity
+
+            This PR was closed because it did not receive an update after: {reasons}.
+
+            > **To continue:**
+            > 1. Address the outstanding feedback or merge conflicts
+            > 2. Reopen this PR when it is ready to continue

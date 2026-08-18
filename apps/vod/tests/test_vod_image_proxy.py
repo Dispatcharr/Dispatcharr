@@ -219,15 +219,17 @@ class VODImageProxyEndpointTestCase(TestCase):
             stream_id="e1",
         )
 
+    @patch("core.image_proxy.validate_outbound_http_url")
     @patch("core.image_proxy.requests.get")
     @patch(
         "core.image_proxy.CoreSettings.get_default_user_agent",
         return_value="Dispatcharr-Test/1.0",
     )
-    def test_movie_backdrop_image_endpoint(self, _mock_ua, mock_get):
+    def test_movie_backdrop_image_endpoint(self, _mock_ua, mock_get, _mock_validate):
+        body = b"\x89PNG\r\n\x1a\n" + b"backdrop-bytes"
         mock_response = MagicMock()
         mock_response.status_code = 200
-        mock_response.iter_content.return_value = [b"backdrop-bytes"]
+        mock_response.iter_content.return_value = [body]
         mock_response.headers = {"Content-Type": "image/jpeg"}
         mock_get.return_value = mock_response
 
@@ -236,7 +238,7 @@ class VODImageProxyEndpointTestCase(TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.content, b"backdrop-bytes")
+        self.assertEqual(response.content, body)
         mock_get.assert_called_once()
         args, kwargs = mock_get.call_args
         self.assertEqual(args[0], "https://cdn.example.com/backdrop.jpg")
@@ -245,15 +247,17 @@ class VODImageProxyEndpointTestCase(TestCase):
             {"User-Agent": "Dispatcharr-Test/1.0"},
         )
 
+    @patch("core.image_proxy.validate_outbound_http_url")
     @patch("core.image_proxy.requests.get")
     @patch(
         "core.image_proxy.CoreSettings.get_default_user_agent",
         return_value="Dispatcharr-Test/1.0",
     )
-    def test_episode_movie_image_endpoint(self, _mock_ua, mock_get):
+    def test_episode_movie_image_endpoint(self, _mock_ua, mock_get, _mock_validate):
+        body = b"\x89PNG\r\n\x1a\n" + b"still-bytes"
         mock_response = MagicMock()
         mock_response.status_code = 200
-        mock_response.iter_content.return_value = [b"still-bytes"]
+        mock_response.iter_content.return_value = [body]
         mock_response.headers = {"Content-Type": "image/jpeg"}
         mock_get.return_value = mock_response
 
@@ -262,7 +266,7 @@ class VODImageProxyEndpointTestCase(TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.content, b"still-bytes")
+        self.assertEqual(response.content, body)
 
     def test_rejects_unknown_kind(self):
         response = self.client.get(
@@ -276,15 +280,17 @@ class VODImageProxyEndpointTestCase(TestCase):
         )
         self.assertEqual(response.status_code, 404)
 
+    @patch("core.image_proxy.validate_outbound_http_url")
     @patch("core.image_proxy.requests.get")
     @patch(
         "core.image_proxy.CoreSettings.get_default_user_agent",
         return_value="Dispatcharr-Test/1.0",
     )
-    def test_series_backdrop_image_endpoint(self, _mock_ua, mock_get):
+    def test_series_backdrop_image_endpoint(self, _mock_ua, mock_get, _mock_validate):
+        body = b"\x89PNG\r\n\x1a\n" + b"series-bd"
         mock_response = MagicMock()
         mock_response.status_code = 200
-        mock_response.iter_content.return_value = [b"series-bd"]
+        mock_response.iter_content.return_value = [body]
         mock_response.headers = {"Content-Type": "image/jpeg"}
         mock_get.return_value = mock_response
 
@@ -292,14 +298,15 @@ class VODImageProxyEndpointTestCase(TestCase):
             f"/api/vod/series/{self.series.id}/image/?kind=backdrop&index=0"
         )
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.content, b"series-bd")
+        self.assertEqual(response.content, body)
 
+    @patch("core.image_proxy.validate_outbound_http_url")
     @patch("core.image_proxy.requests.get")
     @patch(
         "core.image_proxy.CoreSettings.get_default_user_agent",
         return_value="Dispatcharr-Test/1.0",
     )
-    def test_resolve_prefers_higher_priority_relation_artwork(self, _mock_ua, mock_get):
+    def test_resolve_prefers_higher_priority_relation_artwork(self, _mock_ua, mock_get, _mock_validate):
         high = M3UAccount.objects.create(
             name="High Priority",
             server_url="http://high.example.com",
@@ -343,9 +350,10 @@ class VODImageProxyEndpointTestCase(TestCase):
             "https://cdn.example.com/low.jpg",
         )
 
+        body = b"\x89PNG\r\n\x1a\n" + b"high-still"
         mock_response = MagicMock()
         mock_response.status_code = 200
-        mock_response.iter_content.return_value = [b"high-still"]
+        mock_response.iter_content.return_value = [body]
         mock_response.headers = {"Content-Type": "image/jpeg"}
         mock_get.return_value = mock_response
 
@@ -353,5 +361,5 @@ class VODImageProxyEndpointTestCase(TestCase):
             f"/api/vod/episodes/{self.episode.id}/image/?kind=movie_image"
         )
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.content, b"high-still")
+        self.assertEqual(response.content, body)
         self.assertEqual(mock_get.call_args[0][0], "https://cdn.example.com/high.jpg")

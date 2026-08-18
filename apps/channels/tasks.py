@@ -2816,6 +2816,22 @@ def recover_recordings_on_startup():
         logger.error(f"Error during DVR recovery: {e}")
         return f"Error: {e}"
 
+# Setting value -> CLI flag for the bundled Comskip donator build.
+# "qsv" is a legacy alias; that build has no --qsv option.
+_COMSKIP_HW_ACCEL_FLAGS = {
+    "cuvid": "--cuvid",
+    "hwassist": "--hwassist",
+    "qsv": "--hwassist",
+}
+
+
+def _comskip_hw_accel_flag(hw_accel: str) -> str | None:
+    """Return the Comskip CLI flag for a DVR hardware-accel setting, or None."""
+    if not hw_accel or hw_accel == "none":
+        return None
+    return _COMSKIP_HW_ACCEL_FLAGS.get(hw_accel)
+
+
 @shared_task
 def comskip_process_recording(recording_id: int):
     """Run comskip on the MKV to remove commercials and replace the file in place.
@@ -2889,10 +2905,10 @@ def comskip_process_recording(recording_id: int):
 
     try:
         comskip_mode = CoreSettings.get_dvr_comskip_mode()
-        hw_accel = CoreSettings.get_dvr_comskip_hw_accel()
+        hw_flag = _comskip_hw_accel_flag(CoreSettings.get_dvr_comskip_hw_accel())
         cmd = [comskip_bin, "--output", os.path.dirname(file_path)]
-        if hw_accel != "none":
-            cmd.insert(1, f"--{hw_accel}")
+        if hw_flag:
+            cmd.insert(1, hw_flag)
         # Prefer user-specified INI, fall back to known defaults
         ini_candidates = []
         try:
@@ -3271,7 +3287,17 @@ def _resolve_poster_for_program(channel_name, program, channel_logo_id=None):
     if not poster_logo_id and not poster_url and _title and not _title_is_channel_name:
         try:
             from .models import Logo
-            existing = Logo.objects.filter(name__iexact=_title).first()
+            from core.utils import truncate_with_warning
+
+            # Match the same clamp used when Logo.name is stored so titles
+            # longer than varchar(255) still hit a previously truncated row.
+            existing = Logo.objects.filter(
+                name__iexact=truncate_with_warning(
+                    _title,
+                    max_length=Logo._meta.get_field("name").max_length,
+                    label="Logo name",
+                )
+            ).first()
             if existing:
                 poster_logo_id = existing.id
                 poster_url = existing.url
