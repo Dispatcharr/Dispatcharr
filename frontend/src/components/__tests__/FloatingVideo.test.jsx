@@ -8,6 +8,7 @@ import {
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import FloatingVideo from '../FloatingVideo';
 import useVideoStore from '../../store/useVideoStore';
+import useOutputProfilesStore from '../../store/outputProfiles';
 
 // Mock the video store
 vi.mock('../../store/useVideoStore');
@@ -416,6 +417,139 @@ describe('FloatingVideo', () => {
       expect(mpegts.createPlayer).toHaveBeenCalledTimes(
         createPlayerCallsAfterClose
       );
+    });
+  });
+
+  describe('Live stream AAC-profile fallback', () => {
+    const AAC_PROFILE = { id: 42, name: 'Web Player (AAC Audio)' };
+
+    beforeEach(() => {
+      useVideoStore.mockImplementation((selector) => {
+        const state = {
+          isVisible: true,
+          streamUrl: 'http://example.com/stream.ts?output_format=mpegts',
+          contentType: 'live',
+          metadata: null,
+          hideVideo: mockHideVideo,
+        };
+        return selector ? selector(state) : state;
+      });
+      useOutputProfilesStore.setState({ profiles: [AAC_PROFILE] });
+    });
+
+    afterEach(() => {
+      useOutputProfilesStore.setState({ profiles: [] });
+      vi.useRealTimers();
+    });
+
+    const getErrorCallback = () =>
+      mockPlayer.on.mock.calls
+        .filter((call) => call[0] === mpegts.Events.ERROR)
+        .at(-1)?.[1];
+
+    it('should retry once with the AAC profile on a MediaError', async () => {
+      vi.useFakeTimers();
+      render(<FloatingVideo />);
+
+      const errorCallback = getErrorCallback();
+      act(() => {
+        errorCallback('MediaError', 'AC3 codec not supported');
+      });
+
+      expect(
+        screen.getByText(/retrying with a compatible profile/i)
+      ).toBeInTheDocument();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+
+      expect(mpegts.createPlayer).toHaveBeenCalledTimes(2);
+      const secondCallUrl = mpegts.createPlayer.mock.calls[1][0].url;
+      expect(secondCallUrl).toContain('output_profile=42');
+    });
+
+    it('should not retry a second time if the AAC-profile attempt also errors', async () => {
+      vi.useFakeTimers();
+      render(<FloatingVideo />);
+
+      let errorCallback = getErrorCallback();
+      act(() => {
+        errorCallback('MediaError', 'AC3 codec not supported');
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(mpegts.createPlayer).toHaveBeenCalledTimes(2);
+
+      // The AAC-profile player itself now fails too.
+      errorCallback = getErrorCallback();
+      act(() => {
+        errorCallback('MediaError', 'still broken');
+      });
+
+      expect(
+        screen.getByText(/codec not supported|Media codec/i)
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByText(/retrying with a compatible profile/i)
+      ).not.toBeInTheDocument();
+
+      // No further reconnect attempt should ever be scheduled.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(15000);
+      });
+      expect(mpegts.createPlayer).toHaveBeenCalledTimes(2);
+    });
+
+    it('should not retry if already on the AAC profile', async () => {
+      useVideoStore.mockImplementation((selector) => {
+        const state = {
+          isVisible: true,
+          streamUrl:
+            'http://example.com/stream.ts?output_format=mpegts&output_profile=42',
+          contentType: 'live',
+          metadata: null,
+          hideVideo: mockHideVideo,
+        };
+        return selector ? selector(state) : state;
+      });
+      vi.useFakeTimers();
+      render(<FloatingVideo />);
+
+      const errorCallback = getErrorCallback();
+      act(() => {
+        errorCallback('MediaError', 'still broken');
+      });
+
+      expect(
+        screen.getByText(/codec not supported|Media codec/i)
+      ).toBeInTheDocument();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(15000);
+      });
+      expect(mpegts.createPlayer).toHaveBeenCalledTimes(1);
+    });
+
+    it('should not retry if the AAC profile is not available', async () => {
+      useOutputProfilesStore.setState({ profiles: [] });
+      vi.useFakeTimers();
+      render(<FloatingVideo />);
+
+      const errorCallback = getErrorCallback();
+      act(() => {
+        errorCallback('MediaError', 'AC3 codec not supported');
+      });
+
+      expect(
+        screen.getByText(/codec not supported|Media codec/i)
+      ).toBeInTheDocument();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(15000);
+      });
+      expect(mpegts.createPlayer).toHaveBeenCalledTimes(1);
     });
   });
 

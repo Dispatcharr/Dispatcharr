@@ -13,6 +13,27 @@ export const buildLiveStreamUrl = (path) => {
   return `${path}?${params.toString()}`;
 };
 
+/**
+ * Read the `output_profile` query param from a live-stream URL built by
+ * buildLiveStreamUrl(), or null if unset.
+ */
+export const getOutputProfileParam = (url) => {
+  if (!url || typeof url !== 'string') return null;
+  const [, query = ''] = url.split('?');
+  return new URLSearchParams(query).get('output_profile');
+};
+
+/**
+ * Return a copy of a live-stream URL with `output_profile` set/replaced.
+ */
+export const setOutputProfileParam = (url, profileId) => {
+  if (!url || typeof url !== 'string') return url;
+  const [base, query = ''] = url.split('?');
+  const params = new URLSearchParams(query);
+  params.set('output_profile', String(profileId));
+  return `${base}?${params.toString()}`;
+};
+
 export const getPlayerPrefs = () => {
   try {
     return JSON.parse(localStorage.getItem(PLAYER_PREFS_KEY) || '{}');

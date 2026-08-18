@@ -3,6 +3,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import Draggable from 'react-draggable';
 import useVideoStore from '../store/useVideoStore';
 import useAuthStore from '../store/auth';
+import useOutputProfilesStore from '../store/outputProfiles';
 import mpegts from 'mpegts.js';
 import Hls from 'hls.js';
 import { CloseButton, Flex, Loader, Text, Box } from '@mantine/core';
@@ -14,7 +15,16 @@ import {
   getVODPlayerErrorMessage,
   getPlayerPrefs,
   savePlayerPrefs,
+  getOutputProfileParam,
+  setOutputProfileParam,
 } from '../utils/components/FloatingVideoUtils.js';
+
+// Locked, seeded-on-install OutputProfile (core/migrations/0024_outputprofile.py)
+// that transcodes to AAC audio -- the one profile guaranteed to be playable by
+// browser MediaSource Extensions. Used as a one-shot automatic fallback when
+// the live player hits a MediaError (e.g. a source using AC3 audio, which no
+// browser can decode via MSE).
+const WEB_PLAYER_AAC_PROFILE_NAME = 'Web Player (AAC Audio)';
 
 // Native <video src> cannot send Authorization headers. Append ?token= at playback
 // time (not when building the URL in cards/modals) so the JWT is fresh. hls.js
@@ -149,6 +159,10 @@ export default function FloatingVideo() {
   // mpegts.js live-player reconnect bookkeeping (see initializeLivePlayer).
   const reconnectAttemptsRef = useRef(0);
   const reconnectTimeoutRef = useRef(null);
+  // Tracks whether we've already tried the one-shot AAC output-profile
+  // fallback for the current stream (see initializeLivePlayer).
+  const mediaFallbackAttemptedRef = useRef(false);
+  const mediaFallbackTimeoutRef = useRef(null);
 
   const [isLoading, setIsLoading] = useState(false);
   const [loadError, setLoadError] = useState(null);
@@ -233,6 +247,12 @@ export default function FloatingVideo() {
     if (reconnectTimeoutRef.current) {
       clearTimeout(reconnectTimeoutRef.current);
       reconnectTimeoutRef.current = null;
+    }
+
+    // Clear any pending AAC-profile fallback attempt
+    if (mediaFallbackTimeoutRef.current) {
+      clearTimeout(mediaFallbackTimeoutRef.current);
+      mediaFallbackTimeoutRef.current = null;
     }
   };
 
@@ -453,9 +473,13 @@ export default function FloatingVideo() {
     };
   };
 
-  // Initialize live stream player (mpegts.js)
-  const initializeLivePlayer = () => {
-    if (!videoRef.current || !streamUrl) return;
+  // Initialize live stream player (mpegts.js). `overrideUrl`, when passed,
+  // is used instead of the store's `streamUrl` -- e.g. the AAC-profile
+  // fallback below reconnects to the same channel with a different
+  // `output_profile` query param baked in.
+  const initializeLivePlayer = (overrideUrl) => {
+    const effectiveStreamUrl = overrideUrl || streamUrl;
+    if (!videoRef.current || !effectiveStreamUrl) return;
 
     setIsLoading(true);
     setLoadError(null);
@@ -473,9 +497,9 @@ export default function FloatingVideo() {
       // mpegts.js workers run in WorkerGlobalScope where relative URLs are
       // not resolved against the page origin. Always pass an absolute URL.
       const absoluteStreamUrl =
-        streamUrl.startsWith('/') && typeof window !== 'undefined'
-          ? `${window.location.origin}${streamUrl}`
-          : streamUrl;
+        effectiveStreamUrl.startsWith('/') && typeof window !== 'undefined'
+          ? `${window.location.origin}${effectiveStreamUrl}`
+          : effectiveStreamUrl;
 
       // Read the JWT from the auth store at player-creation time rather than
       // relying on the closure-captured `accessToken` value.  mpegts.js has
@@ -524,12 +548,14 @@ export default function FloatingVideo() {
         setIsLoading(false);
         // Data is flowing again -- give future errors a fresh retry budget.
         reconnectAttemptsRef.current = 0;
+        mediaFallbackAttemptedRef.current = false;
       });
 
       player.on(mpegts.Events.METADATA_ARRIVED, () => {
         if (playerRef.current !== player) return;
         setIsLoading(false);
         reconnectAttemptsRef.current = 0;
+        mediaFallbackAttemptedRef.current = false;
       });
 
       player.on(mpegts.Events.ERROR, (errorType, errorDetail) => {
@@ -569,6 +595,41 @@ export default function FloatingVideo() {
             safeDestroyPlayer();
             initializeLivePlayer();
           }, delay);
+        } else if (
+          errorType === 'MediaError' &&
+          !mediaFallbackAttemptedRef.current
+        ) {
+          // A MediaError means the browser can't decode a codec in this
+          // stream (most commonly AC3 audio, which no browser supports via
+          // MediaSource Extensions). Unlike a NetworkError, this is
+          // deterministic against the *current* output profile -- but a
+          // one-shot switch to the locked "Web Player (AAC Audio)" profile
+          // (core/migrations/0024_outputprofile.py, guaranteed to exist and
+          // can't be deleted) transcodes the audio into something every
+          // browser can play. Only attempted once per stream, and skipped
+          // entirely if we're already on that profile, to avoid ever looping.
+          const aacProfile = useOutputProfilesStore
+            .getState()
+            .profiles.find((p) => p.name === WEB_PLAYER_AAC_PROFILE_NAME);
+          const currentProfileId = getOutputProfileParam(effectiveStreamUrl);
+
+          if (aacProfile && String(aacProfile.id) !== currentProfileId) {
+            mediaFallbackAttemptedRef.current = true;
+            const fallbackUrl = setOutputProfileParam(
+              effectiveStreamUrl,
+              aacProfile.id
+            );
+            setLoadError(
+              'Audio format not supported -- retrying with a compatible profile...'
+            );
+            mediaFallbackTimeoutRef.current = setTimeout(() => {
+              mediaFallbackTimeoutRef.current = null;
+              safeDestroyPlayer();
+              initializeLivePlayer(fallbackUrl);
+            }, 0);
+          } else {
+            setLoadError(getLivePlayerErrorMessage(errorType, errorDetail));
+          }
         } else {
           setLoadError(getLivePlayerErrorMessage(errorType, errorDetail));
         }
@@ -624,6 +685,7 @@ export default function FloatingVideo() {
     // Fresh stream selection -- give it a full reconnect budget, independent
     // of whatever a previously viewed channel had used up.
     reconnectAttemptsRef.current = 0;
+    mediaFallbackAttemptedRef.current = false;
 
     // Initialize the appropriate player based on content type
     if (contentType === 'vod') {
