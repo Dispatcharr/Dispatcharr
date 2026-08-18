@@ -61,12 +61,13 @@ RUN uv pip install --python $UV_PROJECT_ENVIRONMENT/bin/python --no-cache build 
 #
 # Distro libav (via libavformat-dev) is required: linuxserver ships libav
 # statically inside ffmpeg, with no shared libavcodec to link comskip against.
-# PKG_CONFIG_LIBDIR selects distro headers. -L is not enough on amd64: Ubuntu
-# libav pulls pangocairo, which needs fontconfig 2.17's
-# FcConfigSetDefaultSubstitute, while ld resolves that DT_NEEDED from
-# linuxserver's older /usr/local/lib/libfontconfig. -rpath-link is the link-time
-# search path for those transitive libs; -rpath keeps the same order at runtime
-# (ld.so.cache lists /usr/local first).
+# PKG_CONFIG_LIBDIR selects distro headers. -rpath-link is the link-time search
+# path for pangocairo's fontconfig. gcc's default --enable-new-dtags turns
+# -rpath into DT_RUNPATH, which is searched after LD_LIBRARY_PATH and is not
+# inherited by libpangoft2. linuxserver sets LD_LIBRARY_PATH=/usr/local/lib, so
+# the older /usr/local fontconfig wins and FcConfigSetDefaultSubstitute is
+# missing. --disable-new-dtags writes DT_RPATH, which is searched first and
+# inherited by transitive deps. ffmpeg is a separate process and is unchanged.
 RUN apt-get update && apt-get install --no-install-recommends -y \
     autoconf automake libtool pkg-config \
     libargtable2-dev libavformat-dev libswscale-dev \
@@ -82,7 +83,7 @@ RUN apt-get update && apt-get install --no-install-recommends -y \
     && MULTIARCH="$(dpkg-architecture -qDEB_HOST_MULTIARCH)" \
     && DISTRO_LIB="/usr/lib/${MULTIARCH}" \
     && export PKG_CONFIG_LIBDIR="${DISTRO_LIB}/pkgconfig" \
-    && export LDFLAGS="-L${DISTRO_LIB} -Wl,-rpath-link,${DISTRO_LIB} -Wl,-rpath,${DISTRO_LIB}" \
+    && export LDFLAGS="-L${DISTRO_LIB} -Wl,-rpath-link,${DISTRO_LIB} -Wl,-rpath,${DISTRO_LIB} -Wl,--disable-new-dtags" \
     && ./autogen.sh && ./configure && make -j"$(nproc)" \
     && strip comskip \
     && install -m 0755 comskip /usr/local/bin/comskip \
