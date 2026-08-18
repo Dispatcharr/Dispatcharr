@@ -16,6 +16,15 @@ def _env_zone():
         return ZoneInfo("UTC")
 
 
+def format_display_timestamp(dt, msecs):
+    # Non-UTC stamps carry their offset so persisted logs are unambiguous.
+    base = f"{dt.strftime('%Y-%m-%d %H:%M:%S')},{msecs:03d}"
+    offset = dt.strftime("%z")
+    if offset and offset != "+0000":
+        return f"{base} {offset}"
+    return base
+
+
 def set_display_zone(zone_name):
     try:
         _cache["zone"] = ZoneInfo(zone_name)
@@ -54,4 +63,4 @@ class DisplayTimezoneFormatter(logging.Formatter):
         dt = datetime.fromtimestamp(record.created, tz=_cache["zone"] or _env_zone())
         if datefmt:
             return dt.strftime(datefmt)
-        return f"{dt.strftime('%Y-%m-%d %H:%M:%S')},{int(record.msecs):03d}"
+        return format_display_timestamp(dt, int(record.msecs))

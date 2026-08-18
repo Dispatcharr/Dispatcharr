@@ -29,10 +29,12 @@ def _record():
 
 
 def _expected(zone_name):
-    stamp = datetime.fromtimestamp(FIXED_EPOCH, ZoneInfo(zone_name)).strftime(
-        "%Y-%m-%d %H:%M:%S"
-    )
-    return f"{stamp},123"
+    dt = datetime.fromtimestamp(FIXED_EPOCH, ZoneInfo(zone_name))
+    stamp = f"{dt.strftime('%Y-%m-%d %H:%M:%S')},123"
+    offset = dt.strftime("%z")
+    if offset != "+0000":
+        return f"{stamp} {offset}"
+    return stamp
 
 
 class DisplayTimezoneFormatterTests(TestCase):
@@ -111,3 +113,13 @@ class DisplayTimezoneFormatterTests(TestCase):
         self.assertEqual(
             self.formatter.formatTime(_record(), datefmt="%H:%M"), expected
         )
+
+    def test_non_utc_stamp_carries_offset(self):
+        CoreSettings.set_system_time_zone("Pacific/Auckland")
+        stamp = self.formatter.formatTime(_record())
+        self.assertRegex(stamp, r" [+-]\d{4}$")
+
+    def test_utc_stamp_has_no_offset(self):
+        CoreSettings.set_system_time_zone("UTC")
+        stamp = self.formatter.formatTime(_record())
+        self.assertNotRegex(stamp, r"[+-]\d{4}$")
