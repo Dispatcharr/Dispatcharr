@@ -29,8 +29,11 @@ import {
   formatRange,
   getChannelOptions,
   getTvgOptions,
+  mappedEpgDataIdsFromChannels,
+  parseTvgOptionValue,
   previewSeriesRule,
   TITLE_MODES,
+  tvgSelectValueFromRule,
 } from '../../utils/forms/SeriesRuleEditorModalUtils.js';
 
 export default function SeriesRuleEditorModal({
@@ -41,8 +44,9 @@ export default function SeriesRuleEditorModal({
 }) {
   const tvgs = useEPGsStore((s) => s.tvgs);
   const tvgsById = useEPGsStore((s) => s.tvgsById);
+  const epgs = useEPGsStore((s) => s.epgs);
 
-  const [tvgId, setTvgId] = useState('');
+  const [tvgSelectValue, setTvgSelectValue] = useState('');
   const [mode, setMode] = useState('all');
   const [title, setTitle] = useState('');
   const [titleMode, setTitleMode] = useState('exact');
@@ -60,11 +64,20 @@ export default function SeriesRuleEditorModal({
   const [previewError, setPreviewError] = useState(null);
   const [saving, setSaving] = useState(false);
   const abortRef = useRef(null);
+  // Once the station is set by the user, or auto-bound from the rule, the
+  // late-arriving channel summary must not change it again.
+  const tvgBoundRef = useRef(false);
+
+  const mappedEpgDataIds = useMemo(
+    () => mappedEpgDataIdsFromChannels(allChannels),
+    [allChannels]
+  );
 
   // Hydrate state when opened or initial rule changes
   useEffect(() => {
     if (!opened) return;
-    setTvgId(String(initialRule?.tvg_id || ''));
+    tvgBoundRef.current = false;
+    setTvgSelectValue(tvgSelectValueFromRule(initialRule));
     setMode(initialRule?.mode || 'all');
     setTitle(initialRule?.title || '');
     setTitleMode(initialRule?.title_mode || 'exact');
@@ -74,6 +87,18 @@ export default function SeriesRuleEditorModal({
     setPreview({ matches: [], total: 0, epg_found: true });
     setPreviewError(null);
   }, [opened, initialRule]);
+
+  // A legacy rule stores no source, so its station can only be resolved once
+  // the channel summary says which EPG copies are actually mapped. This only
+  // ever fills a value in, never clears one.
+  useEffect(() => {
+    if (!opened || tvgBoundRef.current) return;
+    const bound = tvgSelectValueFromRule(initialRule, tvgs, mappedEpgDataIds);
+    if (bound) {
+      tvgBoundRef.current = true;
+      setTvgSelectValue(bound);
+    }
+  }, [opened, initialRule, tvgs, mappedEpgDataIds]);
 
   // Load channels from the summary API on modal open (same as Recording.jsx).
   useEffect(() => {
@@ -91,18 +116,48 @@ export default function SeriesRuleEditorModal({
     };
   }, [opened]);
 
+  const parsedTvg = useMemo(
+    () => parseTvgOptionValue(tvgSelectValue),
+    [tvgSelectValue]
+  );
+  // If an unsourced legacy rule could not unique-bind (same tvg_id on more
+  // than one source), keep that tvg_id in the payload so saving does not
+  // accidentally turn it into a title-only all-channels rule.
+  // Keep a legacy unsourced tvg_id in the payload only while the station
+  // picker has not been resolved or touched. After the user clears it, this
+  // must become a title-only rule rather than silently keeping the old id.
+  const tvgId =
+    parsedTvg.tvg_id ||
+    (!tvgSelectValue &&
+    !tvgBoundRef.current &&
+    initialRule?.tvg_id &&
+    (initialRule.epg_source_id == null || initialRule.epg_source_id === '')
+      ? String(initialRule.tvg_id)
+      : '');
+  const epgSourceId = parsedTvg.epg_source_id;
+
   // Build the payload for both preview and save
   const payload = useMemo(
     () => ({
-      tvg_id: tvgId.trim(),
+      tvg_id: String(tvgId || '').trim(),
       mode,
       title: title.trim(),
       title_mode: titleMode,
       description: description.trim(),
       description_mode: descriptionMode,
       ...(channelId ? { channel_id: Number(channelId) } : {}),
+      ...(epgSourceId ? { epg_source_id: epgSourceId } : {}),
     }),
-    [tvgId, mode, title, titleMode, description, descriptionMode, channelId]
+    [
+      tvgId,
+      epgSourceId,
+      mode,
+      title,
+      titleMode,
+      description,
+      descriptionMode,
+      channelId,
+    ]
   );
 
   // Debounce the part of the payload that affects preview
@@ -143,15 +198,14 @@ export default function SeriesRuleEditorModal({
     return () => controller.abort();
   }, [opened, debouncedPreviewKey]);
 
-  // EPG channel options for the tvg_id selector. Deduplicate by tvg_id value
-  // since the same channel can appear across multiple EPG sources.
-  const tvgOptions = useMemo(() => {
-    return getTvgOptions(tvgs);
-  }, [tvgs]);
+  const tvgOptions = useMemo(
+    () => getTvgOptions(tvgs, epgs, mappedEpgDataIds),
+    [tvgs, epgs, mappedEpgDataIds]
+  );
 
   const channelOptions = useMemo(() => {
-    return getChannelOptions(allChannels, tvgsById, tvgId);
-  }, [allChannels, tvgsById, tvgId]);
+    return getChannelOptions(allChannels, tvgsById, tvgId, epgSourceId);
+  }, [allChannels, tvgsById, tvgId, epgSourceId]);
 
   const canSave = !!(payload.title || payload.description);
 
@@ -195,13 +249,16 @@ export default function SeriesRuleEditorModal({
       <Stack gap="sm">
         <Select
           label="EPG channel (optional)"
-          description="Limit matching to a specific EPG channel. Leave blank to search all channels."
-          placeholder="Search by name or tvg_id..."
+          description="Limit matching to a specific EPG station. Leave blank to search all channels. When the same tvg_id exists on more than one source, pick one copy."
+          placeholder="Search by name, tvg_id, or source..."
           searchable
           clearable
           data={tvgOptions}
-          value={tvgId || null}
-          onChange={(v) => setTvgId(v || '')}
+          value={tvgSelectValue || null}
+          onChange={(v) => {
+            tvgBoundRef.current = true;
+            setTvgSelectValue(v || '');
+          }}
           nothingFoundMessage="No EPG channels found"
           comboboxProps={{ zIndex: 10000 }}
           filter={({ options, search }) => {
@@ -297,6 +354,14 @@ export default function SeriesRuleEditorModal({
               No EPG channel matches this tvg_id.
             </Text>
           )}
+          {preview.status === 'no_channel_for_epg' &&
+            tvgId &&
+            !previewLoading && (
+              <Text size="xs" c="orange">
+                This tvg_id exists, but no channel uses that EPG copy. Pick
+                another source or map a channel to it.
+              </Text>
+            )}
         </Group>
 
         {previewError && (

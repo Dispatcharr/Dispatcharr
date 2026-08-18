@@ -496,7 +496,13 @@ def _evaluate_series_rules_locked(tvg_id, result):
     """Inner implementation of series rule evaluation, called under lock."""
     from django.utils import timezone
     from apps.channels.models import Recording, Channel
-    from apps.epg.models import EPGData, ProgramData
+    from apps.channels.managers import (
+        epg_ids_mapped_to_channels,
+        parse_optional_epg_source_id,
+        resolve_epg_data_for_series_rule,
+        with_effective_values,
+    )
+    from apps.epg.models import ProgramData
 
     rules = CoreSettings.get_dvr_series_rules()
     if not isinstance(rules, list) or not rules:
@@ -586,6 +592,10 @@ def _evaluate_series_rules_locked(tvg_id, result):
         except Exception:
             continue
 
+    # Resolved once on first use and shared by every tvg_id-scoped rule; the
+    # lookup spans all channels and overrides, so it must not run per rule.
+    mapped_epg_ids = None
+
     for rule in rules:
         rv_tvg = str(rule.get("tvg_id") or "").strip()
         mode = (rule.get("mode") or "all").lower()
@@ -602,12 +612,28 @@ def _evaluate_series_rules_locked(tvg_id, result):
             continue
 
         if rv_tvg:
-            epg = EPGData.objects.filter(tvg_id=rv_tvg).first()
-            if not epg:
-                result["details"].append({"tvg_id": rv_tvg, "status": "no_epg_match"})
+            if mapped_epg_ids is None:
+                mapped_epg_ids = epg_ids_mapped_to_channels()
+            rule_source_id = parse_optional_epg_source_id(rule.get("epg_source_id"))
+            resolved_epgs, epg_status = resolve_epg_data_for_series_rule(
+                rv_tvg, rule_source_id, mapped_epg_ids
+            )
+            if epg_status:
+                logger.warning(
+                    "Series rule skipped (%s): tvg_id=%s epg_source_id=%s title=%s",
+                    epg_status,
+                    rv_tvg,
+                    rule_source_id,
+                    series_title,
+                )
+                result["details"].append({
+                    "tvg_id": rv_tvg,
+                    "epg_source_id": rule_source_id,
+                    "status": epg_status,
+                })
                 continue
-            programs_qs = ProgramData.objects.filter(
-                epg=epg,
+            programs_qs = ProgramData.objects.select_related("epg").filter(
+                epg_id__in=[e.id for e in resolved_epgs],
                 end_time__gt=now,
                 start_time__lte=horizon,
             )
@@ -674,19 +700,33 @@ def _evaluate_series_rules_locked(tvg_id, result):
                 result["details"].append({"tvg_id": rv_tvg, "status": "pinned_channel_missing", "channel_id": pinned_channel_id})
                 continue
             channels_by_epg_id = None
-        elif rv_tvg:
-            pinned_channel = Channel.objects.filter(epg_data=epg).order_by("channel_number").first()
-            if not pinned_channel:
-                result["details"].append({"tvg_id": rv_tvg, "status": "no_channel_for_epg"})
-                continue
-            channels_by_epg_id = None
         else:
             pinned_channel = None
             epg_ids = {p.epg_id for p in programs}
+            # Effective values so a hand-assigned override EPG counts as the
+            # channel's station, matching how the rule resolved its EPG rows.
+            # Lowest effective channel number wins when several channels share
+            # one station.
             channels_by_epg_id = {}
-            for ch in Channel.objects.filter(epg_data_id__in=epg_ids).order_by("channel_number"):
-                if ch.epg_data_id not in channels_by_epg_id:
-                    channels_by_epg_id[ch.epg_data_id] = ch
+            channels_qs = (
+                with_effective_values(Channel.objects.all())
+                .filter(effective_epg_data_id__in=epg_ids)
+                .order_by("effective_channel_number")
+            )
+            for ch in channels_qs:
+                if ch.effective_epg_data_id not in channels_by_epg_id:
+                    channels_by_epg_id[ch.effective_epg_data_id] = ch
+            if not channels_by_epg_id:
+                logger.warning(
+                    "Series rule skipped (no_channel_for_epg): tvg_id=%s title=%s",
+                    rv_tvg,
+                    series_title,
+                )
+                result["details"].append({
+                    "tvg_id": rv_tvg,
+                    "status": "no_channel_for_epg",
+                })
+                continue
 
         #
         # Many providers list multiple future airings of the same episode
@@ -814,27 +854,34 @@ def _evaluate_series_rules_locked(tvg_id, result):
                 except Exception:
                     pass
 
+                program_snapshot = {
+                    "id": prog.id,
+                    "tvg_id": prog.tvg_id,
+                    "title": prog.title,
+                    "sub_title": prog.sub_title,
+                    "description": prog.description,
+                    "start_time": prog.start_time.isoformat(),
+                    "end_time": prog.end_time.isoformat(),
+                    # Stable across EPG refreshes, unlike the times above.
+                    "season": (prog.custom_properties or {}).get("season"),
+                    "episode": (prog.custom_properties or {}).get("episode"),
+                    "onscreen_episode": (prog.custom_properties or {}).get(
+                        "onscreen_episode"
+                    ),
+                }
+                # Pin the recording to the EPG source that produced this
+                # airing so deleting one sourced rule cannot wipe another
+                # source's upcoming list for the same tvg_id + title.
+                epg_obj = getattr(prog, "epg", None)
+                source_id = getattr(epg_obj, "epg_source_id", None)
+                if source_id:
+                    program_snapshot["epg_source_id"] = int(source_id)
+
                 rec = Recording.objects.create(
                     channel=rec_channel,
                     start_time=adj_start,
                     end_time=adj_end,
-                    custom_properties={
-                        "program": {
-                            "id": prog.id,
-                            "tvg_id": prog.tvg_id,
-                            "title": prog.title,
-                            "sub_title": prog.sub_title,
-                            "description": prog.description,
-                            "start_time": prog.start_time.isoformat(),
-                            "end_time": prog.end_time.isoformat(),
-                            # Stable across EPG refreshes, unlike the times above.
-                            "season": (prog.custom_properties or {}).get("season"),
-                            "episode": (prog.custom_properties or {}).get("episode"),
-                            "onscreen_episode": (prog.custom_properties or {}).get(
-                                "onscreen_episode"
-                            ),
-                        }
-                    },
+                    custom_properties={"program": program_snapshot},
                 )
                 existing_program_keys.add(prog_key)
                 if prog_ident:
@@ -1522,9 +1569,10 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
             _active_lock_redis = None
 
     # --- Clean up the one-off PeriodicTask that dispatched this task ---
+    # Only the Beat row. Do not AsyncResult.revoke() this execution's task_id.
     try:
-        from apps.channels.signals import revoke_task, _dvr_task_name
-        revoke_task(_dvr_task_name(recording_id))
+        from apps.channels.signals import _delete_periodic_task_named, _dvr_task_name
+        _delete_periodic_task_named(_dvr_task_name(recording_id))
     except Exception as e:
         logger.debug(f"PeriodicTask cleanup failed (non-fatal): {e}")
 
@@ -2949,7 +2997,7 @@ def comskip_process_recording(recording_id: int):
     try:
         comskip_mode = CoreSettings.get_dvr_comskip_mode()
         hw_flag = _comskip_hw_accel_flag(CoreSettings.get_dvr_comskip_hw_accel())
-        cmd = [comskip_bin, "--output", os.path.dirname(file_path)]
+        cmd = [comskip_bin, "--threads=1", "--output", os.path.dirname(file_path)]
         if hw_flag:
             cmd.insert(1, hw_flag)
         # Prefer user-specified INI, fall back to known defaults
@@ -3003,6 +3051,13 @@ def comskip_process_recording(recording_id: int):
                 detail["ini_path"] = selected_ini
             cp["comskip"] = detail
             _persist_custom_properties()
+            logger.warning(
+                "Comskip failed for recording %s: returncode=%s cmd=%s stderr=%s",
+                recording_id,
+                result.returncode,
+                cmd,
+                "\n".join(stderr_tail) if stderr_tail else "",
+            )
             _ws('error', {"reason": "comskip_failed", "returncode": result.returncode})
             return "comskip_failed"
     except Exception as e:
