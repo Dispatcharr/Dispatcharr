@@ -2997,7 +2997,7 @@ def comskip_process_recording(recording_id: int):
     try:
         comskip_mode = CoreSettings.get_dvr_comskip_mode()
         hw_flag = _comskip_hw_accel_flag(CoreSettings.get_dvr_comskip_hw_accel())
-        cmd = [comskip_bin, "--output", os.path.dirname(file_path)]
+        cmd = [comskip_bin, "--threads=1", "--output", os.path.dirname(file_path)]
         if hw_flag:
             cmd.insert(1, hw_flag)
         # Prefer user-specified INI, fall back to known defaults
@@ -3051,6 +3051,13 @@ def comskip_process_recording(recording_id: int):
                 detail["ini_path"] = selected_ini
             cp["comskip"] = detail
             _persist_custom_properties()
+            logger.warning(
+                "Comskip failed for recording %s: returncode=%s cmd=%s stderr=%s",
+                recording_id,
+                result.returncode,
+                cmd,
+                "\n".join(stderr_tail) if stderr_tail else "",
+            )
             _ws('error', {"reason": "comskip_failed", "returncode": result.returncode})
             return "comskip_failed"
     except Exception as e:
