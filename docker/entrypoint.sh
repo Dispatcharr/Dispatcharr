@@ -239,6 +239,7 @@ echo "Starting user setup..."
 # Archive the previous run's log on start (WatchedFileHandler keeps appending to the live file); this only
 # shifts, never deletes -- the log collector prunes per system setting once it is up.
 LOG_FILE_DIR=${DISPATCHARR_LOG_DIR:-/data/logs}
+if [[ "$DISPATCHARR_ENV" != "modular" ]]; then
 mkdir -p "$LOG_FILE_DIR" 2>/dev/null || true
 if [ -s "$LOG_FILE_DIR/dispatcharr.log" ]; then
     # Shift every existing archive up by one (highest index first, nothing clobbered), then move the live log to .1.
@@ -251,6 +252,7 @@ fi
 touch "$LOG_FILE_DIR/dispatcharr.log" 2>/dev/null || true
 # Non-recursive: DISPATCHARR_LOG_DIR is operator-set, so a recursive chown could re-own a mis-pointed data tree (e.g. /data/db). Tolerant: chown-refusing mounts (NFS root_squash) must not block boot.
 chown "$PUID:$PGID" "$LOG_FILE_DIR" "$LOG_FILE_DIR"/dispatcharr.log* 2>/dev/null || true
+fi
 
 # Everything below (uwsgi, celery, daphne, nginx, postgres, redis, this
 # script) flows THROUGH the log collector: it forwards each filtered line to

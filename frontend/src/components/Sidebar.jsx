@@ -207,8 +207,13 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
   const hiddenNav = getHiddenNav();
   const navItems = useMemo(() => {
     const ordered = getOrderedNavItems(navOrder, isAdmin, channelIds);
-    return ordered.filter((item) => !hiddenNav.includes(item.id));
-  }, [navOrder, hiddenNav, isAdmin, channelIds]);
+    return ordered.filter(
+      (item) =>
+        !hiddenNav.includes(item.id) &&
+        // Modular mode is stdout-only: no collector, no log file to browse.
+        !(item.path === '/logs' && environment.env_mode === 'modular')
+    );
+  }, [navOrder, hiddenNav, isAdmin, channelIds, environment.env_mode]);
 
   const isSettingsPage = location.pathname.startsWith('/settings');
   const activeSettingsId = location.hash.replace('#', '');

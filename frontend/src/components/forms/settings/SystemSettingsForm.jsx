@@ -80,36 +80,41 @@ const SystemSettingsForm = React.memo(({ active }) => {
         max={1000}
         step={10}
       />
-      <Switch
-        label="Persist Logs to File"
-        description="Write application logs to disk for the Logs page. Console logging is unaffected. Disable on slow storage (SD cards, network shares) if logging overhead is a concern."
-        {...form.getInputProps('log_persist', { type: 'checkbox' })}
-        id="log_persist"
-      />
-      <NumberInput
-        label="Maximum Log File Size (MB)"
-        description="Rotate the application log once it grows past this size. Older logs are kept up to the retention limit below."
-        id="log_max_mb"
-        value={form.values['log_max_mb'] || 10}
-        onChange={(value) => {
-          form.setFieldValue('log_max_mb', value);
-        }}
-        min={1}
-        max={1000}
-        step={5}
-      />
-      <NumberInput
-        label="Log Files Retained"
-        description="How many rotated log files to keep before the oldest is deleted."
-        id="log_keep"
-        value={form.values['log_keep'] || 5}
-        onChange={(value) => {
-          form.setFieldValue('log_keep', value);
-        }}
-        min={1}
-        max={50}
-        step={1}
-      />
+      {/* Modular mode is stdout-only: the collector and its file do not exist there. */}
+      {!isModular && (
+        <>
+          <Switch
+            label="Persist Logs to File"
+            description="Write application logs to disk for the Logs page. Console logging is unaffected. Disable on slow storage (SD cards, network shares) if logging overhead is a concern."
+            {...form.getInputProps('log_persist', { type: 'checkbox' })}
+            id="log_persist"
+          />
+          <NumberInput
+            label="Maximum Log File Size (MB)"
+            description="Rotate the application log once it grows past this size. Older logs are kept up to the retention limit below."
+            id="log_max_mb"
+            value={form.values['log_max_mb'] || 10}
+            onChange={(value) => {
+              form.setFieldValue('log_max_mb', value);
+            }}
+            min={1}
+            max={1000}
+            step={5}
+          />
+          <NumberInput
+            label="Log Files Retained"
+            description="How many rotated log files to keep before the oldest is deleted."
+            id="log_keep"
+            value={form.values['log_keep'] || 5}
+            onChange={(value) => {
+              form.setFieldValue('log_keep', value);
+            }}
+            min={1}
+            max={50}
+            step={1}
+          />
+        </>
+      )}
       <Select
         searchable
         clearable

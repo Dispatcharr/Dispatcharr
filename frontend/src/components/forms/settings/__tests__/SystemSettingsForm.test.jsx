@@ -240,6 +240,14 @@ describe('SystemSettingsForm', () => {
       expect(screen.getByTestId('log_persist')).toBeInTheDocument();
     });
 
+    it('hides the log file fields in modular mode', () => {
+      setupMocks({ environment: makeEnvironment({ env_mode: 'modular' }) });
+      render(<SystemSettingsForm active={true} />);
+      expect(screen.queryByTestId('log_persist')).not.toBeInTheDocument();
+      expect(screen.queryByText('Maximum Log File Size (MB)')).not.toBeInTheDocument();
+      expect(screen.queryByText('Log Files Retained')).not.toBeInTheDocument();
+    });
+
     it('does not show success alert on initial render', () => {
       setupMocks();
       render(<SystemSettingsForm active={true} />);
