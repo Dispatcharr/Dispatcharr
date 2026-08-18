@@ -7,7 +7,9 @@ process ever performs log file I/O. The reader owns stdin from the first
 instant and touches only stdout, so a dead /data can never back-pressure the
 producers; bounded memory with drop-oldest and an explicit dropped-lines
 marker absorbs disk stalls (markers are file-only: the forwarded stream never
-dropped anything). Owns rotation and pruning. Django-free; configured via
+dropped anything). Every line is rewritten into the canonical
+"stamp [offset] LEVEL source rest" grammar and gated by the configured minimum
+level. Owns rotation and pruning. Django-free; configured via
 <logdir>/collector.conf and SIGHUP through apply_settings().
 """
 
@@ -39,10 +41,44 @@ _DEFAULT_CONF = {
     "keep": 5,
     "filters": "",
     "time_zone": "UTC",
+    "level": "",
 }
 
-# One stamp convention for every source; strict match or pass through.
+# One canonical shape for every source: "stamp [offset] LEVEL source rest".
 _CANON = re.compile(rb"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3} [+-]\d{4} ")
+_TOKENS = re.compile(rb"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3}(?: [+-]\d{4})? (\S+) ")
+_LEVEL_RANK = {
+    b"TRACE": 5,
+    b"DEBUG": 10,
+    b"INFO": 20,
+    b"WARNING": 30,
+    b"ERROR": 40,
+    b"CRITICAL": 50,
+}
+_REDIS_LEVELS = {b".": b"DEBUG", b"-": b"DEBUG", b"*": b"INFO", b"#": b"WARNING"}
+# Postgres repeats its prefix on DETAIL/HINT/STATEMENT, so those arrive as
+# stamped lines that belong to the severity above them.
+_PG_SEVERITY = re.compile(rb"^([A-Z]+)\d*:")
+_PG_LEVELS = {
+    b"DEBUG": b"DEBUG",
+    b"LOG": b"INFO",
+    b"INFO": b"INFO",
+    b"NOTICE": b"INFO",
+    b"WARNING": b"WARNING",
+    b"ERROR": b"ERROR",
+    b"FATAL": b"CRITICAL",
+    b"PANIC": b"CRITICAL",
+}
+_NGX_LEVELS = {
+    b"debug": b"DEBUG",
+    b"info": b"INFO",
+    b"notice": b"INFO",
+    b"warn": b"WARNING",
+    b"error": b"ERROR",
+    b"crit": b"CRITICAL",
+    b"alert": b"CRITICAL",
+    b"emerg": b"CRITICAL",
+}
 # uwsgi's request log-format mimics the Python shape but stamps localtime.
 _PY_REQ = re.compile(
     rb"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}),(\d{3}) (\S+ uwsgi\.requests )"
@@ -61,7 +97,8 @@ _NGX_ACC = re.compile(
     rb"^((?:\d{1,3}\.){3}\d{1,3} \S+ \S+) "
     rb"\[(\d{2}/\w{3}/\d{4}:\d{2}:\d{2}:\d{2}) ([+-]\d{4})\] "
 )
-_CONTINUATION = re.compile(rb"^[ \t]|^Traceback")
+_CONTINUATION = re.compile(rb"^[ \t]")
+_TB_START = re.compile(rb"^Traceback")
 
 
 def _resolve_container_zone():
@@ -104,7 +141,7 @@ def pid_path(log_dir):
     return os.path.join(log_dir, PID_NAME)
 
 
-def write_conf(log_dir, persist, max_mb, keep, filters="", time_zone="UTC"):
+def write_conf(log_dir, persist, max_mb, keep, filters="", time_zone="UTC", level=""):
     """Write collector.conf atomically; called from the app (safe contexts only)."""
     if not log_dir:
         return
@@ -117,6 +154,7 @@ def write_conf(log_dir, persist, max_mb, keep, filters="", time_zone="UTC"):
                 f"keep={int(keep)}\n"
                 f"filters={filters}\n"
                 f"time_zone={time_zone}\n"
+                f"level={level}\n"
             )
         os.replace(tmp, conf_path(log_dir))
     except OSError:
@@ -140,6 +178,7 @@ def apply_settings(log_dir, values):
         values.get("log_keep", 5) or 5,
         values.get("log_filters", ""),
         values.get("time_zone") or "UTC",
+        values.get("log_level") or "",
     )
     signal_reload(log_dir)
 
@@ -228,6 +267,11 @@ class Collector:
         self._fs_ready = False
         self._filter_strikes = 0
         self._filters_broken = False
+        self._min_rank = 0
+        self._suppressed = False
+        self._continuation = False
+        self._in_traceback = False
+        self._pg_level = b"INFO"
         self.conf = dict(_DEFAULT_CONF)
         self.filters = []
         self._display_zone = timezone.utc
@@ -252,7 +296,11 @@ class Collector:
             # Continuation chunks of an oversize line must not be stamped.
             if not mid_line:
                 line = self._normalize(line)
+                self._gate(line)
+            suppressed = self._suppressed
             mid_line = not line.endswith(b"\n")
+            if suppressed:
+                continue
             line = self._filter(line)
             if line is None:
                 continue
@@ -273,6 +321,16 @@ class Collector:
         self._stop = True
         self._wake.set()
 
+    def _gate(self, line):
+        # Records below the level floor drop from both sinks, their
+        # continuations with them; unknown levels always pass.
+        m = _TOKENS.match(line)
+        if m is not None:
+            rank = _LEVEL_RANK.get(m.group(1))
+            self._suppressed = rank is not None and rank < self._min_rank
+        elif not self._continuation:
+            self._suppressed = False
+
     def _render(self, dt):
         dt = dt.astimezone(self._display_zone)
         base = f"{dt.strftime('%Y-%m-%d %H:%M:%S')},{dt.microsecond // 1000:03d}"
@@ -289,10 +347,30 @@ class Collector:
         return dt.replace(microsecond=ms * 1000, tzinfo=zone)
 
     def _normalize(self, raw):
-        """Rewrite every source's stamp into the one display-zone convention.
+        """Classify *raw* as a record or a continuation and canonicalise records."""
+        out = self._restamp(raw)
+        if out is not None:
+            self._continuation = False
+            self._in_traceback = False
+            return out
+        if _TB_START.match(raw):
+            self._continuation = True
+            self._in_traceback = True
+            return raw
+        # A traceback's tail sits at column 0 (exception line, chained-exception
+        # separator, blank line), so an open traceback claims it.
+        if self._in_traceback or _CONTINUATION.match(raw):
+            self._continuation = True
+            return raw
+        self._continuation = False
+        return f"{self._now_stamp()} INFO stdout ".encode() + raw
+
+    def _restamp(self, raw):
+        """Rewrite a known source into "stamp [offset] LEVEL source rest", else None.
 
         Strict match or pass through: an unrecognised line is never altered,
-        so a parse surprise cannot garble the stream.
+        so a parse surprise cannot garble the stream. Native severity text
+        stays verbatim in the body; only the stamp and tokens are synthetic.
         """
         try:
             if _CANON.match(raw):
@@ -300,7 +378,7 @@ class Collector:
             m = _UWSGI.match(raw)
             if m:
                 dt = self._parse_naive(m.group(1), int(m.group(2)), self._container_zone)
-                return f"{self._render(dt)} - ".encode() + raw[m.end() :]
+                return f"{self._render(dt)} INFO uwsgi ".encode() + raw[m.end() :]
             m = _PY_REQ.match(raw)
             if m:
                 dt = self._parse_naive(m.group(1), int(m.group(2)), self._container_zone)
@@ -312,14 +390,21 @@ class Collector:
             m = _SHELL.match(raw)
             if m:
                 dt = self._parse_naive(m.group(1), 0, self._pid1_zone)
-                return f"{self._render(dt)} - ".encode() + raw[m.end() :]
+                return f"{self._render(dt)} INFO entrypoint ".encode() + raw[m.end() :]
             m = _REDIS.match(raw)
             if m:
                 dt = self._parse_naive(
                     m.group(2), int(m.group(3)), self._container_zone, "%d %b %Y %H:%M:%S"
                 )
+                rest = raw[m.end() :]
+                level = _REDIS_LEVELS.get(rest[:1], b"INFO")
                 return (
-                    f"{self._render(dt)} ".encode() + m.group(1) + b" " + raw[m.end() :]
+                    f"{self._render(dt)} ".encode()
+                    + level
+                    + b" redis "
+                    + m.group(1)
+                    + b" "
+                    + rest
                 )
             m = _PG.match(raw)
             if m:
@@ -329,14 +414,30 @@ class Collector:
                     else self._container_zone
                 )
                 dt = self._parse_naive(m.group(1), int(m.group(2)), zone)
+                rest = raw[m.end() :]
+                sev = _PG_SEVERITY.match(rest)
+                level = _PG_LEVELS.get(sev.group(1) if sev else b"")
+                if level is None:
+                    level = self._pg_level
+                else:
+                    self._pg_level = level
                 return (
-                    f"{self._render(dt)} ".encode() + m.group(4) + raw[m.end() :]
+                    f"{self._render(dt)} ".encode()
+                    + level
+                    + b" postgres "
+                    + m.group(4)
+                    + rest
                 )
             m = _NGX_ERR.match(raw)
             if m:
                 dt = self._parse_naive(m.group(1), 0, self._pid1_zone, "%Y/%m/%d %H:%M:%S")
+                level = _NGX_LEVELS.get(m.group(2)[1:-2], b"INFO")
                 return (
-                    f"{self._render(dt)} ".encode() + m.group(2) + raw[m.end() :]
+                    f"{self._render(dt)} ".encode()
+                    + level
+                    + b" nginx.error "
+                    + m.group(2)
+                    + raw[m.end() :]
                 )
             m = _NGX_ACC.match(raw)
             if m:
@@ -345,12 +446,14 @@ class Collector:
                     "%d/%b/%Y:%H:%M:%S %z",
                 )
                 return (
-                    f"{self._render(dt)} ".encode() + m.group(1) + b" " + raw[m.end() :]
+                    f"{self._render(dt)} INFO nginx.access ".encode()
+                    + m.group(1)
+                    + b" "
+                    + raw[m.end() :]
                 )
-            if _CONTINUATION.match(raw):
-                return raw
-            return f"{self._now_stamp()} ".encode() + raw
+            return None
         except Exception:
+            # A parse surprise leaves the line untouched, still a record.
             return raw
 
     def _forward(self, line):
@@ -428,6 +531,9 @@ class Collector:
         self.filters = load_filters(self.conf["filters"])
         self._filter_strikes = 0
         self._filters_broken = False
+        self._min_rank = _LEVEL_RANK.get(
+            str(self.conf["level"]).strip().upper().encode(), 0
+        )
         try:
             self._display_zone = ZoneInfo(str(self.conf["time_zone"]).strip())
         except (KeyError, ValueError):

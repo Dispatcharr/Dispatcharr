@@ -31,7 +31,7 @@ class ConfTests(SimpleTestCase):
 
     def test_conf_round_trip(self):
         log_collector.write_conf(
-            self.log_dir, False, 42, 7, "a.b:c", "Pacific/Auckland"
+            self.log_dir, False, 42, 7, "a.b:c", "Pacific/Auckland", "DEBUG"
         )
         conf = log_collector.read_conf(self.log_dir)
         self.assertEqual(
@@ -42,6 +42,7 @@ class ConfTests(SimpleTestCase):
                 "keep": 7,
                 "filters": "a.b:c",
                 "time_zone": "Pacific/Auckland",
+                "level": "DEBUG",
             },
         )
 
@@ -100,11 +101,12 @@ class CollectorTests(SimpleTestCase):
 
     @staticmethod
     def strip_stamps(text):
+        # Case-insensitive so uppercasing filters still strip the arrival tokens.
         return re.sub(
-            r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3}(?: [+-]\d{4})? ",
+            r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3}(?: [+-]\d{4})? (?:INFO stdout )?",
             "",
             text,
-            flags=re.M,
+            flags=re.M | re.I,
         )
 
     def test_lines_reach_the_file_in_order(self):
@@ -245,6 +247,89 @@ class CollectorTests(SimpleTestCase):
         names = sorted(self.collector._archive_indices())
         self.assertEqual(names, [1, 2])
 
+    def test_level_gate_drops_below_floor_from_both_sinks(self):
+        self.collector._min_rank = 20
+        self.feed(
+            b"2026-08-18 01:00:00,100 DEBUG core.utils noisy\n",
+            b"2026-08-18 01:00:00,200 INFO core.utils kept\n",
+        )
+        self.collector._drain()
+        for content in (self.read_log(), self.read_forward()):
+            self.assertNotIn("noisy", content)
+            self.assertIn("kept", content)
+
+    def test_level_gate_suppresses_continuations_with_their_record(self):
+        self.collector._min_rank = 20
+        self.feed(
+            b"2026-08-18 01:00:00,100 DEBUG core.utils noisy\n",
+            b"  noisy detail\n",
+            b"2026-08-18 01:00:00,200 ERROR core.utils boom\n",
+            b"  boom detail\n",
+        )
+        self.collector._drain()
+        content = self.read_log()
+        self.assertNotIn("noisy", content)
+        self.assertIn("boom\n", content)
+        self.assertIn("  boom detail\n", content)
+
+    def test_level_gate_keeps_whole_traceback_with_its_record(self):
+        # The tail lines sit at column 0, so only an open traceback keeps them
+        # attached to the ERROR they belong to.
+        self.collector._min_rank = 40
+        self.feed(
+            b"2026-08-18 01:00:00,100 ERROR apps.channels refresh failed\n",
+            b"Traceback (most recent call last):\n",
+            b'  File "/app/x.py", line 1, in run\n',
+            b"ValueError: bad m3u\n",
+            b"\n",
+            b"During handling of the above exception, another exception occurred:\n",
+            b"Traceback (most recent call last):\n",
+            b"RuntimeError: boom\n",
+        )
+        self.collector._drain()
+        for content in (self.read_log(), self.read_forward()):
+            self.assertIn("ValueError: bad m3u", content)
+            self.assertIn("During handling of the above exception", content)
+            self.assertIn("RuntimeError: boom", content)
+
+    def test_level_gate_releases_after_a_traceback_ends(self):
+        # The stdout line lands after a suppressed record: it is judged on its
+        # own INFO token, not left inheriting the traceback's record.
+        self.collector._min_rank = 20
+        self.feed(
+            b"2026-08-18 01:00:00,100 ERROR apps.channels refresh failed\n",
+            b"Traceback (most recent call last):\n",
+            b"ValueError: bad m3u\n",
+            b"2026-08-18 01:00:00,200 DEBUG core.utils quiet\n",
+            b"plain stdout line\n",
+        )
+        self.collector._drain()
+        content = self.read_log()
+        self.assertNotIn("quiet", content)
+        self.assertIn("plain stdout line", content)
+
+    def test_level_gate_passes_records_normalize_left_untouched(self):
+        # A known shape with an unparseable date passes through unstamped; it
+        # is still a record, not the previous record's continuation.
+        self.collector._min_rank = 20
+        self.feed(
+            b"2026-08-18 01:00:00,100 DEBUG core.utils quiet\n",
+            b"345:M 18 Xyz 2026 01:00:07.211 # Memory overcommit must be enabled\n",
+        )
+        self.collector._drain()
+        self.assertIn("Memory overcommit", self.read_log())
+
+    def test_level_gate_passes_unknown_levels(self):
+        self.collector._min_rank = 50
+        self.feed(b"2026-08-18 01:00:00,100 NOTE core.utils odd but kept\n")
+        self.collector._drain()
+        self.assertIn("odd but kept", self.read_log())
+
+    def test_level_floor_comes_from_conf(self):
+        log_collector.write_conf(self.log_dir, True, 10, 5, level="ERROR")
+        self.collector._apply_conf()
+        self.assertEqual(self.collector._min_rank, 40)
+
     def test_marker_defers_while_tail_open(self):
         # A dropped-lines marker must never splice into an unterminated line.
         self.collector._tail_open = True
@@ -280,32 +365,93 @@ class NormalizationTests(SimpleTestCase):
         out = self.norm(b"2026-08-18 01:00:00,500 INFO core.utils msg\n")
         self.assertEqual(out, "2026-08-18 13:00:00,500 +1200 INFO core.utils msg\n")
 
-    def test_uwsgi_dash_stamp_uses_container_zone(self):
+    def test_uwsgi_dash_stamp_gets_info_uwsgi_tokens(self):
         out = self.norm(b"2026-08-18 01:00:06,000 - *** Starting uWSGI ***\n")
-        self.assertEqual(out, "2026-08-18 13:00:06,000 +1200 - *** Starting uWSGI ***\n")
+        self.assertEqual(
+            out, "2026-08-18 13:00:06,000 +1200 INFO uwsgi *** Starting uWSGI ***\n"
+        )
 
-    def test_shell_stamp_without_millis(self):
+    def test_shell_stamp_gets_entrypoint_tokens(self):
         out = self.norm(b"2026-08-18 01:00:06 - Starting init process...\n")
-        self.assertEqual(out, "2026-08-18 13:00:06,000 +1200 - Starting init process...\n")
+        self.assertEqual(
+            out, "2026-08-18 13:00:06,000 +1200 INFO entrypoint Starting init process...\n"
+        )
 
     def test_redis_stamp_rewritten_and_pid_role_kept(self):
         out = self.norm(b"345:M 18 Aug 2026 01:00:07.211 * Ready to accept\n")
-        self.assertEqual(out, "2026-08-18 13:00:07,211 +1200 345:M * Ready to accept\n")
+        self.assertEqual(
+            out, "2026-08-18 13:00:07,211 +1200 INFO redis 345:M * Ready to accept\n"
+        )
+
+    def test_redis_warning_sigil_maps_to_warning(self):
+        out = self.norm(b"345:M 18 Aug 2026 01:00:07.211 # Memory overcommit off\n")
+        self.assertEqual(
+            out,
+            "2026-08-18 13:00:07,211 +1200 WARNING redis 345:M # Memory overcommit off\n",
+        )
 
     def test_postgres_stamp_rewritten(self):
         out = self.norm(b"2026-08-18 01:00:00.359 UTC [214] LOG:  starting\n")
-        self.assertEqual(out, "2026-08-18 13:00:00,359 +1200 [214] LOG:  starting\n")
+        self.assertEqual(
+            out, "2026-08-18 13:00:00,359 +1200 INFO postgres [214] LOG:  starting\n"
+        )
+
+    def test_postgres_severities_map_to_python_levels(self):
+        for native, level in ((b"FATAL", "CRITICAL"), (b"ERROR", "ERROR"), (b"DEBUG2", "DEBUG")):
+            out = self.norm(
+                b"2026-08-18 01:00:00.359 UTC [214] " + native + b":  boom\n"
+            )
+            self.assertEqual(
+                out,
+                f"2026-08-18 13:00:00,359 +1200 {level} postgres [214] "
+                + native.decode()
+                + ":  boom\n",
+            )
+
+    def test_postgres_trailers_inherit_their_record_severity(self):
+        # Postgres repeats its prefix on DETAIL/STATEMENT, so they arrive as
+        # stamped lines that must keep the severity above them.
+        self.norm(b"2026-08-18 01:00:00.359 UTC [214] ERROR:  duplicate key\n")
+        for trailer in (b"DETAIL:  Key (id)=(1) exists.", b"STATEMENT:  INSERT INTO t"):
+            out = self.norm(b"2026-08-18 01:00:00.359 UTC [214] " + trailer + b"\n")
+            self.assertEqual(
+                out,
+                "2026-08-18 13:00:00,359 +1200 ERROR postgres [214] "
+                + trailer.decode()
+                + "\n",
+            )
+
+    def test_python_traceback_tail_is_not_stamped(self):
+        self.collector._normalize(b"2026-08-18 01:00:00,100 ERROR apps.x boom\n")
+        self.collector._normalize(b"Traceback (most recent call last):\n")
+        for line in (b"ValueError: bad m3u\n", b"\n", b"During handling\n"):
+            self.assertEqual(self.collector._normalize(line), line)
 
     def test_nginx_error_stamp_rewritten(self):
         out = self.norm(b"2026/08/18 01:00:00 [notice] 1#1: start worker\n")
-        self.assertEqual(out, "2026-08-18 13:00:00,000 +1200 [notice] 1#1: start worker\n")
+        self.assertEqual(
+            out, "2026-08-18 13:00:00,000 +1200 INFO nginx.error [notice] 1#1: start worker\n"
+        )
+
+    def test_nginx_error_levels_map_to_python_levels(self):
+        for native, level in ((b"error", "ERROR"), (b"emerg", "CRITICAL")):
+            out = self.norm(
+                b"2026/08/18 01:00:00 [" + native + b"] 1#1: broken\n"
+            )
+            self.assertEqual(
+                out,
+                f"2026-08-18 13:00:00,000 +1200 {level} nginx.error ["
+                + native.decode()
+                + "] 1#1: broken\n",
+            )
 
     def test_nginx_access_uses_its_own_offset(self):
         out = self.norm(
             b'192.0.2.7 - admin [18/Aug/2026:03:00:00 +0200] "GET / HTTP/1.1" 200\n'
         )
         self.assertEqual(
-            out, '2026-08-18 13:00:00,000 +1200 192.0.2.7 - admin "GET / HTTP/1.1" 200\n'
+            out,
+            '2026-08-18 13:00:00,000 +1200 INFO nginx.access 192.0.2.7 - admin "GET / HTTP/1.1" 200\n',
         )
 
     def test_uwsgi_request_shape_uses_container_zone(self):
@@ -322,17 +468,19 @@ class NormalizationTests(SimpleTestCase):
     def test_postgres_utc_token_is_honoured_over_container_zone(self):
         self.collector._container_zone = ZoneInfo("Pacific/Auckland")
         out = self.norm(b"2026-08-18 01:00:00.359 UTC [214] LOG:  starting\n")
-        self.assertEqual(out, "2026-08-18 13:00:00,359 +1200 [214] LOG:  starting\n")
+        self.assertEqual(
+            out, "2026-08-18 13:00:00,359 +1200 INFO postgres [214] LOG:  starting\n"
+        )
 
     def test_continuation_lines_pass_through(self):
         for line in (b"  File \"x.py\", line 1\n", b"\tDETAIL: boom\n", b"Traceback (most recent call last):\n"):
             self.assertEqual(self.collector._normalize(line), line)
 
-    def test_unstamped_line_gets_arrival_stamp(self):
+    def test_unstamped_line_gets_arrival_stamp_and_stdout_tokens(self):
         out = self.norm(b"spawned uWSGI worker 1 (pid: 74)\n")
         self.assertRegex(
             out,
-            r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3} \+1[23]00 spawned uWSGI worker 1 \(pid: 74\)\n$",
+            r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3} \+1[23]00 INFO stdout spawned uWSGI worker 1 \(pid: 74\)\n$",
         )
 
     def test_unparseable_date_in_known_shape_passes_through(self):
@@ -354,7 +502,12 @@ class ApplySettingsTests(SimpleTestCase):
         with mock.patch.object(log_collector, "signal_reload") as reload_sig:
             log_collector.apply_settings(
                 self.log_dir,
-                {"log_persist": False, "log_max_mb": 25, "log_keep": 3},
+                {
+                    "log_persist": False,
+                    "log_max_mb": 25,
+                    "log_keep": 3,
+                    "log_level": "WARNING",
+                },
             )
         reload_sig.assert_called_once_with(self.log_dir)
         conf = log_collector.read_conf(self.log_dir)
@@ -366,6 +519,7 @@ class ApplySettingsTests(SimpleTestCase):
                 "keep": 3,
                 "filters": "",
                 "time_zone": "UTC",
+                "level": "WARNING",
             },
         )
 
@@ -421,5 +575,6 @@ class ReceiverTests(TestCase):
                 "keep": 4,
                 "filters": "",
                 "time_zone": "UTC",
+                "level": "",
             },
         )

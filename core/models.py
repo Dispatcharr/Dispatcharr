@@ -729,6 +729,7 @@ class CoreSettings(models.Model):
             "log_max_mb": 10,
             "log_keep": 5,
             "log_persist": True,
+            "log_level": "",
         })
 
     @classmethod

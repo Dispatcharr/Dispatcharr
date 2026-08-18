@@ -28,39 +28,53 @@ const COLORS = {
   plugin: '#74c0fc', // blue — third-party plugin code
 };
 
-// Line colouring by log category; first match wins, and auth outranks warn since 401/403 lines log at WARNING.
+// The collector guarantees the canonical grammar "stamp [offset] LEVEL source rest"; every rule keys off those tokens.
+const RECORD_TOKENS =
+  /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3}(?: [+-]\d{4})? (\S+) (\S+) ?(.*)$/;
+
+const LEVEL_RANK = {
+  TRACE: 5,
+  DEBUG: 10,
+  INFO: 20,
+  WARNING: 30,
+  ERROR: 40,
+  CRITICAL: 50,
+};
+
+const parseRecord = (line) => {
+  const m = RECORD_TOKENS.exec(line);
+  return m ? { level: m[1], source: m[2], message: m[3] } : null;
+};
+
+// Record colouring by token; first match wins, and auth outranks warn since 401/403 lines log at WARNING.
 const LINE_RULES = [
   {
     label: 'error',
     color: COLORS.error,
-    // Anchor the level keywords to the level field so a message body mentioning "ERROR" (e.g. "state to ERROR in Redis") doesn't redden an INFO line; Traceback/Exception stay content-matched for stack dumps.
-    test: (line) =>
-      /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}[.,]\d+(?: [+-]\d{4})?\s+(?:\[\d+\] )?(ERROR|CRITICAL|FATAL)\b|Traceback|Exception/.test(
-        line
-      ),
+    test: (r) => r.level === 'ERROR' || r.level === 'CRITICAL',
   },
   {
     label: 'login/auth',
     color: COLORS.auth,
-    // Real auth events only: apps.accounts / jwt_ws_auth loggers or django.request 401/403 — but not the routine token-refresh/notification 401 polling, which is benign warn noise.
-    test: (line) =>
-      /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}[.,]\d+(?: [+-]\d{4})?\s+\w+\s+(apps\.accounts\.|dispatcharr\.jwt_ws_auth\b|django\.request\s+(Unauthorized|Forbidden)\b(?!:\s*\/api\/(?:accounts\/token\/refresh|core\/notifications)))/.test(
-        line
-      ),
+    // Real auth events only: apps.accounts / jwt_ws_auth sources or django.request 401/403 — but not the routine token-refresh/notification 401 polling, which is benign warn noise.
+    test: (r) =>
+      r.source.startsWith('apps.accounts.') ||
+      r.source === 'dispatcharr.jwt_ws_auth' ||
+      (r.source === 'django.request' &&
+        /^(Unauthorized|Forbidden)\b(?!:\s*\/api\/(?:accounts\/token\/refresh|core\/notifications))/.test(
+          r.message
+        )),
   },
   {
     label: 'warn',
     color: COLORS.warn,
-    test: (line) => /\bWARN(ING)?\b/.test(line),
+    test: (r) => r.level === 'WARNING',
   },
   {
     label: 'plugin',
     color: COLORS.plugin,
-    // Match the plugins.<key> logger-name field, not the word "plugin" — apps.plugins.* infrastructure stays default.
-    test: (line) =>
-      /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}[.,]\d+(?: [+-]\d{4})?\s+\w+\s+plugins\./.test(
-        line
-      ),
+    // The plugins.<key> source only — apps.plugins.* infrastructure stays default.
+    test: (r) => r.source.startsWith('plugins.'),
   },
 ];
 
@@ -73,12 +87,9 @@ const LEGEND = [
   { label: 'plugin', color: COLORS.plugin },
 ];
 
-// A record starts with a stamped line or a known foreign-format line
-// (redis pid:role, nginx access, uwsgi announce/request, entrypoint
-// echoes); anything else is a continuation (multi-line messages, traceback
-// frames) and inherits the record's colour.
-const RECORD_START =
-  /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}|^\d+:[MCSX] |^(?:\d{1,3}\.){3}\d{1,3} - |^\*{3} |^\[pid: |^(?:spawned|mapped|Python|WSGI|uWSGI|\p{Emoji_Presentation})/u;
+// A record starts with a canonical stamp; anything else is a continuation
+// (multi-line messages, traceback frames) and inherits the record's colour.
+const RECORD_START = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3}(?: [+-]\d{4})? /;
 
 // Cap on rendered lines: a mixed-severity tail can defeat the run-length grouping (one span per line), so bound the DOM for low-end TV browsers.
 const MAX_RENDER_LINES = 5000;
@@ -90,6 +101,31 @@ const REFRESH_OPTIONS = [
   { value: '30', label: '30s' },
   { value: '60', label: '1m' },
 ];
+
+const LEVEL_OPTIONS = [
+  { value: '0', label: 'All levels' },
+  { value: '10', label: 'Debug +' },
+  { value: '20', label: 'Info +' },
+  { value: '30', label: 'Warning +' },
+  { value: '40', label: 'Error +' },
+];
+
+// Records below the floor hide with their continuations; unknown levels and unstamped shapes always show.
+const filterByLevel = (lines, minRank) => {
+  const out = [];
+  let suppress = false;
+  for (const line of lines) {
+    const record = parseRecord(line);
+    if (record) {
+      const rank = LEVEL_RANK[record.level];
+      suppress = rank !== undefined && rank < minRank;
+    } else if (RECORD_START.test(line)) {
+      suppress = false;
+    }
+    if (!suppress) out.push(line);
+  }
+  return out;
+};
 
 // Newest first flips whole records, so a multi-line record keeps its own line order.
 const reverseRecords = (lines) => {
@@ -112,16 +148,16 @@ const colorizeLines = (lines) => {
   let seenRecord = false;
   for (const line of lines) {
     let color;
-    if (RECORD_START.test(line)) {
-      const rule = LINE_RULES.find((r) => r.test(line));
+    const record = parseRecord(line);
+    if (record) {
+      const rule = LINE_RULES.find((r) => r.test(record));
       color = rule ? rule.color : null;
       recordColor = color;
       seenRecord = true;
     } else if (seenRecord) {
       color = recordColor;
     } else {
-      const rule = LINE_RULES.find((r) => r.test(line));
-      color = rule ? rule.color : null;
+      color = null;
     }
     if (current && current.color === color) {
       current.text += `\n${line}`;
@@ -153,6 +189,16 @@ const LogFileViewPage = () => {
     'log-viewer-newest-first',
     true
   );
+  const [minLevelSetting, setMinLevelSetting] = useBrowserStorage(
+    'log-viewer-min-level',
+    0
+  );
+  // A stored value outside the options falls back to All rather than an empty select.
+  const minLevel = LEVEL_OPTIONS.some(
+    (option) => option.value === String(minLevelSetting)
+  )
+    ? Number(minLevelSetting)
+    : 0;
   const [loadError, setLoadError] = useState(false);
 
   // Guards the auto-refresh loop: skip a tick mid-flight, and count failures so a persistently-failing tail switches itself off.
@@ -161,14 +207,15 @@ const LogFileViewPage = () => {
 
   // Render only the last MAX_RENDER_LINES; hiddenLines drives the "showing the last N lines" notice.
   const { chunks, hiddenLines } = useMemo(() => {
-    const all = content ? content.split('\n') : [];
+    let all = content ? content.split('\n') : [];
+    if (minLevel) all = filterByLevel(all, minLevel);
     const hidden = Math.max(0, all.length - MAX_RENDER_LINES);
     const kept = hidden ? all.slice(hidden) : all;
     return {
       chunks: colorizeLines(newestFirst ? reverseRecords(kept) : kept),
       hiddenLines: hidden,
     };
-  }, [content, newestFirst]);
+  }, [content, newestFirst, minLevel]);
 
   // One notice: line-cap wins over the byte-truncation banner since it states what's actually on screen.
   const notice =
@@ -253,6 +300,15 @@ const LogFileViewPage = () => {
           )}
           <Select
             size="xs"
+            label="Level"
+            value={String(minLevel)}
+            onChange={(value) => setMinLevelSetting(parseInt(value))}
+            allowDeselect={false}
+            data={LEVEL_OPTIONS}
+            style={{ width: 110 }}
+          />
+          <Select
+            size="xs"
             label="Order"
             value={newestFirst ? 'newest' : 'oldest'}
             onChange={(value) => setNewestFirst(value === 'newest')}
@@ -328,16 +384,18 @@ const LogFileViewPage = () => {
               whiteSpace: 'pre',
             }}
           >
-            {content
-              ? chunks.map((chunk, i) => (
-                  <span
-                    key={i}
-                    style={chunk.color ? { color: chunk.color } : undefined}
-                  >
-                    {i < chunks.length - 1 ? `${chunk.text}\n` : chunk.text}
-                  </span>
-                ))
-              : '(empty)'}
+            {!content
+              ? '(empty)'
+              : chunks.length
+                ? chunks.map((chunk, i) => (
+                    <span
+                      key={i}
+                      style={chunk.color ? { color: chunk.color } : undefined}
+                    >
+                      {i < chunks.length - 1 ? `${chunk.text}\n` : chunk.text}
+                    </span>
+                  ))
+                : '(no records at this level)'}
           </pre>
         )}
       </Paper>

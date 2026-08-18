@@ -37,3 +37,14 @@ class SystemSettingsCoercionTests(TestCase):
         inst.refresh_from_db()
         self.assertEqual(inst.value["log_max_mb"], 10)  # garbage -> default
         self.assertEqual(inst.value["log_keep"], 50)  # above max -> clamped
+
+    def test_update_coerces_log_level(self):
+        inst, _ = CoreSettings.objects.get_or_create(
+            key=SYSTEM_SETTINGS_KEY, defaults={"value": {}}
+        )
+        CoreSettingsSerializer().update(inst, {"value": {"log_level": "warning"}})
+        inst.refresh_from_db()
+        self.assertEqual(inst.value["log_level"], "WARNING")  # normalized to upper
+        CoreSettingsSerializer().update(inst, {"value": {"log_level": "loudest"}})
+        inst.refresh_from_db()
+        self.assertEqual(inst.value["log_level"], "")  # unknown -> container default

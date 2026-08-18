@@ -115,6 +115,7 @@ const setupMocks = ({
     log_max_mb: 10,
     log_keep: 5,
     log_persist: true,
+    log_level: '',
     preferred_region: '',
     auto_import_mapped_files: true,
     enable_ip_lookup: true,
@@ -240,10 +241,20 @@ describe('SystemSettingsForm', () => {
       expect(screen.getByTestId('log_persist')).toBeInTheDocument();
     });
 
+    it('renders the Log Level select with all levels', () => {
+      setupMocks();
+      render(<SystemSettingsForm active={true} />);
+      expect(screen.getByTestId('log_level')).toBeInTheDocument();
+      ['Container default', 'Trace', 'Critical'].forEach((label) =>
+        expect(screen.getByText(label)).toBeInTheDocument()
+      );
+    });
+
     it('hides the log file fields in modular mode', () => {
       setupMocks({ environment: makeEnvironment({ env_mode: 'modular' }) });
       render(<SystemSettingsForm active={true} />);
       expect(screen.queryByTestId('log_persist')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('log_level')).not.toBeInTheDocument();
       expect(screen.queryByText('Maximum Log File Size (MB)')).not.toBeInTheDocument();
       expect(screen.queryByText('Log Files Retained')).not.toBeInTheDocument();
     });
@@ -328,6 +339,7 @@ describe('SystemSettingsForm', () => {
         log_max_mb: 10,
         log_keep: 5,
         log_persist: true,
+        log_level: '',
         preferred_region: '',
         auto_import_mapped_files: true,
         enable_ip_lookup: true,

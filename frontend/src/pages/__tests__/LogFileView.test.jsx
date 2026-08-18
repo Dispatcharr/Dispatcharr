@@ -461,6 +461,67 @@ describe('LogFileViewPage', () => {
     }
   });
 
+  it('filters records below the chosen level with their continuations', async () => {
+    API.getLogFile.mockResolvedValue({
+      content: [
+        '2026-07-15 10:00:00,000 DEBUG core.tasks noisy tick',
+        '    noisy continuation detail',
+        '2026-07-15 10:00:01,000 INFO core.tasks routine note',
+        '2026-07-15 10:00:02,000 ERROR apps.epg boom failure',
+        '2026-07-15 10:00:03,000 NOTE core.tasks unknown level survives',
+      ].join('\n'),
+      truncated: false,
+    });
+    renderPage();
+    await screen.findByText(/noisy tick/);
+
+    fireEvent.change(screen.getByLabelText('Level'), {
+      target: { value: '30' },
+    });
+    expect(screen.queryByText(/noisy tick/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/noisy continuation/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/routine note/)).not.toBeInTheDocument();
+    expect(screen.getByText(/boom failure/)).toBeInTheDocument();
+    // A record with an unrecognised level token is never hidden.
+    expect(screen.getByText(/unknown level survives/)).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText('Level'), {
+      target: { value: '0' },
+    });
+    expect(screen.getByText(/noisy tick/)).toBeInTheDocument();
+  });
+
+  it('keeps a whole traceback when filtering, and reports an empty result', async () => {
+    API.getLogFile.mockResolvedValue({
+      content: [
+        '2026-07-15 10:00:00,000 ERROR apps.epg refresh failed',
+        'Traceback (most recent call last):',
+        '  File "/app/x.py", line 1, in run',
+        'ValueError: bad m3u',
+        '2026-07-15 10:00:01,000 DEBUG core.tasks quiet',
+      ].join('\n'),
+      truncated: false,
+    });
+    renderPage();
+    await screen.findByText(/refresh failed/);
+
+    fireEvent.change(screen.getByLabelText('Level'), {
+      target: { value: '40' },
+    });
+    // The tail line is unstamped, so it stays with the ERROR it belongs to.
+    expect(screen.getByText(/ValueError: bad m3u/)).toBeInTheDocument();
+    expect(screen.queryByText(/quiet/)).not.toBeInTheDocument();
+
+    API.getLogFile.mockResolvedValue({
+      content: '2026-07-15 10:00:01,000 DEBUG core.tasks quiet\n',
+      truncated: false,
+    });
+    fireEvent.click(screen.getByText('Refresh'));
+    await waitFor(() => {
+      expect(screen.getByText('(no records at this level)')).toBeInTheDocument();
+    });
+  });
+
   it('keeps a multi-line record intact when reversed', async () => {
     API.getLogFile.mockResolvedValue({
       content: [
