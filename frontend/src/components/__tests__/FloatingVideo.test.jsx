@@ -419,6 +419,134 @@ describe('FloatingVideo', () => {
     });
   });
 
+  describe('Live stream stale-player-instance guards', () => {
+    beforeEach(() => {
+      useVideoStore.mockImplementation((selector) => {
+        const state = {
+          isVisible: true,
+          streamUrl: 'http://example.com/stream.ts',
+          contentType: 'live',
+          metadata: null,
+          hideVideo: mockHideVideo,
+        };
+        return selector ? selector(state) : state;
+      });
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    // Every other test in this file reuses one shared mockPlayer instance
+    // across destroy+recreate cycles, so `playerRef.current !== player`
+    // (the guard under test here) can never actually be true there -- it's
+    // trivially the same object. These tests give each createPlayer() call
+    // its own distinct instance instead, so a "stale" callback captured
+    // from an earlier, since-replaced instance is meaningfully different
+    // from the current one, the way it is in a real browser.
+    const mockDistinctPlayerInstances = () => {
+      const instances = [];
+      mpegts.createPlayer.mockImplementation(() => {
+        const instance = {
+          attachMediaElement: vi.fn(),
+          load: vi.fn(),
+          play: vi.fn(() => Promise.resolve()),
+          pause: vi.fn(),
+          destroy: vi.fn(),
+          on: vi.fn(),
+        };
+        instances.push(instance);
+        return instance;
+      });
+      return instances;
+    };
+
+    const getCallback = (instance, eventName) =>
+      instance.on.mock.calls.find((call) => call[0] === eventName)?.[1];
+
+    it('should ignore a late NetworkError from a player already replaced by a reconnect', async () => {
+      vi.useFakeTimers();
+      const instances = mockDistinctPlayerInstances();
+      render(<FloatingVideo />);
+      expect(instances).toHaveLength(1);
+
+      // Player #1 hits a NetworkError -> schedules a reconnect (1000ms).
+      act(() => {
+        getCallback(instances[0], mpegts.Events.ERROR)(
+          'NetworkError',
+          'connection lost'
+        );
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+      });
+      expect(instances).toHaveLength(2); // reconnect created player #2
+
+      // A second NetworkError arrives late from player #1 -- already
+      // replaced by player #2 by the time this fires (mirrors a real
+      // mpegts.js worker message that was already in flight when we tore
+      // player #1 down).
+      act(() => {
+        getCallback(instances[0], mpegts.Events.ERROR)(
+          'NetworkError',
+          'connection lost'
+        );
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10000);
+      });
+
+      // Must be a no-op: no third player created, and the current player
+      // #2 must not have been torn down.
+      expect(instances).toHaveLength(2);
+      expect(instances[1].destroy).not.toHaveBeenCalled();
+    });
+
+    it('should ignore a late autoplay-prevented rejection from a replaced player', async () => {
+      vi.useFakeTimers();
+      const instances = mockDistinctPlayerInstances();
+      // Player #1's play() call resolves only after we've moved on to
+      // player #2, simulating a slow/late-settling promise.
+      let rejectFirstPlay;
+      render(<FloatingVideo />);
+      instances[0].play.mockReturnValue(
+        new Promise((_resolve, reject) => {
+          rejectFirstPlay = reject;
+        })
+      );
+
+      // Trigger player #1's MEDIA_INFO -> its play() call is now pending.
+      act(() => {
+        getCallback(instances[0], mpegts.Events.MEDIA_INFO)();
+      });
+
+      // A NetworkError replaces player #1 with player #2 (reconnect).
+      act(() => {
+        getCallback(instances[0], mpegts.Events.ERROR)(
+          'NetworkError',
+          'connection lost'
+        );
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+      });
+      expect(instances).toHaveLength(2);
+
+      // Player #1's play() promise finally rejects (autoplay-prevented),
+      // long after player #2 took over.
+      await act(async () => {
+        rejectFirstPlay(new DOMException('', 'NotAllowedError'));
+        await Promise.resolve().catch(() => {});
+      });
+
+      // Must not show the stale "Auto-play was prevented" message, since
+      // it refers to a player instance that is no longer active.
+      expect(
+        screen.queryByText(/Auto-play was prevented/i)
+      ).not.toBeInTheDocument();
+    });
+  });
+
   describe('VOD Player', () => {
     beforeEach(() => {
       useVideoStore.mockImplementation((selector) => {

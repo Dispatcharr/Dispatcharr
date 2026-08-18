@@ -516,17 +516,24 @@ export default function FloatingVideo() {
       if (typeof savedMuted === 'boolean') videoRef.current.muted = savedMuted;
 
       player.on(mpegts.Events.LOADING_COMPLETE, () => {
+        // mpegts.js can emit events asynchronously from a player instance
+        // that has since been destroyed and replaced (e.g. by our own
+        // reconnect below) -- ignore anything from a stale, no-longer-active
+        // player rather than let it mutate shared state.
+        if (playerRef.current !== player) return;
         setIsLoading(false);
         // Data is flowing again -- give future errors a fresh retry budget.
         reconnectAttemptsRef.current = 0;
       });
 
       player.on(mpegts.Events.METADATA_ARRIVED, () => {
+        if (playerRef.current !== player) return;
         setIsLoading(false);
         reconnectAttemptsRef.current = 0;
       });
 
       player.on(mpegts.Events.ERROR, (errorType, errorDetail) => {
+        if (playerRef.current !== player) return;
         setIsLoading(false);
 
         if (errorType === 'NetworkError' && errorDetail?.includes('aborted')) {
@@ -570,9 +577,15 @@ export default function FloatingVideo() {
       player.load();
 
       player.on(mpegts.Events.MEDIA_INFO, () => {
+        if (playerRef.current !== player) return;
         setIsLoading(false);
         try {
           player.play().catch((e) => {
+            // This player may have already been replaced by the time the
+            // play() promise settles (e.g. a reconnect fired in the
+            // meantime) -- a rejection from a now-stale player must not
+            // stomp the current, possibly-successful player's state.
+            if (playerRef.current !== player) return;
             console.log('Auto-play prevented:', e);
             setLoadError('Auto-play was prevented. Click play to start.');
           });
