@@ -35,7 +35,7 @@ const LINE_RULES = [
     color: COLORS.error,
     // Anchor the level keywords to the level field so a message body mentioning "ERROR" (e.g. "state to ERROR in Redis") doesn't redden an INFO line; Traceback/Exception stay content-matched for stack dumps.
     test: (line) =>
-      /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}[.,]\d+(?: [+-]\d{4})?\s+(ERROR|CRITICAL|FATAL)\b|Traceback|Exception/.test(
+      /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}[.,]\d+(?: [+-]\d{4})?\s+(?:\[\d+\] )?(ERROR|CRITICAL|FATAL)\b|Traceback|Exception/.test(
         line
       ),
   },

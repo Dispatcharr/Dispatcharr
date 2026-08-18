@@ -2,9 +2,12 @@
 
 import io
 import os
+import re
 import shutil
 import tempfile
+from datetime import timezone
 from unittest import mock
+from zoneinfo import ZoneInfo
 
 from django.test import SimpleTestCase, TestCase, override_settings
 
@@ -27,10 +30,19 @@ class ConfTests(SimpleTestCase):
         self.addCleanup(shutil.rmtree, self.log_dir, ignore_errors=True)
 
     def test_conf_round_trip(self):
-        log_collector.write_conf(self.log_dir, False, 42, 7, "a.b:c")
+        log_collector.write_conf(
+            self.log_dir, False, 42, 7, "a.b:c", "Pacific/Auckland"
+        )
         conf = log_collector.read_conf(self.log_dir)
         self.assertEqual(
-            conf, {"persist": False, "max_mb": 42, "keep": 7, "filters": "a.b:c"}
+            conf,
+            {
+                "persist": False,
+                "max_mb": 42,
+                "keep": 7,
+                "filters": "a.b:c",
+                "time_zone": "Pacific/Auckland",
+            },
         )
 
     def test_conf_clamps_garbage(self):
@@ -86,10 +98,19 @@ class CollectorTests(SimpleTestCase):
         except FileNotFoundError:
             return ""
 
+    @staticmethod
+    def strip_stamps(text):
+        return re.sub(
+            r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3}(?: [+-]\d{4})? ",
+            "",
+            text,
+            flags=re.M,
+        )
+
     def test_lines_reach_the_file_in_order(self):
         self.feed(b"one\n", b"two\n")
         self.collector._drain()
-        self.assertEqual(self.read_log(), "one\ntwo\n")
+        self.assertEqual(self.strip_stamps(self.read_log()), "one\ntwo\n")
 
     def test_drop_oldest_past_budget_writes_exact_marker(self):
         with mock.patch.object(log_collector, "_BUFFER_BYTES", 8):
@@ -124,13 +145,13 @@ class CollectorTests(SimpleTestCase):
         self.collector.filters = [_drop_secret_filter, _upper_filter]
         self.feed(b"keep me\n", b"a secret line\n")
         self.collector._drain()
-        self.assertEqual(self.read_log(), "KEEP ME\n")
+        self.assertEqual(self.strip_stamps(self.read_log()), "KEEP ME\n")
 
     def test_broken_filter_passes_line_through(self):
         self.collector.filters = [lambda line: 1 / 0]
         self.feed(b"survives\n")
         self.collector._drain()
-        self.assertEqual(self.read_log(), "survives\n")
+        self.assertEqual(self.strip_stamps(self.read_log()), "survives\n")
 
     def test_rotation_at_cap_shifts_and_prunes(self):
         self.collector.conf.update({"max_mb": 1, "keep": 2})
@@ -161,7 +182,7 @@ class CollectorTests(SimpleTestCase):
         os.remove(self.collector.live_path)
         self.feed(b"after\n")
         self.collector._drain()
-        self.assertEqual(self.read_log(), "after\n")
+        self.assertEqual(self.strip_stamps(self.read_log()), "after\n")
 
     def test_reader_eof_requests_stop(self):
         self.collector.reader(io.BytesIO(b"line\n"))
@@ -170,9 +191,9 @@ class CollectorTests(SimpleTestCase):
     def test_forwarded_stream_gets_filtered_lines(self):
         self.collector.filters = [_upper_filter]
         self.feed(b"masked?\n")
-        self.assertEqual(self.read_forward(), "MASKED?\n")
+        self.assertEqual(self.strip_stamps(self.read_forward()), "MASKED?\n")
         self.collector._drain()
-        self.assertEqual(self.read_log(), "MASKED?\n")
+        self.assertEqual(self.strip_stamps(self.read_log()), "MASKED?\n")
 
     def test_filter_none_drops_from_both_sinks(self):
         self.collector.filters = [_drop_secret_filter]
@@ -185,7 +206,7 @@ class CollectorTests(SimpleTestCase):
         self.collector.conf["persist"] = False
         self.feed(b"stdout only\n")
         self.collector._drain()
-        self.assertEqual(self.read_forward(), "stdout only\n")
+        self.assertEqual(self.strip_stamps(self.read_forward()), "stdout only\n")
         self.assertEqual(self.read_log(), "")
 
     def test_slow_filter_latches_off(self):
@@ -196,6 +217,14 @@ class CollectorTests(SimpleTestCase):
         self.assertTrue(self.read_forward().endswith("four\n"))
         self.collector._drain()
         self.assertIn("filters disabled", self.read_log())
+
+    def test_oversize_line_chunks_are_not_stamped_mid_line(self):
+        big = b"x" * (log_collector._MAX_LINE_BYTES + 100)
+        self.feed(big + b"\n")
+        forward = self.read_forward()
+        # One stamp at the front, none spliced at the chunk boundary.
+        self.assertEqual(len(re.findall(r"\d{4}-\d{2}-\d{2} ", forward)), 1)
+        self.assertIn("x" * 200, forward)
 
     def test_dropped_marker_is_file_only(self):
         with mock.patch.object(log_collector, "_BUFFER_BYTES", 8):
@@ -222,13 +251,98 @@ class CollectorTests(SimpleTestCase):
         with mock.patch.object(log_collector, "_BUFFER_BYTES", 8):
             self.feed(b"aaaa\n", b"bbbb\n", b"cccc")
         self.collector._drain()
-        self.assertEqual(self.read_log(), "cccc")
+        self.assertEqual(self.strip_stamps(self.read_log()), "cccc")
         self.assertEqual(self.collector._dropped, 2)
         self.feed(b" end\n")
         self.collector._drain()
         content = self.read_log()
         self.assertIn("cccc end\n", content)
         self.assertIn("2 log lines dropped", content)
+
+
+class NormalizationTests(SimpleTestCase):
+    def setUp(self):
+        self.log_dir = tempfile.mkdtemp(prefix="dispatcharr-collector-")
+        self.addCleanup(shutil.rmtree, self.log_dir, ignore_errors=True)
+        self.collector = Collector(self.log_dir)
+        self.collector._display_zone = ZoneInfo("Pacific/Auckland")
+        self.collector._container_zone = timezone.utc
+        self.collector._pid1_zone = timezone.utc
+
+    def norm(self, raw):
+        return self.collector._normalize(raw).decode()
+
+    def test_canonical_line_passes_through(self):
+        line = b"2026-08-18 13:00:00,500 +1200 INFO core.utils msg\n"
+        self.assertEqual(self.collector._normalize(line), line)
+
+    def test_python_utc_stamp_rendered_in_display_zone(self):
+        out = self.norm(b"2026-08-18 01:00:00,500 INFO core.utils msg\n")
+        self.assertEqual(out, "2026-08-18 13:00:00,500 +1200 INFO core.utils msg\n")
+
+    def test_uwsgi_dash_stamp_uses_container_zone(self):
+        out = self.norm(b"2026-08-18 01:00:06,000 - *** Starting uWSGI ***\n")
+        self.assertEqual(out, "2026-08-18 13:00:06,000 +1200 - *** Starting uWSGI ***\n")
+
+    def test_shell_stamp_without_millis(self):
+        out = self.norm(b"2026-08-18 01:00:06 - Starting init process...\n")
+        self.assertEqual(out, "2026-08-18 13:00:06,000 +1200 - Starting init process...\n")
+
+    def test_redis_stamp_rewritten_and_pid_role_kept(self):
+        out = self.norm(b"345:M 18 Aug 2026 01:00:07.211 * Ready to accept\n")
+        self.assertEqual(out, "2026-08-18 13:00:07,211 +1200 345:M * Ready to accept\n")
+
+    def test_postgres_stamp_rewritten(self):
+        out = self.norm(b"2026-08-18 01:00:00.359 UTC [214] LOG:  starting\n")
+        self.assertEqual(out, "2026-08-18 13:00:00,359 +1200 [214] LOG:  starting\n")
+
+    def test_nginx_error_stamp_rewritten(self):
+        out = self.norm(b"2026/08/18 01:00:00 [notice] 1#1: start worker\n")
+        self.assertEqual(out, "2026-08-18 13:00:00,000 +1200 [notice] 1#1: start worker\n")
+
+    def test_nginx_access_uses_its_own_offset(self):
+        out = self.norm(
+            b'192.0.2.7 - admin [18/Aug/2026:03:00:00 +0200] "GET / HTTP/1.1" 200\n'
+        )
+        self.assertEqual(
+            out, '2026-08-18 13:00:00,000 +1200 192.0.2.7 - admin "GET / HTTP/1.1" 200\n'
+        )
+
+    def test_uwsgi_request_shape_uses_container_zone(self):
+        # uwsgi's log-format mimics the Python shape but stamps localtime.
+        self.collector._container_zone = ZoneInfo("Pacific/Auckland")
+        out = self.norm(
+            b"2026-08-18 13:00:00,000 DEBUG uwsgi.requests Worker ID: 3 GET 200 / 4ms\n"
+        )
+        self.assertEqual(
+            out,
+            "2026-08-18 13:00:00,000 +1200 DEBUG uwsgi.requests Worker ID: 3 GET 200 / 4ms\n",
+        )
+
+    def test_postgres_utc_token_is_honoured_over_container_zone(self):
+        self.collector._container_zone = ZoneInfo("Pacific/Auckland")
+        out = self.norm(b"2026-08-18 01:00:00.359 UTC [214] LOG:  starting\n")
+        self.assertEqual(out, "2026-08-18 13:00:00,359 +1200 [214] LOG:  starting\n")
+
+    def test_continuation_lines_pass_through(self):
+        for line in (b"  File \"x.py\", line 1\n", b"\tDETAIL: boom\n", b"Traceback (most recent call last):\n"):
+            self.assertEqual(self.collector._normalize(line), line)
+
+    def test_unstamped_line_gets_arrival_stamp(self):
+        out = self.norm(b"spawned uWSGI worker 1 (pid: 74)\n")
+        self.assertRegex(
+            out,
+            r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3} \+1[23]00 spawned uWSGI worker 1 \(pid: 74\)\n$",
+        )
+
+    def test_unparseable_date_in_known_shape_passes_through(self):
+        line = b"345:M 99 Xxx 2026 01:00:07.211 * garbled\n"
+        self.assertEqual(self.collector._normalize(line), line)
+
+    def test_display_zone_utc_renders_without_offset(self):
+        self.collector._display_zone = timezone.utc
+        out = self.norm(b"2026-08-18 01:00:00,500 INFO core.utils msg\n")
+        self.assertEqual(out, "2026-08-18 01:00:00,500 INFO core.utils msg\n")
 
 
 class ApplySettingsTests(SimpleTestCase):
@@ -245,7 +359,14 @@ class ApplySettingsTests(SimpleTestCase):
         reload_sig.assert_called_once_with(self.log_dir)
         conf = log_collector.read_conf(self.log_dir)
         self.assertEqual(
-            conf, {"persist": False, "max_mb": 25, "keep": 3, "filters": ""}
+            conf,
+            {
+                "persist": False,
+                "max_mb": 25,
+                "keep": 3,
+                "filters": "",
+                "time_zone": "UTC",
+            },
         )
 
     def test_modular_mode_is_a_no_op(self):
@@ -293,5 +414,12 @@ class ReceiverTests(TestCase):
             inst.save()
         conf = log_collector.read_conf(log_dir)
         self.assertEqual(
-            conf, {"persist": False, "max_mb": 20, "keep": 4, "filters": ""}
+            conf,
+            {
+                "persist": False,
+                "max_mb": 20,
+                "keep": 4,
+                "filters": "",
+                "time_zone": "UTC",
+            },
         )

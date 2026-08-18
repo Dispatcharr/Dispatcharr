@@ -14,10 +14,13 @@ dropped anything). Owns rotation and pruning. Django-free; configured via
 import collections
 import importlib
 import os
+import re
 import signal
 import sys
 import threading
 import time
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 LIVE_NAME = "dispatcharr.log"
 CONF_NAME = "collector.conf"
@@ -30,7 +33,67 @@ _MAX_LINE_BYTES = 256 * 1024
 _FILTER_BUDGET_SECONDS = 0.1
 _FILTER_STRIKES = 3
 
-_DEFAULT_CONF = {"persist": True, "max_mb": 10, "keep": 5, "filters": ""}
+_DEFAULT_CONF = {
+    "persist": True,
+    "max_mb": 10,
+    "keep": 5,
+    "filters": "",
+    "time_zone": "UTC",
+}
+
+# One stamp convention for every source; strict match or pass through.
+_CANON = re.compile(rb"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3} [+-]\d{4} ")
+# uwsgi's request log-format mimics the Python shape but stamps localtime.
+_PY_REQ = re.compile(
+    rb"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}),(\d{3}) (\S+ uwsgi\.requests )"
+)
+_PY = re.compile(rb"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}),(\d{3}) (?!- )")
+_UWSGI = re.compile(rb"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}),(\d{3}) - ")
+_SHELL = re.compile(rb"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) - ")
+_REDIS = re.compile(
+    rb"^(\d+:[MCSX]) (\d{1,2} \w{3} \d{4} \d{2}:\d{2}:\d{2})\.(\d{3}) "
+)
+_PG = re.compile(
+    rb"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\.(\d{3}) ([A-Za-z0-9+\-]{2,5}) (\[\d+\] )"
+)
+_NGX_ERR = re.compile(rb"^(\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2}) (\[\w+\] )")
+_NGX_ACC = re.compile(
+    rb"^((?:\d{1,3}\.){3}\d{1,3} \S+ \S+) "
+    rb"\[(\d{2}/\w{3}/\d{4}:\d{2}:\d{2}:\d{2}) ([+-]\d{4})\] "
+)
+_CONTINUATION = re.compile(rb"^[ \t]|^Traceback")
+
+
+def _resolve_container_zone():
+    # The zone libc-stamping daemons use: /etc/localtime, else the process
+    # local offset, else UTC.
+    try:
+        name = os.readlink("/etc/localtime").split("zoneinfo/", 1)[1]
+        return ZoneInfo(name)
+    except (OSError, IndexError, KeyError, ValueError):
+        pass
+    try:
+        # Bind-mounted /etc/localtime is a plain file; stay DST-aware.
+        with open("/etc/localtime", "rb") as f:
+            return ZoneInfo.from_file(f)
+    except (OSError, ValueError):
+        pass
+    try:
+        return datetime.now().astimezone().tzinfo or timezone.utc
+    except Exception:
+        return timezone.utc
+
+
+def _resolve_pid1_zone(default):
+    # nginx and the entrypoint run env-unstripped, so they honour TZ.
+    try:
+        with open("/proc/1/environ", "rb") as f:
+            for chunk in f.read().split(b"\x00"):
+                if chunk.startswith(b"TZ="):
+                    return ZoneInfo(chunk[3:].decode())
+    except (OSError, KeyError, ValueError, UnicodeDecodeError):
+        pass
+    return default
 
 
 def conf_path(log_dir):
@@ -41,7 +104,7 @@ def pid_path(log_dir):
     return os.path.join(log_dir, PID_NAME)
 
 
-def write_conf(log_dir, persist, max_mb, keep, filters=""):
+def write_conf(log_dir, persist, max_mb, keep, filters="", time_zone="UTC"):
     """Write collector.conf atomically; called from the app (safe contexts only)."""
     if not log_dir:
         return
@@ -53,6 +116,7 @@ def write_conf(log_dir, persist, max_mb, keep, filters=""):
                 f"max_mb={int(max_mb)}\n"
                 f"keep={int(keep)}\n"
                 f"filters={filters}\n"
+                f"time_zone={time_zone}\n"
             )
         os.replace(tmp, conf_path(log_dir))
     except OSError:
@@ -75,6 +139,7 @@ def apply_settings(log_dir, values):
         values.get("log_max_mb", 10) or 10,
         values.get("log_keep", 5) or 5,
         values.get("log_filters", ""),
+        values.get("time_zone") or "UTC",
     )
     signal_reload(log_dir)
 
@@ -136,14 +201,6 @@ def load_filters(spec):
     return filters
 
 
-def _stamp():
-    now = time.time()
-    local = time.localtime(now)
-    base = time.strftime("%Y-%m-%d %H:%M:%S", local) + f",{int(now * 1000) % 1000:03d}"
-    offset = time.strftime("%z", local)
-    if offset and offset != "+0000":
-        return f"{base} {offset}"
-    return base
 
 
 class _WriteFailure(Exception):
@@ -173,6 +230,9 @@ class Collector:
         self._filters_broken = False
         self.conf = dict(_DEFAULT_CONF)
         self.filters = []
+        self._display_zone = timezone.utc
+        self._container_zone = timezone.utc
+        self._pid1_zone = timezone.utc
 
     def install_signals(self):
         # Handlers set plain flags only: threading primitives are not
@@ -184,10 +244,15 @@ class Collector:
     # ── reader thread: stdin -> filter -> forward to stdout -> buffer ──────
 
     def reader(self, stream):
+        mid_line = False
         while True:
             line = stream.readline(_MAX_LINE_BYTES)
             if not line:
                 break
+            # Continuation chunks of an oversize line must not be stamped.
+            if not mid_line:
+                line = self._normalize(line)
+            mid_line = not line.endswith(b"\n")
             line = self._filter(line)
             if line is None:
                 continue
@@ -207,6 +272,86 @@ class Collector:
                 self._wake.set()
         self._stop = True
         self._wake.set()
+
+    def _render(self, dt):
+        dt = dt.astimezone(self._display_zone)
+        base = f"{dt.strftime('%Y-%m-%d %H:%M:%S')},{dt.microsecond // 1000:03d}"
+        offset = dt.strftime("%z")
+        if offset and offset != "+0000":
+            return f"{base} {offset}"
+        return base
+
+    def _now_stamp(self):
+        return self._render(datetime.now(timezone.utc))
+
+    def _parse_naive(self, stamp, ms, zone, fmt="%Y-%m-%d %H:%M:%S"):
+        dt = datetime.strptime(stamp.decode(), fmt)
+        return dt.replace(microsecond=ms * 1000, tzinfo=zone)
+
+    def _normalize(self, raw):
+        """Rewrite every source's stamp into the one display-zone convention.
+
+        Strict match or pass through: an unrecognised line is never altered,
+        so a parse surprise cannot garble the stream.
+        """
+        try:
+            if _CANON.match(raw):
+                return raw
+            m = _UWSGI.match(raw)
+            if m:
+                dt = self._parse_naive(m.group(1), int(m.group(2)), self._container_zone)
+                return f"{self._render(dt)} - ".encode() + raw[m.end() :]
+            m = _PY_REQ.match(raw)
+            if m:
+                dt = self._parse_naive(m.group(1), int(m.group(2)), self._container_zone)
+                return f"{self._render(dt)} ".encode() + m.group(3) + raw[m.end() :]
+            m = _PY.match(raw)
+            if m:
+                dt = self._parse_naive(m.group(1), int(m.group(2)), timezone.utc)
+                return f"{self._render(dt)} ".encode() + raw[m.end() :]
+            m = _SHELL.match(raw)
+            if m:
+                dt = self._parse_naive(m.group(1), 0, self._pid1_zone)
+                return f"{self._render(dt)} - ".encode() + raw[m.end() :]
+            m = _REDIS.match(raw)
+            if m:
+                dt = self._parse_naive(
+                    m.group(2), int(m.group(3)), self._container_zone, "%d %b %Y %H:%M:%S"
+                )
+                return (
+                    f"{self._render(dt)} ".encode() + m.group(1) + b" " + raw[m.end() :]
+                )
+            m = _PG.match(raw)
+            if m:
+                zone = (
+                    timezone.utc
+                    if m.group(3) in (b"UTC", b"GMT")
+                    else self._container_zone
+                )
+                dt = self._parse_naive(m.group(1), int(m.group(2)), zone)
+                return (
+                    f"{self._render(dt)} ".encode() + m.group(4) + raw[m.end() :]
+                )
+            m = _NGX_ERR.match(raw)
+            if m:
+                dt = self._parse_naive(m.group(1), 0, self._pid1_zone, "%Y/%m/%d %H:%M:%S")
+                return (
+                    f"{self._render(dt)} ".encode() + m.group(2) + raw[m.end() :]
+                )
+            m = _NGX_ACC.match(raw)
+            if m:
+                dt = datetime.strptime(
+                    (m.group(2) + b" " + m.group(3)).decode(),
+                    "%d/%b/%Y:%H:%M:%S %z",
+                )
+                return (
+                    f"{self._render(dt)} ".encode() + m.group(1) + b" " + raw[m.end() :]
+                )
+            if _CONTINUATION.match(raw):
+                return raw
+            return f"{self._now_stamp()} ".encode() + raw
+        except Exception:
+            return raw
 
     def _forward(self, line):
         # Same blocking semantics the producers had writing stdout directly.
@@ -248,7 +393,7 @@ class Collector:
                 )
                 self._enqueue(
                     (
-                        _stamp()
+                        self._now_stamp()
                         + " WARNING dispatcharr.log_collector line filters "
                         + "disabled after repeated time-budget overruns\n"
                     ).encode()
@@ -283,6 +428,12 @@ class Collector:
         self.filters = load_filters(self.conf["filters"])
         self._filter_strikes = 0
         self._filters_broken = False
+        try:
+            self._display_zone = ZoneInfo(str(self.conf["time_zone"]).strip())
+        except (KeyError, ValueError):
+            self._display_zone = timezone.utc
+        self._container_zone = _resolve_container_zone()
+        self._pid1_zone = _resolve_pid1_zone(self._container_zone)
         self._prune()
 
     def _setup_fs(self):
@@ -294,7 +445,7 @@ class Collector:
                 f.write(str(os.getpid()))
             if not self._fs_ready:
                 self._fs_ready = True
-                self._enqueue(f"{_stamp()} INFO dispatcharr.log_collector started\n".encode())
+                self._enqueue(f"{self._now_stamp()} INFO dispatcharr.log_collector started\n".encode())
         except OSError:
             pass
 
@@ -323,7 +474,7 @@ class Collector:
             marker_count = 0
             if dropped and not self._tail_open:
                 marker = (
-                    f"{_stamp()} WARNING dispatcharr.log_collector {dropped} "
+                    f"{self._now_stamp()} WARNING dispatcharr.log_collector {dropped} "
                     f"log lines dropped (buffer full - slow disk or log burst)\n"
                 ).encode("utf-8", "replace")
                 batch.insert(0, marker)
@@ -443,8 +594,12 @@ class Collector:
 
     def run(self, stream):
         # Signals first, then the reader owns stdin before any filesystem
-        # work: a dead /data must never leave the pipe undrained.
+        # work: a dead /data must never leave the pipe undrained. The clock
+        # zones live on the root filesystem, so resolving them here is safe
+        # and spares the first tick's lines a wrong-zone parse.
         self.install_signals()
+        self._container_zone = _resolve_container_zone()
+        self._pid1_zone = _resolve_pid1_zone(self._container_zone)
         reader = threading.Thread(target=self.reader, args=(stream,), daemon=True)
         reader.start()
         self.writer()
