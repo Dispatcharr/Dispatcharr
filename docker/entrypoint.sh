@@ -237,20 +237,44 @@ echo "Starting user setup..."
 . /app/docker/init/01-user-setup.sh
 
 # Archive the previous run's log on start (WatchedFileHandler keeps appending to the live file); this only
-# shifts, never deletes -- the rotate_log_file worker prunes per system setting once Postgres/Django are up.
+# shifts, never deletes -- the log collector prunes per system setting once it is up.
 LOG_FILE_DIR=${DISPATCHARR_LOG_DIR:-/data/logs}
-mkdir -p "$LOG_FILE_DIR"
+mkdir -p "$LOG_FILE_DIR" 2>/dev/null || true
 if [ -s "$LOG_FILE_DIR/dispatcharr.log" ]; then
     # Shift every existing archive up by one (highest index first, nothing clobbered), then move the live log to .1.
     for n in $(ls "$LOG_FILE_DIR" 2>/dev/null \
                  | sed -n 's/^dispatcharr\.log\.\([0-9][0-9]*\)$/\1/p' | sort -rn); do
-        mv "$LOG_FILE_DIR/dispatcharr.log.$n" "$LOG_FILE_DIR/dispatcharr.log.$((n + 1))"
+        mv "$LOG_FILE_DIR/dispatcharr.log.$n" "$LOG_FILE_DIR/dispatcharr.log.$((n + 1))" 2>/dev/null || true
     done
-    mv "$LOG_FILE_DIR/dispatcharr.log" "$LOG_FILE_DIR/dispatcharr.log.1"
+    mv "$LOG_FILE_DIR/dispatcharr.log" "$LOG_FILE_DIR/dispatcharr.log.1" 2>/dev/null || true
 fi
-touch "$LOG_FILE_DIR/dispatcharr.log"
-# Non-recursive: DISPATCHARR_LOG_DIR is operator-set, so a recursive chown could re-own a mis-pointed data tree (e.g. /data/db).
-chown "$PUID:$PGID" "$LOG_FILE_DIR" "$LOG_FILE_DIR"/dispatcharr.log*
+touch "$LOG_FILE_DIR/dispatcharr.log" 2>/dev/null || true
+# Non-recursive: DISPATCHARR_LOG_DIR is operator-set, so a recursive chown could re-own a mis-pointed data tree (e.g. /data/db). Tolerant: chown-refusing mounts (NFS root_squash) must not block boot.
+chown "$PUID:$PGID" "$LOG_FILE_DIR" "$LOG_FILE_DIR"/dispatcharr.log* 2>/dev/null || true
+
+# Everything below (uwsgi, celery, daphne, nginx, postgres, redis, this
+# script) flows THROUGH the log collector: it forwards each filtered line to
+# the real stdout for docker logs and files the same bytes, so redaction
+# reaches both sinks. The pipe read end survives collector restarts (no line
+# loss, brief delay only) and repeated rapid failures degrade to a plain cat
+# passthrough so docker logs outlives any collector fault. Modular mode stays
+# stdout-only (one shared /data across containers must not have one writer).
+if [[ "$DISPATCHARR_ENV" != "modular" ]]; then
+    exec 3>&1
+    exec > >({ _lc_failures=0
+    while :; do
+        _lc_started=$SECONDS
+        su - "$POSTGRES_USER" -c "cd /app && exec $VIRTUAL_ENV/bin/python -m dispatcharr.log_collector '$LOG_FILE_DIR'" && break
+        if [ $((SECONDS - _lc_started)) -ge 30 ]; then _lc_failures=0; fi
+        _lc_failures=$((_lc_failures + 1))
+        if [ "$_lc_failures" -ge 3 ]; then
+            echo "log collector failing repeatedly; falling back to passthrough"
+            exec cat
+        fi
+        echo "log collector exited abnormally; restarting"
+        sleep 0.2
+    done; } >&3 2>&3) 2>&1
+fi
 
 # Fix TLS client key permissions/ownership BEFORE any external PG connections.
 # Must run after 01-user-setup.sh (user exists for chown) and before

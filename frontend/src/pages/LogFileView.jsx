@@ -35,7 +35,7 @@ const LINE_RULES = [
     color: COLORS.error,
     // Anchor the level keywords to the level field so a message body mentioning "ERROR" (e.g. "state to ERROR in Redis") doesn't redden an INFO line; Traceback/Exception stay content-matched for stack dumps.
     test: (line) =>
-      /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}[.,]\d+\s+(ERROR|CRITICAL|FATAL)\b|Traceback|Exception/.test(
+      /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}[.,]\d+(?: [+-]\d{4})?\s+(ERROR|CRITICAL|FATAL)\b|Traceback|Exception/.test(
         line
       ),
   },
@@ -44,7 +44,7 @@ const LINE_RULES = [
     color: COLORS.auth,
     // Real auth events only: apps.accounts / jwt_ws_auth loggers or django.request 401/403 — but not the routine token-refresh/notification 401 polling, which is benign warn noise.
     test: (line) =>
-      /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}[.,]\d+\s+\w+\s+(apps\.accounts\.|dispatcharr\.jwt_ws_auth\b|django\.request\s+(Unauthorized|Forbidden)\b(?!:\s*\/api\/(?:accounts\/token\/refresh|core\/notifications)))/.test(
+      /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}[.,]\d+(?: [+-]\d{4})?\s+\w+\s+(apps\.accounts\.|dispatcharr\.jwt_ws_auth\b|django\.request\s+(Unauthorized|Forbidden)\b(?!:\s*\/api\/(?:accounts\/token\/refresh|core\/notifications)))/.test(
         line
       ),
   },
@@ -58,7 +58,7 @@ const LINE_RULES = [
     color: COLORS.plugin,
     // Match the plugins.<key> logger-name field, not the word "plugin" — apps.plugins.* infrastructure stays default.
     test: (line) =>
-      /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}[.,]\d+\s+\w+\s+plugins\./.test(
+      /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}[.,]\d+(?: [+-]\d{4})?\s+\w+\s+plugins\./.test(
         line
       ),
   },
@@ -73,9 +73,12 @@ const LEGEND = [
   { label: 'plugin', color: COLORS.plugin },
 ];
 
-// A record starts with a timestamp; anything else is a continuation line
-// (multi-line messages, traceback frames) and inherits the record's colour.
-const RECORD_START = /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}/;
+// A record starts with a stamped line or a known foreign-format line
+// (redis pid:role, nginx access, uwsgi announce/request, entrypoint
+// echoes); anything else is a continuation (multi-line messages, traceback
+// frames) and inherits the record's colour.
+const RECORD_START =
+  /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}|^\d+:[MCSX] |^(?:\d{1,3}\.){3}\d{1,3} - |^\*{3} |^\[pid: |^(?:spawned|mapped|Python|WSGI|uWSGI|\p{Emoji_Presentation})/u;
 
 // Cap on rendered lines: a mixed-severity tail can defeat the run-length grouping (one span per line), so bound the DOM for low-end TV browsers.
 const MAX_RENDER_LINES = 5000;

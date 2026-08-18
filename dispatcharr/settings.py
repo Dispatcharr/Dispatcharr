@@ -430,12 +430,6 @@ CELERY_TASK_SERIALIZER = "json"
 CELERY_WORKER_MAX_MEMORY_PER_CHILD = 524_288  # 512 MB in KB
 
 CELERY_BEAT_SCHEDULER = "django_celery_beat.schedulers.DatabaseScheduler"
-# Cheap check (stat+listdir): run more often at DEBUG/TRACE (faster log growth); worker_ready dispatch (celery.py) covers startup.
-_rotate_interval = (
-    300.0
-    if os.environ.get("DISPATCHARR_LOG_LEVEL", "").upper() in ("DEBUG", "TRACE")
-    else 900.0
-)
 CELERY_BEAT_SCHEDULE = {
     # Explicitly disable the old fetch-channel-statuses task
     # This ensures it gets disabled when DatabaseScheduler syncs
@@ -463,11 +457,12 @@ CELERY_BEAT_SCHEDULE = {
         "task": "apps.m3u.tasks.check_account_expirations",
         "schedule": 86400.0,  # Once every 24 hours
     },
-    # Rotate/prune the app log; single-owner via beat. 5 min at DEBUG/TRACE,
-    # 15 min otherwise (also dispatched once at worker startup).
+    # Explicitly disable the old rotate task on upgraded installs: the
+    # DatabaseScheduler keeps its PeriodicTask row alive otherwise.
     "rotate-log-file": {
         "task": "core.tasks.rotate_log_file",
-        "schedule": _rotate_interval,
+        "schedule": 900.0,  # Original schedule (doesn't matter since disabled)
+        "enabled": False,  # Explicitly disabled; the log collector rotates now
     },
 }
 
@@ -643,21 +638,11 @@ LOGGING = {
     },
 }
 
-# Add a file handler to every logger so logs persist to disk for the UI log browser.
+# The log collector process files the container's merged stdout; Python
+# logging stays console-only. LOG_FILE_DIR is where the log browser reads.
 LOG_FILE_DIR = os.environ.get("DISPATCHARR_LOG_DIR", "/data/logs")
 try:
     os.makedirs(LOG_FILE_DIR, exist_ok=True)
-    LOGGING["handlers"]["file"] = {
-        "class": "logging.handlers.WatchedFileHandler",
-        "filename": os.path.join(LOG_FILE_DIR, "dispatcharr.log"),
-        "formatter": "verbose",
-        "level": 5,
-        "delay": True,
-    }
-    for _logger_config in list(LOGGING["loggers"].values()) + [LOGGING["root"]]:
-        _handlers = _logger_config.setdefault("handlers", [])
-        if "file" not in _handlers:
-            _handlers.append("file")
 except OSError:
     # No writable /data (e.g. some test environments): console-only.
     LOG_FILE_DIR = None

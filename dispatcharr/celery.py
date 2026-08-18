@@ -245,6 +245,3 @@ def on_worker_ready(**kwargs):
         from core.tasks import check_for_version_update
         check_for_version_update.delay()
 
-    if _claim("core:rotate_log_dispatch_lock"):
-        from core.tasks import rotate_log_file
-        rotate_log_file.delay()
