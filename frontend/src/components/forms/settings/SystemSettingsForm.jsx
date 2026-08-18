@@ -80,6 +80,12 @@ const SystemSettingsForm = React.memo(({ active }) => {
         max={1000}
         step={10}
       />
+      <Switch
+        label="Persist Logs to File"
+        description="Write application logs to disk for the Logs page. Console logging is unaffected. Disable on slow storage (SD cards, network shares) if logging overhead is a concern."
+        {...form.getInputProps('log_persist', { type: 'checkbox' })}
+        id="log_persist"
+      />
       <NumberInput
         label="Maximum Log File Size (MB)"
         description="Rotate the application log once it grows past this size. Older logs are kept up to the retention limit below."

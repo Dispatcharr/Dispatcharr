@@ -13,9 +13,10 @@ describe('SystemSettingsFormUtils', () => {
         auto_import_mapped_files: true,
         enable_ip_lookup: true,
         catchup_enabled: true,
-        // Exact match, so the two log fields have to be listed.
+        // Exact match, so the log fields have to be listed.
         log_max_mb: 10,
         log_keep: 5,
+        log_persist: true,
       });
     });
 

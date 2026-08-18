@@ -78,7 +78,7 @@ class CoreSettingsSerializer(serializers.ModelSerializer):
                     }
                 )
 
-        # Coerce log-rotation settings to sane ints so a bad API payload can't wedge rotate_log_file (the UI constrains these; the raw API is the gap).
+        # Coerce log-rotation settings to sane ints so a bad API payload can't wedge the log collector (the UI constrains these; the raw API is the gap).
         if instance.key == SYSTEM_SETTINGS_KEY:
             value = validated_data.get("value")
             if isinstance(value, dict):
@@ -86,6 +86,8 @@ class CoreSettingsSerializer(serializers.ModelSerializer):
                     value["log_max_mb"] = _clamp_int(value["log_max_mb"], 10, 1, 1000)
                 if "log_keep" in value:
                     value["log_keep"] = _clamp_int(value["log_keep"], 5, 1, 50)
+                if "log_persist" in value:
+                    value["log_persist"] = value["log_persist"] is not False
 
         # Sanitize series_rules when DVR settings are saved through the
         # generic settings API (e.g. Settings page round-trip) to prevent

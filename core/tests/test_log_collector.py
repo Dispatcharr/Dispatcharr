@@ -271,3 +271,27 @@ class ApplySettingsTests(SimpleTestCase):
         if hasattr(log_collector.signal, "SIGHUP"):
             self.assertTrue(opened["proc"])
             kill.assert_not_called()
+
+# locmem cache: isolates this test's settings write from the shared Redis-backed group cache.
+@override_settings(
+    CACHES={
+        "default": {
+            "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+            "LOCATION": "log-collector-receiver-tests",
+        }
+    }
+)
+class ReceiverTests(TestCase):
+    def test_saving_system_settings_writes_conf(self):
+        log_dir = tempfile.mkdtemp(prefix="dispatcharr-collector-")
+        self.addCleanup(shutil.rmtree, log_dir, ignore_errors=True)
+        inst, _ = CoreSettings.objects.get_or_create(
+            key=SYSTEM_SETTINGS_KEY, defaults={"value": {}}
+        )
+        with override_settings(LOG_FILE_DIR=log_dir):
+            inst.value = {"log_persist": False, "log_max_mb": 20, "log_keep": 4}
+            inst.save()
+        conf = log_collector.read_conf(log_dir)
+        self.assertEqual(
+            conf, {"persist": False, "max_mb": 20, "keep": 4, "filters": ""}
+        )

@@ -114,6 +114,7 @@ const setupMocks = ({
     max_system_events: settings?.max_system_events ?? 100,
     log_max_mb: 10,
     log_keep: 5,
+    log_persist: true,
     preferred_region: '',
     auto_import_mapped_files: true,
     enable_ip_lookup: true,
@@ -233,6 +234,12 @@ describe('SystemSettingsForm', () => {
       expect(screen.getByTestId('catchup_enabled')).toBeInTheDocument();
     });
 
+    it('renders the Persist Logs to File switch', () => {
+      setupMocks();
+      render(<SystemSettingsForm active={true} />);
+      expect(screen.getByTestId('log_persist')).toBeInTheDocument();
+    });
+
     it('does not show success alert on initial render', () => {
       setupMocks();
       render(<SystemSettingsForm active={true} />);
@@ -312,6 +319,7 @@ describe('SystemSettingsForm', () => {
         max_system_events: 100,
         log_max_mb: 10,
         log_keep: 5,
+        log_persist: true,
         preferred_region: '',
         auto_import_mapped_files: true,
         enable_ip_lookup: true,
