@@ -14,7 +14,14 @@ import {
   TextInput,
   Image,
 } from '@mantine/core';
-import { AlertTriangle, Send, SquarePen, SquareMinus, SquarePlus, X } from 'lucide-react';
+import {
+  AlertTriangle,
+  Send,
+  SquarePen,
+  SquareMinus,
+  SquarePlus,
+  X,
+} from 'lucide-react';
 import API from '../../api';
 import useMacDevicesStore from '../../store/macDevices';
 
@@ -60,7 +67,7 @@ const svgToDataUri = (svg) => {
     const svgEl = doc.body.querySelector('svg');
     const cleaned = svgEl ? new XMLSerializer().serializeToString(svgEl) : svg;
     return `data:image/svg+xml;base64,${btoa(unescape(encodeURIComponent(cleaned)))}`;
-  } catch (e) {
+  } catch {
     return null;
   }
 };
@@ -72,21 +79,32 @@ const DeviceForm = ({ initial, onCancel, onSave }) => {
   );
   const [saving, setSaving] = useState(false);
 
-  const setField = (field, value) => setValues((v) => ({ ...v, [field]: value }));
+  const setField = (field, value) =>
+    setValues((v) => ({ ...v, [field]: value }));
 
   const submit = async () => {
     setSaving(true);
     try {
       // Clear a leftover PIN if the admin toggled protection off rather
       // than sending a stale value the panel would silently keep using.
-      await onSave({ ...values, protect_pin: protectEnabled ? values.protect_pin : '' });
+      await onSave({
+        ...values,
+        protect_pin: protectEnabled ? values.protect_pin : '',
+      });
     } finally {
       setSaving(false);
     }
   };
 
   return (
-    <Stack gap="xs" p="sm" style={{ border: '1px solid var(--mantine-color-default-border)', borderRadius: 6 }}>
+    <Stack
+      gap="xs"
+      p="sm"
+      style={{
+        border: '1px solid var(--mantine-color-default-border)',
+        borderRadius: 6,
+      }}
+    >
       <Group grow>
         <Select
           label="Panel"
@@ -194,7 +212,14 @@ const PushCaptchaPanel = ({ device, onCancel, onSubmit }) => {
   const dataUri = svg ? svgToDataUri(svg) : null;
 
   return (
-    <Stack gap="xs" p="sm" style={{ border: '1px solid var(--mantine-color-default-border)', borderRadius: 6 }}>
+    <Stack
+      gap="xs"
+      p="sm"
+      style={{
+        border: '1px solid var(--mantine-color-default-border)',
+        borderRadius: 6,
+      }}
+    >
       <Text size="sm" fw={500}>
         Captcha required for {device.label || device.mac_address}
       </Text>
@@ -209,15 +234,30 @@ const PushCaptchaPanel = ({ device, onCancel, onSubmit }) => {
           onChange={(e) => setAnswer(e.target.value)}
           disabled={loading}
         />
-        <Button size="xs" variant="subtle" onClick={loadCaptcha} disabled={loading}>
+        <Button
+          size="xs"
+          variant="subtle"
+          onClick={loadCaptcha}
+          disabled={loading}
+        >
           Refresh
         </Button>
       </Group>
       <Group justify="flex-end">
-        <Button variant="subtle" size="xs" onClick={onCancel} disabled={submitting}>
+        <Button
+          variant="subtle"
+          size="xs"
+          onClick={onCancel}
+          disabled={submitting}
+        >
           Cancel
         </Button>
-        <Button size="xs" onClick={submit} loading={submitting} disabled={!answer || loading}>
+        <Button
+          size="xs"
+          onClick={submit}
+          loading={submitting}
+          disabled={!answer || loading}
+        >
           Submit &amp; Push
         </Button>
       </Group>
@@ -249,7 +289,8 @@ const MacDevices = ({ user, isOpen, onClose }) => {
 
   const allowedNetworks = user?.custom_properties?.allowed_networks;
   const hasNetworkRestriction =
-    allowedNetworks && (Array.isArray(allowedNetworks) ? allowedNetworks.length > 0 : true);
+    allowedNetworks &&
+    (Array.isArray(allowedNetworks) ? allowedNetworks.length > 0 : true);
 
   const refresh = () => API.getMacDevices(user.id);
 
@@ -279,7 +320,11 @@ const MacDevices = ({ user, isOpen, onClose }) => {
       setCaptchaDevice(device);
       return;
     }
-    setPushResult({ deviceId: device.id, success: true, message: resp.message });
+    setPushResult({
+      deviceId: device.id,
+      success: true,
+      message: resp.message,
+    });
     refresh();
   };
 
@@ -291,22 +336,40 @@ const MacDevices = ({ user, isOpen, onClose }) => {
     }
     if (resp.captchaRequired) {
       // Wrong answer or expired token — let the panel handle a fresh captcha.
-      setPushResult({ deviceId: device.id, success: false, message: 'Captcha rejected, try again.' });
+      setPushResult({
+        deviceId: device.id,
+        success: false,
+        message: 'Captcha rejected, try again.',
+      });
       return;
     }
     setCaptchaDevice(null);
-    setPushResult({ deviceId: device.id, success: true, message: resp.message });
+    setPushResult({
+      deviceId: device.id,
+      success: true,
+      message: resp.message,
+    });
     refresh();
   };
 
   return (
-    <Modal opened={isOpen} onClose={onClose} title={`MAC Devices — ${user.username}`} size="lg">
+    <Modal
+      opened={isOpen}
+      onClose={onClose}
+      title={`MAC Devices — ${user.username}`}
+      size="lg"
+    >
       <Stack gap="sm">
         {hasNetworkRestriction && (
-          <Alert icon={<AlertTriangle size={16} />} color="yellow" title="Network restriction in effect">
-            This user has an IP/network restriction configured. Pushing credentials to a MAC
-            panel does not bypass it — the customer's device may still be blocked at playback
-            time even after a successful push.
+          <Alert
+            icon={<AlertTriangle size={16} />}
+            color="yellow"
+            title="Network restriction in effect"
+          >
+            This user has an IP/network restriction configured. Pushing
+            credentials to a MAC panel does not bypass it — the customer's
+            device may still be blocked at playback time even after a successful
+            push.
           </Alert>
         )}
 
@@ -320,16 +383,29 @@ const MacDevices = ({ user, isOpen, onClose }) => {
 
         {!loading &&
           devices.map((device) => (
-            <Stack key={device.id} gap={4} p="xs" style={{ border: '1px solid var(--mantine-color-default-border)', borderRadius: 6 }}>
+            <Stack
+              key={device.id}
+              gap={4}
+              p="xs"
+              style={{
+                border: '1px solid var(--mantine-color-default-border)',
+                borderRadius: 6,
+              }}
+            >
               <Group justify="space-between" wrap="nowrap">
                 <Group gap="xs" wrap="wrap">
                   <Badge size="sm" color="gray">
-                    {PANEL_OPTIONS.find((p) => p.value === device.panel)?.label || device.panel}
+                    {PANEL_OPTIONS.find((p) => p.value === device.panel)
+                      ?.label || device.panel}
                   </Badge>
                   <Text size="sm" style={{ fontFamily: 'monospace' }}>
                     {device.mac_address}
                   </Text>
-                  {device.label && <Text size="sm" c="dimmed">{device.label}</Text>}
+                  {device.label && (
+                    <Text size="sm" c="dimmed">
+                      {device.label}
+                    </Text>
+                  )}
                   {device.protect_pin && (
                     <Badge size="sm" color="yellow" variant="light">
                       PIN Protected
@@ -419,7 +495,11 @@ const MacDevices = ({ user, isOpen, onClose }) => {
         )}
 
         <Group justify="flex-end">
-          <Button leftSection={<X size={14} />} variant="subtle" onClick={onClose}>
+          <Button
+            leftSection={<X size={14} />}
+            variant="subtle"
+            onClick={onClose}
+          >
             Close
           </Button>
         </Group>

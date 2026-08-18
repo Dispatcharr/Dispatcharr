@@ -53,7 +53,15 @@ vi.mock('../../forms/MacDevices', () => ({
 }));
 
 vi.mock('../../ConfirmationDialog', () => ({
-  default: ({ opened, onClose, onConfirm, title, loading, confirmLabel, cancelLabel }) =>
+  default: ({
+    opened,
+    onClose,
+    onConfirm,
+    title,
+    loading,
+    confirmLabel,
+    cancelLabel,
+  }) =>
     opened ? (
       <div data-testid="confirm-dialog">
         <span data-testid="confirm-title">{title}</span>
@@ -91,16 +99,19 @@ vi.mock('@mantine/core', () => ({
   ),
   Box: ({ children, style }) => <div style={style}>{children}</div>,
   Button: ({ children, onClick, leftSection, disabled, loading }) => (
-    <button data-testid="button" onClick={onClick} disabled={disabled || loading}>
+    <button
+      data-testid="button"
+      onClick={onClick}
+      disabled={disabled || loading}
+    >
       {leftSection}
       {children}
     </button>
   ),
   Flex: ({ children, style }) => <div style={style}>{children}</div>,
-  Group: ({ children, style }) => (
-    <div style={style}>{children}</div>
-  ),
-  LoadingOverlay: ({ visible }) => visible ? <div data-testid="loading-overlay" /> : null,
+  Group: ({ children, style }) => <div style={style}>{children}</div>,
+  LoadingOverlay: ({ visible }) =>
+    visible ? <div data-testid="loading-overlay" /> : null,
   Paper: ({ children, style }) => <div style={style}>{children}</div>,
   Stack: ({ children, style }) => <div style={style}>{children}</div>,
   Text: ({ children, style, name }) => (
@@ -108,9 +119,7 @@ vi.mock('@mantine/core', () => ({
       {children}
     </span>
   ),
-  Tooltip: ({ children, label }) => (
-    <div data-tooltip={label}>{children}</div>
-  ),
+  Tooltip: ({ children, label }) => <div data-tooltip={label}>{children}</div>,
   useMantineTheme: vi.fn(() => ({
     tailwind: {
       yellow: { 3: '#fde047' },
@@ -158,7 +167,12 @@ const makeUser = (overrides = {}) => ({
 });
 
 const makeAdminUser = (overrides = {}) =>
-  makeUser({ id: 99, username: 'admin', user_level: USER_LEVELS.ADMIN, ...overrides });
+  makeUser({
+    id: 99,
+    username: 'admin',
+    user_level: USER_LEVELS.ADMIN,
+    ...overrides,
+  });
 
 let capturedTableOptions = null;
 
@@ -169,17 +183,11 @@ const setupMocks = ({
   isWarningSuppressed = vi.fn(() => false),
   suppressWarning = vi.fn(),
 } = {}) => {
-  vi.mocked(useUsersStore).mockImplementation((sel) =>
-    sel({ users })
-  );
+  vi.mocked(useUsersStore).mockImplementation((sel) => sel({ users }));
 
-  vi.mocked(useChannelsStore).mockImplementation((sel) =>
-    sel({ profiles })
-  );
+  vi.mocked(useChannelsStore).mockImplementation((sel) => sel({ profiles }));
 
-  vi.mocked(useAuthStore).mockImplementation((sel) =>
-    sel({ user: authUser })
-  );
+  vi.mocked(useAuthStore).mockImplementation((sel) => sel({ user: authUser }));
 
   vi.mocked(useWarningsStore).mockImplementation((sel) =>
     sel({ isWarningSuppressed, suppressWarning })
@@ -339,7 +347,10 @@ describe('UsersTable', () => {
 
     it('edit button is disabled for non-admin auth user', () => {
       const user = makeUser({ id: 5 });
-      setupMocks({ users: [user], authUser: makeUser({ id: 99, user_level: USER_LEVELS.STANDARD }) });
+      setupMocks({
+        users: [user],
+        authUser: makeUser({ id: 99, user_level: USER_LEVELS.STANDARD }),
+      });
       render(<UsersTable />);
 
       const actionsCol = getActionsCell();
@@ -358,7 +369,9 @@ describe('UsersTable', () => {
       const { getByTestId } = render(
         actionsCol.cell({ row: { original: user } })
       );
-      expect(getByTestId('icon-square-pen').closest('button')).not.toBeDisabled();
+      expect(
+        getByTestId('icon-square-pen').closest('button')
+      ).not.toBeDisabled();
     });
   });
 
@@ -377,7 +390,9 @@ describe('UsersTable', () => {
       fireEvent.click(getByTestId('icon-smartphone').closest('button'));
 
       expect(screen.getByTestId('mac-devices-form')).toBeInTheDocument();
-      expect(screen.getByTestId('mac-devices-form-user')).toHaveTextContent('janedoe');
+      expect(screen.getByTestId('mac-devices-form-user')).toHaveTextContent(
+        'janedoe'
+      );
     });
 
     it('closes the modal when onClose is called', () => {
@@ -397,7 +412,10 @@ describe('UsersTable', () => {
 
     it('is disabled for non-admin auth user', () => {
       const user = makeUser({ id: 5 });
-      setupMocks({ users: [user], authUser: makeUser({ id: 99, user_level: USER_LEVELS.STANDARD }) });
+      setupMocks({
+        users: [user],
+        authUser: makeUser({ id: 99, user_level: USER_LEVELS.STANDARD }),
+      });
       render(<UsersTable />);
 
       const actionsCol = getActionsCell();
@@ -423,7 +441,9 @@ describe('UsersTable', () => {
       fireEvent.click(getByTestId('icon-square-minus').closest('button'));
 
       expect(screen.getByTestId('confirm-dialog')).toBeInTheDocument();
-      expect(screen.getByTestId('confirm-title')).toHaveTextContent('Confirm User Deletion');
+      expect(screen.getByTestId('confirm-title')).toHaveTextContent(
+        'Confirm User Deletion'
+      );
     });
 
     it('calls API.deleteUser when confirmed via dialog', async () => {
@@ -438,9 +458,7 @@ describe('UsersTable', () => {
       fireEvent.click(getByTestId('icon-square-minus').closest('button'));
       fireEvent.click(screen.getByTestId('confirm-ok'));
 
-      await waitFor(() =>
-        expect(API.deleteUser).toHaveBeenCalledWith(5)
-      );
+      await waitFor(() => expect(API.deleteUser).toHaveBeenCalledWith(5));
     });
 
     it('closes the dialog after confirming delete', async () => {
@@ -486,15 +504,16 @@ describe('UsersTable', () => {
       );
       fireEvent.click(getByTestId('icon-square-minus').closest('button'));
 
-      await waitFor(() =>
-        expect(API.deleteUser).toHaveBeenCalledWith(7)
-      );
+      await waitFor(() => expect(API.deleteUser).toHaveBeenCalledWith(7));
       expect(screen.queryByTestId('confirm-dialog')).not.toBeInTheDocument();
     });
 
     it('delete button is disabled for non-admin auth user', () => {
       const user = makeUser({ id: 5 });
-      setupMocks({ users: [user], authUser: makeUser({ id: 99, user_level: USER_LEVELS.STANDARD }) });
+      setupMocks({
+        users: [user],
+        authUser: makeUser({ id: 99, user_level: USER_LEVELS.STANDARD }),
+      });
       render(<UsersTable />);
 
       const actionsCol = getActionsCell();
@@ -525,7 +544,9 @@ describe('UsersTable', () => {
       const { getByTestId } = render(
         actionsCol.cell({ row: { original: user } })
       );
-      expect(getByTestId('icon-square-minus').closest('button')).not.toBeDisabled();
+      expect(
+        getByTestId('icon-square-minus').closest('button')
+      ).not.toBeDisabled();
     });
   });
 
@@ -549,7 +570,9 @@ describe('UsersTable', () => {
       setupMocks();
       render(<UsersTable />);
 
-      const { getByText, getByTestId } = renderXCCell({ xc_password: 'mypassword' });
+      const { getByText, getByTestId } = renderXCCell({
+        xc_password: 'mypassword',
+      });
       fireEvent.click(getByTestId('icon-eye').closest('button'));
       expect(getByText('mypassword')).toBeInTheDocument();
     });
@@ -558,7 +581,9 @@ describe('UsersTable', () => {
       setupMocks();
       render(<UsersTable />);
 
-      const { getByText, getByTestId } = renderXCCell({ xc_password: 'mypassword' });
+      const { getByText, getByTestId } = renderXCCell({
+        xc_password: 'mypassword',
+      });
       const toggleBtn = getByTestId('icon-eye').closest('button');
       fireEvent.click(toggleBtn);
       fireEvent.click(getByTestId('icon-eye-off').closest('button'));
@@ -597,16 +622,24 @@ describe('UsersTable', () => {
       setupMocks();
       render(<UsersTable />);
       const col = getCol('user_level');
-      const { getByText } = render(col.cell({ getValue: () => USER_LEVELS.ADMIN }));
-      expect(getByText(USER_LEVEL_LABELS[USER_LEVELS.ADMIN])).toBeInTheDocument();
+      const { getByText } = render(
+        col.cell({ getValue: () => USER_LEVELS.ADMIN })
+      );
+      expect(
+        getByText(USER_LEVEL_LABELS[USER_LEVELS.ADMIN])
+      ).toBeInTheDocument();
     });
 
     it('renders the label for STANDARD level', () => {
       setupMocks();
       render(<UsersTable />);
       const col = getCol('user_level');
-      const { getByText } = render(col.cell({ getValue: () => USER_LEVELS.STANDARD }));
-      expect(getByText(USER_LEVEL_LABELS[USER_LEVELS.STANDARD])).toBeInTheDocument();
+      const { getByText } = render(
+        col.cell({ getValue: () => USER_LEVELS.STANDARD })
+      );
+      expect(
+        getByText(USER_LEVEL_LABELS[USER_LEVELS.STANDARD])
+      ).toBeInTheDocument();
     });
   });
 
@@ -649,8 +682,13 @@ describe('UsersTable', () => {
       setupMocks();
       render(<UsersTable />);
       const col = getCol('date_joined');
-      const { getByText } = render(col.cell({ getValue: () => '2024-01-15T10:00:00Z' }));
-      expect(vi.mocked(format)).toHaveBeenCalledWith('2024-01-15T10:00:00Z', 'MM/DD/YYYY');
+      const { getByText } = render(
+        col.cell({ getValue: () => '2024-01-15T10:00:00Z' })
+      );
+      expect(vi.mocked(format)).toHaveBeenCalledWith(
+        '2024-01-15T10:00:00Z',
+        'MM/DD/YYYY'
+      );
       expect(getByText('formatted:2024-01-15T10:00:00Z')).toBeInTheDocument();
     });
 
@@ -668,8 +706,13 @@ describe('UsersTable', () => {
       setupMocks();
       render(<UsersTable />);
       const col = getCol('last_login');
-      const { getByText } = render(col.cell({ getValue: () => '2024-06-01T12:00:00Z' }));
-      expect(vi.mocked(format)).toHaveBeenCalledWith('2024-06-01T12:00:00Z', 'MM/DD/YYYY HH:mm');
+      const { getByText } = render(
+        col.cell({ getValue: () => '2024-06-01T12:00:00Z' })
+      );
+      expect(vi.mocked(format)).toHaveBeenCalledWith(
+        '2024-06-01T12:00:00Z',
+        'MM/DD/YYYY HH:mm'
+      );
       expect(getByText('formatted:2024-06-01T12:00:00Z')).toBeInTheDocument();
     });
 
@@ -693,7 +736,10 @@ describe('UsersTable', () => {
 
     it('renders a badge for each assigned profile', () => {
       setupMocks({
-        profiles: { 10: { id: 10, name: 'HD Profile' }, 20: { id: 20, name: 'SD Profile' } },
+        profiles: {
+          10: { id: 10, name: 'HD Profile' },
+          20: { id: 20, name: 'SD Profile' },
+        },
       });
       render(<UsersTable />);
       const col = getCol('channel_profiles');

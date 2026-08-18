@@ -8,62 +8,86 @@ import { USER_LEVELS } from '../../constants';
 vi.mock('../../store/auth');
 vi.mock('../../components/tables/UserAgentsTable', () => ({
   default: ({ active }) => (
-    <div data-testid="user-agents-table">UserAgentsTable {active ? 'active' : 'inactive'}</div>
+    <div data-testid="user-agents-table">
+      UserAgentsTable {active ? 'active' : 'inactive'}
+    </div>
   ),
 }));
 vi.mock('../../components/tables/StreamProfilesTable', () => ({
   default: ({ active }) => (
-    <div data-testid="stream-profiles-table">StreamProfilesTable {active ? 'active' : 'inactive'}</div>
+    <div data-testid="stream-profiles-table">
+      StreamProfilesTable {active ? 'active' : 'inactive'}
+    </div>
   ),
 }));
 vi.mock('../../components/backups/BackupManager', () => ({
   default: ({ active }) => (
-    <div data-testid="backup-manager">BackupManager {active ? 'active' : 'inactive'}</div>
+    <div data-testid="backup-manager">
+      BackupManager {active ? 'active' : 'inactive'}
+    </div>
   ),
 }));
 vi.mock('../../components/forms/settings/UiSettingsForm', () => ({
   default: ({ active }) => (
-    <div data-testid="ui-settings-form">UiSettingsForm {active ? 'active' : 'inactive'}</div>
+    <div data-testid="ui-settings-form">
+      UiSettingsForm {active ? 'active' : 'inactive'}
+    </div>
   ),
 }));
 vi.mock('../../components/forms/settings/NetworkAccessForm', () => ({
   default: ({ active }) => (
-    <div data-testid="network-access-form">NetworkAccessForm {active ? 'active' : 'inactive'}</div>
+    <div data-testid="network-access-form">
+      NetworkAccessForm {active ? 'active' : 'inactive'}
+    </div>
   ),
 }));
 vi.mock('../../components/forms/settings/ProxySettingsForm', () => ({
   default: ({ active }) => (
-    <div data-testid="proxy-settings-form">ProxySettingsForm {active ? 'active' : 'inactive'}</div>
+    <div data-testid="proxy-settings-form">
+      ProxySettingsForm {active ? 'active' : 'inactive'}
+    </div>
   ),
 }));
 vi.mock('../../components/forms/settings/StreamSettingsForm', () => ({
   default: ({ active }) => (
-    <div data-testid="stream-settings-form">StreamSettingsForm {active ? 'active' : 'inactive'}</div>
+    <div data-testid="stream-settings-form">
+      StreamSettingsForm {active ? 'active' : 'inactive'}
+    </div>
   ),
 }));
 vi.mock('../../components/forms/settings/DvrSettingsForm', () => ({
   default: ({ active }) => (
-    <div data-testid="dvr-settings-form">DvrSettingsForm {active ? 'active' : 'inactive'}</div>
+    <div data-testid="dvr-settings-form">
+      DvrSettingsForm {active ? 'active' : 'inactive'}
+    </div>
   ),
 }));
 vi.mock('../../components/forms/settings/SystemSettingsForm', () => ({
   default: ({ active }) => (
-    <div data-testid="system-settings-form">SystemSettingsForm {active ? 'active' : 'inactive'}</div>
+    <div data-testid="system-settings-form">
+      SystemSettingsForm {active ? 'active' : 'inactive'}
+    </div>
   ),
 }));
 vi.mock('../../components/forms/settings/NavOrderForm', () => ({
   default: ({ active }) => (
-    <div data-testid="nav-order-form">NavOrderForm {active ? 'active' : 'inactive'}</div>
+    <div data-testid="nav-order-form">
+      NavOrderForm {active ? 'active' : 'inactive'}
+    </div>
   ),
 }));
 vi.mock('../../components/forms/settings/UserLimitsForm', () => ({
   default: ({ active }) => (
-    <div data-testid="user-limits-form">UserLimitsForm {active ? 'active' : 'inactive'}</div>
+    <div data-testid="user-limits-form">
+      UserLimitsForm {active ? 'active' : 'inactive'}
+    </div>
   ),
 }));
 vi.mock('../../components/forms/settings/MacPanelSettingsForm', () => ({
   default: ({ active }) => (
-    <div data-testid="mac-panel-settings-form">MacPanelSettingsForm {active ? 'active' : 'inactive'}</div>
+    <div data-testid="mac-panel-settings-form">
+      MacPanelSettingsForm {active ? 'active' : 'inactive'}
+    </div>
   ),
 }));
 vi.mock('../../components/ErrorBoundary', () => ({
@@ -79,7 +103,9 @@ vi.mock('@mantine/core', async () => ({
 }));
 
 const renderWithRouter = (component, { initialEntries = ['/settings'] } = {}) =>
-  render(<MemoryRouter initialEntries={initialEntries}>{component}</MemoryRouter>);
+  render(
+    <MemoryRouter initialEntries={initialEntries}>{component}</MemoryRouter>
+  );
 
 describe('SettingsPage', () => {
   beforeEach(() => {
@@ -88,22 +114,32 @@ describe('SettingsPage', () => {
 
   describe('no section selected', () => {
     beforeEach(() => {
-      useAuthStore.mockReturnValue({ user_level: USER_LEVELS.USER, username: 'testuser' });
+      useAuthStore.mockReturnValue({
+        user_level: USER_LEVELS.USER,
+        username: 'testuser',
+      });
     });
 
     it('shows placeholder when no hash', () => {
       renderWithRouter(<SettingsPage />);
-      expect(screen.getByText('Select a setting from the sidebar')).toBeInTheDocument();
+      expect(
+        screen.getByText('Select a setting from the sidebar')
+      ).toBeInTheDocument();
     });
   });
 
   describe('regular user', () => {
     beforeEach(() => {
-      useAuthStore.mockReturnValue({ user_level: USER_LEVELS.USER, username: 'testuser' });
+      useAuthStore.mockReturnValue({
+        user_level: USER_LEVELS.USER,
+        username: 'testuser',
+      });
     });
 
     it('renders ui-settings section via hash', async () => {
-      renderWithRouter(<SettingsPage />, { initialEntries: ['/settings#ui-settings'] });
+      renderWithRouter(<SettingsPage />, {
+        initialEntries: ['/settings#ui-settings'],
+      });
       await waitFor(() => {
         expect(screen.getByTestId('ui-settings-form')).toBeInTheDocument();
       });
@@ -111,25 +147,36 @@ describe('SettingsPage', () => {
     });
 
     it('renders nav-order section via hash', async () => {
-      renderWithRouter(<SettingsPage />, { initialEntries: ['/settings#nav-order'] });
+      renderWithRouter(<SettingsPage />, {
+        initialEntries: ['/settings#nav-order'],
+      });
       await waitFor(() => {
         expect(screen.getByTestId('nav-order-form')).toBeInTheDocument();
       });
     });
 
     it('shows placeholder for admin-only section hash', () => {
-      renderWithRouter(<SettingsPage />, { initialEntries: ['/settings#dvr-settings'] });
-      expect(screen.getByText('Select a setting from the sidebar')).toBeInTheDocument();
+      renderWithRouter(<SettingsPage />, {
+        initialEntries: ['/settings#dvr-settings'],
+      });
+      expect(
+        screen.getByText('Select a setting from the sidebar')
+      ).toBeInTheDocument();
     });
   });
 
   describe('admin user', () => {
     beforeEach(() => {
-      useAuthStore.mockReturnValue({ user_level: USER_LEVELS.ADMIN, username: 'admin' });
+      useAuthStore.mockReturnValue({
+        user_level: USER_LEVELS.ADMIN,
+        username: 'admin',
+      });
     });
 
     it('renders dvr-settings section via hash', async () => {
-      renderWithRouter(<SettingsPage />, { initialEntries: ['/settings#dvr-settings'] });
+      renderWithRouter(<SettingsPage />, {
+        initialEntries: ['/settings#dvr-settings'],
+      });
       await waitFor(() => {
         expect(screen.getByTestId('dvr-settings-form')).toBeInTheDocument();
       });
@@ -137,57 +184,75 @@ describe('SettingsPage', () => {
     });
 
     it('renders stream-settings section via hash', async () => {
-      renderWithRouter(<SettingsPage />, { initialEntries: ['/settings#stream-settings'] });
+      renderWithRouter(<SettingsPage />, {
+        initialEntries: ['/settings#stream-settings'],
+      });
       await waitFor(() => {
         expect(screen.getByTestId('stream-settings-form')).toBeInTheDocument();
       });
     });
 
     it('renders stream-profiles section via hash', async () => {
-      renderWithRouter(<SettingsPage />, { initialEntries: ['/settings#stream-profiles'] });
+      renderWithRouter(<SettingsPage />, {
+        initialEntries: ['/settings#stream-profiles'],
+      });
       await waitFor(() => {
         expect(screen.getByTestId('stream-profiles-table')).toBeInTheDocument();
       });
     });
 
     it('renders network-access section via hash', async () => {
-      renderWithRouter(<SettingsPage />, { initialEntries: ['/settings#network-access'] });
+      renderWithRouter(<SettingsPage />, {
+        initialEntries: ['/settings#network-access'],
+      });
       await waitFor(() => {
         expect(screen.getByTestId('network-access-form')).toBeInTheDocument();
       });
     });
 
     it('renders proxy-settings section via hash', async () => {
-      renderWithRouter(<SettingsPage />, { initialEntries: ['/settings#proxy-settings'] });
+      renderWithRouter(<SettingsPage />, {
+        initialEntries: ['/settings#proxy-settings'],
+      });
       await waitFor(() => {
         expect(screen.getByTestId('proxy-settings-form')).toBeInTheDocument();
       });
     });
 
     it('renders backups section via hash', async () => {
-      renderWithRouter(<SettingsPage />, { initialEntries: ['/settings#backups'] });
+      renderWithRouter(<SettingsPage />, {
+        initialEntries: ['/settings#backups'],
+      });
       await waitFor(() => {
         expect(screen.getByTestId('backup-manager')).toBeInTheDocument();
       });
     });
 
     it('renders system-settings section via hash', async () => {
-      renderWithRouter(<SettingsPage />, { initialEntries: ['/settings#system-settings'] });
+      renderWithRouter(<SettingsPage />, {
+        initialEntries: ['/settings#system-settings'],
+      });
       await waitFor(() => {
         expect(screen.getByTestId('system-settings-form')).toBeInTheDocument();
       });
     });
 
     it('renders mac-panel-settings section via hash', async () => {
-      renderWithRouter(<SettingsPage />, { initialEntries: ['/settings#mac-panel-settings'] });
+      renderWithRouter(<SettingsPage />, {
+        initialEntries: ['/settings#mac-panel-settings'],
+      });
       await waitFor(() => {
-        expect(screen.getByTestId('mac-panel-settings-form')).toBeInTheDocument();
+        expect(
+          screen.getByTestId('mac-panel-settings-form')
+        ).toBeInTheDocument();
       });
       expect(screen.getByText('MAC Panel')).toBeInTheDocument();
     });
 
     it('passes active=true to rendered component', async () => {
-      renderWithRouter(<SettingsPage />, { initialEntries: ['/settings#dvr-settings'] });
+      renderWithRouter(<SettingsPage />, {
+        initialEntries: ['/settings#dvr-settings'],
+      });
       await waitFor(() => {
         expect(screen.getByText(/active/)).toBeInTheDocument();
       });

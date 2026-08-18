@@ -45,7 +45,9 @@ const MacPanelSettingsForm = React.memo(({ active }) => {
       // public_url is stored trimmed of a trailing slash server-side too,
       // but strip it here as well so the field reflects what's actually
       // saved rather than surprising the admin after a page refresh.
-      const value = { public_url: (values.public_url || '').replace(/\/+$/, '') };
+      const value = {
+        public_url: (values.public_url || '').replace(/\/+$/, ''),
+      };
 
       const result = existing?.id
         ? await updateSetting({ ...existing, value })

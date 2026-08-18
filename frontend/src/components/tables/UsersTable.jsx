@@ -7,7 +7,14 @@ import useChannelsStore from '../../store/channels';
 import useAuthStore from '../../store/auth';
 import { USER_LEVELS, USER_LEVEL_LABELS } from '../../constants';
 import useWarningsStore from '../../store/warnings';
-import { SquarePlus, SquareMinus, SquarePen, Eye, EyeOff, Smartphone } from 'lucide-react';
+import {
+  SquarePlus,
+  SquareMinus,
+  SquarePen,
+  Eye,
+  EyeOff,
+  Smartphone,
+} from 'lucide-react';
 import {
   ActionIcon,
   Box,
@@ -71,7 +78,13 @@ const XCPasswordCell = ({ getValue }) => {
   );
 };
 
-const UserRowActions = ({ theme, row, editUser, handleDeleteUser, openMacDevices }) => {
+const UserRowActions = ({
+  theme,
+  row,
+  editUser,
+  handleDeleteUser,
+  openMacDevices,
+}) => {
   const [tableSize, _] = useLocalStorage('table-size', 'default');
   const authUser = useAuthStore((s) => s.user);
 
@@ -349,7 +362,14 @@ const UsersTable = () => {
         ),
       },
     ],
-    [theme, editUser, handleDeleteUser, openMacDevices, fullDateFormat, fullDateTimeFormat]
+    [
+      theme,
+      editUser,
+      handleDeleteUser,
+      openMacDevices,
+      fullDateFormat,
+      fullDateTimeFormat,
+    ]
   );
 
   const closeUserForm = () => {

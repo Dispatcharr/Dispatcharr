@@ -15,19 +15,45 @@ import {
   Video,
 } from 'lucide-react';
 
-const UiSettingsForm = lazy(() => import('../components/forms/settings/UiSettingsForm.jsx'));
-const NavOrderForm = lazy(() => import('../components/forms/settings/NavOrderForm.jsx'));
-const StreamSettingsForm = lazy(() => import('../components/forms/settings/StreamSettingsForm.jsx'));
-const ProxySettingsForm = lazy(() => import('../components/forms/settings/ProxySettingsForm.jsx'));
-const StreamProfilesTable = lazy(() => import('../components/tables/StreamProfilesTable.jsx'));
-const OutputProfilesTable = lazy(() => import('../components/tables/OutputProfilesTable.jsx'));
-const DvrSettingsForm = lazy(() => import('../components/forms/settings/DvrSettingsForm.jsx'));
-const UserAgentsTable = lazy(() => import('../components/tables/UserAgentsTable.jsx'));
-const NetworkAccessForm = lazy(() => import('../components/forms/settings/NetworkAccessForm.jsx'));
-const SystemSettingsForm = lazy(() => import('../components/forms/settings/SystemSettingsForm.jsx'));
-const UserLimitsForm = lazy(() => import('../components/forms/settings/UserLimitsForm.jsx'));
-const BackupManager = lazy(() => import('../components/backups/BackupManager.jsx'));
-const MacPanelSettingsForm = lazy(() => import('../components/forms/settings/MacPanelSettingsForm.jsx'));
+const UiSettingsForm = lazy(
+  () => import('../components/forms/settings/UiSettingsForm.jsx')
+);
+const NavOrderForm = lazy(
+  () => import('../components/forms/settings/NavOrderForm.jsx')
+);
+const StreamSettingsForm = lazy(
+  () => import('../components/forms/settings/StreamSettingsForm.jsx')
+);
+const ProxySettingsForm = lazy(
+  () => import('../components/forms/settings/ProxySettingsForm.jsx')
+);
+const StreamProfilesTable = lazy(
+  () => import('../components/tables/StreamProfilesTable.jsx')
+);
+const OutputProfilesTable = lazy(
+  () => import('../components/tables/OutputProfilesTable.jsx')
+);
+const DvrSettingsForm = lazy(
+  () => import('../components/forms/settings/DvrSettingsForm.jsx')
+);
+const UserAgentsTable = lazy(
+  () => import('../components/tables/UserAgentsTable.jsx')
+);
+const NetworkAccessForm = lazy(
+  () => import('../components/forms/settings/NetworkAccessForm.jsx')
+);
+const SystemSettingsForm = lazy(
+  () => import('../components/forms/settings/SystemSettingsForm.jsx')
+);
+const UserLimitsForm = lazy(
+  () => import('../components/forms/settings/UserLimitsForm.jsx')
+);
+const BackupManager = lazy(
+  () => import('../components/backups/BackupManager.jsx')
+);
+const MacPanelSettingsForm = lazy(
+  () => import('../components/forms/settings/MacPanelSettingsForm.jsx')
+);
 
 // Component lives on each section so it can never drift out of sync with the
 // id used for routing/lookup (previously a separate COMPONENT_MAP keyed by
@@ -38,8 +64,18 @@ export const SETTINGS_GROUPS = [
     label: 'Interface',
     adminOnly: false,
     sections: [
-      { id: 'ui-settings', label: 'UI Settings', icon: Palette, Component: UiSettingsForm },
-      { id: 'nav-order', label: 'Navigation', icon: Menu, Component: NavOrderForm },
+      {
+        id: 'ui-settings',
+        label: 'UI Settings',
+        icon: Palette,
+        Component: UiSettingsForm,
+      },
+      {
+        id: 'nav-order',
+        label: 'Navigation',
+        icon: Menu,
+        Component: NavOrderForm,
+      },
     ],
   },
   {
@@ -47,10 +83,30 @@ export const SETTINGS_GROUPS = [
     label: 'Streaming',
     adminOnly: true,
     sections: [
-      { id: 'stream-settings', label: 'Stream Settings', icon: Video, Component: StreamSettingsForm },
-      { id: 'proxy-settings', label: 'Proxy Settings', icon: ArrowLeftRight, Component: ProxySettingsForm },
-      { id: 'stream-profiles', label: 'Stream Profiles', icon: SlidersHorizontal, Component: StreamProfilesTable },
-      { id: 'output-profiles', label: 'Output Profiles', icon: FileOutput, Component: OutputProfilesTable },
+      {
+        id: 'stream-settings',
+        label: 'Stream Settings',
+        icon: Video,
+        Component: StreamSettingsForm,
+      },
+      {
+        id: 'proxy-settings',
+        label: 'Proxy Settings',
+        icon: ArrowLeftRight,
+        Component: ProxySettingsForm,
+      },
+      {
+        id: 'stream-profiles',
+        label: 'Stream Profiles',
+        icon: SlidersHorizontal,
+        Component: StreamProfilesTable,
+      },
+      {
+        id: 'output-profiles',
+        label: 'Output Profiles',
+        icon: FileOutput,
+        Component: OutputProfilesTable,
+      },
     ],
   },
   {
@@ -58,7 +114,12 @@ export const SETTINGS_GROUPS = [
     label: 'DVR',
     adminOnly: true,
     sections: [
-      { id: 'dvr-settings', label: 'DVR Settings', icon: Tv, Component: DvrSettingsForm },
+      {
+        id: 'dvr-settings',
+        label: 'DVR Settings',
+        icon: Tv,
+        Component: DvrSettingsForm,
+      },
     ],
   },
   {
@@ -66,8 +127,18 @@ export const SETTINGS_GROUPS = [
     label: 'Network',
     adminOnly: true,
     sections: [
-      { id: 'user-agents', label: 'User-Agents', icon: Monitor, Component: UserAgentsTable },
-      { id: 'network-access', label: 'Network Access', icon: Network, Component: NetworkAccessForm },
+      {
+        id: 'user-agents',
+        label: 'User-Agents',
+        icon: Monitor,
+        Component: UserAgentsTable,
+      },
+      {
+        id: 'network-access',
+        label: 'Network Access',
+        icon: Network,
+        Component: NetworkAccessForm,
+      },
     ],
   },
   {
@@ -75,8 +146,18 @@ export const SETTINGS_GROUPS = [
     label: 'System',
     adminOnly: true,
     sections: [
-      { id: 'system-settings', label: 'System Settings', icon: Settings2, Component: SystemSettingsForm },
-      { id: 'user-limits', label: 'User Limits', icon: Users, Component: UserLimitsForm },
+      {
+        id: 'system-settings',
+        label: 'System Settings',
+        icon: Settings2,
+        Component: SystemSettingsForm,
+      },
+      {
+        id: 'user-limits',
+        label: 'User Limits',
+        icon: Users,
+        Component: UserLimitsForm,
+      },
     ],
   },
   {
@@ -84,7 +165,12 @@ export const SETTINGS_GROUPS = [
     label: 'Backup',
     adminOnly: true,
     sections: [
-      { id: 'backups', label: 'Backup & Restore', icon: DatabaseBackup, Component: BackupManager },
+      {
+        id: 'backups',
+        label: 'Backup & Restore',
+        icon: DatabaseBackup,
+        Component: BackupManager,
+      },
     ],
   },
   {
@@ -92,7 +178,12 @@ export const SETTINGS_GROUPS = [
     label: 'MAC Panel',
     adminOnly: true,
     sections: [
-      { id: 'mac-panel-settings', label: 'MAC Panel', icon: Smartphone, Component: MacPanelSettingsForm },
+      {
+        id: 'mac-panel-settings',
+        label: 'MAC Panel',
+        icon: Smartphone,
+        Component: MacPanelSettingsForm,
+      },
     ],
   },
 ];
