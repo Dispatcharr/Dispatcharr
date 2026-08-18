@@ -21,7 +21,7 @@ RUN apt-get update && apt-get install --no-install-recommends -y \
     && apt-get update \
     && apt-get install --no-install-recommends -y \
     python3.13 python3.13-dev python3.13-venv libpython3.13 \
-    libpcre3 libpcre3-dev \
+    libpcre2-dev \
     build-essential gcc g++ gfortran libopenblas-dev libopenblas0 ninja-build \
     && rm -rf /var/lib/apt/lists/*
 
@@ -49,6 +49,27 @@ RUN uv pip install --python $UV_PROJECT_ENVIRONMENT/bin/python --no-cache build 
     cd / && rm -rf /tmp/numpy-* /tmp/*.tar.gz /tmp/build && \
     uv pip uninstall --python $UV_PROJECT_ENVIRONMENT/bin/python build pip
 
+# Ubuntu 26.04 dropped the comskip package. Build the latest GitHub release
+# against distro libav (same libraries the old universe package used).
+# PKG_CONFIG_LIBDIR ignores linuxserver's /usr/local ffmpeg so we do not mix
+# two libav ABIs. git is not installed; the release tarball is enough.
+RUN apt-get update && apt-get install --no-install-recommends -y \
+    autoconf automake libtool pkg-config \
+    libargtable2-dev libavformat-dev libswscale-dev \
+    && COMSKIP_TAG=$(curl -fsSL https://api.github.com/repos/erikkaashoek/Comskip/releases/latest \
+        | python3 -c "import json,sys; print(json.load(sys.stdin)['tag_name'])") \
+    && echo "Building Comskip ${COMSKIP_TAG}" \
+    && mkdir /tmp/comskip \
+    && curl -fsSL "https://github.com/erikkaashoek/Comskip/archive/refs/tags/${COMSKIP_TAG}.tar.gz" \
+        | tar -xz --strip-components=1 -C /tmp/comskip \
+    && cd /tmp/comskip \
+    && export PKG_CONFIG_LIBDIR="/usr/lib/$(dpkg-architecture -qDEB_HOST_MULTIARCH)/pkgconfig" \
+    && ./autogen.sh && ./configure && make -j"$(nproc)" \
+    && strip comskip \
+    && install -m 0755 comskip /usr/local/bin/comskip \
+    && rm -rf /tmp/comskip \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
 # ==============================================================================
 # Stage 2: final runtime image
 # Same ffmpeg base, but installs only the runtime system libraries (no compilers)
@@ -64,26 +85,28 @@ ENV UV_COMPILE_BYTECODE=1
 ENV UV_LINK_MODE=copy
 
 # --- Install runtime system dependencies (no build toolchain) ---
-# python3.13 + libpython3.13 back the copied venv; libpcre3 backs uWSGI;
-# libopenblas0 backs the legacy NumPy wheel; ca-certificates/gnupg2/curl/wget
-# and software-properties-common are kept for TLS and the AIO runtime apt step.
+# python3.13 + libpython3.13 back the copied venv; libpcre2-8-0 backs uWSGI;
+# libopenblas0 backs the legacy NumPy wheel; libargtable2-0 is for comskip;
+# ca-certificates/gnupg2/curl/wget and software-properties-common are kept
+# for TLS and the AIO runtime apt step.
 RUN apt-get update && apt-get install --no-install-recommends -y \
     ca-certificates software-properties-common gnupg2 curl wget \
     && add-apt-repository ppa:deadsnakes/ppa \
     && apt-get update \
     && apt-get install --no-install-recommends -y \
     python3.13 python3.13-venv libpython3.13 \
-    libpcre3 libopenblas0 procps pciutils \
-    nginx comskip \
+    libpcre2-8-0 libopenblas0 procps pciutils \
+    nginx libargtable2-0 \
     vlc-bin vlc-plugin-base \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # --- Install UV (used at runtime to swap in the legacy NumPy wheel) ---
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
-# --- Copy prebuilt virtual environment and legacy NumPy wheel from the builder ---
+# --- Copy prebuilt virtual environment, legacy NumPy wheel, and comskip ---
 COPY --from=builder /dispatcharrpy /dispatcharrpy
 COPY --from=builder /opt/numpy-*.whl /opt/
+COPY --from=builder /usr/local/bin/comskip /usr/local/bin/comskip
 
 # --- Set up Redis 7.x ---
 RUN curl -fsSL https://packages.redis.io/gpg | gpg --dearmor -o /usr/share/keyrings/redis-archive-keyring.gpg && \
