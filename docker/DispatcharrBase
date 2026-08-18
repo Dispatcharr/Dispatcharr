@@ -59,10 +59,14 @@ RUN uv pip install --python $UV_PROJECT_ENVIRONMENT/bin/python --no-cache build 
 #   https://github.com/erikkaashoek/Comskip/archive/refs/tags/${TAG}.tar.gz
 # and delete the ticks_per_frame sed below if that tree already compiles.
 #
-# PKG_CONFIG_LIBDIR plus LIBRARY_PATH/LDFLAGS keep gcc off linuxserver's
-# /usr/local libs. Headers-only isolation is not enough: amd64 then links
-# distro pangocairo against the older /usr/local fontconfig (missing
-# FcConfigSetDefaultSubstitute). arm64 did not hit that shadowing.
+# Distro libav (via libavformat-dev) is required: linuxserver ships libav
+# statically inside ffmpeg, with no shared libavcodec to link comskip against.
+# PKG_CONFIG_LIBDIR selects distro headers. -L is not enough on amd64: Ubuntu
+# libav pulls pangocairo, which needs fontconfig 2.17's
+# FcConfigSetDefaultSubstitute, while ld resolves that DT_NEEDED from
+# linuxserver's older /usr/local/lib/libfontconfig. -rpath-link is the link-time
+# search path for those transitive libs; -rpath keeps the same order at runtime
+# (ld.so.cache lists /usr/local first).
 RUN apt-get update && apt-get install --no-install-recommends -y \
     autoconf automake libtool pkg-config \
     libargtable2-dev libavformat-dev libswscale-dev \
@@ -76,9 +80,9 @@ RUN apt-get update && apt-get install --no-install-recommends -y \
         -e 's/is->dec_ctx->ticks_per_frame/(is->dec_ctx->codec_descriptor \&\& (is->dec_ctx->codec_descriptor->props \& AV_CODEC_PROP_FIELDS) ? 2 : 1)/g' \
         mpeg2dec.c \
     && MULTIARCH="$(dpkg-architecture -qDEB_HOST_MULTIARCH)" \
-    && export PKG_CONFIG_LIBDIR="/usr/lib/${MULTIARCH}/pkgconfig" \
-    && export LIBRARY_PATH="/usr/lib/${MULTIARCH}:/lib/${MULTIARCH}" \
-    && export LDFLAGS="-L/usr/lib/${MULTIARCH} -L/lib/${MULTIARCH}" \
+    && DISTRO_LIB="/usr/lib/${MULTIARCH}" \
+    && export PKG_CONFIG_LIBDIR="${DISTRO_LIB}/pkgconfig" \
+    && export LDFLAGS="-L${DISTRO_LIB} -Wl,-rpath-link,${DISTRO_LIB} -Wl,-rpath,${DISTRO_LIB}" \
     && ./autogen.sh && ./configure && make -j"$(nproc)" \
     && strip comskip \
     && install -m 0755 comskip /usr/local/bin/comskip \
