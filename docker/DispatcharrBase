@@ -51,8 +51,6 @@ RUN uv pip install --python $UV_PROJECT_ENVIRONMENT/bin/python --no-cache build 
 
 # Ubuntu 26.04 dropped the comskip package. Build from Comskip master
 # against distro libav (same libraries the old universe package used).
-# PKG_CONFIG_LIBDIR ignores linuxserver's /usr/local ffmpeg so we do not mix
-# two libav ABIs.
 #
 # Latest GitHub release is still V0.83, which does not compile here: gcc 15
 # rejects void OutputFrame(); (fixed on master) and FFmpeg 8 removed
@@ -60,6 +58,11 @@ RUN uv pip install --python $UV_PROJECT_ENVIRONMENT/bin/python --no-cache build 
 # release that builds on Ubuntu 26.04, switch the tarball to
 #   https://github.com/erikkaashoek/Comskip/archive/refs/tags/${TAG}.tar.gz
 # and delete the ticks_per_frame sed below if that tree already compiles.
+#
+# PKG_CONFIG_LIBDIR plus LIBRARY_PATH/LDFLAGS keep gcc off linuxserver's
+# /usr/local libs. Headers-only isolation is not enough: amd64 then links
+# distro pangocairo against the older /usr/local fontconfig (missing
+# FcConfigSetDefaultSubstitute). arm64 did not hit that shadowing.
 RUN apt-get update && apt-get install --no-install-recommends -y \
     autoconf automake libtool pkg-config \
     libargtable2-dev libavformat-dev libswscale-dev \
@@ -72,7 +75,10 @@ RUN apt-get update && apt-get install --no-install-recommends -y \
         -e '/is->dec_ctx->ticks_per_frame = 1/d' \
         -e 's/is->dec_ctx->ticks_per_frame/(is->dec_ctx->codec_descriptor \&\& (is->dec_ctx->codec_descriptor->props \& AV_CODEC_PROP_FIELDS) ? 2 : 1)/g' \
         mpeg2dec.c \
-    && export PKG_CONFIG_LIBDIR="/usr/lib/$(dpkg-architecture -qDEB_HOST_MULTIARCH)/pkgconfig" \
+    && MULTIARCH="$(dpkg-architecture -qDEB_HOST_MULTIARCH)" \
+    && export PKG_CONFIG_LIBDIR="/usr/lib/${MULTIARCH}/pkgconfig" \
+    && export LIBRARY_PATH="/usr/lib/${MULTIARCH}:/lib/${MULTIARCH}" \
+    && export LDFLAGS="-L/usr/lib/${MULTIARCH} -L/lib/${MULTIARCH}" \
     && ./autogen.sh && ./configure && make -j"$(nproc)" \
     && strip comskip \
     && install -m 0755 comskip /usr/local/bin/comskip \
