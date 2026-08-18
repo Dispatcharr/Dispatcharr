@@ -49,20 +49,29 @@ RUN uv pip install --python $UV_PROJECT_ENVIRONMENT/bin/python --no-cache build 
     cd / && rm -rf /tmp/numpy-* /tmp/*.tar.gz /tmp/build && \
     uv pip uninstall --python $UV_PROJECT_ENVIRONMENT/bin/python build pip
 
-# Ubuntu 26.04 dropped the comskip package. Build the latest GitHub release
+# Ubuntu 26.04 dropped the comskip package. Build from Comskip master
 # against distro libav (same libraries the old universe package used).
 # PKG_CONFIG_LIBDIR ignores linuxserver's /usr/local ffmpeg so we do not mix
-# two libav ABIs. git is not installed; the release tarball is enough.
+# two libav ABIs.
+#
+# Latest GitHub release is still V0.83, which does not compile here: gcc 15
+# rejects void OutputFrame(); (fixed on master) and FFmpeg 8 removed
+# AVCodecContext.ticks_per_frame (not in any tag yet). When they tag a
+# release that builds on Ubuntu 26.04, switch the tarball to
+#   https://github.com/erikkaashoek/Comskip/archive/refs/tags/${TAG}.tar.gz
+# and delete the ticks_per_frame sed below if that tree already compiles.
 RUN apt-get update && apt-get install --no-install-recommends -y \
     autoconf automake libtool pkg-config \
     libargtable2-dev libavformat-dev libswscale-dev \
-    && COMSKIP_TAG=$(curl -fsSL https://api.github.com/repos/erikkaashoek/Comskip/releases/latest \
-        | python3 -c "import json,sys; print(json.load(sys.stdin)['tag_name'])") \
-    && echo "Building Comskip ${COMSKIP_TAG}" \
     && mkdir /tmp/comskip \
-    && curl -fsSL "https://github.com/erikkaashoek/Comskip/archive/refs/tags/${COMSKIP_TAG}.tar.gz" \
+    && curl -fsSL https://github.com/erikkaashoek/Comskip/archive/refs/heads/master.tar.gz \
         | tar -xz --strip-components=1 -C /tmp/comskip \
     && cd /tmp/comskip \
+    && sed -i \
+        -e '/#include <libavcodec\/avcodec.h>/a #include <libavcodec/codec_desc.h>' \
+        -e '/is->dec_ctx->ticks_per_frame = 1/d' \
+        -e 's/is->dec_ctx->ticks_per_frame/(is->dec_ctx->codec_descriptor \&\& (is->dec_ctx->codec_descriptor->props \& AV_CODEC_PROP_FIELDS) ? 2 : 1)/g' \
+        mpeg2dec.c \
     && export PKG_CONFIG_LIBDIR="/usr/lib/$(dpkg-architecture -qDEB_HOST_MULTIARCH)/pkgconfig" \
     && ./autogen.sh && ./configure && make -j"$(nproc)" \
     && strip comskip \
