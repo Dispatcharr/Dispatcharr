@@ -268,6 +268,7 @@ class ProxyServer:
                                                 success = stream_manager.update_url(new_url, event_stream_id, event_m3u_profile_id)
 
                                             if success:
+                                                stream_manager.reset_failover_rotation_state()
                                                 logger.info(f"Stream switch initiated for channel {channel_id}")
 
                                                 if self.redis_client:

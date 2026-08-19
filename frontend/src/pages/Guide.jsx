@@ -715,7 +715,10 @@ export default function TVChannelGuide({ startDate, endDate }) {
       setRecordChoiceOpen(true);
       try {
         const rules = await fetchRules();
-        const rule = getRuleByProgram(rules, program);
+        const tvgRecord = channel?.epg_data_id
+          ? tvgsById[channel.epg_data_id]
+          : null;
+        const rule = getRuleByProgram(rules, program, tvgRecord?.epg_source);
         setExistingRuleMode(rule ? rule.mode : null);
         setExistingRule(rule || null);
       } catch (error) {
@@ -724,7 +727,7 @@ export default function TVChannelGuide({ startDate, endDate }) {
 
       setRecordingForProgram(recordingsByProgramId.get(program.id) || null);
     },
-    [recordingsByProgramId]
+    [recordingsByProgramId, tvgsById]
   );
 
   const recordOne = useCallback(async (program, channel) => {
@@ -746,18 +749,27 @@ export default function TVChannelGuide({ startDate, endDate }) {
     showNotification({ title: 'Recording scheduled' });
   }, []);
 
-  const saveSeriesRule = useCallback(async (program, mode) => {
-    await createSeriesRule({
-      tvg_id: program.tvg_id,
-      mode,
-      title: program.title,
-    });
-    await evaluateSeriesRulesByTvgId(program.tvg_id);
-    // recordings_refreshed WS event triggers the debounced fetchRecordings()
-    showNotification({
-      title: mode === 'new' ? 'Record new episodes' : 'Record all episodes',
-    });
-  }, []);
+  const saveSeriesRule = useCallback(
+    async (program, mode) => {
+      const tvgRecord = recordChoiceChannel?.epg_data_id
+        ? tvgsById[recordChoiceChannel.epg_data_id]
+        : null;
+      await createSeriesRule({
+        tvg_id: program.tvg_id,
+        mode,
+        title: program.title,
+        ...(tvgRecord?.epg_source
+          ? { epg_source_id: tvgRecord.epg_source }
+          : {}),
+      });
+      await evaluateSeriesRulesByTvgId(program.tvg_id);
+      // recordings_refreshed WS event triggers the debounced fetchRecordings()
+      showNotification({
+        title: mode === 'new' ? 'Record new episodes' : 'Record all episodes',
+      });
+    },
+    [recordChoiceChannel, tvgsById]
+  );
 
   const openRules = useCallback(async () => {
     setRulesOpen(true);
@@ -1471,6 +1483,11 @@ export default function TVChannelGuide({ startDate, endDate }) {
               recording={recordingForProgram}
               existingRuleMode={existingRuleMode}
               existingRule={existingRule}
+              epgSourceId={
+                recordChoiceChannel?.epg_data_id
+                  ? tvgsById[recordChoiceChannel.epg_data_id]?.epg_source
+                  : null
+              }
               onRecordOne={() =>
                 recordOne(recordChoiceProgram, recordChoiceChannel)
               }

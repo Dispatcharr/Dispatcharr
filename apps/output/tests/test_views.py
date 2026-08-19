@@ -1497,3 +1497,64 @@ class GenerateM3UCacheKeyTests(SimpleTestCase):
         self.assertIn("origin=http://tv.example.com", public_key)
         self.assertNotEqual(lan_key, public_key)
         self.assertEqual(lan_key, same_lan_key)
+
+
+class XcVodStreamsAdultContentTests(TestCase):
+    def setUp(self):
+        self.factory = RequestFactory()
+        self.account = M3UAccount.objects.create(
+            name=f"vod-adult-{uuid4().hex[:6]}",
+            server_url="http://example.com",
+            priority=1,
+            is_active=True,
+        )
+        self.safe = Movie.objects.create(name="Family Movie", is_adult=False)
+        self.adult = Movie.objects.create(name="Mature Movie", is_adult=True)
+        M3UMovieRelation.objects.create(
+            m3u_account=self.account,
+            movie=self.safe,
+            stream_id="safe-1",
+        )
+        M3UMovieRelation.objects.create(
+            m3u_account=self.account,
+            movie=self.adult,
+            stream_id="adult-1",
+        )
+        self.request = self.factory.get("/player_api.php")
+
+    def test_vod_streams_emits_is_adult_flag(self):
+        user = User.objects.create_user(
+            username=f"xc-adult-admin-{uuid4().hex[:8]}",
+            password="pass",
+            user_level=10,
+            custom_properties={"xc_password": "xcpass"},
+        )
+        streams = {s["name"]: s for s in xc_get_vod_streams(self.request, user)}
+        self.assertEqual(streams["Family Movie"]["is_adult"], 0)
+        self.assertEqual(streams["Mature Movie"]["is_adult"], 1)
+
+    def test_hide_adult_content_filters_vod_for_non_admin(self):
+        user = User.objects.create_user(
+            username=f"xc-adult-hide-{uuid4().hex[:8]}",
+            password="pass",
+            user_level=0,
+            custom_properties={
+                "xc_password": "xcpass",
+                "hide_adult_content": True,
+            },
+        )
+        names = {s["name"] for s in xc_get_vod_streams(self.request, user)}
+        self.assertEqual(names, {"Family Movie"})
+
+    def test_admin_still_sees_adult_vod_when_hide_set(self):
+        user = User.objects.create_user(
+            username=f"xc-adult-admin-hide-{uuid4().hex[:8]}",
+            password="pass",
+            user_level=10,
+            custom_properties={
+                "xc_password": "xcpass",
+                "hide_adult_content": True,
+            },
+        )
+        names = {s["name"] for s in xc_get_vod_streams(self.request, user)}
+        self.assertEqual(names, {"Family Movie", "Mature Movie"})

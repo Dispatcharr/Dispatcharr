@@ -999,7 +999,7 @@ XC_MOVIE_VALUE_FIELDS = (
     'id', 'movie_id', 'category_id', 'container_extension',
     'movie__id', 'movie__name', 'movie__rating', 'movie__created_at',
     'movie__tmdb_id', 'movie__imdb_id', 'movie__description', 'movie__genre',
-    'movie__year', 'movie__custom_properties', 'movie__logo_id',
+    'movie__year', 'movie__is_adult', 'movie__custom_properties', 'movie__logo_id',
     # Lean relation-artwork extracts (see _xc_annotate_relation_artwork).
     'rel_movie_image', 'rel_backdrop',
 )
@@ -1193,6 +1193,9 @@ def xc_get_vod_streams(request, user, category_id=None):
     rel_filters = {"m3u_account__is_active": True}
     if category_id:
         rel_filters["category_id"] = category_id
+    # Non-admins with Hide Mature Content skip adult VODs.
+    if user.user_level < 10 and (user.custom_properties or {}).get('hide_adult_content', False):
+        rel_filters["movie__is_adult"] = False
 
     relations = _xc_fetch_priority_distinct_relations(
         manager=M3UMovieRelation.objects,
@@ -1233,7 +1236,7 @@ def xc_get_vod_streams(request, user, category_id=None):
             "rating": rating or "0",
             "rating_5based": round(float(rating or 0) / 2, 2) if rating else 0,
             "added": str(int(row['movie__created_at'].timestamp())),
-            "is_adult": 0,
+            "is_adult": int(bool(row['movie__is_adult'])),
             "tmdb_id": row['movie__tmdb_id'] or "",
             "imdb_id": row['movie__imdb_id'] or "",
             "trailer": custom_props.get('youtube_trailer') or "",
@@ -1617,6 +1620,8 @@ def xc_get_vod_info(request, user, vod_id):
 
     # All authenticated users get access to VOD from all active M3U accounts
     filters = {"movie_id": vod_id, "m3u_account__is_active": True}
+    if user.user_level < 10 and (user.custom_properties or {}).get('hide_adult_content', False):
+        filters["movie__is_adult"] = False
 
     try:
         # Order by account priority to get the best relation when multiple exist

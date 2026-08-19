@@ -3238,11 +3238,12 @@ export default class API {
     }
   }
 
-  static async deleteSeriesRule(tvgId, title) {
+  static async deleteSeriesRule(tvgId, title, epgSourceId) {
     try {
       const params = new URLSearchParams();
       if (tvgId) params.set('tvg_id', tvgId);
       if (title) params.set('title', title);
+      if (epgSourceId) params.set('epg_source_id', String(epgSourceId));
       await request(`${host}/api/channels/series-rules/?${params}`, {
         method: 'DELETE',
       });
@@ -3294,13 +3295,19 @@ export default class API {
     tvg_id,
     title = null,
     scope = 'title',
+    epg_source_id,
   }) {
     try {
       const resp = await request(
         `${host}/api/channels/series-rules/bulk-remove/`,
         {
           method: 'POST',
-          body: { tvg_id, title, scope },
+          body: {
+            tvg_id,
+            title,
+            scope,
+            ...(epg_source_id ? { epg_source_id } : {}),
+          },
         }
       );
       notifications.show({ title: `Removed ${resp.removed || 0} scheduled` });

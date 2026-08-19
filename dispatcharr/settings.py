@@ -522,12 +522,19 @@ else:
 
 LOG_LEVEL = LOG_LEVEL_MAP.get(LOG_LEVEL_NAME, 20)  # Default to INFO (20) if invalid
 
+# Read at module import: Django re-stamps os.environ["TZ"] to TIME_ZONE
+# ("UTC") via time.tzset() as soon as settings finish loading.
+DISPATCHARR_DISPLAY_TZ = (
+    os.environ.get("DISPATCHARR_TIME_ZONE") or os.environ.get("TZ") or "UTC"
+)
+
 # Add this to your existing LOGGING configuration or create one if it doesn't exist
 LOGGING = {
     "version": 1,
     "disable_existing_loggers": False,
     "formatters": {
         "verbose": {
+            "()": "dispatcharr.display_timezone.DisplayTimezoneFormatter",
             "format": "{asctime} {levelname} {name} {message}",
             "style": "{",
         },

@@ -21,7 +21,7 @@ RUN apt-get update && apt-get install --no-install-recommends -y \
     && apt-get update \
     && apt-get install --no-install-recommends -y \
     python3.13 python3.13-dev python3.13-venv libpython3.13 \
-    libpcre3 libpcre3-dev \
+    libpcre2-dev \
     build-essential gcc g++ gfortran libopenblas-dev libopenblas0 ninja-build \
     && rm -rf /var/lib/apt/lists/*
 
@@ -49,6 +49,47 @@ RUN uv pip install --python $UV_PROJECT_ENVIRONMENT/bin/python --no-cache build 
     cd / && rm -rf /tmp/numpy-* /tmp/*.tar.gz /tmp/build && \
     uv pip uninstall --python $UV_PROJECT_ENVIRONMENT/bin/python build pip
 
+# Ubuntu 26.04 dropped the comskip package. Build from Comskip master
+# against distro libav (same libraries the old universe package used).
+#
+# Latest GitHub release is still V0.83, which does not compile here: gcc 15
+# rejects void OutputFrame(); (fixed on master) and FFmpeg 8 removed
+# AVCodecContext.ticks_per_frame (not in any tag yet). When they tag a
+# release that builds on Ubuntu 26.04, switch the tarball to
+#   https://github.com/erikkaashoek/Comskip/archive/refs/tags/${TAG}.tar.gz
+# and delete the ticks_per_frame sed below if that tree already compiles.
+#
+# Distro libav (via libavformat-dev) is required: linuxserver ships libav
+# statically inside ffmpeg, with no shared libavcodec to link comskip against.
+# PKG_CONFIG_LIBDIR selects distro headers. -rpath-link is the link-time search
+# path for pangocairo's fontconfig. gcc's default --enable-new-dtags turns
+# -rpath into DT_RUNPATH, which is searched after LD_LIBRARY_PATH and is not
+# inherited by libpangoft2. linuxserver sets LD_LIBRARY_PATH=/usr/local/lib, so
+# the older /usr/local fontconfig wins and FcConfigSetDefaultSubstitute is
+# missing. --disable-new-dtags writes DT_RPATH, which is searched first and
+# inherited by transitive deps. ffmpeg is a separate process and is unchanged.
+RUN apt-get update && apt-get install --no-install-recommends -y \
+    autoconf automake libtool pkg-config \
+    libargtable2-dev libavformat-dev libswscale-dev \
+    && mkdir /tmp/comskip \
+    && curl -fsSL https://github.com/erikkaashoek/Comskip/archive/refs/heads/master.tar.gz \
+        | tar -xz --strip-components=1 -C /tmp/comskip \
+    && cd /tmp/comskip \
+    && sed -i \
+        -e '/#include <libavcodec\/avcodec.h>/a #include <libavcodec/codec_desc.h>' \
+        -e '/is->dec_ctx->ticks_per_frame = 1/d' \
+        -e 's/is->dec_ctx->ticks_per_frame/(is->dec_ctx->codec_descriptor \&\& (is->dec_ctx->codec_descriptor->props \& AV_CODEC_PROP_FIELDS) ? 2 : 1)/g' \
+        mpeg2dec.c \
+    && MULTIARCH="$(dpkg-architecture -qDEB_HOST_MULTIARCH)" \
+    && DISTRO_LIB="/usr/lib/${MULTIARCH}" \
+    && export PKG_CONFIG_LIBDIR="${DISTRO_LIB}/pkgconfig" \
+    && export LDFLAGS="-L${DISTRO_LIB} -Wl,-rpath-link,${DISTRO_LIB} -Wl,-rpath,${DISTRO_LIB} -Wl,--disable-new-dtags" \
+    && ./autogen.sh && ./configure && make -j"$(nproc)" \
+    && strip comskip \
+    && install -m 0755 comskip /usr/local/bin/comskip \
+    && rm -rf /tmp/comskip \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
 # ==============================================================================
 # Stage 2: final runtime image
 # Same ffmpeg base, but installs only the runtime system libraries (no compilers)
@@ -64,26 +105,28 @@ ENV UV_COMPILE_BYTECODE=1
 ENV UV_LINK_MODE=copy
 
 # --- Install runtime system dependencies (no build toolchain) ---
-# python3.13 + libpython3.13 back the copied venv; libpcre3 backs uWSGI;
-# libopenblas0 backs the legacy NumPy wheel; ca-certificates/gnupg2/curl/wget
-# and software-properties-common are kept for TLS and the AIO runtime apt step.
+# python3.13 + libpython3.13 back the copied venv; libpcre2-8-0 backs uWSGI;
+# libopenblas0 backs the legacy NumPy wheel; libargtable2-0 is for comskip;
+# ca-certificates/gnupg2/curl/wget and software-properties-common are kept
+# for TLS and the AIO runtime apt step.
 RUN apt-get update && apt-get install --no-install-recommends -y \
     ca-certificates software-properties-common gnupg2 curl wget \
     && add-apt-repository ppa:deadsnakes/ppa \
     && apt-get update \
     && apt-get install --no-install-recommends -y \
     python3.13 python3.13-venv libpython3.13 \
-    libpcre3 libopenblas0 procps pciutils \
-    nginx comskip \
+    libpcre2-8-0 libopenblas0 procps pciutils \
+    nginx libargtable2-0 \
     vlc-bin vlc-plugin-base \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # --- Install UV (used at runtime to swap in the legacy NumPy wheel) ---
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
-# --- Copy prebuilt virtual environment and legacy NumPy wheel from the builder ---
+# --- Copy prebuilt virtual environment, legacy NumPy wheel, and comskip ---
 COPY --from=builder /dispatcharrpy /dispatcharrpy
 COPY --from=builder /opt/numpy-*.whl /opt/
+COPY --from=builder /usr/local/bin/comskip /usr/local/bin/comskip
 
 # --- Set up Redis 7.x ---
 RUN curl -fsSL https://packages.redis.io/gpg | gpg --dearmor -o /usr/share/keyrings/redis-archive-keyring.gpg && \
@@ -101,5 +144,10 @@ RUN curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | gpg --dearmo
 
 # Create render group for hardware acceleration support with GID 109
 RUN groupadd -r -g 109 render || true
+
+# /etc/localtime as a regular file, not a symlink to Etc/UTC. Bind-mounting
+# the host's /etc/localtime then overlays this path instead of following the
+# symlink and replacing the IANA UTC zone with the host timezone.
+RUN rm -f /etc/localtime && cp -a /usr/share/zoneinfo/Etc/UTC /etc/localtime
 
 ENTRYPOINT ["/app/docker/entrypoint.sh"]
