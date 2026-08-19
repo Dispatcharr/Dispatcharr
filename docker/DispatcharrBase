@@ -4,7 +4,7 @@
 # builds the legacy (CPU-baseline=none) NumPy wheel. None of these compilers end
 # up in the final image — only the artifacts below are copied forward.
 # ==============================================================================
-FROM lscr.io/linuxserver/ffmpeg:latest AS builder
+FROM lscr.io/linuxserver/ffmpeg:version-8.1.2-cli AS builder
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV UV_PROJECT_ENVIRONMENT=/dispatcharrpy
@@ -49,8 +49,8 @@ RUN uv pip install --python $UV_PROJECT_ENVIRONMENT/bin/python --no-cache build 
     cd / && rm -rf /tmp/numpy-* /tmp/*.tar.gz /tmp/build && \
     uv pip uninstall --python $UV_PROJECT_ENVIRONMENT/bin/python build pip
 
-# Ubuntu 26.04 dropped the comskip package. Build from Comskip master
-# against distro libav (same libraries the old universe package used).
+# Build Comskip from upstream master (newer than distro packages). Links against
+# distro libav (same libraries the old universe package used), not linuxserver ffmpeg.
 #
 # Latest GitHub release is still V0.83, which does not compile here: gcc 15
 # rejects void OutputFrame(); (fixed on master) and FFmpeg 8 removed
@@ -95,7 +95,7 @@ RUN apt-get update && apt-get install --no-install-recommends -y \
 # Same ffmpeg base, but installs only the runtime system libraries (no compilers)
 # and copies the prebuilt virtual environment + NumPy wheel from the builder.
 # ==============================================================================
-FROM lscr.io/linuxserver/ffmpeg:latest AS final
+FROM lscr.io/linuxserver/ffmpeg:version-8.1.2-cli AS final
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV UV_PROJECT_ENVIRONMENT=/dispatcharrpy
