@@ -793,41 +793,49 @@ def _evaluate_series_rules_locked(tvg_id, result):
                 prog_title_l = str(prog.title or "").strip().lower()
                 prog_ident = _identity_of(prog.custom_properties or {}, prog.sub_title)
                 idx_key = (str(prog.tvg_id), prog_title_l)
-                if prog_ident:
-                    if (str(prog.tvg_id), prog_title_l, prog_ident) in existing_episode_keys:
-                        continue
-                else:
-                    # No identity at all: a narrow start-time window is the only
-                    # signal left. Compared solely against other identity-less
-                    # airings, so this can never suppress an identifiable episode.
-                    # Skip only when the nearby recording's original slot is gone
-                    # from the current EPG (this candidate is its drift
-                    # replacement); if it is still listed, this candidate is a
-                    # different airing (e.g. back-to-back news). Each orphaned
-                    # entry can be claimed by only one candidate: pick the
-                    # closest unclaimed match rather than the first.
-                    try:
-                        best_entry = None
-                        best_delta = None
-                        for seen_start, seen_end in existing_program_index.get(idx_key, ()):
-                            entry = (idx_key, seen_start, seen_end)
-                            if entry in claimed_program_index_entries:
-                                continue
-                            delta = abs(seen_start - prog.start_time)
-                            if delta > DEDUP_START_TOLERANCE:
-                                continue
-                            if (
-                                seen_end is not None
-                                and (str(prog.tvg_id), seen_start, seen_end) in live_airings
-                            ):
-                                continue
-                            if best_delta is None or delta < best_delta:
-                                best_entry, best_delta = entry, delta
-                        if best_entry is not None:
-                            claimed_program_index_entries.add(best_entry)
+                # PATCH 11: window runs after an episode-key miss REGARDLESS of
+                # identity. A booking made before the snapshot carried season/episode
+                # is identity-LESS, contributes nothing to existing_episode_keys, and
+                # would otherwise be invisible to an identifiable candidate - which on
+                # 2026-08-06 scheduled Seven News twice 30s apart and destroyed the
+                # recording when both remuxes wrote the same output path.
+                if prog_ident and (
+                    (str(prog.tvg_id), prog_title_l, prog_ident) in existing_episode_keys
+                ):
+                    continue
+                # existing_program_index is populated ONLY from identity-less
+                # recordings, so an identifiable episode still cannot be
+                # suppressed by another identifiable one -- only by an
+                # identity-less booking of the same channel+title inside the
+                # window, which is the ambiguous case that corrupts files.
+                # Skip only when the nearby recording's original slot is gone
+                # from the current EPG (this candidate is its drift
+                # replacement); if it is still listed, this candidate is a
+                # different airing (e.g. back-to-back news). Each orphaned
+                # entry can be claimed by only one candidate: pick the
+                # closest unclaimed match rather than the first.
+                try:
+                    best_entry = None
+                    best_delta = None
+                    for seen_start, seen_end in existing_program_index.get(idx_key, ()):
+                        entry = (idx_key, seen_start, seen_end)
+                        if entry in claimed_program_index_entries:
                             continue
-                    except TypeError:
-                        pass  # naive/aware mismatch in stored data: fall through
+                        delta = abs(seen_start - prog.start_time)
+                        if delta > DEDUP_START_TOLERANCE:
+                            continue
+                        if (
+                            seen_end is not None
+                            and (str(prog.tvg_id), seen_start, seen_end) in live_airings
+                        ):
+                            continue
+                        if best_delta is None or delta < best_delta:
+                            best_entry, best_delta = entry, delta
+                    if best_entry is not None:
+                        claimed_program_index_entries.add(best_entry)
+                        continue
+                except TypeError:
+                    pass  # naive/aware mismatch in stored data: fall through
                 # Extra guard: DB query on the same exact program times stored
                 # in custom_properties (unadjusted, not offset-adjusted
                 # Recording.start_time/end_time).

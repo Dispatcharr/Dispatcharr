@@ -382,3 +382,86 @@ class EPGTimeDriftTests(SeriesRuleDedupBaseTestCase):
         result = evaluate_series_rules_impl()
         self.assertEqual(result["scheduled"], 0)
         self.assertEqual(Recording.objects.count(), 1)
+
+    @patch("apps.channels.tasks.acquire_task_lock", return_value=True)
+    @patch("apps.channels.tasks.release_task_lock")
+    def test_identifiable_airing_dedups_against_identity_less_booking(
+        self, mock_release, mock_lock, mock_schedule, mock_artwork
+    ):
+        """An identity-LESS booking must still suppress an identifiable replacement.
+
+        The recording was scheduled before the snapshot carried season/episode, so
+        it contributes nothing to existing_episode_keys and lives only in
+        existing_program_index. When the refreshed listing comes back WITH an
+        identity, the episode-key lookup misses; if the window is skipped because
+        the candidate is identifiable, the same airing is booked twice and both
+        recordings resolve to one output path.
+        """
+        from apps.channels.tasks import evaluate_series_rules_impl
+        from apps.epg.models import ProgramData
+
+        start = self.now + timedelta(hours=2)
+        prog = ProgramData.objects.create(
+            epg=self.epg, tvg_id="test.channel.1",
+            start_time=start, end_time=start + timedelta(hours=1),
+            title="Test Show", sub_title="",
+        )
+        self.assertEqual(evaluate_series_rules_impl()["scheduled"], 1)
+        self.assertEqual(Recording.objects.count(), 1)
+
+        # strip identity from the stored snapshot: this is what a booking made
+        # before the season/episode fields existed looks like
+        rec = Recording.objects.first()
+        for key in ("season", "episode", "onscreen_episode"):
+            rec.custom_properties["program"].pop(key, None)
+        rec.custom_properties["program"]["sub_title"] = ""
+        rec.save(update_fields=["custom_properties"])
+
+        # the EPG reissues the listing 30s later, now carrying an identity
+        self._simulate_epg_refresh([{
+            "tvg_id": "test.channel.1",
+            "start_time": start + timedelta(seconds=30),
+            "end_time": prog.end_time + timedelta(seconds=30),
+            "title": "Test Show",
+            "sub_title": "",
+            "custom_properties": {"season": 26, "episode": 218},
+        }])
+
+        result = evaluate_series_rules_impl()
+        self.assertEqual(result["scheduled"], 0)
+        self.assertEqual(Recording.objects.count(), 1)
+
+    @patch("apps.channels.tasks.acquire_task_lock", return_value=True)
+    @patch("apps.channels.tasks.release_task_lock")
+    def test_identifiable_airing_not_suppressed_by_identifiable_booking(
+        self, mock_release, mock_lock, mock_schedule, mock_artwork
+    ):
+        """The property the if/else was protecting still holds.
+
+        Two DIFFERENT identifiable episodes inside the window must both record:
+        only identity-less bookings feed existing_program_index, so an
+        identifiable episode can never be suppressed by another identifiable one.
+        """
+        from apps.channels.tasks import evaluate_series_rules_impl
+        from apps.epg.models import ProgramData
+
+        start = self.now + timedelta(hours=2)
+        ProgramData.objects.create(
+            epg=self.epg, tvg_id="test.channel.1",
+            start_time=start, end_time=start + timedelta(minutes=10),
+            title="Test Show", sub_title="",
+            custom_properties={"season": 3, "episode": 1},
+        )
+        self.assertEqual(evaluate_series_rules_impl()["scheduled"], 1)
+
+        ProgramData.objects.create(
+            epg=self.epg, tvg_id="test.channel.1",
+            start_time=start + timedelta(minutes=10),
+            end_time=start + timedelta(minutes=20),
+            title="Test Show", sub_title="",
+            custom_properties={"season": 3, "episode": 2},
+        )
+
+        result = evaluate_series_rules_impl()
+        self.assertEqual(result["scheduled"], 1)
+        self.assertEqual(Recording.objects.count(), 2)
