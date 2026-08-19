@@ -56,7 +56,8 @@ class WaitForRedisTests(SimpleTestCase):
         mock_selective.assert_called_once_with(mock_client)
 
     @patch('core.utils.redis.Redis.from_url')
-    def test_retries_on_connection_error(self, mock_redis_from_url):
+    @patch('core.utils.redis.Redis')
+    def test_retries_on_connection_error(self, mock_redis, mock_redis_from_url):
         """Should retry on ConnectionError and eventually succeed."""
         mock_client = MagicMock()
         mock_client.ping.side_effect = [
@@ -64,7 +65,7 @@ class WaitForRedisTests(SimpleTestCase):
             redis_module.exceptions.ConnectionError("refused"),
             True,
         ]
-        mock_redis_from_url.return_value = mock_client
+        mock_redis_from_url.return_value = mock_redis.return_value = mock_client
 
         wait_for_redis = _import_wait_for_redis()
         result = wait_for_redis(max_retries=5, retry_interval=0)
@@ -73,11 +74,12 @@ class WaitForRedisTests(SimpleTestCase):
         self.assertEqual(mock_client.ping.call_count, 3)
 
     @patch('core.utils.redis.Redis.from_url')
-    def test_returns_false_after_max_retries(self, mock_redis_from_url):
+    @patch('core.utils.redis.Redis')
+    def test_returns_false_after_max_retries(self, mock_redis, mock_redis_from_url):
         """Should return False when max retries are exhausted."""
         mock_client = MagicMock()
         mock_client.ping.side_effect = redis_module.exceptions.ConnectionError("refused")
-        mock_redis_from_url.return_value = mock_client
+        mock_redis_from_url.return_value = mock_redis.return_value = mock_client
 
         wait_for_redis = _import_wait_for_redis()
         result = wait_for_redis(max_retries=2, retry_interval=0)
@@ -85,11 +87,12 @@ class WaitForRedisTests(SimpleTestCase):
         self.assertFalse(result)
 
     @patch('core.utils.redis.Redis.from_url')
-    def test_unexpected_error_returns_false(self, mock_redis_from_url):
+    @patch('core.utils.redis.Redis')
+    def test_unexpected_error_returns_false(self, mock_redis, mock_redis_from_url):
         """Generic exceptions should return False immediately."""
         mock_client = MagicMock()
         mock_client.ping.side_effect = RuntimeError("Unexpected")
-        mock_redis_from_url.return_value = mock_client
+        mock_redis_from_url.return_value = mock_redis.return_value = mock_client
 
         wait_for_redis = _import_wait_for_redis()
         result = wait_for_redis(max_retries=5, retry_interval=0)
