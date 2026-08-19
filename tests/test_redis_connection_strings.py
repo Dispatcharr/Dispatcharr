@@ -1,11 +1,10 @@
 import os
-import ssl
 
 from core.utils import RedisClient
 from django.test import SimpleTestCase
 from unittest.mock import patch
 
-UNIVERSAL_KWARGS = {"decode_responses" : False, "health_check_interval" : 15} #retry_on_timeout should be part of this, but is sometimes mangled by get_connection_kwargs()
+UNIVERSAL_KWARGS = {"decode_responses" : False, "health_check_interval" : 15} #retry_on_timeout should technically be part of this, but is sometimes mangled by get_connection_kwargs() into a Retry object
 COMMON_TEST_KWARGS = {"host" : "localhost", "port" : 6379, "db" : 0}
 COMMON_SOCKET_KWARGS = {"socket_timeout" : 60, "socket_connect_timeout" : 5, "socket_keepalive" : True}
 
@@ -46,10 +45,7 @@ class RedisConnectionStringsTests(SimpleTestCase):
 
         mock_ping.return_value = True
 
-        # Somehow, redis-py's get_connection_kwargs serializes
-        # the query `?db=7` as a list containing the db index as a single character (e.g. ['7']),
-        # and the netloc /path/to/socket as //path/to/socket.
-        EXPECTED_KWARGS_UNIX = {"path" : "//var/run/test.sock", "db" : ['7'], "retry_on_timeout" : True} | UNIVERSAL_KWARGS
+        EXPECTED_KWARGS_UNIX = {"path" : "/var/run/test.sock", "db" : 7, "retry_on_timeout" : True} | UNIVERSAL_KWARGS
 
         with patch.dict(os.environ, {"REDIS_URL":"unix:///var/run/test.sock?db=7"}, clear=False):
 
@@ -63,7 +59,7 @@ class RedisConnectionStringsTests(SimpleTestCase):
 
         mock_ping.return_value = True
 
-        EXPECTED_KWARGS_REDISS = COMMON_TEST_KWARGS | {"ssl_cert_reqs" : ["none"], "ssl_ca_certs" : ["/test/testchain.crt"], "ssl_certfile" : ["/test/test.crt"], "ssl_keyfile" : ["/test/test.key"], "retry_on_timeout" : True} | UNIVERSAL_KWARGS | COMMON_SOCKET_KWARGS
+        EXPECTED_KWARGS_REDISS = COMMON_TEST_KWARGS | {"ssl_cert_reqs" : "none", "ssl_ca_certs" : "/test/testchain.crt", "ssl_certfile" : "/test/test.crt", "ssl_keyfile" : "/test/test.key", "retry_on_timeout" : True} | UNIVERSAL_KWARGS | COMMON_SOCKET_KWARGS
 
         with patch.dict(os.environ, {"REDIS_URL":"rediss://localhost:6379/0?ssl_cert_reqs=none&ssl_ca_certs=/test/testchain.crt&ssl_certfile=/test/test.crt&ssl_keyfile=/test/test.key"}, clear=False):
 
@@ -82,8 +78,7 @@ class RedisConnectionStringsTests(SimpleTestCase):
         with patch.dict(os.environ, {"REDIS_HOST" : "localhost", 
                                      "REDIS_USER" : "user",
                                      "REDIS_PASSWORD" : "secret", 
-                                     "REDIS_DB" : '1',
-                                     "REDIS_URL" : ''}, clear=False):
+                                     "REDIS_DB" : '1'}, clear=False):
 
             client = RedisClient().get_test_client(max_retries = 1)
             self.assertTrue(EXPECTED_KWARGS_HOSTPORT.items() <= client.get_connection_kwargs().items())

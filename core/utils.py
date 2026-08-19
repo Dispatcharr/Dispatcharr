@@ -7,7 +7,8 @@ import threading
 from pathlib import Path
 import re
 
-from urllib.parse import urlsplit, parse_qs
+from urllib.parse import urlsplit, parse_qsl, urlencode
+from random import uniform
 
 from django.conf import settings
 from redis.exceptions import ConnectionError, TimeoutError
@@ -125,7 +126,7 @@ class RedisClient:
     _netloc = None
 
     @classmethod
-    def _init_client(cls, decode_responses=True, max_retries=5, retry_interval=1, no_socket_timeout=False, disable_persistence=True, exponential_backoff=True):
+    def _init_client(cls, decode_responses=True, max_retries=5, retry_interval=1, max_retry_interval=None, no_socket_timeout=False, disable_persistence=True, exponential_backoff=True, backoff_jitter=False):
         retry_count = 0
         while retry_count < max_retries:
             try:
@@ -155,7 +156,7 @@ class RedisClient:
                 immutable_kwargs = (*sockargs.keys(), "health_check_interval", "retry_on_timeout", "decode_responses")
 
                 # If REDIS_URL is set, use from_url and ignore REDIS_[HOST|PORT|DB|USER|PASSWORD|SSL_*] envvars
-                if redis_url:
+                if "REDIS_URL" in os.environ.keys():
 
                     redis_constructor = redis.Redis.from_url
                     connstring = urlsplit(redis_url, allow_fragments = False)
@@ -163,7 +164,7 @@ class RedisClient:
                     # Pop the connection string arguments which would otherwise override our defaults (see https://redis.readthedocs.io/en/stable/connections.html - "In the case of conflicting arguments, querystring arguments always win.")
                     try:
 
-                        connargs = parse_qs(connstring.query, strict_parsing = True)
+                        connargs = dict(parse_qsl(connstring.query, strict_parsing = True))
                         for k in immutable_kwargs:
                             connargs.pop(k, None)
 
@@ -175,21 +176,27 @@ class RedisClient:
                     if connstring.scheme != "unix":
                         connargs |= sockargs
 
-                    url = (f"{connstring.scheme}://{connstring.netloc}/{connstring.path}",)
+                    connargs = urlencode(connargs)
+
+                    # Rebuilds the connection string manually, since urlunsplit(urlsplit(...)) is not necessarily idempotent
+                    url = (f"{connstring.scheme}://{connstring.netloc}{connstring.path}{'?' + connargs if connargs else ''}",)
+
+                    redis_kwargs = {}
 
                 # If REDIS_URL turns out unset, collect REDIS_[HOST|PORT|DB|USER|PASSWORD|SSL_*] as kwargs to redis.Redis
                 else:
 
                     redis_constructor = redis.Redis
-                    connargs = {"host" : redis_host, "port" : redis_port, "db" : redis_db,
-                                "username" : redis_user,
-                                "password" : redis_password} | ssl_params | sockargs
+                    redis_kwargs = {"host" : redis_host, "port" : redis_port, "db" : redis_db,
+                                    "username" : redis_user,
+                                    "password" : redis_password} | ssl_params | sockargs
 
                     url = ()
 
                 # Create Redis client with our defaults, ensuring REDIS_URL does not override said defaults
-                client = redis_constructor(*url,
-                    **connargs,
+                client = redis_constructor(
+                    *url,
+                    **redis_kwargs,
                     health_check_interval=health_check_interval,
                     retry_on_timeout=retry_on_timeout,
                     decode_responses=decode_responses,
@@ -238,8 +245,14 @@ class RedisClient:
                     logger.error(f"Failed to connect to Redis after {max_retries} attempts: {e}{_tls_hint}")
                     return None
                 else:
-                    # Use exponential backoff for retries
-                    wait_time = retry_interval * (2 ** (retry_count - 1)) if exponential_backoff else retry_interval
+                    if max_retry_interval is not None:
+                        wait_time = min(retry_interval * (2 ** (retry_count - 1)) if exponential_backoff else retry_interval, max_retry_interval)
+                    else:
+                        wait_time = retry_interval * (2 ** (retry_count - 1)) if exponential_backoff else retry_interval
+
+                    if backoff_jitter:
+                        wait_time += uniform(0, 0.5 * wait_time)
+
                     logger.warning(f"Redis connection failed. Retrying in {wait_time}s... ({retry_count}/{max_retries})")
                     time.sleep(wait_time)
 
@@ -255,30 +268,30 @@ class RedisClient:
         return None
 
     @classmethod
-    def get_client(cls, max_retries=5, retry_interval=1):
+    def get_client(cls, max_retries=5, retry_interval=1, max_retry_interval = None, disable_persistence = True):
         """Get Redis client optimized for non-binary data (decoded responses)"""
         if cls._client is None:
-            cls._client = cls._init_client(decode_responses=True, max_retries=max_retries, retry_interval=retry_interval)
+            cls._client = cls._init_client(decode_responses=True, max_retries=max_retries, retry_interval=retry_interval, max_retry_interval=max_retry_interval, disable_persistence=disable_persistence)
         return cls._client
 
     @classmethod
-    def get_buffer(cls, max_retries=5, retry_interval=1):
+    def get_buffer(cls, max_retries=5, retry_interval=1, max_retry_interval = None, disable_persistence = True):
         """Get Redis client optimized for binary data (no decoding)"""
         if cls._buffer is None:
-            cls._buffer = cls._init_client(decode_responses=False, max_retries=max_retries, retry_interval=retry_interval)
+            cls._buffer = cls._init_client(decode_responses=False, max_retries=max_retries, retry_interval=retry_interval, max_retry_interval=max_retry_interval, disable_persistence=disable_persistence)
         return cls._buffer
 
     @classmethod
-    def get_pubsub_client(cls, max_retries=5, retry_interval=1):
+    def get_pubsub_client(cls, max_retries=5, retry_interval=1, max_retry_interval = None, disable_persistence = False):
         """Get Redis client optimized for PubSub operations (no socket timeout)"""
         if cls._pubsub_client is None:
-            cls._pubsub_client = cls._init_client(decode_responses=True, max_retries=max_retries, retry_interval=retry_interval, no_socket_timeout=True, disable_persistence=False)
+            cls._pubsub_client = cls._init_client(decode_responses=True, max_retries=max_retries, retry_interval=retry_interval, max_retry_interval=max_retry_interval, no_socket_timeout=True, disable_persistence=disable_persistence)
         return cls._pubsub_client
 
     @classmethod
-    def get_test_client(cls, max_retries = 30, retry_interval = 2, decode_responses = False, disable_persistence = False):
+    def get_test_client(cls, max_retries = 30, retry_interval = 2, max_retry_interval = None, decode_responses = False, disable_persistence = False):
         """Get Redis test client for wait_for_redis script (no decoding, no persistence disabling, no exponential retry intervals)"""
-        return cls._init_client(decode_responses=False, max_retries=max_retries, retry_interval=retry_interval, disable_persistence=False, exponential_backoff=False)
+        return cls._init_client(decode_responses=False, max_retries=max_retries, retry_interval=retry_interval, max_retry_interval = max_retry_interval, exponential_backoff=False, disable_persistence=disable_persistence)
 
     @classmethod
     def get_net_location(cls):
