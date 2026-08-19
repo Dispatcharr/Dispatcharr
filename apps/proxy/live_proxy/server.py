@@ -9,7 +9,6 @@ Handles live TS stream proxying with support for:
 
 import threading
 import socket
-import random
 import time
 import os
 import json
@@ -159,45 +158,21 @@ class ProxyServer:
             return
 
         def event_listener():
-            retry_count = 0
-            base_retry_delay = 1  # Start with 1 second delay
-            max_retry_delay = 30  # Cap at 30 seconds
+
             pubsub_client = None
             pubsub = None
 
             while True:
                 try:
                     # Use dedicated PubSub client for event listener
-                    pubsub_client = RedisClient.get_pubsub_client()
+                    pubsub_client = RedisClient.get_pubsub_client(retry_interval = 1, max_retry_interval =  30)
                     if pubsub_client:
                         logger.info("Using dedicated Redis PubSub client for event listener")
                     else:
                         # Fall back to creating a dedicated client if utility fails
                         logger.warning("Utility function for PubSub client failed, creating direct connection")
-                        from django.conf import settings
-                        import redis
-
-                        redis_host = os.environ.get("REDIS_HOST", getattr(settings, 'REDIS_HOST', 'localhost'))
-                        redis_port = int(os.environ.get("REDIS_PORT", getattr(settings, 'REDIS_PORT', 6379)))
-                        redis_db = int(os.environ.get("REDIS_DB", getattr(settings, 'REDIS_DB', 0)))
-                        redis_password = os.environ.get("REDIS_PASSWORD", getattr(settings, 'REDIS_PASSWORD', ''))
-                        redis_user = os.environ.get("REDIS_USER", getattr(settings, 'REDIS_USER', ''))
-
-                        ssl_params = getattr(settings, 'REDIS_SSL_PARAMS', {})
-                        pubsub_client = redis.Redis(
-                            host=redis_host,
-                            port=redis_port,
-                            db=redis_db,
-                            password=redis_password if redis_password else None,
-                            username=redis_user if redis_user else None,
-                            socket_timeout=60,
-                            socket_connect_timeout=10,
-                            socket_keepalive=True,
-                            health_check_interval=30,
-                            decode_responses=True,
-                            **ssl_params
-                        )
-                        logger.info("Created fallback Redis PubSub client for event listener")
+                        pubsub_client = RedisClient.get_client(disable_persistence=False)
+                        logger.info("Created fallback Redis client for event listener")
 
                     # Test connection before subscribing
                     pubsub_client.ping()
@@ -207,9 +182,6 @@ class ProxyServer:
                     pubsub.psubscribe("live:events:*")
 
                     logger.info("Started Redis event listener for client activity")
-
-                    # Reset retry count on successful connection
-                    retry_count = 0
 
                     for message in pubsub.listen():
                         if message["type"] != "pmessage":
@@ -392,17 +364,6 @@ class ProxyServer:
                                             self.ensure_output_profile(channel_id, profile_id, command)
                         except Exception as e:
                             logger.error(f"Error processing event message: {e}")
-
-                except (ConnectionError, TimeoutError) as e:
-                    # Calculate exponential backoff with jitter
-                    retry_count += 1
-                    delay = min(base_retry_delay * (2 ** (retry_count - 1)), max_retry_delay)
-                    # Add some randomness to prevent thundering herd
-                    jitter = random.uniform(0, 0.5 * delay)
-                    final_delay = delay + jitter
-
-                    logger.error(f"Error in event listener: {e}. Retrying in {final_delay:.1f}s (attempt {retry_count})")
-                    gevent.sleep(final_delay)
 
                 except Exception as e:
                     logger.error(f"Error in event listener: {e}")
