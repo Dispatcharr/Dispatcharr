@@ -1180,6 +1180,25 @@ def _parse_epg_tv_movie_info(program):
                 year = str(d)[:4]
     except Exception:
         pass
+    # The lookup above reads the LIVE ProgramData row. EPG refreshes delete and
+    # bulk-recreate those rows rather than updating them in place, so a refresh
+    # between scheduling and recording start leaves prog_id resolving to nothing
+    # and season/episode come back None -- which silently drops the caller onto
+    # the S/E-less fallback template. The booking snapshot stored on the
+    # Recording holds the same identity fields and is not affected by the
+    # refresh, so fall back to it rather than losing the episode number.
+    if isinstance(program, dict):
+        if season is None:
+            season = program.get('season')
+        if episode is None:
+            episode = program.get('episode')
+        onscreen = program.get('onscreen_episode')
+        if (season is None or episode is None) and isinstance(onscreen, str):
+            import re as _re
+            m = _re.search(r'[sS](\d+)[eE](\d+)', onscreen)
+            if m:
+                season = season if season is not None else int(m.group(1))
+                episode = episode if episode is not None else int(m.group(2))
     return is_movie, season, episode, year, sub_title
 
 
@@ -1197,6 +1216,28 @@ def _build_output_paths(channel, program, start_time, end_time, recording_id):
     library_root = '/data/recordings'
 
     is_movie, season, episode, year, sub_title = _parse_epg_tv_movie_info(program)
+    if season is None or episode is None:
+        # prefetch_recording_artwork stores season/episode on the Recording's own
+        # custom_properties shortly after the booking is made, independently of
+        # ProgramData -- so it survives the EPG refresh that invalidates
+        # program['id']. Recordings whose snapshot predates that prefetch would
+        # otherwise still fall through to the date-based fallback template.
+        try:
+            from apps.channels.models import Recording
+
+            recording = (
+                Recording.objects
+                .filter(id=recording_id)
+                .only('custom_properties')
+                .first()
+            )
+            recording_props = (recording.custom_properties or {}) if recording else {}
+            if season is None:
+                season = recording_props.get('season')
+            if episode is None:
+                episode = recording_props.get('episode')
+        except Exception:
+            pass
     show = _safe_name(program.get('title') if isinstance(program, dict) else channel.name)
     title = _safe_name(program.get('title') if isinstance(program, dict) else channel.name)
     sub_title = _safe_name(sub_title)
