@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Channel profiles can start empty and accept channels via "Add to Profile...".** Creating a profile now offers "Start empty" (`start_empty` on the profiles API; omitted/`false` keeps the previous all-channels backfill). Selected channels can be added to another profile from the Channels toolbar without changing the source profile. - Thanks [@Veneziaisking](https://github.com/Veneziaisking)
+
 ### Changed
 
 - **Docker base image pinned to FFmpeg 8.1.2.** `linuxserver/ffmpeg:latest` rebased to Ubuntu 26.04 / FFmpeg 9, which requires NVENC API 13.1 (NVIDIA driver 610+). Pascal and other legacy GPUs are capped at driver 580.x (API 13.0), so NVENC transcode profiles fail with "Driver does not support the required nvenc API version." The base now tracks `version-8.1.2-cli` (Ubuntu 24.04 Noble, FFmpeg 8.1.2).

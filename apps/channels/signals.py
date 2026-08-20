@@ -235,7 +235,7 @@ def refresh_epg_programs_for_override(sender, instance, created, **kwargs):
 
 @receiver(post_save, sender=ChannelProfile)
 def create_profile_memberships(sender, instance, created, **kwargs):
-    if created:
+    if created and not getattr(instance, "_start_empty", False):
         channels = Channel.objects.all()
         ChannelProfileMembership.objects.bulk_create([
             ChannelProfileMembership(channel_profile=instance, channel=channel)

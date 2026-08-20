@@ -280,10 +280,18 @@ class ChannelGroupSerializer(serializers.ModelSerializer):
 
 class ChannelProfileSerializer(serializers.ModelSerializer):
     channels = serializers.SerializerMethodField()
+    start_empty = serializers.BooleanField(write_only=True, required=False, default=False)
 
     class Meta:
         model = ChannelProfile
-        fields = ["id", "name", "channels"]
+        fields = ["id", "name", "channels", "start_empty"]
+
+    def create(self, validated_data):
+        start_empty = validated_data.pop("start_empty", False)
+        instance = ChannelProfile(**validated_data)
+        instance._start_empty = start_empty
+        instance.save()
+        return instance
 
     def get_channels(self, obj):
         # Use prefetched attr when available, fall back to a direct query.

@@ -3,6 +3,7 @@ import {
   ActionIcon,
   Box,
   Button,
+  Checkbox,
   Flex,
   Group,
   Menu,
@@ -15,6 +16,7 @@ import {
   PopoverDropdown,
   PopoverTarget,
   Select,
+  Stack,
   Text,
   TextInput,
   Tooltip,
@@ -28,6 +30,7 @@ import {
   Eye,
   EyeOff,
   Filter,
+  FolderPlus,
   Lock,
   LockOpen,
   Pin,
@@ -49,6 +52,7 @@ import ConfirmationDialog from '../../ConfirmationDialog';
 import useWarningsStore from '../../../store/warnings';
 import ProfileModal, { renderProfileOption } from '../../modals/ProfileModal';
 import EPGMatchModal from '../../modals/EPGMatchModal';
+import AddToProfileModal from '../../modals/AddToProfileModal';
 import {
   addChannelProfile,
   deleteChannelProfile,
@@ -57,18 +61,21 @@ import {
 const CreateProfilePopover = React.memo(() => {
   const [opened, setOpened] = useState(false);
   const [name, setName] = useState('');
+  const [startEmpty, setStartEmpty] = useState(false);
   const theme = useMantineTheme();
 
   const authUser = useAuthStore((s) => s.user);
 
   const setOpen = () => {
     setName('');
+    setStartEmpty(false);
     setOpened(!opened);
   };
 
   const submit = async () => {
-    await addChannelProfile({ name });
+    await addChannelProfile({ name, start_empty: startEmpty });
     setName('');
+    setStartEmpty(false);
     setOpened(false);
   };
 
@@ -92,23 +99,33 @@ const CreateProfilePopover = React.memo(() => {
       </PopoverTarget>
 
       <PopoverDropdown>
-        <Group>
-          <TextInput
-            placeholder="Profile Name"
-            value={name}
-            onChange={(event) => setName(event.currentTarget.value)}
+        <Stack gap="xs">
+          <Group>
+            <TextInput
+              placeholder="Profile Name"
+              value={name}
+              onChange={(event) => setName(event.currentTarget.value)}
+              size="xs"
+            />
+
+            <ActionIcon
+              variant="transparent"
+              color={theme.tailwind.green[5]}
+              size="sm"
+              onClick={submit}
+            >
+              <CircleCheck />
+            </ActionIcon>
+          </Group>
+
+          <Checkbox
+            label="Start empty"
+            description="New profiles include all channels unless checked."
+            checked={startEmpty}
+            onChange={(event) => setStartEmpty(event.currentTarget.checked)}
             size="xs"
           />
-
-          <ActionIcon
-            variant="transparent"
-            color={theme.tailwind.green[5]}
-            size="sm"
-            onClick={submit}
-          >
-            <CircleCheck />
-          </ActionIcon>
-        </Group>
+        </Stack>
       </PopoverDropdown>
     </Popover>
   );
@@ -138,6 +155,7 @@ const ChannelTableHeader = ({
   const [assignNumbersModalOpen, setAssignNumbersModalOpen] = useState(false);
   const [groupManagerOpen, setGroupManagerOpen] = useState(false);
   const [epgMatchModalOpen, setEpgMatchModalOpen] = useState(false);
+  const [addToProfileModalOpen, setAddToProfileModalOpen] = useState(false);
   const [confirmDeleteProfileOpen, setConfirmDeleteProfileOpen] =
     useState(false);
   const [profileToDelete, setProfileToDelete] = useState(null);
@@ -419,6 +437,19 @@ const ChannelTableHeader = ({
           </Button>
 
           <Button
+            leftSection={<FolderPlus size={18} />}
+            variant="default"
+            size="xs"
+            onClick={() => setAddToProfileModalOpen(true)}
+            disabled={
+              selectedTableIds.length == 0 ||
+              authUser.user_level != USER_LEVELS.ADMIN
+            }
+          >
+            Add to Profile...
+          </Button>
+
+          <Button
             leftSection={<SquarePlus size={18} />}
             variant="light"
             size="xs"
@@ -532,6 +563,14 @@ const ChannelTableHeader = ({
         opened={epgMatchModalOpen}
         onClose={() => setEpgMatchModalOpen(false)}
         selectedChannelIds={selectedTableIds}
+      />
+
+      <AddToProfileModal
+        opened={addToProfileModalOpen}
+        onClose={() => setAddToProfileModalOpen(false)}
+        channelIds={selectedTableIds}
+        profiles={profiles}
+        excludeProfileId={selectedProfileId}
       />
 
       <ConfirmationDialog
