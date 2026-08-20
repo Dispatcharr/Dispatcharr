@@ -1,3 +1,4 @@
+import React from 'react';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
@@ -97,12 +98,13 @@ vi.mock('@mantine/core', () => ({
     </button>
   ),
   Box: ({ children, style }) => <div style={style}>{children}</div>,
-  Button: ({ children, onClick, disabled, variant, color }) => (
+  Button: ({ children, onClick, disabled, variant, color, ...rest }) => (
     <button
       onClick={onClick}
       disabled={disabled}
       data-variant={variant}
       data-color={color}
+      aria-label={rest['aria-label']}
     >
       {children}
     </button>
@@ -184,7 +186,10 @@ vi.mock('@mantine/core', () => ({
       placeholder={placeholder}
     />
   ),
-  Tooltip: ({ children, label }) => <div data-tooltip={label}>{children}</div>,
+  Tooltip: ({ children, label }) =>
+    React.isValidElement(children)
+      ? React.cloneElement(children, { 'aria-label': label })
+      : children,
   useMantineTheme: () => ({
     tailwind: {
       green: { 5: 'green.5' },
@@ -337,19 +342,19 @@ describe('ChannelTableHeader', () => {
     it('renders the Edit button', () => {
       setupMocks();
       render(<ChannelTableHeader {...makeDefaultProps()} />);
-      expect(screen.getByText('Edit')).toBeInTheDocument();
+      expect(screen.getByLabelText('Edit')).toBeInTheDocument();
     });
 
     it('renders the Delete button', () => {
       setupMocks();
       render(<ChannelTableHeader {...makeDefaultProps()} />);
-      expect(screen.getByText('Delete')).toBeInTheDocument();
+      expect(screen.getByLabelText('Delete')).toBeInTheDocument();
     });
 
     it('renders the Add button', () => {
       setupMocks();
       render(<ChannelTableHeader {...makeDefaultProps()} />);
-      expect(screen.getByText('Add')).toBeInTheDocument();
+      expect(screen.getByLabelText('Add Channel')).toBeInTheDocument();
     });
 
     it('does not show Editing Mode text when not unlocked', () => {
@@ -482,7 +487,7 @@ describe('ChannelTableHeader', () => {
       render(
         <ChannelTableHeader {...makeDefaultProps({ selectedTableIds: [] })} />
       );
-      expect(screen.getByText('Edit')).toBeDisabled();
+      expect(screen.getByLabelText('Edit')).toBeDisabled();
     });
 
     it('Edit button is enabled when rows are selected and user is admin', () => {
@@ -492,7 +497,7 @@ describe('ChannelTableHeader', () => {
           {...makeDefaultProps({ selectedTableIds: ['ch-1'] })}
         />
       );
-      expect(screen.getByText('Edit')).not.toBeDisabled();
+      expect(screen.getByLabelText('Edit')).not.toBeDisabled();
     });
 
     it('Edit button is disabled for non-admin users even with selection', () => {
@@ -502,7 +507,7 @@ describe('ChannelTableHeader', () => {
           {...makeDefaultProps({ selectedTableIds: ['ch-1'] })}
         />
       );
-      expect(screen.getByText('Edit')).toBeDisabled();
+      expect(screen.getByLabelText('Edit')).toBeDisabled();
     });
 
     it('calls editChannel when Edit is clicked', () => {
@@ -513,7 +518,7 @@ describe('ChannelTableHeader', () => {
           {...makeDefaultProps({ selectedTableIds: ['ch-1'], editChannel })}
         />
       );
-      fireEvent.click(screen.getByText('Edit'));
+      fireEvent.click(screen.getByLabelText('Edit'));
       expect(editChannel).toHaveBeenCalled();
     });
 
@@ -522,7 +527,7 @@ describe('ChannelTableHeader', () => {
       render(
         <ChannelTableHeader {...makeDefaultProps({ selectedTableIds: [] })} />
       );
-      expect(screen.getByText('Delete')).toBeDisabled();
+      expect(screen.getByLabelText('Delete')).toBeDisabled();
     });
 
     it('calls deleteChannels when Delete is clicked', () => {
@@ -533,21 +538,21 @@ describe('ChannelTableHeader', () => {
           {...makeDefaultProps({ selectedTableIds: ['ch-1'], deleteChannels })}
         />
       );
-      fireEvent.click(screen.getByText('Delete'));
+      fireEvent.click(screen.getByLabelText('Delete'));
       expect(deleteChannels).toHaveBeenCalled();
     });
 
     it('Add button is disabled for non-admin users', () => {
       setupMocks({ userLevel: STANDARD });
       render(<ChannelTableHeader {...makeDefaultProps()} />);
-      expect(screen.getByText('Add')).toBeDisabled();
+      expect(screen.getByLabelText('Add Channel')).toBeDisabled();
     });
 
     it('calls editChannel with forceAdd option when Add is clicked', () => {
       const editChannel = vi.fn();
       setupMocks({ userLevel: ADMIN });
       render(<ChannelTableHeader {...makeDefaultProps({ editChannel })} />);
-      fireEvent.click(screen.getByText('Add'));
+      fireEvent.click(screen.getByLabelText('Add Channel'));
       expect(editChannel).toHaveBeenCalledWith(null, { forceAdd: true });
     });
 
@@ -556,7 +561,7 @@ describe('ChannelTableHeader', () => {
       render(
         <ChannelTableHeader {...makeDefaultProps({ selectedTableIds: [] })} />
       );
-      expect(screen.getByText('Add to Profile...')).toBeDisabled();
+      expect(screen.getByLabelText('Add to Profile')).toBeDisabled();
     });
 
     it('Add to Profile... button is enabled when rows are selected', () => {
@@ -566,7 +571,7 @@ describe('ChannelTableHeader', () => {
           {...makeDefaultProps({ selectedTableIds: ['ch-1'] })}
         />
       );
-      expect(screen.getByText('Add to Profile...')).not.toBeDisabled();
+      expect(screen.getByLabelText('Add to Profile')).not.toBeDisabled();
     });
 
     it('Add to Profile... button is disabled for non-admin users even with selection', () => {
@@ -576,7 +581,7 @@ describe('ChannelTableHeader', () => {
           {...makeDefaultProps({ selectedTableIds: ['ch-1'] })}
         />
       );
-      expect(screen.getByText('Add to Profile...')).toBeDisabled();
+      expect(screen.getByLabelText('Add to Profile')).toBeDisabled();
     });
 
     it('opens AddToProfileModal when Add to Profile... is clicked', () => {
@@ -586,7 +591,7 @@ describe('ChannelTableHeader', () => {
           {...makeDefaultProps({ selectedTableIds: ['ch-1', 'ch-2'] })}
         />
       );
-      fireEvent.click(screen.getByText('Add to Profile...'));
+      fireEvent.click(screen.getByLabelText('Add to Profile'));
       expect(screen.getByTestId('add-to-profile-modal')).toBeInTheDocument();
     });
 
@@ -597,7 +602,7 @@ describe('ChannelTableHeader', () => {
           {...makeDefaultProps({ selectedTableIds: ['ch-1', 'ch-2'] })}
         />
       );
-      fireEvent.click(screen.getByText('Add to Profile...'));
+      fireEvent.click(screen.getByLabelText('Add to Profile'));
       expect(
         screen.getByTestId('add-to-profile-channel-ids')
       ).toHaveTextContent('["ch-1","ch-2"]');
@@ -610,7 +615,7 @@ describe('ChannelTableHeader', () => {
           {...makeDefaultProps({ selectedTableIds: ['ch-1'] })}
         />
       );
-      fireEvent.click(screen.getByText('Add to Profile...'));
+      fireEvent.click(screen.getByLabelText('Add to Profile'));
       expect(screen.getByTestId('add-to-profile-exclude-id')).toHaveTextContent(
         '1'
       );
@@ -623,7 +628,7 @@ describe('ChannelTableHeader', () => {
           {...makeDefaultProps({ selectedTableIds: ['ch-1'] })}
         />
       );
-      fireEvent.click(screen.getByText('Add to Profile...'));
+      fireEvent.click(screen.getByLabelText('Add to Profile'));
       fireEvent.click(screen.getByText('Close Add To Profile'));
       expect(
         screen.queryByTestId('add-to-profile-modal')

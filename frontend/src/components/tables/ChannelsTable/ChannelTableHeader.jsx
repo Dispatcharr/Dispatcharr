@@ -410,63 +410,70 @@ const ChannelTableHeader = ({
             </MenuDropdown>
           </Menu>
 
-          <Button
-            leftSection={<SquarePen size={18} />}
-            variant="default"
-            size="xs"
-            onClick={() => editChannel()}
-            disabled={
-              selectedTableIds.length == 0 ||
-              authUser.user_level != USER_LEVELS.ADMIN
-            }
-          >
-            Edit
-          </Button>
+          <Tooltip label="Edit" openDelay={500}>
+            <Button
+              variant="default"
+              size="xs"
+              onClick={() => editChannel()}
+              disabled={
+                selectedTableIds.length == 0 ||
+                authUser.user_level != USER_LEVELS.ADMIN
+              }
+              p={5}
+            >
+              <SquarePen size={18} />
+            </Button>
+          </Tooltip>
 
-          <Button
-            leftSection={<SquareMinus size={18} />}
-            variant="default"
-            size="xs"
-            onClick={deleteChannels}
-            disabled={
-              selectedTableIds.length == 0 ||
-              authUser.user_level != USER_LEVELS.ADMIN
-            }
-          >
-            Delete
-          </Button>
+          <Tooltip label="Delete" openDelay={500}>
+            <Button
+              variant="default"
+              size="xs"
+              onClick={deleteChannels}
+              disabled={
+                selectedTableIds.length == 0 ||
+                authUser.user_level != USER_LEVELS.ADMIN
+              }
+              p={5}
+            >
+              <SquareMinus size={18} />
+            </Button>
+          </Tooltip>
 
-          <Button
-            leftSection={<FolderPlus size={18} />}
-            variant="default"
-            size="xs"
-            onClick={() => setAddToProfileModalOpen(true)}
-            disabled={
-              selectedTableIds.length == 0 ||
-              authUser.user_level != USER_LEVELS.ADMIN
-            }
-          >
-            Add to Profile...
-          </Button>
+          <Tooltip label="Add to Profile" openDelay={500}>
+            <Button
+              variant="default"
+              size="xs"
+              onClick={() => setAddToProfileModalOpen(true)}
+              disabled={
+                selectedTableIds.length == 0 ||
+                authUser.user_level != USER_LEVELS.ADMIN
+              }
+              p={5}
+            >
+              <FolderPlus size={18} />
+            </Button>
+          </Tooltip>
 
-          <Button
-            leftSection={<SquarePlus size={18} />}
-            variant="light"
-            size="xs"
-            onClick={() => editChannel(null, { forceAdd: true })}
-            disabled={authUser.user_level != USER_LEVELS.ADMIN}
-            p={5}
-            color={theme.tailwind.green[5]}
-            style={{
-              ...(authUser.user_level == USER_LEVELS.ADMIN && {
-                borderWidth: '1px',
-                borderColor: theme.tailwind.green[5],
-                color: 'white',
-              }),
-            }}
-          >
-            Add
-          </Button>
+          <Tooltip label="Add Channel" openDelay={500}>
+            <Button
+              variant="light"
+              size="xs"
+              onClick={() => editChannel(null, { forceAdd: true })}
+              disabled={authUser.user_level != USER_LEVELS.ADMIN}
+              p={5}
+              color={theme.tailwind.green[5]}
+              style={{
+                ...(authUser.user_level == USER_LEVELS.ADMIN && {
+                  borderWidth: '1px',
+                  borderColor: theme.tailwind.green[5],
+                  color: 'white',
+                }),
+              }}
+            >
+              <SquarePlus size={18} />
+            </Button>
+          </Tooltip>
 
           <Menu>
             <MenuTarget>

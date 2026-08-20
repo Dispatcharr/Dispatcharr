@@ -107,14 +107,24 @@ vi.mock('../CustomTable', () => ({
 
 // ── Mantine core ───────────────────────────────────────────────────────────────
 vi.mock('@mantine/core', () => ({
-  ActionIcon: ({ children, onClick, disabled }) => (
-    <button data-testid="action-icon" onClick={onClick} disabled={disabled}>
+  ActionIcon: ({ children, onClick, disabled, ...rest }) => (
+    <button
+      data-testid="action-icon"
+      onClick={onClick}
+      disabled={disabled}
+      aria-label={rest['aria-label']}
+    >
       {children}
     </button>
   ),
   Box: ({ children, style }) => <div style={style}>{children}</div>,
-  Button: ({ children, onClick, leftSection, disabled, loading }) => (
-    <button data-testid="button" onClick={onClick} disabled={disabled || loading}>
+  Button: ({ children, onClick, leftSection, disabled, loading, ...rest }) => (
+    <button
+      data-testid="button"
+      onClick={onClick}
+      disabled={disabled || loading}
+      aria-label={rest['aria-label']}
+    >
       {leftSection}
       {children}
     </button>
@@ -193,9 +203,10 @@ vi.mock('@mantine/core', () => ({
     />
   ),
   Title: ({ children, style }) => <h3 style={style}>{children}</h3>,
-  Tooltip: ({ children, label }) => (
-    <div data-tooltip={label}>{children}</div>
-  ),
+  Tooltip: ({ children, label }) =>
+    React.isValidElement(children)
+      ? React.cloneElement(children, { 'aria-label': label })
+      : children,
   UnstyledButton: ({ children, onClick }) => (
     <button data-testid="unstyled-button" onClick={onClick}>{children}</button>
   ),
@@ -374,34 +385,34 @@ describe('StreamsTable', () => {
       expect(screen.getByText('Streams')).toBeInTheDocument();
     });
 
-    it('renders the "Create Stream" button', () => {
+    it('renders the Create Stream button', () => {
       setupMocks();
       render(<StreamsTable />);
-      expect(screen.getByText('Create Stream')).toBeInTheDocument();
+      expect(screen.getByLabelText('Create a new custom stream')).toBeInTheDocument();
     });
 
-    it('renders the "Delete" button', () => {
+    it('renders the Delete button', () => {
       setupMocks();
       render(<StreamsTable />);
-      expect(screen.getByText('Delete')).toBeInTheDocument();
+      expect(screen.getByLabelText('Delete selected stream(s)')).toBeInTheDocument();
     });
 
-    it('renders the "Add to Channel" button', () => {
+    it('renders the Add to Channel button', () => {
       setupMocks();
       render(<StreamsTable />);
-      expect(screen.getByText('Add to Channel')).toBeInTheDocument();
+      expect(screen.getByLabelText('Add selected stream(s) to the target channel')).toBeInTheDocument();
     });
 
-    it('renders "Create Channel (0)" button when no streams are selected', () => {
+    it('renders Create Channel button when no streams are selected', () => {
       setupMocks({ selectedStreamIds: [] });
       render(<StreamsTable />);
-      expect(screen.getByText('Create Channel (0)')).toBeInTheDocument();
+      expect(screen.getByLabelText('Create channels from 0 stream(s)')).toBeInTheDocument();
     });
 
-    it('renders "Create Channels (N)" button when multiple streams are selected', () => {
+    it('renders Create Channels tooltip with selection count', () => {
       setupMocks({ selectedStreamIds: [1, 2] });
       render(<StreamsTable />);
-      expect(screen.getByText('Create Channels (2)')).toBeInTheDocument();
+      expect(screen.getByLabelText('Create channels from 2 stream(s)')).toBeInTheDocument();
     });
 
     it('does not render the stream form on initial load', () => {
@@ -443,7 +454,7 @@ describe('StreamsTable', () => {
     it('opens the stream form with no stream when "Create Stream" is clicked', () => {
       setupMocks();
       render(<StreamsTable />);
-      fireEvent.click(screen.getByText('Create Stream'));
+      fireEvent.click(screen.getByLabelText('Create a new custom stream'));
       expect(screen.getByTestId('stream-form')).toBeInTheDocument();
       expect(screen.getByTestId('form-stream-name')).toHaveTextContent('new');
     });
@@ -451,7 +462,7 @@ describe('StreamsTable', () => {
     it('closes the stream form when onClose is called', async () => {
       setupMocks();
       render(<StreamsTable />);
-      fireEvent.click(screen.getByText('Create Stream'));
+      fireEvent.click(screen.getByLabelText('Create a new custom stream'));
       fireEvent.click(screen.getByTestId('form-close'));
       await waitFor(() => {
         expect(screen.queryByTestId('stream-form')).not.toBeInTheDocument();
@@ -461,7 +472,7 @@ describe('StreamsTable', () => {
     it('calls requeryStreams after form is closed', async () => {
       setupMocks();
       render(<StreamsTable />);
-      fireEvent.click(screen.getByText('Create Stream'));
+      fireEvent.click(screen.getByLabelText('Create a new custom stream'));
       fireEvent.click(screen.getByTestId('form-close'));
       await waitFor(() => {
         expect(StreamsTableUtils.requeryStreams).toHaveBeenCalled();
@@ -475,14 +486,14 @@ describe('StreamsTable', () => {
     it('is disabled when no streams are selected', () => {
       setupMocks({ selectedStreamIds: [] });
       render(<StreamsTable />);
-      const deleteBtn = screen.getByText('Delete').closest('button');
+      const deleteBtn = screen.getByLabelText('Delete selected stream(s)').closest('button');
       expect(deleteBtn).toBeDisabled();
     });
 
     it('is enabled when streams are selected', () => {
       setupMocks({ selectedStreamIds: [1] });
       render(<StreamsTable />);
-      const deleteBtn = screen.getByText('Delete').closest('button');
+      const deleteBtn = screen.getByLabelText('Delete selected stream(s)').closest('button');
       expect(deleteBtn).not.toBeDisabled();
     });
   });
@@ -493,14 +504,14 @@ describe('StreamsTable', () => {
     it('is disabled when no streams are selected', () => {
       setupMocks({ selectedStreamIds: [] });
       render(<StreamsTable />);
-      const btn = screen.getByText('Add to Channel').closest('button');
+      const btn = screen.getByLabelText('Add selected stream(s) to the target channel').closest('button');
       expect(btn).toBeDisabled();
     });
 
     it('is disabled when streams selected but no target channel', () => {
       setupMocks({ selectedStreamIds: [1], expandedChannelId: null, selectedChannelIds: [] });
       render(<StreamsTable />);
-      const btn = screen.getByText('Add to Channel').closest('button');
+      const btn = screen.getByLabelText('Add selected stream(s) to the target channel').closest('button');
       expect(btn).toBeDisabled();
     });
 
@@ -510,7 +521,7 @@ describe('StreamsTable', () => {
         expandedChannelId: 42,
       });
       render(<StreamsTable />);
-      const btn = screen.getByText('Add to Channel').closest('button');
+      const btn = screen.getByLabelText('Add selected stream(s) to the target channel').closest('button');
       expect(btn).not.toBeDisabled();
     });
   });
@@ -524,7 +535,7 @@ describe('StreamsTable', () => {
         isWarningSuppressed: vi.fn(() => false),
       });
       render(<StreamsTable />);
-      fireEvent.click(screen.getByText('Delete'));
+      fireEvent.click(screen.getByLabelText('Delete selected stream(s)'));
       expect(screen.getByTestId('confirm-dialog')).toBeInTheDocument();
       expect(screen.getByTestId('confirm-title')).toHaveTextContent('Confirm Bulk Stream Deletion');
     });
@@ -535,7 +546,7 @@ describe('StreamsTable', () => {
         isWarningSuppressed: vi.fn(() => false),
       });
       render(<StreamsTable />);
-      fireEvent.click(screen.getByText('Delete'));
+      fireEvent.click(screen.getByLabelText('Delete selected stream(s)'));
       fireEvent.click(screen.getByTestId('confirm-ok'));
       await waitFor(() => {
         expect(StreamsTableUtils.deleteStreams).toHaveBeenCalled();
@@ -548,7 +559,7 @@ describe('StreamsTable', () => {
         isWarningSuppressed: vi.fn(() => false),
       });
       render(<StreamsTable />);
-      fireEvent.click(screen.getByText('Delete'));
+      fireEvent.click(screen.getByLabelText('Delete selected stream(s)'));
       fireEvent.click(screen.getByTestId('confirm-ok'));
       await waitFor(() => {
         expect(screen.queryByTestId('confirm-dialog')).not.toBeInTheDocument();
@@ -561,7 +572,7 @@ describe('StreamsTable', () => {
         isWarningSuppressed: vi.fn(() => false),
       });
       render(<StreamsTable />);
-      fireEvent.click(screen.getByText('Delete'));
+      fireEvent.click(screen.getByLabelText('Delete selected stream(s)'));
       fireEvent.click(screen.getByTestId('confirm-cancel'));
       expect(screen.queryByTestId('confirm-dialog')).not.toBeInTheDocument();
     });
@@ -572,7 +583,7 @@ describe('StreamsTable', () => {
         isWarningSuppressed: vi.fn(() => true),
       });
       render(<StreamsTable />);
-      fireEvent.click(screen.getByText('Delete'));
+      fireEvent.click(screen.getByLabelText('Delete selected stream(s)'));
       await waitFor(() => {
         expect(StreamsTableUtils.deleteStreams).toHaveBeenCalled();
         expect(screen.queryByTestId('confirm-dialog')).not.toBeInTheDocument();
@@ -589,7 +600,7 @@ describe('StreamsTable', () => {
         isWarningSuppressed: vi.fn(() => false),
       });
       render(<StreamsTable />);
-      fireEvent.click(screen.getByText('Create Channels (2)'));
+      fireEvent.click(screen.getByLabelText('Create channels from 2 stream(s)'));
       expect(screen.getByTestId('create-channel-modal')).toBeInTheDocument();
     });
 
@@ -599,7 +610,7 @@ describe('StreamsTable', () => {
         isWarningSuppressed: vi.fn(() => false),
       });
       render(<StreamsTable />);
-      fireEvent.click(screen.getByText('Create Channels (2)'));
+      fireEvent.click(screen.getByLabelText('Create channels from 2 stream(s)'));
       fireEvent.click(screen.getByTestId('create-channel-close'));
       expect(screen.queryByTestId('create-channel-modal')).not.toBeInTheDocument();
     });
@@ -610,7 +621,7 @@ describe('StreamsTable', () => {
         isWarningSuppressed: vi.fn(() => false),
       });
       render(<StreamsTable />);
-      fireEvent.click(screen.getByText('Create Channels (2)'));
+      fireEvent.click(screen.getByLabelText('Create channels from 2 stream(s)'));
       fireEvent.click(screen.getByTestId('create-channel-confirm'));
       await waitFor(() => {
         expect(StreamsTableUtils.createChannelsFromStreamsAsync).toHaveBeenCalled();
@@ -620,7 +631,7 @@ describe('StreamsTable', () => {
     it('"Create Channel" button is disabled when no streams selected', () => {
       setupMocks({ selectedStreamIds: [] });
       render(<StreamsTable />);
-      const btn = screen.getByText('Create Channel (0)').closest('button');
+      const btn = screen.getByLabelText('Create channels from 0 stream(s)').closest('button');
       expect(btn).toBeDisabled();
     });
   });
@@ -795,7 +806,7 @@ describe('StreamsTable', () => {
         expandedChannelId: 42,
       });
       render(<StreamsTable />);
-      fireEvent.click(screen.getByText('Add to Channel'));
+      fireEvent.click(screen.getByLabelText('Add selected stream(s) to the target channel'));
       await waitFor(() => {
         expect(StreamsTableUtils.addStreamsToChannel).toHaveBeenCalledWith(
           42,

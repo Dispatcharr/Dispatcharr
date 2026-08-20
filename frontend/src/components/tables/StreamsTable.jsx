@@ -1393,7 +1393,6 @@ const StreamsTable = ({ onReady }) => {
               openDelay={500}
             >
               <Button
-                leftSection={<SquarePlus size={18} />}
                 variant={
                   selectedStreamIds.length > 0 && targetChannelId
                     ? 'light'
@@ -1418,7 +1417,7 @@ const StreamsTable = ({ onReady }) => {
                 }
                 disabled={!(selectedStreamIds.length > 0 && targetChannelId)}
               >
-                Add to Channel
+                <ListPlus size={18} />
               </Button>
             </Tooltip>
 
@@ -1427,16 +1426,13 @@ const StreamsTable = ({ onReady }) => {
               openDelay={500}
             >
               <Button
-                leftSection={<SquarePlus size={18} />}
                 variant="default"
                 size="xs"
                 onClick={createChannelsFromSelection}
                 p={5}
                 disabled={selectedStreamIds.length == 0}
               >
-                {selectedStreamIds.length <= 1
-                  ? `Create Channel (${selectedStreamIds.length})`
-                  : `Create Channels (${selectedStreamIds.length})`}
+                <SquarePlus size={18} />
               </Button>
             </Tooltip>
           </Flex>
@@ -1493,7 +1489,6 @@ const StreamsTable = ({ onReady }) => {
 
             <Tooltip label="Create a new custom stream" openDelay={500}>
               <Button
-                leftSection={<SquarePlus size={18} />}
                 variant="light"
                 size="xs"
                 onClick={() => editStream()}
@@ -1505,19 +1500,19 @@ const StreamsTable = ({ onReady }) => {
                   color: 'white',
                 }}
               >
-                Create Stream
+                <SquarePlus size={18} />
               </Button>
             </Tooltip>
 
             <Tooltip label="Delete selected stream(s)" openDelay={500}>
               <Button
-                leftSection={<SquareMinus size={18} />}
                 variant="default"
                 size="xs"
                 onClick={handleDeleteStreams}
                 disabled={selectedStreamIds.length == 0}
+                p={5}
               >
-                Delete
+                <SquareMinus size={18} />
               </Button>
             </Tooltip>
 
