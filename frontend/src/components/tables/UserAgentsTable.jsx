@@ -16,7 +16,7 @@ import {
 } from '@mantine/core';
 import { SquareMinus, SquarePen, Check, X, SquarePlus } from 'lucide-react';
 import { CustomTable, useTable } from './CustomTable';
-import useLocalStorage from '../../hooks/useLocalStorage';
+import useBrowserStorage from '../../hooks/useBrowserStorage';
 import { showNotification } from '../../utils/notificationUtils.js';
 
 const deleteUserAgents = async (ids) => {
@@ -61,7 +61,7 @@ const UserAgentsTable = () => {
 
   const userAgents = useUserAgentsStore((state) => state.userAgents);
   const settings = useSettingsStore((s) => s.settings);
-  const [tableSize] = useLocalStorage('table-size', 'default');
+  const [tableSize] = useBrowserStorage('table-size', 'default');
 
   const columns = useMemo(
     //column definitions...

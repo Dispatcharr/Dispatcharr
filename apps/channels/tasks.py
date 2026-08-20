@@ -496,7 +496,13 @@ def _evaluate_series_rules_locked(tvg_id, result):
     """Inner implementation of series rule evaluation, called under lock."""
     from django.utils import timezone
     from apps.channels.models import Recording, Channel
-    from apps.epg.models import EPGData, ProgramData
+    from apps.channels.managers import (
+        epg_ids_mapped_to_channels,
+        parse_optional_epg_source_id,
+        resolve_epg_data_for_series_rule,
+        with_effective_values,
+    )
+    from apps.epg.models import ProgramData
 
     rules = CoreSettings.get_dvr_series_rules()
     if not isinstance(rules, list) or not rules:
@@ -521,13 +527,44 @@ def _evaluate_series_rules_locked(tvg_id, result):
     except Exception:
         post_min = 0
 
-    # Preload existing recordings keyed by stable program attributes that
-    # survive EPG refreshes (tvg_id + original start/end times stored in
-    # custom_properties).  ProgramData.id changes on every EPG refresh so
-    # it cannot be used for deduplication.  Only load future recordings
-    # to bound the set size — past recordings cannot collide with newly
-    # scheduled future programs.
+    # Preload existing recordings for dedup. ProgramData.id changes on every
+    # EPG refresh, so it cannot be used. Only load future recordings to bound
+    # the set size: past recordings cannot collide with newly scheduled
+    # future programs.
+    #
+    # Exact (tvg_id, start, end) from custom_properties is the first guard, but
+    # those times are not stable: XMLTV feeds nudge programme boundaries between
+    # refreshes, an exact key misses on any drift, and the same airing is
+    # scheduled twice onto one output path. Episode identity (season/episode, or
+    # onscreen_episode, or sub_title) is stable across refreshes, so it is the
+    # primary extra guard. A 15-minute start-time window covers programmes with
+    # no identity at all, and recordings scheduled before identity was stored,
+    # but only when the recording's original start/end is gone from the current
+    # EPG. If that slot is still listed, a nearby same-title programme is a
+    # different airing, not a drifted copy of this one.
+    from django.utils.dateparse import parse_datetime
+
+    def _identity_of(props, sub_title):
+        """Stable episode identity, shared with _episode_key (no id fallback)."""
+        try:
+            season = props.get("season")
+            episode = props.get("episode")
+            onscreen = props.get("onscreen_episode")
+        except Exception:
+            return None
+        if season is not None and episode is not None:
+            return f"s{season}e{episode}"
+        if onscreen:
+            return str(onscreen).strip().lower()
+        if sub_title:
+            return str(sub_title).strip().lower()
+        return None
+
+    DEDUP_START_TOLERANCE = timedelta(minutes=15)
+
     existing_program_keys = set()
+    existing_episode_keys = set()
+    existing_program_index = {}
     for cp in Recording.objects.filter(
         end_time__gte=now,
     ).values_list("custom_properties", flat=True):
@@ -538,8 +575,26 @@ def _evaluate_series_rules_locked(tvg_id, result):
             et = prog_data.get("end_time")
             if tvg_id_val and st and et:
                 existing_program_keys.add((str(tvg_id_val), str(st), str(et)))
+            if tvg_id_val:
+                title_l = str(prog_data.get("title") or "").strip().lower()
+                ident = _identity_of(prog_data, prog_data.get("sub_title"))
+                if ident:
+                    existing_episode_keys.add((str(tvg_id_val), title_l, ident))
+                elif st:
+                    # Only airings with NO identity feed the time window, so an
+                    # identifiable episode can never be suppressed by one.
+                    st_dt = parse_datetime(str(st))
+                    et_dt = parse_datetime(str(et)) if et else None
+                    if st_dt is not None:
+                        existing_program_index.setdefault(
+                            (str(tvg_id_val), title_l), []
+                        ).append((st_dt, et_dt))
         except Exception:
             continue
+
+    # Resolved once on first use and shared by every tvg_id-scoped rule; the
+    # lookup spans all channels and overrides, so it must not run per rule.
+    mapped_epg_ids = None
 
     for rule in rules:
         rv_tvg = str(rule.get("tvg_id") or "").strip()
@@ -557,12 +612,28 @@ def _evaluate_series_rules_locked(tvg_id, result):
             continue
 
         if rv_tvg:
-            epg = EPGData.objects.filter(tvg_id=rv_tvg).first()
-            if not epg:
-                result["details"].append({"tvg_id": rv_tvg, "status": "no_epg_match"})
+            if mapped_epg_ids is None:
+                mapped_epg_ids = epg_ids_mapped_to_channels()
+            rule_source_id = parse_optional_epg_source_id(rule.get("epg_source_id"))
+            resolved_epgs, epg_status = resolve_epg_data_for_series_rule(
+                rv_tvg, rule_source_id, mapped_epg_ids
+            )
+            if epg_status:
+                logger.warning(
+                    "Series rule skipped (%s): tvg_id=%s epg_source_id=%s title=%s",
+                    epg_status,
+                    rv_tvg,
+                    rule_source_id,
+                    series_title,
+                )
+                result["details"].append({
+                    "tvg_id": rv_tvg,
+                    "epg_source_id": rule_source_id,
+                    "status": epg_status,
+                })
                 continue
-            programs_qs = ProgramData.objects.filter(
-                epg=epg,
+            programs_qs = ProgramData.objects.select_related("epg").filter(
+                epg_id__in=[e.id for e in resolved_epgs],
                 end_time__gt=now,
                 start_time__lte=horizon,
             )
@@ -593,6 +664,35 @@ def _evaluate_series_rules_locked(tvg_id, result):
             )
 
         programs = list(programs_qs.distinct().order_by("start_time"))
+        # Current EPG listings for this rule, used so the identity-less time
+        # window can tell "this recording's original slot is still listed"
+        # (a nearby programme is a different airing) from "the slot is gone"
+        # (the nearby programme is the same airing after times drifted).
+        #
+        # Scoped to (tvg_id, title) pairs the window could ever consult: pairs
+        # with a pre-existing identity-less recording, plus pairs with an
+        # identity-less programme in this very batch (two brand-new,
+        # never-recorded listings can land in the same evaluation pass, before
+        # either is in existing_program_index). A programme is included by
+        # title/tvg_id match regardless of its own identity, since enrichment
+        # can add identity to the live listing of a slot that was identity-less
+        # when it was first recorded.
+        identity_less_keys = {
+            (str(p.tvg_id), str(p.title or "").strip().lower())
+            for p in programs
+            if not _identity_of(p.custom_properties or {}, p.sub_title)
+        }
+        relevant_index_keys = set(existing_program_index.keys()) | identity_less_keys
+        live_airings = {
+            (str(p.tvg_id), p.start_time, p.end_time)
+            for p in programs
+            if (str(p.tvg_id), str(p.title or "").strip().lower()) in relevant_index_keys
+        }
+        # One orphaned (identity-less) recording must resolve to at most one
+        # replacement candidate. Without this, a recording whose slot drifted
+        # can also swallow an unrelated same-title programme that happens to
+        # start nearby, and that second programme would never get recorded at all.
+        claimed_program_index_entries = set()
 
         if pinned_channel_id is not None:
             pinned_channel = Channel.objects.filter(id=pinned_channel_id).first()
@@ -600,19 +700,33 @@ def _evaluate_series_rules_locked(tvg_id, result):
                 result["details"].append({"tvg_id": rv_tvg, "status": "pinned_channel_missing", "channel_id": pinned_channel_id})
                 continue
             channels_by_epg_id = None
-        elif rv_tvg:
-            pinned_channel = Channel.objects.filter(epg_data=epg).order_by("channel_number").first()
-            if not pinned_channel:
-                result["details"].append({"tvg_id": rv_tvg, "status": "no_channel_for_epg"})
-                continue
-            channels_by_epg_id = None
         else:
             pinned_channel = None
             epg_ids = {p.epg_id for p in programs}
+            # Effective values so a hand-assigned override EPG counts as the
+            # channel's station, matching how the rule resolved its EPG rows.
+            # Lowest effective channel number wins when several channels share
+            # one station.
             channels_by_epg_id = {}
-            for ch in Channel.objects.filter(epg_data_id__in=epg_ids).order_by("channel_number"):
-                if ch.epg_data_id not in channels_by_epg_id:
-                    channels_by_epg_id[ch.epg_data_id] = ch
+            channels_qs = (
+                with_effective_values(Channel.objects.all())
+                .filter(effective_epg_data_id__in=epg_ids)
+                .order_by("effective_channel_number")
+            )
+            for ch in channels_qs:
+                if ch.effective_epg_data_id not in channels_by_epg_id:
+                    channels_by_epg_id[ch.effective_epg_data_id] = ch
+            if not channels_by_epg_id:
+                logger.warning(
+                    "Series rule skipped (no_channel_for_epg): tvg_id=%s title=%s",
+                    rv_tvg,
+                    series_title,
+                )
+                result["details"].append({
+                    "tvg_id": rv_tvg,
+                    "status": "no_channel_for_epg",
+                })
+                continue
 
         #
         # Many providers list multiple future airings of the same episode
@@ -628,20 +742,10 @@ def _evaluate_series_rules_locked(tvg_id, result):
         # (usually movies or specials without episode identifiers).
         #
         def _episode_key(p: "ProgramData"):
-            try:
-                props = p.custom_properties or {}
-                season = props.get("season")
-                episode = props.get("episode")
-                onscreen = props.get("onscreen_episode")
-            except Exception:
-                season = episode = onscreen = None
+            ident = _identity_of(p.custom_properties or {}, p.sub_title)
             base = f"{p.tvg_id or ''}|{(p.title or '').strip().lower()}"  # series scope
-            if season is not None and episode is not None:
-                return f"{base}|s{season}e{episode}"
-            if onscreen:
-                return f"{base}|{str(onscreen).strip().lower()}"
-            if p.sub_title:
-                return f"{base}|{p.sub_title.strip().lower()}"
+            if ident:
+                return f"{base}|{ident}"
             # No reliable episode identity; use the program id to avoid over-merging
             return f"id:{p.id}"
 
@@ -676,14 +780,57 @@ def _evaluate_series_rules_locked(tvg_id, result):
                     if rec_channel is None:
                         continue
                 # Skip if a recording already exists for this exact airing
-                # (keyed by tvg_id + original program times, which are stable
-                # across EPG refreshes unlike ProgramData.id).
+                # (tvg_id + original program times). This catches unchanged
+                # times after an EPG refresh regenerates ProgramData.id.
                 prog_key = (str(prog.tvg_id), prog.start_time.isoformat(), prog.end_time.isoformat())
                 if prog_key in existing_program_keys:
                     continue
-                # Extra guard: DB query using the same stable attributes
-                # stored in custom_properties (unadjusted program times,
-                # not offset-adjusted Recording.start_time/end_time).
+                # Same airing after an EPG refresh moved its boundaries.
+                # Episode identity survives a refresh, so when it exists it is
+                # authoritative and the time window is not consulted at all: an
+                # identifiable episode that is not already scheduled is a genuinely
+                # different airing, however close it sits to another one.
+                prog_title_l = str(prog.title or "").strip().lower()
+                prog_ident = _identity_of(prog.custom_properties or {}, prog.sub_title)
+                idx_key = (str(prog.tvg_id), prog_title_l)
+                if prog_ident:
+                    if (str(prog.tvg_id), prog_title_l, prog_ident) in existing_episode_keys:
+                        continue
+                else:
+                    # No identity at all: a narrow start-time window is the only
+                    # signal left. Compared solely against other identity-less
+                    # airings, so this can never suppress an identifiable episode.
+                    # Skip only when the nearby recording's original slot is gone
+                    # from the current EPG (this candidate is its drift
+                    # replacement); if it is still listed, this candidate is a
+                    # different airing (e.g. back-to-back news). Each orphaned
+                    # entry can be claimed by only one candidate: pick the
+                    # closest unclaimed match rather than the first.
+                    try:
+                        best_entry = None
+                        best_delta = None
+                        for seen_start, seen_end in existing_program_index.get(idx_key, ()):
+                            entry = (idx_key, seen_start, seen_end)
+                            if entry in claimed_program_index_entries:
+                                continue
+                            delta = abs(seen_start - prog.start_time)
+                            if delta > DEDUP_START_TOLERANCE:
+                                continue
+                            if (
+                                seen_end is not None
+                                and (str(prog.tvg_id), seen_start, seen_end) in live_airings
+                            ):
+                                continue
+                            if best_delta is None or delta < best_delta:
+                                best_entry, best_delta = entry, delta
+                        if best_entry is not None:
+                            claimed_program_index_entries.add(best_entry)
+                            continue
+                    except TypeError:
+                        pass  # naive/aware mismatch in stored data: fall through
+                # Extra guard: DB query on the same exact program times stored
+                # in custom_properties (unadjusted, not offset-adjusted
+                # Recording.start_time/end_time).
                 try:
                     if Recording.objects.filter(
                         custom_properties__program__tvg_id=prog.tvg_id,
@@ -707,23 +854,44 @@ def _evaluate_series_rules_locked(tvg_id, result):
                 except Exception:
                     pass
 
+                program_snapshot = {
+                    "id": prog.id,
+                    "tvg_id": prog.tvg_id,
+                    "title": prog.title,
+                    "sub_title": prog.sub_title,
+                    "description": prog.description,
+                    "start_time": prog.start_time.isoformat(),
+                    "end_time": prog.end_time.isoformat(),
+                    # Stable across EPG refreshes, unlike the times above.
+                    "season": (prog.custom_properties or {}).get("season"),
+                    "episode": (prog.custom_properties or {}).get("episode"),
+                    "onscreen_episode": (prog.custom_properties or {}).get(
+                        "onscreen_episode"
+                    ),
+                }
+                # Pin the recording to the EPG source that produced this
+                # airing so deleting one sourced rule cannot wipe another
+                # source's upcoming list for the same tvg_id + title.
+                epg_obj = getattr(prog, "epg", None)
+                source_id = getattr(epg_obj, "epg_source_id", None)
+                if source_id:
+                    program_snapshot["epg_source_id"] = int(source_id)
+
                 rec = Recording.objects.create(
                     channel=rec_channel,
                     start_time=adj_start,
                     end_time=adj_end,
-                    custom_properties={
-                        "program": {
-                            "id": prog.id,
-                            "tvg_id": prog.tvg_id,
-                            "title": prog.title,
-                            "sub_title": prog.sub_title,
-                            "description": prog.description,
-                            "start_time": prog.start_time.isoformat(),
-                            "end_time": prog.end_time.isoformat(),
-                        }
-                    },
+                    custom_properties={"program": program_snapshot},
                 )
                 existing_program_keys.add(prog_key)
+                if prog_ident:
+                    existing_episode_keys.add(
+                        (str(prog.tvg_id), prog_title_l, prog_ident)
+                    )
+                else:
+                    existing_program_index.setdefault(idx_key, []).append(
+                        (prog.start_time, prog.end_time)
+                    )
                 created_here += 1
                 try:
                     prefetch_recording_artwork.apply_async(args=[rec.id], countdown=1)
@@ -1401,9 +1569,10 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
             _active_lock_redis = None
 
     # --- Clean up the one-off PeriodicTask that dispatched this task ---
+    # Only the Beat row. Do not AsyncResult.revoke() this execution's task_id.
     try:
-        from apps.channels.signals import revoke_task, _dvr_task_name
-        revoke_task(_dvr_task_name(recording_id))
+        from apps.channels.signals import _delete_periodic_task_named, _dvr_task_name
+        _delete_periodic_task_named(_dvr_task_name(recording_id))
     except Exception as e:
         logger.debug(f"PeriodicTask cleanup failed (non-fatal): {e}")
 
@@ -2828,7 +2997,7 @@ def comskip_process_recording(recording_id: int):
     try:
         comskip_mode = CoreSettings.get_dvr_comskip_mode()
         hw_flag = _comskip_hw_accel_flag(CoreSettings.get_dvr_comskip_hw_accel())
-        cmd = [comskip_bin, "--output", os.path.dirname(file_path)]
+        cmd = [comskip_bin, "--threads=1", "--output", os.path.dirname(file_path)]
         if hw_flag:
             cmd.insert(1, hw_flag)
         # Prefer user-specified INI, fall back to known defaults
@@ -2882,6 +3051,13 @@ def comskip_process_recording(recording_id: int):
                 detail["ini_path"] = selected_ini
             cp["comskip"] = detail
             _persist_custom_properties()
+            logger.warning(
+                "Comskip failed for recording %s: returncode=%s cmd=%s stderr=%s",
+                recording_id,
+                result.returncode,
+                cmd,
+                "\n".join(stderr_tail) if stderr_tail else "",
+            )
             _ws('error', {"reason": "comskip_failed", "returncode": result.returncode})
             return "comskip_failed"
     except Exception as e:

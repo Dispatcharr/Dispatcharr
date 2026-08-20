@@ -2,8 +2,15 @@ import { create } from 'zustand';
 import api from '../api';
 import { showNotification } from '../utils/notificationUtils.js';
 import useUsersStore from './users';
+import { readStoredJSON, writeStoredJSON } from '../hooks/useBrowserStorage';
 
 const defaultProfiles = { 0: { id: '0', name: 'All', channels: new Set() } };
+const SELECTED_PROFILE_ID_KEY = 'channels-selected-profile-id';
+const DEFAULT_SELECTED_PROFILE_ID = '0';
+
+const persistSelectedProfileId = (id) => {
+  writeStoredJSON(SELECTED_PROFILE_ID_KEY, id, 'session');
+};
 
 // Seconds-precision timestamp recorded when this module is first loaded.
 // Compared against client.connected_at (also in seconds) to distinguish connections
@@ -113,7 +120,11 @@ const useChannelsStore = create((set, get) => ({
   channelsByUUID: {},
   channelGroups: {},
   profiles: {},
-  selectedProfileId: '0',
+  selectedProfileId: readStoredJSON(
+    SELECTED_PROFILE_ID_KEY,
+    DEFAULT_SELECTED_PROFILE_ID,
+    'session'
+  ),
   channelsPageSelection: [],
   stats: {},
   activeChannels: {},
@@ -187,15 +198,39 @@ const useChannelsStore = create((set, get) => ({
     set({ isLoading: true, error: null });
     try {
       const profiles = await api.getChannelProfiles();
-      set({
-        profiles: profiles.reduce((acc, profile) => {
+      const nextProfiles = profiles.reduce(
+        (acc, profile) => {
           acc[profile.id] = {
             ...profile,
             channels: new Set(profile.channels),
           };
           return acc;
-        }, defaultProfiles),
-        isLoading: false,
+        },
+        {
+          0: {
+            ...defaultProfiles[0],
+            channels: new Set(),
+          },
+        }
+      );
+
+      set((state) => {
+        const selectedStillExists =
+          state.selectedProfileId === DEFAULT_SELECTED_PROFILE_ID ||
+          nextProfiles[state.selectedProfileId] !== undefined;
+        const nextSelectedProfileId = selectedStillExists
+          ? state.selectedProfileId
+          : DEFAULT_SELECTED_PROFILE_ID;
+
+        if (nextSelectedProfileId !== state.selectedProfileId) {
+          persistSelectedProfileId(nextSelectedProfileId);
+        }
+
+        return {
+          profiles: nextProfiles,
+          selectedProfileId: nextSelectedProfileId,
+          isLoading: false,
+        };
       });
     } catch (error) {
       console.error('Failed to fetch channel profiles:', error);
@@ -328,7 +363,9 @@ const useChannelsStore = create((set, get) => ({
       return { channelGroups: remainingGroups };
     }),
 
-  addProfile: (profile) =>
+  addProfile: (profile) => {
+    const nextSelectedProfileId = String(profile.id);
+    persistSelectedProfileId(nextSelectedProfileId);
     set((state) => ({
       profiles: {
         ...state.profiles,
@@ -337,7 +374,9 @@ const useChannelsStore = create((set, get) => ({
           channels: new Set(profile.channels),
         },
       },
-    })),
+      selectedProfileId: nextSelectedProfileId,
+    }));
+  },
 
   updateProfile: (profile) =>
     set((state) => ({
@@ -353,20 +392,26 @@ const useChannelsStore = create((set, get) => ({
   removeProfiles: (profileIds) =>
     set((state) => {
       const updatedProfiles = { ...state.profiles };
+      const removedIds = new Set(profileIds.map(String));
       for (const id of profileIds) {
         delete updatedProfiles[id];
       }
 
-      const additionalUpdates = profileIds.includes(state.selectedProfileId)
-        ? { selectedProfileId: '0' }
-        : {};
+      // Compare as strings: Select values are strings, but profile.id from the
+      // API (and confirmation dialog) is a number.
+      const nextSelectedProfileId = removedIds.has(
+        String(state.selectedProfileId)
+      )
+        ? DEFAULT_SELECTED_PROFILE_ID
+        : state.selectedProfileId;
+
+      if (nextSelectedProfileId !== state.selectedProfileId) {
+        persistSelectedProfileId(nextSelectedProfileId);
+      }
 
       return {
         profiles: updatedProfiles,
-        selectedProfileId: profileIds.includes(state.selectedProfileId)
-          ? '0'
-          : state.selectedProfileId,
-        ...additionalUpdates,
+        selectedProfileId: nextSelectedProfileId,
       };
     }),
 
@@ -412,10 +457,16 @@ const useChannelsStore = create((set, get) => ({
   setChannelsPageSelection: (channelsPageSelection) =>
     set(() => ({ channelsPageSelection })),
 
-  setSelectedProfileId: (id) =>
+  setSelectedProfileId: (id) => {
+    const nextId =
+      id === null || id === undefined || id === ''
+        ? DEFAULT_SELECTED_PROFILE_ID
+        : String(id);
+    persistSelectedProfileId(nextId);
     set(() => ({
-      selectedProfileId: id,
-    })),
+      selectedProfileId: nextId,
+    }));
+  },
 
   setChannelStats: (stats) => {
     return set((state) => {
@@ -511,10 +562,13 @@ const useChannelsStore = create((set, get) => ({
   setTimeshiftStats: (stats) => {
     return set((state) => {
       const sessions = stats.timeshift_sessions || [];
-      const oldSessions = state.activeTimeshiftSessions.reduce((acc, session) => {
-        acc[session.session_id] = session;
-        return acc;
-      }, {});
+      const oldSessions = state.activeTimeshiftSessions.reduce(
+        (acc, session) => {
+          acc[session.session_id] = session;
+          return acc;
+        },
+        {}
+      );
       const newSessions = sessions.reduce((acc, session) => {
         acc[session.session_id] = session;
         return acc;

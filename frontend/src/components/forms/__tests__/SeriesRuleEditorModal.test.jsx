@@ -23,24 +23,31 @@ vi.mock('../../../utils/guideUtils.js', () => ({
   evaluateSeriesRulesByTvgId: vi.fn(),
 }));
 
-vi.mock('../../../utils/forms/SeriesRuleEditorModalUtils.js', () => ({
-  TITLE_MODES: [
-    { label: 'Exact', value: 'exact' },
-    { label: 'Contains', value: 'contains' },
-  ],
-  DESCRIPTION_MODES: [
-    { label: 'Contains', value: 'contains' },
-    { label: 'Exact', value: 'exact' },
-  ],
-  EPISODE_MODES: [
-    { label: 'All', value: 'all' },
-    { label: 'New only', value: 'new' },
-  ],
-  formatRange: vi.fn((start, end) => `${start} - ${end}`),
-  getChannelOptions: vi.fn(() => [{ value: '10', label: '501 - HBO' }]),
-  getTvgOptions: vi.fn(),
-  previewSeriesRule: vi.fn(),
-}));
+vi.mock(
+  '../../../utils/forms/SeriesRuleEditorModalUtils.js',
+  async (importOriginal) => {
+    const actual = await importOriginal();
+    return {
+      ...actual,
+      TITLE_MODES: [
+        { label: 'Exact', value: 'exact' },
+        { label: 'Contains', value: 'contains' },
+      ],
+      DESCRIPTION_MODES: [
+        { label: 'Contains', value: 'contains' },
+        { label: 'Exact', value: 'exact' },
+      ],
+      EPISODE_MODES: [
+        { label: 'All', value: 'all' },
+        { label: 'New only', value: 'new' },
+      ],
+      formatRange: vi.fn((start, end) => `${start} - ${end}`),
+      getChannelOptions: vi.fn(() => [{ value: '10', label: '501 - HBO' }]),
+      getTvgOptions: vi.fn(),
+      previewSeriesRule: vi.fn(),
+    };
+  }
+);
 
 // ── Mantine core ───────────────────────────────────────────────────────────
 vi.mock('@mantine/core', () => ({
@@ -154,6 +161,7 @@ import {
   evaluateSeriesRulesByTvgId,
 } from '../../../utils/guideUtils.js';
 import {
+  getChannelOptions,
   getTvgOptions,
   previewSeriesRule,
   formatRange,
@@ -202,7 +210,7 @@ const setupMocks = () => {
   const mockFetchRecordings = vi.fn().mockResolvedValue(undefined);
 
   vi.mocked(useEPGsStore).mockImplementation((selector) =>
-    selector({ tvgs: mockTvgs, tvgsById: mockTvgsById })
+    selector({ tvgs: mockTvgs, tvgsById: mockTvgsById, epgs: {} })
   );
 
   // Mock getState for the imperative call in handleSave
@@ -408,9 +416,58 @@ describe('SeriesRuleEditorModal', () => {
   // ── TVG options ───────────────────────────────────────────────────────────
 
   describe('EPG channel options', () => {
-    it('calls getTvgOptions with tvgs from store', () => {
+    it('keeps a user station pick after the channel summary resolves', async () => {
+      let resolveChannels;
+      vi.mocked(getChannelsSummary).mockReturnValue(
+        new Promise((resolve) => {
+          resolveChannels = resolve;
+        })
+      );
       render(<SeriesRuleEditorModal {...defaultProps} />);
-      expect(getTvgOptions).toHaveBeenCalledWith(mockTvgs);
+      const select = screen.getByTestId('select-epg-channel-(optional)');
+      fireEvent.change(select, { target: { value: 'tvg-1' } });
+      expect(select).toHaveValue('tvg-1');
+
+      resolveChannels(mockChannels);
+      await waitFor(() =>
+        expect(
+          vi
+            .mocked(getChannelOptions)
+            .mock.calls.some((call) => call[0] === mockChannels)
+        ).toBe(true)
+      );
+      expect(select).toHaveValue('tvg-1');
+    });
+
+    it('binds an unsourced rule to its mapped copy once channels load', async () => {
+      const tvgs = [
+        { id: 122, tvg_id: 'tvg-1', name: 'Unmapped copy', epg_source: 1 },
+        { id: 895, tvg_id: 'tvg-1', name: 'Mapped copy', epg_source: 11 },
+      ];
+      vi.mocked(useEPGsStore).mockImplementation((selector) =>
+        selector({ tvgs, tvgsById: {}, epgs: {} })
+      );
+      vi.mocked(getTvgOptions).mockReturnValue([
+        { value: 'tvg-1::11', label: 'Mapped copy (tvg-1)' },
+      ]);
+      vi.mocked(getChannelsSummary).mockResolvedValue([
+        { id: 10, name: 'Comedy', channel_number: 5, epg_data_id: 895 },
+      ]);
+
+      render(
+        <SeriesRuleEditorModal
+          {...defaultProps}
+          initialRule={{ tvg_id: 'tvg-1', title: 'Show', mode: 'all' }}
+        />
+      );
+
+      const select = screen.getByTestId('select-epg-channel-(optional)');
+      await waitFor(() => expect(select).toHaveValue('tvg-1::11'));
+    });
+
+    it('calls getTvgOptions with tvgs, epgs, and mapped EPG ids', () => {
+      render(<SeriesRuleEditorModal {...defaultProps} />);
+      expect(getTvgOptions).toHaveBeenCalledWith(mockTvgs, {}, expect.any(Set));
     });
   });
 
@@ -504,6 +561,26 @@ describe('SeriesRuleEditorModal', () => {
       await waitFor(() => {
         expect(
           screen.getByText(/No EPG channel matches this tvg_id/)
+        ).toBeInTheDocument();
+      });
+    });
+
+    it('warns when the tvg_id exists but no channel uses that EPG copy', async () => {
+      vi.mocked(previewSeriesRule).mockResolvedValue({
+        matches: [],
+        total: 0,
+        epg_found: true,
+        status: 'no_channel_for_epg',
+      });
+      render(
+        <SeriesRuleEditorModal
+          {...defaultProps}
+          initialRule={{ tvg_id: 'tvg-1', title: 'X', epg_source_id: 11 }}
+        />
+      );
+      await waitFor(() => {
+        expect(
+          screen.getByText(/no channel uses that EPG copy/)
         ).toBeInTheDocument();
       });
     });
@@ -685,6 +762,28 @@ describe('SeriesRuleEditorModal', () => {
       await waitFor(() => {
         const call = vi.mocked(createSeriesRule).mock.calls[0][0];
         expect(call).not.toHaveProperty('channel_id');
+      });
+    });
+
+    it('includes epg_source_id in payload for a sourced rule', async () => {
+      render(
+        <SeriesRuleEditorModal
+          {...defaultProps}
+          initialRule={{
+            tvg_id: 'tvg-1',
+            title: 'Show',
+            epg_source_id: 11,
+          }}
+        />
+      );
+      fireEvent.click(screen.getByText('Save rule'));
+      await waitFor(() => {
+        expect(createSeriesRule).toHaveBeenCalledWith(
+          expect.objectContaining({
+            tvg_id: 'tvg-1',
+            epg_source_id: 11,
+          })
+        );
       });
     });
   });

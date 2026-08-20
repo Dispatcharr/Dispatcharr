@@ -2683,7 +2683,7 @@ export default class API {
     }
   }
 
-  static async uploadLogo(file, name = null) {
+  static async uploadLogo(file, name = null, overwrite = false) {
     try {
       const formData = new FormData();
       formData.append('file', file);
@@ -2691,6 +2691,10 @@ export default class API {
       // Add custom name if provided
       if (name && name.trim()) {
         formData.append('name', name.trim());
+      }
+
+      if (overwrite) {
+        formData.append('overwrite', 'true');
       }
 
       // Add timeout handling for file uploads
@@ -2733,7 +2737,11 @@ export default class API {
         timeoutError.code = 'NETWORK_ERROR';
         throw timeoutError;
       }
-      errorNotification('Failed to upload logo', e);
+      // Skip the generic toast for an already-exists conflict — the caller
+      // handles that case with its own overwrite-confirmation prompt.
+      if (e.status !== 409 || !e.body?.already_exists) {
+        errorNotification('Failed to upload logo', e);
+      }
       throw e;
     }
   }
@@ -3238,11 +3246,12 @@ export default class API {
     }
   }
 
-  static async deleteSeriesRule(tvgId, title) {
+  static async deleteSeriesRule(tvgId, title, epgSourceId) {
     try {
       const params = new URLSearchParams();
       if (tvgId) params.set('tvg_id', tvgId);
       if (title) params.set('title', title);
+      if (epgSourceId) params.set('epg_source_id', String(epgSourceId));
       await request(`${host}/api/channels/series-rules/?${params}`, {
         method: 'DELETE',
       });
@@ -3294,13 +3303,19 @@ export default class API {
     tvg_id,
     title = null,
     scope = 'title',
+    epg_source_id,
   }) {
     try {
       const resp = await request(
         `${host}/api/channels/series-rules/bulk-remove/`,
         {
           method: 'POST',
-          body: { tvg_id, title, scope },
+          body: {
+            tvg_id,
+            title,
+            scope,
+            ...(epg_source_id ? { epg_source_id } : {}),
+          },
         }
       );
       notifications.show({ title: `Removed ${resp.removed || 0} scheduled` });

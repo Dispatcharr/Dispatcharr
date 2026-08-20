@@ -311,7 +311,13 @@ class IntegrationEPGRefreshTests(SeriesRuleDedupBaseTestCase):
         # Verify the recording was created with correct program metadata
         rec = Recording.objects.first()
         self.assertEqual(rec.custom_properties["program"]["tvg_id"], "test.channel.1")
-        self.assertEqual(rec.custom_properties["program"]["title"], "Test Show")
+        self.assertEqual(
+            rec.custom_properties["program"]["title"], "Test Show"
+        )
+        self.assertEqual(
+            rec.custom_properties["program"]["epg_source_id"],
+            self.epg.epg_source_id,
+        )
         self.assertEqual(
             rec.custom_properties["program"]["start_time"],
             prog.start_time.isoformat()
@@ -834,3 +840,176 @@ class TitleOnlyRuleTests(SeriesRuleDedupBaseTestCase):
         result = evaluate_series_rules_impl()
         self.assertEqual(result["scheduled"], 0)
         self.assertEqual(Recording.objects.count(), 0)
+
+
+@patch("apps.channels.tasks.prefetch_recording_artwork")
+@patch("apps.channels.signals.schedule_recording_task", return_value="mock-task-id")
+class DuplicateTvgIdSeriesRuleTests(SeriesRuleDedupBaseTestCase):
+    """Same tvg_id on two EPG sources: do not let an unmapped copy win."""
+
+    def _make_duplicate_sources(self):
+        """Leave self.epg unmapped (lower pk) and map the channel to a new copy."""
+        other_source = EPGSource.objects.create(
+            name="Other EPG", source_type="xmltv"
+        )
+        mapped = EPGData.objects.create(
+            tvg_id="test.channel.1",
+            name="Mapped copy",
+            epg_source=other_source,
+        )
+        self.channel.epg_data = mapped
+        self.channel.save(update_fields=["epg_data"])
+        return self.epg, mapped
+
+    @patch("apps.channels.tasks.acquire_task_lock", return_value=True)
+    @patch("apps.channels.tasks.release_task_lock")
+    def test_legacy_rule_uses_mapped_epg_not_first_row(
+        self, mock_release, mock_lock, mock_schedule, mock_artwork
+    ):
+        """A tvg_id-only rule ignores an unmapped duplicate EPG row."""
+        from apps.channels.tasks import evaluate_series_rules_impl
+
+        unmapped, mapped = self._make_duplicate_sources()
+        self.assertLess(unmapped.id, mapped.id)
+
+        start = self.now + timedelta(hours=2)
+        ProgramData.objects.create(
+            epg=mapped, tvg_id="test.channel.1",
+            start_time=start, end_time=start + timedelta(hours=1),
+            title="Test Show", sub_title="Episode 1",
+        )
+        ProgramData.objects.create(
+            epg=unmapped, tvg_id="test.channel.1",
+            start_time=start + timedelta(hours=3),
+            end_time=start + timedelta(hours=4),
+            title="Test Show", sub_title="Should not record",
+        )
+
+        result = evaluate_series_rules_impl()
+        self.assertEqual(result["scheduled"], 1)
+        rec = Recording.objects.get()
+        self.assertEqual(rec.channel_id, self.channel.id)
+        self.assertEqual(
+            rec.custom_properties["program"]["epg_source_id"],
+            mapped.epg_source_id,
+        )
+
+    @patch("apps.channels.tasks.acquire_task_lock", return_value=True)
+    @patch("apps.channels.tasks.release_task_lock")
+    def test_sourced_rule_only_uses_that_epg_source(
+        self, mock_release, mock_lock, mock_schedule, mock_artwork
+    ):
+        """epg_source_id pins evaluation to one source's copy of the tvg_id."""
+        from apps.channels.tasks import evaluate_series_rules_impl
+
+        unmapped, mapped = self._make_duplicate_sources()
+        _set_series_rules([{
+            "tvg_id": "test.channel.1",
+            "mode": "all",
+            "title": "Test Show",
+            "epg_source_id": mapped.epg_source_id,
+        }])
+
+        start = self.now + timedelta(hours=2)
+        ProgramData.objects.create(
+            epg=mapped, tvg_id="test.channel.1",
+            start_time=start, end_time=start + timedelta(hours=1),
+            title="Test Show", sub_title="Episode 1",
+        )
+        result = evaluate_series_rules_impl()
+        self.assertEqual(result["scheduled"], 1)
+        rec = Recording.objects.get()
+        self.assertEqual(
+            rec.custom_properties["program"]["epg_source_id"],
+            mapped.epg_source_id,
+        )
+
+        _set_series_rules([{
+            "tvg_id": "test.channel.1",
+            "mode": "all",
+            "title": "Test Show",
+            "epg_source_id": unmapped.epg_source_id,
+        }])
+        Recording.objects.all().delete()
+        result = evaluate_series_rules_impl()
+        self.assertEqual(result["scheduled"], 0)
+        statuses = [d.get("status") for d in result["details"]]
+        self.assertIn("no_channel_for_epg", statuses)
+
+    @patch("apps.channels.tasks.acquire_task_lock", return_value=True)
+    @patch("apps.channels.tasks.release_task_lock")
+    def test_override_assigned_epg_still_records(
+        self, mock_release, mock_lock, mock_schedule, mock_artwork
+    ):
+        """A channel whose EPG is assigned via ChannelOverride records normally.
+
+        Auto-synced channels keep Channel.epg_data null and carry the
+        hand-assigned station on the override row. That counts as mapped when
+        resolving the rule, so it must also count when picking the channel to
+        record on.
+        """
+        from apps.channels.models import ChannelOverride
+        from apps.channels.tasks import evaluate_series_rules_impl
+
+        self.channel.epg_data = None
+        self.channel.save(update_fields=["epg_data"])
+        ChannelOverride.objects.create(channel=self.channel, epg_data=self.epg)
+
+        self._create_program(hours_from_now=2)
+
+        result = evaluate_series_rules_impl()
+        self.assertEqual(result["scheduled"], 1)
+        self.assertEqual(Recording.objects.get().channel_id, self.channel.id)
+
+    @patch("apps.channels.tasks.acquire_task_lock", return_value=True)
+    @patch("apps.channels.tasks.release_task_lock")
+    def test_epg_without_any_channel_is_reported(
+        self, mock_release, mock_lock, mock_schedule, mock_artwork
+    ):
+        """Losing the channel for a station reports instead of silently doing nothing."""
+        from apps.channels.tasks import evaluate_series_rules_impl
+
+        self._create_program(hours_from_now=2)
+        self.channel.epg_data = None
+        self.channel.save(update_fields=["epg_data"])
+
+        result = evaluate_series_rules_impl()
+        self.assertEqual(result["scheduled"], 0)
+        statuses = [d.get("status") for d in result["details"]]
+        self.assertIn("no_channel_for_epg", statuses)
+
+    @patch("apps.channels.tasks.acquire_task_lock", return_value=True)
+    @patch("apps.channels.tasks.release_task_lock")
+    def test_legacy_rule_records_from_every_mapped_copy(
+        self, mock_release, mock_lock, mock_schedule, mock_artwork
+    ):
+        """A tvg_id-only rule uses every mapped source copy, not just the first."""
+        from apps.channels.tasks import evaluate_series_rules_impl
+
+        other_source = EPGSource.objects.create(
+            name="Other EPG", source_type="xmltv"
+        )
+        mapped_b = EPGData.objects.create(
+            tvg_id="test.channel.1",
+            name="Mapped B",
+            epg_source=other_source,
+        )
+        Channel.objects.create(
+            channel_number=2, name="Second Channel", epg_data=mapped_b
+        )
+        start = self.now + timedelta(hours=2)
+        ProgramData.objects.create(
+            epg=self.epg, tvg_id="test.channel.1",
+            start_time=start, end_time=start + timedelta(hours=1),
+            title="Test Show", sub_title="Episode A",
+        )
+        ProgramData.objects.create(
+            epg=mapped_b, tvg_id="test.channel.1",
+            start_time=start + timedelta(hours=3),
+            end_time=start + timedelta(hours=4),
+            title="Test Show", sub_title="Episode B",
+        )
+
+        result = evaluate_series_rules_impl()
+        self.assertEqual(result["scheduled"], 2)
+        self.assertEqual(Recording.objects.count(), 2)
