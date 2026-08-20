@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import useAuthStore from '../../store/auth';
 import useSettingsStore from '../../store/settings';
 import {
@@ -20,6 +20,7 @@ import {
 } from '@mantine/core';
 import logo from '../../assets/logo.png';
 import { showNotification } from '../../utils/notificationUtils.js';
+import { defaultRoute, getSafeNextPath } from '../../utils/loginRedirect';
 
 const LoginForm = () => {
   const login = useAuthStore((s) => s.login);
@@ -30,6 +31,7 @@ const LoginForm = () => {
   const storedVersion = useSettingsStore((s) => s.version);
 
   const navigate = useNavigate(); // Hook to navigate to other routes
+  const [searchParams] = useSearchParams();
   const [formData, setFormData] = useState({ username: '', password: '' });
   const [rememberMe, setRememberMe] = useState(false);
   const [savePassword, setSavePassword] = useState(false);
@@ -86,11 +88,13 @@ const LoginForm = () => {
     }
   }, []);
 
+  const nextParam = searchParams.get('next');
+
   useEffect(() => {
     if (isAuthenticated) {
-      navigate('/channels');
+      navigate(getSafeNextPath(nextParam) || defaultRoute, { replace: true });
     }
-  }, [isAuthenticated, navigate]);
+  }, [isAuthenticated, navigate, nextParam]);
 
   const handleInputChange = (e) => {
     setFormData({
