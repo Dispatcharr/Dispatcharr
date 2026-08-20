@@ -358,12 +358,11 @@ if [ "$DISPATCHARR_DEBUG" != "true" ]; then
     uwsgi_args+=" --disable-logging"
 fi
 
-# Launch uwsgi with configurable nice level (default: 0 for normal priority)
-# Users can override via UWSGI_NICE_LEVEL environment variable in docker-compose
-# Start with nice as root, then use setpriv to drop privileges to dispatch user
-# This preserves both the nice value and environment variables
-nice -n "$UWSGI_NICE_LEVEL" su - "$POSTGRES_USER" -c "cd /app && exec $VIRTUAL_ENV/bin/uwsgi $uwsgi_args" & uwsgi_pid=$!
-echo "✅ uwsgi started with PID $uwsgi_pid (nice $UWSGI_NICE_LEVEL)"
+# Launch uwsgi (UWSGI_NICE_LEVEL, default 0). su -/pam_limits resets soft nofile
+# to 1024; raise it inside the session. Guarded so a bad value cannot abort set -e.
+DISPATCHARR_NOFILE="${DISPATCHARR_NOFILE:-65536}"
+nice -n "$UWSGI_NICE_LEVEL" su - "$POSTGRES_USER" -c "ulimit -n $DISPATCHARR_NOFILE 2>/dev/null || true; cd /app && exec $VIRTUAL_ENV/bin/uwsgi $uwsgi_args" & uwsgi_pid=$!
+echo "✅ uwsgi started with PID $uwsgi_pid (nice $UWSGI_NICE_LEVEL, nofile $DISPATCHARR_NOFILE)"
 pids+=("$uwsgi_pid"); pid_names[$uwsgi_pid]="uwsgi"
 
 # Wait for services to fully initialize before checking hardware
