@@ -751,10 +751,18 @@ def _evaluate_series_rules_locked(tvg_id, result):
 
         # Optionally filter to only brand-new episodes before grouping
         if mode == "new":
+            # PATCH 12: previously_shown. XMLTV allows a feed to mark first runs
+            # with <new/> OR to mark repeats with <previously-shown/>. Testing only
+            # the former makes this rule match NOTHING on a feed that uses the
+            # latter - which is every feed here (measured 2026-08-19: the "new" key
+            # is absent on all programmes across all four auepg feeds, while repeats
+            # carry "previously_shown"). Neither tag counts as new, erring toward
+            # recording: an extra capture costs disk, a missed one is unrecoverable.
             filtered = []
             for p in programs:
                 try:
-                    if (p.custom_properties or {}).get("new"):
+                    props = p.custom_properties or {}
+                    if props.get("new") or not props.get("previously_shown"):
                         filtered.append(p)
                 except Exception:
                     pass

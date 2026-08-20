@@ -4278,7 +4278,15 @@ class SeriesRulePreviewAPIView(APIView):
         # over the bounded result set we already filtered down to.
         candidates = list(qs[:limit * 4])  # small overshoot to allow new-only filtering
         if mode == "new":
-            candidates = [p for p in candidates if (p.custom_properties or {}).get("new")]
+            # PATCH 13: preview previously_shown. Mirrors the scheduler filter
+            # in _evaluate_series_rules_locked: XMLTV feeds may mark first runs
+            # with <new/> OR mark repeats with <previously-shown/>, and testing
+            # only the former hides every programme on a feed using the latter.
+            candidates = [
+                p for p in candidates
+                if (p.custom_properties or {}).get("new")
+                or not (p.custom_properties or {}).get("previously_shown")
+            ]
 
         total = len(candidates)
         candidates = candidates[:limit]
@@ -4296,7 +4304,8 @@ class SeriesRulePreviewAPIView(APIView):
                 "end_time": p.end_time.isoformat(),
                 "season": cp.get("season"),
                 "episode": cp.get("episode"),
-                "is_new": bool(cp.get("new")),
+                "is_new": bool(cp.get("new"))
+                or not cp.get("previously_shown"),
             })
 
         return Response({
