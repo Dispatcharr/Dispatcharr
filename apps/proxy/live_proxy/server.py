@@ -9,7 +9,6 @@ Handles live TS stream proxying with support for:
 
 import threading
 import socket
-import random
 import time
 import os
 import json
@@ -25,7 +24,7 @@ from .client_manager import ClientManager
 from .output.fmp4.manager import FMP4RemuxManager
 from .output.profile.manager import OutputProfileManager, PROFILE_STATE_ACTIVE
 from .redis_keys import RedisKeys
-from .constants import ChannelState, EventType, StreamType, ChannelMetadataField, REDIS_TTL_DEFAULT
+from .constants import ChannelState, EventType, ChannelMetadataField, REDIS_TTL_DEFAULT
 from .config_helper import ConfigHelper
 from .utils import get_logger
 
@@ -45,9 +44,6 @@ class ProxyServer:
             cls._instance = cls._INITIALIZING
             try:
                 from .server import ProxyServer
-                from .input.manager import StreamManager
-                from .input.buffer import StreamBuffer
-                from .client_manager import ClientManager
                 real_instance = ProxyServer()
                 cls._instance = real_instance
                 return real_instance
@@ -93,7 +89,7 @@ class ProxyServer:
             # Use dedicated Redis client for proxy
             self.redis_client = RedisClient.get_client()
             if self.redis_client is not None:
-                logger.info(f"Using dedicated Redis client for proxy server")
+                logger.info("Using dedicated Redis client for proxy server")
                 logger.info(f"Worker ID: {self.worker_id}")
             else:
                 # Fall back to direct connection with retry
@@ -116,7 +112,7 @@ class ProxyServer:
         self.redis_client = RedisClient.get_client(max_retries=self.redis_max_retries,
                                             retry_interval=self.redis_retry_interval)
         if self.redis_client:
-            logger.info(f"Successfully connected to Redis using utility function")
+            logger.info("Successfully connected to Redis using utility function")
             logger.info(f"Worker ID: {self.worker_id}")
         else:
             logger.error(f"Failed to connect to Redis after {self.redis_max_retries} attempts")
@@ -162,46 +158,21 @@ class ProxyServer:
             return
 
         def event_listener():
-            retry_count = 0
-            max_retries = 10
-            base_retry_delay = 1  # Start with 1 second delay
-            max_retry_delay = 30  # Cap at 30 seconds
+
             pubsub_client = None
             pubsub = None
 
             while True:
                 try:
                     # Use dedicated PubSub client for event listener
-                    pubsub_client = RedisClient.get_pubsub_client()
+                    pubsub_client = RedisClient.get_pubsub_client(retry_interval = 1, max_retry_interval =  30)
                     if pubsub_client:
                         logger.info("Using dedicated Redis PubSub client for event listener")
                     else:
                         # Fall back to creating a dedicated client if utility fails
                         logger.warning("Utility function for PubSub client failed, creating direct connection")
-                        from django.conf import settings
-                        import redis
-
-                        redis_host = os.environ.get("REDIS_HOST", getattr(settings, 'REDIS_HOST', 'localhost'))
-                        redis_port = int(os.environ.get("REDIS_PORT", getattr(settings, 'REDIS_PORT', 6379)))
-                        redis_db = int(os.environ.get("REDIS_DB", getattr(settings, 'REDIS_DB', 0)))
-                        redis_password = os.environ.get("REDIS_PASSWORD", getattr(settings, 'REDIS_PASSWORD', ''))
-                        redis_user = os.environ.get("REDIS_USER", getattr(settings, 'REDIS_USER', ''))
-
-                        ssl_params = getattr(settings, 'REDIS_SSL_PARAMS', {})
-                        pubsub_client = redis.Redis(
-                            host=redis_host,
-                            port=redis_port,
-                            db=redis_db,
-                            password=redis_password if redis_password else None,
-                            username=redis_user if redis_user else None,
-                            socket_timeout=60,
-                            socket_connect_timeout=10,
-                            socket_keepalive=True,
-                            health_check_interval=30,
-                            decode_responses=True,
-                            **ssl_params
-                        )
-                        logger.info("Created fallback Redis PubSub client for event listener")
+                        pubsub_client = RedisClient.get_client(disable_persistence=False)
+                        logger.info("Created fallback Redis client for event listener")
 
                     # Test connection before subscribing
                     pubsub_client.ping()
@@ -210,17 +181,13 @@ class ProxyServer:
                     pubsub = pubsub_client.pubsub()
                     pubsub.psubscribe("live:events:*")
 
-                    logger.info(f"Started Redis event listener for client activity")
-
-                    # Reset retry count on successful connection
-                    retry_count = 0
+                    logger.info("Started Redis event listener for client activity")
 
                     for message in pubsub.listen():
                         if message["type"] != "pmessage":
                             continue
 
                         try:
-                            channel = message["channel"]
                             data = json.loads(message["data"])
 
                             event_type = data.get("event")
@@ -399,17 +366,6 @@ class ProxyServer:
                         except Exception as e:
                             logger.error(f"Error processing event message: {e}")
 
-                except (ConnectionError, TimeoutError) as e:
-                    # Calculate exponential backoff with jitter
-                    retry_count += 1
-                    delay = min(base_retry_delay * (2 ** (retry_count - 1)), max_retry_delay)
-                    # Add some randomness to prevent thundering herd
-                    jitter = random.uniform(0, 0.5 * delay)
-                    final_delay = delay + jitter
-
-                    logger.error(f"Error in event listener: {e}. Retrying in {final_delay:.1f}s (attempt {retry_count})")
-                    gevent.sleep(final_delay)
-
                 except Exception as e:
                     logger.error(f"Error in event listener: {e}")
                     # Add a short delay to prevent rapid retries on persistent errors
@@ -476,7 +432,7 @@ class ProxyServer:
             )
 
             if acquired is None:  # Redis command failed
-                logger.warning(f"Redis command failed during ownership acquisition - assuming ownership")
+                logger.warning("Redis command failed during ownership acquisition - assuming ownership")
                 return True
 
             if acquired:

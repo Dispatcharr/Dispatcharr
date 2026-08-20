@@ -24,7 +24,7 @@ from rest_framework_simplejwt.authentication import JWTAuthentication
 from apps.accounts.authentication import ApiKeyAuthentication, QueryParamJWTAuthentication
 from apps.proxy.utils import check_user_stream_limits
 from dispatcharr.utils import network_access_allowed
-from core.utils import dispatcharr_user_agent
+from core.utils import dispatcharr_user_agent, RedisClient
 
 logger = logging.getLogger(__name__)
 
@@ -985,23 +985,7 @@ def head_vod(request, content_type, content_id, session_id=None, profile_id=None
 
         # Store the total content length in Redis for the persistent connection to use
         try:
-            import redis
-            from django.conf import settings
-            redis_host = getattr(settings, 'REDIS_HOST', 'localhost')
-            redis_port = int(getattr(settings, 'REDIS_PORT', 6379))
-            redis_db = int(getattr(settings, 'REDIS_DB', 0))
-            redis_password = getattr(settings, 'REDIS_PASSWORD', '')
-            redis_user = getattr(settings, 'REDIS_USER', '')
-            ssl_params = getattr(settings, 'REDIS_SSL_PARAMS', {})
-            r = redis.StrictRedis(
-                host=redis_host,
-                port=redis_port,
-                db=redis_db,
-                password=redis_password if redis_password else None,
-                username=redis_user if redis_user else None,
-                decode_responses=True,
-                **ssl_params
-            )
+            r = RedisClient().get_client()
             content_length_key = f"vod_content_length:{session_id}"
             r.set(content_length_key, total_size, ex=1800)  # Store for 30 minutes
             logger.info(f"[VOD-HEAD] Stored total content length {total_size} for session {session_id}")
