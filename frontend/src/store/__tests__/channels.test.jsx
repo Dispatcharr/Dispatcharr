@@ -266,15 +266,20 @@ describe('useChannelsStore', () => {
   });
 
   describe('profile operations', () => {
-    it('should add a profile', () => {
+    it('should add a profile and select it', () => {
       const { result } = renderHook(() => useChannelsStore());
-      const newProfile = { id: '1', name: 'Profile', channels: [1, 2] };
+      const newProfile = { id: 1, name: 'Profile', channels: [1, 2] };
 
       act(() => {
         result.current.addProfile(newProfile);
       });
 
       expect(result.current.profiles['1'].channels).toBeInstanceOf(Set);
+      expect(result.current.selectedProfileId).toBe('1');
+      expect(sessionStorage.setItem).toHaveBeenCalledWith(
+        'channels-selected-profile-id',
+        JSON.stringify('1')
+      );
     });
 
     it('should update a profile', () => {

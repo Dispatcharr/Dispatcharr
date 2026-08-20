@@ -363,7 +363,9 @@ const useChannelsStore = create((set, get) => ({
       return { channelGroups: remainingGroups };
     }),
 
-  addProfile: (profile) =>
+  addProfile: (profile) => {
+    const nextSelectedProfileId = String(profile.id);
+    persistSelectedProfileId(nextSelectedProfileId);
     set((state) => ({
       profiles: {
         ...state.profiles,
@@ -372,7 +374,9 @@ const useChannelsStore = create((set, get) => ({
           channels: new Set(profile.channels),
         },
       },
-    })),
+      selectedProfileId: nextSelectedProfileId,
+    }));
+  },
 
   updateProfile: (profile) =>
     set((state) => ({

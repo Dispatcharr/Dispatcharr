@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Creating or duplicating a channel profile now selects it in the Channels table.** The profile dropdown switches to the new profile (and persists that choice for the tab) instead of staying on the previous selection.
 - **M3U and EPG table type filters now use `sessionStorage` instead of `localStorage`.** Same keys (`m3u-table-type-filter`, `epg-table-type-filter`); they clear when the tab closes, matching other working table filters.
 - **Renamed `useLocalStorage` to `useBrowserStorage`.** The hook now supports both `localStorage` (default) and `sessionStorage` via `{ storage: 'session' }`, with shared `readStoredJSON` / `writeStoredJSON` helpers for Zustand.
 - **Channels and Streams table header actions are icon-only with tooltips.** Edit, Delete, Add, Add to Profile, Add to Channel, Create Channel(s), Create Stream, and related controls no longer show text labels in the toolbar; each keeps a descriptive tooltip on hover.
