@@ -78,6 +78,9 @@ services:
       # Negative values require cap_add: SYS_NICE (see below)
       #- UWSGI_NICE_LEVEL=-5   # uWSGI/FFmpeg/Streaming (default: 0, recommended: -5 for high priority)
 
+      # Soft open-file limit for uwsgi/daphne (Optional, default: 65536)
+      #- DISPATCHARR_NOFILE=65536
+
     # --- Advanced Configuration ---
     # Uncomment to enable high priority for streaming (required if UWSGI_NICE_LEVEL < 0)
     #cap_add:

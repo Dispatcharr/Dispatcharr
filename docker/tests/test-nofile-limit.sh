@@ -1,37 +1,13 @@
 #!/bin/bash
 #
-# Integration test suite for the worker open-file (RLIMIT_NOFILE) limit.
+# Integration tests for worker RLIMIT_NOFILE after su -/pam_limits in entrypoint.sh.
 #
-# Regression coverage for: uwsgi and its attach-daemons (daphne, celery, redis)
-# starting with RLIMIT_NOFILE soft=1024 because `su -` in docker/entrypoint.sh
-# opens a PAM session and pam_limits.so resets the limit the container was given.
-# A saturated daphne fails every new stream with "[Errno 24] Too many open files"
-# while the web UI keeps answering, so the container still looks healthy.
-#
-# Prerequisites:
-#   - Docker Desktop (or Docker Engine) running
-#   - Internet access (first build only)
-#   - ~5 minutes for a full run
+# Prerequisites: Docker; ~5 minutes for a full run (image build).
 #
 # Usage:
-#   cd <repo_root>
 #   bash docker/tests/test-nofile-limit.sh [--skip-build] [--keep-on-fail] [scenario_name]
 #
-# Options:
-#   --skip-build    Skip Docker image build (use existing dispatcharr:nofile-test image)
-#   --keep-on-fail  Don't clean up containers/volumes on failure (for debugging)
-#   scenario_name   Run only the named scenario (e.g., "default_limit")
-#
-# Scenarios:
-#   default_limit      No UWSGI_MAX_FD set -> workers get the 65536 default
-#   pam_reset          `su - $POSTGRES_USER` no longer collapses to 1024
-#   env_override       UWSGI_MAX_FD=32768 is honoured by the worker tree
-#   above_hard_limit   UWSGI_MAX_FD above the hard limit degrades, never aborts startup
-#   compose_ulimits    A container-level `ulimits:` no longer leaves workers at 1024
-#
-# Exit codes:
-#   0  All tests passed
-#   1  One or more tests failed (or build failed)
+# Scenarios: default_limit, pam_reset, env_override, above_hard_limit, compose_ulimits
 
 set -uo pipefail
 
@@ -120,8 +96,7 @@ should_run() {
     [ -z "$SINGLE_SCENARIO" ] || [ "$SINGLE_SCENARIO" = "$1" ]
 }
 
-# Wait until uwsgi has spawned its daphne attach-daemon, which is the last of
-# the worker processes to appear.
+# Wait until uwsgi has spawned its daphne attach-daemon.
 wait_for_workers() {
     local name="$1"
     local waited=0
@@ -209,9 +184,7 @@ fi
 
 ###############################################################################
 # Scenario: pam_reset
-#
-# The bug itself: a login shell for POSTGRES_USER used to come back with 1024
-# because /etc/pam.d/su loads pam_limits.so.
+# Regression: su - used to leave workers at soft 1024 via pam_limits.
 ###############################################################################
 if should_run pam_reset; then
     section "pam_reset"
@@ -226,10 +199,9 @@ if should_run pam_reset; then
             log_fail "container default soft nofile = $pid1 (expected 65536)"
         fi
 
-        # Regression assertion: this returned 1024 before the fix.
         daphne_fd=$(soft_nofile_of "$name" "bin/daphne")
         if [ "$daphne_fd" = "1024" ]; then
-            log_fail "daphne still pinned to 1024 — pam_limits reset is back"
+            log_fail "daphne still pinned to 1024, pam_limits reset is back"
         else
             log_pass "daphne is not pinned to 1024 (got $daphne_fd)"
         fi
@@ -244,7 +216,7 @@ if should_run env_override; then
     section "env_override"
     name="${TEST_PREFIX}_override"
     docker rm -f "$name" >/dev/null 2>&1
-    start_aio "$name" -e UWSGI_MAX_FD=32768
+    start_aio "$name" -e DISPATCHARR_NOFILE=32768
     if wait_for_workers "$name"; then
         assert_soft_nofile "$name" "bin/uwsgi"  32768 "uwsgi"
         assert_soft_nofile "$name" "bin/daphne" 32768 "daphne"
@@ -254,22 +226,22 @@ fi
 
 ###############################################################################
 # Scenario: above_hard_limit
-#
-# Asking for more than the hard limit must not abort startup — entrypoint.sh
-# runs under `set -e`, so an unguarded ulimit failure would kill the container.
+# DISPATCHARR_NOFILE above hard must not abort startup (entrypoint uses set -e).
+# After su -/pam_limits soft is 1024; the failed raise leaves that PAM soft in
+# place (not the pre-su Docker soft of 4096).
 ###############################################################################
 if should_run above_hard_limit; then
     section "above_hard_limit"
     name="${TEST_PREFIX}_toohigh"
     docker rm -f "$name" >/dev/null 2>&1
-    start_aio "$name" --ulimit "nofile=4096:4096" -e UWSGI_MAX_FD=65536
+    start_aio "$name" --ulimit "nofile=4096:4096" -e DISPATCHARR_NOFILE=65536
     if wait_for_workers "$name"; then
-        log_pass "container started despite UWSGI_MAX_FD > hard limit"
+        log_pass "container started despite DISPATCHARR_NOFILE > hard limit"
         actual=$(soft_nofile_of "$name" "bin/daphne")
-        if [ "$actual" = "4096" ]; then
-            log_pass "daphne kept the inherited limit ($actual)"
+        if [ "$actual" = "1024" ]; then
+            log_pass "daphne kept the PAM soft limit after failed raise ($actual)"
         else
-            log_fail "daphne soft nofile = $actual (expected inherited 4096)"
+            log_fail "daphne soft nofile = $actual (expected PAM soft 1024)"
         fi
     fi
     cleanup_scenario
@@ -277,14 +249,13 @@ fi
 
 ###############################################################################
 # Scenario: compose_ulimits
-#
-# An operator raising `ulimits:` in compose should not be silently ignored.
+# Raise soft via DISPATCHARR_NOFILE up to a compose-provided hard limit.
 ###############################################################################
 if should_run compose_ulimits; then
     section "compose_ulimits"
     name="${TEST_PREFIX}_ulimits"
     docker rm -f "$name" >/dev/null 2>&1
-    start_aio "$name" --ulimit "nofile=200000:524288" -e UWSGI_MAX_FD=200000
+    start_aio "$name" --ulimit "nofile=200000:524288" -e DISPATCHARR_NOFILE=200000
     if wait_for_workers "$name"; then
         assert_soft_nofile "$name" "bin/daphne" 200000 "daphne"
     fi
