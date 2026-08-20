@@ -6,7 +6,7 @@ import ErrorBoundary from '../components/ErrorBoundary.jsx';
 import { Center, Image, Loader, Paper, Stack } from '@mantine/core';
 import logo from '../assets/logo.png';
 
-const LoginLoadingCard = () => (
+export const LoginLoadingCard = () => (
   <Center style={{ height: '100vh' }}>
     <Paper
       elevation={3}
