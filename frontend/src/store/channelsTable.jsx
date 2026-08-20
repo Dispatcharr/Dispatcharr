@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { readStoredJSON, writeStoredJSON } from '../hooks/useLocalStorage';
+import { readStoredJSON, writeStoredJSON } from '../hooks/useBrowserStorage';
 
 // Stable empty array to avoid creating new references in getChannelStreams
 const emptyStreams = [];

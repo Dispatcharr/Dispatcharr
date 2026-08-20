@@ -40,7 +40,11 @@ export const writeStoredJSON = (key, value, storage = 'local') => {
   }
 };
 
-const useLocalStorage = (key, defaultValue, options = {}) => {
+/**
+ * Persist React state in localStorage (default) or sessionStorage.
+ * Pass { storage: 'session' } for tab-scoped values.
+ */
+const useBrowserStorage = (key, defaultValue, options = {}) => {
   const { storage = 'local' } = options;
 
   const [value, setValue] = useState(() =>
@@ -54,4 +58,4 @@ const useLocalStorage = (key, defaultValue, options = {}) => {
   return [value, setValue];
 };
 
-export default useLocalStorage;
+export default useBrowserStorage;

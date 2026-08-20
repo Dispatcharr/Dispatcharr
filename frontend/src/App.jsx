@@ -21,7 +21,7 @@ import Users from './pages/Users';
 import LogosPage from './pages/Logos';
 import VODsPage from './pages/VODs';
 import useAuthStore from './store/auth';
-import useLocalStorage from './hooks/useLocalStorage';
+import useBrowserStorage from './hooks/useBrowserStorage';
 import FloatingVideo from './components/FloatingVideo';
 import { WebsocketProvider } from './WebSocket';
 import { Box, AppShell, MantineProvider } from '@mantine/core';
@@ -48,7 +48,7 @@ const LoginRedirect = () => {
 };
 
 const App = () => {
-  const [open, setOpen] = useLocalStorage('dispatcharr_sidebar_open', true);
+  const [open, setOpen] = useBrowserStorage('dispatcharr_sidebar_open', true);
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
   const isInitialized = useAuthStore((s) => s.isInitialized);
   const authReady = isAuthenticated && isInitialized;

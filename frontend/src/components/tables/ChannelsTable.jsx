@@ -78,7 +78,7 @@ import useChannelsTableStore from '../../store/channelsTable';
 import ChannelTableStreams from './ChannelTableStreams';
 import CatchupIndicator from '../CatchupIndicator';
 import LazyLogo from '../LazyLogo';
-import useLocalStorage from '../../hooks/useLocalStorage';
+import useBrowserStorage from '../../hooks/useBrowserStorage';
 import useEPGsStore from '../../store/epgs';
 import { useChannelLogoSelection } from '../../hooks/useSmartLogos';
 import { CustomTable, useTable } from './CustomTable';
@@ -320,7 +320,7 @@ const ChannelsTable = ({ onReady }) => {
   const hasChannels = useChannelsStore((s) => s.channelIds.length > 0);
   const profiles = useChannelsStore((s) => s.profiles);
   const selectedProfileId = useChannelsStore((s) => s.selectedProfileId);
-  const [, setTablePrefs] = useLocalStorage('channel-table-prefs', {
+  const [, setTablePrefs] = useBrowserStorage('channel-table-prefs', {
     pageSize: 50,
   });
 
@@ -352,7 +352,7 @@ const ChannelsTable = ({ onReady }) => {
     showOnlyCatchupChannels: false,
     visibilityFilter: 'active',
   };
-  const [tableFilters, setTableFilters] = useLocalStorage(
+  const [tableFilters, setTableFilters] = useBrowserStorage(
     'channels-table-filters',
     DEFAULT_CHANNELS_FILTERS,
     { storage: 'session' }
@@ -436,7 +436,7 @@ const ChannelsTable = ({ onReady }) => {
 
   // Column sizing state for resizable columns
   // Store in localStorage but with empty object as default
-  const [columnSizing, setColumnSizing] = useLocalStorage(
+  const [columnSizing, setColumnSizing] = useBrowserStorage(
     'channels-table-column-sizing',
     {}
   );

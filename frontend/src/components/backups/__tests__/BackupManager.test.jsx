@@ -26,7 +26,9 @@ vi.mock('../../../utils/components/backups/BackupManagerUtils.js', () => ({
 }));
 
 // ── hooks ──────────────────────────────────────────────────────────────────────
-vi.mock('../../../hooks/useLocalStorage', () => ({
+vi.mock('../../../hooks/useBrowserStorage', () => ({
+  readStoredJSON: (key, defaultValue) => defaultValue,
+  writeStoredJSON: vi.fn(),
   default: vi.fn(() => ['UTC', vi.fn()]),
 }));
 
@@ -1078,7 +1080,7 @@ describe('BackupManager', () => {
       await renderAndLoad({
         schedule: { ...defaultSchedule, enabled: true, cron_expression: '' },
       });
-      // useLocalStorage mock returns 'UTC'
+      // useBrowserStorage mock returns 'UTC'
       expect(screen.getByText(/UTC/)).toBeInTheDocument();
     });
   });

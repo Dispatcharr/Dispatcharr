@@ -6,7 +6,11 @@ import UiSettingsForm from '../UiSettingsForm';
 vi.mock('../../../../store/settings.jsx', () => ({ default: vi.fn() }));
 
 // ── Hook mocks ─────────────────────────────────────────────────────────────────
-vi.mock('../../../../hooks/useLocalStorage.jsx', () => ({ default: vi.fn() }));
+vi.mock('../../../../hooks/useBrowserStorage.jsx', () => ({
+  readStoredJSON: (key, defaultValue) => defaultValue,
+  writeStoredJSON: vi.fn(),
+  default: vi.fn(),
+}));
 vi.mock('../../../../hooks/useTablePreferences.jsx', () => ({
   default: vi.fn(),
 }));
@@ -62,7 +66,7 @@ vi.mock('@mantine/core', () => ({
 // Imports after mocks
 // ──────────────────────────────────────────────────────────────────────────────
 import useSettingsStore from '../../../../store/settings.jsx';
-import useLocalStorage from '../../../../hooks/useLocalStorage.jsx';
+import useBrowserStorage from '../../../../hooks/useBrowserStorage.jsx';
 import useTablePreferences from '../../../../hooks/useTablePreferences.jsx';
 import {
   buildTimeZoneOptions,
@@ -107,7 +111,7 @@ const setupMocks = ({
 
   vi.mocked(useSettingsStore).mockImplementation((sel) => sel({ settings }));
 
-  vi.mocked(useLocalStorage).mockImplementation((key, defaultVal) => {
+  vi.mocked(useBrowserStorage).mockImplementation((key, defaultVal) => {
     if (key === 'time-format') return [timeFormat, setTimeFormat];
     if (key === 'date-format') return [dateFormat, setDateFormat];
     if (key === 'time-zone') return [timeZone, setTimeZone];

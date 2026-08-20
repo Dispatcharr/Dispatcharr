@@ -62,7 +62,7 @@ import useVideoStore from '../../store/useVideoStore';
 import useChannelsTableStore from '../../store/channelsTable';
 import useWarningsStore from '../../store/warnings';
 import { CustomTable, useTable } from './CustomTable';
-import useLocalStorage from '../../hooks/useLocalStorage';
+import useBrowserStorage from '../../hooks/useBrowserStorage';
 import ConfirmationDialog from '../ConfirmationDialog';
 import CreateChannelModal from '../modals/CreateChannelModal';
 import useStreamsTableStore from '../../store/streamsTable';
@@ -256,12 +256,12 @@ const StreamsTable = ({ onReady }) => {
     hide_stale: false,
     is_catchup: false,
   };
-  const [filters, setFilters] = useLocalStorage(
+  const [filters, setFilters] = useBrowserStorage(
     'streams-table-filters',
     DEFAULT_STREAMS_FILTERS,
     { storage: 'session' }
   );
-  const [columnSizing, setColumnSizing] = useLocalStorage(
+  const [columnSizing, setColumnSizing] = useBrowserStorage(
     'streams-table-column-sizing',
     {}
   );
@@ -279,7 +279,7 @@ const StreamsTable = ({ onReady }) => {
     stats: false,
   };
 
-  const [storedColumnVisibility, setStoredColumnVisibility] = useLocalStorage(
+  const [storedColumnVisibility, setStoredColumnVisibility] = useBrowserStorage(
     'streams-table-column-visibility',
     null // Use null as default to detect fresh install
   );

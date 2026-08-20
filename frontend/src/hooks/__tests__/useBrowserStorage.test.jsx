@@ -1,9 +1,9 @@
 import { renderHook, act } from '@testing-library/react';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import useLocalStorage, {
+import useBrowserStorage, {
   readStoredJSON,
   writeStoredJSON,
-} from '../useLocalStorage';
+} from '../useBrowserStorage';
 
 const createStorageMock = () => {
   let store = {};
@@ -79,7 +79,7 @@ describe('readStoredJSON / writeStoredJSON', () => {
   });
 });
 
-describe('useLocalStorage', () => {
+describe('useBrowserStorage', () => {
   beforeEach(() => {
     localStorageMock.clear();
     sessionStorageMock.clear();
@@ -88,7 +88,7 @@ describe('useLocalStorage', () => {
 
   it('should initialize with default value when localStorage is empty', () => {
     const { result } = renderHook(() =>
-      useLocalStorage('testKey', 'defaultValue')
+      useBrowserStorage('testKey', 'defaultValue')
     );
 
     expect(result.current[0]).toBe('defaultValue');
@@ -98,14 +98,16 @@ describe('useLocalStorage', () => {
     localStorageMock.setItem('testKey', JSON.stringify('storedValue'));
 
     const { result } = renderHook(() =>
-      useLocalStorage('testKey', 'defaultValue')
+      useBrowserStorage('testKey', 'defaultValue')
     );
 
     expect(result.current[0]).toBe('storedValue');
   });
 
   it('should update localStorage when value changes', () => {
-    const { result } = renderHook(() => useLocalStorage('testKey', 'initial'));
+    const { result } = renderHook(() =>
+      useBrowserStorage('testKey', 'initial')
+    );
 
     act(() => {
       result.current[1]('updated');
@@ -122,7 +124,7 @@ describe('useLocalStorage', () => {
     const complexObject = { name: 'test', count: 42, nested: { value: true } };
 
     const { result } = renderHook(() =>
-      useLocalStorage('testKey', complexObject)
+      useBrowserStorage('testKey', complexObject)
     );
 
     act(() => {
@@ -138,7 +140,7 @@ describe('useLocalStorage', () => {
     });
 
     const { result } = renderHook(() =>
-      useLocalStorage('testKey', 'defaultValue')
+      useBrowserStorage('testKey', 'defaultValue')
     );
 
     expect(result.current[0]).toBe('defaultValue');
@@ -153,7 +155,9 @@ describe('useLocalStorage', () => {
       throw new Error('Write error');
     });
 
-    const { result } = renderHook(() => useLocalStorage('testKey', 'initial'));
+    const { result } = renderHook(() =>
+      useBrowserStorage('testKey', 'initial')
+    );
 
     act(() => {
       result.current[1]('updated');
@@ -169,7 +173,7 @@ describe('useLocalStorage', () => {
     localStorageMock.getItem.mockReturnValueOnce('invalid json{');
 
     const { result } = renderHook(() =>
-      useLocalStorage('testKey', 'defaultValue')
+      useBrowserStorage('testKey', 'defaultValue')
     );
 
     expect(result.current[0]).toBe('defaultValue');
@@ -183,7 +187,7 @@ describe('useLocalStorage', () => {
     );
 
     const { result } = renderHook(() =>
-      useLocalStorage('sessionKey', { name: '' }, { storage: 'session' })
+      useBrowserStorage('sessionKey', { name: '' }, { storage: 'session' })
     );
 
     expect(result.current[0]).toEqual({ name: 'restored' });
@@ -205,7 +209,7 @@ describe('useLocalStorage', () => {
     localStorageMock.setItem('objKey', JSON.stringify({ name: 'espn' }));
 
     const { result } = renderHook(() =>
-      useLocalStorage('objKey', { name: '', hide_stale: false })
+      useBrowserStorage('objKey', { name: '', hide_stale: false })
     );
 
     expect(result.current[0]).toEqual({ name: 'espn', hide_stale: false });

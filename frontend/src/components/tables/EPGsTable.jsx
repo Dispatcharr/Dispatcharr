@@ -32,7 +32,7 @@ import {
   SquarePlus,
 } from 'lucide-react';
 import { format, useDateTimeFormat } from '../../utils/dateTimeUtils.js';
-import useLocalStorage from '../../hooks/useLocalStorage';
+import useBrowserStorage from '../../hooks/useBrowserStorage';
 import ConfirmationDialog from '../../components/ConfirmationDialog';
 import useWarningsStore from '../../store/warnings';
 import { CustomTable, useTable } from './CustomTable';
@@ -220,8 +220,8 @@ const EPGsTable = () => {
 
   const theme = useMantineTheme();
   const { fullDateTimeFormat } = useDateTimeFormat();
-  const [tableSize] = useLocalStorage('table-size', 'default');
-  const [typeFilter, setTypeFilter] = useLocalStorage(
+  const [tableSize] = useBrowserStorage('table-size', 'default');
+  const [typeFilter, setTypeFilter] = useBrowserStorage(
     'epg-table-type-filter',
     ALL_SOURCE_TYPES
   );

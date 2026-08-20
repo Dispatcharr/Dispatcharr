@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import SystemEvents from '../SystemEvents';
 import API from '../../api';
-import useLocalStorage from '../../hooks/useLocalStorage';
+import useBrowserStorage from '../../hooks/useBrowserStorage';
 
 // Mock the API module
 vi.mock('../../api', () => ({
@@ -11,8 +11,10 @@ vi.mock('../../api', () => ({
   },
 }));
 
-// Mock the useLocalStorage hook
-vi.mock('../../hooks/useLocalStorage', () => ({
+// Mock the useBrowserStorage hook
+vi.mock('../../hooks/useBrowserStorage', () => ({
+  readStoredJSON: (key, defaultValue) => defaultValue,
+  writeStoredJSON: vi.fn(),
   default: vi.fn((key, defaultValue) => {
     const mockSetters = {
       'events-refresh-interval': vi.fn(),
@@ -166,7 +168,7 @@ describe('SystemEvents', () => {
     const mockSetEventsLimit = vi.fn();
 
     // Update the mock to return the setter for this test
-    useLocalStorage.mockImplementation((key, defaultValue) => {
+    useBrowserStorage.mockImplementation((key, defaultValue) => {
       if (key === 'events-limit') {
         return [100, mockSetEventsLimit];
       }

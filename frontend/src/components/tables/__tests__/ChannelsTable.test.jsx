@@ -38,7 +38,9 @@ vi.mock('../../../store/outputProfiles', () => ({ default: vi.fn() }));
 vi.mock('../../../store/warnings', () => ({ default: vi.fn() }));
 
 // ── Hook mocks ─────────────────────────────────────────────────────────────────
-vi.mock('../../../hooks/useLocalStorage', () => ({
+vi.mock('../../../hooks/useBrowserStorage', () => ({
+  readStoredJSON: (key, defaultValue) => defaultValue,
+  writeStoredJSON: vi.fn(),
   default: vi.fn((key, defaultValue) => [defaultValue, vi.fn()]),
 }));
 vi.mock('../../../hooks/useSmartLogos', () => ({
@@ -430,7 +432,7 @@ import useSettingsStore from '../../../store/settings';
 import useVideoStore from '../../../store/useVideoStore';
 import useOutputProfilesStore from '../../../store/outputProfiles';
 import useWarningsStore from '../../../store/warnings';
-import useLocalStorage from '../../../hooks/useLocalStorage';
+import useBrowserStorage from '../../../hooks/useBrowserStorage';
 import { useTable } from '../CustomTable';
 import {
   deleteChannel,
@@ -540,7 +542,7 @@ const setupMocks = ({
     sel({ isWarningSuppressed, suppressWarning, getActionPreference })
   );
 
-  vi.mocked(useLocalStorage).mockImplementation((key, defaultValue) => [
+  vi.mocked(useBrowserStorage).mockImplementation((key, defaultValue) => [
     defaultValue,
     vi.fn(),
   ]);

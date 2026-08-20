@@ -12,7 +12,9 @@ vi.mock('../../../store/warnings', () => ({ default: vi.fn() }));
 vi.mock('../../../store/streamsTable', () => ({ default: vi.fn() }));
 
 // ── Hook mocks ─────────────────────────────────────────────────────────────────
-vi.mock('../../../hooks/useLocalStorage', () => ({
+vi.mock('../../../hooks/useBrowserStorage', () => ({
+  readStoredJSON: (key, defaultValue) => defaultValue,
+  writeStoredJSON: vi.fn(),
   default: vi.fn((key, defaultValue) => [defaultValue, vi.fn()]),
 }));
 
@@ -287,7 +289,7 @@ import useVideoStore from '../../../store/useVideoStore';
 import useChannelsTableStore from '../../../store/channelsTable';
 import useWarningsStore from '../../../store/warnings';
 import useStreamsTableStore from '../../../store/streamsTable';
-import useLocalStorage from '../../../hooks/useLocalStorage';
+import useBrowserStorage from '../../../hooks/useBrowserStorage';
 import { useNavigate } from 'react-router-dom';
 import { useTable } from '../CustomTable';
 import * as StreamsTableUtils from '../../../utils/tables/StreamsTableUtils.js';
@@ -382,8 +384,8 @@ const setupMocks = ({
     sel({ suppressWarning, isWarningSuppressed })
   );
 
-  // useLocalStorage: return defaults by key (filters, column-sizing, visibility)
-  vi.mocked(useLocalStorage).mockImplementation((key, defaultValue) => {
+  // useBrowserStorage: return defaults by key (filters, column-sizing, visibility)
+  vi.mocked(useBrowserStorage).mockImplementation((key, defaultValue) => {
     if (key === 'streams-table-column-visibility') {
       return [tableSize, vi.fn()];
     }

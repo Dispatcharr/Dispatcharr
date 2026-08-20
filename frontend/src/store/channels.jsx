@@ -2,7 +2,7 @@ import { create } from 'zustand';
 import api from '../api';
 import { showNotification } from '../utils/notificationUtils.js';
 import useUsersStore from './users';
-import { readStoredJSON, writeStoredJSON } from '../hooks/useLocalStorage';
+import { readStoredJSON, writeStoredJSON } from '../hooks/useBrowserStorage';
 
 const defaultProfiles = { 0: { id: '0', name: 'All', channels: new Set() } };
 const SELECTED_PROFILE_ID_KEY = 'channels-selected-profile-id';

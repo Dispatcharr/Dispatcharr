@@ -25,7 +25,7 @@ import {
   UploadCloud,
 } from 'lucide-react';
 import ConfirmationDialog from '../ConfirmationDialog';
-import useLocalStorage from '../../hooks/useLocalStorage';
+import useBrowserStorage from '../../hooks/useBrowserStorage';
 import useWarningsStore from '../../store/warnings';
 import { CustomTable, useTable } from '../tables/CustomTable';
 import { validateCronExpression } from '../../utils/cronUtils';
@@ -111,7 +111,7 @@ export default function BackupManager() {
 
   // Read user's preferences from settings
   const { fullDateTimeFormat, timeFormatSetting } = useDateTimeFormat();
-  const [userTimezone] = useLocalStorage('time-zone', getDefaultTimeZone());
+  const [userTimezone] = useBrowserStorage('time-zone', getDefaultTimeZone());
   const is12Hour = timeFormatSetting === '12h';
 
   // Warning suppression for confirmation dialogs

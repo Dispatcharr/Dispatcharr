@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { readStoredJSON, writeStoredJSON } from '../hooks/useLocalStorage';
+import { readStoredJSON, writeStoredJSON } from '../hooks/useBrowserStorage';
 
 const DEFAULT_STREAMS_SORTING = [{ id: 'name', desc: false }];
 const STREAMS_SORTING_KEY = 'streams-table-sorting';
