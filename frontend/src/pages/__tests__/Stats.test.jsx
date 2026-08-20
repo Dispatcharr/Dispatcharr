@@ -165,6 +165,7 @@ describe('StatsPage', () => {
   let mockSetRefreshInterval;
   let mockSetVodStats;
   let mockSetTimeshiftStats;
+  let mockEnableLogoRendering;
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -173,6 +174,7 @@ describe('StatsPage', () => {
     mockSetRefreshInterval = vi.fn();
     mockSetVodStats = vi.fn();
     mockSetTimeshiftStats = vi.fn();
+    mockEnableLogoRendering = vi.fn();
 
     // Setup store mocks
     useChannelsStore.mockImplementation((selector) => {
@@ -199,6 +201,7 @@ describe('StatsPage', () => {
     useLogosStore.mockImplementation((selector) => {
       const state = {
         logos: mockLogos,
+        enableLogoRendering: mockEnableLogoRendering,
       };
       return selector ? selector(state) : state;
     });
@@ -231,6 +234,12 @@ describe('StatsPage', () => {
         expect(mockSetChannelStats).toHaveBeenCalledWith(mockChannelStats);
         expect(mockSetVodStats).toHaveBeenCalledWith(mockVODStats);
       });
+    });
+
+    it('enables lazy logo rendering on mount', () => {
+      render(<StatsPage />);
+
+      expect(mockEnableLogoRendering).toHaveBeenCalledOnce();
     });
 
     it('displays connection counts', async () => {
