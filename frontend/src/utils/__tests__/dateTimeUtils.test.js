@@ -5,7 +5,7 @@ import utc from 'dayjs/plugin/utc';
 import timezone from 'dayjs/plugin/timezone';
 import * as dateTimeUtils from '../dateTimeUtils';
 import useSettingsStore from '../../store/settings';
-import useLocalStorage from '../../hooks/useLocalStorage';
+import useBrowserStorage from '../../hooks/useBrowserStorage';
 
 dayjs.extend(utc);
 dayjs.extend(timezone);
@@ -13,7 +13,9 @@ dayjs.extend(timezone);
 vi.mock('../../store/settings', () => ({
   default: vi.fn(() => ({})),
 }));
-vi.mock('../../hooks/useLocalStorage', () => ({
+vi.mock('../../hooks/useBrowserStorage', () => ({
+  readStoredJSON: (key, defaultValue) => defaultValue,
+  writeStoredJSON: vi.fn(),
   default: vi.fn(() => ['UTC', vi.fn()]),
 }));
 
@@ -322,7 +324,7 @@ describe('dateTimeUtils', () => {
 
   describe('useUserTimeZone', () => {
     it('should return time zone from local storage', () => {
-      useLocalStorage.mockReturnValue(['America/New_York', vi.fn()]);
+      useBrowserStorage.mockReturnValue(['America/New_York', vi.fn()]);
       useSettingsStore.mockReturnValue({});
 
       const { result } = renderHook(() => dateTimeUtils.useUserTimeZone());
@@ -332,7 +334,7 @@ describe('dateTimeUtils', () => {
 
     it('should update time zone from settings', () => {
       const setTimeZone = vi.fn();
-      useLocalStorage.mockReturnValue(['America/New_York', setTimeZone]);
+      useBrowserStorage.mockReturnValue(['America/New_York', setTimeZone]);
       useSettingsStore.mockReturnValue({
         system_settings: { value: { time_zone: 'America/Los_Angeles' } },
       });
@@ -345,7 +347,7 @@ describe('dateTimeUtils', () => {
 
   describe('useTimeHelpers', () => {
     beforeEach(() => {
-      useLocalStorage.mockReturnValue(['America/New_York', vi.fn()]);
+      useBrowserStorage.mockReturnValue(['America/New_York', vi.fn()]);
       useSettingsStore.mockReturnValue({});
     });
 
@@ -415,7 +417,7 @@ describe('dateTimeUtils', () => {
 
   describe('useDateTimeFormat', () => {
     it('should return 12h format and mdy date format by default', () => {
-      useLocalStorage
+      useBrowserStorage
         .mockReturnValueOnce(['12h', vi.fn()])
         .mockReturnValueOnce(['mdy', vi.fn()]);
 
@@ -426,7 +428,7 @@ describe('dateTimeUtils', () => {
     });
 
     it('should return 24h format when set', () => {
-      useLocalStorage
+      useBrowserStorage
         .mockReturnValueOnce(['24h', vi.fn()])
         .mockReturnValueOnce(['mdy', vi.fn()]);
 
@@ -436,7 +438,7 @@ describe('dateTimeUtils', () => {
     });
 
     it('should return dmy date format when set', () => {
-      useLocalStorage
+      useBrowserStorage
         .mockReturnValueOnce(['12h', vi.fn()])
         .mockReturnValueOnce(['dmy', vi.fn()]);
 

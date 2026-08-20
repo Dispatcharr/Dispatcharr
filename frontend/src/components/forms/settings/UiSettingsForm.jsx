@@ -1,5 +1,5 @@
 import useSettingsStore from '../../../store/settings.jsx';
-import useLocalStorage from '../../../hooks/useLocalStorage.jsx';
+import useBrowserStorage from '../../../hooks/useBrowserStorage.jsx';
 import useTablePreferences from '../../../hooks/useTablePreferences.jsx';
 import useOutputProfilesStore from '../../../store/outputProfiles.jsx';
 import {
@@ -29,9 +29,9 @@ const UiSettingsForm = React.memo(() => {
     () => getPlayerPrefs().webPlayerOutputProfileId ?? null
   );
 
-  const [timeFormat, setTimeFormat] = useLocalStorage('time-format', '12h');
-  const [dateFormat, setDateFormat] = useLocalStorage('date-format', 'mdy');
-  const [timeZone, setTimeZone] = useLocalStorage(
+  const [timeFormat, setTimeFormat] = useBrowserStorage('time-format', '12h');
+  const [dateFormat, setDateFormat] = useBrowserStorage('date-format', 'mdy');
+  const [timeZone, setTimeZone] = useBrowserStorage(
     'time-zone',
     getDefaultTimeZone()
   );

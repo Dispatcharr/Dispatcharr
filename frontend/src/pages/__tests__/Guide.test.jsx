@@ -8,7 +8,7 @@ import useLogosStore from '../../store/logos';
 import useEPGsStore from '../../store/epgs';
 import useSettingsStore from '../../store/settings';
 import useVideoStore from '../../store/useVideoStore';
-import useLocalStorage from '../../hooks/useLocalStorage';
+import useBrowserStorage from '../../hooks/useBrowserStorage';
 import * as guideUtils from '../../utils/guideUtils';
 import * as recordingCardUtils from '../../utils/cards/RecordingCardUtils.js';
 import * as dateTimeUtils from '../../utils/dateTimeUtils.js';
@@ -30,7 +30,9 @@ vi.mock('../../store/settings', () => ({
 vi.mock('../../store/useVideoStore', () => ({
   default: vi.fn(),
 }));
-vi.mock('../../hooks/useLocalStorage', () => ({
+vi.mock('../../hooks/useBrowserStorage', () => ({
+  readStoredJSON: (key, defaultValue) => defaultValue,
+  writeStoredJSON: vi.fn(),
   default: vi.fn(),
 }));
 vi.mock('../../api', () => ({
@@ -377,7 +379,7 @@ describe('Guide', () => {
 
     useSettingsStore.mockReturnValue('production');
     useVideoStore.mockReturnValue(mockShowVideo);
-    useLocalStorage.mockReturnValue(['12h', vi.fn()]);
+    useBrowserStorage.mockReturnValue(['12h', vi.fn()]);
 
     dateTimeUtils.getNow.mockReturnValue(now);
     dateTimeUtils.format.mockImplementation((date, format) => {

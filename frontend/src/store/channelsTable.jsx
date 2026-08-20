@@ -1,14 +1,22 @@
 import { create } from 'zustand';
+import { readStoredJSON, writeStoredJSON } from '../hooks/useBrowserStorage';
 
 // Stable empty array to avoid creating new references in getChannelStreams
 const emptyStreams = [];
+
+const DEFAULT_CHANNELS_SORTING = [{ id: 'channel_number', desc: false }];
+const CHANNELS_SORTING_KEY = 'channels-table-sorting';
 
 const useChannelsTableStore = create((set, get) => ({
   channels: [],
   pageCount: 0,
   totalCount: 0,
   hasUnassignedEPGChannels: false,
-  sorting: [{ id: 'channel_number', desc: false }],
+  sorting: readStoredJSON(
+    CHANNELS_SORTING_KEY,
+    DEFAULT_CHANNELS_SORTING,
+    'session'
+  ),
   pagination: {
     pageIndex: 0,
     pageSize:
@@ -60,7 +68,8 @@ const useChannelsTableStore = create((set, get) => ({
   },
 
   setSorting: (sorting) => {
-    set((state) => ({
+    writeStoredJSON(CHANNELS_SORTING_KEY, sorting, 'session');
+    set(() => ({
       sorting,
     }));
   },

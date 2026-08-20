@@ -2,8 +2,15 @@ import { create } from 'zustand';
 import api from '../api';
 import { showNotification } from '../utils/notificationUtils.js';
 import useUsersStore from './users';
+import { readStoredJSON, writeStoredJSON } from '../hooks/useBrowserStorage';
 
 const defaultProfiles = { 0: { id: '0', name: 'All', channels: new Set() } };
+const SELECTED_PROFILE_ID_KEY = 'channels-selected-profile-id';
+const DEFAULT_SELECTED_PROFILE_ID = '0';
+
+const persistSelectedProfileId = (id) => {
+  writeStoredJSON(SELECTED_PROFILE_ID_KEY, id, 'session');
+};
 
 // Seconds-precision timestamp recorded when this module is first loaded.
 // Compared against client.connected_at (also in seconds) to distinguish connections
@@ -113,7 +120,11 @@ const useChannelsStore = create((set, get) => ({
   channelsByUUID: {},
   channelGroups: {},
   profiles: {},
-  selectedProfileId: '0',
+  selectedProfileId: readStoredJSON(
+    SELECTED_PROFILE_ID_KEY,
+    DEFAULT_SELECTED_PROFILE_ID,
+    'session'
+  ),
   channelsPageSelection: [],
   stats: {},
   activeChannels: {},
@@ -357,16 +368,17 @@ const useChannelsStore = create((set, get) => ({
         delete updatedProfiles[id];
       }
 
-      const additionalUpdates = profileIds.includes(state.selectedProfileId)
-        ? { selectedProfileId: '0' }
-        : {};
+      const nextSelectedProfileId = profileIds.includes(state.selectedProfileId)
+        ? DEFAULT_SELECTED_PROFILE_ID
+        : state.selectedProfileId;
+
+      if (nextSelectedProfileId !== state.selectedProfileId) {
+        persistSelectedProfileId(nextSelectedProfileId);
+      }
 
       return {
         profiles: updatedProfiles,
-        selectedProfileId: profileIds.includes(state.selectedProfileId)
-          ? '0'
-          : state.selectedProfileId,
-        ...additionalUpdates,
+        selectedProfileId: nextSelectedProfileId,
       };
     }),
 
@@ -412,10 +424,12 @@ const useChannelsStore = create((set, get) => ({
   setChannelsPageSelection: (channelsPageSelection) =>
     set(() => ({ channelsPageSelection })),
 
-  setSelectedProfileId: (id) =>
+  setSelectedProfileId: (id) => {
+    persistSelectedProfileId(id);
     set(() => ({
       selectedProfileId: id,
-    })),
+    }));
+  },
 
   setChannelStats: (stats) => {
     return set((state) => {
@@ -511,10 +525,13 @@ const useChannelsStore = create((set, get) => ({
   setTimeshiftStats: (stats) => {
     return set((state) => {
       const sessions = stats.timeshift_sessions || [];
-      const oldSessions = state.activeTimeshiftSessions.reduce((acc, session) => {
-        acc[session.session_id] = session;
-        return acc;
-      }, {});
+      const oldSessions = state.activeTimeshiftSessions.reduce(
+        (acc, session) => {
+          acc[session.session_id] = session;
+          return acc;
+        },
+        {}
+      );
       const newSessions = sessions.reduce((acc, session) => {
         acc[session.session_id] = session;
         return acc;

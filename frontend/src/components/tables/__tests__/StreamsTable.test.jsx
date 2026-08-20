@@ -12,8 +12,10 @@ vi.mock('../../../store/warnings', () => ({ default: vi.fn() }));
 vi.mock('../../../store/streamsTable', () => ({ default: vi.fn() }));
 
 // ── Hook mocks ─────────────────────────────────────────────────────────────────
-vi.mock('../../../hooks/useLocalStorage', () => ({
-  default: vi.fn(() => [{}, vi.fn()]),
+vi.mock('../../../hooks/useBrowserStorage', () => ({
+  readStoredJSON: (key, defaultValue) => defaultValue,
+  writeStoredJSON: vi.fn(),
+  default: vi.fn((key, defaultValue) => [defaultValue, vi.fn()]),
 }));
 
 // ── Router mock ────────────────────────────────────────────────────────────────
@@ -43,15 +45,22 @@ vi.mock('../../../utils/tables/StreamsTableUtils.js', () => ({
   addStreamsToChannel: vi.fn().mockResolvedValue(undefined),
   appendFetchPageParams: vi.fn(),
   createChannelFromStream: vi.fn().mockResolvedValue(undefined),
-  createChannelsFromStreamsAsync: vi.fn().mockResolvedValue({ task_id: 'task-1', stream_count: 1 }),
+  createChannelsFromStreamsAsync: vi
+    .fn()
+    .mockResolvedValue({ task_id: 'task-1', stream_count: 1 }),
   deleteStream: vi.fn().mockResolvedValue(undefined),
   deleteStreams: vi.fn().mockResolvedValue(undefined),
   getAllStreamIds: vi.fn().mockResolvedValue([]),
-  getChannelNumberValue: vi.fn((mode) => mode === 'provider' ? null : 1),
+  getChannelNumberValue: vi.fn((mode) => (mode === 'provider' ? null : 1)),
   getChannelProfileIds: vi.fn((profileIds) => profileIds),
   getFilterParams: vi.fn(() => new URLSearchParams()),
-  getStatsTooltip: vi.fn(() => ({ compactDisplay: '1080p', tooltipContent: '1920x1080' })),
-  getStreamFilterOptions: vi.fn().mockResolvedValue({ groups: [], m3u_accounts: [] }),
+  getStatsTooltip: vi.fn(() => ({
+    compactDisplay: '1080p',
+    tooltipContent: '1920x1080',
+  })),
+  getStreamFilterOptions: vi
+    .fn()
+    .mockResolvedValue({ groups: [], m3u_accounts: [] }),
   getStreams: vi.fn().mockResolvedValue([]),
   queryStreamsTable: vi.fn().mockResolvedValue({ count: 5, results: [] }),
   requeryStreams: vi.fn().mockResolvedValue(undefined),
@@ -71,11 +80,22 @@ vi.mock('../../forms/Stream', () => ({
 }));
 
 vi.mock('../../ConfirmationDialog', () => ({
-  default: ({ opened, onClose, onConfirm, title, message, confirmLabel, cancelLabel, loading }) =>
+  default: ({
+    opened,
+    onClose,
+    onConfirm,
+    title,
+    message,
+    confirmLabel,
+    cancelLabel,
+    loading,
+  }) =>
     opened ? (
       <div data-testid="confirm-dialog">
         <span data-testid="confirm-title">{title}</span>
-        <span data-testid="confirm-message">{typeof message === 'string' ? message : 'message'}</span>
+        <span data-testid="confirm-message">
+          {typeof message === 'string' ? message : 'message'}
+        </span>
         <button data-testid="confirm-ok" onClick={onConfirm} disabled={loading}>
           {confirmLabel}
         </button>
@@ -130,15 +150,16 @@ vi.mock('@mantine/core', () => ({
     </button>
   ),
   Card: ({ children, style }) => (
-    <div data-testid="card" style={style}>{children}</div>
+    <div data-testid="card" style={style}>
+      {children}
+    </div>
   ),
   Center: ({ children, style }) => <div style={style}>{children}</div>,
   Divider: ({ label }) => <hr data-label={label} />,
-  Flex: ({ children, style }) => (
-    <div style={style}>{children}</div>
-  ),
+  Flex: ({ children, style }) => <div style={style}>{children}</div>,
   Group: ({ children, style }) => <div style={style}>{children}</div>,
-  LoadingOverlay: ({ visible }) => visible ? <div data-testid="loading-overlay" /> : null,
+  LoadingOverlay: ({ visible }) =>
+    visible ? <div data-testid="loading-overlay" /> : null,
   Menu: Object.assign(
     ({ children }) => <div data-testid="menu">{children}</div>,
     {
@@ -165,26 +186,42 @@ vi.mock('@mantine/core', () => ({
   MenuLabel: ({ children }) => <div data-testid="menu-label">{children}</div>,
   MenuTarget: ({ children }) => <div>{children}</div>,
   MultiSelect: ({ onChange, value, data }) => (
-    <select data-testid="multi-select" onChange={(e) => onChange && onChange([e.target.value])} value={value}>
+    <select
+      data-testid="multi-select"
+      onChange={(e) => onChange && onChange([e.target.value])}
+      value={value}
+    >
       {(data || []).map((d) => (
-        <option key={d.value ?? d} value={d.value ?? d}>{d.label ?? d}</option>
+        <option key={d.value ?? d} value={d.value ?? d}>
+          {d.label ?? d}
+        </option>
       ))}
     </select>
   ),
   NativeSelect: ({ onChange, value, data }) => (
     <select data-testid="native-select" onChange={onChange} value={value}>
       {(data || []).map((d) => (
-        <option key={d} value={d}>{d}</option>
+        <option key={d} value={d}>
+          {d}
+        </option>
       ))}
     </select>
   ),
   Pagination: ({ total, value, onChange }) => (
     <div data-testid="pagination">
-      <button data-testid="page-prev" onClick={() => onChange && onChange(value - 1)} disabled={value <= 1}>
+      <button
+        data-testid="page-prev"
+        onClick={() => onChange && onChange(value - 1)}
+        disabled={value <= 1}
+      >
         Prev
       </button>
       <span data-testid="page-current">{value}</span>
-      <button data-testid="page-next" onClick={() => onChange && onChange(value + 1)} disabled={value >= total}>
+      <button
+        data-testid="page-next"
+        onClick={() => onChange && onChange(value + 1)}
+        disabled={value >= total}
+      >
         Next
       </button>
     </div>
@@ -192,7 +229,9 @@ vi.mock('@mantine/core', () => ({
   Paper: ({ children, style }) => <div style={style}>{children}</div>,
   Stack: ({ children, style }) => <div style={style}>{children}</div>,
   Text: ({ children, style }) => (
-    <span data-testid="text" style={style}>{children}</span>
+    <span data-testid="text" style={style}>
+      {children}
+    </span>
   ),
   TextInput: ({ onChange, value, placeholder }) => (
     <input
@@ -208,10 +247,16 @@ vi.mock('@mantine/core', () => ({
       ? React.cloneElement(children, { 'aria-label': label })
       : children,
   UnstyledButton: ({ children, onClick }) => (
-    <button data-testid="unstyled-button" onClick={onClick}>{children}</button>
+    <button data-testid="unstyled-button" onClick={onClick}>
+      {children}
+    </button>
   ),
   useMantineTheme: vi.fn(() => ({
-    tailwind: { blue: { 6: '#3b82f6' }, green: { 5: '#22c55e' }, yellow: { 3: '#fde047' } },
+    tailwind: {
+      blue: { 6: '#3b82f6' },
+      green: { 5: '#22c55e' },
+      yellow: { 3: '#fde047' },
+    },
     palette: { background: { paper: '#1a1a1a' } },
     colors: {},
   })),
@@ -244,7 +289,7 @@ import useVideoStore from '../../../store/useVideoStore';
 import useChannelsTableStore from '../../../store/channelsTable';
 import useWarningsStore from '../../../store/warnings';
 import useStreamsTableStore from '../../../store/streamsTable';
-import useLocalStorage from '../../../hooks/useLocalStorage';
+import useBrowserStorage from '../../../hooks/useBrowserStorage';
 import { useNavigate } from 'react-router-dom';
 import { useTable } from '../CustomTable';
 import * as StreamsTableUtils from '../../../utils/tables/StreamsTableUtils.js';
@@ -339,10 +384,13 @@ const setupMocks = ({
     sel({ suppressWarning, isWarningSuppressed })
   );
 
-  // useLocalStorage: first call is column-sizing, second is column-visibility
-  vi.mocked(useLocalStorage)
-    .mockReturnValueOnce([{}, vi.fn()])    // streams-table-column-sizing
-    .mockReturnValueOnce([tableSize, vi.fn()]); // streams-table-column-visibility
+  // useBrowserStorage: return defaults by key (filters, column-sizing, visibility)
+  vi.mocked(useBrowserStorage).mockImplementation((key, defaultValue) => {
+    if (key === 'streams-table-column-visibility') {
+      return [tableSize, vi.fn()];
+    }
+    return [defaultValue, vi.fn()];
+  });
 
   vi.mocked(useTable).mockImplementation((opts) => {
     capturedTableOptions = opts;
@@ -364,7 +412,10 @@ describe('StreamsTable', () => {
     vi.clearAllMocks();
     capturedTableOptions = null;
 
-    vi.mocked(StreamsTableUtils.queryStreamsTable).mockResolvedValue({ count: 5, results: [] });
+    vi.mocked(StreamsTableUtils.queryStreamsTable).mockResolvedValue({
+      count: 5,
+      results: [],
+    });
     vi.mocked(StreamsTableUtils.getAllStreamIds).mockResolvedValue([]);
     vi.mocked(StreamsTableUtils.getStreamFilterOptions).mockResolvedValue({
       groups: [],
@@ -372,7 +423,9 @@ describe('StreamsTable', () => {
     });
     vi.mocked(StreamsTableUtils.deleteStream).mockResolvedValue(undefined);
     vi.mocked(StreamsTableUtils.deleteStreams).mockResolvedValue(undefined);
-    vi.mocked(StreamsTableUtils.addStreamsToChannel).mockResolvedValue(undefined);
+    vi.mocked(StreamsTableUtils.addStreamsToChannel).mockResolvedValue(
+      undefined
+    );
     vi.mocked(StreamsTableUtils.requeryStreams).mockResolvedValue(undefined);
   });
 
@@ -388,31 +441,41 @@ describe('StreamsTable', () => {
     it('renders the Create Stream button', () => {
       setupMocks();
       render(<StreamsTable />);
-      expect(screen.getByLabelText('Create a new custom stream')).toBeInTheDocument();
+      expect(
+        screen.getByLabelText('Create a new custom stream')
+      ).toBeInTheDocument();
     });
 
     it('renders the Delete button', () => {
       setupMocks();
       render(<StreamsTable />);
-      expect(screen.getByLabelText('Delete selected stream(s)')).toBeInTheDocument();
+      expect(
+        screen.getByLabelText('Delete selected stream(s)')
+      ).toBeInTheDocument();
     });
 
     it('renders the Add to Channel button', () => {
       setupMocks();
       render(<StreamsTable />);
-      expect(screen.getByLabelText('Add selected stream(s) to the target channel')).toBeInTheDocument();
+      expect(
+        screen.getByLabelText('Add selected stream(s) to the target channel')
+      ).toBeInTheDocument();
     });
 
     it('renders Create Channel button when no streams are selected', () => {
       setupMocks({ selectedStreamIds: [] });
       render(<StreamsTable />);
-      expect(screen.getByLabelText('Create channels from 0 stream(s)')).toBeInTheDocument();
+      expect(
+        screen.getByLabelText('Create channels from 0 stream(s)')
+      ).toBeInTheDocument();
     });
 
     it('renders Create Channels tooltip with selection count', () => {
       setupMocks({ selectedStreamIds: [1, 2] });
       render(<StreamsTable />);
-      expect(screen.getByLabelText('Create channels from 2 stream(s)')).toBeInTheDocument();
+      expect(
+        screen.getByLabelText('Create channels from 2 stream(s)')
+      ).toBeInTheDocument();
     });
 
     it('does not render the stream form on initial load', () => {
@@ -422,7 +485,10 @@ describe('StreamsTable', () => {
     });
 
     it('shows getting-started card when totalCount is 0', async () => {
-      vi.mocked(StreamsTableUtils.queryStreamsTable).mockResolvedValue({ count: 0, results: [] });
+      vi.mocked(StreamsTableUtils.queryStreamsTable).mockResolvedValue({
+        count: 0,
+        results: [],
+      });
       setupMocks({ totalCount: 0, streams: [] });
       render(<StreamsTable />);
       await waitFor(() => {
@@ -486,14 +552,18 @@ describe('StreamsTable', () => {
     it('is disabled when no streams are selected', () => {
       setupMocks({ selectedStreamIds: [] });
       render(<StreamsTable />);
-      const deleteBtn = screen.getByLabelText('Delete selected stream(s)').closest('button');
+      const deleteBtn = screen
+        .getByLabelText('Delete selected stream(s)')
+        .closest('button');
       expect(deleteBtn).toBeDisabled();
     });
 
     it('is enabled when streams are selected', () => {
       setupMocks({ selectedStreamIds: [1] });
       render(<StreamsTable />);
-      const deleteBtn = screen.getByLabelText('Delete selected stream(s)').closest('button');
+      const deleteBtn = screen
+        .getByLabelText('Delete selected stream(s)')
+        .closest('button');
       expect(deleteBtn).not.toBeDisabled();
     });
   });
@@ -504,14 +574,22 @@ describe('StreamsTable', () => {
     it('is disabled when no streams are selected', () => {
       setupMocks({ selectedStreamIds: [] });
       render(<StreamsTable />);
-      const btn = screen.getByLabelText('Add selected stream(s) to the target channel').closest('button');
+      const btn = screen
+        .getByLabelText('Add selected stream(s) to the target channel')
+        .closest('button');
       expect(btn).toBeDisabled();
     });
 
     it('is disabled when streams selected but no target channel', () => {
-      setupMocks({ selectedStreamIds: [1], expandedChannelId: null, selectedChannelIds: [] });
+      setupMocks({
+        selectedStreamIds: [1],
+        expandedChannelId: null,
+        selectedChannelIds: [],
+      });
       render(<StreamsTable />);
-      const btn = screen.getByLabelText('Add selected stream(s) to the target channel').closest('button');
+      const btn = screen
+        .getByLabelText('Add selected stream(s) to the target channel')
+        .closest('button');
       expect(btn).toBeDisabled();
     });
 
@@ -521,7 +599,9 @@ describe('StreamsTable', () => {
         expandedChannelId: 42,
       });
       render(<StreamsTable />);
-      const btn = screen.getByLabelText('Add selected stream(s) to the target channel').closest('button');
+      const btn = screen
+        .getByLabelText('Add selected stream(s) to the target channel')
+        .closest('button');
       expect(btn).not.toBeDisabled();
     });
   });
@@ -537,7 +617,9 @@ describe('StreamsTable', () => {
       render(<StreamsTable />);
       fireEvent.click(screen.getByLabelText('Delete selected stream(s)'));
       expect(screen.getByTestId('confirm-dialog')).toBeInTheDocument();
-      expect(screen.getByTestId('confirm-title')).toHaveTextContent('Confirm Bulk Stream Deletion');
+      expect(screen.getByTestId('confirm-title')).toHaveTextContent(
+        'Confirm Bulk Stream Deletion'
+      );
     });
 
     it('calls deleteStreams when delete is confirmed', async () => {
@@ -600,7 +682,9 @@ describe('StreamsTable', () => {
         isWarningSuppressed: vi.fn(() => false),
       });
       render(<StreamsTable />);
-      fireEvent.click(screen.getByLabelText('Create channels from 2 stream(s)'));
+      fireEvent.click(
+        screen.getByLabelText('Create channels from 2 stream(s)')
+      );
       expect(screen.getByTestId('create-channel-modal')).toBeInTheDocument();
     });
 
@@ -610,9 +694,13 @@ describe('StreamsTable', () => {
         isWarningSuppressed: vi.fn(() => false),
       });
       render(<StreamsTable />);
-      fireEvent.click(screen.getByLabelText('Create channels from 2 stream(s)'));
+      fireEvent.click(
+        screen.getByLabelText('Create channels from 2 stream(s)')
+      );
       fireEvent.click(screen.getByTestId('create-channel-close'));
-      expect(screen.queryByTestId('create-channel-modal')).not.toBeInTheDocument();
+      expect(
+        screen.queryByTestId('create-channel-modal')
+      ).not.toBeInTheDocument();
     });
 
     it('calls createChannelsFromStreamsAsync when modal is confirmed', async () => {
@@ -621,17 +709,23 @@ describe('StreamsTable', () => {
         isWarningSuppressed: vi.fn(() => false),
       });
       render(<StreamsTable />);
-      fireEvent.click(screen.getByLabelText('Create channels from 2 stream(s)'));
+      fireEvent.click(
+        screen.getByLabelText('Create channels from 2 stream(s)')
+      );
       fireEvent.click(screen.getByTestId('create-channel-confirm'));
       await waitFor(() => {
-        expect(StreamsTableUtils.createChannelsFromStreamsAsync).toHaveBeenCalled();
+        expect(
+          StreamsTableUtils.createChannelsFromStreamsAsync
+        ).toHaveBeenCalled();
       });
     });
 
     it('"Create Channel" button is disabled when no streams selected', () => {
       setupMocks({ selectedStreamIds: [] });
       render(<StreamsTable />);
-      const btn = screen.getByLabelText('Create channels from 0 stream(s)').closest('button');
+      const btn = screen
+        .getByLabelText('Create channels from 0 stream(s)')
+        .closest('button');
       expect(btn).toBeDisabled();
     });
   });
@@ -640,7 +734,10 @@ describe('StreamsTable', () => {
 
   describe('getting started card', () => {
     const renderEmpty = async () => {
-      vi.mocked(StreamsTableUtils.queryStreamsTable).mockResolvedValue({ count: 0, results: [] });
+      vi.mocked(StreamsTableUtils.queryStreamsTable).mockResolvedValue({
+        count: 0,
+        results: [],
+      });
       setupMocks({ totalCount: 0, streams: [] });
       render(<StreamsTable />);
       await waitFor(() => screen.getByText('Getting started'));
@@ -683,7 +780,11 @@ describe('StreamsTable', () => {
     });
 
     it('renders current page number', async () => {
-      setupMocks({ totalCount: 5, streams: [makeStream()], pagination: { pageIndex: 0, pageSize: 50 } });
+      setupMocks({
+        totalCount: 5,
+        streams: [makeStream()],
+        pagination: { pageIndex: 0, pageSize: 50 },
+      });
       render(<StreamsTable />);
       await waitFor(() => {
         expect(screen.getByTestId('page-current')).toHaveTextContent('1');
@@ -806,7 +907,9 @@ describe('StreamsTable', () => {
         expandedChannelId: 42,
       });
       render(<StreamsTable />);
-      fireEvent.click(screen.getByLabelText('Add selected stream(s) to the target channel'));
+      fireEvent.click(
+        screen.getByLabelText('Add selected stream(s) to the target channel')
+      );
       await waitFor(() => {
         expect(StreamsTableUtils.addStreamsToChannel).toHaveBeenCalledWith(
           42,
@@ -822,7 +925,11 @@ describe('StreamsTable', () => {
   describe('handleWatchStream (via row actions)', () => {
     it('calls buildLiveStreamUrl and showVideo via the actions cell renderer', async () => {
       const mockShowVideo = vi.fn();
-      setupMocks({ totalCount: 5, streams: [makeStream()], showVideo: mockShowVideo });
+      setupMocks({
+        totalCount: 5,
+        streams: [makeStream()],
+        showVideo: mockShowVideo,
+      });
       render(<StreamsTable />);
       await waitFor(() => expect(capturedTableOptions).not.toBeNull());
 

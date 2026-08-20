@@ -38,8 +38,10 @@ vi.mock('../../../store/outputProfiles', () => ({ default: vi.fn() }));
 vi.mock('../../../store/warnings', () => ({ default: vi.fn() }));
 
 // ── Hook mocks ─────────────────────────────────────────────────────────────────
-vi.mock('../../../hooks/useLocalStorage', () => ({
-  default: vi.fn(() => [{}, vi.fn()]),
+vi.mock('../../../hooks/useBrowserStorage', () => ({
+  readStoredJSON: (key, defaultValue) => defaultValue,
+  writeStoredJSON: vi.fn(),
+  default: vi.fn((key, defaultValue) => [defaultValue, vi.fn()]),
 }));
 vi.mock('../../../hooks/useSmartLogos', () => ({
   useChannelLogoSelection: vi.fn(() => ({ ensureLogosLoaded: vi.fn() })),
@@ -430,7 +432,7 @@ import useSettingsStore from '../../../store/settings';
 import useVideoStore from '../../../store/useVideoStore';
 import useOutputProfilesStore from '../../../store/outputProfiles';
 import useWarningsStore from '../../../store/warnings';
-import useLocalStorage from '../../../hooks/useLocalStorage';
+import useBrowserStorage from '../../../hooks/useBrowserStorage';
 import { useTable } from '../CustomTable';
 import {
   deleteChannel,
@@ -540,7 +542,10 @@ const setupMocks = ({
     sel({ isWarningSuppressed, suppressWarning, getActionPreference })
   );
 
-  vi.mocked(useLocalStorage).mockReturnValue([{}, vi.fn()]);
+  vi.mocked(useBrowserStorage).mockImplementation((key, defaultValue) => [
+    defaultValue,
+    vi.fn(),
+  ]);
 
   const tableInstance = makeDefaultTableInstance(tableOverrides);
   vi.mocked(useTable).mockImplementation((opts) => {
@@ -937,7 +942,9 @@ describe('ChannelsTable', () => {
       fireEvent.click(screen.getByTestId('header-delete-channels'));
       fireEvent.click(screen.getByTestId('confirm-ok'));
       await waitFor(() =>
-        expect(deleteChannels).toHaveBeenCalledWith([1, 2], { stopStream: false })
+        expect(deleteChannels).toHaveBeenCalledWith([1, 2], {
+          stopStream: false,
+        })
       );
     });
 
@@ -965,7 +972,9 @@ describe('ChannelsTable', () => {
       fireEvent.click(screen.getByTestId('confirm-ok'));
 
       await waitFor(() =>
-        expect(deleteChannels).toHaveBeenCalledWith([1, 2], { stopStream: false })
+        expect(deleteChannels).toHaveBeenCalledWith([1, 2], {
+          stopStream: false,
+        })
       );
       expect(requeryChannels).toHaveBeenCalled();
       expect(setSelectedTableIds).not.toHaveBeenCalled();
@@ -989,7 +998,9 @@ describe('ChannelsTable', () => {
       render(<ChannelsTable />);
       fireEvent.click(screen.getByTestId('header-delete-channels'));
       await waitFor(() =>
-        expect(deleteChannels).toHaveBeenCalledWith([1, 2], { stopStream: false })
+        expect(deleteChannels).toHaveBeenCalledWith([1, 2], {
+          stopStream: false,
+        })
       );
       expect(screen.queryByTestId('confirm-dialog')).not.toBeInTheDocument();
     });

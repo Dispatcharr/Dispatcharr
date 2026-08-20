@@ -9,10 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Channel and Streams table filters, sort order, and channel profile selection persist for the browser tab.** Working filters (including filter-menu toggles), table sort, and the Channels profile dropdown are stored in `sessionStorage` and restored on navigation within the same tab. Values are hydrated synchronously before the first list fetch so restoring does not trigger a second API request. Closing the tab clears them. Page size, column sizing, and column visibility remain in `localStorage`.
 - **Channel profiles can start empty and accept channels via "Add to Profile...".** Creating a profile now offers "Start empty" (`start_empty` on the profiles API; omitted/`false` keeps the previous all-channels backfill). Selected channels can be added to another profile from the Channels toolbar without changing the source profile. (Closes #1080) - Thanks [@Veneziaisking](https://github.com/Veneziaisking)
 
 ### Changed
 
+- **M3U and EPG table type filters now use `sessionStorage` instead of `localStorage`.** Same keys (`m3u-table-type-filter`, `epg-table-type-filter`); they clear when the tab closes, matching other working table filters.
+- **Renamed `useLocalStorage` to `useBrowserStorage`.** The hook now supports both `localStorage` (default) and `sessionStorage` via `{ storage: 'session' }`, with shared `readStoredJSON` / `writeStoredJSON` helpers for Zustand.
 - **Channels and Streams table header actions are icon-only with tooltips.** Edit, Delete, Add, Add to Profile, Add to Channel, Create Channel(s), Create Stream, and related controls no longer show text labels in the toolbar; each keeps a descriptive tooltip on hover.
 - **Docker base image pinned to FFmpeg 8.1.2.** `linuxserver/ffmpeg:latest` rebased to Ubuntu 26.04 / FFmpeg 9, which requires NVENC API 13.1 (NVIDIA driver 610+). Pascal and other legacy GPUs are capped at driver 580.x (API 13.0), so NVENC transcode profiles fail with "Driver does not support the required nvenc API version." The base now tracks `version-8.1.2-cli` (Ubuntu 24.04 Noble, FFmpeg 8.1.2).
 - **Comskip is built from [erikkaashoek/Comskip](https://github.com/erikkaashoek/Comskip) `master` (0.83.001) instead of the distro package.** The builder compiles current Comskip against distro libav (linuxserver ships libav statically inside `ffmpeg`, with no shared `.so` to link against). Tagged V0.83 does not compile on gcc 15 or newer FFmpeg headers; master plus small source patches are used until a release tag builds cleanly. uWSGI links `libpcre2`. The comskip binary is linked with DT_RPATH to distro libfontconfig so linuxserver's older `/usr/local/lib` does not win at runtime.
