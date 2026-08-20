@@ -1476,7 +1476,7 @@ export default function TVChannelGuide({ startDate, endDate }) {
 
       {/* Record choice modal */}
       {recordChoiceOpen && recordChoiceProgram && (
-        <ErrorBoundary>
+        <ErrorBoundary inline>
           <Suspense fallback={<LoadingOverlay />}>
             <ProgramRecordingModal
               opened={recordChoiceOpen}
@@ -1507,7 +1507,7 @@ export default function TVChannelGuide({ startDate, endDate }) {
 
       {/* Series rules modal */}
       {rulesOpen && (
-        <ErrorBoundary>
+        <ErrorBoundary inline>
           <Suspense fallback={<LoadingOverlay />}>
             <SeriesRecordingModal
               opened={rulesOpen}
@@ -1521,7 +1521,7 @@ export default function TVChannelGuide({ startDate, endDate }) {
 
       {/* Program detail modal */}
       {selectedProgram && (
-        <ErrorBoundary>
+        <ErrorBoundary inline>
           <Suspense fallback={<LoadingOverlay />}>
             <ProgramDetailModal
               program={selectedProgram}

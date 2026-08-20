@@ -430,7 +430,7 @@ const DVRPage = () => {
 
       {/* Details Modal */}
       {detailsRecording && (
-        <ErrorBoundary>
+        <ErrorBoundary inline>
           <Suspense fallback={<Text>Loading...</Text>}>
             <RecordingDetailsModal
               opened={detailsOpen}
