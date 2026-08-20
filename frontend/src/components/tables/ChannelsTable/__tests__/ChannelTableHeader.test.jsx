@@ -107,7 +107,7 @@ vi.mock('@mantine/core', () => ({
       {children}
     </button>
   ),
-  Checkbox: ({ label, checked, onChange }) => (
+  Checkbox: ({ label, description, checked, onChange }) => (
     <label>
       <input
         type="checkbox"
@@ -116,6 +116,7 @@ vi.mock('@mantine/core', () => ({
         onChange={onChange}
       />
       {label}
+      {description ? <span>{description}</span> : null}
     </label>
   ),
   Flex: ({ children }) => <div data-testid="flex">{children}</div>,
@@ -756,7 +757,7 @@ describe('ChannelTableHeader', () => {
       });
     });
 
-    it('calls addChannelProfile with start_empty: true when "Start with no channels" is checked', async () => {
+    it('calls addChannelProfile with start_empty: true when "Start empty" is checked', async () => {
       setupMocks({ userLevel: ADMIN });
       render(<ChannelTableHeader {...makeDefaultProps()} />);
 

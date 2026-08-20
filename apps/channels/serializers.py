@@ -287,9 +287,6 @@ class ChannelProfileSerializer(serializers.ModelSerializer):
         fields = ["id", "name", "channels", "start_empty"]
 
     def create(self, validated_data):
-        # start_empty isn't a model field - it just tells the post_save
-        # signal whether to skip auto-populating memberships for every
-        # existing channel (see apps.channels.signals.create_profile_memberships).
         start_empty = validated_data.pop("start_empty", False)
         instance = ChannelProfile(**validated_data)
         instance._start_empty = start_empty

@@ -341,7 +341,7 @@ const ChannelsTable = ({ onReady }) => {
   const [channelModalOpen, setChannelModalOpen] = useState(false);
   const [channelBatchModalOpen, setChannelBatchModalOpen] = useState(false);
   const [recordingModalOpen, setRecordingModalOpen] = useState(false);
-  const [showDisabled, setShowDisabled] = useState(false);
+  const [showDisabled, setShowDisabled] = useState(true);
   const [showOnlyStreamlessChannels, setShowOnlyStreamlessChannels] =
     useState(false);
   const [showOnlyStaleChannels, setShowOnlyStaleChannels] = useState(false);

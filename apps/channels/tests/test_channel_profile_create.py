@@ -20,12 +20,10 @@ class ChannelProfileCreateAPITests(TestCase):
         self.channel1 = Channel.objects.create(channel_number=1.0, name="Channel 1")
         self.channel2 = Channel.objects.create(channel_number=2.0, name="Channel 2")
 
-        # This mirrors the pre-existing "All" profile: created before our
-        # channels above, so create_profile_memberships already backfilled it.
+        # After channels so the membership signal backfills both.
         self.all_profile = ChannelProfile.objects.create(name="All")
 
     def test_create_profile_defaults_to_all_channels(self):
-        """Existing behavior must be preserved when start_empty isn't sent."""
         response = self.client.post(
             self.profiles_url, {"name": "Default Profile"}, format="json"
         )
@@ -76,7 +74,6 @@ class ChannelProfileCreateAPITests(TestCase):
         self.assertEqual(sorted(all_memberships_before), sorted(all_memberships_after))
 
     def test_duplicate_action_still_copies_channels(self):
-        """The existing duplicate endpoint must be unaffected by start_empty."""
         response = self.client.post(
             f"{self.profiles_url}{self.all_profile.id}/duplicate/",
             {"name": "All Copy"},

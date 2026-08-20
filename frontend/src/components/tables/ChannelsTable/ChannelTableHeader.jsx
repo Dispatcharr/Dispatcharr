@@ -119,7 +119,8 @@ const CreateProfilePopover = React.memo(() => {
           </Group>
 
           <Checkbox
-            label="Start with no channels"
+            label="Start empty"
+            description="New profiles include all channels unless checked."
             checked={startEmpty}
             onChange={(event) => setStartEmpty(event.currentTarget.checked)}
             size="xs"

@@ -25,8 +25,7 @@ const AddToProfileModal = ({
   };
 
   const profileOptions = Object.values(profiles)
-    // '0' is the client-side "All Channels" pseudo-profile (unfiltered view),
-    // not a real ChannelProfile - it can't be a membership target.
+    // id 0 is the client-side "All Channels" view, not a real profile.
     .filter(
       (profile) =>
         `${profile.id}` !== '0' && `${profile.id}` !== `${excludeProfileId}`
