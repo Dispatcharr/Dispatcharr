@@ -4,8 +4,10 @@ import LoginForm from '../LoginForm';
 
 // ── Router mock ────────────────────────────────────────────────────────────────
 const mockNavigate = vi.fn();
+let mockSearchParams = new URLSearchParams();
 vi.mock('react-router-dom', () => ({
   useNavigate: () => mockNavigate,
+  useSearchParams: () => [mockSearchParams],
 }));
 
 // Mock localStorage
@@ -160,6 +162,7 @@ describe('LoginForm', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     localStorage.clear();
+    mockSearchParams = new URLSearchParams();
   });
 
   // ── Rendering ──────────────────────────────────────────────────────────────
@@ -295,7 +298,41 @@ describe('LoginForm', () => {
       fireEvent.click(getLoginButton());
 
       await waitFor(() => {
-        expect(mockNavigate).toHaveBeenCalledWith('/channels');
+        expect(mockNavigate).toHaveBeenCalledWith('/channels', {
+          replace: true,
+        });
+      });
+    });
+
+    it('navigates to the "next" param when authenticated', async () => {
+      mockSearchParams = new URLSearchParams({ next: '/stats' });
+      setupMocks({ isAuthenticated: true });
+      renderLoginForm();
+
+      fireEvent.change(getUsername(), { target: { value: 'admin' } });
+      fireEvent.change(getPassword(), { target: { value: 'pass123' } });
+      fireEvent.click(getLoginButton());
+
+      await waitFor(() => {
+        expect(mockNavigate).toHaveBeenCalledWith('/stats', {
+          replace: true,
+        });
+      });
+    });
+
+    it('falls back to "/channels" for an unsafe "next" param', async () => {
+      mockSearchParams = new URLSearchParams({ next: '//evil.com' });
+      setupMocks({ isAuthenticated: true });
+      renderLoginForm();
+
+      fireEvent.change(getUsername(), { target: { value: 'admin' } });
+      fireEvent.change(getPassword(), { target: { value: 'pass123' } });
+      fireEvent.click(getLoginButton());
+
+      await waitFor(() => {
+        expect(mockNavigate).toHaveBeenCalledWith('/channels', {
+          replace: true,
+        });
       });
     });
   });
