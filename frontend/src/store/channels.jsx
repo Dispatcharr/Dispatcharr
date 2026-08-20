@@ -198,15 +198,39 @@ const useChannelsStore = create((set, get) => ({
     set({ isLoading: true, error: null });
     try {
       const profiles = await api.getChannelProfiles();
-      set({
-        profiles: profiles.reduce((acc, profile) => {
+      const nextProfiles = profiles.reduce(
+        (acc, profile) => {
           acc[profile.id] = {
             ...profile,
             channels: new Set(profile.channels),
           };
           return acc;
-        }, defaultProfiles),
-        isLoading: false,
+        },
+        {
+          0: {
+            ...defaultProfiles[0],
+            channels: new Set(),
+          },
+        }
+      );
+
+      set((state) => {
+        const selectedStillExists =
+          state.selectedProfileId === DEFAULT_SELECTED_PROFILE_ID ||
+          nextProfiles[state.selectedProfileId] !== undefined;
+        const nextSelectedProfileId = selectedStillExists
+          ? state.selectedProfileId
+          : DEFAULT_SELECTED_PROFILE_ID;
+
+        if (nextSelectedProfileId !== state.selectedProfileId) {
+          persistSelectedProfileId(nextSelectedProfileId);
+        }
+
+        return {
+          profiles: nextProfiles,
+          selectedProfileId: nextSelectedProfileId,
+          isLoading: false,
+        };
       });
     } catch (error) {
       console.error('Failed to fetch channel profiles:', error);
@@ -364,11 +388,16 @@ const useChannelsStore = create((set, get) => ({
   removeProfiles: (profileIds) =>
     set((state) => {
       const updatedProfiles = { ...state.profiles };
+      const removedIds = new Set(profileIds.map(String));
       for (const id of profileIds) {
         delete updatedProfiles[id];
       }
 
-      const nextSelectedProfileId = profileIds.includes(state.selectedProfileId)
+      // Compare as strings: Select values are strings, but profile.id from the
+      // API (and confirmation dialog) is a number.
+      const nextSelectedProfileId = removedIds.has(
+        String(state.selectedProfileId)
+      )
         ? DEFAULT_SELECTED_PROFILE_ID
         : state.selectedProfileId;
 
@@ -425,9 +454,13 @@ const useChannelsStore = create((set, get) => ({
     set(() => ({ channelsPageSelection })),
 
   setSelectedProfileId: (id) => {
-    persistSelectedProfileId(id);
+    const nextId =
+      id === null || id === undefined || id === ''
+        ? DEFAULT_SELECTED_PROFILE_ID
+        : String(id);
+    persistSelectedProfileId(nextId);
     set(() => ({
-      selectedProfileId: id,
+      selectedProfileId: nextId,
     }));
   },
 

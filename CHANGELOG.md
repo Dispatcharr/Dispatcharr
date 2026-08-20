@@ -23,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Deleting the currently selected channel profile no longer crashes the Channels page.** The confirmation dialog passed a numeric profile id while the store kept the selection as a string, so selection was not reset to All and URL builders read `.name` on `undefined`. Profile removal and refresh now compare ids as strings, and missing selections fall back to All.
 - **TV Guide no longer shows stale or wrong channel logos after bulk-adding channels.** Guide rows now fetch missing logos on demand instead of a blind cache lookup, and logo refreshes merge into the store instead of replacing it. (Fixes #955)
 - **Uploading a logo with the same filename as an existing one now actually replaces it**, prompting to confirm the overwrite instead of silently keeping the old name and cached image. API clients that upload a colliding filename now get `409` unless they pass `overwrite=true`, instead of the previous silent no-op success. (Fixes #330)
 - **Comskip no longer aborts on decoder init in Docker.** `thread_count=0` is libav autodetect (all cores) and SIGFPEs (or SIGABRTs) during multi-threaded decoder init in this image. Dispatcharr now passes `--threads=1` on the CLI, which is required because a custom or volume-mounted ini with `0` would still crash if we only changed the shipped file. The shipped `docker/comskip.ini` default is also `thread_count=1`. Failures now log returncode, command, and stderr instead of only a UI toast. (Fixes #1251)

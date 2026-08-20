@@ -863,8 +863,9 @@ const ChannelsTable = ({ onReady }) => {
   }, [fetchData]);
 
   useEffect(() => {
+    const profileName = profiles[selectedProfileId]?.name;
     const profileString =
-      selectedProfileId != '0' ? `/${profiles[selectedProfileId].name}` : '';
+      selectedProfileId != '0' && profileName ? `/${profileName}` : '';
     setHDHRUrl(`${hdhrUrlBase}${profileString}`);
     setEPGUrl(`${epgUrlBase}${profileString}`);
     setM3UUrl(`${m3uUrlBase}${profileString}`);
