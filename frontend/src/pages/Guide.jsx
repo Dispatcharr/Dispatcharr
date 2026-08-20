@@ -8,7 +8,6 @@ import React, {
   Suspense,
 } from 'react';
 import useChannelsStore from '../store/channels';
-import useLogosStore from '../store/logos';
 import useVideoStore from '../store/useVideoStore';
 import useSettingsStore from '../store/settings';
 import {
@@ -99,7 +98,6 @@ export default function TVChannelGuide({ startDate, endDate }) {
   const channelGroups = useChannelsStore((s) => s.channelGroups);
   const profiles = useChannelsStore((s) => s.profiles);
   const [isProgramsLoading, setIsProgramsLoading] = useState(true);
-  const logos = useLogosStore((s) => s.logos);
 
   const tvgsById = useEPGsStore((s) => s.tvgsById);
   const epgs = useEPGsStore((s) => s.epgs);
@@ -1140,7 +1138,6 @@ export default function TVChannelGuide({ startDate, endDate }) {
       filteredChannels,
       programsByChannelId,
       rowHeights,
-      logos,
       renderProgram,
       handleLogoClick,
       contentWidth,
@@ -1155,7 +1152,6 @@ export default function TVChannelGuide({ startDate, endDate }) {
       filteredChannels,
       programsByChannelId,
       rowHeights,
-      logos,
       renderProgram,
       handleLogoClick,
       contentWidth,
