@@ -1,13 +1,15 @@
 import { renderHook, act } from '@testing-library/react';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import useLocalStorage from '../useLocalStorage';
+import useLocalStorage, {
+  readStoredJSON,
+  writeStoredJSON,
+} from '../useLocalStorage';
 
-// Mock localStorage
-const localStorageMock = (() => {
+const createStorageMock = () => {
   let store = {};
 
   return {
-    getItem: vi.fn((key) => store[key] || null),
+    getItem: vi.fn((key) => (key in store ? store[key] : null)),
     setItem: vi.fn((key, value) => {
       store[key] = value.toString();
     }),
@@ -18,16 +20,69 @@ const localStorageMock = (() => {
       delete store[key];
     }),
   };
-})();
+};
 
-global.localStorage = localStorageMock;
+const localStorageMock = createStorageMock();
+const sessionStorageMock = createStorageMock();
+
+globalThis.localStorage = localStorageMock;
+globalThis.sessionStorage = sessionStorageMock;
 
 // Mock console.error to avoid cluttering test output
-global.console.error = vi.fn();
+globalThis.console.error = vi.fn();
+
+describe('readStoredJSON / writeStoredJSON', () => {
+  beforeEach(() => {
+    localStorageMock.clear();
+    sessionStorageMock.clear();
+    vi.clearAllMocks();
+  });
+
+  it('returns default when storage is empty', () => {
+    expect(readStoredJSON('missing', 'fallback')).toBe('fallback');
+  });
+
+  it('reads and writes localStorage by default', () => {
+    writeStoredJSON('prefs', { a: 1 });
+    expect(localStorageMock.setItem).toHaveBeenCalledWith(
+      'prefs',
+      JSON.stringify({ a: 1 })
+    );
+    expect(readStoredJSON('prefs', {})).toEqual({ a: 1 });
+  });
+
+  it('reads and writes sessionStorage when storage is session', () => {
+    writeStoredJSON('filters', { name: 'espn' }, 'session');
+    expect(sessionStorageMock.setItem).toHaveBeenCalledWith(
+      'filters',
+      JSON.stringify({ name: 'espn' })
+    );
+    expect(readStoredJSON('filters', {}, 'session')).toEqual({ name: 'espn' });
+    expect(localStorageMock.setItem).not.toHaveBeenCalled();
+  });
+
+  it('shallow-merges plain objects with defaults on read', () => {
+    writeStoredJSON('filters', { name: 'espn' }, 'session');
+    expect(
+      readStoredJSON(
+        'filters',
+        { name: '', hide_stale: false, is_catchup: false },
+        'session'
+      )
+    ).toEqual({ name: 'espn', hide_stale: false, is_catchup: false });
+  });
+
+  it('returns default on invalid JSON', () => {
+    localStorageMock.getItem.mockReturnValueOnce('invalid json{');
+    expect(readStoredJSON('bad', 'default')).toBe('default');
+    expect(console.error).toHaveBeenCalled();
+  });
+});
 
 describe('useLocalStorage', () => {
   beforeEach(() => {
     localStorageMock.clear();
+    sessionStorageMock.clear();
     vi.clearAllMocks();
   });
 
@@ -119,5 +174,40 @@ describe('useLocalStorage', () => {
 
     expect(result.current[0]).toBe('defaultValue');
     expect(console.error).toHaveBeenCalled();
+  });
+
+  it('should use sessionStorage when storage option is session', () => {
+    sessionStorageMock.setItem(
+      'sessionKey',
+      JSON.stringify({ name: 'restored' })
+    );
+
+    const { result } = renderHook(() =>
+      useLocalStorage('sessionKey', { name: '' }, { storage: 'session' })
+    );
+
+    expect(result.current[0]).toEqual({ name: 'restored' });
+
+    act(() => {
+      result.current[1]({ name: 'updated' });
+    });
+
+    expect(sessionStorageMock.setItem).toHaveBeenCalledWith(
+      'sessionKey',
+      JSON.stringify({ name: 'updated' })
+    );
+    expect(
+      localStorageMock.setItem.mock.calls.some(([key]) => key === 'sessionKey')
+    ).toBe(false);
+  });
+
+  it('should merge stored objects with defaults on init', () => {
+    localStorageMock.setItem('objKey', JSON.stringify({ name: 'espn' }));
+
+    const { result } = renderHook(() =>
+      useLocalStorage('objKey', { name: '', hide_stale: false })
+    );
+
+    expect(result.current[0]).toEqual({ name: 'espn', hide_stale: false });
   });
 });

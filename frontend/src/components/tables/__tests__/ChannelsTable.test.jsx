@@ -39,7 +39,7 @@ vi.mock('../../../store/warnings', () => ({ default: vi.fn() }));
 
 // ── Hook mocks ─────────────────────────────────────────────────────────────────
 vi.mock('../../../hooks/useLocalStorage', () => ({
-  default: vi.fn(() => [{}, vi.fn()]),
+  default: vi.fn((key, defaultValue) => [defaultValue, vi.fn()]),
 }));
 vi.mock('../../../hooks/useSmartLogos', () => ({
   useChannelLogoSelection: vi.fn(() => ({ ensureLogosLoaded: vi.fn() })),
@@ -540,7 +540,10 @@ const setupMocks = ({
     sel({ isWarningSuppressed, suppressWarning, getActionPreference })
   );
 
-  vi.mocked(useLocalStorage).mockReturnValue([{}, vi.fn()]);
+  vi.mocked(useLocalStorage).mockImplementation((key, defaultValue) => [
+    defaultValue,
+    vi.fn(),
+  ]);
 
   const tableInstance = makeDefaultTableInstance(tableOverrides);
   vi.mocked(useTable).mockImplementation((opts) => {
@@ -937,7 +940,9 @@ describe('ChannelsTable', () => {
       fireEvent.click(screen.getByTestId('header-delete-channels'));
       fireEvent.click(screen.getByTestId('confirm-ok'));
       await waitFor(() =>
-        expect(deleteChannels).toHaveBeenCalledWith([1, 2], { stopStream: false })
+        expect(deleteChannels).toHaveBeenCalledWith([1, 2], {
+          stopStream: false,
+        })
       );
     });
 
@@ -965,7 +970,9 @@ describe('ChannelsTable', () => {
       fireEvent.click(screen.getByTestId('confirm-ok'));
 
       await waitFor(() =>
-        expect(deleteChannels).toHaveBeenCalledWith([1, 2], { stopStream: false })
+        expect(deleteChannels).toHaveBeenCalledWith([1, 2], {
+          stopStream: false,
+        })
       );
       expect(requeryChannels).toHaveBeenCalled();
       expect(setSelectedTableIds).not.toHaveBeenCalled();
@@ -989,7 +996,9 @@ describe('ChannelsTable', () => {
       render(<ChannelsTable />);
       fireEvent.click(screen.getByTestId('header-delete-channels'));
       await waitFor(() =>
-        expect(deleteChannels).toHaveBeenCalledWith([1, 2], { stopStream: false })
+        expect(deleteChannels).toHaveBeenCalledWith([1, 2], {
+          stopStream: false,
+        })
       );
       expect(screen.queryByTestId('confirm-dialog')).not.toBeInTheDocument();
     });

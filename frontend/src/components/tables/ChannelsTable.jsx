@@ -341,21 +341,72 @@ const ChannelsTable = ({ onReady }) => {
   const [channelModalOpen, setChannelModalOpen] = useState(false);
   const [channelBatchModalOpen, setChannelBatchModalOpen] = useState(false);
   const [recordingModalOpen, setRecordingModalOpen] = useState(false);
-  const [showDisabled, setShowDisabled] = useState(true);
-  const [showOnlyStreamlessChannels, setShowOnlyStreamlessChannels] =
-    useState(false);
-  const [showOnlyStaleChannels, setShowOnlyStaleChannels] = useState(false);
-  const [showOnlyOverriddenChannels, setShowOnlyOverriddenChannels] =
-    useState(false);
-  const [showOnlyCatchupChannels, setShowOnlyCatchupChannels] = useState(false);
-  const [visibilityFilter, setVisibilityFilter] = useState('active');
-
-  const [paginationString, setPaginationString] = useState('');
-  const [filters, setFilters] = useState({
+  const DEFAULT_CHANNELS_FILTERS = {
     name: '',
     channel_group: '',
     epg: '',
-  });
+    showDisabled: true,
+    showOnlyStreamlessChannels: false,
+    showOnlyStaleChannels: false,
+    showOnlyOverriddenChannels: false,
+    showOnlyCatchupChannels: false,
+    visibilityFilter: 'active',
+  };
+  const [tableFilters, setTableFilters] = useLocalStorage(
+    'channels-table-filters',
+    DEFAULT_CHANNELS_FILTERS,
+    { storage: 'session' }
+  );
+  const {
+    showDisabled,
+    showOnlyStreamlessChannels,
+    showOnlyStaleChannels,
+    showOnlyOverriddenChannels,
+    showOnlyCatchupChannels,
+    visibilityFilter,
+  } = tableFilters;
+  // Column filters used by debounce / header inputs (subset of tableFilters)
+  const filters = useMemo(
+    () => ({
+      name: tableFilters.name,
+      channel_group: tableFilters.channel_group,
+      epg: tableFilters.epg,
+    }),
+    [tableFilters.name, tableFilters.channel_group, tableFilters.epg]
+  );
+  const setFilters = (updater) => {
+    setTableFilters((prev) => {
+      const nextColumnFilters =
+        typeof updater === 'function'
+          ? updater({
+              name: prev.name,
+              channel_group: prev.channel_group,
+              epg: prev.epg,
+            })
+          : updater;
+      return { ...prev, ...nextColumnFilters };
+    });
+  };
+  const setShowDisabled = (value) =>
+    setTableFilters((prev) => ({ ...prev, showDisabled: value }));
+  const setShowOnlyStreamlessChannels = (value) =>
+    setTableFilters((prev) => ({
+      ...prev,
+      showOnlyStreamlessChannels: value,
+    }));
+  const setShowOnlyStaleChannels = (value) =>
+    setTableFilters((prev) => ({ ...prev, showOnlyStaleChannels: value }));
+  const setShowOnlyOverriddenChannels = (value) =>
+    setTableFilters((prev) => ({
+      ...prev,
+      showOnlyOverriddenChannels: value,
+    }));
+  const setShowOnlyCatchupChannels = (value) =>
+    setTableFilters((prev) => ({ ...prev, showOnlyCatchupChannels: value }));
+  const setVisibilityFilter = (value) =>
+    setTableFilters((prev) => ({ ...prev, visibilityFilter: value }));
+
+  const [paginationString, setPaginationString] = useState('');
   const [, setIsLoading] = useState(true);
 
   const [hdhrUrl, setHDHRUrl] = useState(hdhrUrlBase);

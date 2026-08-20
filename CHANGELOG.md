@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Channel and Streams table filters, sort order, and channel profile selection persist for the browser tab.** Working filters (including filter-menu toggles), table sort, and the Channels profile dropdown are stored in `sessionStorage` and restored on navigation within the same tab. Values are hydrated synchronously before the first list fetch so restoring does not trigger a second API request. Closing the tab clears them. Page size, column sizing, and column visibility remain in `localStorage`.
 - **Channel profiles can start empty and accept channels via "Add to Profile...".** Creating a profile now offers "Start empty" (`start_empty` on the profiles API; omitted/`false` keeps the previous all-channels backfill). Selected channels can be added to another profile from the Channels toolbar without changing the source profile. (Closes #1080) - Thanks [@Veneziaisking](https://github.com/Veneziaisking)
 
 ### Changed

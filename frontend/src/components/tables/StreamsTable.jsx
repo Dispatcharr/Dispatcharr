@@ -1,4 +1,10 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState, } from 'react';
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import StreamForm from '../forms/Stream';
 import CatchupIndicator from '../CatchupIndicator';
 import usePlaylistsStore from '../../store/playlists';
@@ -241,14 +247,20 @@ const StreamsTable = ({ onReady }) => {
   const [isBulkDelete, setIsBulkDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
-  const [filters, setFilters] = useState({
+  const DEFAULT_STREAMS_FILTERS = {
     name: '',
     channel_group: '',
     m3u_account: '',
+    tvg_id: '',
     unassigned: false,
     hide_stale: false,
     is_catchup: false,
-  });
+  };
+  const [filters, setFilters] = useLocalStorage(
+    'streams-table-filters',
+    DEFAULT_STREAMS_FILTERS,
+    { storage: 'session' }
+  );
   const [columnSizing, setColumnSizing] = useLocalStorage(
     'streams-table-column-sizing',
     {}
@@ -662,8 +674,10 @@ const StreamsTable = ({ onReady }) => {
       const savedStartNumber =
         localStorage.getItem('channel-numbering-start') || '1';
 
-      const startingChannelNumberValue =
-        getChannelNumberValue(savedMode, savedStartNumber);
+      const startingChannelNumberValue = getChannelNumberValue(
+        savedMode,
+        savedStartNumber
+      );
 
       await executeChannelCreation(
         startingChannelNumberValue,
@@ -756,7 +770,10 @@ const StreamsTable = ({ onReady }) => {
     }
 
     // Convert mode to API value
-    const startingChannelNumberValue = getChannelNumberValue(numberingMode, customStartNumber);
+    const startingChannelNumberValue = getChannelNumberValue(
+      numberingMode,
+      customStartNumber
+    );
 
     setChannelNumberingModalOpen(false);
     await executeChannelCreation(
@@ -857,7 +874,10 @@ const StreamsTable = ({ onReady }) => {
       const savedChannelNumber =
         localStorage.getItem('single-channel-numbering-specific') || '1';
 
-      const channelNumberValue = getChannelNumberValue(savedMode, savedChannelNumber);
+      const channelNumberValue = getChannelNumberValue(
+        savedMode,
+        savedChannelNumber
+      );
 
       await executeSingleChannelCreation(
         stream,
@@ -877,7 +897,10 @@ const StreamsTable = ({ onReady }) => {
     channelNumber = null,
     profileIds = null
   ) => {
-    const channelProfileIds = getChannelProfileIds(profileIds, selectedProfileId);
+    const channelProfileIds = getChannelProfileIds(
+      profileIds,
+      selectedProfileId
+    );
     await createChannelFromStream({
       name: stream.name,
       channel_number: channelNumber,
@@ -902,7 +925,10 @@ const StreamsTable = ({ onReady }) => {
     }
 
     // Convert mode to API value
-    const channelNumberValue = getChannelNumberValue(singleChannelMode, specificChannelNumber);
+    const channelNumberValue = getChannelNumberValue(
+      singleChannelMode,
+      specificChannelNumber
+    );
 
     setSingleChannelModalOpen(false);
     await executeSingleChannelCreation(
@@ -1349,7 +1375,13 @@ const StreamsTable = ({ onReady }) => {
         }));
       }
     }
-  }, [groupOptions, m3uOptions, filters.channel_group, filters.m3u_account]);
+  }, [
+    groupOptions,
+    m3uOptions,
+    filters.channel_group,
+    filters.m3u_account,
+    setFilters,
+  ]);
 
   return (
     <>
