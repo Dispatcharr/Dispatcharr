@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **M3U and EPG table type filters now use `sessionStorage` instead of `localStorage`.** Same keys (`m3u-table-type-filter`, `epg-table-type-filter`); they clear when the tab closes, matching other working table filters.
 - **Renamed `useLocalStorage` to `useBrowserStorage`.** The hook now supports both `localStorage` (default) and `sessionStorage` via `{ storage: 'session' }`, with shared `readStoredJSON` / `writeStoredJSON` helpers for Zustand.
 - **Channels and Streams table header actions are icon-only with tooltips.** Edit, Delete, Add, Add to Profile, Add to Channel, Create Channel(s), Create Stream, and related controls no longer show text labels in the toolbar; each keeps a descriptive tooltip on hover.
 - **Docker base image pinned to FFmpeg 8.1.2.** `linuxserver/ffmpeg:latest` rebased to Ubuntu 26.04 / FFmpeg 9, which requires NVENC API 13.1 (NVIDIA driver 610+). Pascal and other legacy GPUs are capped at driver 580.x (API 13.0), so NVENC transcode profiles fail with "Driver does not support the required nvenc API version." The base now tracks `version-8.1.2-cli` (Ubuntu 24.04 Noble, FFmpeg 8.1.2).

@@ -223,7 +223,8 @@ const EPGsTable = () => {
   const [tableSize] = useBrowserStorage('table-size', 'default');
   const [typeFilter, setTypeFilter] = useBrowserStorage(
     'epg-table-type-filter',
-    ALL_SOURCE_TYPES
+    ALL_SOURCE_TYPES,
+    { storage: 'session' }
   );
   const isWarningSuppressed = useWarningsStore((s) => s.isWarningSuppressed);
   const suppressWarning = useWarningsStore((s) => s.suppressWarning);

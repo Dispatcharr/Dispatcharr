@@ -166,7 +166,8 @@ const M3UTable = () => {
   const [tableSize] = useBrowserStorage('table-size', 'default');
   const [typeFilter, setTypeFilter] = useBrowserStorage(
     'm3u-table-type-filter',
-    ALL_ACCOUNT_TYPES
+    ALL_ACCOUNT_TYPES,
+    { storage: 'session' }
   );
   const { fullDateFormat, fullDateTimeFormat } = useDateTimeFormat();
 
