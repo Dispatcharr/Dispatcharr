@@ -99,7 +99,11 @@ export default function TVChannelGuide({ startDate, endDate }) {
   const channelGroups = useChannelsStore((s) => s.channelGroups);
   const profiles = useChannelsStore((s) => s.profiles);
   const [isProgramsLoading, setIsProgramsLoading] = useState(true);
-  const logos = useLogosStore((s) => s.logos);
+
+  const enableLogoRendering = useLogosStore((s) => s.enableLogoRendering);
+  useEffect(() => {
+    enableLogoRendering();
+  }, [enableLogoRendering]);
 
   const tvgsById = useEPGsStore((s) => s.tvgsById);
   const epgs = useEPGsStore((s) => s.epgs);
@@ -1140,7 +1144,6 @@ export default function TVChannelGuide({ startDate, endDate }) {
       filteredChannels,
       programsByChannelId,
       rowHeights,
-      logos,
       renderProgram,
       handleLogoClick,
       contentWidth,
@@ -1155,7 +1158,6 @@ export default function TVChannelGuide({ startDate, endDate }) {
       filteredChannels,
       programsByChannelId,
       rowHeights,
-      logos,
       renderProgram,
       handleLogoClick,
       contentWidth,

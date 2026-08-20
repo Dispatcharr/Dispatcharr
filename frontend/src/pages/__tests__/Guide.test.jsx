@@ -305,6 +305,7 @@ describe('Guide', () => {
   let mockChannelsState;
   let mockShowVideo;
   let mockFetchRecordings;
+  let mockEnableLogoRendering;
   const now = dayjs('2024-01-15T12:00:00Z');
 
   beforeEach(() => {
@@ -347,6 +348,7 @@ describe('Guide', () => {
 
     mockShowVideo = vi.fn();
     mockFetchRecordings = vi.fn().mockResolvedValue([]);
+    mockEnableLogoRendering = vi.fn();
 
     useChannelsStore.mockImplementation((selector) => {
       const state = {
@@ -356,9 +358,15 @@ describe('Guide', () => {
       return selector ? selector(state) : state;
     });
 
-    useLogosStore.mockReturnValue({
-      'logo-1': { url: 'http://logo1.png' },
-      'logo-2': { url: 'http://logo2.png' },
+    useLogosStore.mockImplementation((selector) => {
+      const state = {
+        logos: {
+          'logo-1': { url: 'http://logo1.png' },
+          'logo-2': { url: 'http://logo2.png' },
+        },
+        enableLogoRendering: mockEnableLogoRendering,
+      };
+      return selector ? selector(state) : state;
     });
 
     useEPGsStore.mockImplementation((selector) =>
@@ -449,6 +457,7 @@ describe('Guide', () => {
       render(<Guide />);
 
       expect(screen.getByText('TV Guide')).toBeInTheDocument();
+      expect(mockEnableLogoRendering).toHaveBeenCalledOnce();
     });
 
     it('displays current time in header', async () => {
