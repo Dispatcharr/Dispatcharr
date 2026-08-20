@@ -2821,6 +2821,16 @@ class LogoViewSet(viewsets.ModelViewSet):
         except ValueError:
             return Response({"error": "Invalid filename."}, status=status.HTTP_400_BAD_REQUEST)
 
+        overwrite = _parse_request_bool(request.data.get("overwrite"))
+        if os.path.exists(file_path) and not overwrite:
+            return Response(
+                {
+                    "error": f"A logo named '{os.path.basename(file_path)}' already exists.",
+                    "already_exists": True,
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+
         os.makedirs("/data/logos", exist_ok=True)
         with open(file_path, "wb+") as destination:
             for chunk in file.chunks():
@@ -2843,7 +2853,7 @@ class LogoViewSet(viewsets.ModelViewSet):
         custom_name = request.data.get('name', '').strip()
         logo_name = custom_name if custom_name else os.path.basename(file_path)
 
-        logo, _ = Logo.objects.get_or_create(
+        logo, _ = Logo.objects.update_or_create(
             url=file_path,
             defaults={
                 "name": logo_name,
