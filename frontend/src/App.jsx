@@ -4,9 +4,10 @@ import {
   Route,
   Routes,
   Navigate,
+  useLocation,
 } from 'react-router-dom';
 import Sidebar from './components/Sidebar';
-import Login from './pages/Login';
+import Login, { LoginLoadingCard } from './pages/Login';
 import Channels from './pages/Channels';
 import ContentSources from './pages/ContentSources';
 import Guide from './pages/Guide';
@@ -20,7 +21,7 @@ import Users from './pages/Users';
 import LogosPage from './pages/Logos';
 import VODsPage from './pages/VODs';
 import useAuthStore from './store/auth';
-import useLocalStorage from './hooks/useLocalStorage';
+import useBrowserStorage from './hooks/useBrowserStorage';
 import FloatingVideo from './components/FloatingVideo';
 import { WebsocketProvider } from './WebSocket';
 import { Box, AppShell, MantineProvider } from '@mantine/core';
@@ -33,16 +34,25 @@ import mantineTheme from './mantineTheme';
 import API from './api';
 import { Notifications } from '@mantine/notifications';
 import M3URefreshNotification from './components/M3URefreshNotification';
+import { defaultRoute, getSafeNextPath } from './utils/loginRedirect';
 import 'allotment/dist/style.css';
 
 const drawerWidth = 240;
 const miniDrawerWidth = 60;
-const defaultRoute = '/channels';
+
+const LoginRedirect = () => {
+  const location = useLocation();
+  const target = getSafeNextPath(location.pathname + location.search);
+  const next = target ? `?next=${encodeURIComponent(target)}` : '';
+  return <Navigate to={`/login${next}`} replace />;
+};
 
 const App = () => {
-  const [open, setOpen] = useLocalStorage('dispatcharr_sidebar_open', true);
+  const [open, setOpen] = useBrowserStorage('dispatcharr_sidebar_open', true);
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
   const isInitialized = useAuthStore((s) => s.isInitialized);
+  const authReady = isAuthenticated && isInitialized;
+  const isCheckingAuth = useAuthStore((s) => s.isCheckingAuth);
   const logout = useAuthStore((s) => s.logout);
   const initData = useAuthStore((s) => s.initData);
   const initializeAuth = useAuthStore((s) => s.initializeAuth);
@@ -117,15 +127,10 @@ const App = () => {
               height: 0,
             }}
             navbar={{
-              width:
-                isAuthenticated && isInitialized
-                  ? open
-                    ? drawerWidth
-                    : miniDrawerWidth
-                  : 0,
+              width: authReady ? (open ? drawerWidth : miniDrawerWidth) : 0,
             }}
           >
-            {isAuthenticated && isInitialized && (
+            {authReady && (
               <Sidebar
                 drawerWidth={drawerWidth}
                 miniDrawerWidth={miniDrawerWidth}
@@ -146,42 +151,46 @@ const App = () => {
                 }}
               >
                 <Box sx={{ p: 2, flex: 1, overflow: 'auto' }}>
-                  <Routes>
-                    {isAuthenticated && isInitialized ? (
-                      <>
-                        <Route path="/channels" element={<Channels />} />
-                        <Route path="/sources" element={<ContentSources />} />
-                        <Route path="/guide" element={<Guide />} />
-                        <Route path="/dvr" element={<DVR />} />
-                        <Route path="/stats" element={<Stats />} />
-                        <Route
-                          path="/plugins/browse"
-                          element={<PluginBrowsePage />}
-                        />
-                        <Route path="/plugins" element={<PluginsPage />} />
-                        <Route path="/connect" element={<ConnectPage />} />
-                        <Route path="/users" element={<Users />} />
-                        <Route path="/settings" element={<Settings />} />
-                        <Route path="/logos" element={<LogosPage />} />
-                        <Route path="/vods" element={<VODsPage />} />
-                      </>
-                    ) : (
-                      <Route path="/login" element={<Login />} />
-                    )}
-                    <Route
-                      path="*"
-                      element={
-                        <Navigate
-                          to={
-                            isAuthenticated && isInitialized
-                              ? defaultRoute
-                              : '/login'
-                          }
-                          replace
-                        />
-                      }
-                    />
-                  </Routes>
+                  {isCheckingAuth ? (
+                    <LoginLoadingCard />
+                  ) : (
+                    <Routes>
+                      {authReady ? (
+                        <>
+                          <Route path="/channels" element={<Channels />} />
+                          <Route
+                            path="/sources"
+                            element={<ContentSources />}
+                          />
+                          <Route path="/guide" element={<Guide />} />
+                          <Route path="/dvr" element={<DVR />} />
+                          <Route path="/stats" element={<Stats />} />
+                          <Route
+                            path="/plugins/browse"
+                            element={<PluginBrowsePage />}
+                          />
+                          <Route path="/plugins" element={<PluginsPage />} />
+                          <Route path="/connect" element={<ConnectPage />} />
+                          <Route path="/users" element={<Users />} />
+                          <Route path="/settings" element={<Settings />} />
+                          <Route path="/logos" element={<LogosPage />} />
+                          <Route path="/vods" element={<VODsPage />} />
+                        </>
+                      ) : (
+                        <Route path="/login" element={<Login />} />
+                      )}
+                      <Route
+                        path="*"
+                        element={
+                          authReady ? (
+                            <Navigate to={defaultRoute} replace />
+                          ) : (
+                            <LoginRedirect />
+                          )
+                        }
+                      />
+                    </Routes>
+                  )}
                 </Box>
               </Box>
             </AppShell.Main>

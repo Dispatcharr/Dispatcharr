@@ -8,8 +8,26 @@ import { showNotification } from '../../utils/notificationUtils';
 vi.mock('../../api');
 vi.mock('../../utils/notificationUtils');
 
+const createStorageMock = () => {
+  let store = {};
+  return {
+    getItem: vi.fn((key) => (key in store ? store[key] : null)),
+    setItem: vi.fn((key, value) => {
+      store[key] = value.toString();
+    }),
+    clear: vi.fn(() => {
+      store = {};
+    }),
+    removeItem: vi.fn((key) => {
+      delete store[key];
+    }),
+  };
+};
+
 describe('useChannelsStore', () => {
   beforeEach(() => {
+    globalThis.localStorage = createStorageMock();
+    globalThis.sessionStorage = createStorageMock();
     vi.clearAllMocks();
     // Reset store state between tests
     useChannelsStore.setState({
@@ -260,6 +278,26 @@ describe('useChannelsStore', () => {
 
       expect(result.current.profiles['1']).toBeUndefined();
       expect(result.current.selectedProfileId).toBe('0');
+      expect(sessionStorage.setItem).toHaveBeenCalledWith(
+        'channels-selected-profile-id',
+        JSON.stringify('0')
+      );
+    });
+  });
+
+  describe('setSelectedProfileId', () => {
+    it('should update and persist selected profile id', () => {
+      const { result } = renderHook(() => useChannelsStore());
+
+      act(() => {
+        result.current.setSelectedProfileId('5');
+      });
+
+      expect(result.current.selectedProfileId).toBe('5');
+      expect(sessionStorage.setItem).toHaveBeenCalledWith(
+        'channels-selected-profile-id',
+        JSON.stringify('5')
+      );
     });
   });
 

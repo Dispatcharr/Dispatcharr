@@ -60,6 +60,7 @@ from core.utils import (
     cleanup_memory,
     log_system_event,
     _is_celery_worker_context,
+    truncate_with_warning,
 )
 
 logger = logging.getLogger(__name__)
@@ -1286,9 +1287,11 @@ def parse_channels_only(source):
                         if not display_name:
                             display_name = tvg_id
 
-                        if display_name and len(display_name) > name_max_length:
-                            logger.warning(f"EPG display name too long ({len(display_name)} > {name_max_length}), truncating: {display_name[:80]}...")
-                            display_name = display_name[:name_max_length]
+                        display_name = truncate_with_warning(
+                            display_name,
+                            max_length=name_max_length,
+                            label="EPG display name",
+                        )
 
                         # Use lazy loading approach to reduce memory usage
                         if tvg_id in existing_tvg_ids:
@@ -1715,6 +1718,7 @@ def parse_programs_for_tvg_id(epg_id, force=False, _defer_retry=0):
             # (weeks of one channel's schedule) that this doesn't need batched flushing
             # to the DB the way the whole-source bulk parse does.
             programs_to_create = []
+            title_max_length = ProgramData._meta.get_field('title').max_length
     
             try:
                 # Open the file directly - no need to check compression
@@ -1774,7 +1778,7 @@ def parse_programs_for_tvg_id(epg_id, force=False, _defer_retry=0):
                                 epg=epg,
                                 start_time=start_time,
                                 end_time=end_time,
-                                title=title[:255],
+                                title=title[:title_max_length],
                                 description=desc,
                                 sub_title=sub_title,
                                 tvg_id=epg.tvg_id,
@@ -2140,6 +2144,8 @@ def parse_programs_for_source(epg_source, tvg_id=None):
         logger.info(f"Parsing programs for {mapped_count} MAPPED channels from source: {epg_source.name} "
                    f"(skipping {total_epg_count - mapped_count} unmapped EPG entries)")
 
+        title_max_length = ProgramData._meta.get_field('title').max_length
+
         # Get the file path
         file_path = epg_source.extracted_file_path if epg_source.extracted_file_path else epg_source.file_path
         if not file_path:
@@ -2259,7 +2265,7 @@ def parse_programs_for_source(epg_source, tvg_id=None):
                             epg_id=epg_id,
                             start_time=start_time,
                             end_time=end_time,
-                            title=title[:255],
+                            title=title[:title_max_length],
                             description=desc,
                             sub_title=sub_title,
                             tvg_id=channel_id,

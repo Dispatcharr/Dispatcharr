@@ -2753,6 +2753,10 @@ class TimeshiftSessionRedirectTests(TestCase):
                           return_value=[_make_catchup_stream()]), \
              patch.object(views, "resolve_catchup_duration", return_value=40), \
              patch.object(views, "parse_catchup_timestamp", return_value=True), \
+             patch(
+                 "core.models.CoreSettings.is_default_stream_profile_redirect",
+                 return_value=False,
+             ), \
              patch.object(views, "RedisClient") as redis_cls:
             redis_cls.get_client.return_value = _FakeRedis()
             channel_cls.objects.get.return_value = MagicMock(id=8)
@@ -2867,6 +2871,10 @@ class TimeshiftSessionRedirectTests(TestCase):
                           return_value=[_make_catchup_stream()]), \
              patch.object(views, "resolve_catchup_duration", return_value=40), \
              patch.object(views, "parse_catchup_timestamp", return_value=True), \
+             patch(
+                 "core.models.CoreSettings.is_default_stream_profile_redirect",
+                 return_value=False,
+             ), \
              patch.object(views, "RedisClient") as redis_cls:
             redis_cls.get_client.return_value = _FakeRedis()
             channel_cls.objects.get.return_value = MagicMock(id=8)
@@ -2890,6 +2898,10 @@ class TimeshiftSessionRedirectTests(TestCase):
                           return_value=[_make_catchup_stream()]), \
              patch.object(views, "resolve_catchup_duration", return_value=40), \
              patch.object(views, "parse_catchup_timestamp", return_value=True), \
+             patch(
+                 "core.models.CoreSettings.is_default_stream_profile_redirect",
+                 return_value=False,
+             ), \
              patch.object(views, "RedisClient") as redis_cls:
             redis_cls.get_client.return_value = _FakeRedis()
             channel_cls.objects.get.return_value = MagicMock(id=8)
@@ -5340,6 +5352,10 @@ class CatchupProxyTests(TestCase):
                           return_value=[_make_catchup_stream()]), \
              patch.object(views, "resolve_catchup_duration", return_value=40), \
              patch.object(views, "parse_catchup_timestamp", return_value=True), \
+             patch(
+                 "core.models.CoreSettings.is_default_stream_profile_redirect",
+                 return_value=False,
+             ), \
              patch.object(views, "RedisClient") as redis_cls:
             redis_cls.get_client.return_value = _FakeRedis()
             channel_cls.objects.get.return_value = channel

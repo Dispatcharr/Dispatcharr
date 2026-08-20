@@ -6,7 +6,7 @@ import { Allotment } from 'allotment';
 import { USER_LEVELS } from '../constants';
 import useAuthStore from '../store/auth';
 import useLogosStore from '../store/logos';
-import useLocalStorage from '../hooks/useLocalStorage';
+import useBrowserStorage from '../hooks/useBrowserStorage';
 import ErrorBoundary from '../components/ErrorBoundary';
 
 const PageContent = () => {
@@ -20,7 +20,7 @@ const PageContent = () => {
   const streamsReady = useRef(false);
   const logosTriggered = useRef(false);
 
-  const [allotmentSizes, setAllotmentSizes] = useLocalStorage(
+  const [allotmentSizes, setAllotmentSizes] = useBrowserStorage(
     'channels-splitter-sizes',
     [60, 40]
   );

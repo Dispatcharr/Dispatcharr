@@ -2821,6 +2821,16 @@ class LogoViewSet(viewsets.ModelViewSet):
         except ValueError:
             return Response({"error": "Invalid filename."}, status=status.HTTP_400_BAD_REQUEST)
 
+        overwrite = _parse_request_bool(request.data.get("overwrite"))
+        if os.path.exists(file_path) and not overwrite:
+            return Response(
+                {
+                    "error": f"A logo named '{os.path.basename(file_path)}' already exists.",
+                    "already_exists": True,
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+
         os.makedirs("/data/logos", exist_ok=True)
         with open(file_path, "wb+") as destination:
             for chunk in file.chunks():
@@ -2843,7 +2853,7 @@ class LogoViewSet(viewsets.ModelViewSet):
         custom_name = request.data.get('name', '').strip()
         logo_name = custom_name if custom_name else os.path.basename(file_path)
 
-        logo, _ = Logo.objects.get_or_create(
+        logo, _ = Logo.objects.update_or_create(
             url=file_path,
             defaults={
                 "name": logo_name,
@@ -4035,6 +4045,7 @@ class SeriesRulesAPIView(APIView):
                 'description': serializers.CharField(required=False, help_text='Optional description match expression'),
                 'description_mode': serializers.ChoiceField(choices=['contains', 'search', 'regex'], default='contains', required=False, help_text='How to match the description field'),
                 'channel_id': serializers.IntegerField(required=False, help_text='Optional channel to pin recordings to (defaults to lowest-numbered channel for the EPG)'),
+                'epg_source_id': serializers.IntegerField(required=False, help_text='Optional EPG source. Combined with tvg_id this picks a specific EPG row when the same tvg_id exists on more than one source. Omit on legacy rules to use every mapped copy of that tvg_id.'),
             },
         ),
     )
@@ -4047,6 +4058,8 @@ class SeriesRulesAPIView(APIView):
         description = data.get("description") or ""
         description_mode = (data.get("description_mode") or "contains").lower()
         channel_id = data.get("channel_id")
+        from apps.channels.managers import parse_optional_epg_source_id
+        epg_source_id = parse_optional_epg_source_id(data.get("epg_source_id"))
         if mode not in ("all", "new"):
             return Response({"error": "mode must be 'all' or 'new'"}, status=status.HTTP_400_BAD_REQUEST)
         if title_mode not in ("exact", "contains", "search", "regex"):
@@ -4077,15 +4090,33 @@ class SeriesRulesAPIView(APIView):
         }
         if pinned_channel_id is not None:
             rule_record["channel_id"] = pinned_channel_id
+        if epg_source_id is not None:
+            rule_record["epg_source_id"] = epg_source_id
 
         rules = CoreSettings.get_dvr_series_rules()
-        # Upsert by tvg_id + title so multiple rules can target the same channel
+        # Upsert by (tvg_id, title, epg_source_id). Re-saving a legacy
+        # unsourced rule from the editor with a source selected upgrades
+        # that rule in place rather than creating a second copy.
+        incoming_source = epg_source_id
         existing = next(
-            (r for r in rules if
-             str(r.get("tvg_id") or "") == tvg_id and
-             str(r.get("title") or "") == title),
+            (
+                r for r in rules
+                if str(r.get("tvg_id") or "") == tvg_id
+                and str(r.get("title") or "") == title
+                and parse_optional_epg_source_id(r.get("epg_source_id")) == incoming_source
+            ),
             None
         )
+        if existing is None and incoming_source is not None:
+            existing = next(
+                (
+                    r for r in rules
+                    if str(r.get("tvg_id") or "") == tvg_id
+                    and str(r.get("title") or "") == title
+                    and parse_optional_epg_source_id(r.get("epg_source_id")) is None
+                ),
+                None
+            )
         if existing:
             existing.clear()
             existing.update(rule_record)
@@ -4099,22 +4130,36 @@ class SeriesRulesAPIView(APIView):
 
     @extend_schema(
         summary="Delete a series rule",
-        description="Remove a series recording rule by tvg_id + title and clean up future scheduled recordings.",
+        description="Remove a series recording rule by tvg_id + title and clean up future scheduled recordings. Pass epg_source_id to delete only that source copy when the same title exists on more than one source.",
         parameters=[
             OpenApiParameter('tvg_id', str, OpenApiParameter.QUERY, required=False, description='Channel TVG ID (may be blank for title-only rules)'),
             OpenApiParameter('title', str, OpenApiParameter.QUERY, required=False, description='Series title'),
+            OpenApiParameter('epg_source_id', int, OpenApiParameter.QUERY, required=False, description='Optional EPG source. When set, only the rule for that source is removed, and only recordings tagged with that source (plus untagged legacy snapshots) are cleaned up.'),
         ],
     )
     def delete(self, request):
+        from apps.channels.managers import parse_optional_epg_source_id
+
         tvg_id = str(request.query_params.get("tvg_id") or "").strip()
         title = request.query_params.get("title")
+        epg_source_id = parse_optional_epg_source_id(
+            request.query_params.get("epg_source_id")
+        )
 
         rules = CoreSettings.get_dvr_series_rules()
 
         def _matches(r):
             tvg_match = str(r.get("tvg_id") or "") == tvg_id
             title_match = title is None or str(r.get("title") or "") == title
-            return tvg_match and title_match
+            if not (tvg_match and title_match):
+                return False
+            if epg_source_id is None:
+                return True
+            # Recordings carry program.epg_source_id even when the rule does
+            # not. A DVR "entire series" delete forwards that id and must
+            # still match the unsourced rule.
+            rule_source = parse_optional_epg_source_id(r.get("epg_source_id"))
+            return rule_source is None or rule_source == epg_source_id
 
         deleted_rule = next((r for r in rules if _matches(r)), None)
         remaining = [r for r in rules if not _matches(r)]
@@ -4122,14 +4167,13 @@ class SeriesRulesAPIView(APIView):
 
         removed = 0
         if deleted_rule:
-            from .models import Recording
-            qs = Recording.objects.filter(start_time__gte=timezone.now())
-            rule_tvg_id = deleted_rule.get("tvg_id") or ""
-            if rule_tvg_id:
-                qs = qs.filter(custom_properties__program__tvg_id=rule_tvg_id)
-            rule_title = deleted_rule.get("title") or ""
-            if rule_title:
-                qs = qs.filter(custom_properties__program__title=rule_title)
+            from apps.channels.managers import future_recordings_for_series
+
+            qs = future_recordings_for_series(
+                tvg_id=deleted_rule.get("tvg_id") or "",
+                title=deleted_rule.get("title") or "",
+                epg_source_id=epg_source_id,
+            )
             removed = qs.count()
             qs.delete()
 
@@ -4169,12 +4213,13 @@ class SeriesRulePreviewAPIView(APIView):
                 'title_mode': serializers.ChoiceField(choices=['exact', 'contains', 'search', 'regex'], default='exact', required=False),
                 'description': serializers.CharField(required=False),
                 'description_mode': serializers.ChoiceField(choices=['contains', 'search', 'regex'], default='contains', required=False),
+                'epg_source_id': serializers.IntegerField(required=False, help_text='Optional EPG source, combined with tvg_id'),
                 'limit': serializers.IntegerField(required=False, help_text='Max programs to return (default 25, max 100)'),
             },
         ),
     )
     def post(self, request):
-        from apps.epg.models import EPGData, ProgramData
+        from apps.epg.models import ProgramData
         from apps.epg.query_utils import parse_text_query
 
         data = request.data or {}
@@ -4197,10 +4242,27 @@ class SeriesRulePreviewAPIView(APIView):
         horizon = now + timedelta(days=7)
 
         if tvg_id:
-            epg = EPGData.objects.filter(tvg_id=tvg_id).first()
-            if not epg:
-                return Response({"matches": [], "total": 0, "epg_found": False})
-            qs = ProgramData.objects.filter(epg=epg, end_time__gt=now, start_time__lte=horizon)
+            from apps.channels.managers import (
+                parse_optional_epg_source_id,
+                resolve_epg_data_for_series_rule,
+            )
+
+            source_id = parse_optional_epg_source_id(data.get("epg_source_id"))
+            resolved_epgs, epg_status = resolve_epg_data_for_series_rule(
+                tvg_id, source_id
+            )
+            if epg_status:
+                return Response({
+                    "matches": [],
+                    "total": 0,
+                    "epg_found": epg_status != "no_epg_match",
+                    "status": epg_status,
+                })
+            qs = ProgramData.objects.filter(
+                epg_id__in=[e.id for e in resolved_epgs],
+                end_time__gt=now,
+                start_time__lte=horizon,
+            )
         else:
             qs = ProgramData.objects.filter(end_time__gt=now, start_time__lte=horizon)
 
@@ -4303,22 +4365,30 @@ class BulkRemoveSeriesRecordingsAPIView(APIView):
                 "tvg_id": serializers.CharField(required=True, help_text="Channel TVG ID (required)"),
                 "title": serializers.CharField(required=False, help_text="Series title - when scope=title, only recordings matching this title are removed"),
                 "scope": serializers.ChoiceField(choices=["title", "channel"], default="title", required=False, help_text="title: remove only matching title on channel, channel: remove all future recordings on channel"),
+                "epg_source_id": serializers.IntegerField(required=False, help_text="Optional EPG source. When set, only recordings tagged with that source (and untagged legacy snapshots) are removed."),
             },
         ),
     )
     def post(self, request):
-        from django.utils import timezone
+        from apps.channels.managers import (
+            future_recordings_for_series,
+            parse_optional_epg_source_id,
+        )
+
         tvg_id = str(request.data.get("tvg_id") or "").strip()
         title = request.data.get("title")
         scope = (request.data.get("scope") or "title").lower()
+        epg_source_id = parse_optional_epg_source_id(
+            request.data.get("epg_source_id")
+        )
         if not tvg_id and not title:
             return Response({"error": "tvg_id or title is required"}, status=status.HTTP_400_BAD_REQUEST)
 
-        qs = Recording.objects.filter(start_time__gte=timezone.now())
-        if tvg_id:
-            qs = qs.filter(custom_properties__program__tvg_id=tvg_id)
-        if scope == "title" and title:
-            qs = qs.filter(custom_properties__program__title=title)
+        qs = future_recordings_for_series(
+            tvg_id=tvg_id,
+            title=title if scope == "title" else "",
+            epg_source_id=epg_source_id,
+        )
 
         count = qs.count()
         qs.delete()

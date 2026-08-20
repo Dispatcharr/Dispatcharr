@@ -19,7 +19,7 @@ import useChannelsStore from '../store/channels';
 import API from '../api';
 import useLogosStore from '../store/logos';
 import useStreamProfilesStore from '../store/streamProfiles';
-import useLocalStorage from '../hooks/useLocalStorage';
+import useBrowserStorage from '../hooks/useBrowserStorage';
 import SystemEvents from '../components/SystemEvents';
 import ErrorBoundary from '../components/ErrorBoundary.jsx';
 import {
@@ -182,7 +182,7 @@ const StatsPage = () => {
   }, [neededUUIDs.join(',')]);
 
   // Use localStorage for stats refresh interval (in seconds)
-  const [refreshIntervalSeconds, setRefreshIntervalSeconds] = useLocalStorage(
+  const [refreshIntervalSeconds, setRefreshIntervalSeconds] = useBrowserStorage(
     'stats-refresh-interval',
     5
   );
