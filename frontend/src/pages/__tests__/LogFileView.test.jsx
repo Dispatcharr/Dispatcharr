@@ -503,7 +503,23 @@ describe('LogFileViewPage', () => {
     }
   });
 
+  it('defaults the level floor to Info', async () => {
+    API.getLogFile.mockResolvedValue({
+      content: [
+        '2026-08-21 10:00:00,000 DEBUG core.tasks chatter',
+        '2026-08-21 10:00:01,000 INFO core.tasks visible line',
+      ].join('\n'),
+      truncated: false,
+    });
+    renderPage();
+    await screen.findByText(/visible line/);
+    expect(screen.getByLabelText('Level')).toHaveValue('20');
+    expect(screen.queryByText(/chatter/)).not.toBeInTheDocument();
+  });
+
   it('filters records below the chosen level with their continuations', async () => {
+    // Start from the Trace floor so the DEBUG fixture is visible before filtering.
+    localStorage.setItem('log-viewer-min-level', '0');
     API.getLogFile.mockResolvedValue({
       content: [
         '2026-07-15 10:00:00,000 DEBUG core.tasks noisy tick',

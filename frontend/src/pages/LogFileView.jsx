@@ -145,12 +145,13 @@ const REFRESH_OPTIONS = [
   { value: '60', label: '1m' },
 ];
 
+// Selecting a level shows it and everything above; Trace sits at the floor of the vocabulary, so it shows everything.
 const LEVEL_OPTIONS = [
-  { value: '0', label: 'All levels' },
-  { value: '10', label: 'Debug +' },
-  { value: '20', label: 'Info +' },
-  { value: '30', label: 'Warning +' },
-  { value: '40', label: 'Error +' },
+  { value: '0', label: 'Trace' },
+  { value: '10', label: 'Debug' },
+  { value: '20', label: 'Info' },
+  { value: '30', label: 'Warning' },
+  { value: '40', label: 'Error' },
 ];
 
 // One tokenize-and-classify pass per content change; filters and ordering reuse it.
@@ -251,14 +252,14 @@ const LogFileViewPage = () => {
   );
   const [minLevelSetting, setMinLevelSetting] = useBrowserStorage(
     'log-viewer-min-level',
-    0
+    20
   );
-  // A stored value outside the options falls back to All rather than an empty select.
+  // A stored value outside the options falls back to the Info default rather than an empty select.
   const minLevel = LEVEL_OPTIONS.some(
     (option) => option.value === String(minLevelSetting)
   )
     ? Number(minLevelSetting)
-    : 0;
+    : 20;
   const [moduleSetting, setModuleSetting] = useBrowserStorage(
     'log-viewer-module',
     'all'
