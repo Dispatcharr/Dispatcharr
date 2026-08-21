@@ -269,10 +269,8 @@ describe('FloatingVideo', () => {
       });
     });
 
-    // The mock always returns the same mockPlayer instance across
-    // destroy+recreate cycles, so mockPlayer.on.mock.calls accumulates every
-    // registration made so far. Grab the most recently registered handler --
-    // the one bound to the currently "live" player -- not the first.
+    // Shared mockPlayer accumulates .on registrations across recreate; use the
+    // latest ERROR handler (current player), not the first.
     const getErrorCallback = () =>
       mockPlayer.on.mock.calls
         .filter((call) => call[0] === mpegts.Events.ERROR)
@@ -282,7 +280,7 @@ describe('FloatingVideo', () => {
       vi.useRealTimers();
     });
 
-    it('should destroy and recreate the player after a NetworkError, with backoff', async () => {
+    it('should destroy immediately and recreate after backoff on NetworkError', async () => {
       vi.useFakeTimers();
       render(<FloatingVideo />);
 
@@ -296,9 +294,9 @@ describe('FloatingVideo', () => {
       expect(
         screen.getByText(/reconnecting\.\.\. \(attempt 1\/5\)/i)
       ).toBeInTheDocument();
-      expect(mockPlayer.destroy).not.toHaveBeenCalled();
+      expect(mockPlayer.destroy).toHaveBeenCalledTimes(1);
+      expect(mpegts.createPlayer).toHaveBeenCalledTimes(1);
 
-      // First retry fires after the base delay (1000ms), not immediately.
       await act(async () => {
         await vi.advanceTimersByTimeAsync(999);
       });
@@ -307,7 +305,6 @@ describe('FloatingVideo', () => {
       await act(async () => {
         await vi.advanceTimersByTimeAsync(1);
       });
-      expect(mockPlayer.destroy).toHaveBeenCalledTimes(1);
       expect(mpegts.createPlayer).toHaveBeenCalledTimes(2);
     });
 
@@ -329,8 +326,7 @@ describe('FloatingVideo', () => {
         });
       }
 
-      // All 5 attempts used -- the 6th NetworkError should not schedule
-      // another retry and should surface the real error message instead.
+      // 6th NetworkError: no retry, surface the real error.
       const finalErrorCallback = getErrorCallback();
       act(() => {
         finalErrorCallback('NetworkError', 'connection lost');
@@ -362,7 +358,7 @@ describe('FloatingVideo', () => {
       expect(mpegts.createPlayer).toHaveBeenCalledTimes(1);
     });
 
-    it('should reset the retry budget after the stream recovers', async () => {
+    it('should reset the retry budget after MEDIA_INFO (stream is viable again)', async () => {
       vi.useFakeTimers();
       render(<FloatingVideo />);
 
@@ -376,7 +372,33 @@ describe('FloatingVideo', () => {
       });
       expect(mpegts.createPlayer).toHaveBeenCalledTimes(2);
 
-      // Stream recovers -- LOADING_COMPLETE resets the attempt counter.
+      const mediaInfoCallback = mockPlayer.on.mock.calls
+        .filter((call) => call[0] === mpegts.Events.MEDIA_INFO)
+        .at(-1)?.[1];
+      act(() => {
+        mediaInfoCallback();
+      });
+
+      errorCallback = getErrorCallback();
+      act(() => {
+        errorCallback('NetworkError', 'connection lost');
+      });
+      expect(screen.getByText(/attempt 1\/5/i)).toBeInTheDocument();
+    });
+
+    it('should not reset the retry budget on LOADING_COMPLETE (EOF, not recovery)', async () => {
+      vi.useFakeTimers();
+      render(<FloatingVideo />);
+
+      let errorCallback = getErrorCallback();
+      act(() => {
+        errorCallback('NetworkError', 'connection lost');
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+      });
+      expect(mpegts.createPlayer).toHaveBeenCalledTimes(2);
+
       const loadingCompleteCallback = mockPlayer.on.mock.calls
         .filter((call) => call[0] === mpegts.Events.LOADING_COMPLETE)
         .at(-1)?.[1];
@@ -384,12 +406,55 @@ describe('FloatingVideo', () => {
         loadingCompleteCallback();
       });
 
-      // A subsequent error should again start at attempt 1, not 2.
       errorCallback = getErrorCallback();
       act(() => {
         errorCallback('NetworkError', 'connection lost');
       });
+      expect(screen.getByText(/attempt 2\/5/i)).toBeInTheDocument();
+    });
+
+    it('should not stack reconnect timers on repeated NetworkErrors before recreate', async () => {
+      vi.useFakeTimers();
+      const instances = [];
+      mpegts.createPlayer.mockImplementation(() => {
+        const instance = {
+          attachMediaElement: vi.fn(),
+          load: vi.fn(),
+          play: vi.fn(() => Promise.resolve()),
+          pause: vi.fn(),
+          destroy: vi.fn(),
+          on: vi.fn(),
+        };
+        instances.push(instance);
+        return instance;
+      });
+      render(<FloatingVideo />);
+      expect(instances).toHaveLength(1);
+
+      act(() => {
+        instances[0].on.mock.calls.find(
+          (call) => call[0] === mpegts.Events.ERROR
+        )[1]('NetworkError', 'connection lost');
+      });
+      expect(instances[0].destroy).toHaveBeenCalledTimes(1);
       expect(screen.getByText(/attempt 1\/5/i)).toBeInTheDocument();
+
+      act(() => {
+        instances[0].on.mock.calls.find(
+          (call) => call[0] === mpegts.Events.ERROR
+        )[1]('NetworkError', 'connection lost again');
+      });
+      expect(screen.getByText(/attempt 1\/5/i)).toBeInTheDocument();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+      });
+      expect(instances).toHaveLength(2);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10000);
+      });
+      expect(instances).toHaveLength(2);
     });
 
     it('should not fire a queued reconnect after the player is closed', async () => {
@@ -409,7 +474,6 @@ describe('FloatingVideo', () => {
 
       const createPlayerCallsAfterClose = mpegts.createPlayer.mock.calls.length;
 
-      // Advance well past the scheduled reconnect delay -- it must not fire.
       await act(async () => {
         await vi.advanceTimersByTimeAsync(10000);
       });
@@ -437,13 +501,8 @@ describe('FloatingVideo', () => {
       vi.useRealTimers();
     });
 
-    // Every other test in this file reuses one shared mockPlayer instance
-    // across destroy+recreate cycles, so `playerRef.current !== player`
-    // (the guard under test here) can never actually be true there -- it's
-    // trivially the same object. These tests give each createPlayer() call
-    // its own distinct instance instead, so a "stale" callback captured
-    // from an earlier, since-replaced instance is meaningfully different
-    // from the current one, the way it is in a real browser.
+    // Shared mockPlayer makes playerRef.current === player always true across
+    // recreate; these tests use a fresh instance per createPlayer() call.
     const mockDistinctPlayerInstances = () => {
       const instances = [];
       mpegts.createPlayer.mockImplementation(() => {
@@ -470,22 +529,18 @@ describe('FloatingVideo', () => {
       render(<FloatingVideo />);
       expect(instances).toHaveLength(1);
 
-      // Player #1 hits a NetworkError -> schedules a reconnect (1000ms).
       act(() => {
         getCallback(instances[0], mpegts.Events.ERROR)(
           'NetworkError',
           'connection lost'
         );
       });
+      expect(instances[0].destroy).toHaveBeenCalledTimes(1);
       await act(async () => {
         await vi.advanceTimersByTimeAsync(1000);
       });
-      expect(instances).toHaveLength(2); // reconnect created player #2
+      expect(instances).toHaveLength(2);
 
-      // A second NetworkError arrives late from player #1 -- already
-      // replaced by player #2 by the time this fires (mirrors a real
-      // mpegts.js worker message that was already in flight when we tore
-      // player #1 down).
       act(() => {
         getCallback(instances[0], mpegts.Events.ERROR)(
           'NetworkError',
@@ -496,8 +551,6 @@ describe('FloatingVideo', () => {
         await vi.advanceTimersByTimeAsync(10000);
       });
 
-      // Must be a no-op: no third player created, and the current player
-      // #2 must not have been torn down.
       expect(instances).toHaveLength(2);
       expect(instances[1].destroy).not.toHaveBeenCalled();
     });
@@ -505,8 +558,6 @@ describe('FloatingVideo', () => {
     it('should ignore a late autoplay-prevented rejection from a replaced player', async () => {
       vi.useFakeTimers();
       const instances = mockDistinctPlayerInstances();
-      // Player #1's play() call resolves only after we've moved on to
-      // player #2, simulating a slow/late-settling promise.
       let rejectFirstPlay;
       render(<FloatingVideo />);
       instances[0].play.mockReturnValue(
@@ -515,12 +566,10 @@ describe('FloatingVideo', () => {
         })
       );
 
-      // Trigger player #1's MEDIA_INFO -> its play() call is now pending.
       act(() => {
         getCallback(instances[0], mpegts.Events.MEDIA_INFO)();
       });
 
-      // A NetworkError replaces player #1 with player #2 (reconnect).
       act(() => {
         getCallback(instances[0], mpegts.Events.ERROR)(
           'NetworkError',
@@ -532,15 +581,11 @@ describe('FloatingVideo', () => {
       });
       expect(instances).toHaveLength(2);
 
-      // Player #1's play() promise finally rejects (autoplay-prevented),
-      // long after player #2 took over.
       await act(async () => {
         rejectFirstPlay(new DOMException('', 'NotAllowedError'));
         await Promise.resolve().catch(() => {});
       });
 
-      // Must not show the stale "Auto-play was prevented" message, since
-      // it refers to a player instance that is no longer active.
       expect(
         screen.queryByText(/Auto-play was prevented/i)
       ).not.toBeInTheDocument();

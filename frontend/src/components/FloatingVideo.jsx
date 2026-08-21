@@ -146,7 +146,6 @@ export default function FloatingVideo() {
   // Ref kept in sync with videoSize state for use inside event handlers
   // where closures over state would be stale.
   const videoSizeRef = useRef(null);
-  // mpegts.js live-player reconnect bookkeeping (see initializeLivePlayer).
   const reconnectAttemptsRef = useRef(0);
   const reconnectTimeoutRef = useRef(null);
 
@@ -229,7 +228,6 @@ export default function FloatingVideo() {
       overlayTimeoutRef.current = null;
     }
 
-    // Clear any pending live-player reconnect attempt
     if (reconnectTimeoutRef.current) {
       clearTimeout(reconnectTimeoutRef.current);
       reconnectTimeoutRef.current = null;
@@ -515,21 +513,18 @@ export default function FloatingVideo() {
         videoRef.current.volume = savedVolume;
       if (typeof savedMuted === 'boolean') videoRef.current.muted = savedMuted;
 
+      // Active before load() so sync events from this instance pass the guard.
+      playerRef.current = player;
+
       player.on(mpegts.Events.LOADING_COMPLETE, () => {
-        // mpegts.js can emit events asynchronously from a player instance
-        // that has since been destroyed and replaced (e.g. by our own
-        // reconnect below) -- ignore anything from a stale, no-longer-active
-        // player rather than let it mutate shared state.
+        // Ignore events from a player that reconnect already replaced.
         if (playerRef.current !== player) return;
         setIsLoading(false);
-        // Data is flowing again -- give future errors a fresh retry budget.
-        reconnectAttemptsRef.current = 0;
       });
 
       player.on(mpegts.Events.METADATA_ARRIVED, () => {
         if (playerRef.current !== player) return;
         setIsLoading(false);
-        reconnectAttemptsRef.current = 0;
       });
 
       player.on(mpegts.Events.ERROR, (errorType, errorDetail) => {
@@ -542,31 +537,29 @@ export default function FloatingVideo() {
 
         console.error('Player error:', errorType, errorDetail);
 
-        // Only retry NetworkError -- it's the one error class that's actually
-        // transient (dropped connection, backend hiccup the backend itself
-        // recovers from). MediaError (unsupported codec) and other error
-        // types are deterministic: retrying would just fail identically
-        // every time and delay showing the user an actionable message.
-        //
-        // Unlike hls.js (startLoad()/recoverMediaError()), mpegts.js has no
-        // partial-recovery API -- a fatal error leaves the underlying player
-        // unusable, so the only way to self-heal is a full destroy + rebuild.
+        // mpegts.js has no partial recovery; NetworkError is the only transient
+        // class worth a full destroy + rebuild.
         if (
           errorType === 'NetworkError' &&
           reconnectAttemptsRef.current < MAX_LIVE_RECONNECT_ATTEMPTS
         ) {
+          if (reconnectTimeoutRef.current) return;
+
           reconnectAttemptsRef.current += 1;
           const attempt = reconnectAttemptsRef.current;
           const delay = Math.min(
             LIVE_RECONNECT_BASE_DELAY_MS * 2 ** (attempt - 1),
             LIVE_RECONNECT_MAX_DELAY_MS
           );
+
+          // Destroy first (frees the failed session); set message after because
+          // safeDestroyPlayer clears loadError.
+          safeDestroyPlayer();
           setLoadError(
             `Connection lost, reconnecting... (attempt ${attempt}/${MAX_LIVE_RECONNECT_ATTEMPTS})`
           );
           reconnectTimeoutRef.current = setTimeout(() => {
             reconnectTimeoutRef.current = null;
-            safeDestroyPlayer();
             initializeLivePlayer();
           }, delay);
         } else {
@@ -574,28 +567,24 @@ export default function FloatingVideo() {
         }
       });
 
-      player.load();
-
       player.on(mpegts.Events.MEDIA_INFO, () => {
         if (playerRef.current !== player) return;
         setIsLoading(false);
+        reconnectAttemptsRef.current = 0;
         try {
           player.play().catch((e) => {
-            // This player may have already been replaced by the time the
-            // play() promise settles (e.g. a reconnect fired in the
-            // meantime) -- a rejection from a now-stale player must not
-            // stomp the current, possibly-successful player's state.
             if (playerRef.current !== player) return;
             console.log('Auto-play prevented:', e);
             setLoadError('Auto-play was prevented. Click play to start.');
           });
         } catch (e) {
+          if (playerRef.current !== player) return;
           console.log('Error during play:', e);
           setLoadError(`Playback error: ${e.message}`);
         }
       });
 
-      playerRef.current = player;
+      player.load();
     } catch (error) {
       setIsLoading(false);
       console.error('Error initializing player:', error);
@@ -621,8 +610,6 @@ export default function FloatingVideo() {
 
     // Clean up any existing player
     safeDestroyPlayer();
-    // Fresh stream selection -- give it a full reconnect budget, independent
-    // of whatever a previously viewed channel had used up.
     reconnectAttemptsRef.current = 0;
 
     // Initialize the appropriate player based on content type
