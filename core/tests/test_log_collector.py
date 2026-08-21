@@ -228,6 +228,32 @@ class CollectorTests(SimpleTestCase):
         self.assertEqual(len(re.findall(r"\d{4}-\d{2}-\d{2} ", forward)), 1)
         self.assertIn("x" * 200, forward)
 
+    def test_oversize_record_is_truncated_in_both_sinks(self):
+        # A postgres STATEMENT can echo a whole batch insert; one such record
+        # would otherwise consume most of a rotation.
+        big = b"2026-08-18 01:00:00,100 ERROR postgres [1] STATEMENT:  " + b"y" * 60000
+        self.feed(big + b"\n")
+        self.collector._drain()
+        for content in (self.read_log(), self.read_forward()):
+            self.assertLess(len(content), 20000)
+            self.assertIn("truncated this record at", content)
+
+    def test_record_after_an_oversize_one_survives(self):
+        # The dropped tail must not swallow the next line.
+        self.feed(
+            b"2026-08-18 01:00:00,100 ERROR postgres [1] STATEMENT:  " + b"y" * 60000 + b"\n",
+            b"2026-08-18 01:00:01,100 INFO core.utils still here\n",
+        )
+        self.collector._drain()
+        self.assertIn("still here", self.read_log())
+
+    def test_record_under_the_cap_is_untouched(self):
+        self.feed(b"2026-08-18 01:00:00,100 INFO core.utils " + b"z" * 100 + b"\n")
+        self.collector._drain()
+        content = self.read_log()
+        self.assertIn("z" * 100, content)
+        self.assertNotIn("truncated", content)
+
     def test_dropped_marker_is_file_only(self):
         with mock.patch.object(log_collector, "_BUFFER_BYTES", 8):
             self.feed(b"aaaa\n", b"bbbb\n", b"cccc\n")

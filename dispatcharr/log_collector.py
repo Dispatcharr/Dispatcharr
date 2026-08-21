@@ -32,8 +32,11 @@ _FLUSH_INTERVAL_SECONDS = 0.25
 _BATCH_BYTES = 128 * 1024
 _BUFFER_BYTES = 2 * 1024 * 1024
 _MAX_LINE_BYTES = 256 * 1024
+_MAX_RECORD_BYTES = 16 * 1024
 _FILTER_BUDGET_SECONDS = 0.1
 _FILTER_STRIKES = 3
+
+_TRUNCATED = b" ... [log_collector truncated this record at %d bytes]\n" % _MAX_RECORD_BYTES
 
 _DEFAULT_CONF = {
     "persist": True,
@@ -289,17 +292,25 @@ class Collector:
 
     def reader(self, stream):
         mid_line = False
+        overrun = False
         while True:
-            line = stream.readline(_MAX_LINE_BYTES)
-            if not line:
+            chunk = stream.readline(_MAX_LINE_BYTES)
+            if not chunk:
                 break
+            more = not chunk.endswith(b"\n")
             # Continuation chunks of an oversize line must not be stamped.
-            if not mid_line:
-                line = self._normalize(line)
+            if mid_line:
+                line = b"" if overrun else chunk
+            else:
+                line = self._normalize(chunk)
                 self._gate(line)
+                # One runaway record can evict a whole rotation of history.
+                overrun = len(line) > _MAX_RECORD_BYTES
+                if overrun:
+                    line = line[:_MAX_RECORD_BYTES] + _TRUNCATED
             suppressed = self._suppressed
-            mid_line = not line.endswith(b"\n")
-            if suppressed:
+            mid_line = more
+            if suppressed or not line:
                 continue
             line = self._filter(line)
             if line is None:
