@@ -45,7 +45,7 @@ class RedisConnectionStringsTests(SimpleTestCase):
 
         mock_ping.return_value = True
 
-        EXPECTED_KWARGS_UNIX = {"path" : "/var/run/test.sock", "db" : 7, "retry_on_timeout" : True} | UNIVERSAL_KWARGS
+        EXPECTED_KWARGS_UNIX = {"path" : "/var/run/test.sock", "db" : 7, "retry_on_timeout" : True, "socket_timeout" : 60, "socket_connect_timeout" : 5} | UNIVERSAL_KWARGS
 
         with patch.dict(os.environ, {"REDIS_URL":"unix:///var/run/test.sock?db=7"}, clear=False):
 

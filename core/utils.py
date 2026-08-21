@@ -159,6 +159,8 @@ class RedisClient:
                 if "REDIS_URL" in os.environ.keys():
 
                     redis_constructor = redis.Redis.from_url
+                    redis_kwargs = {}
+
                     connstring = urlsplit(redis_url, allow_fragments = False)
 
                     # Pop the connection string arguments which would otherwise override our defaults (see https://redis.readthedocs.io/en/stable/connections.html - "In the case of conflicting arguments, querystring arguments always win.")
@@ -173,15 +175,15 @@ class RedisClient:
                         logging.error("Ill-formatted REDIS_URL: Unable to parse connection string parameters")
                         return None
 
-                    if connstring.scheme != "unix":
-                        connargs |= sockargs
-
                     connargs = urlencode(connargs)
 
                     # Rebuilds the connection string manually, since urlunsplit(urlsplit(...)) is not necessarily idempotent
                     url = (f"{connstring.scheme}://{connstring.netloc}{connstring.path}{'?' + connargs if connargs else ''}",)
 
-                    redis_kwargs = {}
+                    if connstring.scheme == "unix":
+                        sockargs.pop("socket_keepalive", None)
+
+                    redis_kwargs |= sockargs
 
                 # If REDIS_URL turns out unset, collect REDIS_[HOST|PORT|DB|USER|PASSWORD|SSL_*] as kwargs to redis.Redis
                 else:
