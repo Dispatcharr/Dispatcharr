@@ -436,8 +436,10 @@ class ProxyServer:
             lock_key = RedisKeys.channel_owner(channel_id)
 
             # Use atomic SET NX EX for locking with error handling
+            # None means Redis failed; a held lock gives False.
             acquired = self._execute_redis_command(
                 lambda: self.redis_client.set(lock_key, self.worker_id, nx=True, ex=ttl)
+                or False
             )
 
             if acquired is None:  # Redis command failed
