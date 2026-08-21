@@ -148,41 +148,66 @@ class RedisClient:
     _pubsub_client = None
 
     @classmethod
+    def _connection_pool_kwargs(cls, decode_responses=True, socket_timeout=5):
+        """Build kwargs for a process-local BlockingConnectionPool."""
+        redis_host = os.environ.get("REDIS_HOST", getattr(settings, 'REDIS_HOST', 'localhost'))
+        redis_port = int(os.environ.get("REDIS_PORT", getattr(settings, 'REDIS_PORT', 6379)))
+        redis_db = int(os.environ.get("REDIS_DB", getattr(settings, 'REDIS_DB', 0)))
+        redis_password = os.environ.get("REDIS_PASSWORD", getattr(settings, 'REDIS_PASSWORD', ''))
+        redis_user = os.environ.get("REDIS_USER", getattr(settings, 'REDIS_USER', ''))
+
+        socket_connect_timeout = getattr(settings, 'REDIS_SOCKET_CONNECT_TIMEOUT', 5)
+        health_check_interval = getattr(settings, 'REDIS_HEALTH_CHECK_INTERVAL', 30)
+        socket_keepalive = getattr(settings, 'REDIS_SOCKET_KEEPALIVE', True)
+        retry_on_timeout = getattr(settings, 'REDIS_RETRY_ON_TIMEOUT', True)
+        max_connections = int(getattr(settings, 'REDIS_MAX_CONNECTIONS', 50))
+        pool_timeout = float(getattr(settings, 'REDIS_POOL_TIMEOUT', 20))
+        ssl_params = getattr(settings, 'REDIS_SSL_PARAMS', {})
+
+        return {
+            'host': redis_host,
+            'port': redis_port,
+            'db': redis_db,
+            'password': redis_password if redis_password else None,
+            'username': redis_user if redis_user else None,
+            'socket_timeout': socket_timeout,
+            'socket_connect_timeout': socket_connect_timeout,
+            'socket_keepalive': socket_keepalive,
+            'health_check_interval': health_check_interval,
+            'retry_on_timeout': retry_on_timeout,
+            'decode_responses': decode_responses,
+            'max_connections': max_connections,
+            'timeout': pool_timeout,
+            **ssl_params,
+        }
+
+    @classmethod
+    def _make_client(cls, decode_responses=True, socket_timeout=5):
+        """Create a Redis client backed by a bounded BlockingConnectionPool."""
+        from redis.connection import BlockingConnectionPool
+
+        pool = BlockingConnectionPool(
+            **cls._connection_pool_kwargs(
+                decode_responses=decode_responses,
+                socket_timeout=socket_timeout,
+            )
+        )
+        return redis.Redis(connection_pool=pool)
+
+    @classmethod
     def _init_client(cls, decode_responses=True, max_retries=5, retry_interval=1):
         retry_count = 0
         while retry_count < max_retries:
             try:
-                # Get connection parameters from settings or environment
                 redis_host = os.environ.get("REDIS_HOST", getattr(settings, 'REDIS_HOST', 'localhost'))
                 redis_port = int(os.environ.get("REDIS_PORT", getattr(settings, 'REDIS_PORT', 6379)))
                 redis_db = int(os.environ.get("REDIS_DB", getattr(settings, 'REDIS_DB', 0)))
-                redis_password = os.environ.get("REDIS_PASSWORD", getattr(settings, 'REDIS_PASSWORD', ''))
-                redis_user = os.environ.get("REDIS_USER", getattr(settings, 'REDIS_USER', ''))
-
-                # Use standardized settings
-                socket_timeout = getattr(settings, 'REDIS_SOCKET_TIMEOUT', 5)
-                socket_connect_timeout = getattr(settings, 'REDIS_SOCKET_CONNECT_TIMEOUT', 5)
-                health_check_interval = getattr(settings, 'REDIS_HEALTH_CHECK_INTERVAL', 30)
-                socket_keepalive = getattr(settings, 'REDIS_SOCKET_KEEPALIVE', True)
-                retry_on_timeout = getattr(settings, 'REDIS_RETRY_ON_TIMEOUT', True)
-
-                # TLS params from settings (empty dict when TLS is disabled)
                 ssl_params = getattr(settings, 'REDIS_SSL_PARAMS', {})
 
-                # Create Redis client with better defaults
-                client = redis.Redis(
-                    host=redis_host,
-                    port=redis_port,
-                    db=redis_db,
-                    password=redis_password if redis_password else None,
-                    username=redis_user if redis_user else None,
-                    socket_timeout=socket_timeout,
-                    socket_connect_timeout=socket_connect_timeout,
-                    socket_keepalive=socket_keepalive,
-                    health_check_interval=health_check_interval,
-                    retry_on_timeout=retry_on_timeout,
+                # Bounded pool: gevent concurrency must not open unbounded Redis fds.
+                client = cls._make_client(
                     decode_responses=decode_responses,
-                    **ssl_params
+                    socket_timeout=getattr(settings, 'REDIS_SOCKET_TIMEOUT', 5),
                 )
 
                 # Validate connection with ping
@@ -193,6 +218,13 @@ class RedisClient:
                 try:
                     client.config_set('save', '')  # Disable RDB snapshots
                     client.config_set('appendonly', 'no')  # Disable AOF logging
+
+                    # Close idle clients after REDIS_IDLE_TIMEOUT seconds with
+                    # no commands (0 = disabled). Blocked Celery BRPOP waiters
+                    # are exempt. Best-effort: managed Redis may reject CONFIG SET.
+                    idle_timeout = int(getattr(settings, 'REDIS_IDLE_TIMEOUT', 300))
+                    if idle_timeout > 0:
+                        client.config_set('timeout', str(idle_timeout))
 
                     # Disable protected mode when in debug mode
                     if os.environ.get('DISPATCHARR_DEBUG', '').lower() == 'true':
@@ -259,39 +291,15 @@ class RedisClient:
         """Get Redis client optimized for PubSub operations"""
         if cls._pubsub_client is None:
             retry_count = 0
+            ssl_params = getattr(settings, 'REDIS_SSL_PARAMS', {})
             while retry_count < max_retries:
                 try:
-                    # Get connection parameters from settings or environment
                     redis_host = os.environ.get("REDIS_HOST", getattr(settings, 'REDIS_HOST', 'localhost'))
                     redis_port = int(os.environ.get("REDIS_PORT", getattr(settings, 'REDIS_PORT', 6379)))
                     redis_db = int(os.environ.get("REDIS_DB", getattr(settings, 'REDIS_DB', 0)))
-                    redis_password = os.environ.get("REDIS_PASSWORD", getattr(settings, 'REDIS_PASSWORD', ''))
-                    redis_user = os.environ.get("REDIS_USER", getattr(settings, 'REDIS_USER', ''))
 
-                    # Use standardized settings but without socket timeouts for PubSub
-                    # Important: socket_timeout is None for PubSub operations
-                    socket_connect_timeout = getattr(settings, 'REDIS_SOCKET_CONNECT_TIMEOUT', 5)
-                    socket_keepalive = getattr(settings, 'REDIS_SOCKET_KEEPALIVE', True)
-                    health_check_interval = getattr(settings, 'REDIS_HEALTH_CHECK_INTERVAL', 30)
-                    retry_on_timeout = getattr(settings, 'REDIS_RETRY_ON_TIMEOUT', True)
-
-                    ssl_params = getattr(settings, 'REDIS_SSL_PARAMS', {})
-
-                    # Create Redis client with PubSub-optimized settings - no timeout
-                    client = redis.Redis(
-                        host=redis_host,
-                        port=redis_port,
-                        db=redis_db,
-                        password=redis_password if redis_password else None,
-                        username=redis_user if redis_user else None,
-                        socket_timeout=None,  # Critical: No timeout for PubSub operations
-                        socket_connect_timeout=socket_connect_timeout,
-                        socket_keepalive=socket_keepalive,
-                        health_check_interval=health_check_interval,
-                        retry_on_timeout=retry_on_timeout,
-                        decode_responses=True,
-                        **ssl_params
-                    )
+                    # socket_timeout=None is required so PubSub listens do not time out.
+                    client = cls._make_client(decode_responses=True, socket_timeout=None)
 
                     # Validate connection with ping
                     client.ping()

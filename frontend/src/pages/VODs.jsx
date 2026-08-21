@@ -191,7 +191,7 @@ const VODsPage = () => {
         ) : (
           <>
             <Grid gutter="md">
-              <ErrorBoundary>
+              <ErrorBoundary inline>
                 <Suspense fallback={<Loader />}>
                   {getDisplayData().map((item) => (
                     <GridCol
@@ -227,7 +227,7 @@ const VODsPage = () => {
       </Stack>
 
       {/* Series Episodes Modal */}
-      <ErrorBoundary>
+      <ErrorBoundary inline>
         <Suspense fallback={<LoadingOverlay />}>
           <SeriesModal
             series={selectedSeries}
@@ -238,7 +238,7 @@ const VODsPage = () => {
       </ErrorBoundary>
 
       {/* VOD Details Modal */}
-      <ErrorBoundary>
+      <ErrorBoundary inline>
         <Suspense fallback={<LoadingOverlay />}>
           <VODModal
             vod={selectedVOD}

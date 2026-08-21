@@ -2683,7 +2683,7 @@ export default class API {
     }
   }
 
-  static async uploadLogo(file, name = null) {
+  static async uploadLogo(file, name = null, overwrite = false) {
     try {
       const formData = new FormData();
       formData.append('file', file);
@@ -2691,6 +2691,10 @@ export default class API {
       // Add custom name if provided
       if (name && name.trim()) {
         formData.append('name', name.trim());
+      }
+
+      if (overwrite) {
+        formData.append('overwrite', 'true');
       }
 
       // Add timeout handling for file uploads
@@ -2733,7 +2737,11 @@ export default class API {
         timeoutError.code = 'NETWORK_ERROR';
         throw timeoutError;
       }
-      errorNotification('Failed to upload logo', e);
+      // Skip the generic toast for an already-exists conflict — the caller
+      // handles that case with its own overwrite-confirmation prompt.
+      if (e.status !== 409 || !e.body?.already_exists) {
+        errorNotification('Failed to upload logo', e);
+      }
       throw e;
     }
   }

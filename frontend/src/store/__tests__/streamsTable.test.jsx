@@ -2,12 +2,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, renderHook } from '@testing-library/react';
 import useStreamsTableStore from '../streamsTable';
 
-// Mock localStorage
-const localStorageMock = (() => {
+// Mock localStorage / sessionStorage
+const createStorageMock = () => {
   let store = {};
 
   return {
-    getItem: vi.fn((key) => store[key] || null),
+    getItem: vi.fn((key) => (key in store ? store[key] : null)),
     setItem: vi.fn((key, value) => {
       store[key] = value.toString();
     }),
@@ -18,14 +18,33 @@ const localStorageMock = (() => {
       delete store[key];
     }),
   };
-})();
+};
+
+const localStorageMock = createStorageMock();
+const sessionStorageMock = createStorageMock();
 
 globalThis.localStorage = localStorageMock;
+globalThis.sessionStorage = sessionStorageMock;
 
 describe('useStreamsTableStore', () => {
   beforeEach(() => {
     localStorageMock.clear();
+    sessionStorageMock.clear();
     vi.clearAllMocks();
+
+    useStreamsTableStore.setState({
+      streams: [],
+      pageCount: 0,
+      totalCount: 0,
+      sorting: [{ id: 'name', desc: false }],
+      pagination: {
+        pageIndex: 0,
+        pageSize: 50,
+      },
+      selectedStreamIds: [],
+      allQueryIds: [],
+      lastQueryParams: null,
+    });
   });
 
   afterEach(() => {
@@ -231,6 +250,20 @@ describe('useStreamsTableStore', () => {
       });
 
       expect(result.current.sorting).toEqual(newSorting);
+    });
+
+    it('should persist sorting to sessionStorage', () => {
+      const { result } = renderHook(() => useStreamsTableStore());
+      const newSorting = [{ id: 'created_at', desc: true }];
+
+      act(() => {
+        result.current.setSorting(newSorting);
+      });
+
+      expect(sessionStorageMock.setItem).toHaveBeenCalledWith(
+        'streams-table-sorting',
+        JSON.stringify(newSorting)
+      );
     });
 
     it('should handle multiple sorting columns', () => {

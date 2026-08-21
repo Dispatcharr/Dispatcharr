@@ -6,7 +6,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 vi.mock('../../../store/outputProfiles', () => ({ default: vi.fn() }));
 
 // ── Hook mocks ─────────────────────────────────────────────────────────────────
-vi.mock('../../../hooks/useLocalStorage', () => ({
+vi.mock('../../../hooks/useBrowserStorage', () => ({
+  readStoredJSON: (key, defaultValue) => defaultValue,
+  writeStoredJSON: vi.fn(),
   default: vi.fn(() => ['default', vi.fn()]),
 }));
 
@@ -90,7 +92,7 @@ vi.mock('lucide-react', () => ({
 
 // ── Imports after mocks ────────────────────────────────────────────────────────
 import useOutputProfilesStore from '../../../store/outputProfiles';
-import useLocalStorage from '../../../hooks/useLocalStorage';
+import useBrowserStorage from '../../../hooks/useBrowserStorage';
 import * as OutputProfilesTableUtils from '../../../utils/tables/OutputProfilesTableUtils.js';
 import { useTable } from '../CustomTable';
 import OutputProfiles from '../OutputProfilesTable';
@@ -116,7 +118,7 @@ const setupMocks = ({
     sel({ profiles })
   );
 
-  vi.mocked(useLocalStorage).mockReturnValue([tableSize, vi.fn()]);
+  vi.mocked(useBrowserStorage).mockReturnValue([tableSize, vi.fn()]);
 
   vi.mocked(useTable).mockImplementation((opts) => {
     capturedTableOptions = opts;

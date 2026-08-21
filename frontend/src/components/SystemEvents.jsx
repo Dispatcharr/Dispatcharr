@@ -30,7 +30,7 @@ import {
   XCircle,
 } from 'lucide-react';
 import API from '../api';
-import useLocalStorage from '../hooks/useLocalStorage';
+import useBrowserStorage from '../hooks/useBrowserStorage';
 import { format } from '../utils/dateTimeUtils.js';
 
 const getEventIcon = (eventType) => {
@@ -125,7 +125,7 @@ const getSystemEvents = (eventsLimit, offset) => {
 };
 
 const Event = ({ event }) => {
-  const [dateFormatSetting] = useLocalStorage('date-format', 'mdy');
+  const [dateFormatSetting] = useBrowserStorage('date-format', 'mdy');
   const dateFormat = dateFormatSetting === 'mdy' ? 'MM/DD' : 'DD/MM';
 
   return (
@@ -179,11 +179,11 @@ const SystemEvents = () => {
   const isNarrow = cardWidth < 650;
   const [isLoading, setIsLoading] = useState(false);
 
-  const [eventsRefreshInterval, setEventsRefreshInterval] = useLocalStorage(
+  const [eventsRefreshInterval, setEventsRefreshInterval] = useBrowserStorage(
     'events-refresh-interval',
     0
   );
-  const [eventsLimit, setEventsLimit] = useLocalStorage('events-limit', 100);
+  const [eventsLimit, setEventsLimit] = useBrowserStorage('events-limit', 100);
   const [currentPage, setCurrentPage] = useState(1);
 
   // Calculate offset based on current page and limit

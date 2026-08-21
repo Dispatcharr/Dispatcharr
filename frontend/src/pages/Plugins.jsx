@@ -152,7 +152,7 @@ const PluginsList = ({ onRequestDelete, onRequireTrust, onRequestConfirm }) => {
           cols={{ base: 1, md: 2, xl: 3 }}
           spacing="md"
         >
-          <ErrorBoundary>
+          <ErrorBoundary inline>
             <Suspense fallback={<Loader />}>
               {filteredPlugins.map((p) => (
                 <PluginCard

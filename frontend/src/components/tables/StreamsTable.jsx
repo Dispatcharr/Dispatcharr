@@ -1,4 +1,10 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState, } from 'react';
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import StreamForm from '../forms/Stream';
 import CatchupIndicator from '../CatchupIndicator';
 import usePlaylistsStore from '../../store/playlists';
@@ -56,7 +62,7 @@ import useVideoStore from '../../store/useVideoStore';
 import useChannelsTableStore from '../../store/channelsTable';
 import useWarningsStore from '../../store/warnings';
 import { CustomTable, useTable } from './CustomTable';
-import useLocalStorage from '../../hooks/useLocalStorage';
+import useBrowserStorage from '../../hooks/useBrowserStorage';
 import ConfirmationDialog from '../ConfirmationDialog';
 import CreateChannelModal from '../modals/CreateChannelModal';
 import useStreamsTableStore from '../../store/streamsTable';
@@ -241,15 +247,21 @@ const StreamsTable = ({ onReady }) => {
   const [isBulkDelete, setIsBulkDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
-  const [filters, setFilters] = useState({
+  const DEFAULT_STREAMS_FILTERS = {
     name: '',
     channel_group: '',
     m3u_account: '',
+    tvg_id: '',
     unassigned: false,
     hide_stale: false,
     is_catchup: false,
-  });
-  const [columnSizing, setColumnSizing] = useLocalStorage(
+  };
+  const [filters, setFilters] = useBrowserStorage(
+    'streams-table-filters',
+    DEFAULT_STREAMS_FILTERS,
+    { storage: 'session' }
+  );
+  const [columnSizing, setColumnSizing] = useBrowserStorage(
     'streams-table-column-sizing',
     {}
   );
@@ -267,7 +279,7 @@ const StreamsTable = ({ onReady }) => {
     stats: false,
   };
 
-  const [storedColumnVisibility, setStoredColumnVisibility] = useLocalStorage(
+  const [storedColumnVisibility, setStoredColumnVisibility] = useBrowserStorage(
     'streams-table-column-visibility',
     null // Use null as default to detect fresh install
   );
@@ -662,8 +674,10 @@ const StreamsTable = ({ onReady }) => {
       const savedStartNumber =
         localStorage.getItem('channel-numbering-start') || '1';
 
-      const startingChannelNumberValue =
-        getChannelNumberValue(savedMode, savedStartNumber);
+      const startingChannelNumberValue = getChannelNumberValue(
+        savedMode,
+        savedStartNumber
+      );
 
       await executeChannelCreation(
         startingChannelNumberValue,
@@ -756,7 +770,10 @@ const StreamsTable = ({ onReady }) => {
     }
 
     // Convert mode to API value
-    const startingChannelNumberValue = getChannelNumberValue(numberingMode, customStartNumber);
+    const startingChannelNumberValue = getChannelNumberValue(
+      numberingMode,
+      customStartNumber
+    );
 
     setChannelNumberingModalOpen(false);
     await executeChannelCreation(
@@ -857,7 +874,10 @@ const StreamsTable = ({ onReady }) => {
       const savedChannelNumber =
         localStorage.getItem('single-channel-numbering-specific') || '1';
 
-      const channelNumberValue = getChannelNumberValue(savedMode, savedChannelNumber);
+      const channelNumberValue = getChannelNumberValue(
+        savedMode,
+        savedChannelNumber
+      );
 
       await executeSingleChannelCreation(
         stream,
@@ -877,7 +897,10 @@ const StreamsTable = ({ onReady }) => {
     channelNumber = null,
     profileIds = null
   ) => {
-    const channelProfileIds = getChannelProfileIds(profileIds, selectedProfileId);
+    const channelProfileIds = getChannelProfileIds(
+      profileIds,
+      selectedProfileId
+    );
     await createChannelFromStream({
       name: stream.name,
       channel_number: channelNumber,
@@ -902,7 +925,10 @@ const StreamsTable = ({ onReady }) => {
     }
 
     // Convert mode to API value
-    const channelNumberValue = getChannelNumberValue(singleChannelMode, specificChannelNumber);
+    const channelNumberValue = getChannelNumberValue(
+      singleChannelMode,
+      specificChannelNumber
+    );
 
     setSingleChannelModalOpen(false);
     await executeSingleChannelCreation(
@@ -1349,7 +1375,13 @@ const StreamsTable = ({ onReady }) => {
         }));
       }
     }
-  }, [groupOptions, m3uOptions, filters.channel_group, filters.m3u_account]);
+  }, [
+    groupOptions,
+    m3uOptions,
+    filters.channel_group,
+    filters.m3u_account,
+    setFilters,
+  ]);
 
   return (
     <>
@@ -1393,7 +1425,6 @@ const StreamsTable = ({ onReady }) => {
               openDelay={500}
             >
               <Button
-                leftSection={<SquarePlus size={18} />}
                 variant={
                   selectedStreamIds.length > 0 && targetChannelId
                     ? 'light'
@@ -1418,7 +1449,7 @@ const StreamsTable = ({ onReady }) => {
                 }
                 disabled={!(selectedStreamIds.length > 0 && targetChannelId)}
               >
-                Add to Channel
+                <ListPlus size={18} />
               </Button>
             </Tooltip>
 
@@ -1427,16 +1458,13 @@ const StreamsTable = ({ onReady }) => {
               openDelay={500}
             >
               <Button
-                leftSection={<SquarePlus size={18} />}
                 variant="default"
                 size="xs"
                 onClick={createChannelsFromSelection}
                 p={5}
                 disabled={selectedStreamIds.length == 0}
               >
-                {selectedStreamIds.length <= 1
-                  ? `Create Channel (${selectedStreamIds.length})`
-                  : `Create Channels (${selectedStreamIds.length})`}
+                <SquarePlus size={18} />
               </Button>
             </Tooltip>
           </Flex>
@@ -1493,7 +1521,6 @@ const StreamsTable = ({ onReady }) => {
 
             <Tooltip label="Create a new custom stream" openDelay={500}>
               <Button
-                leftSection={<SquarePlus size={18} />}
                 variant="light"
                 size="xs"
                 onClick={() => editStream()}
@@ -1505,19 +1532,19 @@ const StreamsTable = ({ onReady }) => {
                   color: 'white',
                 }}
               >
-                Create Stream
+                <SquarePlus size={18} />
               </Button>
             </Tooltip>
 
             <Tooltip label="Delete selected stream(s)" openDelay={500}>
               <Button
-                leftSection={<SquareMinus size={18} />}
                 variant="default"
                 size="xs"
                 onClick={handleDeleteStreams}
                 disabled={selectedStreamIds.length == 0}
+                p={5}
               >
-                Delete
+                <SquareMinus size={18} />
               </Button>
             </Tooltip>
 

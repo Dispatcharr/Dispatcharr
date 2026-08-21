@@ -97,6 +97,10 @@ export REDIS_PORT=${REDIS_PORT:-6379}
 export REDIS_DB=${REDIS_DB:-0}
 export REDIS_PASSWORD=${REDIS_PASSWORD:-}
 export REDIS_USER=${REDIS_USER:-}
+# Idle-client timeout for redis-server (AIO attach-daemon) and CONFIG SET.
+export REDIS_IDLE_TIMEOUT=${REDIS_IDLE_TIMEOUT:-300}
+# Per-process redis-py / django-redis pool cap (see dispatcharr.settings).
+export REDIS_MAX_CONNECTIONS=${REDIS_MAX_CONNECTIONS:-50}
 export DISPATCHARR_PORT=${DISPATCHARR_PORT:-9191}
 export LIBVA_DRIVERS_PATH='/usr/local/lib/x86_64-linux-gnu/dri'
 export LD_LIBRARY_PATH='/usr/local/lib'
@@ -184,7 +188,7 @@ variables=(
     PATH VIRTUAL_ENV DJANGO_SETTINGS_MODULE PYTHONUNBUFFERED PYTHONDONTWRITEBYTECODE
     POSTGRES_DB POSTGRES_USER POSTGRES_PASSWORD POSTGRES_HOST POSTGRES_PORT
     DISPATCHARR_ENV DISPATCHARR_DEBUG DISPATCHARR_LOG_LEVEL DISPATCHARR_ENABLE_IP_LOOKUP
-    REDIS_HOST REDIS_PORT REDIS_DB REDIS_PASSWORD REDIS_USER POSTGRES_DIR DISPATCHARR_PORT
+    REDIS_HOST REDIS_PORT REDIS_DB REDIS_PASSWORD REDIS_USER REDIS_IDLE_TIMEOUT REDIS_MAX_CONNECTIONS POSTGRES_DIR DISPATCHARR_PORT
     DISPATCHARR_VERSION DISPATCHARR_TIMESTAMP LIBVA_DRIVERS_PATH LIBVA_DRIVER_NAME LD_LIBRARY_PATH
     CELERY_NICE_LEVEL UWSGI_NICE_LEVEL DJANGO_SECRET_KEY DISPATCHARR_TIME_ZONE
 )
@@ -358,12 +362,11 @@ if [ "$DISPATCHARR_DEBUG" != "true" ]; then
     uwsgi_args+=" --disable-logging"
 fi
 
-# Launch uwsgi with configurable nice level (default: 0 for normal priority)
-# Users can override via UWSGI_NICE_LEVEL environment variable in docker-compose
-# Start with nice as root, then use setpriv to drop privileges to dispatch user
-# This preserves both the nice value and environment variables
-nice -n "$UWSGI_NICE_LEVEL" su - "$POSTGRES_USER" -c "cd /app && exec $VIRTUAL_ENV/bin/uwsgi $uwsgi_args" & uwsgi_pid=$!
-echo "✅ uwsgi started with PID $uwsgi_pid (nice $UWSGI_NICE_LEVEL)"
+# Launch uwsgi (UWSGI_NICE_LEVEL, default 0). su -/pam_limits resets soft nofile
+# to 1024; raise it inside the session. Guarded so a bad value cannot abort set -e.
+DISPATCHARR_NOFILE="${DISPATCHARR_NOFILE:-65536}"
+nice -n "$UWSGI_NICE_LEVEL" su - "$POSTGRES_USER" -c "ulimit -n $DISPATCHARR_NOFILE 2>/dev/null || true; cd /app && exec $VIRTUAL_ENV/bin/uwsgi $uwsgi_args" & uwsgi_pid=$!
+echo "✅ uwsgi started with PID $uwsgi_pid (nice $UWSGI_NICE_LEVEL, nofile $DISPATCHARR_NOFILE)"
 pids+=("$uwsgi_pid"); pid_names[$uwsgi_pid]="uwsgi"
 
 # Wait for services to fully initialize before checking hardware
