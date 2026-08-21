@@ -37,7 +37,11 @@ vi.mock('@mantine/core', () => ({
       onChange={(e) => onChange(e.target.value)}
     >
       {data.map((option) => (
-        <option key={option.value} value={option.value}>
+        <option
+          key={option.value}
+          value={option.value}
+          disabled={option.disabled}
+        >
           {option.label}
         </option>
       ))}
@@ -626,6 +630,8 @@ describe('LogFileViewPage', () => {
   });
 
   it('filters records by module with their continuations', async () => {
+    // The Module control only exists in debug mode.
+    localStorage.setItem('log-viewer-min-level', '0');
     API.getLogFile.mockResolvedValue({
       content: [
         '2026-08-21 10:00:00,000 INFO apps.epg.tasks epg tick',
@@ -655,6 +661,7 @@ describe('LogFileViewPage', () => {
 
   it('keeps a stored module filter engaged even when the tail lacks it', async () => {
     // The selection stays honest instead of silently disengaging and snapping back on a later poll.
+    localStorage.setItem('log-viewer-min-level', '0');
     localStorage.setItem('log-viewer-module', '"m:ghost"');
     API.getLogFile.mockResolvedValue({
       content: '2026-08-21 10:00:00,000 INFO core.tasks alive\n',
@@ -670,6 +677,7 @@ describe('LogFileViewPage', () => {
   });
 
   it('treats an unprefixed legacy stored module as no filter', async () => {
+    localStorage.setItem('log-viewer-min-level', '0');
     localStorage.setItem('log-viewer-module', '"ghost"');
     API.getLogFile.mockResolvedValue({
       content: '2026-08-21 10:00:00,000 INFO core.tasks alive\n',
@@ -681,6 +689,7 @@ describe('LogFileViewPage', () => {
   });
 
   it('handles a module literally named all without colliding with the sentinel', async () => {
+    localStorage.setItem('log-viewer-min-level', '0');
     API.getLogFile.mockResolvedValue({
       content: [
         '2026-08-21 10:00:00,000 INFO plugins.all Plugin loaded',
@@ -747,6 +756,82 @@ describe('LogFileViewPage', () => {
     expect(screen.getByText('INFO').closest('div').textContent).toBe(
       '2026-08-21 10:00:00,000 INFO core'
     );
+  });
+
+  it('filters by category at the Info floor with no Module control present', async () => {
+    API.getLogFile.mockResolvedValue({
+      content: [
+        '2026-08-21 10:00:00,000 INFO apps.epg.tasks app line',
+        '2026-08-21 10:00:01,000 INFO postgres [312] LOG:  daemon line',
+        '2026-08-21 10:00:02,000 INFO celery.beat framework line',
+      ].join('\n'),
+      truncated: false,
+    });
+    renderPage();
+    await screen.findByText(/app line/);
+    expect(screen.queryByLabelText('Module')).not.toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('Category'), {
+      target: { value: 'services' },
+    });
+    // Services covers native daemons and third-party Python alike.
+    expect(screen.getByText(/daemon line/)).toBeInTheDocument();
+    expect(screen.getByText(/framework line/)).toBeInTheDocument();
+    expect(screen.queryByText(/app line/)).not.toBeInTheDocument();
+  });
+
+  it('shows the Module control in debug mode and disables options outside the category', async () => {
+    localStorage.setItem('log-viewer-min-level', '10');
+    API.getLogFile.mockResolvedValue({
+      content: [
+        '2026-08-21 10:00:00,000 DEBUG apps.epg.tasks app line',
+        '2026-08-21 10:00:01,000 INFO postgres [312] LOG:  service line',
+      ].join('\n'),
+      truncated: false,
+    });
+    renderPage();
+    await screen.findByText(/app line/);
+    fireEvent.change(screen.getByLabelText('Category'), {
+      target: { value: 'app' },
+    });
+    const options = Array.from(
+      screen.getByLabelText('Module').querySelectorAll('option')
+    );
+    expect(options.find((o) => o.value === 'm:epg').disabled).toBe(false);
+    expect(options.find((o) => o.value === 'm:postgres').disabled).toBe(true);
+  });
+
+  it('resets an incompatible module selection when the category changes', async () => {
+    localStorage.setItem('log-viewer-min-level', '0');
+    localStorage.setItem('log-viewer-module', '"m:postgres"');
+    API.getLogFile.mockResolvedValue({
+      content: [
+        '2026-08-21 10:00:00,000 INFO apps.epg.tasks app line',
+        '2026-08-21 10:00:01,000 INFO postgres [312] LOG:  service line',
+      ].join('\n'),
+      truncated: false,
+    });
+    renderPage();
+    await screen.findByText(/service line/);
+    fireEvent.change(screen.getByLabelText('Category'), {
+      target: { value: 'app' },
+    });
+    expect(screen.getByLabelText('Module')).toHaveValue('all');
+    expect(screen.getByText(/app line/)).toBeInTheDocument();
+  });
+
+  it('ignores a stored module filter while its control is hidden at Info', async () => {
+    localStorage.setItem('log-viewer-module', '"m:epg"');
+    API.getLogFile.mockResolvedValue({
+      content: [
+        '2026-08-21 10:00:00,000 INFO apps.epg.tasks epg line',
+        '2026-08-21 10:00:01,000 INFO core.tasks core line',
+      ].join('\n'),
+      truncated: false,
+    });
+    renderPage();
+    await screen.findByText(/epg line/);
+    // No hidden active state: the filter only applies when its control is visible.
+    expect(screen.getByText(/core line/)).toBeInTheDocument();
   });
 
   it('keeps a multi-line record intact when reversed', async () => {

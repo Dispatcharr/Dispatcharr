@@ -45,25 +45,42 @@ const LEVEL_RANK = {
   CRITICAL: 50,
 };
 
-// One definition of "module": the segment that names the component.
-const moduleOf = (source) => {
-  if (source.startsWith('apps.')) return source.split('.')[1] || source;
-  if (source.startsWith('plugins.')) return source.slice(8) || source;
-  return source.split('.')[0] || source;
+// First-party top-level packages that log outside apps.*.
+const FIRST_PARTY = new Set([
+  'core',
+  'dispatcharr',
+  'live_proxy',
+  'vod_proxy',
+  'proxy',
+  'backups',
+]);
+
+// One definition of "module" and the closed category it lives in: the segment
+// that names the component. Everything that is not Dispatcharr's own code or a
+// plugin — native daemons and third-party Python alike — is Services, which
+// also keeps the category vocabulary closed.
+const parseSource = (source) => {
+  if (source.startsWith('apps.'))
+    return { module: source.split('.')[1] || source, tier: 'app' };
+  if (source.startsWith('plugins.'))
+    return { module: source.slice(8) || source, tier: 'plugins' };
+  const head = source.split('.')[0] || source;
+  return { module: head, tier: FIRST_PARTY.has(head) ? 'app' : 'services' };
 };
 
 const parseRecord = (line) => {
   const m = RECORD_TOKENS.exec(line);
-  return m
-    ? {
-        stamp: m[1],
-        level: m[2],
-        source: m[3],
-        module: moduleOf(m[3]),
-        sep: m[4],
-        message: m[5],
-      }
-    : null;
+  if (!m) return null;
+  const { module, tier } = parseSource(m[3]);
+  return {
+    stamp: m[1],
+    level: m[2],
+    source: m[3],
+    module,
+    tier,
+    sep: m[4],
+    message: m[5],
+  };
 };
 
 // Display names compress the level column: CRITICAL joins ERROR and WARNING shortens to WARN. Ranking and the raw token (on hover) are untouched.
@@ -145,6 +162,14 @@ const REFRESH_OPTIONS = [
   { value: '60', label: '1m' },
 ];
 
+// The category vocabulary is closed by construction — unknown loggers land in Services — so this list is static.
+const CATEGORY_OPTIONS = [
+  { value: 'all', label: 'All categories' },
+  { value: 'app', label: 'App' },
+  { value: 'plugins', label: 'Plugins' },
+  { value: 'services', label: 'Services' },
+];
+
 // Selecting a level shows it and everything above; Trace sits at the floor of the vocabulary, so it shows everything.
 const LEVEL_OPTIONS = [
   { value: '0', label: 'Trace' },
@@ -182,8 +207,8 @@ const classifyLines = (lines) => {
   return entries;
 };
 
-// Records below the level floor or outside the chosen module (null = no filter) hide with their continuations; standalone lines and unknown levels always show.
-const filterEntries = (entries, minRank, module) => {
+// Records below the level floor or outside the chosen category/module (null = no filter) hide with their continuations; standalone lines and unknown levels always show.
+const filterEntries = (entries, minRank, category, module) => {
   const out = [];
   let suppress = false;
   for (const entry of entries) {
@@ -191,6 +216,7 @@ const filterEntries = (entries, minRank, module) => {
       const rank = LEVEL_RANK[entry.record.level];
       suppress =
         (rank !== undefined && rank < minRank) ||
+        (category !== null && entry.record.tier !== category) ||
         (module !== null && entry.record.module !== module);
     } else if (entry.kind === 'standalone') {
       suppress = false;
@@ -260,6 +286,16 @@ const LogFileViewPage = () => {
   )
     ? Number(minLevelSetting)
     : 20;
+  const [categorySetting, setCategorySetting] = useBrowserStorage(
+    'log-viewer-category',
+    'all'
+  );
+  // The category vocabulary is closed, so an unknown stored value simply means no filter.
+  const category =
+    categorySetting !== 'all' &&
+    CATEGORY_OPTIONS.some((option) => option.value === categorySetting)
+      ? categorySetting
+      : null;
   const [moduleSetting, setModuleSetting] = useBrowserStorage(
     'log-viewer-module',
     'all'
@@ -280,20 +316,25 @@ const LogFileViewPage = () => {
     [content]
   );
 
-  // The module list comes from the loaded tail itself; the vocabulary is open-ended.
-  const modules = useMemo(() => {
-    const seen = new Set();
+  // The module list comes from the loaded tail itself; the vocabulary is open-ended. Tiers drive the category cross-filtering of the module options.
+  const { modules, moduleTiers } = useMemo(() => {
+    const tiers = new Map();
     for (const entry of entries) {
-      if (entry.record) seen.add(entry.record.module);
+      if (entry.record && !tiers.has(entry.record.module))
+        tiers.set(entry.record.module, entry.record.tier);
     }
-    return [...seen].sort();
+    return { modules: [...tiers.keys()].sort(), moduleTiers: tiers };
   }, [entries]);
+
+  // The module control only exists in debug mode, and its filter only applies while the control is visible — no hidden active state.
+  const debugMode = minLevel < 20;
+  const effectiveModule = debugMode ? moduleFilter : null;
 
   // Render only the last MAX_RENDER_LINES; hiddenLines drives the "showing the last N lines" notice.
   const { blocks, cols, hiddenLines } = useMemo(() => {
     let kept = entries;
-    if (minLevel || moduleFilter !== null)
-      kept = filterEntries(entries, minLevel, moduleFilter);
+    if (minLevel || category !== null || effectiveModule !== null)
+      kept = filterEntries(entries, minLevel, category, effectiveModule);
     const hidden = Math.max(0, kept.length - MAX_RENDER_LINES);
     if (hidden) kept = kept.slice(hidden);
     const built = buildBlocks(newestFirst ? reverseEntries(kept) : kept);
@@ -317,7 +358,7 @@ const LogFileViewPage = () => {
       },
       hiddenLines: hidden,
     };
-  }, [entries, newestFirst, minLevel, moduleFilter]);
+  }, [entries, newestFirst, minLevel, category, effectiveModule]);
 
   // One notice: line-cap wins over the byte-truncation banner since it states what's actually on screen.
   const notice =
@@ -411,25 +452,50 @@ const LogFileViewPage = () => {
           />
           <Select
             size="xs"
-            label="Module"
-            value={moduleFilter === null ? 'all' : `m:${moduleFilter}`}
-            onChange={(value) => setModuleSetting(value)}
-            allowDeselect={false}
-            searchable
-            maxDropdownHeight={300}
-            data={[
-              { value: 'all', label: 'All modules' },
-              // The active selection stays listed even when the current tail lacks it, so the filter never silently disengages or re-engages.
-              ...(moduleFilter !== null && !modules.includes(moduleFilter)
-                ? [moduleFilter]
-                : []
+            label="Category"
+            value={category === null ? 'all' : category}
+            onChange={(value) => {
+              setCategorySetting(value);
+              // A category that excludes the selected module visibly resets it rather than silently emptying the view.
+              if (
+                value !== 'all' &&
+                moduleFilter !== null &&
+                moduleTiers.get(moduleFilter) !== value
               )
-                .concat(modules)
-                .sort()
-                .map((m) => ({ value: `m:${m}`, label: m })),
-            ]}
-            style={{ width: 150 }}
+                setModuleSetting('all');
+            }}
+            allowDeselect={false}
+            data={CATEGORY_OPTIONS}
+            style={{ width: 130 }}
           />
+          {debugMode && (
+            <Select
+              size="xs"
+              label="Module"
+              value={moduleFilter === null ? 'all' : `m:${moduleFilter}`}
+              onChange={(value) => setModuleSetting(value)}
+              allowDeselect={false}
+              searchable
+              maxDropdownHeight={300}
+              data={[
+                { value: 'all', label: 'All modules' },
+                // The active selection stays listed even when the current tail lacks it, so the filter never silently disengages or re-engages; options outside the active category are disabled.
+                ...(moduleFilter !== null && !modules.includes(moduleFilter)
+                  ? [moduleFilter]
+                  : []
+                )
+                  .concat(modules)
+                  .sort()
+                  .map((m) => ({
+                    value: `m:${m}`,
+                    label: m,
+                    disabled:
+                      category !== null && moduleTiers.get(m) !== category,
+                  })),
+              ]}
+              style={{ width: 150 }}
+            />
+          )}
           <Select
             size="xs"
             label="Order"
