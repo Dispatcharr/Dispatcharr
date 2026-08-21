@@ -123,6 +123,10 @@ const RECORD_START =
 // Cap on rendered lines: every record block emits a handful of nodes, so bound the DOM for low-end TV browsers.
 const MAX_RENDER_LINES = 5000;
 
+// Column caps keep one outsized token from pushing every message off-screen; the full value stays on hover.
+const LEVEL_COL_MAX = 12;
+const MODULE_COL_MAX = 20;
+
 const REFRESH_OPTIONS = [
   { value: '0', label: 'Manual' },
   { value: '5', label: '5s' },
@@ -244,14 +248,31 @@ const LogFileViewPage = () => {
   const moduleFilter = modules.includes(moduleSetting) ? moduleSetting : 'all';
 
   // Render only the last MAX_RENDER_LINES; hiddenLines drives the "showing the last N lines" notice.
-  const { blocks, hiddenLines } = useMemo(() => {
+  const { blocks, cols, hiddenLines } = useMemo(() => {
     let all = content ? content.split('\n') : [];
     if (minLevel || moduleFilter !== 'all')
       all = filterLines(all, minLevel, moduleFilter);
     const hidden = Math.max(0, all.length - MAX_RENDER_LINES);
     const kept = hidden ? all.slice(hidden) : all;
+    const built = buildBlocks(newestFirst ? reverseRecords(kept) : kept);
+    // Column widths come from the visible records themselves so every row aligns.
+    let stamp = 0;
+    let level = 0;
+    let module = 0;
+    for (const block of built) {
+      if (!block.record) continue;
+      stamp = Math.max(stamp, block.record.stamp.length);
+      level = Math.max(level, block.record.level.length);
+      module = Math.max(module, block.record.module.length);
+    }
     return {
-      blocks: buildBlocks(newestFirst ? reverseRecords(kept) : kept),
+      blocks: built,
+      cols: {
+        stamp,
+        // Floored at CRITICAL's width so the column stays put while tailing.
+        level: Math.min(Math.max(level, 8), LEVEL_COL_MAX),
+        module: Math.min(module, MODULE_COL_MAX),
+      },
       hiddenLines: hidden,
     };
   }, [content, newestFirst, minLevel, moduleFilter]);
@@ -462,19 +483,38 @@ const LogFileViewPage = () => {
                           paddingLeft: 8,
                         }}
                       >
-                        <span style={{ color: COLORS.stamp }}>
+                        <span
+                          style={{
+                            color: COLORS.stamp,
+                            display: 'inline-block',
+                            width: `${cols.stamp}ch`,
+                            verticalAlign: 'bottom',
+                          }}
+                        >
                           {block.record.stamp}
                         </span>{' '}
                         <span
                           style={{
                             color: levelColor(block.record.level),
                             fontWeight: bc === 'transparent' ? undefined : 500,
+                            display: 'inline-block',
+                            width: `${cols.level}ch`,
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            verticalAlign: 'bottom',
                           }}
                         >
                           {block.record.level}
                         </span>{' '}
                         <span
-                          style={{ color: COLORS.module }}
+                          style={{
+                            color: COLORS.module,
+                            display: 'inline-block',
+                            width: `${cols.module}ch`,
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            verticalAlign: 'bottom',
+                          }}
                           title={block.record.source}
                         >
                           {block.record.module}
@@ -485,7 +525,9 @@ const LogFileViewPage = () => {
                         {block.continuations.length > 0 && (
                           <div
                             style={{
-                              paddingLeft: 24,
+                              paddingLeft: `${
+                                cols.stamp + cols.level + cols.module + 3
+                              }ch`,
                               color: mc || undefined,
                             }}
                           >

@@ -565,6 +565,28 @@ describe('LogFileViewPage', () => {
     });
   });
 
+  it('aligns tokens in equal-width columns', async () => {
+    API.getLogFile.mockResolvedValue({
+      content: [
+        '2026-08-21 10:00:00,000 INFO core.tasks short module line',
+        '2026-08-21 10:00:01,000 ERROR plugins.event_channel_managarr long module line',
+        'trailing continuation detail',
+      ].join('\n'),
+      truncated: false,
+    });
+    renderPage();
+    await screen.findByText(/short module line/);
+    // Both module cells share the capped width of the longest module present.
+    expect(screen.getByTitle('core.tasks')).toHaveStyle({ width: '20ch' });
+    expect(screen.getByTitle('plugins.event_channel_managarr')).toHaveStyle({
+      width: '20ch',
+    });
+    // Continuations indent to the message column: stamp + level + module + 3 separators.
+    expect(screen.getByText(/trailing continuation detail/)).toHaveStyle({
+      paddingLeft: '54ch',
+    });
+  });
+
   it('filters records by module with their continuations', async () => {
     API.getLogFile.mockResolvedValue({
       content: [
