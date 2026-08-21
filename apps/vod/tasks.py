@@ -62,7 +62,7 @@ def refresh_vod_content(account_id):
             logger.warning(f"VOD refresh called for non-XC account {account_id}")
             return "VOD refresh only available for XtreamCodes accounts"
 
-        logger.info(f"Starting batch VOD refresh for account {account.name}")
+        logger.info(f"Starting batch VOD refresh for account #{account.id}")
         start_time = timezone.now()
 
         # Send start notification
@@ -78,7 +78,7 @@ def refresh_vod_content(account_id):
             category_maps = refresh_categories(account.id, client)
             if category_maps is None:
                 message = (
-                    f"Provider returned no VOD categories for account {account.name}; "
+                    f"Provider returned no VOD categories for account #{account.id}; "
                     "aborting VOD refresh to preserve existing category selections"
                 )
                 logger.warning(message)
@@ -103,10 +103,10 @@ def refresh_vod_content(account_id):
         end_time = timezone.now()
         duration = (end_time - start_time).total_seconds()
 
-        logger.info(f"Batch VOD refresh completed for account {account.name} in {duration:.2f} seconds")
+        logger.info(f"Batch VOD refresh completed for account #{account.id} in {duration:.2f} seconds")
 
         # Cleanup orphaned VOD content after refresh (scoped to this account only)
-        logger.info(f"Starting cleanup of orphaned VOD content for account {account.name}")
+        logger.info(f"Starting cleanup of orphaned VOD content for account #{account.id}")
         cleanup_result = cleanup_orphaned_vod_content(account_id=account_id, scan_start_time=start_time)
         logger.info(f"VOD cleanup completed: {cleanup_result}")
 
@@ -137,7 +137,7 @@ def refresh_categories(account_id, client=None):
             account.password,
             account.get_user_agent_string()
         )
-    logger.info(f"Refreshing movie categories for account {account.name}")
+    logger.info(f"Refreshing movie categories for account #{account.id}")
 
     # First, get the category list to properly map category IDs and names
     logger.info("Fetching movie categories from provider...")
@@ -145,7 +145,7 @@ def refresh_categories(account_id, client=None):
     if _empty_categories_should_abort(categories_data, account, 'movie'):
         logger.warning(
             f"Provider returned no movie categories for account {account.id} "
-            f"({account.name}); aborting VOD refresh to preserve existing category selections"
+            f"(#{account.id}); aborting VOD refresh to preserve existing category selections"
         )
         return None
     category_map = batch_create_categories(categories_data, 'movie', account)
@@ -165,7 +165,7 @@ def refresh_categories(account_id, client=None):
     if _empty_categories_should_abort(categories_data, account, 'series'):
         logger.warning(
             f"Provider returned no series categories for account {account.id} "
-            f"({account.name}); aborting VOD refresh to preserve existing category selections"
+            f"(#{account.id}); aborting VOD refresh to preserve existing category selections"
         )
         return None
     category_map = batch_create_categories(categories_data, 'series', account)
@@ -183,7 +183,7 @@ def refresh_categories(account_id, client=None):
 
 def refresh_movies(client, account, categories_by_provider, relations, scan_start_time=None):
     """Refresh movie content using single API call for all movies"""
-    logger.info(f"Refreshing movies for account {account.name}")
+    logger.info(f"Refreshing movies for account #{account.id}")
 
     # Ensure "Uncategorized" category exists for movies without a category
     uncategorized_category, created = VODCategory.objects.get_or_create(
@@ -238,7 +238,7 @@ def refresh_movies(client, account, categories_by_provider, relations, scan_star
 
 def refresh_series(client, account, categories_by_provider, relations, scan_start_time=None):
     """Refresh series content using single API call for all series"""
-    logger.info(f"Refreshing series for account {account.name}")
+    logger.info(f"Refreshing series for account #{account.id}")
 
     # Ensure "Uncategorized" category exists for series without a category
     uncategorized_category, created = VODCategory.objects.get_or_create(
@@ -422,7 +422,7 @@ def batch_create_categories(categories_data, category_type, account):
 @shared_task
 def process_movie_batch(account, batch, categories, relations, scan_start_time=None):
     """Process a batch of movies using simple bulk operations like M3U processing"""
-    logger.info(f"Processing movie batch of {len(batch)} movies for account {account.name}")
+    logger.info(f"Processing movie batch of {len(batch)} movies for account #{account.id}")
 
     movies_to_create = []
     movies_to_update = []
@@ -795,7 +795,7 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
 @shared_task
 def process_series_batch(account, batch, categories, relations, scan_start_time=None):
     """Process a batch of series using simple bulk operations like M3U processing"""
-    logger.info(f"Processing series batch of {len(batch)} series for account {account.name}")
+    logger.info(f"Processing series batch of {len(batch)} series for account #{account.id}")
 
     series_to_create = []
     series_to_update = []
