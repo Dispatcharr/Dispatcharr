@@ -139,7 +139,7 @@ describe('LogFileViewPage', () => {
       color: '#ff6b6b',
     });
     screen
-      .getAllByText('WARNING')
+      .getAllByText('WARN')
       .forEach((token) => expect(token).toHaveStyle({ color: '#ffd43b' }));
     expect(screen.getByText(/cache miss/)).not.toHaveStyle({
       color: '#ffd43b',
@@ -584,8 +584,29 @@ describe('LogFileViewPage', () => {
     });
     // Continuations indent to the message column: stamp + level + module + 3 separators.
     expect(screen.getByText(/trailing continuation detail/)).toHaveStyle({
-      paddingLeft: '54ch',
+      paddingLeft: '51ch',
     });
+  });
+
+  it('compresses level display names without touching their rank', async () => {
+    API.getLogFile.mockResolvedValue({
+      content: [
+        '2026-08-21 10:00:00,000 CRITICAL core.tasks meltdown',
+        '2026-08-21 10:00:01,000 WARNING core.utils toasty',
+        '2026-08-21 10:00:02,000 DEBUG core.utils chatter',
+      ].join('\n'),
+      truncated: false,
+    });
+    renderPage();
+    await screen.findByText(/meltdown/);
+    expect(screen.getByText('ERROR')).toHaveAttribute('title', 'CRITICAL');
+    expect(screen.getByText('WARN')).toHaveAttribute('title', 'WARNING');
+    // CRITICAL still ranks above the Error+ floor under its display name.
+    fireEvent.change(screen.getByLabelText('Level'), {
+      target: { value: '40' },
+    });
+    expect(screen.getByText(/meltdown/)).toBeInTheDocument();
+    expect(screen.queryByText(/toasty/)).not.toBeInTheDocument();
   });
 
   it('filters records by module with their continuations', async () => {

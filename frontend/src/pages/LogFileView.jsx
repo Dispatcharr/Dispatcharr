@@ -26,9 +26,10 @@ const COLORS = {
   warn: '#ffd43b', // yellow
   auth: '#51cf66', // green — real login/auth events
   plugin: '#74c0fc', // blue — third-party plugin code
-  stamp: '#71717a', // dim grey — timestamps and DEBUG/TRACE recede
+  stamp: '#71717a', // dim grey — timestamps recede
   module: '#8bc4eb', // soft blue — the module token
-  level: '#a1a1aa', // neutral grey — INFO and unknown level tokens
+  level: '#e4e4e7', // bright neutral — INFO and unknown levels stand apart from the stamp
+  quiet: '#a1a1aa', // mid grey — DEBUG/TRACE sit between stamp and INFO
 };
 
 // The collector guarantees the canonical grammar "stamp [offset] LEVEL source rest"; every rule keys off those tokens.
@@ -66,11 +67,18 @@ const parseRecord = (line) => {
     : null;
 };
 
+// Display names compress the level column: CRITICAL joins ERROR and WARNING shortens to WARN. Ranking and the raw token (on hover) are untouched.
+const levelLabel = (level) => {
+  if (level === 'CRITICAL') return 'ERROR';
+  if (level === 'WARNING') return 'WARN';
+  return level;
+};
+
 // Severity lives on the level token and the record bar; the message keeps category colour only.
 const levelColor = (level) => {
   if (level === 'ERROR' || level === 'CRITICAL') return COLORS.error;
   if (level === 'WARNING') return COLORS.warn;
-  if (level === 'DEBUG' || level === 'TRACE') return COLORS.stamp;
+  if (level === 'DEBUG' || level === 'TRACE') return COLORS.quiet;
   return COLORS.level;
 };
 
@@ -295,15 +303,15 @@ const LogFileViewPage = () => {
     for (const block of built) {
       if (!block.record) continue;
       stamp = Math.max(stamp, block.record.stamp.length);
-      level = Math.max(level, block.record.level.length);
+      level = Math.max(level, levelLabel(block.record.level).length);
       module = Math.max(module, block.record.module.length);
     }
     return {
       blocks: built,
       cols: {
         stamp,
-        // Floored at CRITICAL's width so the column stays put while tailing.
-        level: Math.min(Math.max(level, 8), LEVEL_COL_MAX),
+        // Floored at ERROR's display width so the column stays put while tailing.
+        level: Math.min(Math.max(level, 5), LEVEL_COL_MAX),
         module: Math.min(module, MODULE_COL_MAX),
       },
       hiddenLines: hidden,
@@ -536,15 +544,16 @@ const LogFileViewPage = () => {
                         <span
                           style={{
                             color: levelColor(block.record.level),
-                            fontWeight: bc === 'transparent' ? undefined : 500,
+                            fontWeight: 500,
                             display: 'inline-block',
                             width: `${cols.level}ch`,
                             overflow: 'hidden',
                             textOverflow: 'ellipsis',
                             verticalAlign: 'bottom',
                           }}
+                          title={block.record.level}
                         >
-                          {block.record.level}
+                          {levelLabel(block.record.level)}
                         </span>{' '}
                         <span
                           style={{
