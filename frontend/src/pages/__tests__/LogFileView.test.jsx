@@ -427,7 +427,7 @@ describe('LogFileViewPage', () => {
     }
   });
 
-  it('renders newest first by default and flips to newest last', async () => {
+  it('renders newest last by default and flips to newest first', async () => {
     API.getLogFile.mockResolvedValue({
       content: [
         '2026-07-15 10:00:00,000 INFO core.tasks alpha',
@@ -437,14 +437,15 @@ describe('LogFileViewPage', () => {
     });
     renderPage();
     await screen.findByText(/alpha/);
+    // File order by default, so boot banners and tracebacks read top-down.
     const before = document.body.textContent;
-    expect(before.indexOf('omega')).toBeLessThan(before.indexOf('alpha'));
+    expect(before.indexOf('alpha')).toBeLessThan(before.indexOf('omega'));
 
     fireEvent.change(screen.getByLabelText('Order'), {
-      target: { value: 'oldest' },
+      target: { value: 'newest' },
     });
     const after = document.body.textContent;
-    expect(after.indexOf('alpha')).toBeLessThan(after.indexOf('omega'));
+    expect(after.indexOf('omega')).toBeLessThan(after.indexOf('alpha'));
   });
 
   it('does not poll while the interval is zero', async () => {
@@ -1022,6 +1023,9 @@ describe('LogFileViewPage', () => {
     });
     renderPage();
     await screen.findByText(/second failure/);
+    fireEvent.change(screen.getByLabelText('Order'), {
+      target: { value: 'newest' },
+    });
     const text = document.body.textContent;
     expect(text.indexOf('second failure')).toBeLessThan(
       text.indexOf('first failure')

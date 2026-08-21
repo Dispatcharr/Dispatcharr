@@ -283,7 +283,7 @@ const LogFileViewPage = () => {
     : 0;
   const [newestFirst, setNewestFirst] = useBrowserStorage(
     'log-viewer-newest-first',
-    true
+    false
   );
   const [minLevelSetting, setMinLevelSetting] = useBrowserStorage(
     'log-viewer-min-level',
