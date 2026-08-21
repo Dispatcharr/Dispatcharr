@@ -108,16 +108,6 @@ describe('LogFileViewPage', () => {
     await waitFor(() => expect(API.getLogFile).toHaveBeenCalledTimes(2));
   });
 
-  it('renders the colour key', async () => {
-    renderPage();
-    await waitFor(() => {
-      expect(screen.getByText('login/auth')).toBeInTheDocument();
-    });
-    ['text', 'error', 'warn', 'login/auth', 'plugin'].forEach((label) =>
-      expect(screen.getByText(label)).toBeInTheDocument()
-    );
-  });
-
   it('colours severity on the level token and category on the message', async () => {
     API.getLogFile.mockResolvedValue({
       content: [
@@ -863,6 +853,112 @@ describe('LogFileViewPage', () => {
     });
     expect(screen.getByLabelText('Module')).toHaveValue('all');
     expect(screen.getByText(/app line/)).toBeInTheDocument();
+  });
+
+  it('keeps a module spanning two tiers selectable in each of them', async () => {
+    localStorage.setItem('log-viewer-min-level', '10');
+    localStorage.setItem('log-viewer-module', '"m:redis"');
+    API.getLogFile.mockResolvedValue({
+      content: [
+        '2026-08-21 10:00:00,000 INFO redis 1:M Ready to accept connections',
+        '2026-08-21 10:00:01,000 INFO plugins.redis Plugin loaded',
+      ].join('\n'),
+      truncated: false,
+    });
+    renderPage();
+    await screen.findByText(/Plugin loaded/);
+    // The name exists in both tiers, so a category covering either keeps the selection.
+    fireEvent.change(screen.getByLabelText('Category'), {
+      target: { value: 'plugins' },
+    });
+    expect(screen.getByLabelText('Module')).toHaveValue('m:redis');
+    expect(screen.getByText(/Plugin loaded/)).toBeInTheDocument();
+    expect(screen.queryByText(/Ready to accept/)).not.toBeInTheDocument();
+    // A category outside every known tier still resets it.
+    fireEvent.change(screen.getByLabelText('Category'), {
+      target: { value: 'app' },
+    });
+    expect(screen.getByLabelText('Module')).toHaveValue('all');
+  });
+
+  it('keeps a ghost module engaged and selectable across a category change', async () => {
+    localStorage.setItem('log-viewer-min-level', '10');
+    localStorage.setItem('log-viewer-module', '"m:ghost"');
+    API.getLogFile.mockResolvedValue({
+      content: '2026-08-21 10:00:00,000 INFO core.tasks alive\n',
+      truncated: false,
+    });
+    renderPage();
+    await waitFor(() => {
+      expect(
+        screen.getByText('(no records match the filters)')
+      ).toBeInTheDocument();
+    });
+    // Unknown tier is not evidence of incompatibility: no reset, no greying.
+    fireEvent.change(screen.getByLabelText('Category'), {
+      target: { value: 'app' },
+    });
+    expect(screen.getByLabelText('Module')).toHaveValue('m:ghost');
+    const ghost = Array.from(
+      screen.getByLabelText('Module').querySelectorAll('option')
+    ).find((o) => o.value === 'm:ghost');
+    expect(ghost.disabled).toBe(false);
+  });
+
+  it('does not wipe the stored module when the category changes before the log loads', async () => {
+    localStorage.setItem('log-viewer-min-level', '10');
+    localStorage.setItem('log-viewer-module', '"m:epg"');
+    API.getLogFile.mockReturnValue(new Promise(() => {}));
+    renderPage();
+    fireEvent.change(screen.getByLabelText('Category'), {
+      target: { value: 'app' },
+    });
+    expect(localStorage.getItem('log-viewer-module')).toBe('"m:epg"');
+  });
+
+  it('leaves a dormant module selection alone when the category changes at Info', async () => {
+    localStorage.setItem('log-viewer-module', '"m:epg"');
+    API.getLogFile.mockResolvedValue({
+      content: '2026-08-21 10:00:00,000 INFO core.tasks alive\n',
+      truncated: false,
+    });
+    renderPage();
+    await screen.findByText(/alive/);
+    fireEvent.change(screen.getByLabelText('Category'), {
+      target: { value: 'services' },
+    });
+    // The hidden control's selection survives; it reappears intact in debug mode.
+    fireEvent.change(screen.getByLabelText('Level'), {
+      target: { value: '10' },
+    });
+    expect(screen.getByLabelText('Module')).toHaveValue('m:epg');
+  });
+
+  it('maps the loader import name to the plugin key under Plugins', async () => {
+    localStorage.setItem('log-viewer-min-level', '10');
+    API.getLogFile.mockResolvedValue({
+      content: [
+        '2026-08-21 10:00:00,000 INFO _dispatcharr_plugin_epg_watchdog.plugin Sweep done',
+        '2026-08-21 10:00:01,000 DEBUG django.geventpool DB connection reused',
+      ].join('\n'),
+      truncated: false,
+    });
+    renderPage();
+    await screen.findByText(/Sweep done/);
+    // getLogger(__name__) inside a plugin wears the loader's import name.
+    expect(
+      screen.getByTitle('_dispatcharr_plugin_epg_watchdog.plugin')
+    ).toHaveTextContent('epg_watchdog');
+    expect(screen.getByText(/Sweep done/)).toHaveStyle({ color: '#74c0fc' });
+    // First-party pool code under the django namespace files with App.
+    expect(screen.getByTitle('django.geventpool')).toHaveTextContent(
+      'geventpool'
+    );
+    fireEvent.change(screen.getByLabelText('Category'), {
+      target: { value: 'app' },
+    });
+    expect(screen.getByText(/DB connection reused/)).toBeInTheDocument();
+    expect(screen.queryByText(/Sweep done/)).not.toBeInTheDocument();
   });
 
   it('ignores a stored module filter while its control is hidden at Info', async () => {

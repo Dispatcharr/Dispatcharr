@@ -69,6 +69,14 @@ const parseSource = (source) => {
   }
   if (source.startsWith('plugins.'))
     return { module: source.slice(8) || source, tier: 'plugins' };
+  // Plugins loaded from disk import as _dispatcharr_plugin_<key>, so getLogger(__name__) inside a plugin wears that head.
+  if (source.startsWith('_dispatcharr_plugin_')) {
+    const head = source.split('.')[0];
+    return { module: head.slice(20) || head, tier: 'plugins' };
+  }
+  // First-party DB pool code logs under a django namespace.
+  if (source.startsWith('django.geventpool'))
+    return { module: 'geventpool', tier: 'app' };
   const head = source.split('.')[0] || source;
   return { module: head, tier: FIRST_PARTY.has(head) ? 'app' : 'services' };
 };
@@ -129,8 +137,10 @@ const MESSAGE_RULES = [
   {
     label: 'plugin',
     color: COLORS.plugin,
-    // The plugins.<key> source only — apps.plugins.* infrastructure stays default.
-    test: (r) => r.source.startsWith('plugins.'),
+    // Third-party plugin code only — plugins.<key> by convention or the loader's _dispatcharr_plugin_<key> import name; apps.plugins.* infrastructure stays default.
+    test: (r) =>
+      r.source.startsWith('plugins.') ||
+      r.source.startsWith('_dispatcharr_plugin_'),
   },
 ];
 
@@ -138,15 +148,6 @@ const messageColor = (record) => {
   const rule = MESSAGE_RULES.find((r) => r.test(record));
   return rule ? rule.color : null;
 };
-
-// Legend display order (default text first), independent of rule precedence.
-const LEGEND = [
-  { label: 'text', color: null },
-  { label: 'error', color: COLORS.error },
-  { label: 'warn', color: COLORS.warn },
-  { label: 'login/auth', color: COLORS.auth },
-  { label: 'plugin', color: COLORS.plugin },
-];
 
 // A record starts with a canonical stamp; anything else is a continuation
 // (multi-line messages, traceback frames) and inherits the record's colour.
@@ -321,12 +322,14 @@ const LogFileViewPage = () => {
     [content]
   );
 
-  // The module list comes from the loaded tail itself; the vocabulary is open-ended. Tiers drive the category cross-filtering of the module options.
+  // The module list comes from the loaded tail itself; the vocabulary is open-ended. A module name can span tiers (a plugin keyed like a daemon), so the map holds every tier seen.
   const { modules, moduleTiers } = useMemo(() => {
     const tiers = new Map();
     for (const entry of entries) {
-      if (entry.record && !tiers.has(entry.record.module))
-        tiers.set(entry.record.module, entry.record.tier);
+      if (!entry.record) continue;
+      const seen = tiers.get(entry.record.module);
+      if (seen) seen.add(entry.record.tier);
+      else tiers.set(entry.record.module, new Set([entry.record.tier]));
     }
     return { modules: [...tiers.keys()].sort(), moduleTiers: tiers };
   }, [entries]);
@@ -461,12 +464,10 @@ const LogFileViewPage = () => {
             value={category === null ? 'all' : category}
             onChange={(value) => {
               setCategorySetting(value);
-              // A category that excludes the selected module visibly resets it rather than silently emptying the view.
-              if (
-                value !== 'all' &&
-                moduleFilter !== null &&
-                moduleTiers.get(moduleFilter) !== value
-              )
+              // Reset only a provably incompatible selection, and only while the Module control is visible: a module of unknown tier stays engaged — the per-record filter already keeps wrong rows out.
+              const tiers =
+                moduleFilter === null ? null : moduleTiers.get(moduleFilter);
+              if (value !== 'all' && debugMode && tiers && !tiers.has(value))
                 setModuleSetting('all');
             }}
             allowDeselect={false}
@@ -494,8 +495,11 @@ const LogFileViewPage = () => {
                   .map((m) => ({
                     value: `m:${m}`,
                     label: m,
+                    // Grey out only when every one of the module's known tiers is excluded; ghosts stay selectable.
                     disabled:
-                      category !== null && moduleTiers.get(m) !== category,
+                      category !== null &&
+                      moduleTiers.has(m) &&
+                      !moduleTiers.get(m).has(category),
                   })),
               ]}
               style={{ width: 150 }}
@@ -543,19 +547,6 @@ const LogFileViewPage = () => {
       </Group>
 
       <Paper withBorder radius="md" p="sm" style={{ overflowX: 'auto' }}>
-        <Group gap="md" mb="xs" wrap="wrap">
-          {LEGEND.map((item) => (
-            <Text
-              key={item.label}
-              size="xs"
-              span
-              ff="monospace"
-              style={item.color ? { color: item.color } : undefined}
-            >
-              {item.label}
-            </Text>
-          ))}
-        </Group>
         {loading && !content ? (
           <Loader />
         ) : !content && loadError ? (
