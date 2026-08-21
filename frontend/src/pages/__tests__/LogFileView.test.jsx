@@ -48,6 +48,14 @@ vi.mock('@mantine/core', () => ({
     </select>
   ),
   Text: ({ children }) => <span>{children}</span>,
+  TextInput: ({ label, value, onChange, placeholder }) => (
+    <input
+      aria-label={label}
+      placeholder={placeholder}
+      value={value}
+      onChange={onChange}
+    />
+  ),
   Title: ({ children }) => <h4>{children}</h4>,
 }));
 
@@ -974,6 +982,33 @@ describe('LogFileViewPage', () => {
     await screen.findByText(/epg line/);
     // No hidden active state: the filter only applies when its control is visible.
     expect(screen.getByText(/core line/)).toBeInTheDocument();
+  });
+
+  it('filters by free text across whole record blocks', async () => {
+    API.getLogFile.mockResolvedValue({
+      content: [
+        '2026-08-21 10:00:00,000 INFO core.tasks alpha event',
+        '2026-08-21 10:00:01,000 ERROR apps.epg refresh failed',
+        'Traceback (most recent call last):',
+        'ValueError: beta marker',
+        '2026-08-21 10:00:02,000 INFO core.tasks gamma event',
+      ].join('\n'),
+      truncated: false,
+    });
+    renderPage();
+    await screen.findByText(/alpha event/);
+    fireEvent.change(screen.getByLabelText('Search'), {
+      target: { value: 'beta' },
+    });
+    // A matching continuation keeps its whole record; everything else hides.
+    expect(screen.getByText(/refresh failed/)).toBeInTheDocument();
+    expect(screen.getByText(/Traceback/).textContent).toContain('beta marker');
+    expect(screen.queryByText(/alpha event/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/gamma event/)).not.toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('Search'), {
+      target: { value: '' },
+    });
+    expect(screen.getByText(/alpha event/)).toBeInTheDocument();
   });
 
   it('keeps a multi-line record intact when reversed', async () => {

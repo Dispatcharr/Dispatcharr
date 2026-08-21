@@ -15,6 +15,7 @@ import {
   Paper,
   Select,
   Text,
+  TextInput,
   Title,
 } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
@@ -213,27 +214,8 @@ const classifyLines = (lines) => {
   return entries;
 };
 
-// Records below the level floor or outside the chosen category/module (null = no filter) hide with their continuations; standalone lines and unknown levels always show.
-const filterEntries = (entries, minRank, category, module) => {
-  const out = [];
-  let suppress = false;
-  for (const entry of entries) {
-    if (entry.record) {
-      const rank = LEVEL_RANK[entry.record.level];
-      suppress =
-        (rank !== undefined && rank < minRank) ||
-        (category !== null && entry.record.tier !== category) ||
-        (module !== null && entry.record.module !== module);
-    } else if (entry.kind === 'standalone') {
-      suppress = false;
-    }
-    if (!suppress) out.push(entry);
-  }
-  return out;
-};
-
-// Newest first flips whole records, so a multi-line record keeps its own line order.
-const reverseEntries = (entries) => {
+// Group a record with its continuations (standalones stand alone) so filters and ordering treat a multi-line record as one unit.
+const groupEntries = (entries) => {
   const groups = [];
   for (const entry of entries) {
     if (entry.kind !== 'continuation' || !groups.length) {
@@ -242,8 +224,29 @@ const reverseEntries = (entries) => {
       groups[groups.length - 1].push(entry);
     }
   }
-  return groups.reverse().flat();
+  return groups;
 };
+
+// Records below the level floor or outside the chosen category/module (null = no filter) hide with their continuations; standalone lines and unknown levels always show. The text query narrows every group, matching any line of a record block.
+const filterEntries = (entries, minRank, category, module, query) => {
+  const out = [];
+  for (const group of groupEntries(entries)) {
+    const record = group[0].record;
+    if (record) {
+      const rank = LEVEL_RANK[record.level];
+      if (rank !== undefined && rank < minRank) continue;
+      if (category !== null && record.tier !== category) continue;
+      if (module !== null && record.module !== module) continue;
+    }
+    if (query && !group.some((e) => e.line.toLowerCase().includes(query)))
+      continue;
+    out.push(...group);
+  }
+  return out;
+};
+
+// Newest first flips whole records, so a multi-line record keeps its own line order.
+const reverseEntries = (entries) => groupEntries(entries).reverse().flat();
 
 // Group entries into record blocks (header + its continuations) so each record renders as one bordered unit; continuations stay one joined text node.
 const buildBlocks = (entries) => {
@@ -311,6 +314,9 @@ const LogFileViewPage = () => {
     typeof moduleSetting === 'string' && moduleSetting.startsWith('m:')
       ? moduleSetting.slice(2)
       : null;
+  // The text filter is deliberately ephemeral — searches are moments, not settings.
+  const [search, setSearch] = useState('');
+  const query = search.trim().toLowerCase();
   const [loadError, setLoadError] = useState(false);
 
   // Guards the auto-refresh loop: skip a tick mid-flight, and count failures so a persistently-failing tail switches itself off.
@@ -341,8 +347,8 @@ const LogFileViewPage = () => {
   // Render only the last MAX_RENDER_LINES; hiddenLines drives the "showing the last N lines" notice.
   const { blocks, cols, hiddenLines } = useMemo(() => {
     let kept = entries;
-    if (minLevel || category !== null || effectiveModule !== null)
-      kept = filterEntries(entries, minLevel, category, effectiveModule);
+    if (minLevel || category !== null || effectiveModule !== null || query)
+      kept = filterEntries(entries, minLevel, category, effectiveModule, query);
     const hidden = Math.max(0, kept.length - MAX_RENDER_LINES);
     if (hidden) kept = kept.slice(hidden);
     const built = buildBlocks(newestFirst ? reverseEntries(kept) : kept);
@@ -366,7 +372,7 @@ const LogFileViewPage = () => {
       },
       hiddenLines: hidden,
     };
-  }, [entries, newestFirst, minLevel, category, effectiveModule]);
+  }, [entries, newestFirst, minLevel, category, effectiveModule, query]);
 
   // One notice: line-cap wins over the byte-truncation banner since it states what's actually on screen.
   const notice =
@@ -449,6 +455,14 @@ const LogFileViewPage = () => {
               {notice}
             </Text>
           )}
+          <TextInput
+            size="xs"
+            label="Search"
+            placeholder="Filter text"
+            value={search}
+            onChange={(event) => setSearch(event.currentTarget.value)}
+            style={{ width: 180 }}
+          />
           <Select
             size="xs"
             label="Level"
