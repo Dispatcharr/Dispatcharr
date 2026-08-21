@@ -46,14 +46,13 @@ const LEVEL_RANK = {
   CRITICAL: 50,
 };
 
-// First-party top-level packages that log outside apps.*.
+// First-party logger names that live outside apps.*: core, the dispatcharr package, and the proxy subsystem's explicit logger names.
 const FIRST_PARTY = new Set([
   'core',
   'dispatcharr',
   'live_proxy',
   'vod_proxy',
   'proxy',
-  'backups',
 ]);
 
 // One definition of "module" and the closed category it lives in: the segment
@@ -61,8 +60,13 @@ const FIRST_PARTY = new Set([
 // plugin — native daemons and third-party Python alike — is Services, which
 // also keeps the category vocabulary closed.
 const parseSource = (source) => {
-  if (source.startsWith('apps.'))
-    return { module: source.split('.')[1] || source, tier: 'app' };
+  if (source.startsWith('apps.')) {
+    const module = source.split('.')[1] || source;
+    // apps.plugins is the plugin system's own infrastructure: it files under the
+    // Plugins category, renamed so a plugins token always means third-party code.
+    if (module === 'plugins') return { module: 'plugin_sys', tier: 'plugins' };
+    return { module, tier: 'app' };
+  }
   if (source.startsWith('plugins.'))
     return { module: source.slice(8) || source, tier: 'plugins' };
   const head = source.split('.')[0] || source;

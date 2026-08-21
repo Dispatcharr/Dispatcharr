@@ -801,6 +801,30 @@ describe('LogFileViewPage', () => {
     expect(screen.queryByText(/app line/)).not.toBeInTheDocument();
   });
 
+  it('collects the plugin infrastructure under the Plugins category', async () => {
+    API.getLogFile.mockResolvedValue({
+      content: [
+        '2026-08-21 10:00:00,000 INFO apps.plugins.loader Discovered 5 plugin(s)',
+        '2026-08-21 10:00:01,000 INFO plugins.epg_watchdog Sweep done',
+        '2026-08-21 10:00:02,000 INFO apps.epg.tasks epg tick',
+      ].join('\n'),
+      truncated: false,
+    });
+    renderPage();
+    await screen.findByText(/epg tick/);
+    fireEvent.change(screen.getByLabelText('Category'), {
+      target: { value: 'plugins' },
+    });
+    // First-party plugin infrastructure files with the plugins it manages,
+    // renamed so the plugins token stays third-party only.
+    expect(screen.getByText(/Discovered 5 plugin/)).toBeInTheDocument();
+    expect(screen.getByText(/Sweep done/)).toBeInTheDocument();
+    expect(screen.queryByText(/epg tick/)).not.toBeInTheDocument();
+    expect(screen.getByTitle('apps.plugins.loader')).toHaveTextContent(
+      'plugin_sys'
+    );
+  });
+
   it('shows the Module control in debug mode and disables options outside the category', async () => {
     localStorage.setItem('log-viewer-min-level', '10');
     API.getLogFile.mockResolvedValue({
