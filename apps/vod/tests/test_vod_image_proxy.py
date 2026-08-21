@@ -253,6 +253,28 @@ class VODImageProxyEndpointTestCase(TestCase):
         "core.image_proxy.CoreSettings.get_default_user_agent",
         return_value="Dispatcharr-Test/1.0",
     )
+    def test_movie_image_accepts_slash_less_url(self, _mock_ua, mock_get, _mock_validate):
+        body = b"\x89PNG\r\n\x1a\n" + b"backdrop-bytes"
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.iter_content.return_value = [body]
+        mock_response.headers = {"Content-Type": "image/jpeg"}
+        mock_get.return_value = mock_response
+
+        response = self.client.get(
+            f"/api/vod/movies/{self.movie.id}/image?kind=backdrop&index=0"
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.content, body)
+        self.assertFalse(response.has_header("Location"))
+
+    @patch("core.image_proxy.validate_outbound_http_url")
+    @patch("core.image_proxy.requests.get")
+    @patch(
+        "core.image_proxy.CoreSettings.get_default_user_agent",
+        return_value="Dispatcharr-Test/1.0",
+    )
     def test_episode_movie_image_endpoint(self, _mock_ua, mock_get, _mock_validate):
         body = b"\x89PNG\r\n\x1a\n" + b"still-bytes"
         mock_response = MagicMock()
