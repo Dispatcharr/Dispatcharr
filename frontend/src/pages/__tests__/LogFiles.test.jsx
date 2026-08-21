@@ -21,8 +21,8 @@ vi.mock('@mantine/core', () => {
   TableStub.Thead = ({ children }) => <thead>{children}</thead>;
   TableStub.Tbody = ({ children }) => <tbody>{children}</tbody>;
   TableStub.Tr = ({ children }) => <tr>{children}</tr>;
-  TableStub.Th = ({ children }) => <th>{children}</th>;
-  TableStub.Td = ({ children }) => <td>{children}</td>;
+  TableStub.Th = ({ children, ta }) => <th data-align={ta}>{children}</th>;
+  TableStub.Td = ({ children, ta }) => <td data-align={ta}>{children}</td>;
 
   return {
     Anchor: ({ children, onClick, to }) => (
@@ -37,7 +37,7 @@ vi.mock('@mantine/core', () => {
     Group: ({ children }) => <div>{children}</div>,
     Paper: ({ children }) => <div>{children}</div>,
     Table: TableStub,
-    Text: ({ children }) => <span>{children}</span>,
+    Text: ({ children, title }) => <span title={title}>{children}</span>,
     Title: ({ children }) => <h3>{children}</h3>,
   };
 });
@@ -75,6 +75,22 @@ describe('LogFilesPage', () => {
     expect(screen.getByText('dispatcharr.log.1')).toBeInTheDocument();
     expect(screen.getByText('2.0 KB')).toBeInTheDocument();
     expect(screen.getByText('5.0 MB')).toBeInTheDocument();
+  });
+
+  it('right-aligns sizes and keeps the exact count a hover away', async () => {
+    API.getLogFiles.mockResolvedValue(files);
+    renderPage();
+    await screen.findByText('2.0 KB');
+    // KB above MB down one column only scans when the digits line up.
+    expect(screen.getByText('Size')).toHaveAttribute('data-align', 'right');
+    expect(screen.getByText('2.0 KB').closest('td')).toHaveAttribute(
+      'data-align',
+      'right'
+    );
+    expect(screen.getByText('5.0 MB')).toHaveAttribute(
+      'title',
+      '5,242,880 bytes'
+    );
   });
 
   it('links filenames to the raw view route', async () => {

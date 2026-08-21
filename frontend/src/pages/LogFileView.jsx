@@ -127,8 +127,16 @@ const levelColor = (level) => {
   return severityColor(level) || COLORS.level;
 };
 
-// The bar spans a record block so a traceback reads as one owned unit; quiet levels stay bare.
-const barColor = (level) => severityColor(level) || 'transparent';
+// The bar spans a record block so a traceback reads as one owned unit. It marks
+// what rises above the floor in force: at a Warning floor every row would carry
+// one, and a bar every row wears stops telling the reader anything.
+const barColor = (level, minRank) => {
+  const color = severityColor(level);
+  if (!color) return 'transparent';
+  // CRITICAL displays as ERROR, so it answers to ERROR's floor here too.
+  const rank = level === 'CRITICAL' ? LEVEL_RANK.ERROR : LEVEL_RANK[level];
+  return rank > minRank ? color : 'transparent';
+};
 
 // A record starts with a canonical stamp; anything else is a continuation
 // (multi-line messages, traceback frames) and inherits the record's colour.
@@ -256,6 +264,13 @@ const renderContinuations = (lines) => {
   return out;
 };
 
+// Neither empty state is log content, so neither wears the log's font or margin.
+const emptyState = (message) => (
+  <Text size="sm" c="dimmed" ta="center" py="md">
+    {message}
+  </Text>
+);
+
 // Group entries into record blocks (header + its continuations) so each record renders as one bordered unit.
 const buildBlocks = (entries) => {
   const blocks = [];
@@ -327,32 +342,35 @@ const LogFileViewPage = () => {
     [content]
   );
 
+  // Widths come from every record in the file, not the visible ones: a width that
+  // tracked the filtered set would slide the message column on each keystroke.
+  const cols = useMemo(() => {
+    let stamp = 0;
+    let level = 0;
+    let module = 0;
+    for (const entry of entries) {
+      if (!entry.record) continue;
+      stamp = Math.max(stamp, entry.record.stamp.length);
+      level = Math.max(level, levelLabel(entry.record.level).length);
+      module = Math.max(module, entry.record.module.length);
+    }
+    return {
+      stamp,
+      // Floored at ERROR's display width so the column stays put while tailing.
+      level: Math.min(Math.max(level, 5), LEVEL_COL_MAX),
+      module: Math.min(module, MODULE_COL_MAX),
+    };
+  }, [entries]);
+
   // Render only the last MAX_RENDER_LINES; hiddenLines drives the "showing the last N lines" notice.
-  const { blocks, cols, hiddenLines } = useMemo(() => {
+  const { blocks, hiddenLines } = useMemo(() => {
     let kept = entries;
     if (minLevel || category !== null || query)
       kept = filterEntries(entries, minLevel, category, query);
     const hidden = Math.max(0, kept.length - MAX_RENDER_LINES);
     if (hidden) kept = kept.slice(hidden);
-    const built = buildBlocks(newestFirst ? reverseEntries(kept) : kept);
-    // Column widths come from the visible records themselves so every row aligns.
-    let stamp = 0;
-    let level = 0;
-    let module = 0;
-    for (const block of built) {
-      if (!block.record) continue;
-      stamp = Math.max(stamp, block.record.stamp.length);
-      level = Math.max(level, levelLabel(block.record.level).length);
-      module = Math.max(module, block.record.module.length);
-    }
     return {
-      blocks: built,
-      cols: {
-        stamp,
-        // Floored at ERROR's display width so the column stays put while tailing.
-        level: Math.min(Math.max(level, 5), LEVEL_COL_MAX),
-        module: Math.min(module, MODULE_COL_MAX),
-      },
+      blocks: buildBlocks(newestFirst ? reverseEntries(kept) : kept),
       hiddenLines: hidden,
     };
   }, [entries, newestFirst, minLevel, category, query]);
@@ -428,85 +446,96 @@ const LogFileViewPage = () => {
 
   return (
     <Box p="md">
-      <Group justify="space-between" mb="sm">
-        <Group gap="sm">
-          <Anchor component={Link} to="/logs" size="sm">
-            ← Logs
-          </Anchor>
-          <Title order={4}>{name}</Title>
+      <Box
+        // The controls have to stay in reach: a tail runs to tens of viewports.
+        style={{
+          position: 'sticky',
+          top: 0,
+          zIndex: 2,
+          background: 'var(--mantine-color-body)',
+          paddingBottom: 8,
+        }}
+      >
+        <Group justify="space-between" mb="sm">
+          <Group gap="sm">
+            <Anchor component={Link} to="/logs" size="sm">
+              ← Logs
+            </Anchor>
+            <Title order={4}>{name}</Title>
+          </Group>
+          <Group gap="sm">
+            {notice && (
+              <Text size="sm" c="yellow">
+                {notice}
+              </Text>
+            )}
+            <TextInput
+              size="xs"
+              label="Search"
+              placeholder="Filter text"
+              value={search}
+              onChange={(event) => setSearch(event.currentTarget.value)}
+              style={{ width: 180 }}
+            />
+            <Select
+              size="xs"
+              label="Level"
+              value={String(minLevel)}
+              onChange={(value) => setMinLevelSetting(parseInt(value))}
+              allowDeselect={false}
+              data={LEVEL_OPTIONS}
+              style={{ width: 110 }}
+            />
+            <Select
+              size="xs"
+              label="Category"
+              value={category === null ? 'all' : category}
+              onChange={(value) => setCategorySetting(value)}
+              allowDeselect={false}
+              data={CATEGORY_OPTIONS}
+              style={{ width: 130 }}
+            />
+            <Select
+              size="xs"
+              label="Order"
+              value={newestFirst ? 'newest' : 'oldest'}
+              onChange={(value) => setNewestFirst(value === 'newest')}
+              allowDeselect={false}
+              data={[
+                { value: 'newest', label: 'Newest first' },
+                { value: 'oldest', label: 'Newest last' },
+              ]}
+              style={{ width: 130 }}
+            />
+            <Select
+              size="xs"
+              label="Auto Refresh"
+              value={refreshSeconds.toString()}
+              onChange={(value) => setRefreshSetting(parseInt(value))}
+              allowDeselect={false}
+              data={REFRESH_OPTIONS}
+              style={{ width: 120 }}
+            />
+            <Button
+              size="xs"
+              variant="subtle"
+              onClick={() => load()}
+              loading={loading}
+              style={{ marginTop: 'auto' }}
+            >
+              Refresh
+            </Button>
+            <Button
+              size="xs"
+              variant="subtle"
+              onClick={() => API.downloadLogFile(name)}
+              style={{ marginTop: 'auto' }}
+            >
+              Download
+            </Button>
+          </Group>
         </Group>
-        <Group gap="sm">
-          {notice && (
-            <Text size="sm" c="yellow">
-              {notice}
-            </Text>
-          )}
-          <TextInput
-            size="xs"
-            label="Search"
-            placeholder="Filter text"
-            value={search}
-            onChange={(event) => setSearch(event.currentTarget.value)}
-            style={{ width: 180 }}
-          />
-          <Select
-            size="xs"
-            label="Level"
-            value={String(minLevel)}
-            onChange={(value) => setMinLevelSetting(parseInt(value))}
-            allowDeselect={false}
-            data={LEVEL_OPTIONS}
-            style={{ width: 110 }}
-          />
-          <Select
-            size="xs"
-            label="Category"
-            value={category === null ? 'all' : category}
-            onChange={(value) => setCategorySetting(value)}
-            allowDeselect={false}
-            data={CATEGORY_OPTIONS}
-            style={{ width: 130 }}
-          />
-          <Select
-            size="xs"
-            label="Order"
-            value={newestFirst ? 'newest' : 'oldest'}
-            onChange={(value) => setNewestFirst(value === 'newest')}
-            allowDeselect={false}
-            data={[
-              { value: 'newest', label: 'Newest first' },
-              { value: 'oldest', label: 'Newest last' },
-            ]}
-            style={{ width: 130 }}
-          />
-          <Select
-            size="xs"
-            label="Auto Refresh"
-            value={refreshSeconds.toString()}
-            onChange={(value) => setRefreshSetting(parseInt(value))}
-            allowDeselect={false}
-            data={REFRESH_OPTIONS}
-            style={{ width: 120 }}
-          />
-          <Button
-            size="xs"
-            variant="subtle"
-            onClick={() => load()}
-            loading={loading}
-            style={{ marginTop: 'auto' }}
-          >
-            Refresh
-          </Button>
-          <Button
-            size="xs"
-            variant="subtle"
-            onClick={() => API.downloadLogFile(name)}
-            style={{ marginTop: 'auto' }}
-          >
-            Download
-          </Button>
-        </Group>
-      </Group>
+      </Box>
 
       <Paper withBorder radius="md" p="sm" style={{ overflowX: 'auto' }}>
         {loading && !content ? (
@@ -535,16 +564,19 @@ const LogFileViewPage = () => {
             }}
           >
             {!content
-              ? '(empty)'
+              ? emptyState('(empty)')
               : blocks.length
                 ? blocks.map((block, i) => {
                     if (!block.record) {
                       return (
                         <div
                           key={i}
+                          // Nothing owns these lines. Dimming them stops a run
+                          // of them reading as the tail of the record above.
                           style={{
                             borderLeft: '3px solid transparent',
                             paddingLeft: 8,
+                            color: COLORS.stamp,
                           }}
                         >
                           {block.lines.join('\n')}
@@ -552,7 +584,7 @@ const LogFileViewPage = () => {
                       );
                     }
                     const mc = severityColor(block.record.level);
-                    const bc = barColor(block.record.level);
+                    const bc = barColor(block.record.level, minLevel);
                     return (
                       <div
                         key={i}
@@ -616,7 +648,7 @@ const LogFileViewPage = () => {
                       </div>
                     );
                   })
-                : '(no records match the filters)'}
+                : emptyState('(no records match the filters)')}
           </div>
         )}
       </Paper>

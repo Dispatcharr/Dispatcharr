@@ -47,7 +47,7 @@ const LogFilesPage = () => {
           <Table.Tr>
             <Table.Th>Filename</Table.Th>
             <Table.Th>Last Write Time</Table.Th>
-            <Table.Th>Size</Table.Th>
+            <Table.Th ta="right">Size</Table.Th>
             <Table.Th />
           </Table.Tr>
         </Table.Thead>
@@ -68,8 +68,11 @@ const LogFilesPage = () => {
                   {format(file.modified, fullDateTimeFormat)}
                 </Text>
               </Table.Td>
-              <Table.Td>
-                <Text size="sm">{humanSize(file.size)}</Text>
+              <Table.Td ta="right">
+                {/* Units differ down the column, so the exact byte count is one hover away. */}
+                <Text size="sm" title={`${file.size.toLocaleString()} bytes`}>
+                  {humanSize(file.size)}
+                </Text>
               </Table.Td>
               <Table.Td align="right">
                 <Button

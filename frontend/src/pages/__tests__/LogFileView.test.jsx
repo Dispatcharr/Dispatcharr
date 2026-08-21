@@ -23,7 +23,7 @@ vi.mock('@mantine/notifications', () => ({
 
 vi.mock('@mantine/core', () => ({
   Anchor: ({ children, to }) => <a href={to || '#'}>{children}</a>,
-  Box: ({ children }) => <div>{children}</div>,
+  Box: ({ children, style }) => <div style={style}>{children}</div>,
   Button: ({ children, onClick }) => (
     <button onClick={onClick}>{children}</button>
   ),
@@ -47,7 +47,7 @@ vi.mock('@mantine/core', () => ({
       ))}
     </select>
   ),
-  Text: ({ children }) => <span>{children}</span>,
+  Text: ({ children, c }) => <span data-colour={c}>{children}</span>,
   TextInput: ({ label, value, onChange, placeholder }) => (
     <input
       aria-label={label}
@@ -598,6 +598,101 @@ describe('LogFileViewPage', () => {
     expect(screen.getByText(/continuation tail/).parentElement).toHaveStyle({
       textIndent: '0px',
     });
+  });
+
+  it('keeps the controls in reach while the log scrolls', async () => {
+    renderPage();
+    await screen.findByText(/Scanning disk/);
+    // control group -> header row -> the sticky wrapper around both.
+    const toolbar = screen.getByLabelText('Level').closest('div')
+      .parentElement.parentElement;
+    expect(toolbar).toHaveStyle({ position: 'sticky', top: '0px' });
+  });
+
+  it('holds the message column still while the filters change', async () => {
+    API.getLogFile.mockResolvedValue({
+      content: [
+        '2026-08-21 10:00:00,000 INFO plugins.event_channel_managarr scan done',
+        '2026-08-21 10:00:01,000 INFO core.tasks tick',
+      ].join('\n'),
+      truncated: false,
+    });
+    renderPage();
+    await screen.findByText(/scan done/);
+    // 23 stamp + 5 level + 20 module (capped) + 3 separators.
+    const indent = { paddingLeft: 'calc(8px + 51ch)', textIndent: '-51ch' };
+    expect(screen.getByText(/tick/).closest('div')).toHaveStyle(indent);
+    // Filtering the long module out of view must not re-measure the columns.
+    fireEvent.change(screen.getByLabelText('Search'), {
+      target: { value: 'tick' },
+    });
+    expect(screen.queryByText(/scan done/)).not.toBeInTheDocument();
+    expect(screen.getByText(/tick/).closest('div')).toHaveStyle(indent);
+  });
+
+  it('dims the lines no record owns', async () => {
+    API.getLogFile.mockResolvedValue({
+      content: [
+        '2026-08-21 10:00:00,000 ERROR apps.vod batch failed',
+        'raw daemon chatter nothing stamped',
+      ].join('\n'),
+      truncated: false,
+    });
+    renderPage();
+    await screen.findByText(/batch failed/);
+    // Unattributed lines recede instead of reading as the record's own tail.
+    expect(screen.getByText(/raw daemon chatter/)).toHaveStyle({
+      color: '#a1a1aa',
+    });
+    expect(screen.getByText(/batch failed/)).toHaveStyle({ color: '#ff6b6b' });
+  });
+
+  it('drops the severity bar once every visible row would wear one', async () => {
+    API.getLogFile.mockResolvedValue({
+      content: [
+        '2026-08-21 10:00:00,000 INFO core.tasks tick',
+        '2026-08-21 10:00:01,000 WARNING core.utils cache miss',
+        '2026-08-21 10:00:02,000 ERROR apps.epg boom',
+      ].join('\n'),
+      truncated: false,
+    });
+    renderPage();
+    await screen.findByText(/boom/);
+    const bar = (text) => screen.getByText(text).closest('div');
+    // At the Info floor both stand out.
+    expect(bar(/cache miss/)).toHaveStyle({ borderLeft: '3px solid #ffd43b' });
+    expect(bar(/boom/)).toHaveStyle({ borderLeft: '3px solid #ff6b6b' });
+    // At the Warning floor a warning is the baseline; only the error rises.
+    fireEvent.change(screen.getByLabelText('Level'), {
+      target: { value: '30' },
+    });
+    expect(bar(/cache miss/)).not.toHaveStyle({
+      borderLeft: '3px solid #ffd43b',
+    });
+    expect(bar(/boom/)).toHaveStyle({ borderLeft: '3px solid #ff6b6b' });
+    // At the Error floor nothing rises, so no row wears a bar.
+    fireEvent.change(screen.getByLabelText('Level'), {
+      target: { value: '40' },
+    });
+    expect(bar(/boom/)).not.toHaveStyle({ borderLeft: '3px solid #ff6b6b' });
+    // The level token and message keep the colour either way.
+    expect(screen.getByText(/boom/)).toHaveStyle({ color: '#ff6b6b' });
+  });
+
+  it('states an empty result in the app voice, not the log font', async () => {
+    API.getLogFile.mockResolvedValue({
+      content: '2026-08-21 10:00:00,000 INFO core.tasks tick',
+      truncated: false,
+    });
+    renderPage();
+    await screen.findByText(/tick/);
+    fireEvent.change(screen.getByLabelText('Search'), {
+      target: { value: 'nothing matches this' },
+    });
+    expect(screen.getByText('(no records match the filters)')).toHaveAttribute(
+      'data-colour',
+      'dimmed'
+    );
   });
 
   it('aligns tokens in equal-width columns', async () => {
