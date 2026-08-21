@@ -786,34 +786,23 @@ def _evaluate_series_rules_locked(tvg_id, result):
                 if prog_key in existing_program_keys:
                     continue
                 # Same airing after an EPG refresh moved its boundaries.
-                # Episode identity survives a refresh, so when it exists it is
-                # authoritative and the time window is not consulted at all: an
-                # identifiable episode that is not already scheduled is a genuinely
-                # different airing, however close it sits to another one.
+                # Episode identity is checked first when present. On a miss, the
+                # start-time window still runs: identity-less bookings (e.g.
+                # snapshots from before season/episode were stored) never enter
+                # existing_episode_keys, and skipping the window for identifiable
+                # candidates would double-book the drifted listing onto one path.
                 prog_title_l = str(prog.title or "").strip().lower()
                 prog_ident = _identity_of(prog.custom_properties or {}, prog.sub_title)
                 idx_key = (str(prog.tvg_id), prog_title_l)
-                # PATCH 11: window runs after an episode-key miss REGARDLESS of
-                # identity. A booking made before the snapshot carried season/episode
-                # is identity-LESS, contributes nothing to existing_episode_keys, and
-                # would otherwise be invisible to an identifiable candidate - which on
-                # 2026-08-06 scheduled Seven News twice 30s apart and destroyed the
-                # recording when both remuxes wrote the same output path.
                 if prog_ident and (
                     (str(prog.tvg_id), prog_title_l, prog_ident) in existing_episode_keys
                 ):
                     continue
-                # existing_program_index is populated ONLY from identity-less
-                # recordings, so an identifiable episode still cannot be
-                # suppressed by another identifiable one -- only by an
-                # identity-less booking of the same channel+title inside the
-                # window, which is the ambiguous case that corrupts files.
-                # Skip only when the nearby recording's original slot is gone
-                # from the current EPG (this candidate is its drift
-                # replacement); if it is still listed, this candidate is a
-                # different airing (e.g. back-to-back news). Each orphaned
-                # entry can be claimed by only one candidate: pick the
-                # closest unclaimed match rather than the first.
+                # existing_program_index is identity-less only, so identifiable
+                # episodes cannot suppress each other. Match only when the nearby
+                # booking's original slot is gone from the current EPG; if it is
+                # still listed, this is a different airing. Each orphan claims at
+                # most one candidate (closest unclaimed match).
                 try:
                     best_entry = None
                     best_delta = None

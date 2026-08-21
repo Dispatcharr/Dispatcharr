@@ -15,9 +15,10 @@ working: a genuinely separate later airing of the same title is still recorded.
 Two dedup paths are exercised separately:
 - Episode identity (season/episode, onscreen, or sub_title). The default
   _create_program fixture includes sub_title="Episode 1", so tests that use it
-  hit this path, not the time window.
-- A 15-minute start-time window for programmes with no identity at all, and
-  only when the recording's original start/end is gone from the current EPG.
+  hit this path when both sides are identifiable.
+- A 15-minute start-time window against identity-less bookings (including when
+  the candidate itself is identifiable), only when the recording's original
+  start/end is gone from the current EPG.
 
 The base class is imported rather than duplicated so both suites stay on one
 definition of the fixture.
@@ -291,8 +292,9 @@ class EPGTimeDriftTests(SeriesRuleDedupBaseTestCase):
         """A generic sub-title must not let the window swallow a distinct episode.
 
         Back-to-back programmes can share a boilerplate sub-title while differing
-        by season/episode. Identity is authoritative whenever it exists, so the
-        second airing is scheduled even though it starts inside the window.
+        by season/episode. Both sides are identifiable, so the first booking never
+        enters the identity-less window index and the second airing is still
+        scheduled even though it starts inside the window.
         """
         from apps.channels.tasks import evaluate_series_rules_impl
 
