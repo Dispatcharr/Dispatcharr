@@ -308,7 +308,8 @@ promote_app_role() {
     local CONNECT_ROLE=""
     local CONNECT_DB=""
     for try_db in "postgres" "template1"; do
-        for try_role in "postgres" "$POSTGRES_USER"; do
+        # App role first: on a PUID data directory it is the bootstrap superuser, and probing a missing role logs a FATAL.
+        for try_role in "$POSTGRES_USER" "postgres"; do
             local _super
             _super=$(su - "$POSTGRES_USER" -c "psql -U $try_role -d $try_db -p ${POSTGRES_PORT} -tAc \
                 \"SELECT rolsuper FROM pg_roles WHERE rolname='$try_role';\"" 2>/dev/null | tr -d '[:space:]')
