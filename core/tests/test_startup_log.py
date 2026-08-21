@@ -19,6 +19,23 @@ class StartupLogTests(SimpleTestCase):
         self.assertRegex(line.encode(), log_collector._PY)
         self.assertTrue(line.endswith(" INFO dispatcharr.startup Redis TLS: disabled"))
 
+    def test_startup_log_carries_a_caller_level_and_source(self):
+        # A warning printed before logging exists must not arrive as INFO stdout.
+        buf = io.StringIO()
+        startup_log(
+            "gevent-early-monkey-patch did not run.",
+            level="WARNING",
+            source="dispatcharr.gevent_patch",
+            stream=buf,
+        )
+        line = buf.getvalue().rstrip("\n")
+        self.assertRegex(line.encode(), log_collector._PY)
+        self.assertTrue(
+            line.endswith(
+                " WARNING dispatcharr.gevent_patch gevent-early-monkey-patch did not run."
+            )
+        )
+
     def test_canonical_formatter_matches_the_collector_python_shape(self):
         record = logging.LogRecord(
             "celery.utils.functional",

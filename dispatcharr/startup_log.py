@@ -6,11 +6,11 @@ import time
 from datetime import datetime, timezone
 
 
-def startup_log(message):
+def startup_log(message, level="INFO", source="dispatcharr.startup", stream=None):
     """Print in the collector's canonical grammar so the line carries a real source."""
     now = datetime.now(timezone.utc)
     stamp = now.strftime("%Y-%m-%d %H:%M:%S") + f",{now.microsecond // 1000:03d}"
-    print(f"{stamp} INFO dispatcharr.startup {message}", flush=True)
+    print(f"{stamp} {level} {source} {message}", flush=True, file=stream or sys.stdout)
 
 
 class _CanonicalFormatter(logging.Formatter):
