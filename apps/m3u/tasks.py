@@ -2028,6 +2028,7 @@ def sync_auto_channels(account_id, scan_start_time=None):
         Stream,
         ChannelStream,
     )
+    from apps.channels.tasks import validate_logo_url
     from apps.epg.models import EPGData
     from django.utils import timezone
 
@@ -2064,6 +2065,8 @@ def sync_auto_channels(account_id, scan_start_time=None):
         # power-user diagnostics regardless of the cap.
         failed_stream_details = []
         FAILURE_LOG_LIMIT = 1000
+        rejected_logo_urls = set()
+        rejected_logo = object()
 
         # Group range reservations (start+end) are advisory and NOT seeded
         # here: two groups with overlapping ranges must cooperate, so only
@@ -2137,6 +2140,10 @@ def sync_auto_channels(account_id, scan_start_time=None):
                 custom_logo_id = group_custom_props.get("custom_logo_id")
                 channel_numbering_mode = group_custom_props.get("channel_numbering_mode", "fixed")
                 channel_numbering_fallback = group_custom_props.get("channel_numbering_fallback", 1)
+
+            skip_profile_memberships = (
+                group_custom_props.get("skip_channel_profile_memberships") is True
+            )
 
             # Determine which group to use for created channels
             target_group = channel_group
@@ -2318,23 +2325,44 @@ def sync_auto_channels(account_id, scan_start_time=None):
 
             logo_cache_by_url = {}
             epg_cache_by_tvg_id = {}
+            # URLs accepted by the group warmup below. Resolver trusts this
+            # set so valid streams do not re-encode/re-validate every hit.
+            valid_logo_urls = set()
             if has_streams:
                 # Collect unique URLs / tvg_ids in one DB call each.
                 stream_iter = (
                     current_streams
                     if streams_is_list
-                    else list(current_streams.values("logo_url", "tvg_id"))
+                    else list(
+                        current_streams.values("logo_url", "tvg_id", "name")
+                    )
                 )
-                unique_logo_urls = {
-                    s.get("logo_url") if isinstance(s, dict) else getattr(s, "logo_url", None)
-                    for s in stream_iter
-                }
-                unique_logo_urls.discard(None)
-                unique_logo_urls.discard("")
-                if unique_logo_urls:
+                logo_context_by_url = {}
+                for stream_data in stream_iter:
+                    if isinstance(stream_data, dict):
+                        logo_url = stream_data.get("logo_url")
+                        stream_name = stream_data.get("name")
+                    else:
+                        logo_url = getattr(stream_data, "logo_url", None)
+                        stream_name = getattr(stream_data, "name", None)
+                    if logo_url:
+                        logo_context_by_url.setdefault(
+                            logo_url, f"stream '{stream_name or 'Unknown'}'"
+                        )
+                for logo_url, logo_context in logo_context_by_url.items():
+                    if logo_url in rejected_logo_urls:
+                        continue
+                    validated_logo_url = validate_logo_url(
+                        logo_url, context=logo_context
+                    )
+                    if validated_logo_url is None:
+                        rejected_logo_urls.add(logo_url)
+                    else:
+                        valid_logo_urls.add(validated_logo_url)
+                if valid_logo_urls:
                     logo_cache_by_url = {
                         lg.url: lg
-                        for lg in Logo.objects.filter(url__in=unique_logo_urls)
+                        for lg in Logo.objects.filter(url__in=valid_logo_urls)
                     }
 
                 unique_tvg_ids = {
@@ -2360,18 +2388,52 @@ def sync_auto_channels(account_id, scan_start_time=None):
                     epg_cache_by_tvg_id = {d.tvg_id: d for d in epg_q}
 
             def _resolve_logo_for_stream(stream):
-                """Return a Logo for stream.logo_url, creating it once if needed."""
+                """Return a Logo for stream.logo_url, creating it once if needed.
+
+                Group warmup already validated unique provider URLs and filled
+                rejected_logo_urls / valid_logo_urls / logo_cache_by_url. The
+                common path is therefore set/cache lookup only. Validate again
+                only for a URL that never appeared in the warmup set, so an
+                oversized value still cannot reach the uniquely indexed
+                Logo.url column.
+                """
                 url = getattr(stream, "logo_url", None)
                 if not url:
                     return None
+                if url in rejected_logo_urls:
+                    return rejected_logo
+
                 cached = logo_cache_by_url.get(url)
                 if cached is not None:
                     return cached
-                created, _ = Logo.objects.get_or_create(
-                    url=url,
-                    defaults={"name": stream.name or stream.tvg_id or "Unknown"},
+
+                if url in valid_logo_urls:
+                    created, _ = Logo.objects.get_or_create(
+                        url=url,
+                        defaults={
+                            "name": stream.name or stream.tvg_id or "Unknown"
+                        },
+                    )
+                    logo_cache_by_url[url] = created
+                    return created
+
+                # Rare: URL was not part of the group warmup. Keep the
+                # index-size guard before get_or_create.
+                validated_url = validate_logo_url(
+                    url,
+                    context=f"stream '{stream.name or 'Unknown'}'",
                 )
-                logo_cache_by_url[url] = created
+                if validated_url is None:
+                    rejected_logo_urls.add(url)
+                    return rejected_logo
+
+                created, _ = Logo.objects.get_or_create(
+                    url=validated_url,
+                    defaults={
+                        "name": stream.name or stream.tvg_id or "Unknown"
+                    },
+                )
+                logo_cache_by_url[validated_url] = created
                 return created
 
             def _resolve_epg_for_stream(stream):
@@ -2422,21 +2484,23 @@ def sync_auto_channels(account_id, scan_start_time=None):
             # Prepare profiles to assign to new channels
             from apps.channels.models import ChannelProfile, ChannelProfileMembership
 
-            if (
-                channel_profile_ids
-                and isinstance(channel_profile_ids, list)
-                and len(channel_profile_ids) > 0
-            ):
-                # Convert all to int (in case they're strings)
-                try:
-                    profile_ids = [int(pid) for pid in channel_profile_ids]
-                except Exception:
-                    profile_ids = []
-                profiles_to_assign = list(
-                    ChannelProfile.objects.filter(id__in=profile_ids)
-                )
-            else:
-                profiles_to_assign = list(ChannelProfile.objects.all())
+            profiles_to_assign = []
+            if not skip_profile_memberships:
+                if (
+                    channel_profile_ids
+                    and isinstance(channel_profile_ids, list)
+                    and len(channel_profile_ids) > 0
+                ):
+                    # Convert all to int (in case they're strings)
+                    try:
+                        profile_ids = [int(pid) for pid in channel_profile_ids]
+                    except Exception:
+                        profile_ids = []
+                    profiles_to_assign = list(
+                        ChannelProfile.objects.filter(id__in=profile_ids)
+                    )
+                else:
+                    profiles_to_assign = list(ChannelProfile.objects.all())
 
             # Get stream profile to assign if specified
             from core.models import StreamProfile
@@ -2645,10 +2709,15 @@ def sync_auto_channels(account_id, scan_start_time=None):
                             if custom_logo_id and custom_logo is not None
                             else _resolve_logo_for_stream(stream)
                         )
-                        current_logo_id = current_logo.id if current_logo else None
-                        if existing_channel.logo_id != current_logo_id:
-                            existing_channel.logo = current_logo
-                            dirty_fields.append("logo")
+                        # A rejected provider value must not erase a valid
+                        # logo already assigned to an existing channel.
+                        if current_logo is not rejected_logo:
+                            current_logo_id = (
+                                current_logo.id if current_logo else None
+                            )
+                            if existing_channel.logo_id != current_logo_id:
+                                existing_channel.logo = current_logo
+                                dirty_fields.append("logo")
 
                         # EPG: handled centrally by _resolve_epg_for_stream
                         current_epg_data = _resolve_epg_for_stream(stream)
@@ -2720,6 +2789,8 @@ def sync_auto_channels(account_id, scan_start_time=None):
                             if custom_logo_id and custom_logo is not None
                             else _resolve_logo_for_stream(stream)
                         )
+                        if new_logo is rejected_logo:
+                            new_logo = None
                         new_epg_data = _resolve_epg_for_stream(stream)
 
                         new_channels_pending.append(
@@ -2838,63 +2909,64 @@ def sync_auto_channels(account_id, scan_start_time=None):
                     f"channels (fields: {sorted(existing_dirty_field_set)})"
                 )
 
-            # Reconcile ChannelProfileMembership in two writes: one
-            # bulk_update for enable-flips, one bulk_create for missing
-            # rows. Avoids a per-channel save loop.
-            existing_channel_ids = [
-                c.id for c in existing_channel_map.values()
-            ]
-            target_profile_ids = {p.id for p in profiles_to_assign}
-            if existing_channel_ids:
-                membership_rows = list(
-                    ChannelProfileMembership.objects.filter(
-                        channel_id__in=existing_channel_ids
-                    ).only("id", "channel_id", "channel_profile_id", "enabled")
-                )
-                memberships_by_channel = {}
-                for m in membership_rows:
-                    memberships_by_channel.setdefault(m.channel_id, []).append(m)
+            if not skip_profile_memberships:
+                # Reconcile ChannelProfileMembership in two writes: one
+                # bulk_update for enable-flips, one bulk_create for missing
+                # rows. Avoids a per-channel save loop.
+                existing_channel_ids = [
+                    c.id for c in existing_channel_map.values()
+                ]
+                target_profile_ids = {p.id for p in profiles_to_assign}
+                if existing_channel_ids:
+                    membership_rows = list(
+                        ChannelProfileMembership.objects.filter(
+                            channel_id__in=existing_channel_ids
+                        ).only("id", "channel_id", "channel_profile_id", "enabled")
+                    )
+                    memberships_by_channel = {}
+                    for m in membership_rows:
+                        memberships_by_channel.setdefault(m.channel_id, []).append(m)
 
-                rows_to_flip = []
-                rows_to_create = []
-                for ch_id in existing_channel_ids:
-                    rows = memberships_by_channel.get(ch_id, [])
-                    have_for_target = set()
-                    for m in rows:
-                        if m.channel_profile_id in target_profile_ids:
-                            have_for_target.add(m.channel_profile_id)
-                            if not m.enabled:
-                                m.enabled = True
-                                rows_to_flip.append(m)
-                        else:
-                            if m.enabled:
-                                m.enabled = False
-                                rows_to_flip.append(m)
-                    missing = target_profile_ids - have_for_target
-                    for pid in missing:
-                        rows_to_create.append(
-                            ChannelProfileMembership(
-                                channel_id=ch_id,
-                                channel_profile_id=pid,
-                                enabled=True,
+                    rows_to_flip = []
+                    rows_to_create = []
+                    for ch_id in existing_channel_ids:
+                        rows = memberships_by_channel.get(ch_id, [])
+                        have_for_target = set()
+                        for m in rows:
+                            if m.channel_profile_id in target_profile_ids:
+                                have_for_target.add(m.channel_profile_id)
+                                if not m.enabled:
+                                    m.enabled = True
+                                    rows_to_flip.append(m)
+                            else:
+                                if m.enabled:
+                                    m.enabled = False
+                                    rows_to_flip.append(m)
+                        missing = target_profile_ids - have_for_target
+                        for pid in missing:
+                            rows_to_create.append(
+                                ChannelProfileMembership(
+                                    channel_id=ch_id,
+                                    channel_profile_id=pid,
+                                    enabled=True,
+                                )
                             )
-                        )
 
-                if rows_to_flip:
-                    ChannelProfileMembership.objects.bulk_update(
-                        rows_to_flip, ["enabled"], batch_size=500
-                    )
-                if rows_to_create:
-                    ChannelProfileMembership.objects.bulk_create(
-                        rows_to_create, ignore_conflicts=True, batch_size=500
-                    )
-                if rows_to_flip or rows_to_create:
-                    logger.debug(
-                        f"Reconciled memberships for "
-                        f"{len(existing_channel_ids)} channels "
-                        f"({len(rows_to_flip)} flipped, "
-                        f"{len(rows_to_create)} created)"
-                    )
+                    if rows_to_flip:
+                        ChannelProfileMembership.objects.bulk_update(
+                            rows_to_flip, ["enabled"], batch_size=500
+                        )
+                    if rows_to_create:
+                        ChannelProfileMembership.objects.bulk_create(
+                            rows_to_create, ignore_conflicts=True, batch_size=500
+                        )
+                    if rows_to_flip or rows_to_create:
+                        logger.debug(
+                            f"Reconciled memberships for "
+                            f"{len(existing_channel_ids)} channels "
+                            f"({len(rows_to_flip)} flipped, "
+                            f"{len(rows_to_create)} created)"
+                        )
 
             # Delete channels whose streams have all disappeared.
             # Hidden channels are preserved so event/PPV holds across
