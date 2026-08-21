@@ -584,12 +584,13 @@ describe('AutoSyncAdvanced', () => {
       );
     };
 
-    it('renders the No Profiles pseudo-option', () => {
+    it('renders the No Profiles pseudo-option last', () => {
       setupProfiles();
       renderComponent();
-      expect(
-        screen.getByRole('option', { name: 'No Profiles' })
-      ).toBeInTheDocument();
+      const multi = screen.getByTestId('Channel Profiles');
+      const optionValues = Array.from(multi.options).map((o) => o.value);
+      expect(optionValues).toContain('none');
+      expect(optionValues.at(-1)).toBe('none');
     });
 
     it('loads No Profiles as the only selected option from the persisted flag', () => {
@@ -634,8 +635,11 @@ describe('AutoSyncAdvanced', () => {
         }),
       });
       const multi = screen.getByTestId('Channel Profiles');
+      // Mantine appends the newly selected value last. Simulate that by
+      // selecting the real profile after No Profiles was active; the
+      // handler keeps whichever was chosen last.
       Array.from(multi.options).forEach((opt) => {
-        opt.selected = opt.value === 'none' || opt.value === '1';
+        opt.selected = opt.value === '1';
       });
       fireEvent.change(multi);
 

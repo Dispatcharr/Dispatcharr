@@ -649,11 +649,11 @@ const AutoSyncAdvanced = ({
               value={profileValue}
               onChange={updateProfiles}
               data={[
-                { value: 'none', label: 'No Profiles' },
                 ...Object.values(profiles).map((profile) => ({
                   value: profile.id.toString(),
                   label: profile.name,
                 })),
+                { value: 'none', label: 'No Profiles' },
               ]}
               clearable
               searchable
