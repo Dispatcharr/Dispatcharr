@@ -342,6 +342,22 @@ class Collector:
     def _now_stamp(self):
         return self._render(datetime.now(timezone.utc))
 
+    def _zone_for_token(self, token, stamp):
+        # Services are expected to log UTC, but postgres carries its own
+        # log_timezone: honour the abbreviation it stamps against the zones
+        # this container knows before assuming the clock.
+        if token in (b"UTC", b"GMT"):
+            return timezone.utc
+        try:
+            name = token.decode()
+            naive = datetime.strptime(stamp.decode(), "%Y-%m-%d %H:%M:%S")
+            for zone in (self._display_zone, self._pid1_zone, self._container_zone):
+                if naive.replace(tzinfo=zone).tzname() == name:
+                    return zone
+        except Exception:
+            pass
+        return self._container_zone
+
     def _parse_naive(self, stamp, ms, zone, fmt="%Y-%m-%d %H:%M:%S"):
         dt = datetime.strptime(stamp.decode(), fmt)
         return dt.replace(microsecond=ms * 1000, tzinfo=zone)
@@ -408,12 +424,11 @@ class Collector:
                 )
             m = _PG.match(raw)
             if m:
-                zone = (
-                    timezone.utc
-                    if m.group(3) in (b"UTC", b"GMT")
-                    else self._container_zone
+                dt = self._parse_naive(
+                    m.group(1),
+                    int(m.group(2)),
+                    self._zone_for_token(m.group(3), m.group(1)),
                 )
-                dt = self._parse_naive(m.group(1), int(m.group(2)), zone)
                 rest = raw[m.end() :]
                 sev = _PG_SEVERITY.match(rest)
                 level = _PG_LEVELS.get(sev.group(1) if sev else b"")

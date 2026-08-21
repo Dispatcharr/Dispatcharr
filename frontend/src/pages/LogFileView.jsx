@@ -82,12 +82,22 @@ const parseSource = (source) => {
   return { module: head, tier: FIRST_PARTY.has(head) ? 'app' : 'services' };
 };
 
+// The file keeps the machine-parseable "+1200" for external tooling; the viewer spells it out.
+const STAMP_OFFSET = /^(.*) ([+-])(\d{2})(\d{2})$/;
+
+const displayStamp = (stamp) => {
+  const m = STAMP_OFFSET.exec(stamp);
+  if (!m) return stamp;
+  const minutes = m[4] === '00' ? '' : `:${m[4]}`;
+  return `${m[1]} [UTC${m[2]}${Number(m[3])}${minutes}]`;
+};
+
 const parseRecord = (line) => {
   const m = RECORD_TOKENS.exec(line);
   if (!m) return null;
   const { module, tier } = parseSource(m[3]);
   return {
-    stamp: m[1],
+    stamp: displayStamp(m[1]),
     level: m[2],
     source: m[3],
     module,

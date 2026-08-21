@@ -465,6 +465,44 @@ class NormalizationTests(SimpleTestCase):
             "2026-08-18 13:00:00,000 +1200 DEBUG uwsgi.requests Worker ID: 3 GET 200 / 4ms\n",
         )
 
+    def test_postgres_zone_token_is_honoured_over_the_container_zone(self):
+        # Postgres carries its own log_timezone: a container running UTC still
+        # gets NZST-stamped rows, and reading them as UTC dates them +12h.
+        self.collector._container_zone = timezone.utc
+        out = self.norm(b"2026-08-21 21:35:01.033 NZST [176] LOG:  listening\n")
+        self.assertEqual(
+            out,
+            "2026-08-21 21:35:01,033 +1200 INFO postgres [176] LOG:  listening\n",
+        )
+
+    def test_postgres_zone_token_follows_daylight_saving(self):
+        self.collector._container_zone = timezone.utc
+        out = self.norm(b"2026-01-15 21:35:01.033 NZDT [176] LOG:  midsummer\n")
+        self.assertEqual(
+            out,
+            "2026-01-15 21:35:01,033 +1300 INFO postgres [176] LOG:  midsummer\n",
+        )
+
+    def test_postgres_zone_token_matches_the_env_declared_zone(self):
+        # Display set to UTC while the container declares TZ=Pacific/Auckland:
+        # postgres still names its zone, so the instant stays right.
+        self.collector._display_zone = timezone.utc
+        self.collector._container_zone = timezone.utc
+        self.collector._pid1_zone = ZoneInfo("Pacific/Auckland")
+        out = self.norm(b"2026-08-21 21:35:01.033 NZST [176] LOG:  listening\n")
+        self.assertEqual(
+            out,
+            "2026-08-21 09:35:01,033 INFO postgres [176] LOG:  listening\n",
+        )
+
+    def test_postgres_unknown_zone_token_falls_back_to_the_container_zone(self):
+        self.collector._container_zone = timezone.utc
+        out = self.norm(b"2026-08-21 09:35:01.033 XYZ [176] LOG:  listening\n")
+        self.assertEqual(
+            out,
+            "2026-08-21 21:35:01,033 +1200 INFO postgres [176] LOG:  listening\n",
+        )
+
     def test_postgres_utc_token_is_honoured_over_container_zone(self):
         self.collector._container_zone = ZoneInfo("Pacific/Auckland")
         out = self.norm(b"2026-08-18 01:00:00.359 UTC [214] LOG:  starting\n")

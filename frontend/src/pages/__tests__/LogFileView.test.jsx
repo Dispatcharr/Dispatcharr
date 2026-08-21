@@ -236,6 +236,31 @@ describe('LogFileViewPage', () => {
     });
   });
 
+  it('spells the numeric offset out as a UTC label', async () => {
+    // The file keeps "+1200" so external tooling can parse it; only the display changes.
+    API.getLogFile.mockResolvedValue({
+      content: [
+        '2026-08-21 21:35:01,472 +1200 INFO core.tasks southern hemisphere',
+        '2026-08-21 09:35:01,472 -0330 INFO core.tasks half hour zone',
+        '2026-08-21 09:35:01,472 INFO core.tasks no offset at all',
+      ].join('\n'),
+      truncated: false,
+    });
+    renderPage();
+    await screen.findByText(/southern hemisphere/);
+    expect(
+      screen.getByText('2026-08-21 21:35:01,472 [UTC+12]')
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText('2026-08-21 09:35:01,472 [UTC-3:30]')
+    ).toBeInTheDocument();
+    // An offset-less stamp (the pre-collector boot window) is left alone.
+    expect(
+      screen.getByText('2026-08-21 09:35:01,472')
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/\+1200/)).not.toBeInTheDocument();
+  });
+
   it('does not redden an INFO line whose message body mentions ERROR', async () => {
     // Only the level field reddens: "state to ERROR in Redis" is message text on an INFO line.
     API.getLogFile.mockResolvedValue({
