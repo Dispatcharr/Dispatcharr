@@ -1,6 +1,8 @@
 """Tests for credential redaction."""
 
 import logging
+import random
+import re
 import sys
 
 from django.test import SimpleTestCase
@@ -11,6 +13,7 @@ from core.redaction import (
     redact_text,
     redact_url,
 )
+from dispatcharr import log_redaction
 
 
 class RedactTextTests(SimpleTestCase):
@@ -223,6 +226,83 @@ class RedactTextTests(SimpleTestCase):
         self.assertEqual(redact_text(None), None)
         self.assertEqual(redact_text(42), 42)
         self.assertEqual(redact_text(""), "")
+
+
+class TriggerScanTests(SimpleTestCase):
+    """redact_text() skips the battery on one scan; a false negative is a leak."""
+
+    KEYS = (
+        "username", "user", "password", "passwd", "pass", "secret", "signature",
+        "sig", "authorization", "auth_token", "auth-token", "authtoken", "bearer",
+        "x_api_key", "x-api-key", "api_key", "api-key", "apikey", "token", "url",
+    )
+    PREFIXES = ("", "xc_", "account.", "provider-", "a.b_")
+    CONTEXTS = (
+        "{key}={value}",
+        "?channel=1&{key}={value}",
+        "{key}: {value}",
+        "{key} = {value}",
+        "{key}:{value}",
+        "'{key}': '{value}'",
+        '"{key}": "{value}"',
+        "Authorization: Bearer {value} {key}={value}",
+    )
+    TOKENS = (
+        "user", "password", "xc_password", "token", "url", "host", "sig", "apikey",
+        "http://portal.example", "/live/", "/movie/", "/xmltv.php", "u1", "p1",
+        "=", ":", " ", "'", '"', "&", "?", "/", "@", ".ts", "compass", "bypass",
+        "user_agent", "message", "[username]", "[password]", "2026-08-18",
+    )
+
+    def assert_gate_agrees(self, line):
+        """Return whether the battery masked *line*, so callers can prove substance."""
+        masked = log_redaction._apply(line)
+        self.assertEqual(redact_text(line), masked, repr(line))
+        return masked != line
+
+    def test_the_key_list_still_covers_the_pattern(self):
+        for fragment in log_redaction._KEY_ALT.split("|"):
+            pattern = re.compile(f"^(?:{fragment})$", re.IGNORECASE)
+            self.assertTrue(any(pattern.match(key) for key in self.KEYS), fragment)
+
+    def test_every_key_shape_reaches_the_battery(self):
+        total = masked = 0
+        for key in self.KEYS:
+            for prefix in self.PREFIXES:
+                for context in self.CONTEXTS:
+                    body = context.format(key=prefix + key, value="portalpass")
+                    total += 1
+                    masked += self.assert_gate_agrees(
+                        f"2026-08-18 01:00:00,100 INFO apps.m3u.tasks {body}"
+                    )
+        # Agreement on lines nothing masks would prove nothing.
+        self.assertGreater(masked, total * 0.9)
+
+    def test_url_and_stream_path_shapes_reach_the_battery(self):
+        for body in (
+            "GET /live/portaluser/portalpass/1.ts",
+            "GET /TimeShift/portaluser/portalpass/1.ts",
+            "fetch http://portal.example/player_api.php",
+            "fetch HTTP://portal.example/xmltv.php",
+            "proxy http://portaluser:portalpass@portal.example:8080/path",
+            "HTTPSConnectionPool(host='portal.example', port=443)",
+        ):
+            self.assertTrue(
+                self.assert_gate_agrees(
+                    f"2026-08-18 01:00:00,100 INFO apps.m3u.tasks {body}"
+                ),
+                body,
+            )
+
+    def test_token_soup_agrees(self):
+        rng = random.Random(20260822)
+        masked = 0
+        for _ in range(4000):
+            line = "".join(
+                rng.choice(self.TOKENS) for _ in range(rng.randint(1, 12))
+            )
+            masked += self.assert_gate_agrees(line)
+        self.assertGreater(masked, 100)
 
 
 class RedactUrlTests(SimpleTestCase):
