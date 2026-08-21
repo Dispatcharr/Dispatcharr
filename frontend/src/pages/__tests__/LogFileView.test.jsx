@@ -165,28 +165,29 @@ describe('LogFileViewPage', () => {
     });
   });
 
-  it('renders continuations inside their record block behind the level bar', async () => {
+  it('renders a traceback inside its record block behind the level bar', async () => {
     API.getLogFile.mockResolvedValue({
       content: [
-        '2026-07-15 10:00:07,000 CRITICAL celery.backends.asynchronous ',
-        'Retry limit exceeded while reconnecting to the result store',
-        'The Celery application must be restarted',
+        '2026-07-15 10:00:07,000 ERROR apps.epg refresh failed',
+        'Traceback (most recent call last):',
+        '  File "/app/x.py", line 214, in refresh',
+        'ValueError: bad feed',
         '2026-07-15 10:00:08,000 INFO core.tasks back to normal',
       ].join('\n'),
       truncated: false,
     });
     renderPage();
     await waitFor(() => {
-      expect(screen.getByText(/Retry limit exceeded/)).toBeInTheDocument();
+      expect(screen.getByText(/refresh failed/)).toBeInTheDocument();
     });
-    // The CRITICAL token wears red and the block's bar marks the whole record.
-    expect(screen.getByText('CRITICAL')).toHaveStyle({ color: '#ff6b6b' });
-    expect(screen.getByText('CRITICAL').closest('div')).toHaveStyle({
+    // The ERROR token wears red and the block's bar marks the whole record.
+    expect(screen.getByText('ERROR')).toHaveStyle({ color: '#ff6b6b' });
+    expect(screen.getByText('ERROR').closest('div')).toHaveStyle({
       borderLeft: '3px solid #ff6b6b',
     });
-    // Both continuation lines stay one joined text node inside the block.
-    expect(screen.getByText(/Retry limit exceeded/).textContent).toContain(
-      'must be restarted'
+    // The whole traceback, its column-0 tail included, stays one joined text node inside the block.
+    expect(screen.getByText(/Traceback/).textContent).toContain(
+      'ValueError: bad feed'
     );
     // The next record is its own block and does not inherit the bar.
     expect(screen.getByText(/back to normal/).closest('div')).not.toHaveStyle({
@@ -570,7 +571,7 @@ describe('LogFileViewPage', () => {
       content: [
         '2026-08-21 10:00:00,000 INFO core.tasks short module line',
         '2026-08-21 10:00:01,000 ERROR plugins.event_channel_managarr long module line',
-        'trailing continuation detail',
+        '    trailing continuation detail',
       ].join('\n'),
       truncated: false,
     });
@@ -592,7 +593,7 @@ describe('LogFileViewPage', () => {
       content: [
         '2026-08-21 10:00:00,000 INFO apps.epg.tasks epg tick',
         '2026-08-21 10:00:01,000 ERROR core.tasks core boom',
-        'core continuation detail',
+        '    core continuation detail',
         '2026-08-21 10:00:02,000 INFO apps.m3u.tasks m3u tick',
       ].join('\n'),
       truncated: false,
@@ -601,7 +602,7 @@ describe('LogFileViewPage', () => {
     await screen.findByText(/epg tick/);
 
     fireEvent.change(screen.getByLabelText('Module'), {
-      target: { value: 'core' },
+      target: { value: 'm:core' },
     });
     expect(screen.getByText(/core boom/)).toBeInTheDocument();
     // The unstamped continuation stays with its record.
@@ -615,7 +616,23 @@ describe('LogFileViewPage', () => {
     expect(screen.getByText(/epg tick/)).toBeInTheDocument();
   });
 
-  it('falls back to all modules when the stored module is absent from the file', async () => {
+  it('keeps a stored module filter engaged even when the tail lacks it', async () => {
+    // The selection stays honest instead of silently disengaging and snapping back on a later poll.
+    localStorage.setItem('log-viewer-module', '"m:ghost"');
+    API.getLogFile.mockResolvedValue({
+      content: '2026-08-21 10:00:00,000 INFO core.tasks alive\n',
+      truncated: false,
+    });
+    renderPage();
+    await waitFor(() => {
+      expect(
+        screen.getByText('(no records match the filters)')
+      ).toBeInTheDocument();
+    });
+    expect(screen.getByLabelText('Module')).toHaveValue('m:ghost');
+  });
+
+  it('treats an unprefixed legacy stored module as no filter', async () => {
     localStorage.setItem('log-viewer-module', '"ghost"');
     API.getLogFile.mockResolvedValue({
       content: '2026-08-21 10:00:00,000 INFO core.tasks alive\n',
@@ -626,11 +643,80 @@ describe('LogFileViewPage', () => {
     expect(screen.getByLabelText('Module')).toHaveValue('all');
   });
 
+  it('handles a module literally named all without colliding with the sentinel', async () => {
+    API.getLogFile.mockResolvedValue({
+      content: [
+        '2026-08-21 10:00:00,000 INFO plugins.all Plugin loaded',
+        '2026-08-21 10:00:01,000 INFO core.tasks other line',
+      ].join('\n'),
+      truncated: false,
+    });
+    renderPage();
+    await screen.findByText(/Plugin loaded/);
+    // Prefixed values keep the option list free of duplicates.
+    const values = Array.from(
+      screen.getByLabelText('Module').querySelectorAll('option')
+    ).map((o) => o.value);
+    expect(values).toEqual(['all', 'm:all', 'm:core']);
+    fireEvent.change(screen.getByLabelText('Module'), {
+      target: { value: 'm:all' },
+    });
+    expect(screen.getByText(/Plugin loaded/)).toBeInTheDocument();
+    expect(screen.queryByText(/other line/)).not.toBeInTheDocument();
+  });
+
+  it('never hides the collector pass-through records behind a filter', async () => {
+    // A known source shape with an unparseable date passes through the collector unstamped; the viewer must not fold it into the record above.
+    API.getLogFile.mockResolvedValue({
+      content: [
+        '2026-08-21 10:00:00,000 DEBUG core.utils quiet tick',
+        '345:M 99 Xxx 2026 01:00:07.211 # Memory overcommit must be enabled',
+        '2026-08-21 10:00:01,000 ERROR apps.epg boom failure',
+      ].join('\n'),
+      truncated: false,
+    });
+    renderPage();
+    await screen.findByText(/boom failure/);
+    fireEvent.change(screen.getByLabelText('Level'), {
+      target: { value: '30' },
+    });
+    expect(screen.queryByText(/quiet tick/)).not.toBeInTheDocument();
+    expect(screen.getByText(/Memory overcommit/)).toBeInTheDocument();
+  });
+
+  it('tokenizes a record whose message carries a bare carriage return', async () => {
+    API.getLogFile.mockResolvedValue({
+      content:
+        '2026-08-21 10:00:00,000 INFO stdout frame=1 fps=0\rframe=30 fps=29',
+      truncated: false,
+    });
+    renderPage();
+    await screen.findByText(/frame=1/);
+    // JS '.' excludes \r; the [\s\S] body keeps this a record so the level filter can rank it.
+    expect(screen.getByTitle('stdout')).toHaveTextContent('stdout');
+    fireEvent.change(screen.getByLabelText('Level'), {
+      target: { value: '30' },
+    });
+    expect(screen.queryByText(/frame=1/)).not.toBeInTheDocument();
+  });
+
+  it('does not invent a separator the file lacks', async () => {
+    API.getLogFile.mockResolvedValue({
+      content: '2026-08-21 10:00:00,000 INFO core.tasks',
+      truncated: false,
+    });
+    renderPage();
+    await screen.findByText('INFO');
+    expect(screen.getByText('INFO').closest('div').textContent).toBe(
+      '2026-08-21 10:00:00,000 INFO core'
+    );
+  });
+
   it('keeps a multi-line record intact when reversed', async () => {
     API.getLogFile.mockResolvedValue({
       content: [
         '2026-07-15 10:00:00,000 ERROR apps.epg first failure',
-        'continuation of the first record',
+        '    continuation of the first record',
         '2026-07-15 10:00:01,000 ERROR apps.epg second failure',
       ].join('\n'),
       truncated: false,

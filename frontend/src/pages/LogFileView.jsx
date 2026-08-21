@@ -32,8 +32,9 @@ const COLORS = {
 };
 
 // The collector guarantees the canonical grammar "stamp [offset] LEVEL source rest"; every rule keys off those tokens.
+// The separator is captured so an absent one is not invented on re-emit, and the body uses [\s\S] because JS '.' excludes \r, which real messages can carry.
 const RECORD_TOKENS =
-  /^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3}(?: [+-]\d{4})?) (\S+) (\S+) ?(.*)$/;
+  /^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3}(?: [+-]\d{4})?) (\S+) (\S+)( ?)([\s\S]*)$/;
 
 const LEVEL_RANK = {
   TRACE: 5,
@@ -48,7 +49,7 @@ const LEVEL_RANK = {
 const moduleOf = (source) => {
   if (source.startsWith('apps.')) return source.split('.')[1] || source;
   if (source.startsWith('plugins.')) return source.slice(8) || source;
-  return source.split('.')[0];
+  return source.split('.')[0] || source;
 };
 
 const parseRecord = (line) => {
@@ -59,7 +60,8 @@ const parseRecord = (line) => {
         level: m[2],
         source: m[3],
         module: moduleOf(m[3]),
-        message: m[4],
+        sep: m[4],
+        message: m[5],
       }
     : null;
 };
@@ -143,52 +145,77 @@ const LEVEL_OPTIONS = [
   { value: '40', label: 'Error +' },
 ];
 
-// Records below the level floor or outside the chosen module hide with their continuations; unknown levels and unstamped shapes always show.
-const filterLines = (lines, minRank, module) => {
-  const out = [];
-  let suppress = false;
+// One tokenize-and-classify pass per content change; filters and ordering reuse it.
+// Mirrors the collector's continuation rules: an open traceback claims its tail,
+// indented and blank lines join the record above, and any other column-0 line
+// stands alone (the collector's unstamped pass-through records) so a filter can
+// never swallow it under an unrelated record.
+const classifyLines = (lines) => {
+  const entries = [];
+  let inTraceback = false;
   for (const line of lines) {
     const record = parseRecord(line);
     if (record) {
-      const rank = LEVEL_RANK[record.level];
+      inTraceback = false;
+      entries.push({ line, record, kind: 'record' });
+    } else if (RECORD_START.test(line)) {
+      inTraceback = false;
+      entries.push({ line, record: null, kind: 'standalone' });
+    } else if (line.startsWith('Traceback')) {
+      inTraceback = true;
+      entries.push({ line, record: null, kind: 'continuation' });
+    } else if (inTraceback || /^[ \t]/.test(line) || line === '') {
+      entries.push({ line, record: null, kind: 'continuation' });
+    } else {
+      entries.push({ line, record: null, kind: 'standalone' });
+    }
+  }
+  return entries;
+};
+
+// Records below the level floor or outside the chosen module (null = no filter) hide with their continuations; standalone lines and unknown levels always show.
+const filterEntries = (entries, minRank, module) => {
+  const out = [];
+  let suppress = false;
+  for (const entry of entries) {
+    if (entry.record) {
+      const rank = LEVEL_RANK[entry.record.level];
       suppress =
         (rank !== undefined && rank < minRank) ||
-        (module !== 'all' && record.module !== module);
-    } else if (RECORD_START.test(line)) {
+        (module !== null && entry.record.module !== module);
+    } else if (entry.kind === 'standalone') {
       suppress = false;
     }
-    if (!suppress) out.push(line);
+    if (!suppress) out.push(entry);
   }
   return out;
 };
 
 // Newest first flips whole records, so a multi-line record keeps its own line order.
-const reverseRecords = (lines) => {
-  const records = [];
-  for (const line of lines) {
-    if (RECORD_START.test(line) || !records.length) {
-      records.push([line]);
+const reverseEntries = (entries) => {
+  const groups = [];
+  for (const entry of entries) {
+    if (entry.kind !== 'continuation' || !groups.length) {
+      groups.push([entry]);
     } else {
-      records[records.length - 1].push(line);
+      groups[groups.length - 1].push(entry);
     }
   }
-  return records.reverse().flat();
+  return groups.reverse().flat();
 };
 
-// Group lines into record blocks (header + its continuations) so each record renders as one bordered unit; continuations stay one joined text node.
-const buildBlocks = (lines) => {
+// Group entries into record blocks (header + its continuations) so each record renders as one bordered unit; continuations stay one joined text node.
+const buildBlocks = (entries) => {
   const blocks = [];
-  for (const line of lines) {
-    const record = parseRecord(line);
+  for (const entry of entries) {
     const last = blocks[blocks.length - 1];
-    if (record) {
-      blocks.push({ record, continuations: [] });
-    } else if (RECORD_START.test(line) || !last) {
-      blocks.push({ lines: [line] });
-    } else if (last.record) {
-      last.continuations.push(line);
+    if (entry.record) {
+      blocks.push({ record: entry.record, continuations: [] });
+    } else if (entry.kind === 'continuation' && last) {
+      if (last.record) last.continuations.push(entry.line);
+      else last.lines.push(entry.line);
     } else {
-      last.lines.push(line);
+      blocks.push({ lines: [entry.line] });
     }
   }
   return blocks;
@@ -228,33 +255,39 @@ const LogFileViewPage = () => {
     'log-viewer-module',
     'all'
   );
+  // Stored selections carry an 'm:' prefix so a module literally named "all" can never collide with the sentinel; anything else means no filter.
+  const moduleFilter =
+    typeof moduleSetting === 'string' && moduleSetting.startsWith('m:')
+      ? moduleSetting.slice(2)
+      : null;
   const [loadError, setLoadError] = useState(false);
 
   // Guards the auto-refresh loop: skip a tick mid-flight, and count failures so a persistently-failing tail switches itself off.
   const loadingRef = useRef(false);
   const failuresRef = useRef(0);
 
+  const entries = useMemo(
+    () => classifyLines(content ? content.split('\n') : []),
+    [content]
+  );
+
   // The module list comes from the loaded tail itself; the vocabulary is open-ended.
   const modules = useMemo(() => {
     const seen = new Set();
-    for (const line of content ? content.split('\n') : []) {
-      const record = parseRecord(line);
-      if (record) seen.add(record.module);
+    for (const entry of entries) {
+      if (entry.record) seen.add(entry.record.module);
     }
     return [...seen].sort();
-  }, [content]);
-
-  // A stored module missing from this file falls back to All rather than an empty select.
-  const moduleFilter = modules.includes(moduleSetting) ? moduleSetting : 'all';
+  }, [entries]);
 
   // Render only the last MAX_RENDER_LINES; hiddenLines drives the "showing the last N lines" notice.
   const { blocks, cols, hiddenLines } = useMemo(() => {
-    let all = content ? content.split('\n') : [];
-    if (minLevel || moduleFilter !== 'all')
-      all = filterLines(all, minLevel, moduleFilter);
-    const hidden = Math.max(0, all.length - MAX_RENDER_LINES);
-    const kept = hidden ? all.slice(hidden) : all;
-    const built = buildBlocks(newestFirst ? reverseRecords(kept) : kept);
+    let kept = entries;
+    if (minLevel || moduleFilter !== null)
+      kept = filterEntries(entries, minLevel, moduleFilter);
+    const hidden = Math.max(0, kept.length - MAX_RENDER_LINES);
+    if (hidden) kept = kept.slice(hidden);
+    const built = buildBlocks(newestFirst ? reverseEntries(kept) : kept);
     // Column widths come from the visible records themselves so every row aligns.
     let stamp = 0;
     let level = 0;
@@ -275,7 +308,7 @@ const LogFileViewPage = () => {
       },
       hiddenLines: hidden,
     };
-  }, [content, newestFirst, minLevel, moduleFilter]);
+  }, [entries, newestFirst, minLevel, moduleFilter]);
 
   // One notice: line-cap wins over the byte-truncation banner since it states what's actually on screen.
   const notice =
@@ -370,12 +403,19 @@ const LogFileViewPage = () => {
           <Select
             size="xs"
             label="Module"
-            value={moduleFilter}
+            value={moduleFilter === null ? 'all' : `m:${moduleFilter}`}
             onChange={(value) => setModuleSetting(value)}
             allowDeselect={false}
             data={[
               { value: 'all', label: 'All modules' },
-              ...modules.map((m) => ({ value: m, label: m })),
+              // The active selection stays listed even when the current tail lacks it, so the filter never silently disengages or re-engages.
+              ...(moduleFilter !== null && !modules.includes(moduleFilter)
+                ? [moduleFilter]
+                : []
+              )
+                .concat(modules)
+                .sort()
+                .map((m) => ({ value: `m:${m}`, label: m })),
             ]}
             style={{ width: 150 }}
           />
@@ -518,7 +558,8 @@ const LogFileViewPage = () => {
                           title={block.record.source}
                         >
                           {block.record.module}
-                        </span>{' '}
+                        </span>
+                        {block.record.sep}
                         <span style={mc ? { color: mc } : undefined}>
                           {block.record.message}
                         </span>
