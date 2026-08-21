@@ -122,7 +122,8 @@ done
 
 # Start Celery
 echo 'Migrations complete, starting Celery...'
-celery -A dispatcharr beat -l info &
+# --quiet drops the startup banner each celery process would otherwise print.
+celery --quiet -A dispatcharr beat -l info &
 
 # Celery prefork autoscale (override to tune memory vs throughput; range: 1-20)
 configure_celery_autoscale_workers
@@ -135,6 +136,6 @@ if [ "$NICE_LEVEL" -lt 0 ] 2>/dev/null; then
 fi
 
 # DVR worker: thread pool for the long-running, I/O-bound run_recording task.
-nice -n "$NICE_LEVEL" celery -A dispatcharr worker -Q dvr -n dvr@%h --pool=threads --concurrency=20 -l info &
+nice -n "$NICE_LEVEL" celery --quiet -A dispatcharr worker -Q dvr -n dvr@%h --pool=threads --concurrency=20 -l info &
 # Default prefork worker: every queue except `dvr`.
-nice -n "$NICE_LEVEL" celery -A dispatcharr worker -Q celery -n default@%h --autoscale="$CELERY_MAX_WORKERS,$CELERY_MIN_WORKERS" -l info
+nice -n "$NICE_LEVEL" celery --quiet -A dispatcharr worker -Q celery -n default@%h --autoscale="$CELERY_MAX_WORKERS,$CELERY_MIN_WORKERS" -l info
