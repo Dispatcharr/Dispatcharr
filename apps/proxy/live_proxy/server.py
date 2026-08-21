@@ -103,12 +103,21 @@ class ProxyServer:
             logger.error(f"Failed to initialize Redis: {e}")
             self.redis_client = None
 
-        # Start cleanup thread
-        self.cleanup_interval = getattr(Config, 'CLEANUP_INTERVAL', 60)
-        self._start_cleanup_thread()
+        # Full runtime (cleanup + pubsub) only in stream-serving workers.
+        # Celery/Daphne use client-only mode for Redis coordination (stop events).
+        from .runtime import should_run_live_proxy_runtime
+        from dispatcharr.db.process_label import get_process_role
 
-        # Start event listener for Redis pubsub messages
-        self._start_event_listener()
+        self.cleanup_interval = getattr(Config, 'CLEANUP_INTERVAL', 60)
+        if should_run_live_proxy_runtime():
+            self._start_cleanup_thread()
+            self._start_event_listener()
+        else:
+            logger.info(
+                "ProxyServer client-only mode for process role %s "
+                "(Redis coordination only; no cleanup/event listener)",
+                get_process_role(),
+            )
 
     def _setup_redis_connection(self):
         """Setup Redis connection with retry logic"""
