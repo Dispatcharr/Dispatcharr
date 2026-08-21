@@ -127,12 +127,24 @@ def _set_m3u_account_status(
     try:
         M3UAccount.objects.filter(id=account_id).update(**update)
         if notify_error:
+            error_details = ws_error or last_message or "Unknown error"
             send_m3u_update(
                 account_id,
                 ws_action,
                 100,
                 status="error",
-                error=ws_error or last_message,
+                error=error_details,
+            )
+            try:
+                account = M3UAccount.objects.filter(id=account_id).only("name").first()
+                account_name = account.name if account else str(account_id)
+            except Exception:
+                account_name = str(account_id)
+
+            log_system_event(
+                event_type="m3u_error",
+                account_name=account_name,
+                error=str(error_details),
             )
     except Exception as e:
         logger.error(
@@ -157,6 +169,17 @@ def _ensure_m3u_refresh_terminal_status(account_id):
             )
             send_m3u_update(
                 account_id, "parsing", 100, status="error", error=message
+            )
+            try:
+                account = M3UAccount.objects.filter(id=account_id).only("name").first()
+                account_name = account.name if account else str(account_id)
+            except Exception:
+                account_name = str(account_id)
+
+            log_system_event(
+                event_type="m3u_error",
+                account_name=account_name,
+                error=message,
             )
     except Exception as e:
         logger.debug(

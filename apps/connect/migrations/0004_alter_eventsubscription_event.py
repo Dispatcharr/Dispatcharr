@@ -1,0 +1,16 @@
+from django.db import migrations, models
+
+
+class Migration(migrations.Migration):
+
+    dependencies = [
+        ('dispatcharr_connect', '0003_alter_eventsubscription_event'),
+    ]
+
+    operations = [
+        migrations.AlterField(
+            model_name='eventsubscription',
+            name='event',
+            field=models.CharField(choices=[('channel_start', 'Channel Started'), ('channel_stop', 'Channel Stopped'), ('channel_reconnect', 'Channel Reconnected'), ('channel_error', 'Channel Error'), ('channel_failover', 'Channel Failover'), ('stream_switch', 'Stream Switch'), ('recording_start', 'Recording Started'), ('recording_end', 'Recording Ended'), ('epg_refresh', 'EPG Refreshed'), ('m3u_refresh', 'M3U Refreshed'), ('client_connect', 'Client Connected'), ('client_disconnect', 'Client Disconnected'), ('login_failed', 'Login Failed'), ('epg_blocked', 'EPG Blocked'), ('m3u_blocked', 'M3U Blocked'), ('m3u_error', 'M3U Error'), ('vod_start', 'VOD Started'), ('vod_stop', 'VOD Stopped')], max_length=100),
+        ),
+    ]
