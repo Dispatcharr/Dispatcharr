@@ -71,6 +71,15 @@ _URL_LABEL = re.compile(
 #   HTTPSConnectionPool(host='portal.example', port=443)
 _HOST_KV = re.compile(r"(?i)\bhost=(['\"])[^'\"\s]+\1")
 
+# Every pattern above needs a scheme, a stream path, host=, a credential-shaped
+# key name, so one scan decides a line. A shape missing from here never
+# reaches the battery: add to both together.
+_TRIGGER = re.compile(
+    rf"(?i)://|/(?:live|movie|series|timeshift)/|\bhost="
+    rf"|\b{_KEY_PREFIX}(?:{_KEY_ALT}|url)\b"
+)
+
+
 def _redact_dict_kv(match):
     q, vq = match.group("q"), match.group("vq")
     key = match.group("key")
@@ -96,21 +105,8 @@ def _redact_path_creds(match):
     return f"{match.group('pre')}[username]/[password]{match.group('post')}"
 
 
-def redact_text(value):
-    """Mask credential patterns anywhere in *value*; non-strings pass through."""
-    if not isinstance(value, str) or not value:
-        return value
-    # Fast path: most log lines carry none of the trigger substrings.
-    if (
-        "://" not in value
-        and "=" not in value
-        and ":" not in value
-        and "/live/" not in value
-        and "/movie/" not in value
-        and "/series/" not in value
-        and "/timeshift/" not in value
-    ):
-        return value
+def _apply(value):
+    """Run the whole battery; redact_text() gates this on the trigger scan."""
     result = _URL_USERINFO.sub(r"\1[username]:[password]@", value)
     result = _URL_PATH_CREDS.sub(_redact_url_path_creds, result)
     result = _BARE_PATH_CREDS.sub(_redact_path_creds, result)
@@ -126,3 +122,30 @@ def redact_text(value):
     result = _URL_LABEL.sub(_redact_url_label, result)
     result = _HOST_KV.sub(lambda m: f"host={m.group(1)}[host]{m.group(1)}", result)
     return result
+
+
+def redact_text(value):
+    """Mask credential patterns anywhere in *value*; non-strings pass through.
+
+    Idempotent: every substitution rewrites its match into a bracketed token
+    that the same pattern maps back onto itself, so masking an already-masked
+    line is a no-op.
+    """
+    if not isinstance(value, str) or not value:
+        return value
+    # Cheapest first: a line with none of this punctuation cannot match.
+    if (
+        "://" not in value
+        and "=" not in value
+        and ":" not in value
+        and "/live/" not in value
+        and "/movie/" not in value
+        and "/series/" not in value
+        and "/timeshift/" not in value
+        and "resolve" not in value
+        and " timed out" not in value
+    ):
+        return value
+    if not _TRIGGER.search(value):
+        return value
+    return _apply(value)
