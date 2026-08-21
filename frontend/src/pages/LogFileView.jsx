@@ -352,6 +352,9 @@ const LogFileViewPage = () => {
     };
   }, [entries, newestFirst, minLevel, category, query]);
 
+  // Wrapped lines and continuations both hang under the message column.
+  const messageIndent = cols.stamp + cols.level + cols.module + 3;
+
   // One notice: line-cap wins over the byte-truncation banner since it states what's actually on screen.
   const notice =
     hiddenLines > 0
@@ -520,7 +523,10 @@ const LogFileViewPage = () => {
                 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
               fontSize: 12,
               lineHeight: 1.45,
-              whiteSpace: 'pre',
+              // Wrap rather than scroll sideways; anywhere breaks the unbroken
+              // tokens (URLs, SQL dumps) that no space would ever break.
+              whiteSpace: 'pre-wrap',
+              overflowWrap: 'anywhere',
             }}
           >
             {!content
@@ -547,7 +553,8 @@ const LogFileViewPage = () => {
                         key={i}
                         style={{
                           borderLeft: `3px solid ${bc}`,
-                          paddingLeft: 8,
+                          paddingLeft: `calc(8px + ${messageIndent}ch)`,
+                          textIndent: `-${messageIndent}ch`,
                         }}
                       >
                         <span
@@ -594,9 +601,7 @@ const LogFileViewPage = () => {
                         {block.continuations.length > 0 && (
                           <div
                             style={{
-                              paddingLeft: `${
-                                cols.stamp + cols.level + cols.module + 3
-                              }ch`,
+                              textIndent: '0px',
                               color: mc || undefined,
                             }}
                           >

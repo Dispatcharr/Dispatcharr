@@ -570,6 +570,36 @@ describe('LogFileViewPage', () => {
     });
   });
 
+  it('wraps a long line under the message column instead of scrolling', async () => {
+    API.getLogFile.mockResolvedValue({
+      content: [
+        '2026-08-21 10:00:00,000 ERROR postgres [312] STATEMENT:  ' +
+          'x'.repeat(4000),
+        '  continuation tail',
+      ].join('\n'),
+      truncated: false,
+    });
+    renderPage();
+    const message = await screen.findByText(/STATEMENT/);
+    const pane = message.closest('div').parentElement;
+    // The pane wraps, and breaks tokens no space would ever break.
+    expect(pane).toHaveStyle({
+      whiteSpace: 'pre-wrap',
+      overflowWrap: 'anywhere',
+    });
+    // Records hang: the first line starts at the bar, wrapped text lines up
+    // under the message column (stamp 23 + level 5 + module 8 + 3 gaps).
+    const block = message.closest('div');
+    expect(block).toHaveStyle({
+      paddingLeft: 'calc(8px + 39ch)',
+      textIndent: '-39ch',
+    });
+    // Continuations already sit at that column, so they cancel the hang.
+    expect(screen.getByText(/continuation tail/).parentElement).toHaveStyle({
+      textIndent: '0px',
+    });
+  });
+
   it('aligns tokens in equal-width columns', async () => {
     API.getLogFile.mockResolvedValue({
       content: [
@@ -586,12 +616,15 @@ describe('LogFileViewPage', () => {
     expect(screen.getByTitle('plugins.event_channel_managarr')).toHaveStyle({
       width: '20ch',
     });
-    // Continuations indent to the message column: stamp + level + module + 3 separators. The padding sits on the container above the blank-aware segments.
+    // The record block hangs by the message column - stamp + level + module +
+    // 3 separators - so continuations and wrapped text share one indent.
+    expect(screen.getByText(/long module line/).closest('div')).toHaveStyle({
+      paddingLeft: 'calc(8px + 51ch)',
+      textIndent: '-51ch',
+    });
     expect(
       screen.getByText(/trailing continuation detail/).parentElement
-    ).toHaveStyle({
-      paddingLeft: '51ch',
-    });
+    ).toHaveStyle({ textIndent: '0px' });
   });
 
   it('compresses level display names without touching their rank', async () => {
