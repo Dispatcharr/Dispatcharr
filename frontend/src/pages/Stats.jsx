@@ -72,7 +72,7 @@ const Connections = ({
       </Text>
     </Box>
   ) : (
-    <ErrorBoundary>
+    <ErrorBoundary inline>
       <Suspense fallback={<LoadingOverlay />}>
         {combinedConnections.map((connection) => {
           if (connection.type === 'stream') {

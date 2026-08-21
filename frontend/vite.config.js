@@ -8,6 +8,12 @@ export default defineConfig({
 
   // publicDir: '/data',
 
+  build: {
+    // Maps aren't referenced via sourceMappingURL, but ErrorBoundary fetches
+    // them on demand to decode a caught error's stack (src/utils/symbolicate.js).
+    sourcemap: 'hidden',
+  },
+
   server: {
     port: 9191,
     // Without this, /api/* is served as the React SPA in debug mode and

@@ -34,7 +34,7 @@ const SettingsPage = () => {
             {activeSectionConfig.label}
           </Text>
           <Divider mb="md" />
-          <ErrorBoundary>
+          <ErrorBoundary inline>
             <Suspense fallback={<Loader />}>
               <ActiveComponent active={true} />
             </Suspense>
