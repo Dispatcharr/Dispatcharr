@@ -4,6 +4,8 @@ from celery import Celery
 import logging
 from celery.signals import task_postrun, task_prerun, worker_process_init, worker_ready
 
+from dispatcharr.startup_log import configure_early_logging, startup_log
+
 logger = logging.getLogger(__name__)
 
 # Initialize with defaults before Django settings are loaded
@@ -31,7 +33,9 @@ def get_effective_log_level():
 
 # Get effective log level before Django loads
 effective_log_level = get_effective_log_level()
-print(f"Celery using effective log level: {effective_log_level}")
+startup_log(f"Celery using effective log level: {effective_log_level}")
+# Cover logger output between here and settings import; settings re-tightens the level.
+configure_early_logging(effective_log_level)
 
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'dispatcharr.settings')
 app = Celery("dispatcharr")
@@ -65,7 +69,7 @@ def init_worker_process(**_kwargs):
 
 # Use environment variable for log level with fallback to INFO
 CELERY_LOG_LEVEL = os.environ.get('DISPATCHARR_LOG_LEVEL', 'INFO').upper()
-print(f"Celery using log level from environment: {CELERY_LOG_LEVEL}")
+startup_log(f"Celery using log level from environment: {CELERY_LOG_LEVEL}")
 
 # Configure Celery logging
 app.conf.update(
@@ -143,7 +147,7 @@ def cleanup_task_memory(**kwargs):
             process = psutil.Process()
             if hasattr(process, 'memory_info'):
                 mem = process.memory_info().rss / (1024 * 1024)
-                print(f"Memory usage after {task_name}: {mem:.2f} MB")
+                logger.debug(f"Memory usage after {task_name}: {mem:.2f} MB")
         except (ImportError, Exception):
             pass
     else:
@@ -154,7 +158,7 @@ def cleanup_task_memory(**kwargs):
             if hasattr(process, 'memory_info'):
                 mem = process.memory_info().rss / (1024 * 1024)
                 if mem > 500:  # Only log if using more than 500MB
-                    print(f"High memory usage detected in {task_name}: {mem:.2f} MB")
+                    logger.warning(f"High memory usage detected in {task_name}: {mem:.2f} MB")
         except (ImportError, Exception):
             pass
 
@@ -162,16 +166,18 @@ def cleanup_task_memory(**kwargs):
 def setup_celery_logging(**kwargs):
     # Use our directly determined log level
     log_level = effective_log_level
-    print(f"Celery configuring loggers with level: {log_level}")
+    logger.info(f"Celery configuring loggers with level: {log_level}")
 
-    # Get the specific loggers that output potentially noisy messages
+    # Get the specific loggers that output potentially noisy messages.
+    # Named celery_logger: assigning to `logger` here would make it local to the
+    # whole function and unbind the module logger used above.
     for logger_name in ['celery.app.trace', 'celery.beat', 'celery.worker.strategy', 'celery.beat.Scheduler', 'celery.pool']:
-        logger = logging.getLogger(logger_name)
+        celery_logger = logging.getLogger(logger_name)
 
         # Remove any existing filters first (in case this runs multiple times)
-        for filter in logger.filters[:]:
+        for filter in celery_logger.filters[:]:
             if hasattr(filter, '__class__') and filter.__class__.__name__ == 'SuppressFilter':
-                logger.removeFilter(filter)
+                celery_logger.removeFilter(filter)
 
         # Add filtering for both INFO and DEBUG levels - only TRACE will show full logging
         if log_level not in ['TRACE']:
@@ -189,16 +195,16 @@ def setup_celery_logging(**kwargs):
                     return True  # Log all other messages
 
             # Add the filter to each logger
-            logger.addFilter(SuppressFilter())
+            celery_logger.addFilter(SuppressFilter())
 
         # Set all Celery loggers to the configured level
         # This ensures they respect TRACE/DEBUG when set
         try:
             numeric_level = getattr(logging, log_level)
-            logger.setLevel(numeric_level)
+            celery_logger.setLevel(numeric_level)
         except (AttributeError, TypeError):
             # If the log level string is invalid, default to DEBUG
-            logger.setLevel(logging.DEBUG)
+            celery_logger.setLevel(logging.DEBUG)
 
 
 @worker_ready.connect
