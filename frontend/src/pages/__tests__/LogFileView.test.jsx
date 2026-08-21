@@ -623,8 +623,10 @@ describe('LogFileViewPage', () => {
     expect(screen.getByTitle('plugins.event_channel_managarr')).toHaveStyle({
       width: '20ch',
     });
-    // Continuations indent to the message column: stamp + level + module + 3 separators.
-    expect(screen.getByText(/trailing continuation detail/)).toHaveStyle({
+    // Continuations indent to the message column: stamp + level + module + 3 separators. The padding sits on the container above the blank-aware segments.
+    expect(
+      screen.getByText(/trailing continuation detail/).parentElement
+    ).toHaveStyle({
       paddingLeft: '51ch',
     });
   });
@@ -1010,6 +1012,26 @@ describe('LogFileViewPage', () => {
       target: { value: '' },
     });
     expect(screen.getByText(/alpha event/)).toBeInTheDocument();
+  });
+
+  it('renders blank continuation runs at reduced height', async () => {
+    API.getLogFile.mockResolvedValue({
+      content: [
+        '2026-08-21 10:00:00,000 ERROR apps.epg boom',
+        'Traceback (most recent call last):',
+        'ValueError: first',
+        '',
+        'During handling of the above exception, another exception occurred:',
+      ].join('\n'),
+      truncated: false,
+    });
+    renderPage();
+    await screen.findByText(/ValueError: first/);
+    const padded = screen.getByText(/ValueError: first/).parentElement;
+    // Three segments: text, the compressed blank run, text — bytes intact, gap tightened.
+    expect(padded.children).toHaveLength(3);
+    expect(padded.children[1]).toHaveStyle({ lineHeight: '0.35' });
+    expect(screen.getByText(/During handling/)).toBeInTheDocument();
   });
 
   it('keeps a multi-line record intact when reversed', async () => {

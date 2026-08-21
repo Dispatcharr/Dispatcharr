@@ -248,7 +248,31 @@ const filterEntries = (entries, minRank, category, module, query) => {
 // Newest first flips whole records, so a multi-line record keeps its own line order.
 const reverseEntries = (entries) => groupEntries(entries).reverse().flat();
 
-// Group entries into record blocks (header + its continuations) so each record renders as one bordered unit; continuations stay one joined text node.
+// Blank continuation runs render at reduced height: the bytes stay in the DOM (and copy), only the vertical gap tightens.
+const renderContinuations = (lines) => {
+  const out = [];
+  let run = [];
+  let blank = null;
+  const flush = () => {
+    if (!run.length) return;
+    out.push(
+      <div key={out.length} style={blank ? { lineHeight: 0.35 } : undefined}>
+        {run.join('\n')}
+      </div>
+    );
+    run = [];
+  };
+  for (const line of lines) {
+    const isBlank = line.trim() === '';
+    if (blank !== null && isBlank !== blank) flush();
+    blank = isBlank;
+    run.push(line);
+  }
+  flush();
+  return out;
+};
+
+// Group entries into record blocks (header + its continuations) so each record renders as one bordered unit.
 const buildBlocks = (entries) => {
   const blocks = [];
   for (const entry of entries) {
@@ -660,7 +684,7 @@ const LogFileViewPage = () => {
                               color: mc || undefined,
                             }}
                           >
-                            {block.continuations.join('\n')}
+                            {renderContinuations(block.continuations)}
                           </div>
                         )}
                       </div>
