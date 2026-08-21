@@ -193,7 +193,7 @@ def fetch_m3u_lines(account, use_cache=False):
                 user_agent = account.get_user_agent_string()
 
                 logger.debug(
-                    f"Using user agent: {user_agent} for M3U account: {account.name}"
+                    f"Using user agent: {user_agent} for M3U account: #{account.id}"
                 )
                 headers = {"User-Agent": user_agent}
                 logger.info(f"Fetching from URL {redact_provider_url(account.server_url)}")
@@ -1628,7 +1628,7 @@ def refresh_m3u_groups(account_id, use_cache=False, full_refresh=False, scan_sta
                     # Queue async profile refresh task to run in background
                     # This prevents any delay in the main refresh process
                     try:
-                        logger.info(f"Queueing background profile refresh for account {account.name}")
+                        logger.info(f"Queueing background profile refresh for account #{account.id}")
                         refresh_account_profiles.delay(account.id)
                     except Exception as e:
                         logger.warning(f"Failed to queue profile refresh task: {str(e)}")
@@ -2037,7 +2037,7 @@ def sync_auto_channels(account_id, scan_start_time=None):
 
     try:
         account = M3UAccount.objects.select_related("user_agent").get(id=account_id)
-        logger.info(f"Starting auto channel sync for M3U account {account.name}")
+        logger.info(f"Starting auto channel sync for M3U account #{account.id}")
 
         # Always use scan_start_time as the cutoff for last_seen
         if scan_start_time is not None:
@@ -3069,7 +3069,7 @@ def sync_auto_channels(account_id, scan_start_time=None):
                 )
 
         logger.info(
-            f"Auto channel sync complete for account {account.name}: "
+            f"Auto channel sync complete for account #{account.id}: "
             f"{channels_created} created, {channels_updated} updated, "
             f"{channels_deleted} deleted, {channels_failed} failed"
         )
@@ -3123,9 +3123,9 @@ def get_transformed_credentials(account, profile=None):
             if profile:
                 logger.debug(f"Using primary profile '{profile.name}' for URL transformation")
             else:
-                logger.debug(f"No active profiles found for account {account.name}, using base credentials")
+                logger.debug(f"No active profiles found for account #{account.id}, using base credentials")
         except Exception as e:
-            logger.warning(f"Could not get primary profile for account {account.name}: {e}")
+            logger.warning(f"Could not get primary profile for account #{account.id}: {e}")
             profile = None
 
     from core.xtream_codes import normalize_server_url
@@ -3188,7 +3188,7 @@ def get_transformed_credentials(account, profile=None):
             # No profile or no transformation patterns
             return base_url, base_username, base_password
     else:
-        logger.warning(f"Missing credentials for account {account.name}")
+        logger.warning(f"Missing credentials for account #{account.id}")
         return base_url, base_username, base_password
 
 
@@ -3219,7 +3219,7 @@ def refresh_account_profiles(account_id):
         ).select_related("m3u_account")
 
         if not profiles.exists():
-            logger.info(f"No active profiles found for account {account.name}")
+            logger.info(f"No active profiles found for account #{account.id}")
             return f"No active profiles for account {account_id}"
 
         # Get user agent for this account
@@ -3235,7 +3235,7 @@ def refresh_account_profiles(account_id):
         profiles_updated = 0
         profiles_failed = 0
 
-        logger.info(f"Starting background refresh for {profiles.count()} profiles of account {account.name}")
+        logger.info(f"Starting background refresh for {profiles.count()} profiles of account #{account.id}")
 
         for idx, profile in enumerate(profiles):
             try:
@@ -3284,7 +3284,7 @@ def refresh_account_profiles(account_id):
                 _release_task_db_connection()
                 # Continue with other profiles even if one fails
 
-        result_msg = f"Profile refresh complete for account {account.name}: {profiles_updated} updated, {profiles_failed} failed"
+        result_msg = f"Profile refresh complete for account #{account.id}: {profiles_updated} updated, {profiles_failed} failed"
         logger.info(result_msg)
         return result_msg
 
