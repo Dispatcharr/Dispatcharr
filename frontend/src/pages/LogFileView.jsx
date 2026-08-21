@@ -26,10 +26,9 @@ const COLORS = {
   warn: '#ffd43b', // yellow
   auth: '#51cf66', // green — real login/auth events
   plugin: '#74c0fc', // blue — third-party plugin code
-  stamp: '#71717a', // dim grey — timestamps recede
+  stamp: '#a1a1aa', // mid grey — readable against the dark ground, still recessive
   module: '#8bc4eb', // soft blue — the module token
   level: '#e4e4e7', // bright neutral — INFO and unknown levels stand apart from the stamp
-  quiet: '#a1a1aa', // mid grey — DEBUG/TRACE sit between stamp and INFO
 };
 
 // The collector guarantees the canonical grammar "stamp [offset] LEVEL source rest"; every rule keys off those tokens.
@@ -78,7 +77,8 @@ const levelLabel = (level) => {
 const levelColor = (level) => {
   if (level === 'ERROR' || level === 'CRITICAL') return COLORS.error;
   if (level === 'WARNING') return COLORS.warn;
-  if (level === 'DEBUG' || level === 'TRACE') return COLORS.quiet;
+  // DEBUG/TRACE share the stamp grey; their medium weight keeps them legible as levels.
+  if (level === 'DEBUG' || level === 'TRACE') return COLORS.stamp;
   return COLORS.level;
 };
 
@@ -414,6 +414,8 @@ const LogFileViewPage = () => {
             value={moduleFilter === null ? 'all' : `m:${moduleFilter}`}
             onChange={(value) => setModuleSetting(value)}
             allowDeselect={false}
+            searchable
+            maxDropdownHeight={300}
             data={[
               { value: 'all', label: 'All modules' },
               // The active selection stays listed even when the current tail lacks it, so the filter never silently disengages or re-engages.

@@ -230,7 +230,7 @@ describe('LogFileViewPage', () => {
     expect(screen.queryByText('apps.epg.tasks')).not.toBeInTheDocument();
     // The stamp recedes to grey.
     expect(screen.getByText('2026-08-21 10:00:00,000')).toHaveStyle({
-      color: '#71717a',
+      color: '#a1a1aa',
     });
   });
 
