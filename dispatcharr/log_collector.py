@@ -8,9 +8,11 @@ instant and touches only stdout, so a dead /data can never back-pressure the
 producers; bounded memory with drop-oldest and an explicit dropped-lines
 marker absorbs disk stalls (markers are file-only: the forwarded stream never
 dropped anything). Every line is rewritten into the canonical
-"stamp [offset] LEVEL source rest" grammar and gated by the configured minimum
-level. Owns rotation and pruning. Django-free; configured via
-<logdir>/collector.conf and SIGHUP through apply_settings().
+"stamp [offset] LEVEL source rest" grammar, gated by the configured minimum
+level, and swept for provider credentials -- which is why uwsgi, postgres,
+redis and the entrypoint are masked here and not by any Python formatter.
+Owns rotation and pruning. Django-free; configured via <logdir>/collector.conf
+and SIGHUP through apply_settings().
 """
 
 import collections
@@ -23,6 +25,8 @@ import threading
 import time
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
+
+from dispatcharr.log_redaction import redact_text
 
 LIVE_NAME = "dispatcharr.log"
 CONF_NAME = "collector.conf"
@@ -333,6 +337,7 @@ class Collector:
             mid_line = more
             if suppressed or not line:
                 continue
+            line = self._filter(line)
             self._forward(line)
             if not self.conf["persist"]:
                 # Keep forwarding; only the file sink honours the toggle.
@@ -516,6 +521,23 @@ class Collector:
                 view = view[os.write(self.out_fd, view) :]
         except OSError:
             pass
+
+    def _filter(self, raw):
+        """Mask credentials in every line, on the way to both sinks.
+
+        A fixed stage, not a configurable one: nothing can turn it off. A line
+        the battery leaves alone is returned as its original bytes, so the
+        lossy decode never reaches either sink.
+        """
+        try:
+            text = raw.decode("utf-8", "replace").rstrip("\n")
+            masked = redact_text(text)
+        except Exception:
+            # Redaction must never lose the stream: keep the line.
+            return raw
+        if masked == text:
+            return raw
+        return (masked + "\n").encode("utf-8", "replace")
 
     # ── writer thread: batches, markers, rotation ─────────────────────────
 

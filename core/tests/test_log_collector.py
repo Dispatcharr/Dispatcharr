@@ -4,6 +4,8 @@ import io
 import os
 import re
 import shutil
+import subprocess
+import sys
 import tempfile
 from datetime import timezone
 from unittest import mock
@@ -12,7 +14,7 @@ from zoneinfo import ZoneInfo
 from django.test import SimpleTestCase, TestCase, override_settings
 
 from core.models import CoreSettings, SYSTEM_SETTINGS_KEY
-from dispatcharr import log_collector
+from dispatcharr import log_collector, log_redaction
 from dispatcharr.log_collector import Collector
 
 
@@ -80,6 +82,29 @@ class ConfTests(SimpleTestCase):
     def test_missing_conf_gives_defaults(self):
         self.assertEqual(log_collector.read_conf(self.log_dir), log_collector._DEFAULT_CONF)
 
+class RedactionImportTests(SimpleTestCase):
+    def test_redaction_module_needs_no_django(self):
+        """The collector runs with no settings, so its masking must load bare."""
+        script = (
+            "import importlib.util, sys\n"
+            "spec = importlib.util.spec_from_file_location('lr', sys.argv[1])\n"
+            "module = importlib.util.module_from_spec(spec)\n"
+            "spec.loader.exec_module(module)\n"
+            "assert not [n for n in sys.modules if n.split('.')[0] == 'django'], "
+            "sorted(sys.modules)\n"
+            "print(module.redact_text('GET /live/portaluser/portalpass/1.ts'))\n"
+        )
+        # -I keeps PYTHONPATH and the cwd off sys.path: nothing but the file.
+        result = subprocess.run(
+            [sys.executable, "-I", "-c", script, log_redaction.__file__],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("/live/[username]/[password]/1.ts", result.stdout)
+
+
+class CollectorTests(SimpleTestCase):
     def setUp(self):
         self.log_dir = tempfile.mkdtemp(prefix="dispatcharr-collector-")
         self.addCleanup(shutil.rmtree, self.log_dir, ignore_errors=True)
