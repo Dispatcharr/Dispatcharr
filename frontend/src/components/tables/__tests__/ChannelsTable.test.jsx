@@ -1237,6 +1237,16 @@ describe('ChannelsTable', () => {
       setupMocks({ channels: [channel, null, undefined] });
       expect(() => render(<ChannelsTable />)).not.toThrow();
     });
+
+    it('refetches when the channels array contains a nullish entry', async () => {
+      const channel = makeChannel({ id: 14, streams: [] });
+      setupMocks({ channels: [channel, null] });
+      render(<ChannelsTable />);
+      // Once from the normal mount fetch, once from the self-heal effect.
+      await waitFor(() =>
+        expect(queryChannels).toHaveBeenCalledTimes(2)
+      );
+    });
   });
 
   // ── expandedRowRenderer ────────────────────────────────────────────────────

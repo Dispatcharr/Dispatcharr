@@ -85,9 +85,7 @@ const request = async (url, options = {}) => {
 
 export default class API {
   static lastQueryParams = new URLSearchParams();
-  // Shared by queryChannels/requeryChannels so a slower response (e.g. a
-  // WebSocket-triggered requery racing a user-driven page/filter change)
-  // can't overwrite the store with stale data after a newer request lands.
+  // Shared by queryChannels/requeryChannels to drop stale, out-of-order responses.
   static channelsRequestVersion = 0;
 
   /**

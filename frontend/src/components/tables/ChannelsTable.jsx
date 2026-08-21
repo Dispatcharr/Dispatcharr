@@ -288,9 +288,7 @@ const ChannelsTable = ({ onReady }) => {
 
   // store/channelsTable
   const rawChannels = useChannelsTableStore((s) => s.channels);
-  // Guards against transient nullish entries (e.g. a websocket-driven
-  // requery racing a render) reaching react-table's row model, which
-  // would otherwise crash every row renderer on row.original.id.
+  // Drop nullish entries so a bad row can't crash row rendering.
   const data = useMemo(
     () => (rawChannels.some((c) => !c) ? rawChannels.filter(Boolean) : rawChannels),
     [rawChannels]
@@ -868,6 +866,16 @@ const ChannelsTable = ({ onReady }) => {
   useEffect(() => {
     fetchData();
   }, [fetchData]);
+
+  // Store still has a nullish entry beyond just this render; refetch to clear it.
+  useEffect(() => {
+    if (rawChannels.some((c) => !c)) {
+      console.warn(
+        '[ChannelsTable] Detected nullish entries in channels store; refetching.'
+      );
+      fetchData();
+    }
+  }, [rawChannels, fetchData]);
 
   useEffect(() => {
     const profileName = profiles[selectedProfileId]?.name;
