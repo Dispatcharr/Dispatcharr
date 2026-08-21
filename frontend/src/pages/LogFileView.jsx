@@ -237,8 +237,8 @@ const groupEntries = (entries) => {
   return groups;
 };
 
-// Records below the level floor or outside the chosen category/module (null = no filter) hide with their continuations; standalone lines and unknown levels always show. The text query narrows every group, matching any line of a record block.
-const filterEntries = (entries, minRank, category, module, query) => {
+// Records below the level floor or outside the chosen category (null = no filter) hide with their continuations; standalone lines and unknown levels always show. The text query narrows every group, matching any line of a record block.
+const filterEntries = (entries, minRank, category, query) => {
   const out = [];
   for (const group of groupEntries(entries)) {
     const record = group[0].record;
@@ -246,7 +246,6 @@ const filterEntries = (entries, minRank, category, module, query) => {
       const rank = LEVEL_RANK[record.level];
       if (rank !== undefined && rank < minRank) continue;
       if (category !== null && record.tier !== category) continue;
-      if (module !== null && record.module !== module) continue;
     }
     if (query && !group.some((e) => e.line.toLowerCase().includes(query)))
       continue;
@@ -339,15 +338,6 @@ const LogFileViewPage = () => {
     CATEGORY_OPTIONS.some((option) => option.value === categorySetting)
       ? categorySetting
       : null;
-  const [moduleSetting, setModuleSetting] = useBrowserStorage(
-    'log-viewer-module',
-    'all'
-  );
-  // Stored selections carry an 'm:' prefix so a module literally named "all" can never collide with the sentinel; anything else means no filter.
-  const moduleFilter =
-    typeof moduleSetting === 'string' && moduleSetting.startsWith('m:')
-      ? moduleSetting.slice(2)
-      : null;
   // The text filter is deliberately ephemeral — searches are moments, not settings.
   const [search, setSearch] = useState('');
   const query = search.trim().toLowerCase();
@@ -362,27 +352,11 @@ const LogFileViewPage = () => {
     [content]
   );
 
-  // The module list comes from the loaded tail itself; the vocabulary is open-ended. A module name can span tiers (a plugin keyed like a daemon), so the map holds every tier seen.
-  const { modules, moduleTiers } = useMemo(() => {
-    const tiers = new Map();
-    for (const entry of entries) {
-      if (!entry.record) continue;
-      const seen = tiers.get(entry.record.module);
-      if (seen) seen.add(entry.record.tier);
-      else tiers.set(entry.record.module, new Set([entry.record.tier]));
-    }
-    return { modules: [...tiers.keys()].sort(), moduleTiers: tiers };
-  }, [entries]);
-
-  // The module control only exists in debug mode, and its filter only applies while the control is visible — no hidden active state.
-  const debugMode = minLevel < 20;
-  const effectiveModule = debugMode ? moduleFilter : null;
-
   // Render only the last MAX_RENDER_LINES; hiddenLines drives the "showing the last N lines" notice.
   const { blocks, cols, hiddenLines } = useMemo(() => {
     let kept = entries;
-    if (minLevel || category !== null || effectiveModule !== null || query)
-      kept = filterEntries(entries, minLevel, category, effectiveModule, query);
+    if (minLevel || category !== null || query)
+      kept = filterEntries(entries, minLevel, category, query);
     const hidden = Math.max(0, kept.length - MAX_RENDER_LINES);
     if (hidden) kept = kept.slice(hidden);
     const built = buildBlocks(newestFirst ? reverseEntries(kept) : kept);
@@ -406,7 +380,7 @@ const LogFileViewPage = () => {
       },
       hiddenLines: hidden,
     };
-  }, [entries, newestFirst, minLevel, category, effectiveModule, query]);
+  }, [entries, newestFirst, minLevel, category, query]);
 
   // One notice: line-cap wins over the byte-truncation banner since it states what's actually on screen.
   const notice =
@@ -510,49 +484,11 @@ const LogFileViewPage = () => {
             size="xs"
             label="Category"
             value={category === null ? 'all' : category}
-            onChange={(value) => {
-              setCategorySetting(value);
-              // Reset only a provably incompatible selection, and only while the Module control is visible: a module of unknown tier stays engaged — the per-record filter already keeps wrong rows out.
-              const tiers =
-                moduleFilter === null ? null : moduleTiers.get(moduleFilter);
-              if (value !== 'all' && debugMode && tiers && !tiers.has(value))
-                setModuleSetting('all');
-            }}
+            onChange={(value) => setCategorySetting(value)}
             allowDeselect={false}
             data={CATEGORY_OPTIONS}
             style={{ width: 130 }}
           />
-          {debugMode && (
-            <Select
-              size="xs"
-              label="Module"
-              value={moduleFilter === null ? 'all' : `m:${moduleFilter}`}
-              onChange={(value) => setModuleSetting(value)}
-              allowDeselect={false}
-              searchable
-              maxDropdownHeight={300}
-              data={[
-                { value: 'all', label: 'All modules' },
-                // The active selection stays listed even when the current tail lacks it, so the filter never silently disengages or re-engages; options outside the active category are disabled.
-                ...(moduleFilter !== null && !modules.includes(moduleFilter)
-                  ? [moduleFilter]
-                  : []
-                )
-                  .concat(modules)
-                  .sort()
-                  .map((m) => ({
-                    value: `m:${m}`,
-                    label: m,
-                    // Grey out only when every one of the module's known tiers is excluded; ghosts stay selectable.
-                    disabled:
-                      category !== null &&
-                      moduleTiers.has(m) &&
-                      !moduleTiers.get(m).has(category),
-                  })),
-              ]}
-              style={{ width: 150 }}
-            />
-          )}
           <Select
             size="xs"
             label="Order"

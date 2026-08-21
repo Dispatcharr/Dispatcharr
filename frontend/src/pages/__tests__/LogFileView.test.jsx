@@ -255,9 +255,7 @@ describe('LogFileViewPage', () => {
       screen.getByText('2026-08-21 09:35:01,472 [UTC-3:30]')
     ).toBeInTheDocument();
     // An offset-less stamp (the pre-collector boot window) is left alone.
-    expect(
-      screen.getByText('2026-08-21 09:35:01,472')
-    ).toBeInTheDocument();
+    expect(screen.getByText('2026-08-21 09:35:01,472')).toBeInTheDocument();
     expect(screen.queryByText(/\+1200/)).not.toBeInTheDocument();
   });
 
@@ -677,88 +675,6 @@ describe('LogFileViewPage', () => {
     expect(screen.queryByText(/toasty/)).not.toBeInTheDocument();
   });
 
-  it('filters records by module with their continuations', async () => {
-    // The Module control only exists in debug mode.
-    localStorage.setItem('log-viewer-min-level', '10');
-    API.getLogFile.mockResolvedValue({
-      content: [
-        '2026-08-21 10:00:00,000 INFO apps.epg.tasks epg tick',
-        '2026-08-21 10:00:01,000 ERROR core.tasks core boom',
-        '    core continuation detail',
-        '2026-08-21 10:00:02,000 INFO apps.m3u.tasks m3u tick',
-      ].join('\n'),
-      truncated: false,
-    });
-    renderPage();
-    await screen.findByText(/epg tick/);
-
-    fireEvent.change(screen.getByLabelText('Module'), {
-      target: { value: 'm:core' },
-    });
-    expect(screen.getByText(/core boom/)).toBeInTheDocument();
-    // The unstamped continuation stays with its record.
-    expect(screen.getByText(/core continuation detail/)).toBeInTheDocument();
-    expect(screen.queryByText(/epg tick/)).not.toBeInTheDocument();
-    expect(screen.queryByText(/m3u tick/)).not.toBeInTheDocument();
-
-    fireEvent.change(screen.getByLabelText('Module'), {
-      target: { value: 'all' },
-    });
-    expect(screen.getByText(/epg tick/)).toBeInTheDocument();
-  });
-
-  it('keeps a stored module filter engaged even when the tail lacks it', async () => {
-    // The selection stays honest instead of silently disengaging and snapping back on a later poll.
-    localStorage.setItem('log-viewer-min-level', '10');
-    localStorage.setItem('log-viewer-module', '"m:ghost"');
-    API.getLogFile.mockResolvedValue({
-      content: '2026-08-21 10:00:00,000 INFO core.tasks alive\n',
-      truncated: false,
-    });
-    renderPage();
-    await waitFor(() => {
-      expect(
-        screen.getByText('(no records match the filters)')
-      ).toBeInTheDocument();
-    });
-    expect(screen.getByLabelText('Module')).toHaveValue('m:ghost');
-  });
-
-  it('treats an unprefixed legacy stored module as no filter', async () => {
-    localStorage.setItem('log-viewer-min-level', '10');
-    localStorage.setItem('log-viewer-module', '"ghost"');
-    API.getLogFile.mockResolvedValue({
-      content: '2026-08-21 10:00:00,000 INFO core.tasks alive\n',
-      truncated: false,
-    });
-    renderPage();
-    await screen.findByText(/alive/);
-    expect(screen.getByLabelText('Module')).toHaveValue('all');
-  });
-
-  it('handles a module literally named all without colliding with the sentinel', async () => {
-    localStorage.setItem('log-viewer-min-level', '10');
-    API.getLogFile.mockResolvedValue({
-      content: [
-        '2026-08-21 10:00:00,000 INFO plugins.all Plugin loaded',
-        '2026-08-21 10:00:01,000 INFO core.tasks other line',
-      ].join('\n'),
-      truncated: false,
-    });
-    renderPage();
-    await screen.findByText(/Plugin loaded/);
-    // Prefixed values keep the option list free of duplicates.
-    const values = Array.from(
-      screen.getByLabelText('Module').querySelectorAll('option')
-    ).map((o) => o.value);
-    expect(values).toEqual(['all', 'm:all', 'm:core']);
-    fireEvent.change(screen.getByLabelText('Module'), {
-      target: { value: 'm:all' },
-    });
-    expect(screen.getByText(/Plugin loaded/)).toBeInTheDocument();
-    expect(screen.queryByText(/other line/)).not.toBeInTheDocument();
-  });
-
   it('never hides the collector pass-through records behind a filter', async () => {
     // A known source shape with an unparseable date passes through the collector unstamped; the viewer must not fold it into the record above.
     API.getLogFile.mockResolvedValue({
@@ -806,7 +722,7 @@ describe('LogFileViewPage', () => {
     );
   });
 
-  it('filters by category at the Info floor with no Module control present', async () => {
+  it('filters by category, the only record filter besides level and text', async () => {
     API.getLogFile.mockResolvedValue({
       content: [
         '2026-08-21 10:00:00,000 INFO apps.epg.tasks app line',
@@ -825,6 +741,11 @@ describe('LogFileViewPage', () => {
     expect(screen.getByText(/daemon line/)).toBeInTheDocument();
     expect(screen.getByText(/framework line/)).toBeInTheDocument();
     expect(screen.queryByText(/app line/)).not.toBeInTheDocument();
+    // Dropping to debug no longer summons a second-level drill-down.
+    fireEvent.change(screen.getByLabelText('Level'), {
+      target: { value: '10' },
+    });
+    expect(screen.queryByLabelText('Module')).not.toBeInTheDocument();
   });
 
   it('collects the plugin infrastructure under the Plugins category', async () => {
@@ -849,125 +770,6 @@ describe('LogFileViewPage', () => {
     expect(screen.getByTitle('apps.plugins.loader')).toHaveTextContent(
       'plugin_sys'
     );
-  });
-
-  it('shows the Module control in debug mode and disables options outside the category', async () => {
-    localStorage.setItem('log-viewer-min-level', '10');
-    API.getLogFile.mockResolvedValue({
-      content: [
-        '2026-08-21 10:00:00,000 DEBUG apps.epg.tasks app line',
-        '2026-08-21 10:00:01,000 INFO postgres [312] LOG:  service line',
-      ].join('\n'),
-      truncated: false,
-    });
-    renderPage();
-    await screen.findByText(/app line/);
-    fireEvent.change(screen.getByLabelText('Category'), {
-      target: { value: 'app' },
-    });
-    const options = Array.from(
-      screen.getByLabelText('Module').querySelectorAll('option')
-    );
-    expect(options.find((o) => o.value === 'm:epg').disabled).toBe(false);
-    expect(options.find((o) => o.value === 'm:postgres').disabled).toBe(true);
-  });
-
-  it('resets an incompatible module selection when the category changes', async () => {
-    localStorage.setItem('log-viewer-min-level', '10');
-    localStorage.setItem('log-viewer-module', '"m:postgres"');
-    API.getLogFile.mockResolvedValue({
-      content: [
-        '2026-08-21 10:00:00,000 INFO apps.epg.tasks app line',
-        '2026-08-21 10:00:01,000 INFO postgres [312] LOG:  service line',
-      ].join('\n'),
-      truncated: false,
-    });
-    renderPage();
-    await screen.findByText(/service line/);
-    fireEvent.change(screen.getByLabelText('Category'), {
-      target: { value: 'app' },
-    });
-    expect(screen.getByLabelText('Module')).toHaveValue('all');
-    expect(screen.getByText(/app line/)).toBeInTheDocument();
-  });
-
-  it('keeps a module spanning two tiers selectable in each of them', async () => {
-    localStorage.setItem('log-viewer-min-level', '10');
-    localStorage.setItem('log-viewer-module', '"m:redis"');
-    API.getLogFile.mockResolvedValue({
-      content: [
-        '2026-08-21 10:00:00,000 INFO redis 1:M Ready to accept connections',
-        '2026-08-21 10:00:01,000 INFO plugins.redis Plugin loaded',
-      ].join('\n'),
-      truncated: false,
-    });
-    renderPage();
-    await screen.findByText(/Plugin loaded/);
-    // The name exists in both tiers, so a category covering either keeps the selection.
-    fireEvent.change(screen.getByLabelText('Category'), {
-      target: { value: 'plugins' },
-    });
-    expect(screen.getByLabelText('Module')).toHaveValue('m:redis');
-    expect(screen.getByText(/Plugin loaded/)).toBeInTheDocument();
-    expect(screen.queryByText(/Ready to accept/)).not.toBeInTheDocument();
-    // A category outside every known tier still resets it.
-    fireEvent.change(screen.getByLabelText('Category'), {
-      target: { value: 'app' },
-    });
-    expect(screen.getByLabelText('Module')).toHaveValue('all');
-  });
-
-  it('keeps a ghost module engaged and selectable across a category change', async () => {
-    localStorage.setItem('log-viewer-min-level', '10');
-    localStorage.setItem('log-viewer-module', '"m:ghost"');
-    API.getLogFile.mockResolvedValue({
-      content: '2026-08-21 10:00:00,000 INFO core.tasks alive\n',
-      truncated: false,
-    });
-    renderPage();
-    await waitFor(() => {
-      expect(
-        screen.getByText('(no records match the filters)')
-      ).toBeInTheDocument();
-    });
-    // Unknown tier is not evidence of incompatibility: no reset, no greying.
-    fireEvent.change(screen.getByLabelText('Category'), {
-      target: { value: 'app' },
-    });
-    expect(screen.getByLabelText('Module')).toHaveValue('m:ghost');
-    const ghost = Array.from(
-      screen.getByLabelText('Module').querySelectorAll('option')
-    ).find((o) => o.value === 'm:ghost');
-    expect(ghost.disabled).toBe(false);
-  });
-
-  it('does not wipe the stored module when the category changes before the log loads', async () => {
-    localStorage.setItem('log-viewer-min-level', '10');
-    localStorage.setItem('log-viewer-module', '"m:epg"');
-    API.getLogFile.mockReturnValue(new Promise(() => {}));
-    renderPage();
-    fireEvent.change(screen.getByLabelText('Category'), {
-      target: { value: 'app' },
-    });
-    expect(localStorage.getItem('log-viewer-module')).toBe('"m:epg"');
-  });
-
-  it('leaves a dormant module selection alone when the category changes at Info', async () => {
-    localStorage.setItem('log-viewer-module', '"m:epg"');
-    API.getLogFile.mockResolvedValue({
-      content: '2026-08-21 10:00:00,000 INFO core.tasks alive\n',
-      truncated: false,
-    });
-    renderPage();
-    await screen.findByText(/alive/);
-    fireEvent.change(screen.getByLabelText('Category'), {
-      target: { value: 'services' },
-    });
-    // The hidden control's selection survives; it reappears intact in debug mode.
-    fireEvent.change(screen.getByLabelText('Level'), {
-      target: { value: '10' },
-    });
-    expect(screen.getByLabelText('Module')).toHaveValue('m:epg');
   });
 
   it('maps the loader import name to the plugin key under Plugins', async () => {
@@ -995,21 +797,6 @@ describe('LogFileViewPage', () => {
     });
     expect(screen.getByText(/DB connection reused/)).toBeInTheDocument();
     expect(screen.queryByText(/Sweep done/)).not.toBeInTheDocument();
-  });
-
-  it('ignores a stored module filter while its control is hidden at Info', async () => {
-    localStorage.setItem('log-viewer-module', '"m:epg"');
-    API.getLogFile.mockResolvedValue({
-      content: [
-        '2026-08-21 10:00:00,000 INFO apps.epg.tasks epg line',
-        '2026-08-21 10:00:01,000 INFO core.tasks core line',
-      ].join('\n'),
-      truncated: false,
-    });
-    renderPage();
-    await screen.findByText(/epg line/);
-    // No hidden active state: the filter only applies when its control is visible.
-    expect(screen.getByText(/core line/)).toBeInTheDocument();
   });
 
   it('filters by free text across whole record blocks', async () => {
