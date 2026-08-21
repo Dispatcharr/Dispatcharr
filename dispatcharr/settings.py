@@ -558,6 +558,12 @@ else:
 
 LOG_LEVEL = LOG_LEVEL_MAP.get(LOG_LEVEL_NAME, 20)  # Default to INFO (20) if invalid
 
+# Read before Django re-stamps os.environ["TZ"] to TIME_ZONE. Migration 0020
+# seeds the display time zone from this on a fresh install.
+DISPATCHARR_DISPLAY_TZ = (
+    os.environ.get("DISPATCHARR_TIME_ZONE") or os.environ.get("TZ") or "UTC"
+)
+
 # Loggers can fire during app loading before dictConfig runs (task registration,
 # warnings); give that output the canonical shape instead of the bare last-resort form.
 configure_early_logging(LOG_LEVEL)

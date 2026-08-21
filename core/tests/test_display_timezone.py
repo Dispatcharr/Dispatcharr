@@ -2,6 +2,7 @@
 
 import logging
 
+from django.conf import settings
 from django.test import SimpleTestCase
 
 from dispatcharr.display_timezone import DisplayTimezoneFormatter
@@ -45,3 +46,10 @@ class DisplayTimezoneFormatterTests(SimpleTestCase):
         self.assertEqual(
             self.formatter.formatTime(_record(), datefmt="%H:%M"), "06:53"
         )
+
+
+class DisplayZoneSeedTests(SimpleTestCase):
+    def test_the_migration_seed_source_is_still_defined(self):
+        # Migration 0020 seeds the system time zone from this setting; without
+        # it every fresh install silently seeds UTC and renders the wrong clock.
+        self.assertTrue(getattr(settings, "DISPATCHARR_DISPLAY_TZ", None))
