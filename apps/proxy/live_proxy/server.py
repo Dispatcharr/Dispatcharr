@@ -103,12 +103,21 @@ class ProxyServer:
             logger.error(f"Failed to initialize Redis: {e}")
             self.redis_client = None
 
-        # Start cleanup thread
-        self.cleanup_interval = getattr(Config, 'CLEANUP_INTERVAL', 60)
-        self._start_cleanup_thread()
+        # Full runtime (cleanup + pubsub) only in stream-serving workers.
+        # Celery/Daphne use client-only mode for Redis coordination (stop events).
+        from .runtime import should_run_live_proxy_runtime
+        from dispatcharr.db.process_label import get_process_role
 
-        # Start event listener for Redis pubsub messages
-        self._start_event_listener()
+        self.cleanup_interval = getattr(Config, 'CLEANUP_INTERVAL', 60)
+        if should_run_live_proxy_runtime():
+            self._start_cleanup_thread()
+            self._start_event_listener()
+        else:
+            logger.info(
+                "ProxyServer client-only mode for process role %s "
+                "(Redis coordination only; no cleanup/event listener)",
+                get_process_role(),
+            )
 
     def _setup_redis_connection(self):
         """Setup Redis connection with retry logic"""
@@ -178,28 +187,9 @@ class ProxyServer:
                     else:
                         # Fall back to creating a dedicated client if utility fails
                         logger.warning("Utility function for PubSub client failed, creating direct connection")
-                        from django.conf import settings
-                        import redis
-
-                        redis_host = os.environ.get("REDIS_HOST", getattr(settings, 'REDIS_HOST', 'localhost'))
-                        redis_port = int(os.environ.get("REDIS_PORT", getattr(settings, 'REDIS_PORT', 6379)))
-                        redis_db = int(os.environ.get("REDIS_DB", getattr(settings, 'REDIS_DB', 0)))
-                        redis_password = os.environ.get("REDIS_PASSWORD", getattr(settings, 'REDIS_PASSWORD', ''))
-                        redis_user = os.environ.get("REDIS_USER", getattr(settings, 'REDIS_USER', ''))
-
-                        ssl_params = getattr(settings, 'REDIS_SSL_PARAMS', {})
-                        pubsub_client = redis.Redis(
-                            host=redis_host,
-                            port=redis_port,
-                            db=redis_db,
-                            password=redis_password if redis_password else None,
-                            username=redis_user if redis_user else None,
-                            socket_timeout=60,
-                            socket_connect_timeout=10,
-                            socket_keepalive=True,
-                            health_check_interval=30,
+                        pubsub_client = RedisClient._make_client(
                             decode_responses=True,
-                            **ssl_params
+                            socket_timeout=None,
                         )
                         logger.info("Created fallback Redis PubSub client for event listener")
 

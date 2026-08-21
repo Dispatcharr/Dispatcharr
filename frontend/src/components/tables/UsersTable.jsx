@@ -23,7 +23,7 @@ import {
 } from '@mantine/core';
 import { CustomTable, useTable } from './CustomTable';
 import ConfirmationDialog from '../ConfirmationDialog';
-import useLocalStorage from '../../hooks/useLocalStorage';
+import useBrowserStorage from '../../hooks/useBrowserStorage';
 import { useDateTimeFormat, format } from '../../utils/dateTimeUtils.js';
 
 const deleteUser = (id) => {
@@ -71,7 +71,7 @@ const XCPasswordCell = ({ getValue }) => {
 };
 
 const UserRowActions = ({ theme, row, editUser, handleDeleteUser }) => {
-  const [tableSize, _] = useLocalStorage('table-size', 'default');
+  const [tableSize, _] = useBrowserStorage('table-size', 'default');
   const authUser = useAuthStore((s) => s.user);
 
   const onEdit = useCallback(() => {

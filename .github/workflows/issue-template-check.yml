@@ -26,6 +26,6 @@ jobs:
             ## Issue not opened from a template
 
 
-            This issue was closed because it was not opened using one of the available issue templates.
+            This issue was closed because it was not opened using one of the available issue templates or was opened from the CLI instead of GitHub's web interface.
 
             Please [open a new issue]({new-issue-url}) and select the appropriate template. This helps us triage and address issues efficiently.

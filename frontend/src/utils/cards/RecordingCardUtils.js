@@ -84,18 +84,19 @@ export const extendRecordingById = async (recordingId, extraMinutes) => {
 };
 
 export const deleteSeriesAndRule = async (seriesInfo) => {
-  const { tvg_id, title } = seriesInfo;
+  const { tvg_id, title, epg_source_id } = seriesInfo;
   try {
     await API.bulkRemoveSeriesRecordings({
       tvg_id: tvg_id || '',
       title,
       scope: 'title',
+      ...(epg_source_id ? { epg_source_id } : {}),
     });
   } catch (error) {
     console.error('Failed to remove series recordings', error);
   }
   try {
-    await API.deleteSeriesRule(tvg_id, title);
+    await API.deleteSeriesRule(tvg_id, title, epg_source_id);
   } catch (error) {
     console.error('Failed to delete series rule', error);
   }
@@ -118,5 +119,9 @@ export const getSeasonLabel = (season, episode, onscreen) => {
 export const getSeriesInfo = (customProps) => {
   const cp = customProps || {};
   const pr = cp.program || {};
-  return { tvg_id: pr.tvg_id, title: pr.title };
+  const info = { tvg_id: pr.tvg_id, title: pr.title };
+  if (pr.epg_source_id != null && pr.epg_source_id !== '') {
+    info.epg_source_id = pr.epg_source_id;
+  }
+  return info;
 };

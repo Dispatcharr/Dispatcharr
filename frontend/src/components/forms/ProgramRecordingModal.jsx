@@ -12,12 +12,18 @@ export default function ProgramRecordingModal({
   recording,
   existingRuleMode,
   existingRule,
+  epgSourceId,
   onRecordOne,
   onRecordSeriesAll,
   onRecordSeriesNew,
   onExistingRuleModeChange,
 }) {
   const [editorOpen, setEditorOpen] = useState(false);
+
+  // Delete has to key off the source stored on the rule, not the source of the
+  // channel that was clicked: sending a source for an unsourced rule would
+  // match nothing and delete it.
+  const ruleSourceId = existingRule?.epg_source_id || undefined;
 
   const handleRemoveRecording = async () => {
     try {
@@ -33,13 +39,14 @@ export default function ProgramRecordingModal({
     await deleteSeriesAndRule({
       tvg_id: program.tvg_id,
       title: program.title,
+      epg_source_id: ruleSourceId,
     });
     // recordings_refreshed WS event triggers the debounced fetchRecordings()
     onClose();
   };
 
   const handleRemoveSeriesRule = async () => {
-    await deleteSeriesRuleByTvgId(program.tvg_id, program.title);
+    await deleteSeriesRuleByTvgId(program.tvg_id, program.title, ruleSourceId);
     onExistingRuleModeChange(null);
     onClose();
   };
@@ -125,15 +132,24 @@ export default function ProgramRecordingModal({
         opened={editorOpen}
         onClose={() => setEditorOpen(false)}
         initialRule={
-          existingRule ||
-          (program
+          existingRule
             ? {
-                tvg_id: program.tvg_id,
-                title: program.title,
-                title_mode: 'exact',
-                mode: 'all',
+                ...existingRule,
+                ...(epgSourceId &&
+                (existingRule.epg_source_id == null ||
+                  existingRule.epg_source_id === '')
+                  ? { epg_source_id: epgSourceId }
+                  : {}),
               }
-            : null)
+            : program
+              ? {
+                  tvg_id: program.tvg_id,
+                  title: program.title,
+                  title_mode: 'exact',
+                  mode: 'all',
+                  ...(epgSourceId ? { epg_source_id: epgSourceId } : {}),
+                }
+              : null
         }
         onSaved={() => {
           onClose();

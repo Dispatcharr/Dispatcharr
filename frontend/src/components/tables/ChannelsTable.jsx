@@ -78,7 +78,7 @@ import useChannelsTableStore from '../../store/channelsTable';
 import ChannelTableStreams from './ChannelTableStreams';
 import CatchupIndicator from '../CatchupIndicator';
 import LazyLogo from '../LazyLogo';
-import useLocalStorage from '../../hooks/useLocalStorage';
+import useBrowserStorage from '../../hooks/useBrowserStorage';
 import useEPGsStore from '../../store/epgs';
 import { useChannelLogoSelection } from '../../hooks/useSmartLogos';
 import { CustomTable, useTable } from './CustomTable';
@@ -320,7 +320,7 @@ const ChannelsTable = ({ onReady }) => {
   const hasChannels = useChannelsStore((s) => s.channelIds.length > 0);
   const profiles = useChannelsStore((s) => s.profiles);
   const selectedProfileId = useChannelsStore((s) => s.selectedProfileId);
-  const [, setTablePrefs] = useLocalStorage('channel-table-prefs', {
+  const [, setTablePrefs] = useBrowserStorage('channel-table-prefs', {
     pageSize: 50,
   });
 
@@ -341,21 +341,72 @@ const ChannelsTable = ({ onReady }) => {
   const [channelModalOpen, setChannelModalOpen] = useState(false);
   const [channelBatchModalOpen, setChannelBatchModalOpen] = useState(false);
   const [recordingModalOpen, setRecordingModalOpen] = useState(false);
-  const [showDisabled, setShowDisabled] = useState(true);
-  const [showOnlyStreamlessChannels, setShowOnlyStreamlessChannels] =
-    useState(false);
-  const [showOnlyStaleChannels, setShowOnlyStaleChannels] = useState(false);
-  const [showOnlyOverriddenChannels, setShowOnlyOverriddenChannels] =
-    useState(false);
-  const [showOnlyCatchupChannels, setShowOnlyCatchupChannels] = useState(false);
-  const [visibilityFilter, setVisibilityFilter] = useState('active');
-
-  const [paginationString, setPaginationString] = useState('');
-  const [filters, setFilters] = useState({
+  const DEFAULT_CHANNELS_FILTERS = {
     name: '',
     channel_group: '',
     epg: '',
-  });
+    showDisabled: true,
+    showOnlyStreamlessChannels: false,
+    showOnlyStaleChannels: false,
+    showOnlyOverriddenChannels: false,
+    showOnlyCatchupChannels: false,
+    visibilityFilter: 'active',
+  };
+  const [tableFilters, setTableFilters] = useBrowserStorage(
+    'channels-table-filters',
+    DEFAULT_CHANNELS_FILTERS,
+    { storage: 'session' }
+  );
+  const {
+    showDisabled,
+    showOnlyStreamlessChannels,
+    showOnlyStaleChannels,
+    showOnlyOverriddenChannels,
+    showOnlyCatchupChannels,
+    visibilityFilter,
+  } = tableFilters;
+  // Column filters used by debounce / header inputs (subset of tableFilters)
+  const filters = useMemo(
+    () => ({
+      name: tableFilters.name,
+      channel_group: tableFilters.channel_group,
+      epg: tableFilters.epg,
+    }),
+    [tableFilters.name, tableFilters.channel_group, tableFilters.epg]
+  );
+  const setFilters = (updater) => {
+    setTableFilters((prev) => {
+      const nextColumnFilters =
+        typeof updater === 'function'
+          ? updater({
+              name: prev.name,
+              channel_group: prev.channel_group,
+              epg: prev.epg,
+            })
+          : updater;
+      return { ...prev, ...nextColumnFilters };
+    });
+  };
+  const setShowDisabled = (value) =>
+    setTableFilters((prev) => ({ ...prev, showDisabled: value }));
+  const setShowOnlyStreamlessChannels = (value) =>
+    setTableFilters((prev) => ({
+      ...prev,
+      showOnlyStreamlessChannels: value,
+    }));
+  const setShowOnlyStaleChannels = (value) =>
+    setTableFilters((prev) => ({ ...prev, showOnlyStaleChannels: value }));
+  const setShowOnlyOverriddenChannels = (value) =>
+    setTableFilters((prev) => ({
+      ...prev,
+      showOnlyOverriddenChannels: value,
+    }));
+  const setShowOnlyCatchupChannels = (value) =>
+    setTableFilters((prev) => ({ ...prev, showOnlyCatchupChannels: value }));
+  const setVisibilityFilter = (value) =>
+    setTableFilters((prev) => ({ ...prev, visibilityFilter: value }));
+
+  const [paginationString, setPaginationString] = useState('');
   const [, setIsLoading] = useState(true);
 
   const [hdhrUrl, setHDHRUrl] = useState(hdhrUrlBase);
@@ -385,7 +436,7 @@ const ChannelsTable = ({ onReady }) => {
 
   // Column sizing state for resizable columns
   // Store in localStorage but with empty object as default
-  const [columnSizing, setColumnSizing] = useLocalStorage(
+  const [columnSizing, setColumnSizing] = useBrowserStorage(
     'channels-table-column-sizing',
     {}
   );
@@ -812,8 +863,9 @@ const ChannelsTable = ({ onReady }) => {
   }, [fetchData]);
 
   useEffect(() => {
+    const profileName = profiles[selectedProfileId]?.name;
     const profileString =
-      selectedProfileId != '0' ? `/${profiles[selectedProfileId].name}` : '';
+      selectedProfileId != '0' && profileName ? `/${profileName}` : '';
     setHDHRUrl(`${hdhrUrlBase}${profileString}`);
     setEPGUrl(`${epgUrlBase}${profileString}`);
     setM3UUrl(`${m3uUrlBase}${profileString}`);
