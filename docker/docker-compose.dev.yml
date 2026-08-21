@@ -18,6 +18,10 @@ services:
       - REDIS_HOST=localhost
       - CELERY_BROKER_URL=redis://localhost:6379/0
       - DISPATCHARR_LOG_LEVEL=debug
+      # Redis idle-client timeout in seconds, and per-process redis-py /
+      # django-redis pool cap (Optional, defaults: 300 / 50)
+      #- REDIS_IDLE_TIMEOUT=300
+      #- REDIS_MAX_CONNECTIONS=50
       # First-time web setup from a public IP (optional). When unset, only
       # local/private networks may POST to initialize-superuser.
       #- DISPATCHARR_SETUP_ALLOWED_IP=203.0.113.50

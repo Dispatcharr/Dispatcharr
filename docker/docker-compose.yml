@@ -44,6 +44,9 @@ services:
       # Redis Connection
       - REDIS_HOST=redis
       - REDIS_PORT=6379
+      # Per-process redis-py / django-redis pool cap (default 50). Raise if streams
+      # queue on Redis under heavy concurrent load.
+      #- REDIS_MAX_CONNECTIONS=50
       # Redis Authentication (Optional)
       # Uncomment and set if your Redis requires authentication:
       #- REDIS_PASSWORD=your_strong_redis_password
@@ -154,6 +157,7 @@ services:
       # Redis — must match web service settings
       - REDIS_HOST=redis
       - REDIS_PORT=6379
+      #- REDIS_MAX_CONNECTIONS=50
       #- REDIS_PASSWORD=your_strong_redis_password
       #- REDIS_USER=your_redis_username
       # Redis TLS — must match web service
@@ -211,13 +215,16 @@ services:
     image: redis:latest
     container_name: dispatcharr_redis
     restart: unless-stopped
+    # Close idle clients after REDIS_IDLE_TIMEOUT seconds (default 300). Blocked
+    # Celery BRPOP waiters are exempt. Override with e.g. --timeout 600.
+    command: ["redis-server", "--timeout", "300"]
 
     # --- Authentication Configuration (Optional) ---
     # By default, Redis runs without authentication.
     # Choose ONE of the following options if authentication is required:
 
     # Option 1: Password-only authentication (Redis <6 or default user)
-    #command: ["redis-server", "--requirepass", "your_strong_redis_password"]
+    #command: ["redis-server", "--requirepass", "your_strong_redis_password", "--timeout", "300"]
 
     # Option 2: Redis 6+ ACL with username + password (requires custom config file - see Redis documentation for configuration)
     #command: ["redis-server", "/etc/redis/redis.conf"]
