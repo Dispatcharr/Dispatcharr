@@ -2325,6 +2325,9 @@ def sync_auto_channels(account_id, scan_start_time=None):
 
             logo_cache_by_url = {}
             epg_cache_by_tvg_id = {}
+            # URLs accepted by the group warmup below. Resolver trusts this
+            # set so valid streams do not re-encode/re-validate every hit.
+            valid_logo_urls = set()
             if has_streams:
                 # Collect unique URLs / tvg_ids in one DB call each.
                 stream_iter = (
@@ -2346,7 +2349,6 @@ def sync_auto_channels(account_id, scan_start_time=None):
                         logo_context_by_url.setdefault(
                             logo_url, f"stream '{stream_name or 'Unknown'}'"
                         )
-                valid_logo_urls = set()
                 for logo_url, logo_context in logo_context_by_url.items():
                     if logo_url in rejected_logo_urls:
                         continue
@@ -2386,12 +2388,37 @@ def sync_auto_channels(account_id, scan_start_time=None):
                     epg_cache_by_tvg_id = {d.tvg_id: d for d in epg_q}
 
             def _resolve_logo_for_stream(stream):
-                """Return a Logo for stream.logo_url, creating it once if needed."""
+                """Return a Logo for stream.logo_url, creating it once if needed.
+
+                Group warmup already validated unique provider URLs and filled
+                rejected_logo_urls / valid_logo_urls / logo_cache_by_url. The
+                common path is therefore set/cache lookup only. Validate again
+                only for a URL that never appeared in the warmup set, so an
+                oversized value still cannot reach the uniquely indexed
+                Logo.url column.
+                """
                 url = getattr(stream, "logo_url", None)
                 if not url:
                     return None
                 if url in rejected_logo_urls:
                     return rejected_logo
+
+                cached = logo_cache_by_url.get(url)
+                if cached is not None:
+                    return cached
+
+                if url in valid_logo_urls:
+                    created, _ = Logo.objects.get_or_create(
+                        url=url,
+                        defaults={
+                            "name": stream.name or stream.tvg_id or "Unknown"
+                        },
+                    )
+                    logo_cache_by_url[url] = created
+                    return created
+
+                # Rare: URL was not part of the group warmup. Keep the
+                # index-size guard before get_or_create.
                 validated_url = validate_logo_url(
                     url,
                     context=f"stream '{stream.name or 'Unknown'}'",
@@ -2399,12 +2426,12 @@ def sync_auto_channels(account_id, scan_start_time=None):
                 if validated_url is None:
                     rejected_logo_urls.add(url)
                     return rejected_logo
-                cached = logo_cache_by_url.get(validated_url)
-                if cached is not None:
-                    return cached
+
                 created, _ = Logo.objects.get_or_create(
                     url=validated_url,
-                    defaults={"name": stream.name or stream.tvg_id or "Unknown"},
+                    defaults={
+                        "name": stream.name or stream.tvg_id or "Unknown"
+                    },
                 )
                 logo_cache_by_url[validated_url] = created
                 return created

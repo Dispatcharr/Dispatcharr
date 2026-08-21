@@ -220,32 +220,25 @@ def validate_logo_url(logo_url, max_length=2000, context=None):
     """
     if not logo_url:
         return logo_url
+
+    prefix = (
+        f"Logo URL rejected for {context}"
+        if context
+        else "Logo URL rejected"
+    )
+
     if not isinstance(logo_url, str):
-        if context:
-            logger.warning(
-                "Logo URL rejected for %s: value is not a string", context
-            )
-        else:
-            logger.warning("Logo URL rejected: value is not a string")
+        logger.warning("%s: value is not a string", prefix)
         return None
 
     encoded_length = len(logo_url.encode("utf-8"))
     if encoded_length > max_length:
-        if context:
-            logger.warning(
-                "Logo URL rejected for %s: encoded length %d bytes exceeds "
-                "safe limit %d bytes",
-                context,
-                encoded_length,
-                max_length,
-            )
-        else:
-            logger.warning(
-                "Logo URL rejected: encoded length %d bytes exceeds safe "
-                "limit %d bytes",
-                encoded_length,
-                max_length,
-            )
+        logger.warning(
+            "%s: encoded length %d bytes exceeds safe limit %d bytes",
+            prefix,
+            encoded_length,
+            max_length,
+        )
         return None
     return logo_url
 
