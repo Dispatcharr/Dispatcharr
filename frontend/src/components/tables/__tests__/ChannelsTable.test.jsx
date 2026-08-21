@@ -513,7 +513,7 @@ const setupMocks = ({
 
   vi.mocked(useChannelsStore).mockImplementation((sel) =>
     sel({
-      channelIds: channels.map((c) => c.id),
+      channelIds: channels.filter(Boolean).map((c) => c.id),
       profiles,
       selectedProfileId,
       channelGroups,
@@ -1230,6 +1230,12 @@ describe('ChannelsTable', () => {
       expect(getRowStyles({ original: channel })).toMatchObject({
         className: expect.stringMatching(/stale/i),
       });
+    });
+
+    it('does not crash when the channels array contains a nullish entry', () => {
+      const channel = makeChannel({ id: 13, streams: [] });
+      setupMocks({ channels: [channel, null, undefined] });
+      expect(() => render(<ChannelsTable />)).not.toThrow();
     });
   });
 

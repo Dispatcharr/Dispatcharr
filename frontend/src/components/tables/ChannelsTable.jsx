@@ -287,7 +287,14 @@ const ChannelsTable = ({ onReady }) => {
    */
 
   // store/channelsTable
-  const data = useChannelsTableStore((s) => s.channels);
+  const rawChannels = useChannelsTableStore((s) => s.channels);
+  // Guards against transient nullish entries (e.g. a websocket-driven
+  // requery racing a render) reaching react-table's row model, which
+  // would otherwise crash every row renderer on row.original.id.
+  const data = useMemo(
+    () => (rawChannels.some((c) => !c) ? rawChannels.filter(Boolean) : rawChannels),
+    [rawChannels]
+  );
   const pageCount = useChannelsTableStore((s) => s.pageCount);
 
   const rowClassMap = useMemo(() => {
@@ -296,7 +303,7 @@ const ChannelsTable = ({ onReady }) => {
       const hasStreams = channel.streams?.length > 0;
       if (!hasStreams) {
         map[channel.id] = 'no-streams-row';
-      } else if (channel.streams.some((s) => s.is_stale)) {
+      } else if (channel.streams?.some((s) => s.is_stale)) {
         map[channel.id] = 'has-stale-streams-row';
       }
     }
