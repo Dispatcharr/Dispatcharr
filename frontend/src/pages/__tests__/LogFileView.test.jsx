@@ -219,13 +219,12 @@ describe('LogFileViewPage', () => {
     });
     renderPage();
     await screen.findByText(/Processed 3133/);
-    expect(screen.getByText('epg')).toHaveAttribute('title', 'apps.epg.tasks');
-    expect(screen.getByText('event_channel_managarr')).toHaveAttribute(
-      'title',
-      'plugins.event_channel_managarr'
-    );
-    expect(screen.getByText('nginx')).toHaveAttribute('title', 'nginx.access');
-    expect(screen.getByText('postgres')).toHaveAttribute('title', 'postgres');
+    expect(screen.getByTitle('apps.epg.tasks')).toHaveTextContent('epg');
+    expect(
+      screen.getByTitle('plugins.event_channel_managarr')
+    ).toHaveTextContent('event_channel_managarr');
+    expect(screen.getByTitle('nginx.access')).toHaveTextContent('nginx');
+    expect(screen.getByTitle('postgres')).toHaveTextContent('postgres');
     // The raw dotted name is display-only metadata now, not rendered text.
     expect(screen.queryByText('apps.epg.tasks')).not.toBeInTheDocument();
     // The stamp recedes to grey.
@@ -561,9 +560,48 @@ describe('LogFileViewPage', () => {
     fireEvent.click(screen.getByText('Refresh'));
     await waitFor(() => {
       expect(
-        screen.getByText('(no records at this level)')
+        screen.getByText('(no records match the filters)')
       ).toBeInTheDocument();
     });
+  });
+
+  it('filters records by module with their continuations', async () => {
+    API.getLogFile.mockResolvedValue({
+      content: [
+        '2026-08-21 10:00:00,000 INFO apps.epg.tasks epg tick',
+        '2026-08-21 10:00:01,000 ERROR core.tasks core boom',
+        'core continuation detail',
+        '2026-08-21 10:00:02,000 INFO apps.m3u.tasks m3u tick',
+      ].join('\n'),
+      truncated: false,
+    });
+    renderPage();
+    await screen.findByText(/epg tick/);
+
+    fireEvent.change(screen.getByLabelText('Module'), {
+      target: { value: 'core' },
+    });
+    expect(screen.getByText(/core boom/)).toBeInTheDocument();
+    // The unstamped continuation stays with its record.
+    expect(screen.getByText(/core continuation detail/)).toBeInTheDocument();
+    expect(screen.queryByText(/epg tick/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/m3u tick/)).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText('Module'), {
+      target: { value: 'all' },
+    });
+    expect(screen.getByText(/epg tick/)).toBeInTheDocument();
+  });
+
+  it('falls back to all modules when the stored module is absent from the file', async () => {
+    localStorage.setItem('log-viewer-module', '"ghost"');
+    API.getLogFile.mockResolvedValue({
+      content: '2026-08-21 10:00:00,000 INFO core.tasks alive\n',
+      truncated: false,
+    });
+    renderPage();
+    await screen.findByText(/alive/);
+    expect(screen.getByLabelText('Module')).toHaveValue('all');
   });
 
   it('keeps a multi-line record intact when reversed', async () => {

@@ -139,15 +139,17 @@ const LEVEL_OPTIONS = [
   { value: '40', label: 'Error +' },
 ];
 
-// Records below the floor hide with their continuations; unknown levels and unstamped shapes always show.
-const filterByLevel = (lines, minRank) => {
+// Records below the level floor or outside the chosen module hide with their continuations; unknown levels and unstamped shapes always show.
+const filterLines = (lines, minRank, module) => {
   const out = [];
   let suppress = false;
   for (const line of lines) {
     const record = parseRecord(line);
     if (record) {
       const rank = LEVEL_RANK[record.level];
-      suppress = rank !== undefined && rank < minRank;
+      suppress =
+        (rank !== undefined && rank < minRank) ||
+        (module !== 'all' && record.module !== module);
     } else if (RECORD_START.test(line)) {
       suppress = false;
     }
@@ -218,23 +220,41 @@ const LogFileViewPage = () => {
   )
     ? Number(minLevelSetting)
     : 0;
+  const [moduleSetting, setModuleSetting] = useBrowserStorage(
+    'log-viewer-module',
+    'all'
+  );
   const [loadError, setLoadError] = useState(false);
 
   // Guards the auto-refresh loop: skip a tick mid-flight, and count failures so a persistently-failing tail switches itself off.
   const loadingRef = useRef(false);
   const failuresRef = useRef(0);
 
+  // The module list comes from the loaded tail itself; the vocabulary is open-ended.
+  const modules = useMemo(() => {
+    const seen = new Set();
+    for (const line of content ? content.split('\n') : []) {
+      const record = parseRecord(line);
+      if (record) seen.add(record.module);
+    }
+    return [...seen].sort();
+  }, [content]);
+
+  // A stored module missing from this file falls back to All rather than an empty select.
+  const moduleFilter = modules.includes(moduleSetting) ? moduleSetting : 'all';
+
   // Render only the last MAX_RENDER_LINES; hiddenLines drives the "showing the last N lines" notice.
   const { blocks, hiddenLines } = useMemo(() => {
     let all = content ? content.split('\n') : [];
-    if (minLevel) all = filterByLevel(all, minLevel);
+    if (minLevel || moduleFilter !== 'all')
+      all = filterLines(all, minLevel, moduleFilter);
     const hidden = Math.max(0, all.length - MAX_RENDER_LINES);
     const kept = hidden ? all.slice(hidden) : all;
     return {
       blocks: buildBlocks(newestFirst ? reverseRecords(kept) : kept),
       hiddenLines: hidden,
     };
-  }, [content, newestFirst, minLevel]);
+  }, [content, newestFirst, minLevel, moduleFilter]);
 
   // One notice: line-cap wins over the byte-truncation banner since it states what's actually on screen.
   const notice =
@@ -325,6 +345,18 @@ const LogFileViewPage = () => {
             allowDeselect={false}
             data={LEVEL_OPTIONS}
             style={{ width: 110 }}
+          />
+          <Select
+            size="xs"
+            label="Module"
+            value={moduleFilter}
+            onChange={(value) => setModuleSetting(value)}
+            allowDeselect={false}
+            data={[
+              { value: 'all', label: 'All modules' },
+              ...modules.map((m) => ({ value: m, label: m })),
+            ]}
+            style={{ width: 150 }}
           />
           <Select
             size="xs"
@@ -463,7 +495,7 @@ const LogFileViewPage = () => {
                       </div>
                     );
                   })
-                : '(no records at this level)'}
+                : '(no records match the filters)'}
           </div>
         )}
       </Paper>
