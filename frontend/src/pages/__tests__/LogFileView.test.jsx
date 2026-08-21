@@ -116,18 +116,16 @@ describe('LogFileViewPage', () => {
     await waitFor(() => expect(API.getLogFile).toHaveBeenCalledTimes(2));
   });
 
-  it('colours severity on the level token and category on the message', async () => {
+  it('colours a record by severity alone, level token and message together', async () => {
     API.getLogFile.mockResolvedValue({
       content: [
         '2026-07-15 10:00:00,000 INFO core.tasks routine tick',
         '2026-07-15 10:00:01,000 ERROR apps.epg boom failure',
         '2026-07-15 10:00:02,000 WARNING core.utils cache miss',
         '2026-07-15 10:00:03,000 INFO plugins.iptv_checker sweep done',
-        '2026-07-15 10:00:04,000 INFO apps.proxy.ts_proxy client connected',
+        '2026-07-15 10:00:04,000 ERROR plugins.iptv_checker sweep died',
         '2026-07-15 10:00:05,000 WARNING django.request Unauthorized: /api/x/',
-        '2026-07-15 10:00:06,000 INFO apps.plugins.tasks Refreshed plugin repo hub',
-        '2026-07-15 10:00:07,000 INFO apps.accounts.api_views Login success: user=demo ip=192.0.2.7',
-        '2026-07-15 10:00:08,000 INFO apps.m3u.tasks account credentials rotated for auth refresh',
+        '2026-07-15 10:00:06,000 INFO apps.accounts.api_views Login success: user=demo ip=192.0.2.7',
       ].join('\n'),
       truncated: false,
     });
@@ -135,34 +133,26 @@ describe('LogFileViewPage', () => {
     await waitFor(() => {
       expect(screen.getByText(/boom failure/)).toBeInTheDocument();
     });
-    // Severity colours the level token, never the message text.
-    expect(screen.getByText('ERROR')).toHaveStyle({ color: '#ff6b6b' });
-    expect(screen.getByText(/boom failure/)).not.toHaveStyle({
-      color: '#ff6b6b',
-    });
+    // Severity carries through the level token to the message body.
+    screen
+      .getAllByText('ERROR')
+      .forEach((token) => expect(token).toHaveStyle({ color: '#ff6b6b' }));
+    expect(screen.getByText(/boom failure/)).toHaveStyle({ color: '#ff6b6b' });
     screen
       .getAllByText('WARN')
       .forEach((token) => expect(token).toHaveStyle({ color: '#ffd43b' }));
-    expect(screen.getByText(/cache miss/)).not.toHaveStyle({
-      color: '#ffd43b',
-    });
-    // Category colours the message: plugin blue, auth green.
-    expect(screen.getByText(/sweep done/)).toHaveStyle({ color: '#74c0fc' });
-    expect(screen.getByText(/Unauthorized/)).toHaveStyle({ color: '#51cf66' });
-    expect(screen.getByText(/Login success/)).toHaveStyle({ color: '#51cf66' });
+    expect(screen.getByText(/cache miss/)).toHaveStyle({ color: '#ffd43b' });
+    expect(screen.getByText(/Unauthorized/)).toHaveStyle({ color: '#ffd43b' });
+    // Quiet levels stay plain whatever the record is about.
     expect(screen.getByText(/routine tick/)).not.toHaveStyle({
       color: '#ff6b6b',
     });
-    // System infrastructure mentioning "plugin" is not a plugin event.
-    expect(screen.getByText(/Refreshed plugin repo hub/)).not.toHaveStyle({
+    // Category no longer tints anything: a plugin line reads by its level.
+    expect(screen.getByText(/sweep done/)).not.toHaveStyle({
       color: '#74c0fc',
     });
-    // The dropped client/player rule: a proxy/stream line is now plain text.
-    expect(screen.getByText(/client connected/)).not.toHaveStyle({
-      color: '#51cf66',
-    });
-    // ...and a line merely mentioning auth/credential words is not auth.
-    expect(screen.getByText(/credentials rotated/)).not.toHaveStyle({
+    expect(screen.getByText(/sweep died/)).toHaveStyle({ color: '#ff6b6b' });
+    expect(screen.getByText(/Login success/)).not.toHaveStyle({
       color: '#51cf66',
     });
   });
@@ -195,19 +185,6 @@ describe('LogFileViewPage', () => {
     expect(screen.getByText(/back to normal/).closest('div')).not.toHaveStyle({
       borderLeft: '3px solid #ff6b6b',
     });
-  });
-
-  it('shows severity and category together on a plugin error', async () => {
-    API.getLogFile.mockResolvedValue({
-      content: '2026-07-15 10:00:06,000 ERROR plugins.iptv_checker sweep died',
-      truncated: false,
-    });
-    renderPage();
-    await waitFor(() => {
-      expect(screen.getByText(/sweep died/)).toBeInTheDocument();
-    });
-    expect(screen.getByText('ERROR')).toHaveStyle({ color: '#ff6b6b' });
-    expect(screen.getByText(/sweep died/)).toHaveStyle({ color: '#74c0fc' });
   });
 
   it('displays the module token with the raw source on hover', async () => {
@@ -273,43 +250,6 @@ describe('LogFileViewPage', () => {
     expect(screen.getByText(/state to ERROR in Redis/)).not.toHaveStyle({
       color: '#ff6b6b',
     });
-  });
-
-  it('colours WebSocket JWT auth rejections green', async () => {
-    API.getLogFile.mockResolvedValue({
-      content:
-        '2026-07-20 16:45:17,317 WARNING dispatcharr.jwt_ws_auth Invalid token: given token not valid for any token type',
-      truncated: false,
-    });
-    renderPage();
-    await waitFor(() => {
-      expect(screen.getByText(/Invalid token/)).toBeInTheDocument();
-    });
-    expect(screen.getByText(/Invalid token/)).toHaveStyle({ color: '#51cf66' });
-  });
-
-  it('drops routine token-refresh/notification 401 polling to default text, keeps other 401s green', async () => {
-    API.getLogFile.mockResolvedValue({
-      content: [
-        '2026-07-20 00:50:00,000 WARNING django.request Unauthorized: /api/accounts/token/refresh/',
-        '2026-07-20 00:50:01,000 WARNING django.request Unauthorized: /api/core/notifications/',
-        '2026-07-20 00:50:02,000 WARNING django.request Unauthorized: /api/channels/1/',
-      ].join('\n'),
-      truncated: false,
-    });
-    renderPage();
-    await waitFor(() => {
-      expect(screen.getByText(/token\/refresh/)).toBeInTheDocument();
-    });
-    // Benign polling 401s fall through to default text — severity already shows on the WARNING token.
-    expect(screen.getByText(/token\/refresh/)).not.toHaveStyle({
-      color: '#51cf66',
-    });
-    expect(screen.getByText(/notifications/)).not.toHaveStyle({
-      color: '#51cf66',
-    });
-    // A non-routine 401 stays green — a real unauthorized access is notable.
-    expect(screen.getByText(/channels\/1/)).toHaveStyle({ color: '#51cf66' });
   });
 
   it('shows a load error with Retry and recovers when Retry succeeds', async () => {
@@ -787,7 +727,6 @@ describe('LogFileViewPage', () => {
     expect(
       screen.getByTitle('_dispatcharr_plugin_epg_watchdog.plugin')
     ).toHaveTextContent('epg_watchdog');
-    expect(screen.getByText(/Sweep done/)).toHaveStyle({ color: '#74c0fc' });
     // First-party pool code under the django namespace files with App.
     expect(screen.getByTitle('django.geventpool')).toHaveTextContent(
       'geventpool'

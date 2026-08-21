@@ -25,8 +25,6 @@ import useBrowserStorage from '../hooks/useBrowserStorage';
 const COLORS = {
   error: '#ff6b6b', // red
   warn: '#ffd43b', // yellow
-  auth: '#51cf66', // green — real login/auth events
-  plugin: '#74c0fc', // blue — third-party plugin code
   stamp: '#a1a1aa', // mid grey — readable against the dark ground, still recessive
   module: '#8bc4eb', // soft blue — the module token
   level: '#e4e4e7', // bright neutral — INFO and unknown levels stand apart from the stamp
@@ -115,50 +113,22 @@ const levelLabel = (level) => {
   return level;
 };
 
-// Severity lives on the level token and the record bar; the message keeps category colour only.
-const levelColor = (level) => {
+// Severity is the only thing that colours a record: the level token, the bar
+// and the message all take it, so a warning or error reads as one unit.
+const severityColor = (level) => {
   if (level === 'ERROR' || level === 'CRITICAL') return COLORS.error;
   if (level === 'WARNING') return COLORS.warn;
+  return null;
+};
+
+const levelColor = (level) => {
   // DEBUG/TRACE share the stamp grey; their medium weight keeps them legible as levels.
   if (level === 'DEBUG' || level === 'TRACE') return COLORS.stamp;
-  return COLORS.level;
+  return severityColor(level) || COLORS.level;
 };
 
 // The bar spans a record block so a traceback reads as one owned unit; quiet levels stay bare.
-const barColor = (level) => {
-  if (level === 'ERROR' || level === 'CRITICAL') return COLORS.error;
-  if (level === 'WARNING') return COLORS.warn;
-  return 'transparent';
-};
-
-// Message colouring by category; first match wins.
-const MESSAGE_RULES = [
-  {
-    label: 'login/auth',
-    color: COLORS.auth,
-    // Real auth events only: apps.accounts / jwt_ws_auth sources or django.request 401/403 — but not the routine token-refresh/notification 401 polling, which is benign warn noise.
-    test: (r) =>
-      r.source.startsWith('apps.accounts.') ||
-      r.source === 'dispatcharr.jwt_ws_auth' ||
-      (r.source === 'django.request' &&
-        /^(Unauthorized|Forbidden)\b(?!:\s*\/api\/(?:accounts\/token\/refresh|core\/notifications))/.test(
-          r.message
-        )),
-  },
-  {
-    label: 'plugin',
-    color: COLORS.plugin,
-    // Third-party plugin code only — plugins.<key> by convention or the loader's _dispatcharr_plugin_<key> import name; apps.plugins.* infrastructure stays default.
-    test: (r) =>
-      r.source.startsWith('plugins.') ||
-      r.source.startsWith('_dispatcharr_plugin_'),
-  },
-];
-
-const messageColor = (record) => {
-  const rule = MESSAGE_RULES.find((r) => r.test(record));
-  return rule ? rule.color : null;
-};
+const barColor = (level) => severityColor(level) || 'transparent';
 
 // A record starts with a canonical stamp; anything else is a continuation
 // (multi-line messages, traceback frames) and inherits the record's colour.
@@ -570,7 +540,7 @@ const LogFileViewPage = () => {
                         </div>
                       );
                     }
-                    const mc = messageColor(block.record);
+                    const mc = severityColor(block.record.level);
                     const bc = barColor(block.record.level);
                     return (
                       <div
