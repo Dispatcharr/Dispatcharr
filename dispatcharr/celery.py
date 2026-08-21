@@ -147,7 +147,7 @@ def cleanup_task_memory(**kwargs):
             process = psutil.Process()
             if hasattr(process, 'memory_info'):
                 mem = process.memory_info().rss / (1024 * 1024)
-                logger.debug(f"Memory usage after {task_name}: {mem:.2f} MB")
+                logger.info(f"Memory usage after {task_name}: {mem:.2f} MB")
         except (ImportError, Exception):
             pass
     else:
