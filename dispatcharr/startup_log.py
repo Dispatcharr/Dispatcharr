@@ -13,11 +13,17 @@ def startup_log(message):
     print(f"{stamp} INFO dispatcharr.startup {message}", flush=True)
 
 
+class _CanonicalFormatter(logging.Formatter):
+    converter = time.gmtime
+
+    def format(self, record):
+        # Indent embedded newlines so the collector keeps a multi-line record attached to its stamped header.
+        return super().format(record).replace("\n", "\n ")
+
+
 def canonical_formatter():
     """Formatter matching the collector grammar, stamped in UTC."""
-    formatter = logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s")
-    formatter.converter = time.gmtime
-    return formatter
+    return _CanonicalFormatter("%(asctime)s %(levelname)s %(name)s %(message)s")
 
 
 def configure_early_logging(level):

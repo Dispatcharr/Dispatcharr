@@ -31,3 +31,20 @@ class StartupLogTests(SimpleTestCase):
         )
         line = canonical_formatter().format(record)
         self.assertRegex(line.encode(), log_collector._PY)
+
+    def test_multiline_messages_keep_their_tail_as_continuations(self):
+        # celery's FUNHEAD_TEMPLATE starts with a newline; every tail line must
+        # be indented or the collector stamps it as an unattributed stdout record.
+        record = logging.LogRecord(
+            "celery.utils.functional",
+            logging.DEBUG,
+            __file__,
+            1,
+            "\ndef xstarmap(task, it):\n    return 1\n",
+            None,
+            None,
+        )
+        lines = canonical_formatter().format(record).split("\n")
+        for tail in lines[1:]:
+            self.assertTrue(tail == "" or tail.startswith(" "))
+        self.assertIn("def xstarmap(task, it):", lines[1])

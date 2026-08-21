@@ -9,3 +9,8 @@ class DisplayTimezoneFormatter(logging.Formatter):
 
     def __init__(self, format=None, datefmt=None, style="%"):
         super().__init__(fmt=format, datefmt=datefmt, style=style)
+
+    def format(self, record):
+        # Indent embedded newlines so the collector keeps a multi-line record
+        # (tracebacks, celery's task stubs) attached to its stamped header.
+        return super().format(record).replace("\n", "\n ")
