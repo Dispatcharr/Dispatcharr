@@ -274,6 +274,7 @@ class Collector:
         self._suppressed = False
         self._continuation = False
         self._in_traceback = False
+        self._level_known = True
         self._pg_level = b"INFO"
         self.conf = dict(_DEFAULT_CONF)
         self.filters = []
@@ -338,7 +339,9 @@ class Collector:
         m = _TOKENS.match(line)
         if m is not None:
             rank = _LEVEL_RANK.get(m.group(1))
-            self._suppressed = rank is not None and rank < self._min_rank
+            self._suppressed = (
+                self._level_known and rank is not None and rank < self._min_rank
+            )
         elif not self._continuation:
             self._suppressed = False
 
@@ -375,6 +378,7 @@ class Collector:
 
     def _normalize(self, raw):
         """Classify *raw* as a record or a continuation and canonicalise records."""
+        self._level_known = True
         out = self._restamp(raw)
         if out is not None:
             self._continuation = False
@@ -390,6 +394,9 @@ class Collector:
             self._continuation = True
             return raw
         self._continuation = False
+        # Nothing declared a severity here, so the INFO below is ours, not the
+        # source's: the gate must not read it as permission to drop the line.
+        self._level_known = False
         return f"{self._now_stamp()} INFO stdout ".encode() + raw
 
     def _restamp(self, raw):
@@ -417,6 +424,8 @@ class Collector:
             m = _SHELL.match(raw)
             if m:
                 dt = self._parse_naive(m.group(1), 0, self._pid1_zone)
+                # The shell states no severity; the level below is ours.
+                self._level_known = False
                 return f"{self._render(dt)} INFO entrypoint ".encode() + raw[m.end() :]
             m = _REDIS.match(raw)
             if m:

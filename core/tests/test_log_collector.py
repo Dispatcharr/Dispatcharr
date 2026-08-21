@@ -345,6 +345,22 @@ class CollectorTests(SimpleTestCase):
         self.collector._drain()
         self.assertIn("Memory overcommit", self.read_log())
 
+    def test_level_gate_never_drops_output_whose_severity_is_ours(self):
+        # A dying container reports through the shell, which states no level:
+        # the INFO the collector stamps must not read as permission to drop it.
+        self.collector._min_rank = 30
+        self.feed(
+            b"2026-08-18 01:00:06 - Process uwsgi has exited!\n",
+            b"No processes started. Exiting.\n",
+            b"2026-08-18 01:00:00,100 INFO core.utils routine\n",
+        )
+        self.collector._drain()
+        for content in (self.read_log(), self.read_forward()):
+            self.assertIn("Process uwsgi has exited", content)
+            self.assertIn("No processes started", content)
+            # A source that did state INFO is still filtered.
+            self.assertNotIn("routine", content)
+
     def test_level_gate_passes_unknown_levels(self):
         self.collector._min_rank = 50
         self.feed(b"2026-08-18 01:00:00,100 NOTE core.utils odd but kept\n")
