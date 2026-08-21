@@ -110,6 +110,12 @@ configure_celery_autoscale_workers() {
     export CELERY_MAX_WORKERS CELERY_MIN_WORKERS
 }
 
+# Report a shell event with a severity. The offset is explicit so the stamp is
+# unambiguous wherever the container's clock sits: log_line WARNING "message".
+log_line() {
+    echo "$(date '+%Y-%m-%d %H:%M:%S,000 %z') $1 entrypoint $2"
+}
+
 # Set PostgreSQL environment variables
 export POSTGRES_DB=${POSTGRES_DB:-dispatcharr}
 export POSTGRES_USER=${POSTGRES_USER:-dispatch}
@@ -458,17 +464,17 @@ if [ ${#pids[@]} -gt 0 ]; then
     # Only report unexpected exits — skip if cleanup was already triggered by
     # the trap (i.e. docker stop sent SIGTERM and we shut down intentionally)
     if ! $_cleanup_done; then
-        echo "🚨 One of the processes exited unexpectedly! Checking which one..."
+        log_line ERROR "🚨 One of the processes exited unexpectedly! Checking which one..."
 
         for pid in "${pids[@]}"; do
             if ! kill -0 "$pid" 2>/dev/null; then
                 process_name=${pid_names[$pid]:-unknown}
-                echo "❌ Process $process_name (PID: $pid) has exited!"
+                log_line ERROR "❌ Process $process_name (PID: $pid) has exited!"
             fi
         done
     fi
 else
-    echo "❌ No processes started. Exiting."
+    log_line ERROR "❌ No processes started. Exiting."
     exit 1
 fi
 
