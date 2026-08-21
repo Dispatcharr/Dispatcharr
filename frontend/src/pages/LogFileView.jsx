@@ -67,7 +67,7 @@ const parseSource = (source) => {
     return { module, tier: 'app' };
   }
   if (source.startsWith('plugins.'))
-    return { module: source.slice(8) || source, tier: 'plugins' };
+    return { module: source.split('.')[1] || source, tier: 'plugins' };
   // Plugins loaded from disk import as _dispatcharr_plugin_<key>, so getLogger(__name__) inside a plugin wears that head.
   if (source.startsWith('_dispatcharr_plugin_')) {
     const head = source.split('.')[0];
@@ -171,18 +171,23 @@ const LEVEL_OPTIONS = [
 // indented and blank lines join the record above, and any other column-0 line
 // stands alone (the collector's unstamped pass-through records) so a filter can
 // never swallow it under an unrelated record.
+// Mirrors the collector's _TB_START, which anchors on the bare prefix.
+const TRACEBACK_HEAD = 'Traceback';
+
 const classifyLines = (lines) => {
   const entries = [];
   let inTraceback = false;
   for (const line of lines) {
     const record = parseRecord(line);
     if (record) {
-      inTraceback = false;
+      // The collector stamps an unstamped traceback header into a record and
+      // leaves its tail at column 0, so the record has to claim it too.
+      inTraceback = record.message.startsWith(TRACEBACK_HEAD);
       entries.push({ line, record, kind: 'record' });
     } else if (RECORD_START.test(line)) {
       inTraceback = false;
       entries.push({ line, record: null, kind: 'standalone' });
-    } else if (line.startsWith('Traceback')) {
+    } else if (line.startsWith(TRACEBACK_HEAD)) {
       inTraceback = true;
       entries.push({ line, record: null, kind: 'continuation' });
     } else if (inTraceback || /^[ \t]/.test(line) || line === '') {

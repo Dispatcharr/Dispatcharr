@@ -648,6 +648,53 @@ describe('LogFileViewPage', () => {
     expect(screen.queryByText(/toasty/)).not.toBeInTheDocument();
   });
 
+  it('keeps a plugin submodule under its plugin key', async () => {
+    API.getLogFile.mockResolvedValue({
+      content: [
+        '2026-08-21 10:00:00,000 INFO plugins.iptv_checker sweep started',
+        '2026-08-21 10:00:01,000 INFO plugins.iptv_checker.scheduled nightly run',
+      ].join('\n'),
+      truncated: false,
+    });
+    renderPage();
+    await screen.findByText(/sweep started/);
+    // One plugin is one module however deep its own logger names go.
+    expect(
+      screen.getByTitle('plugins.iptv_checker.scheduled').textContent
+    ).toBe('iptv_checker');
+    expect(screen.getByTitle('plugins.iptv_checker').textContent).toBe(
+      'iptv_checker'
+    );
+  });
+
+  it('claims the column-0 tail of a traceback the collector stamped', async () => {
+    // An unstamped traceback header becomes a record; its tail stays at column 0.
+    API.getLogFile.mockResolvedValue({
+      content: [
+        '2026-08-21 10:00:00,000 INFO stdout Traceback (most recent call last):',
+        '  File "/app/x.py", line 12, in run',
+        'ValueError: bad feed',
+        'During handling of the above exception, another exception occurred:',
+        '2026-08-21 10:00:01,000 INFO core.tasks back to normal',
+      ].join('\n'),
+      truncated: false,
+    });
+    renderPage();
+    await screen.findByText(/back to normal/);
+    // The exception line and the chaining notice belong to the record above.
+    const tail = screen.getByText(/ValueError: bad feed/);
+    expect(tail.textContent).toContain(
+      'During handling of the above exception'
+    );
+    expect(tail.parentElement).toHaveStyle({ textIndent: '0px' });
+    // Filtering the record away takes its whole tail with it.
+    fireEvent.change(screen.getByLabelText('Category'), {
+      target: { value: 'app' },
+    });
+    expect(screen.queryByText(/ValueError: bad feed/)).not.toBeInTheDocument();
+    expect(screen.getByText(/back to normal/)).toBeInTheDocument();
+  });
+
   it('never hides the collector pass-through records behind a filter', async () => {
     // A known source shape with an unparseable date passes through the collector unstamped; the viewer must not fold it into the record above.
     API.getLogFile.mockResolvedValue({
