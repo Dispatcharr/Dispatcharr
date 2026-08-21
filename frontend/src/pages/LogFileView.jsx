@@ -37,7 +37,8 @@ const RECORD_TOKENS =
   /^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3}(?: [+-]\d{4})?) (\S+) (\S+)( ?)([\s\S]*)$/;
 
 const LEVEL_RANK = {
-  TRACE: 5,
+  // The viewer bundles TRACE into DEBUG: same rank, same display name.
+  TRACE: 10,
   DEBUG: 10,
   INFO: 20,
   WARNING: 30,
@@ -83,10 +84,11 @@ const parseRecord = (line) => {
   };
 };
 
-// Display names compress the level column: CRITICAL joins ERROR and WARNING shortens to WARN. Ranking and the raw token (on hover) are untouched.
+// Display names compress the level column: CRITICAL joins ERROR, WARNING shortens to WARN, and TRACE joins DEBUG. The raw token stays on hover.
 const levelLabel = (level) => {
   if (level === 'CRITICAL') return 'ERROR';
   if (level === 'WARNING') return 'WARN';
+  if (level === 'TRACE') return 'DEBUG';
   return level;
 };
 
@@ -170,9 +172,8 @@ const CATEGORY_OPTIONS = [
   { value: 'services', label: 'Services' },
 ];
 
-// Selecting a level shows it and everything above; Trace sits at the floor of the vocabulary, so it shows everything.
+// Selecting a level shows it and everything above; Debug is the floor and includes the app's TRACE records.
 const LEVEL_OPTIONS = [
-  { value: '0', label: 'Trace' },
   { value: '10', label: 'Debug' },
   { value: '20', label: 'Info' },
   { value: '30', label: 'Warning' },

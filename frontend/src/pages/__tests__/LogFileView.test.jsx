@@ -522,8 +522,8 @@ describe('LogFileViewPage', () => {
   });
 
   it('filters records below the chosen level with their continuations', async () => {
-    // Start from the Trace floor so the DEBUG fixture is visible before filtering.
-    localStorage.setItem('log-viewer-min-level', '0');
+    // Start from the Debug floor so the DEBUG fixture is visible before filtering.
+    localStorage.setItem('log-viewer-min-level', '10');
     API.getLogFile.mockResolvedValue({
       content: [
         '2026-07-15 10:00:00,000 DEBUG core.tasks noisy tick',
@@ -548,9 +548,31 @@ describe('LogFileViewPage', () => {
     expect(screen.getByText(/unknown level survives/)).toBeInTheDocument();
 
     fireEvent.change(screen.getByLabelText('Level'), {
-      target: { value: '0' },
+      target: { value: '10' },
     });
     expect(screen.getByText(/noisy tick/)).toBeInTheDocument();
+  });
+
+  it('bundles TRACE into DEBUG for display and filtering', async () => {
+    localStorage.setItem('log-viewer-min-level', '10');
+    API.getLogFile.mockResolvedValue({
+      content: [
+        '2026-08-21 10:00:00,000 TRACE core.utils Redis persistence disabled',
+        '2026-08-21 10:00:01,000 INFO core.tasks routine tick',
+      ].join('\n'),
+      truncated: false,
+    });
+    renderPage();
+    await screen.findByText(/routine tick/);
+    // The TRACE record shows at the Debug floor and wears the DEBUG display name, raw token on hover.
+    expect(screen.getByText(/Redis persistence disabled/)).toBeInTheDocument();
+    expect(screen.getByText('DEBUG')).toHaveAttribute('title', 'TRACE');
+    fireEvent.change(screen.getByLabelText('Level'), {
+      target: { value: '20' },
+    });
+    expect(
+      screen.queryByText(/Redis persistence disabled/)
+    ).not.toBeInTheDocument();
   });
 
   it('keeps a whole traceback when filtering, and reports an empty result', async () => {
@@ -631,7 +653,7 @@ describe('LogFileViewPage', () => {
 
   it('filters records by module with their continuations', async () => {
     // The Module control only exists in debug mode.
-    localStorage.setItem('log-viewer-min-level', '0');
+    localStorage.setItem('log-viewer-min-level', '10');
     API.getLogFile.mockResolvedValue({
       content: [
         '2026-08-21 10:00:00,000 INFO apps.epg.tasks epg tick',
@@ -661,7 +683,7 @@ describe('LogFileViewPage', () => {
 
   it('keeps a stored module filter engaged even when the tail lacks it', async () => {
     // The selection stays honest instead of silently disengaging and snapping back on a later poll.
-    localStorage.setItem('log-viewer-min-level', '0');
+    localStorage.setItem('log-viewer-min-level', '10');
     localStorage.setItem('log-viewer-module', '"m:ghost"');
     API.getLogFile.mockResolvedValue({
       content: '2026-08-21 10:00:00,000 INFO core.tasks alive\n',
@@ -677,7 +699,7 @@ describe('LogFileViewPage', () => {
   });
 
   it('treats an unprefixed legacy stored module as no filter', async () => {
-    localStorage.setItem('log-viewer-min-level', '0');
+    localStorage.setItem('log-viewer-min-level', '10');
     localStorage.setItem('log-viewer-module', '"ghost"');
     API.getLogFile.mockResolvedValue({
       content: '2026-08-21 10:00:00,000 INFO core.tasks alive\n',
@@ -689,7 +711,7 @@ describe('LogFileViewPage', () => {
   });
 
   it('handles a module literally named all without colliding with the sentinel', async () => {
-    localStorage.setItem('log-viewer-min-level', '0');
+    localStorage.setItem('log-viewer-min-level', '10');
     API.getLogFile.mockResolvedValue({
       content: [
         '2026-08-21 10:00:00,000 INFO plugins.all Plugin loaded',
@@ -801,7 +823,7 @@ describe('LogFileViewPage', () => {
   });
 
   it('resets an incompatible module selection when the category changes', async () => {
-    localStorage.setItem('log-viewer-min-level', '0');
+    localStorage.setItem('log-viewer-min-level', '10');
     localStorage.setItem('log-viewer-module', '"m:postgres"');
     API.getLogFile.mockResolvedValue({
       content: [
