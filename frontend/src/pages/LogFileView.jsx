@@ -26,11 +26,14 @@ const COLORS = {
   warn: '#ffd43b', // yellow
   auth: '#51cf66', // green — real login/auth events
   plugin: '#74c0fc', // blue — third-party plugin code
+  stamp: '#71717a', // dim grey — timestamps and DEBUG/TRACE recede
+  module: '#8bc4eb', // soft blue — the module token
+  level: '#a1a1aa', // neutral grey — INFO and unknown level tokens
 };
 
 // The collector guarantees the canonical grammar "stamp [offset] LEVEL source rest"; every rule keys off those tokens.
 const RECORD_TOKENS =
-  /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3}(?: [+-]\d{4})? (\S+) (\S+) ?(.*)$/;
+  /^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3}(?: [+-]\d{4})?) (\S+) (\S+) ?(.*)$/;
 
 const LEVEL_RANK = {
   TRACE: 5,
@@ -41,18 +44,43 @@ const LEVEL_RANK = {
   CRITICAL: 50,
 };
 
-const parseRecord = (line) => {
-  const m = RECORD_TOKENS.exec(line);
-  return m ? { level: m[1], source: m[2], message: m[3] } : null;
+// One definition of "module": the segment that names the component.
+const moduleOf = (source) => {
+  if (source.startsWith('apps.')) return source.split('.')[1] || source;
+  if (source.startsWith('plugins.')) return source.slice(8) || source;
+  return source.split('.')[0];
 };
 
-// Record colouring by token; first match wins, and auth outranks warn since 401/403 lines log at WARNING.
-const LINE_RULES = [
-  {
-    label: 'error',
-    color: COLORS.error,
-    test: (r) => r.level === 'ERROR' || r.level === 'CRITICAL',
-  },
+const parseRecord = (line) => {
+  const m = RECORD_TOKENS.exec(line);
+  return m
+    ? {
+        stamp: m[1],
+        level: m[2],
+        source: m[3],
+        module: moduleOf(m[3]),
+        message: m[4],
+      }
+    : null;
+};
+
+// Severity lives on the level token and the record bar; the message keeps category colour only.
+const levelColor = (level) => {
+  if (level === 'ERROR' || level === 'CRITICAL') return COLORS.error;
+  if (level === 'WARNING') return COLORS.warn;
+  if (level === 'DEBUG' || level === 'TRACE') return COLORS.stamp;
+  return COLORS.level;
+};
+
+// The bar spans a record block so a traceback reads as one owned unit; quiet levels stay bare.
+const barColor = (level) => {
+  if (level === 'ERROR' || level === 'CRITICAL') return COLORS.error;
+  if (level === 'WARNING') return COLORS.warn;
+  return 'transparent';
+};
+
+// Message colouring by category; first match wins.
+const MESSAGE_RULES = [
   {
     label: 'login/auth',
     color: COLORS.auth,
@@ -66,17 +94,17 @@ const LINE_RULES = [
         )),
   },
   {
-    label: 'warn',
-    color: COLORS.warn,
-    test: (r) => r.level === 'WARNING',
-  },
-  {
     label: 'plugin',
     color: COLORS.plugin,
     // The plugins.<key> source only — apps.plugins.* infrastructure stays default.
     test: (r) => r.source.startsWith('plugins.'),
   },
 ];
+
+const messageColor = (record) => {
+  const rule = MESSAGE_RULES.find((r) => r.test(record));
+  return rule ? rule.color : null;
+};
 
 // Legend display order (default text first), independent of rule precedence.
 const LEGEND = [
@@ -89,9 +117,10 @@ const LEGEND = [
 
 // A record starts with a canonical stamp; anything else is a continuation
 // (multi-line messages, traceback frames) and inherits the record's colour.
-const RECORD_START = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3}(?: [+-]\d{4})? /;
+const RECORD_START =
+  /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3}(?: [+-]\d{4})? /;
 
-// Cap on rendered lines: a mixed-severity tail can defeat the run-length grouping (one span per line), so bound the DOM for low-end TV browsers.
+// Cap on rendered lines: every record block emits a handful of nodes, so bound the DOM for low-end TV browsers.
 const MAX_RENDER_LINES = 5000;
 
 const REFRESH_OPTIONS = [
@@ -140,33 +169,23 @@ const reverseRecords = (lines) => {
   return records.reverse().flat();
 };
 
-// Group consecutive same-colour lines into one span each, so a 5 MB file renders a few hundred nodes, not one per line.
-const colorizeLines = (lines) => {
-  const chunks = [];
-  let current = null;
-  let recordColor = null;
-  let seenRecord = false;
+// Group lines into record blocks (header + its continuations) so each record renders as one bordered unit; continuations stay one joined text node.
+const buildBlocks = (lines) => {
+  const blocks = [];
   for (const line of lines) {
-    let color;
     const record = parseRecord(line);
+    const last = blocks[blocks.length - 1];
     if (record) {
-      const rule = LINE_RULES.find((r) => r.test(record));
-      color = rule ? rule.color : null;
-      recordColor = color;
-      seenRecord = true;
-    } else if (seenRecord) {
-      color = recordColor;
+      blocks.push({ record, continuations: [] });
+    } else if (RECORD_START.test(line) || !last) {
+      blocks.push({ lines: [line] });
+    } else if (last.record) {
+      last.continuations.push(line);
     } else {
-      color = null;
-    }
-    if (current && current.color === color) {
-      current.text += `\n${line}`;
-    } else {
-      current = { color, text: line };
-      chunks.push(current);
+      last.lines.push(line);
     }
   }
-  return chunks;
+  return blocks;
 };
 
 // Raw log display, radarr-style: monospace, no wrapping, page scroll.
@@ -206,13 +225,13 @@ const LogFileViewPage = () => {
   const failuresRef = useRef(0);
 
   // Render only the last MAX_RENDER_LINES; hiddenLines drives the "showing the last N lines" notice.
-  const { chunks, hiddenLines } = useMemo(() => {
+  const { blocks, hiddenLines } = useMemo(() => {
     let all = content ? content.split('\n') : [];
     if (minLevel) all = filterByLevel(all, minLevel);
     const hidden = Math.max(0, all.length - MAX_RENDER_LINES);
     const kept = hidden ? all.slice(hidden) : all;
     return {
-      chunks: colorizeLines(newestFirst ? reverseRecords(kept) : kept),
+      blocks: buildBlocks(newestFirst ? reverseRecords(kept) : kept),
       hiddenLines: hidden,
     };
   }, [content, newestFirst, minLevel]);
@@ -374,7 +393,7 @@ const LogFileViewPage = () => {
             </Button>
           </Group>
         ) : (
-          <pre
+          <div
             style={{
               margin: 0,
               fontFamily:
@@ -386,17 +405,66 @@ const LogFileViewPage = () => {
           >
             {!content
               ? '(empty)'
-              : chunks.length
-                ? chunks.map((chunk, i) => (
-                    <span
-                      key={i}
-                      style={chunk.color ? { color: chunk.color } : undefined}
-                    >
-                      {i < chunks.length - 1 ? `${chunk.text}\n` : chunk.text}
-                    </span>
-                  ))
+              : blocks.length
+                ? blocks.map((block, i) => {
+                    if (!block.record) {
+                      return (
+                        <div
+                          key={i}
+                          style={{
+                            borderLeft: '3px solid transparent',
+                            paddingLeft: 8,
+                          }}
+                        >
+                          {block.lines.join('\n')}
+                        </div>
+                      );
+                    }
+                    const mc = messageColor(block.record);
+                    const bc = barColor(block.record.level);
+                    return (
+                      <div
+                        key={i}
+                        style={{
+                          borderLeft: `3px solid ${bc}`,
+                          paddingLeft: 8,
+                        }}
+                      >
+                        <span style={{ color: COLORS.stamp }}>
+                          {block.record.stamp}
+                        </span>{' '}
+                        <span
+                          style={{
+                            color: levelColor(block.record.level),
+                            fontWeight: bc === 'transparent' ? undefined : 500,
+                          }}
+                        >
+                          {block.record.level}
+                        </span>{' '}
+                        <span
+                          style={{ color: COLORS.module }}
+                          title={block.record.source}
+                        >
+                          {block.record.module}
+                        </span>{' '}
+                        <span style={mc ? { color: mc } : undefined}>
+                          {block.record.message}
+                        </span>
+                        {block.continuations.length > 0 && (
+                          <div
+                            style={{
+                              paddingLeft: 24,
+                              color: mc || undefined,
+                            }}
+                          >
+                            {block.continuations.join('\n')}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })
                 : '(no records at this level)'}
-          </pre>
+          </div>
         )}
       </Paper>
     </Box>

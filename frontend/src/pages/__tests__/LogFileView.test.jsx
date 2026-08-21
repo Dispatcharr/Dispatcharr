@@ -114,7 +114,7 @@ describe('LogFileViewPage', () => {
     );
   });
 
-  it('colours lines by category', async () => {
+  it('colours severity on the level token and category on the message', async () => {
     API.getLogFile.mockResolvedValue({
       content: [
         '2026-07-15 10:00:00,000 INFO core.tasks routine tick',
@@ -133,10 +133,19 @@ describe('LogFileViewPage', () => {
     await waitFor(() => {
       expect(screen.getByText(/boom failure/)).toBeInTheDocument();
     });
-    expect(screen.getByText(/boom failure/)).toHaveStyle({ color: '#ff6b6b' });
-    expect(screen.getByText(/cache miss/)).toHaveStyle({ color: '#ffd43b' });
+    // Severity colours the level token, never the message text.
+    expect(screen.getByText('ERROR')).toHaveStyle({ color: '#ff6b6b' });
+    expect(screen.getByText(/boom failure/)).not.toHaveStyle({
+      color: '#ff6b6b',
+    });
+    screen
+      .getAllByText('WARNING')
+      .forEach((token) => expect(token).toHaveStyle({ color: '#ffd43b' }));
+    expect(screen.getByText(/cache miss/)).not.toHaveStyle({
+      color: '#ffd43b',
+    });
+    // Category colours the message: plugin blue, auth green.
     expect(screen.getByText(/sweep done/)).toHaveStyle({ color: '#74c0fc' });
-    // Auth events are green now (login lines + 401/403), outranking warn.
     expect(screen.getByText(/Unauthorized/)).toHaveStyle({ color: '#51cf66' });
     expect(screen.getByText(/Login success/)).toHaveStyle({ color: '#51cf66' });
     expect(screen.getByText(/routine tick/)).not.toHaveStyle({
@@ -156,7 +165,7 @@ describe('LogFileViewPage', () => {
     });
   });
 
-  it('continuation lines inherit the record colour', async () => {
+  it('renders continuations inside their record block behind the level bar', async () => {
     API.getLogFile.mockResolvedValue({
       content: [
         '2026-07-15 10:00:07,000 CRITICAL celery.backends.asynchronous ',
@@ -170,19 +179,22 @@ describe('LogFileViewPage', () => {
     await waitFor(() => {
       expect(screen.getByText(/Retry limit exceeded/)).toBeInTheDocument();
     });
-    // CRITICAL header and both continuation lines render in one red span.
-    expect(screen.getByText(/Retry limit exceeded/)).toHaveStyle({
-      color: '#ff6b6b',
+    // The CRITICAL token wears red and the block's bar marks the whole record.
+    expect(screen.getByText('CRITICAL')).toHaveStyle({ color: '#ff6b6b' });
+    expect(screen.getByText('CRITICAL').closest('div')).toHaveStyle({
+      borderLeft: '3px solid #ff6b6b',
     });
+    // Both continuation lines stay one joined text node inside the block.
     expect(screen.getByText(/Retry limit exceeded/).textContent).toContain(
       'must be restarted'
     );
-    expect(screen.getByText(/back to normal/)).not.toHaveStyle({
-      color: '#ff6b6b',
+    // The next record is its own block and does not inherit the bar.
+    expect(screen.getByText(/back to normal/).closest('div')).not.toHaveStyle({
+      borderLeft: '3px solid #ff6b6b',
     });
   });
 
-  it('colours error levels ahead of category keywords', async () => {
+  it('shows severity and category together on a plugin error', async () => {
     API.getLogFile.mockResolvedValue({
       content: '2026-07-15 10:00:06,000 ERROR plugins.iptv_checker sweep died',
       truncated: false,
@@ -191,7 +203,35 @@ describe('LogFileViewPage', () => {
     await waitFor(() => {
       expect(screen.getByText(/sweep died/)).toBeInTheDocument();
     });
-    expect(screen.getByText(/sweep died/)).toHaveStyle({ color: '#ff6b6b' });
+    expect(screen.getByText('ERROR')).toHaveStyle({ color: '#ff6b6b' });
+    expect(screen.getByText(/sweep died/)).toHaveStyle({ color: '#74c0fc' });
+  });
+
+  it('displays the module token with the raw source on hover', async () => {
+    API.getLogFile.mockResolvedValue({
+      content: [
+        '2026-08-21 10:00:00,000 INFO apps.epg.tasks Processed 3133 channels',
+        '2026-08-21 10:00:01,000 INFO plugins.event_channel_managarr Scheduled scan completed',
+        '2026-08-21 10:00:02,000 INFO nginx.access 192.0.2.7 - - "GET / HTTP/1.1" 200',
+        '2026-08-21 10:00:03,000 INFO postgres [312] LOG:  checkpoint complete',
+      ].join('\n'),
+      truncated: false,
+    });
+    renderPage();
+    await screen.findByText(/Processed 3133/);
+    expect(screen.getByText('epg')).toHaveAttribute('title', 'apps.epg.tasks');
+    expect(screen.getByText('event_channel_managarr')).toHaveAttribute(
+      'title',
+      'plugins.event_channel_managarr'
+    );
+    expect(screen.getByText('nginx')).toHaveAttribute('title', 'nginx.access');
+    expect(screen.getByText('postgres')).toHaveAttribute('title', 'postgres');
+    // The raw dotted name is display-only metadata now, not rendered text.
+    expect(screen.queryByText('apps.epg.tasks')).not.toBeInTheDocument();
+    // The stamp recedes to grey.
+    expect(screen.getByText('2026-08-21 10:00:00,000')).toHaveStyle({
+      color: '#71717a',
+    });
   });
 
   it('does not redden an INFO line whose message body mentions ERROR', async () => {
@@ -223,7 +263,7 @@ describe('LogFileViewPage', () => {
     expect(screen.getByText(/Invalid token/)).toHaveStyle({ color: '#51cf66' });
   });
 
-  it('drops routine token-refresh/notification 401 polling to warn, keeps other 401s green', async () => {
+  it('drops routine token-refresh/notification 401 polling to default text, keeps other 401s green', async () => {
     API.getLogFile.mockResolvedValue({
       content: [
         '2026-07-20 00:50:00,000 WARNING django.request Unauthorized: /api/accounts/token/refresh/',
@@ -236,11 +276,13 @@ describe('LogFileViewPage', () => {
     await waitFor(() => {
       expect(screen.getByText(/token\/refresh/)).toBeInTheDocument();
     });
-    // Benign polling 401s fall through to warn (yellow), not green.
-    expect(screen.getByText(/token\/refresh/)).toHaveStyle({
-      color: '#ffd43b',
+    // Benign polling 401s fall through to default text — severity already shows on the WARNING token.
+    expect(screen.getByText(/token\/refresh/)).not.toHaveStyle({
+      color: '#51cf66',
     });
-    expect(screen.getByText(/notifications/)).toHaveStyle({ color: '#ffd43b' });
+    expect(screen.getByText(/notifications/)).not.toHaveStyle({
+      color: '#51cf66',
+    });
     // A non-routine 401 stays green — a real unauthorized access is notable.
     expect(screen.getByText(/channels\/1/)).toHaveStyle({ color: '#51cf66' });
   });
@@ -518,7 +560,9 @@ describe('LogFileViewPage', () => {
     });
     fireEvent.click(screen.getByText('Refresh'));
     await waitFor(() => {
-      expect(screen.getByText('(no records at this level)')).toBeInTheDocument();
+      expect(
+        screen.getByText('(no records at this level)')
+      ).toBeInTheDocument();
     });
   });
 
