@@ -337,7 +337,8 @@ def acquire_task_lock(task_name, id):
     lock_acquired = redis_client.set(lock_id, "locked", ex=300, nx=True)
 
     if not lock_acquired:
-        logger.warning(f"Lock for {task_name} and id={id} already acquired. Task will not proceed.")
+        # Overlapping schedules are the design, not a fault.
+        logger.info(f"Lock for {task_name} and id={id} already acquired. Task will not proceed.")
 
     return lock_acquired
 
