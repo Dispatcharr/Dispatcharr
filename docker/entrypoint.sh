@@ -209,6 +209,13 @@ DISPATCHARR_LOG_LEVEL=${DISPATCHARR_LOG_LEVEL^^}
 
 echo "Environment DISPATCHARR_LOG_LEVEL set to: '${DISPATCHARR_LOG_LEVEL}'"
 
+# Celery reprints its banner in every worker and beat process. Keep it for the
+# levels that asked for detail; the flag is empty otherwise.
+case "$DISPATCHARR_LOG_LEVEL" in
+    DEBUG|TRACE) export CELERY_BANNER="" ;;
+    *) export CELERY_BANNER="--quiet" ;;
+esac
+
 # Also make the log level available in /etc/environment for all login shells
 #grep -q "DISPATCHARR_LOG_LEVEL" /etc/environment || echo "DISPATCHARR_LOG_LEVEL=${DISPATCHARR_LOG_LEVEL}" >> /etc/environment
 
@@ -246,7 +253,7 @@ variables=(
     REDIS_HOST REDIS_PORT REDIS_DB REDIS_PASSWORD REDIS_USER REDIS_IDLE_TIMEOUT REDIS_MAX_CONNECTIONS POSTGRES_DIR DISPATCHARR_PORT
     DISPATCHARR_VERSION DISPATCHARR_TIMESTAMP LIBVA_DRIVERS_PATH LIBVA_DRIVER_NAME LD_LIBRARY_PATH
     CELERY_NICE_LEVEL UWSGI_NICE_LEVEL CELERY_MAX_WORKERS CELERY_MIN_WORKERS UWSGI_WORKERS
-    DJANGO_SECRET_KEY DISPATCHARR_TIME_ZONE DISPATCHARR_LOG_DIR
+    DJANGO_SECRET_KEY DISPATCHARR_TIME_ZONE DISPATCHARR_LOG_DIR CELERY_BANNER
 )
 
 # Optional variables, only propagate when set to avoid noisy warnings
