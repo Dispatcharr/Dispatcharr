@@ -405,12 +405,10 @@ def schedule_task_on_save(sender, instance, created, **kwargs):
         if rec_status not in ("recording", "completed", "stopped", "interrupted"):
             try:
                 prefetch_recording_artwork.apply_async(args=[instance.id], countdown=1)
-            except Exception as e:
-                print("Error scheduling artwork prefetch:", e)
-    except Exception as e:
-        import traceback
-        print("Error in post_save signal:", e)
-        traceback.print_exc()
+            except Exception:
+                logger.exception("Error scheduling artwork prefetch")
+    except Exception:
+        logger.exception("Error scheduling recording on save")
 
 @receiver(post_delete, sender=Recording)
 def revoke_task_on_delete(sender, instance, **kwargs):
