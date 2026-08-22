@@ -54,6 +54,38 @@ class ConfTests(SimpleTestCase):
         self.assertEqual(conf["keep"], 5)
         self.assertTrue(conf["persist"])
 
+    def test_boot_zone_comes_from_the_entrypoint_environment(self):
+        # `su -` strips TZ and the image's /etc/localtime is UTC, so a line
+        # stamped before the first conf read has only this to go on.
+        with mock.patch.dict(
+            os.environ, {"DISPATCHARR_TIME_ZONE": "Pacific/Auckland"}
+        ):
+            collector = Collector(self.log_dir)
+        out = collector._normalize(b"2026-08-18 01:00:00,500 INFO core.utils msg\n")
+        self.assertEqual(
+            out.decode(), "2026-08-18 13:00:00,500 +1200 INFO core.utils msg\n"
+        )
+
+    def test_boot_zone_falls_back_to_utc_when_the_environment_lies(self):
+        with mock.patch.dict(os.environ, {"DISPATCHARR_TIME_ZONE": "Mars/Olympus"}):
+            collector = Collector(self.log_dir)
+        out = collector._normalize(b"2026-08-18 01:00:00,500 INFO core.utils msg\n")
+        self.assertEqual(
+            out.decode(), "2026-08-18 01:00:00,500 INFO core.utils msg\n"
+        )
+
+    def test_conf_zone_outranks_the_boot_zone(self):
+        log_collector.write_conf(self.log_dir, True, 10, 5, "", "America/Denver", "")
+        with mock.patch.dict(
+            os.environ, {"DISPATCHARR_TIME_ZONE": "Pacific/Auckland"}
+        ):
+            collector = Collector(self.log_dir)
+            collector._apply_conf()
+        out = collector._normalize(b"2026-08-18 01:00:00,500 INFO core.utils msg\n")
+        self.assertEqual(
+            out.decode(), "2026-08-17 19:00:00,500 -0600 INFO core.utils msg\n"
+        )
+
     def test_missing_conf_gives_defaults(self):
         self.assertEqual(log_collector.read_conf(self.log_dir), log_collector._DEFAULT_CONF)
 

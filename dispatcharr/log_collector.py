@@ -43,7 +43,7 @@ _DEFAULT_CONF = {
     "max_mb": 10,
     "keep": 5,
     "filters": "",
-    "time_zone": "UTC",
+    "time_zone": "",
     "level": "",
 }
 
@@ -102,6 +102,24 @@ _NGX_ACC = re.compile(
 )
 _CONTINUATION = re.compile(rb"^[ \t]")
 _TB_START = re.compile(rb"^Traceback")
+
+
+def _boot_display_zone():
+    """The display zone to stamp in until the app's setting arrives.
+
+    The collector starts under `su -`, which strips TZ, and the image ships
+    /etc/localtime as UTC, so the environment variable the entrypoint puts in
+    the login profile is the only zone this process can see before its first
+    conf read. It is the same value the system time zone is seeded from, so
+    the boot lines and the lines after the first SIGHUP agree.
+    """
+    name = os.environ.get("DISPATCHARR_TIME_ZONE", "").strip()
+    if name:
+        try:
+            return ZoneInfo(name)
+        except (KeyError, ValueError):
+            pass
+    return timezone.utc
 
 
 def _resolve_container_zone():
@@ -278,7 +296,7 @@ class Collector:
         self._pg_level = b"INFO"
         self.conf = dict(_DEFAULT_CONF)
         self.filters = []
-        self._display_zone = timezone.utc
+        self._display_zone = _boot_display_zone()
         self._container_zone = timezone.utc
         self._pid1_zone = timezone.utc
 
@@ -572,7 +590,7 @@ class Collector:
         try:
             self._display_zone = ZoneInfo(str(self.conf["time_zone"]).strip())
         except (KeyError, ValueError):
-            self._display_zone = timezone.utc
+            self._display_zone = _boot_display_zone()
         self._container_zone = _resolve_container_zone()
         self._pid1_zone = _resolve_pid1_zone(self._container_zone)
         self._prune()
