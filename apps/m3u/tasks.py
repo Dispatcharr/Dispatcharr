@@ -3,6 +3,7 @@ import logging
 import re
 import regex
 import requests
+from core.redaction import redact_provider_text, redact_provider_url, redact_text
 import os
 import gc
 import gzip, zipfile
@@ -192,10 +193,10 @@ def fetch_m3u_lines(account, use_cache=False):
                 user_agent = account.get_user_agent_string()
 
                 logger.debug(
-                    f"Using user agent: {user_agent} for M3U account: {account.name}"
+                    f"Using user agent: {user_agent} for M3U account: #{account.id}"
                 )
                 headers = {"User-Agent": user_agent}
-                logger.info(f"Fetching from URL {account.server_url}")
+                logger.info(f"Fetching from URL {redact_provider_url(account.server_url)}")
 
                 # Set account status to FETCHING before starting download
                 account.status = M3UAccount.Status.FETCHING
@@ -208,21 +209,21 @@ def fetch_m3u_lines(account, use_cache=False):
                 )
 
                 # Log the actual response details for debugging
-                logger.debug(f"HTTP Response: {response.status_code} from {account.server_url}")
+                logger.debug(f"HTTP Response: {response.status_code} from {redact_provider_url(account.server_url)}")
                 logger.debug(f"Content-Type: {response.headers.get('content-type', 'Not specified')}")
                 logger.debug(f"Content-Length: {response.headers.get('content-length', 'Not specified')}")
-                logger.debug(f"Response headers: {dict(response.headers)}")
+                logger.debug(f"Response headers: {redact_provider_text(str(dict(response.headers)))}")
 
                 # Check if we've been redirected to a different URL
                 if hasattr(response, 'url') and response.url != account.server_url:
-                    logger.warning(f"Request was redirected from {account.server_url} to {response.url}")
+                    logger.warning(f"Request was redirected from {redact_provider_url(account.server_url)} to {redact_provider_url(response.url)}")
 
                 # Check for ANY non-success status code FIRST (before raise_for_status)
                 if response.status_code < 200 or response.status_code >= 300:
                     # For error responses, read the content immediately (not streaming)
                     try:
                         response_content = response.text[:1000]  # Capture up to 1000 characters
-                        logger.error(f"Error response content: {response_content!r}")
+                        logger.error(f"Error response content: {redact_provider_text(response_content)!r}")
                     except Exception as e:
                         logger.error(f"Could not read error response content: {e}")
                         response_content = "Could not read error response content"
@@ -347,7 +348,7 @@ def fetch_m3u_lines(account, use_cache=False):
 
                         # Log first few lines for debugging (be careful not to log too much)
                         preview_lines = head_lines[:5]
-                        logger.info(f"Content preview (first 5 lines): {preview_lines}")
+                        logger.info(f"Content preview (first 5 lines): {redact_provider_text(str(preview_lines))}")
                         logger.info(f"Total lines in content: {total_lines}")
 
                         # Check if it's a valid M3U file (should start with #EXTM3U or contain M3U-like content)
@@ -359,7 +360,7 @@ def fetch_m3u_lines(account, use_cache=False):
                             '<html', '<!doctype html', 'error', 'not found', '404', '403', '500',
                             'access denied', 'unauthorized', 'forbidden', 'invalid', 'expired'
                         ]):
-                            logger.warning(f"Content appears to be an error response disguised as HTTP 200: {head_str[:200]!r}")
+                            logger.warning(f"Content appears to be an error response disguised as HTTP 200: {redact_provider_text(head_str[:200])!r}")
                             # Continue with M3U validation, but this gives us a clue
 
                         if head_lines and head_lines[0].strip().upper().startswith('#EXTM3U'):
@@ -379,7 +380,7 @@ def fetch_m3u_lines(account, use_cache=False):
 
                         if not is_valid_m3u:
                             # Log what we actually received for debugging
-                            logger.error(f"Invalid M3U content received. First 200 characters: {head_str[:200]!r}")
+                            logger.error(f"Invalid M3U content received. First 200 characters: {redact_provider_text(head_str[:200])!r}")
 
                             # Try to provide more specific error messages based on content
                             if '<html' in head_lower or '<!doctype html' in head_lower:
@@ -406,7 +407,7 @@ def fetch_m3u_lines(account, use_cache=False):
                     except UnicodeDecodeError:
                         with open(temp_path, "rb") as vf:
                             first_bytes = vf.read(200)
-                        logger.error(f"Non-text content received. First 200 bytes: {first_bytes!r}")
+                        logger.error(f"Non-text content received. First 200 bytes: {redact_provider_text(repr(first_bytes))}")
                         error_msg = f"Server provided non-text content from URL: {account.server_url}. Unable to process as M3U file."
                         logger.error(error_msg)
                         account.status = M3UAccount.Status.ERROR
@@ -447,7 +448,7 @@ def fetch_m3u_lines(account, use_cache=False):
                 if e.response:
                     try:
                         response_content = e.response.text[:500]  # Limit to first 500 characters
-                        logger.error(f"HTTP error response content: {response_content!r}")
+                        logger.error(f"HTTP error response content: {redact_provider_text(response_content)!r}")
                     except Exception as content_error:
                         logger.error(f"Could not read HTTP error response content: {content_error}")
                         response_content = "Could not read error response content"
@@ -718,10 +719,7 @@ def check_field_lengths(streams_to_create):
     for stream in streams_to_create:
         for field, value in stream.__dict__.items():
             if isinstance(value, str) and len(value) > 255:
-                print(f"{field} --- {value}")
-
-        print("")
-        print("")
+                logger.debug("%s --- %s", field, redact_text(value))
 
 
 @shared_task
@@ -1033,7 +1031,7 @@ def _stream_passes_m3u_filters(name, url, group_title, compiled_filters):
         if pattern.search(target or ""):
             logger.debug(
                 "Stream %s - %s matches filter pattern %s",
-                name, url, filter_obj.regex_pattern,
+                name, redact_provider_url(url), filter_obj.regex_pattern,
             )
             return not filter_obj.exclude
     return True
@@ -1328,7 +1326,7 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys, compiled_filt
             group_title = get_case_insensitive_attr(
                 stream_info["attributes"], "group-title", "Default Group"
             )
-            logger.trace("Processing stream: %s - %s in group %s", name, url, group_title)
+            logger.trace("Processing stream: %s - %s in group %s", name, redact_provider_url(url), group_title)
 
             if compiled_filters and not _stream_passes_m3u_filters(
                 name, url, group_title, compiled_filters,
@@ -1408,7 +1406,7 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys, compiled_filt
                 stream_hashes[stream_hash] = stream_props
         except Exception as e:
             logger.error(f"Failed to process stream {name}: {e}")
-            logger.error(json.dumps(stream_info))
+            logger.error(redact_provider_text(json.dumps(stream_info)))
 
     existing_streams = {
         s.stream_hash: s
@@ -1630,7 +1628,7 @@ def refresh_m3u_groups(account_id, use_cache=False, full_refresh=False, scan_sta
                     # Queue async profile refresh task to run in background
                     # This prevents any delay in the main refresh process
                     try:
-                        logger.info(f"Queueing background profile refresh for account {account.name}")
+                        logger.info(f"Queueing background profile refresh for account #{account.id}")
                         refresh_account_profiles.delay(account.id)
                     except Exception as e:
                         logger.warning(f"Failed to queue profile refresh task: {str(e)}")
@@ -1647,7 +1645,7 @@ def refresh_m3u_groups(account_id, use_cache=False, full_refresh=False, scan_sta
                         # Validate response
                         if not isinstance(xc_categories, list):
                             error_msg = (
-                                f"Unexpected response from XC server: {xc_categories}"
+                                f"Unexpected response from XC server: {redact_provider_text(str(xc_categories))}"
                             )
                             logger.error(error_msg)
                             account.status = M3UAccount.Status.ERROR
@@ -2039,7 +2037,7 @@ def sync_auto_channels(account_id, scan_start_time=None):
 
     try:
         account = M3UAccount.objects.select_related("user_agent").get(id=account_id)
-        logger.info(f"Starting auto channel sync for M3U account {account.name}")
+        logger.info(f"Starting auto channel sync for M3U account #{account.id}")
 
         # Always use scan_start_time as the cutoff for last_seen
         if scan_start_time is not None:
@@ -3071,7 +3069,7 @@ def sync_auto_channels(account_id, scan_start_time=None):
                 )
 
         logger.info(
-            f"Auto channel sync complete for account {account.name}: "
+            f"Auto channel sync complete for account #{account.id}: "
             f"{channels_created} created, {channels_updated} updated, "
             f"{channels_deleted} deleted, {channels_failed} failed"
         )
@@ -3125,9 +3123,9 @@ def get_transformed_credentials(account, profile=None):
             if profile:
                 logger.debug(f"Using primary profile '{profile.name}' for URL transformation")
             else:
-                logger.debug(f"No active profiles found for account {account.name}, using base credentials")
+                logger.debug(f"No active profiles found for account #{account.id}, using base credentials")
         except Exception as e:
-            logger.warning(f"Could not get primary profile for account {account.name}: {e}")
+            logger.warning(f"Could not get primary profile for account #{account.id}: {e}")
             profile = None
 
     from core.xtream_codes import normalize_server_url
@@ -3190,7 +3188,7 @@ def get_transformed_credentials(account, profile=None):
             # No profile or no transformation patterns
             return base_url, base_username, base_password
     else:
-        logger.warning(f"Missing credentials for account {account.name}")
+        logger.warning(f"Missing credentials for account #{account.id}")
         return base_url, base_username, base_password
 
 
@@ -3221,7 +3219,7 @@ def refresh_account_profiles(account_id):
         ).select_related("m3u_account")
 
         if not profiles.exists():
-            logger.info(f"No active profiles found for account {account.name}")
+            logger.info(f"No active profiles found for account #{account.id}")
             return f"No active profiles for account {account_id}"
 
         # Get user agent for this account
@@ -3237,7 +3235,7 @@ def refresh_account_profiles(account_id):
         profiles_updated = 0
         profiles_failed = 0
 
-        logger.info(f"Starting background refresh for {profiles.count()} profiles of account {account.name}")
+        logger.info(f"Starting background refresh for {profiles.count()} profiles of account #{account.id}")
 
         for idx, profile in enumerate(profiles):
             try:
@@ -3286,7 +3284,7 @@ def refresh_account_profiles(account_id):
                 _release_task_db_connection()
                 # Continue with other profiles even if one fails
 
-        result_msg = f"Profile refresh complete for account {account.name}: {profiles_updated} updated, {profiles_failed} failed"
+        result_msg = f"Profile refresh complete for account #{account.id}: {profiles_updated} updated, {profiles_failed} failed"
         logger.info(result_msg)
         return result_msg
 

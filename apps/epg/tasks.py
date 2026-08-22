@@ -1,6 +1,7 @@
 # apps/epg/tasks.py
 
 import logging
+from core.redaction import redact_provider_text, redact_provider_url
 import gzip
 import html.entities
 import lzma
@@ -605,7 +606,7 @@ def fetch_xmltv(source):
         with requests.get(source.url, headers=headers, stream=True, timeout=60) as response:
             # Handle 404 specifically
             if response.status_code == 404:
-                logger.error(f"EPG URL not found (404): {source.url}")
+                logger.error(f"EPG URL not found (404): {redact_provider_url(source.url, '[epg_host]')}")
                 # Update status to error in the database
                 source.status = 'error'
                 source.last_message = f"EPG source '{source.name}' returned 404 error - will retry on next scheduled run"
@@ -902,7 +903,7 @@ def fetch_xmltv(source):
         return False
     except Exception as e:
         error_message = str(e)
-        logger.error(f"Error fetching XMLTV from {source.name}: {e}", exc_info=True)
+        logger.error(f"Error fetching XMLTV from {source.name}: {redact_provider_text(str(e), '[epg_host]')}", exc_info=True)
 
         # Update source status for general exceptions too
         source.status = 'error'
@@ -2832,7 +2833,7 @@ def detect_file_format(file_path=None, content=None):
 
     # Second priority: check file extension - focus on the final extension for compression
     if file_path:
-        logger.debug(f"Detecting file format for: {file_path}")
+        logger.debug(f"Detecting file format for: {redact_provider_url(file_path, '[epg_host]')}")
 
         # Handle compound extensions like .xml.gz - prioritize compression extensions
         lower_path = file_path.lower()

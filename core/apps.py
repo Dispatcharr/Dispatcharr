@@ -25,6 +25,21 @@ class CoreConfig(AppConfig):
         import core.signals
         from dispatcharr.app_initialization import should_skip_initialization
 
+        # Seed the log collector's conf from stored settings at every boot.
+        from django.conf import settings as django_settings
+        from dispatcharr.log_collector import apply_settings
+
+        try:
+            from core.models import CoreSettings
+
+            apply_settings(
+                getattr(django_settings, "LOG_FILE_DIR", None),
+                CoreSettings.get_system_settings(),
+            )
+        except Exception:
+            # Database not migrated yet: the collector keeps its defaults.
+            pass
+
         # Sync developer notifications and check for version updates on startup
         # Only run in the main process (not in management commands, migrations, or workers)
         if should_skip_initialization():
