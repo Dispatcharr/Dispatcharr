@@ -65,6 +65,10 @@ export const saveChangedSettings = async (settings, changedSettings) => {
   const systemFields = [
     'time_zone',
     'max_system_events',
+    'log_max_mb',
+    'log_keep',
+    'log_persist',
+    'log_level',
     'preferred_region',
     'auto_import_mapped_files',
     'enable_ip_lookup',
@@ -126,6 +130,8 @@ export const saveChangedSettings = async (settings, changedSettings) => {
       'retention_count',
       'schedule_day_of_week',
       'max_system_events',
+      'log_max_mb',
+      'log_keep',
     ];
     if (numericFields.includes(formKey) && value != null) {
       value = typeof value === 'number' ? value : parseInt(value, 10);
@@ -137,6 +143,7 @@ export const saveChangedSettings = async (settings, changedSettings) => {
       'auto_import_mapped_files',
       'enable_ip_lookup',
       'catchup_enabled',
+      'log_persist',
     ];
     if (booleanFields.includes(formKey) && value != null) {
       if (typeof value === 'boolean') {
@@ -193,6 +200,9 @@ export const saveChangedSettings = async (settings, changedSettings) => {
   }
 };
 
+// Fields whose empty string is a value, not a missing entry.
+const EMPTY_VALUED_FIELDS = ['log_level'];
+
 export const getChangedSettings = (values, settings) => {
   const changedSettings = {};
 
@@ -239,8 +249,9 @@ export const getChangedSettings = (values, settings) => {
       compareValue = String(actualValue);
     }
 
-    // Skip empty values to avoid validation errors
-    if (!compareValue) {
+    // Skip empty values to avoid validation errors, except where empty is a
+    // real choice (log_level '' means follow the container's level).
+    if (!compareValue && !EMPTY_VALUED_FIELDS.includes(settingKey)) {
       continue;
     }
 
@@ -366,6 +377,19 @@ export const parseSettings = (settings) => {
       typeof systemSettings.max_system_events === 'number'
         ? systemSettings.max_system_events
         : parseInt(systemSettings.max_system_events, 10) || 100;
+    parsed.log_max_mb =
+      typeof systemSettings.log_max_mb === 'number'
+        ? systemSettings.log_max_mb
+        : parseInt(systemSettings.log_max_mb, 10) || 10;
+    parsed.log_keep =
+      typeof systemSettings.log_keep === 'number'
+        ? systemSettings.log_keep
+        : parseInt(systemSettings.log_keep, 10) || 5;
+    parsed.log_persist =
+      typeof systemSettings.log_persist === 'boolean'
+        ? systemSettings.log_persist
+        : true;
+    parsed.log_level = String(systemSettings.log_level || '');
     parsed.preferred_region = systemSettings.preferred_region ?? null;
     parsed.auto_import_mapped_files =
       typeof systemSettings.auto_import_mapped_files === 'boolean'

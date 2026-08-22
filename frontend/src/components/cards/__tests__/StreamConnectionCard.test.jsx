@@ -172,6 +172,7 @@ vi.mock('lucide-react', () => ({
   FileImage: () => <svg data-testid="icon-file-image" />,
   Webhook: () => <svg data-testid="icon-webhook" />,
   Logs: () => <svg data-testid="icon-logs" />,
+  ScrollText: () => <svg />,
   Blocks: () => <svg data-testid="icon-blocks" />,
   MonitorCog: () => <svg data-testid="icon-monitor-cog" />,
   // StreamConnectionCard-specific icons
