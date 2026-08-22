@@ -570,6 +570,29 @@ describe('LogFileViewPage', () => {
     });
   });
 
+  it('keeps the columns out of the wrap and the hanging indent', async () => {
+    API.getLogFile.mockResolvedValue({
+      content:
+        '2026-08-21 10:00:00,000 WARNING plugins.event_channel_managarr scan slow',
+      truncated: false,
+    });
+    renderPage();
+    await screen.findByText(/scan slow/);
+    // Both properties inherit from the pane and the record block, and either
+    // one left alone empties the column: the token wraps inside its own box,
+    // or it draws itself at the block's negative indent, off the left edge.
+    const opts = { whiteSpace: 'nowrap', textIndent: '0px' };
+    expect(screen.getByText('2026-08-21 10:00:00,000')).toHaveStyle(opts);
+    expect(screen.getByText('WARN')).toHaveStyle(opts);
+    expect(screen.getByTitle('plugins.event_channel_managarr')).toHaveStyle(
+      opts
+    );
+    // The message itself is not a column and stays in the wrap.
+    expect(screen.getByText(/scan slow/)).not.toHaveStyle({
+      whiteSpace: 'nowrap',
+    });
+  });
+
   it('wraps a long line under the message column instead of scrolling', async () => {
     API.getLogFile.mockResolvedValue({
       content: [

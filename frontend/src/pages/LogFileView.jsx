@@ -264,6 +264,18 @@ const renderContinuations = (lines) => {
   return out;
 };
 
+// A column is a fixed-width cell inside a block that wraps and hangs. Both of
+// those inherit, so a column has to opt out: without nowrap its token wraps
+// inside its own box instead of ellipsing, and without the indent reset it
+// draws its text at the block's negative indent - off the left edge entirely.
+const columnStyle = (width) => ({
+  display: 'inline-block',
+  width: `${width}ch`,
+  whiteSpace: 'nowrap',
+  textIndent: '0px',
+  verticalAlign: 'bottom',
+});
+
 // Neither empty state is log content, so neither wears the log's font or margin.
 const emptyState = (message) => (
   <Text size="sm" c="dimmed" ta="center" py="md">
@@ -596,23 +608,19 @@ const LogFileViewPage = () => {
                       >
                         <span
                           style={{
+                            ...columnStyle(cols.stamp),
                             color: COLORS.stamp,
-                            display: 'inline-block',
-                            width: `${cols.stamp}ch`,
-                            verticalAlign: 'bottom',
                           }}
                         >
                           {block.record.stamp}
                         </span>{' '}
                         <span
                           style={{
+                            ...columnStyle(cols.level),
                             color: levelColor(block.record.level),
                             fontWeight: 500,
-                            display: 'inline-block',
-                            width: `${cols.level}ch`,
                             overflow: 'hidden',
                             textOverflow: 'ellipsis',
-                            verticalAlign: 'bottom',
                           }}
                           title={block.record.level}
                         >
@@ -620,12 +628,10 @@ const LogFileViewPage = () => {
                         </span>{' '}
                         <span
                           style={{
+                            ...columnStyle(cols.module),
                             color: COLORS.module,
-                            display: 'inline-block',
-                            width: `${cols.module}ch`,
                             overflow: 'hidden',
                             textOverflow: 'ellipsis',
-                            verticalAlign: 'bottom',
                           }}
                           title={block.record.source}
                         >
