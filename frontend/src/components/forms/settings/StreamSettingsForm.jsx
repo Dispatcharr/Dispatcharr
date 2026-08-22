@@ -182,10 +182,11 @@ const StreamSettingsForm = React.memo(({ active }) => {
           id="default_output_format"
           name="default_output_format"
           label="Default Output Format"
-          description="Container format used when proxying streams. MPEG-TS is broadly compatible with media players and devices; fMP4 has better support for modern codecs like AV1 and is preferred by some newer clients."
+          description="Container format used when proxying streams. MPEG-TS is broadly compatible with media players and devices; fMP4 has better support for modern codecs like AV1 and is preferred by some newer clients; HLS serves a segmented playlist for native Apple players and web playback."
           data={[
             { value: 'mpegts', label: 'MPEG-TS' },
             { value: 'fmp4', label: 'fMP4 (fragmented MP4)' },
+            { value: 'hls', label: 'HLS' },
           ]}
         />
         <Select
