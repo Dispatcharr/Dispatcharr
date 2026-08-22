@@ -200,7 +200,8 @@ const App = () => {
                         />
                       </Routes>
                     )}
-                  </Box>                </Box>
+                  </Box>
+                </Box>
               </AppShell.Main>
             </AppShell>
             <M3URefreshNotification />

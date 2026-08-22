@@ -119,6 +119,18 @@ def _boot_display_zone():
     return timezone.utc
 
 
+def _cap_record(line):
+    """Cut an oversize record for the file, never through a codepoint.
+
+    The tail is served as text/plain; charset=utf-8 and downloaded verbatim, so
+    a cut inside a multi-byte sequence would make the file itself malformed.
+    """
+    cut = _MAX_RECORD_BYTES
+    while cut > 0 and (line[cut] & 0xC0) == 0x80:
+        cut -= 1
+    return line[:cut] + _TRUNCATED
+
+
 def _resolve_container_zone():
     # The zone libc-stamping daemons use: /etc/localtime, else the process
     # local offset, else UTC.
@@ -217,8 +229,14 @@ def collector_pid(log_dir):
         with open(pid_path(log_dir), encoding="utf-8") as f:
             pid = int(f.read().strip())
         with open(f"/proc/{pid}/cmdline", "rb") as f:
-            if b"log_collector" not in f.read():
-                return None
+            cmdline = f.read()
+        # Match how the entrypoint starts it, not the bare word: a process that
+        # merely mentions log_collector in its arguments is not one.
+        if not any(
+            token in cmdline
+            for token in (b"dispatcharr.log_collector", b"log_collector.py")
+        ):
+            return None
     except (OSError, ValueError):
         return None
     return pid
@@ -320,20 +338,26 @@ class Collector:
                 break
             more = not chunk.endswith(b"\n")
             # Continuation chunks of an oversize line must not be stamped.
+            tail = mid_line
             if mid_line:
-                line = b"" if overrun else chunk
+                line = chunk
             else:
                 line = self._normalize(chunk)
                 self._gate(line)
-                # One runaway record can evict a whole rotation of history.
+                # One runaway record can evict a whole rotation of history, so
+                # the file takes a capped copy. docker logs is the sink that has
+                # to stay complete, so it takes the record whole.
                 overrun = len(line) > _MAX_RECORD_BYTES
-                if overrun:
-                    line = line[:_MAX_RECORD_BYTES] + _TRUNCATED
             suppressed = self._suppressed
             mid_line = more
             if suppressed or not line:
                 continue
             self._forward(line)
+            if overrun:
+                if tail:
+                    # The file already carries this record's marker.
+                    continue
+                line = _cap_record(line)
             if not self.conf["persist"]:
                 # Keep forwarding; only the file sink honours the toggle.
                 continue
@@ -429,6 +453,10 @@ class Collector:
             m = _UWSGI.match(raw)
             if m:
                 dt = self._parse_naive(m.group(1), int(m.group(2)), self._container_zone)
+                # INFO here is this process's choice, not uwsgi's; gating on it
+                # would let a Warning floor delete every request line from both
+                # sinks, including the broken-pipe and harakiri diagnostics.
+                self._level_known = False
                 return f"{self._render(dt)} INFO uwsgi ".encode() + raw[m.end() :]
             m = _PY_REQ.match(raw)
             if m:
@@ -497,6 +525,8 @@ class Collector:
                     (m.group(2) + b" " + m.group(3)).decode(),
                     "%d/%b/%Y:%H:%M:%S %z",
                 )
+                # INFO here is this process's choice, not nginx's.
+                self._level_known = False
                 return (
                     f"{self._render(dt)} INFO nginx.access ".encode()
                     + m.group(1)

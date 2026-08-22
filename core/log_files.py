@@ -161,9 +161,12 @@ def get_log_download_token(request, name):
 @permission_classes([AllowAny])
 def download_log_file(request, name):
     """Stream a log file as an attachment; requires a signed ``token`` param or admin auth."""
-    # The token path is anonymous, so the network gate IsAdmin would have
-    # applied has to be applied here by hand.
-    if not network_access_allowed(request, "UI"):
+    # This endpoint is AllowAny so a plain link can carry the token, so the
+    # network gate IsAdmin would have applied has to be applied by hand - with
+    # the user when there is one, since that arm checks their own allowed
+    # networks as well as the operator's.
+    user = request.user if request.user.is_authenticated else None
+    if not network_access_allowed(request, "UI", user):
         return Response({"detail": "Forbidden"}, status=403)
     token = request.query_params.get("token")
     if token:

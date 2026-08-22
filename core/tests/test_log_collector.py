@@ -212,15 +212,42 @@ class ConfTests(SimpleTestCase):
         self.assertEqual(len(re.findall(r"\d{4}-\d{2}-\d{2} ", forward)), 1)
         self.assertIn("x" * 200, forward)
 
-    def test_oversize_record_is_truncated_in_both_sinks(self):
+    def test_oversize_record_is_capped_in_the_file_and_whole_on_stdout(self):
         # A postgres STATEMENT can echo a whole batch insert; one such record
-        # would otherwise consume most of a rotation.
+        # would otherwise consume most of a rotation. The file rotates, so it
+        # takes the cap; docker logs is the sink that has to stay complete.
         big = b"2026-08-18 01:00:00,100 ERROR postgres [1] STATEMENT:  " + b"y" * 60000
         self.feed(big + b"\n")
         self.collector._drain()
+        filed = self.read_log()
+        self.assertLess(len(filed), 20000)
+        self.assertIn("truncated this record at", filed)
+        forwarded = self.read_forward()
+        self.assertGreater(len(forwarded), 60000)
+        self.assertNotIn("truncated this record at", forwarded)
+
+    def test_the_cap_never_cuts_through_a_codepoint(self):
+        # The tail is served as charset=utf-8 and downloaded verbatim, so a cut
+        # inside a multi-byte sequence makes the file itself malformed.
+        body = "e" * 20000
+        big = "2026-08-18 01:00:00,100 ERROR postgres [1] STATEMENT:  " + body
+        self.feed(big.encode() + b"\n")
+        self.collector._drain()
+        with open(self.collector.live_path, "rb") as f:
+            raw = f.read()
+        raw.decode("utf-8")  # raises if the cap split a sequence
+
+    def test_a_floor_never_deletes_uwsgi_or_nginx_output(self):
+        # The collector assigns those records INFO itself, so gating on it
+        # would erase every request line - broken pipes and harakiri with them.
+        self.collector._min_rank = 30
+        self.feed(
+            b"2026-08-18 01:00:06,000 - uwsgi_response_write_body_do(): Broken pipe"
+            b" [core/writer.c line 306] during GET /x (192.0.2.5)\n"
+        )
+        self.collector._drain()
         for content in (self.read_log(), self.read_forward()):
-            self.assertLess(len(content), 20000)
-            self.assertIn("truncated this record at", content)
+            self.assertIn("Broken pipe", content)
 
     def test_record_after_an_oversize_one_survives(self):
         # The dropped tail must not swallow the next line.

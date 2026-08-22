@@ -143,7 +143,7 @@ const barColor = (level, minRank) => {
 // (multi-line messages, traceback frames) and inherits the record's colour.
 // Sources the collector assigns when a line carries no level of its own; the
 // level on those records is the collector's, not the producer's.
-const INVENTED_LEVEL = new Set(['stdout']);
+const INVENTED_LEVEL = new Set(['stdout', 'entrypoint', 'uwsgi', 'nginx.access']);
 
 const RECORD_START =
   /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3}(?: [+-]\d{4})? /;
