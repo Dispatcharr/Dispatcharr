@@ -44,7 +44,16 @@ vi.mock('@mantine/core', () => ({
     </button>
   ),
   Flex: ({ children }) => <div>{children}</div>,
-  NumberInput: ({ label, value, onChange, min, max, step, description, id }) => (
+  NumberInput: ({
+    label,
+    value,
+    onChange,
+    min,
+    max,
+    step,
+    description,
+    id,
+  }) => (
     <div>
       <label>{label}</label>
       <p>{description}</p>
@@ -115,7 +124,7 @@ const setupMocks = ({
     log_max_mb: 10,
     log_keep: 5,
     log_persist: true,
-    log_level: '',
+    log_level: settings?.log_level ?? '',
     preferred_region: '',
     auto_import_mapped_files: true,
     enable_ip_lookup: true,
@@ -241,12 +250,35 @@ describe('SystemSettingsForm', () => {
       expect(screen.getByTestId('log_persist')).toBeInTheDocument();
     });
 
-    it('renders the Log Level select with all levels', () => {
+    it('offers the levels the viewer offers, with trace and critical folded in', () => {
       setupMocks();
       render(<SystemSettingsForm active={true} />);
       expect(screen.getByTestId('log_level')).toBeInTheDocument();
-      ['Container default', 'Trace', 'Critical'].forEach((label) =>
-        expect(screen.getByText(label)).toBeInTheDocument()
+      ['Container default', 'Debug', 'Info', 'Warning', 'Error'].forEach(
+        (label) => expect(screen.getByText(label)).toBeInTheDocument()
+      );
+      ['Trace', 'Critical'].forEach((label) =>
+        expect(screen.queryByText(label)).not.toBeInTheDocument()
+      );
+    });
+
+    it('reads a level saved as critical back as error', () => {
+      const { formMock } = setupMocks({
+        settings: makeSettings({ log_level: 'CRITICAL' }),
+      });
+      render(<SystemSettingsForm active={true} />);
+      expect(formMock.setValues).toHaveBeenCalledWith(
+        expect.objectContaining({ log_level: 'ERROR' })
+      );
+    });
+
+    it('leaves a developer trace level alone', () => {
+      const { formMock } = setupMocks({
+        settings: makeSettings({ log_level: 'TRACE' }),
+      });
+      render(<SystemSettingsForm active={true} />);
+      expect(formMock.setValues).toHaveBeenCalledWith(
+        expect.objectContaining({ log_level: 'TRACE' })
       );
     });
 
@@ -255,7 +287,9 @@ describe('SystemSettingsForm', () => {
       render(<SystemSettingsForm active={true} />);
       expect(screen.queryByTestId('log_persist')).not.toBeInTheDocument();
       expect(screen.queryByTestId('log_level')).not.toBeInTheDocument();
-      expect(screen.queryByText('Maximum Log File Size (MB)')).not.toBeInTheDocument();
+      expect(
+        screen.queryByText('Maximum Log File Size (MB)')
+      ).not.toBeInTheDocument();
       expect(screen.queryByText('Log Files Retained')).not.toBeInTheDocument();
     });
 

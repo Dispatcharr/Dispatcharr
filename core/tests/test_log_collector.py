@@ -305,6 +305,17 @@ class CollectorTests(SimpleTestCase):
         names = sorted(self.collector._archive_indices())
         self.assertEqual(names, [1, 2])
 
+    def test_level_gate_keeps_trace_below_debug(self):
+        # Trace is a developer level, not the bottom of the UI's range: a Debug
+        # floor is a floor above it.
+        self.collector._min_rank = 10
+        self.feed(b"2026-08-18 13:00:00,000 +1200 TRACE core.utils fine detail" + b"\n")
+        self.feed(b"2026-08-18 13:00:01,000 +1200 DEBUG core.utils plain detail" + b"\n")
+        self.collector._drain()
+        content = self.read_log()
+        self.assertNotIn("fine detail", content)
+        self.assertIn("plain detail", content)
+
     def test_level_gate_drops_below_floor_from_both_sinks(self):
         self.collector._min_rank = 20
         self.feed(

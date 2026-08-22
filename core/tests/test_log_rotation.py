@@ -48,3 +48,13 @@ class SystemSettingsCoercionTests(TestCase):
         CoreSettingsSerializer().update(inst, {"value": {"log_level": "loudest"}})
         inst.refresh_from_db()
         self.assertEqual(inst.value["log_level"], "")  # unknown -> container default
+        # An error floor already keeps critical, so critical is not a floor of
+        # its own.
+        CoreSettingsSerializer().update(inst, {"value": {"log_level": "critical"}})
+        inst.refresh_from_db()
+        self.assertEqual(inst.value["log_level"], "ERROR")
+        # Trace is: a developer running the container at TRACE must be able to
+        # keep the records it emits.
+        CoreSettingsSerializer().update(inst, {"value": {"log_level": "TRACE"}})
+        inst.refresh_from_db()
+        self.assertEqual(inst.value["log_level"], "TRACE")

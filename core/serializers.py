@@ -91,6 +91,14 @@ class CoreSettingsSerializer(serializers.ModelSerializer):
                     value["log_persist"] = value["log_persist"] is not False
                 if "log_level" in value:
                     level = str(value["log_level"] or "").strip().upper()
+                    # An error floor already keeps critical, so critical is
+                    # not a floor of its own. Trace stays one: it is a
+                    # developer level, reached by starting the container at
+                    # DISPATCHARR_LOG_LEVEL=TRACE, and folding it into debug
+                    # here would raise the floor above the records it exists
+                    # to collect.
+                    if level == "CRITICAL":
+                        level = "ERROR"
                     value["log_level"] = (
                         level if level in django_settings.LOG_LEVEL_MAP else ""
                     )
