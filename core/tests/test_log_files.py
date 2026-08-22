@@ -51,6 +51,11 @@ class LogFilesEndpointTests(TestCase):
             self.assertGreater(entry["size"], 0)
             self.assertIn("T", entry["modified"])  # ISO timestamp
 
+    def test_list_reports_whether_anything_is_writing_these_files(self):
+        # A stalled collector otherwise looks exactly like a quiet system.
+        response = self.client.get("/api/core/logs/")
+        self.assertFalse(response.json()["collector_running"])
+
     def test_view_returns_plain_text(self):
         response = self.client.get("/api/core/logs/dispatcharr.log/")
         self.assertEqual(response.status_code, 200)

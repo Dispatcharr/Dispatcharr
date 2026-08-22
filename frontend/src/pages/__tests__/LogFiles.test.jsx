@@ -30,6 +30,12 @@ vi.mock('@mantine/core', () => {
         {children}
       </a>
     ),
+    Alert: ({ title, children }) => (
+      <div role="alert">
+        {title}
+        {children}
+      </div>
+    ),
     Box: ({ children }) => <div>{children}</div>,
     Button: ({ children, onClick }) => (
       <button onClick={onClick}>{children}</button>
@@ -91,6 +97,24 @@ describe('LogFilesPage', () => {
       'title',
       '5,242,880 bytes'
     );
+  });
+
+  it('says so when nothing is writing the files', async () => {
+    API.getLogFiles.mockResolvedValue({ ...files, collector_running: false });
+    renderPage();
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      /Log collector not running/
+    );
+  });
+
+  it('stays quiet when the collector is running, and on an older backend', async () => {
+    API.getLogFiles.mockResolvedValue({ ...files, collector_running: true });
+    renderPage();
+    await screen.findByText('dispatcharr.log');
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    API.getLogFiles.mockResolvedValue(files);
+    renderPage();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 
   it('links filenames to the raw view route', async () => {

@@ -16,6 +16,7 @@ from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 
 from apps.accounts.permissions import IsAdmin
+from dispatcharr.log_collector import collector_running
 
 # Plain filenames only: no separators, no dotfiles, nothing path-like.
 _NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
@@ -83,7 +84,15 @@ def list_log_files(request):
             }
         )
     files.sort(key=lambda f: f["modified"], reverse=True)
-    return Response({"path": base, "files": files})
+    # Whether anything is still writing these files: without it a stalled
+    # collector looks like a quiet system.
+    return Response(
+        {
+            "path": base,
+            "files": files,
+            "collector_running": collector_running(base),
+        }
+    )
 
 
 @api_view(["GET"])

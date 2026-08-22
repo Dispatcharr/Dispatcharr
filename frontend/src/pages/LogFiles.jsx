@@ -1,6 +1,15 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Anchor, Box, Button, Group, Table, Text, Title } from '@mantine/core';
+import {
+  Alert,
+  Anchor,
+  Box,
+  Button,
+  Group,
+  Table,
+  Text,
+  Title,
+} from '@mantine/core';
 import API from '../api';
 import { useDateTimeFormat, format } from '../utils/dateTimeUtils.js';
 
@@ -12,6 +21,7 @@ const humanSize = (bytes) => {
 
 const LogFilesPage = () => {
   const [files, setFiles] = useState([]);
+  const [collectorRunning, setCollectorRunning] = useState(true);
   const [loading, setLoading] = useState(false);
   const { fullDateTimeFormat } = useDateTimeFormat();
 
@@ -21,6 +31,8 @@ const LogFilesPage = () => {
       const response = await API.getLogFiles();
       if (response) {
         setFiles(response.files || []);
+        // Absent on an older backend: assume running rather than cry wolf.
+        setCollectorRunning(response.collector_running !== false);
       }
     } catch {
       // errorNotification already surfaced the failure
@@ -41,6 +53,18 @@ const LogFilesPage = () => {
           Refresh
         </Button>
       </Group>
+
+      {!collectorRunning && (
+        <Alert
+          variant="light"
+          color="yellow"
+          mb="md"
+          title="Log collector not running"
+        >
+          These files are not being written to, and log settings saved now will
+          not take effect until it restarts. Container output is unaffected.
+        </Alert>
+      )}
 
       <Table highlightOnHover>
         <Table.Thead>

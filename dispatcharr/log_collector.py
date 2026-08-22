@@ -1,5 +1,5 @@
 """Everything logger: the container's merged stdout flows through this
-process, which forwards each (filtered) line to the real stdout for docker
+process, which forwards each normalized line to the real stdout for docker
 logs and files the same bytes, so redaction reaches both sinks.
 
 Runs standalone (python -m dispatcharr.log_collector <logdir>); no application
@@ -14,7 +14,7 @@ level. Owns rotation and pruning. Django-free; configured via
 """
 
 import collections
-import importlib
+import logging
 import os
 import re
 import signal
@@ -33,8 +33,6 @@ _BATCH_BYTES = 128 * 1024
 _BUFFER_BYTES = 2 * 1024 * 1024
 _MAX_LINE_BYTES = 256 * 1024
 _MAX_RECORD_BYTES = 16 * 1024
-_FILTER_BUDGET_SECONDS = 0.1
-_FILTER_STRIKES = 3
 
 _TRUNCATED = b" ... [log_collector truncated this record at %d bytes]\n" % _MAX_RECORD_BYTES
 
@@ -42,7 +40,6 @@ _DEFAULT_CONF = {
     "persist": True,
     "max_mb": 10,
     "keep": 5,
-    "filters": "",
     "time_zone": "",
     "level": "",
 }
@@ -162,7 +159,7 @@ def pid_path(log_dir):
     return os.path.join(log_dir, PID_NAME)
 
 
-def write_conf(log_dir, persist, max_mb, keep, filters="", time_zone="UTC", level=""):
+def write_conf(log_dir, persist, max_mb, keep, time_zone="UTC", level=""):
     """Write collector.conf atomically; called from the app (safe contexts only)."""
     if not log_dir:
         return
@@ -173,7 +170,6 @@ def write_conf(log_dir, persist, max_mb, keep, filters="", time_zone="UTC", leve
                 f"persist={1 if persist else 0}\n"
                 f"max_mb={int(max_mb)}\n"
                 f"keep={int(keep)}\n"
-                f"filters={filters}\n"
                 f"time_zone={time_zone}\n"
                 f"level={level}\n"
             )
@@ -182,7 +178,7 @@ def write_conf(log_dir, persist, max_mb, keep, filters="", time_zone="UTC", leve
         pass
 
 
-def apply_settings(log_dir, values):
+def apply_settings(log_dir, values, warn_if_absent=False):
     """Push the system-settings log keys to the collector (conf + SIGHUP).
 
     Runs on settings saves and process boot — rare, small writes. No-op in
@@ -197,28 +193,60 @@ def apply_settings(log_dir, values):
         values.get("log_persist", True) is not False,
         values.get("log_max_mb", 10) or 10,
         values.get("log_keep", 5) or 5,
-        values.get("log_filters", ""),
         values.get("time_zone") or "UTC",
         values.get("log_level") or "",
     )
-    signal_reload(log_dir)
+    if not signal_reload(log_dir) and warn_if_absent:
+        # The conf is on disk and will be read whenever a collector next starts,
+        # but nothing applied it now: say so rather than let the save look done.
+        logging.getLogger(__name__).warning(
+            "Log settings saved, but no log collector is running to apply them; "
+            "container output is unaffected and the log file is not being written."
+        )
 
 
-def signal_reload(log_dir):
-    """SIGHUP the collector so it rereads collector.conf; quiet on any failure."""
-    sighup = getattr(signal, "SIGHUP", None)
-    if not log_dir or sighup is None:
-        return
+def collector_pid(log_dir):
+    """The running collector's pid, or None.
+
+    A pidfile alone proves nothing: the process it names may be gone or, worse,
+    recycled onto something else, so the cmdline has to say log_collector.
+    """
+    if not log_dir:
+        return None
     try:
         with open(pid_path(log_dir), encoding="utf-8") as f:
             pid = int(f.read().strip())
-        # Never signal a recycled pid: the target must still be a collector.
         with open(f"/proc/{pid}/cmdline", "rb") as f:
             if b"log_collector" not in f.read():
-                return
-        os.kill(pid, sighup)
+                return None
     except (OSError, ValueError):
-        pass
+        return None
+    return pid
+
+
+def collector_running(log_dir):
+    """Whether a collector owns the log directory; False in modular mode."""
+    if os.environ.get("DISPATCHARR_ENV") == "modular":
+        return False
+    return collector_pid(log_dir) is not None
+
+
+def signal_reload(log_dir):
+    """SIGHUP the collector so it rereads collector.conf.
+
+    Returns whether a collector was actually signalled, so a caller can tell
+    the difference between settings that took effect and settings written to a
+    conf file nothing is reading.
+    """
+    sighup = getattr(signal, "SIGHUP", None)
+    pid = collector_pid(log_dir)
+    if pid is None or sighup is None:
+        return False
+    try:
+        os.kill(pid, sighup)
+    except OSError:
+        return False
+    return True
 
 
 def read_conf(log_dir):
@@ -238,29 +266,6 @@ def read_conf(log_dir):
         except (TypeError, ValueError):
             conf[key] = _DEFAULT_CONF[key]
     return conf
-
-
-def load_filters(spec):
-    """Resolve 'module:callable,module:callable' into line filters, skipping bad ones."""
-    filters = []
-    for item in str(spec or "").split(","):
-        item = item.strip()
-        if not item:
-            continue
-        try:
-            module_name, _, attr = item.partition(":")
-            fn = getattr(importlib.import_module(module_name), attr)
-            if callable(fn):
-                filters.append(fn)
-        except Exception as exc:
-            print(
-                f"[log_collector] WARNING: cannot load filter {item!r}: {exc}",
-                file=sys.stderr,
-                flush=True,
-            )
-    return filters
-
-
 
 
 class _WriteFailure(Exception):
@@ -286,8 +291,6 @@ class Collector:
         self._fd = None
         self._tail_open = False
         self._fs_ready = False
-        self._filter_strikes = 0
-        self._filters_broken = False
         self._min_rank = 0
         self._suppressed = False
         self._continuation = False
@@ -295,7 +298,6 @@ class Collector:
         self._level_known = True
         self._pg_level = b"INFO"
         self.conf = dict(_DEFAULT_CONF)
-        self.filters = []
         self._display_zone = _boot_display_zone()
         self._container_zone = timezone.utc
         self._pid1_zone = timezone.utc
@@ -307,7 +309,7 @@ class Collector:
         signal.signal(signal.SIGALRM, lambda *_: setattr(self, "_force_rotate", True))
         signal.signal(signal.SIGTERM, lambda *_: setattr(self, "_stop", True))
 
-    # ── reader thread: stdin -> filter -> forward to stdout -> buffer ──────
+    # ── reader thread: stdin -> normalize -> gate -> forward -> buffer ────
 
     def reader(self, stream):
         mid_line = False
@@ -330,9 +332,6 @@ class Collector:
             suppressed = self._suppressed
             mid_line = more
             if suppressed or not line:
-                continue
-            line = self._filter(line)
-            if line is None:
                 continue
             self._forward(line)
             if not self.conf["persist"]:
@@ -518,44 +517,6 @@ class Collector:
         except OSError:
             pass
 
-    def _filter(self, raw):
-        filters = self.filters
-        if not filters or self._filters_broken:
-            return raw
-        started = time.monotonic()
-        try:
-            text = raw.decode("utf-8", "replace").rstrip("\n")
-            for fn in filters:
-                text = fn(text)
-                if text is None:
-                    result = None
-                    break
-            else:
-                result = (text + "\n").encode("utf-8", "replace")
-        except Exception:
-            # A broken filter must never lose the stream: keep the line.
-            result = raw
-        # Circuit breaker: filters sit on the docker-logs path now, so a
-        # pathological one (catastrophic regex) must latch off, not stall.
-        if time.monotonic() - started > _FILTER_BUDGET_SECONDS:
-            self._filter_strikes += 1
-            if self._filter_strikes >= _FILTER_STRIKES:
-                self._filters_broken = True
-                print(
-                    "[log_collector] WARNING: line filters repeatedly "
-                    "exceeded their time budget - filtering disabled.",
-                    file=sys.stderr,
-                    flush=True,
-                )
-                self._enqueue(
-                    (
-                        self._now_stamp()
-                        + " WARNING dispatcharr.log_collector line filters "
-                        + "disabled after repeated time-budget overruns\n"
-                    ).encode()
-                )
-        return result
-
     # ── writer thread: batches, markers, rotation ─────────────────────────
 
     def writer(self):
@@ -581,9 +542,6 @@ class Collector:
         self._reload = False
         self._setup_fs()
         self.conf = read_conf(self.log_dir)
-        self.filters = load_filters(self.conf["filters"])
-        self._filter_strikes = 0
-        self._filters_broken = False
         self._min_rank = _LEVEL_RANK.get(
             str(self.conf["level"]).strip().upper().encode(), 0
         )

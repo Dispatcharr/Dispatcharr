@@ -16,14 +16,6 @@ from dispatcharr import log_collector
 from dispatcharr.log_collector import Collector
 
 
-def _upper_filter(line):
-    return line.upper()
-
-
-def _drop_secret_filter(line):
-    return None if "secret" in line else line
-
-
 class ConfTests(SimpleTestCase):
     def setUp(self):
         self.log_dir = tempfile.mkdtemp(prefix="dispatcharr-collector-")
@@ -31,7 +23,7 @@ class ConfTests(SimpleTestCase):
 
     def test_conf_round_trip(self):
         log_collector.write_conf(
-            self.log_dir, False, 42, 7, "a.b:c", "Pacific/Auckland", "DEBUG"
+            self.log_dir, False, 42, 7, "Pacific/Auckland", "DEBUG"
         )
         conf = log_collector.read_conf(self.log_dir)
         self.assertEqual(
@@ -40,7 +32,6 @@ class ConfTests(SimpleTestCase):
                 "persist": False,
                 "max_mb": 42,
                 "keep": 7,
-                "filters": "a.b:c",
                 "time_zone": "Pacific/Auckland",
                 "level": "DEBUG",
             },
@@ -75,7 +66,7 @@ class ConfTests(SimpleTestCase):
         )
 
     def test_conf_zone_outranks_the_boot_zone(self):
-        log_collector.write_conf(self.log_dir, True, 10, 5, "", "America/Denver", "")
+        log_collector.write_conf(self.log_dir, True, 10, 5, "America/Denver", "")
         with mock.patch.dict(
             os.environ, {"DISPATCHARR_TIME_ZONE": "Pacific/Auckland"}
         ):
@@ -89,15 +80,6 @@ class ConfTests(SimpleTestCase):
     def test_missing_conf_gives_defaults(self):
         self.assertEqual(log_collector.read_conf(self.log_dir), log_collector._DEFAULT_CONF)
 
-    def test_load_filters_skips_broken_specs(self):
-        filters = log_collector.load_filters(
-            "core.tests.test_log_collector:_upper_filter,nope.missing:fn"
-        )
-        self.assertEqual(len(filters), 1)
-        self.assertEqual(filters[0]("x"), "X")
-
-
-class CollectorTests(SimpleTestCase):
     def setUp(self):
         self.log_dir = tempfile.mkdtemp(prefix="dispatcharr-collector-")
         self.addCleanup(shutil.rmtree, self.log_dir, ignore_errors=True)
@@ -133,7 +115,7 @@ class CollectorTests(SimpleTestCase):
 
     @staticmethod
     def strip_stamps(text):
-        # Case-insensitive so uppercasing filters still strip the arrival tokens.
+        # Case-insensitive so a re-stamped line still strips the arrival tokens.
         return re.sub(
             r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3}(?: [+-]\d{4})? (?:INFO stdout )?",
             "",
@@ -175,18 +157,6 @@ class CollectorTests(SimpleTestCase):
         self.assertEqual(self.read_log(), "")
         self.assertEqual(self.collector._buf_bytes, 0)
 
-    def test_filter_can_rewrite_and_drop_lines(self):
-        self.collector.filters = [_drop_secret_filter, _upper_filter]
-        self.feed(b"keep me\n", b"a secret line\n")
-        self.collector._drain()
-        self.assertEqual(self.strip_stamps(self.read_log()), "KEEP ME\n")
-
-    def test_broken_filter_passes_line_through(self):
-        self.collector.filters = [lambda line: 1 / 0]
-        self.feed(b"survives\n")
-        self.collector._drain()
-        self.assertEqual(self.strip_stamps(self.read_log()), "survives\n")
-
     def test_rotation_at_cap_shifts_and_prunes(self):
         self.collector.conf.update({"max_mb": 1, "keep": 2})
         with open(self.collector.live_path, "w") as f:
@@ -222,19 +192,10 @@ class CollectorTests(SimpleTestCase):
         self.collector.reader(io.BytesIO(b"line\n"))
         self.assertTrue(self.collector._stop)
 
-    def test_forwarded_stream_gets_filtered_lines(self):
-        self.collector.filters = [_upper_filter]
-        self.feed(b"masked?\n")
-        self.assertEqual(self.strip_stamps(self.read_forward()), "MASKED?\n")
+    def test_both_sinks_get_the_same_bytes(self):
+        self.feed(b"one line\n")
         self.collector._drain()
-        self.assertEqual(self.strip_stamps(self.read_log()), "MASKED?\n")
-
-    def test_filter_none_drops_from_both_sinks(self):
-        self.collector.filters = [_drop_secret_filter]
-        self.feed(b"public\n", b"a secret line\n")
-        self.collector._drain()
-        self.assertNotIn("secret", self.read_forward())
-        self.assertNotIn("secret", self.read_log())
+        self.assertEqual(self.read_forward(), self.read_log())
 
     def test_persist_off_still_forwards(self):
         self.collector.conf["persist"] = False
@@ -242,15 +203,6 @@ class CollectorTests(SimpleTestCase):
         self.collector._drain()
         self.assertEqual(self.strip_stamps(self.read_forward()), "stdout only\n")
         self.assertEqual(self.read_log(), "")
-
-    def test_slow_filter_latches_off(self):
-        self.collector.filters = [_upper_filter]
-        with mock.patch.object(log_collector, "_FILTER_BUDGET_SECONDS", -1.0):
-            self.feed(b"one\n", b"two\n", b"three\n", b"four\n")
-        self.assertTrue(self.collector._filters_broken)
-        self.assertTrue(self.read_forward().endswith("four\n"))
-        self.collector._drain()
-        self.assertIn("filters disabled", self.read_log())
 
     def test_oversize_line_chunks_are_not_stamped_mid_line(self):
         big = b"x" * (log_collector._MAX_LINE_BYTES + 100)
@@ -640,7 +592,6 @@ class ApplySettingsTests(SimpleTestCase):
                 "persist": False,
                 "max_mb": 25,
                 "keep": 3,
-                "filters": "",
                 "time_zone": "UTC",
                 "level": "WARNING",
             },
@@ -650,6 +601,28 @@ class ApplySettingsTests(SimpleTestCase):
         with mock.patch.dict(log_collector.os.environ, {"DISPATCHARR_ENV": "modular"}):
             log_collector.apply_settings(self.log_dir, {"log_persist": False})
         self.assertFalse(os.path.exists(log_collector.conf_path(self.log_dir)))
+
+    def test_collector_running_needs_a_live_collector_process(self):
+        # No pidfile at all.
+        self.assertFalse(log_collector.collector_running(self.log_dir))
+        # A pidfile naming this process, which is not a collector.
+        with open(log_collector.pid_path(self.log_dir), "w") as f:
+            f.write(str(os.getpid()))
+        self.assertFalse(log_collector.collector_running(self.log_dir))
+
+    def test_a_save_that_reaches_nobody_says_so(self):
+        # The conf still lands: it is read whenever a collector next starts.
+        with self.assertLogs("dispatcharr.log_collector", level="WARNING") as caught:
+            log_collector.apply_settings(
+                self.log_dir, {"log_max_mb": 12}, warn_if_absent=True
+            )
+        self.assertIn("no log collector is running", caught.output[0])
+        self.assertEqual(log_collector.read_conf(self.log_dir)["max_mb"], 12)
+
+    def test_boot_does_not_warn_about_a_collector_that_may_be_starting(self):
+        # ready() applies settings while the collector may still be starting.
+        with self.assertNoLogs("dispatcharr.log_collector", level="WARNING"):
+            log_collector.apply_settings(self.log_dir, {"log_max_mb": 12})
 
     def test_signal_reload_refuses_recycled_pids(self):
         with open(log_collector.pid_path(self.log_dir), "w") as f:
@@ -696,7 +669,6 @@ class ReceiverTests(TestCase):
                 "persist": False,
                 "max_mb": 20,
                 "keep": 4,
-                "filters": "",
                 "time_zone": "UTC",
                 "level": "",
             },

@@ -13,7 +13,13 @@ def prevent_deletion_if_locked(sender, instance, **kwargs):
 @receiver(post_save, sender=CoreSettings)
 def apply_log_collector_settings(sender, instance, **kwargs):
     if instance.key == SYSTEM_SETTINGS_KEY:
-        apply_settings(getattr(settings, "LOG_FILE_DIR", None), instance.value)
+        # warn_if_absent: a save is a user action, so an unapplied one is worth
+        # saying out loud. Boot does not warn - the collector may still be starting.
+        apply_settings(
+            getattr(settings, "LOG_FILE_DIR", None),
+            instance.value,
+            warn_if_absent=True,
+        )
 
 @receiver(post_save, sender=CoreSettings)
 @receiver(post_delete, sender=CoreSettings)
