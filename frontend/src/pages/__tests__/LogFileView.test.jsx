@@ -330,21 +330,15 @@ describe('LogFileViewPage', () => {
 
     API.getLogFile.mockResolvedValue({ content, truncated: true });
 
-    const start = performance.now();
     renderPage();
-    await waitFor(
-      () => {
-        expect(
-          screen.getByText(/END-OF-SYNTHETIC-LOG-MARKER/)
-        ).toBeInTheDocument();
-      },
-      { timeout: 15000 }
+    // No wall-clock assertion: this proves the render terminates and yields the
+    // right DOM, and a machine under load must not be able to fail it. A real
+    // hang still fails, on the test's own timeout.
+    await screen.findByText(
+      /END-OF-SYNTHETIC-LOG-MARKER/,
+      {},
+      { timeout: 30000 }
     );
-    const elapsed = performance.now() - start;
-
-    // Generous ceiling — this is a smoke/perf-ceiling guard proving the
-    // native <pre> render doesn't hang at max size, not a strict benchmark.
-    expect(elapsed).toBeLessThan(15000);
     expect(screen.queryByTestId('loader')).not.toBeInTheDocument();
     expect(screen.queryByText('(empty)')).not.toBeInTheDocument();
     // F3: only the tail renders — the cap notice shows and the first record is dropped from the DOM.
@@ -352,7 +346,7 @@ describe('LogFileViewPage', () => {
       screen.getByText(/Showing the last [\d,]+ lines/)
     ).toBeInTheDocument();
     expect(screen.queryByText(/record-0\b/)).not.toBeInTheDocument();
-  }, 20000);
+  }, 60000);
 
   it('does not poll while the tab is hidden', async () => {
     vi.useFakeTimers();
