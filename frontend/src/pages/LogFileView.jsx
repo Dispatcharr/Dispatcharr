@@ -458,205 +458,212 @@ const LogFileViewPage = () => {
 
   return (
     <Box p="md">
-      <Box
-        // The controls have to stay in reach: a tail runs to tens of viewports.
-        style={{
-          position: 'sticky',
-          top: 0,
-          zIndex: 2,
-          background: 'var(--mantine-color-body)',
-          paddingBottom: 8,
-        }}
-      >
-        <Group justify="space-between" mb="sm">
-          <Group gap="sm">
-            <Anchor component={Link} to="/logs" size="sm">
-              ← Logs
-            </Anchor>
-            <Title order={4}>{name}</Title>
+      <Paper withBorder radius="md" p={0}>
+        <Box
+          // The panel's own header, pinned so the controls stay in reach: a
+          // tail runs to tens of viewports. Square corners inside the panel's
+          // rounded ones, on the panel's own background, so at rest it is just
+          // the top of the panel and under scroll the records pass beneath a
+          // hairline instead of a floating band with an edge of its own.
+          style={{
+            position: 'sticky',
+            top: 0,
+            zIndex: 2,
+            background: 'var(--mantine-color-body)',
+            borderBottom: '1px solid var(--mantine-color-default-border)',
+            padding: 'var(--mantine-spacing-sm)',
+          }}
+        >
+          <Group justify="space-between">
+            <Group gap="sm">
+              <Anchor component={Link} to="/logs" size="sm">
+                ← Logs
+              </Anchor>
+              <Title order={4}>{name}</Title>
+            </Group>
+            <Group gap="sm">
+              {notice && (
+                <Text size="sm" c="yellow">
+                  {notice}
+                </Text>
+              )}
+              <TextInput
+                size="xs"
+                label="Search"
+                placeholder="Filter text"
+                value={search}
+                onChange={(event) => setSearch(event.currentTarget.value)}
+                style={{ width: 180 }}
+              />
+              <Select
+                size="xs"
+                label="Level"
+                value={String(minLevel)}
+                onChange={(value) => setMinLevelSetting(parseInt(value))}
+                allowDeselect={false}
+                data={LEVEL_OPTIONS}
+                style={{ width: 110 }}
+              />
+              <Select
+                size="xs"
+                label="Category"
+                value={category === null ? 'all' : category}
+                onChange={(value) => setCategorySetting(value)}
+                allowDeselect={false}
+                data={CATEGORY_OPTIONS}
+                style={{ width: 130 }}
+              />
+              <Select
+                size="xs"
+                label="Order"
+                value={newestFirst ? 'newest' : 'oldest'}
+                onChange={(value) => setNewestFirst(value === 'newest')}
+                allowDeselect={false}
+                data={[
+                  { value: 'newest', label: 'Newest first' },
+                  { value: 'oldest', label: 'Newest last' },
+                ]}
+                style={{ width: 130 }}
+              />
+              <Select
+                size="xs"
+                label="Auto Refresh"
+                value={refreshSeconds.toString()}
+                onChange={(value) => setRefreshSetting(parseInt(value))}
+                allowDeselect={false}
+                data={REFRESH_OPTIONS}
+                style={{ width: 120 }}
+              />
+              <Button
+                size="xs"
+                variant="subtle"
+                onClick={() => load()}
+                loading={loading}
+                style={{ marginTop: 'auto' }}
+              >
+                Refresh
+              </Button>
+              <Button
+                size="xs"
+                variant="subtle"
+                onClick={() => API.downloadLogFile(name)}
+                style={{ marginTop: 'auto' }}
+              >
+                Download
+              </Button>
+            </Group>
           </Group>
-          <Group gap="sm">
-            {notice && (
-              <Text size="sm" c="yellow">
-                {notice}
-              </Text>
-            )}
-            <TextInput
-              size="xs"
-              label="Search"
-              placeholder="Filter text"
-              value={search}
-              onChange={(event) => setSearch(event.currentTarget.value)}
-              style={{ width: 180 }}
-            />
-            <Select
-              size="xs"
-              label="Level"
-              value={String(minLevel)}
-              onChange={(value) => setMinLevelSetting(parseInt(value))}
-              allowDeselect={false}
-              data={LEVEL_OPTIONS}
-              style={{ width: 110 }}
-            />
-            <Select
-              size="xs"
-              label="Category"
-              value={category === null ? 'all' : category}
-              onChange={(value) => setCategorySetting(value)}
-              allowDeselect={false}
-              data={CATEGORY_OPTIONS}
-              style={{ width: 130 }}
-            />
-            <Select
-              size="xs"
-              label="Order"
-              value={newestFirst ? 'newest' : 'oldest'}
-              onChange={(value) => setNewestFirst(value === 'newest')}
-              allowDeselect={false}
-              data={[
-                { value: 'newest', label: 'Newest first' },
-                { value: 'oldest', label: 'Newest last' },
-              ]}
-              style={{ width: 130 }}
-            />
-            <Select
-              size="xs"
-              label="Auto Refresh"
-              value={refreshSeconds.toString()}
-              onChange={(value) => setRefreshSetting(parseInt(value))}
-              allowDeselect={false}
-              data={REFRESH_OPTIONS}
-              style={{ width: 120 }}
-            />
-            <Button
-              size="xs"
-              variant="subtle"
-              onClick={() => load()}
-              loading={loading}
-              style={{ marginTop: 'auto' }}
-            >
-              Refresh
-            </Button>
-            <Button
-              size="xs"
-              variant="subtle"
-              onClick={() => API.downloadLogFile(name)}
-              style={{ marginTop: 'auto' }}
-            >
-              Download
-            </Button>
-          </Group>
-        </Group>
-      </Box>
+        </Box>
 
-      <Paper withBorder radius="md" p="sm" style={{ overflowX: 'auto' }}>
-        {loading && !content ? (
-          <Loader />
-        ) : !content && loadError ? (
-          <Group gap="sm">
-            <Text size="sm" c="red">
-              Failed to load {name}
-            </Text>
-            <Button size="xs" variant="subtle" onClick={() => load()}>
-              Retry
-            </Button>
-          </Group>
-        ) : (
-          <div
-            style={{
-              margin: 0,
-              fontFamily:
-                'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
-              fontSize: 12,
-              lineHeight: 1.45,
-              // Wrap rather than scroll sideways; anywhere breaks the unbroken
-              // tokens (URLs, SQL dumps) that no space would ever break.
-              whiteSpace: 'pre-wrap',
-              overflowWrap: 'anywhere',
-            }}
-          >
-            {!content
-              ? emptyState('(empty)')
-              : blocks.length
-                ? blocks.map((block, i) => {
-                    if (!block.record) {
+        <Box p="sm">
+          {loading && !content ? (
+            <Loader />
+          ) : !content && loadError ? (
+            <Group gap="sm">
+              <Text size="sm" c="red">
+                Failed to load {name}
+              </Text>
+              <Button size="xs" variant="subtle" onClick={() => load()}>
+                Retry
+              </Button>
+            </Group>
+          ) : (
+            <div
+              style={{
+                margin: 0,
+                fontFamily:
+                  'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+                fontSize: 12,
+                lineHeight: 1.45,
+                // Wrap rather than scroll sideways; anywhere breaks the unbroken
+                // tokens (URLs, SQL dumps) that no space would ever break.
+                whiteSpace: 'pre-wrap',
+                overflowWrap: 'anywhere',
+              }}
+            >
+              {!content
+                ? emptyState('(empty)')
+                : blocks.length
+                  ? blocks.map((block, i) => {
+                      if (!block.record) {
+                        return (
+                          <div
+                            key={i}
+                            // Nothing owns these lines. Dimming them stops a run
+                            // of them reading as the tail of the record above.
+                            style={{
+                              borderLeft: '3px solid transparent',
+                              paddingLeft: 8,
+                              color: COLORS.stamp,
+                            }}
+                          >
+                            {block.lines.join('\n')}
+                          </div>
+                        );
+                      }
+                      const mc = severityColor(block.record.level);
+                      const bc = barColor(block.record.level, minLevel);
                       return (
                         <div
                           key={i}
-                          // Nothing owns these lines. Dimming them stops a run
-                          // of them reading as the tail of the record above.
                           style={{
-                            borderLeft: '3px solid transparent',
-                            paddingLeft: 8,
-                            color: COLORS.stamp,
+                            borderLeft: `3px solid ${bc}`,
+                            paddingLeft: `calc(8px + ${messageIndent}ch)`,
+                            textIndent: `-${messageIndent}ch`,
                           }}
                         >
-                          {block.lines.join('\n')}
-                        </div>
-                      );
-                    }
-                    const mc = severityColor(block.record.level);
-                    const bc = barColor(block.record.level, minLevel);
-                    return (
-                      <div
-                        key={i}
-                        style={{
-                          borderLeft: `3px solid ${bc}`,
-                          paddingLeft: `calc(8px + ${messageIndent}ch)`,
-                          textIndent: `-${messageIndent}ch`,
-                        }}
-                      >
-                        <span
-                          style={{
-                            ...columnStyle(cols.stamp),
-                            color: COLORS.stamp,
-                          }}
-                        >
-                          {block.record.stamp}
-                        </span>{' '}
-                        <span
-                          style={{
-                            ...columnStyle(cols.level),
-                            color: levelColor(block.record.level),
-                            fontWeight: 500,
-                            overflow: 'hidden',
-                            textOverflow: 'ellipsis',
-                          }}
-                          title={block.record.level}
-                        >
-                          {levelLabel(block.record.level)}
-                        </span>{' '}
-                        <span
-                          style={{
-                            ...columnStyle(cols.module),
-                            color: COLORS.module,
-                            overflow: 'hidden',
-                            textOverflow: 'ellipsis',
-                          }}
-                          title={block.record.source}
-                        >
-                          {block.record.module}
-                        </span>
-                        {block.record.sep}
-                        <span style={mc ? { color: mc } : undefined}>
-                          {block.record.message}
-                        </span>
-                        {block.continuations.length > 0 && (
-                          <div
+                          <span
                             style={{
-                              textIndent: '0px',
-                              color: mc || undefined,
+                              ...columnStyle(cols.stamp),
+                              color: COLORS.stamp,
                             }}
                           >
-                            {renderContinuations(block.continuations)}
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })
-                : emptyState('(no records match the filters)')}
-          </div>
-        )}
+                            {block.record.stamp}
+                          </span>{' '}
+                          <span
+                            style={{
+                              ...columnStyle(cols.level),
+                              color: levelColor(block.record.level),
+                              fontWeight: 500,
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                            }}
+                            title={block.record.level}
+                          >
+                            {levelLabel(block.record.level)}
+                          </span>{' '}
+                          <span
+                            style={{
+                              ...columnStyle(cols.module),
+                              color: COLORS.module,
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                            }}
+                            title={block.record.source}
+                          >
+                            {block.record.module}
+                          </span>
+                          {block.record.sep}
+                          <span style={mc ? { color: mc } : undefined}>
+                            {block.record.message}
+                          </span>
+                          {block.continuations.length > 0 && (
+                            <div
+                              style={{
+                                textIndent: '0px',
+                                color: mc || undefined,
+                              }}
+                            >
+                              {renderContinuations(block.continuations)}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })
+                  : emptyState('(no records match the filters)')}
+            </div>
+          )}
+        </Box>
       </Paper>
     </Box>
   );
