@@ -141,6 +141,10 @@ const barColor = (level, minRank) => {
 
 // A record starts with a canonical stamp; anything else is a continuation
 // (multi-line messages, traceback frames) and inherits the record's colour.
+// Sources the collector assigns when a line carries no level of its own; the
+// level on those records is the collector's, not the producer's.
+const INVENTED_LEVEL = new Set(['stdout']);
+
 const RECORD_START =
   /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3}(?: [+-]\d{4})? /;
 
@@ -227,7 +231,13 @@ const filterEntries = (entries, minRank, category, query) => {
   for (const group of groupEntries(entries)) {
     const record = group[0].record;
     if (record) {
-      const rank = LEVEL_RANK[record.level];
+      // The collector stamps a line it cannot attribute as INFO stdout and
+      // refuses to gate on that invented level, so its own floor never drops
+      // one. Honouring it here would hide the exception line of a traceback
+      // whose head is an ERROR the floor kept.
+      const rank = INVENTED_LEVEL.has(record.source)
+        ? undefined
+        : LEVEL_RANK[record.level];
       if (rank !== undefined && rank < minRank) continue;
       if (category !== null && record.tier !== category) continue;
     }
@@ -238,9 +248,6 @@ const filterEntries = (entries, minRank, category, query) => {
   return out;
 };
 
-// Newest first flips whole records, so a multi-line record keeps its own line order.
-const reverseEntries = (entries) => groupEntries(entries).reverse().flat();
-
 // Blank continuation runs render at reduced height: the bytes stay in the DOM (and copy), only the vertical gap tightens.
 const renderContinuations = (lines) => {
   const out = [];
@@ -248,9 +255,13 @@ const renderContinuations = (lines) => {
   let blank = null;
   const flush = () => {
     if (!run.length) return;
+    // join() alone loses a single blank line: one empty string is '', React
+    // renders no text node, and a div with no in-flow content has no line box
+    // at all - the byte would leave the DOM and the copy buffer with it.
+    const text = run.join('\n') + (blank ? '\n' : '');
     out.push(
       <div key={out.length} style={blank ? { lineHeight: 0.35 } : undefined}>
-        {run.join('\n')}
+        {text}
       </div>
     );
     run = [];
@@ -382,10 +393,12 @@ const LogFileViewPage = () => {
       kept = filterEntries(entries, minLevel, category, query);
     const hidden = Math.max(0, kept.length - MAX_RENDER_LINES);
     if (hidden) kept = kept.slice(hidden);
-    return {
-      blocks: buildBlocks(newestFirst ? reverseEntries(kept) : kept),
-      hiddenLines: hidden,
-    };
+    // Blocks are built in file order and then reversed as blocks: reversing
+    // the entries first would move a continuation run that owns no record to
+    // the end of the list, where it would attach to an unrelated record.
+    const built = buildBlocks(kept);
+    if (newestFirst) built.reverse();
+    return { blocks: built, hiddenLines: hidden };
   }, [entries, newestFirst, minLevel, category, query]);
 
   // Wrapped lines and continuations both hang under the message column.

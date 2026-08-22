@@ -816,6 +816,74 @@ describe('LogFileViewPage', () => {
     expect(screen.getByText(/back to normal/)).toBeInTheDocument();
   });
 
+  it('keeps a record whose level the collector invented, at any floor', async () => {
+    // _normalize stamps an unattributable line as INFO stdout and _gate refuses
+    // to drop it on that invented level. A viewer that honours it hides the
+    // exception line of a traceback whose ERROR head the same floor kept.
+    API.getLogFile.mockResolvedValue({
+      content: [
+        '2026-08-21 10:00:00,000 ERROR core.tasks Traceback (most recent call last):',
+        '  File "/app/x.py", line 3, in run',
+        '2026-08-21 10:00:00,001 INFO stdout ValueError: the actual failure',
+        '2026-08-21 10:00:01,000 INFO core.tasks routine tick',
+      ].join('\n'),
+      truncated: false,
+    });
+    renderPage();
+    await screen.findByText(/routine tick/);
+    fireEvent.change(screen.getByLabelText('Level'), {
+      target: { value: '40' },
+    });
+    // The ordinary INFO goes, the collector's invented one stays.
+    expect(screen.queryByText(/routine tick/)).not.toBeInTheDocument();
+    expect(
+      screen.getByText(/ValueError: the actual failure/)
+    ).toBeInTheDocument();
+  });
+
+  it('leaves an unowned continuation run unowned when the order flips', async () => {
+    // A tail that starts mid-record has continuations with no head. Reversing
+    // entries would move them to the end and graft them onto an unrelated
+    // record - inside its block, behind its severity bar.
+    API.getLogFile.mockResolvedValue({
+      content: [
+        '  orphaned frame from a record the tail cut off',
+        '2026-08-21 10:00:01,000 ERROR apps.epg refresh failed',
+      ].join('\n'),
+      truncated: true,
+    });
+    renderPage();
+    const orphan = await screen.findByText(/orphaned frame/);
+    const owner = screen.getByText(/refresh failed/).closest('div');
+    expect(owner.textContent).not.toContain('orphaned frame');
+    fireEvent.change(screen.getByLabelText('Order'), {
+      target: { value: 'newest' },
+    });
+    const afterFlip = screen.getByText(/refresh failed/).closest('div');
+    expect(afterFlip.textContent).not.toContain('orphaned frame');
+    expect(screen.getByText(/orphaned frame/)).toBeInTheDocument();
+  });
+
+  it('keeps the byte of a single blank continuation line', async () => {
+    // One blank line joins to '', React renders no text node, and a div with no
+    // in-flow content has no line box: the byte would leave the DOM and the
+    // copy buffer with it. Every blank run in the production logs is length 1.
+    API.getLogFile.mockResolvedValue({
+      content: [
+        '2026-08-21 10:00:00,000 ERROR core.tasks Traceback (most recent call last):',
+        '',
+        'ValueError: bad feed',
+      ].join('\n'),
+      truncated: false,
+    });
+    renderPage();
+    await screen.findByText(/Traceback/);
+    const segments = screen.getByText(/ValueError/).parentElement;
+    const blank = segments.children[0];
+    expect(blank).toHaveStyle({ lineHeight: '0.35' });
+    expect(blank.textContent).toBe('\n');
+  });
+
   it('never hides the collector pass-through records behind a filter', async () => {
     // A known source shape with an unparseable date passes through the collector unstamped; the viewer must not fold it into the record above.
     API.getLogFile.mockResolvedValue({
@@ -843,12 +911,9 @@ describe('LogFileViewPage', () => {
     });
     renderPage();
     await screen.findByText(/frame=1/);
-    // JS '.' excludes \r; the [\s\S] body keeps this a record so the level filter can rank it.
+    // JS '.' excludes \r; the [\s\S] body keeps this one record rather than two lines.
     expect(screen.getByTitle('stdout')).toHaveTextContent('stdout');
-    fireEvent.change(screen.getByLabelText('Level'), {
-      target: { value: '30' },
-    });
-    expect(screen.queryByText(/frame=1/)).not.toBeInTheDocument();
+    expect(screen.getByText(/frame=1/).textContent).toContain('frame=30');
   });
 
   it('does not invent a separator the file lacks', async () => {

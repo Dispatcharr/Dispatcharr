@@ -114,6 +114,7 @@ describe('LogFilesPage', () => {
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
     API.getLogFiles.mockResolvedValue(files);
     renderPage();
+    await screen.findAllByText('dispatcharr.log');
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 

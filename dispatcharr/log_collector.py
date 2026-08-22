@@ -1,6 +1,6 @@
 """Everything logger: the container's merged stdout flows through this
 process, which forwards each normalized line to the real stdout for docker
-logs and files the same bytes, so redaction reaches both sinks.
+logs and files the same bytes, so both sinks carry the same record.
 
 Runs standalone (python -m dispatcharr.log_collector <logdir>); no application
 process ever performs log file I/O. The reader owns stdin from the first

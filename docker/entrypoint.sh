@@ -255,9 +255,9 @@ chown "$PUID:$PGID" "$LOG_FILE_DIR" "$LOG_FILE_DIR"/dispatcharr.log* 2>/dev/null
 fi
 
 # Everything below (uwsgi, celery, daphne, nginx, postgres, redis, this
-# script) flows THROUGH the log collector: it forwards each filtered line to
-# the real stdout for docker logs and files the same bytes, so redaction
-# reaches both sinks. The pipe read end survives collector restarts (no line
+# script) flows THROUGH the log collector: it forwards each normalized line to
+# the real stdout for docker logs and files the same bytes, so both sinks
+# carry the same record. The pipe read end survives collector restarts (no line
 # loss, brief delay only) and repeated rapid failures degrade to a plain cat
 # passthrough so docker logs outlives any collector fault. Modular mode stays
 # stdout-only (one shared /data across containers must not have one writer).

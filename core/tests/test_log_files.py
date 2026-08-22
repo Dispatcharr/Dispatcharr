@@ -1,6 +1,7 @@
 """Tests for the log file browsing endpoints (System > Logs)."""
 
 import os
+import time
 import shutil
 import tempfile
 
@@ -64,12 +65,12 @@ class LogFilesEndpointTests(TestCase):
         self.assertEqual(response["X-Log-Truncated"], "0")
 
     def test_view_truncates_large_files_at_line_boundary(self):
-        big = os.path.join(self.log_dir, "big.log")
+        big = os.path.join(self.log_dir, "dispatcharr.log.big")
         line = b"x" * 99 + b"\n"
         with open(big, "wb") as f:
             for _ in range((log_files.MAX_VIEW_BYTES // 100) + 100):
                 f.write(line)
-        response = self.client.get("/api/core/logs/big.log/")
+        response = self.client.get("/api/core/logs/dispatcharr.log.big/")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response["X-Log-Truncated"], "1")
         self.assertLessEqual(len(response.content), log_files.MAX_VIEW_BYTES)
@@ -103,6 +104,38 @@ class LogFilesEndpointTests(TestCase):
         self.assertIn("attachment", response["Content-Disposition"])
         self.assertEqual(
             b"".join(response.streaming_content), b"line one\nline two\n"
+        )
+
+    def test_download_token_expires(self):
+        # uWSGI logs request URIs into this very log, so a token that outlives
+        # the click is a permanent key to the file sitting inside the file.
+        stale = log_files._download_token(
+            "dispatcharr.log", self.admin.pk, expires=time.time() - 1
+        )
+        self.client.logout()
+        response = self.client.get(
+            f"/api/core/logs/dispatcharr.log/download/?token={stale}"
+        )
+        self.assertEqual(response.status_code, 403)
+
+    def test_download_token_is_bound_to_one_file(self):
+        token = log_files._download_token("dispatcharr.log", self.admin.pk)
+        self.client.logout()
+        response = self.client.get(
+            f"/api/core/logs/dispatcharr.log.1/download/?token={token}"
+        )
+        self.assertEqual(response.status_code, 403)
+
+    def test_endpoints_serve_only_the_log_family(self):
+        # An operator who points DISPATCHARR_LOG_DIR at a data root must not
+        # turn view and download into a file server for everything in it.
+        with open(os.path.join(self.log_dir, "secrets.env"), "w") as f:
+            f.write("nothing to see")
+        self.assertEqual(
+            self.client.get("/api/core/logs/secrets.env/").status_code, 404
+        )
+        self.assertEqual(
+            self.client.get("/api/core/logs/secrets.env/download/").status_code, 404
         )
 
     def test_download_with_bad_token_is_forbidden(self):
