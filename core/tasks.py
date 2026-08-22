@@ -14,7 +14,6 @@ from apps.m3u.tasks import refresh_single_m3u_account
 from apps.epg.tasks import refresh_epg_data
 from .models import CoreSettings
 from apps.channels.models import ChannelStream
-from django.conf import settings
 from django.db import transaction
 
 logger = logging.getLogger(__name__)

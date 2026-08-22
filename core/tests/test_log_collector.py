@@ -197,6 +197,29 @@ class ConfTests(SimpleTestCase):
         self.collector._drain()
         self.assertEqual(self.read_forward(), self.read_log())
 
+    def test_persist_off_writes_no_file_at_all(self):
+        # A start line filed into an empty log is enough to make the boot
+        # archive shift promote it, so five restarts with the sink off would
+        # replace a whole rotation of real archives with 64-byte stubs.
+        log_collector.write_conf(self.log_dir, False, 10, 5)
+        self.collector._apply_conf()
+        self.feed(b"2026-08-18 01:00:00,000 INFO core.tasks tick\n")
+        self.collector._drain()
+        self.assertFalse(os.path.exists(self.collector.live_path))
+
+    def test_shutdown_drains_the_whole_buffer(self):
+        # Anything left behind at stop vanishes without even a dropped-lines
+        # marker, which is the one loss this design does not otherwise allow.
+        for i in range(20000):
+            self.collector._enqueue(
+                f"2026-08-18 01:00:00,000 INFO core.tasks line {i}".encode() + b"\n"
+            )
+        self.collector._stop = True
+        self.collector.writer()
+        content = self.read_log()
+        self.assertIn("line 0", content)
+        self.assertIn("line 19999", content)
+
     def test_persist_off_still_forwards(self):
         self.collector.conf["persist"] = False
         self.feed(b"stdout only\n")

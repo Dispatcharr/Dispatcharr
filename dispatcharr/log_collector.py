@@ -570,8 +570,9 @@ class Collector:
 
     def _apply_conf(self):
         self._reload = False
-        self._setup_fs()
+        # Conf first: _setup_fs only announces itself when the file sink is on.
         self.conf = read_conf(self.log_dir)
+        self._setup_fs()
         self._min_rank = _LEVEL_RANK.get(
             str(self.conf["level"]).strip().upper().encode(), 0
         )
@@ -590,7 +591,11 @@ class Collector:
             os.makedirs(self.log_dir, exist_ok=True)
             with open(pid_path(self.log_dir), "w", encoding="utf-8") as f:
                 f.write(str(os.getpid()))
-            if not self._fs_ready:
+            if not self._fs_ready and self.conf["persist"]:
+                # Only when something will actually be filed: announcing the
+                # start into an empty file is what makes the boot archive shift
+                # promote a whole rotation of stubs on an install that turned
+                # the file sink off.
                 self._fs_ready = True
                 self._enqueue(f"{self._now_stamp()} INFO dispatcharr.log_collector started\n".encode())
         except OSError:
@@ -639,8 +644,6 @@ class Collector:
                     raise failure.cause
             if not self._tail_open:
                 self._maybe_rotate()
-            if self._stop:
-                return
 
     def _requeue(self, batch, written, marker_count=0):
         # Requeue only the unwritten tail; a torn item stays whole, so its

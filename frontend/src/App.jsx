@@ -169,6 +169,7 @@ const App = () => {
                             <Route path="/guide" element={<Guide />} />
                             <Route path="/dvr" element={<DVR />} />
                             <Route path="/stats" element={<Stats />} />
+                            {/* Modular runs no collector, so these pages have nothing to show. */}
                             <Route path="/logs" element={<LogFilesPage />} />
                             <Route
                               path="/logs/:name"

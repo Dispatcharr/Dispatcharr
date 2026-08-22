@@ -236,7 +236,7 @@ fi
 echo "Starting user setup..."
 . /app/docker/init/01-user-setup.sh
 
-# Archive the previous run's log on start (WatchedFileHandler keeps appending to the live file); this only
+# Archive the previous run's log on start (the collector holds an O_APPEND fd on the live file); this only
 # shifts, never deletes -- the log collector prunes per system setting once it is up.
 LOG_FILE_DIR=${DISPATCHARR_LOG_DIR:-/data/logs}
 if [[ "$DISPATCHARR_ENV" != "modular" ]]; then
@@ -266,7 +266,7 @@ if [[ "$DISPATCHARR_ENV" != "modular" ]]; then
     exec > >({ _lc_failures=0
     while :; do
         _lc_started=$SECONDS
-        su - "$POSTGRES_USER" -c "cd /app && exec $VIRTUAL_ENV/bin/python -m dispatcharr.log_collector '$LOG_FILE_DIR'" && break
+        su - "$POSTGRES_USER" -c 'cd /app && exec "$0" /app/dispatcharr/log_collector.py "$1"' "$VIRTUAL_ENV/bin/python" "$LOG_FILE_DIR" && break
         if [ $((SECONDS - _lc_started)) -ge 30 ]; then _lc_failures=0; fi
         _lc_failures=$((_lc_failures + 1))
         if [ "$_lc_failures" -ge 3 ]; then
