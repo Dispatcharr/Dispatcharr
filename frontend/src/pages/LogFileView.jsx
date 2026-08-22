@@ -148,7 +148,7 @@ const MAX_RENDER_LINES = 5000;
 
 // Column caps keep one outsized token from pushing every message off-screen; the full value stays on hover.
 const LEVEL_COL_MAX = 12;
-const MODULE_COL_MAX = 20;
+const MODULE_COL_MAX = 12;
 
 const REFRESH_OPTIONS = [
   { value: '0', label: 'Manual' },

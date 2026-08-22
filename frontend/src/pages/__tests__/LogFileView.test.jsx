@@ -642,8 +642,8 @@ describe('LogFileViewPage', () => {
     });
     renderPage();
     await screen.findByText(/scan done/);
-    // 23 stamp + 5 level + 20 module (capped) + 3 separators.
-    const indent = { paddingLeft: 'calc(8px + 51ch)', textIndent: '-51ch' };
+    // 23 stamp + 5 level + 12 module (capped) + 3 separators.
+    const indent = { paddingLeft: 'calc(8px + 43ch)', textIndent: '-43ch' };
     expect(screen.getByText(/tick/).closest('div')).toHaveStyle(indent);
     // Filtering the long module out of view must not re-measure the columns.
     fireEvent.change(screen.getByLabelText('Search'), {
@@ -730,15 +730,15 @@ describe('LogFileViewPage', () => {
     renderPage();
     await screen.findByText(/short module line/);
     // Both module cells share the capped width of the longest module present.
-    expect(screen.getByTitle('core.tasks')).toHaveStyle({ width: '20ch' });
+    expect(screen.getByTitle('core.tasks')).toHaveStyle({ width: '12ch' });
     expect(screen.getByTitle('plugins.event_channel_managarr')).toHaveStyle({
-      width: '20ch',
+      width: '12ch',
     });
     // The record block hangs by the message column - stamp + level + module +
     // 3 separators - so continuations and wrapped text share one indent.
     expect(screen.getByText(/long module line/).closest('div')).toHaveStyle({
-      paddingLeft: 'calc(8px + 51ch)',
-      textIndent: '-51ch',
+      paddingLeft: 'calc(8px + 43ch)',
+      textIndent: '-43ch',
     });
     expect(
       screen.getByText(/trailing continuation detail/).parentElement
