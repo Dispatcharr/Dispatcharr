@@ -623,13 +623,22 @@ describe('LogFileViewPage', () => {
     });
   });
 
-  it('keeps the controls in reach while the log scrolls', async () => {
+  it('scrolls the records inside the panel, not the page', async () => {
     renderPage();
     await screen.findByText(/Scanning disk/);
-    // control group -> header row -> the sticky wrapper around both.
-    const toolbar = screen.getByLabelText('Level').closest('div')
+    // control group -> header row -> the panel header itself.
+    const header = screen.getByLabelText('Level').closest('div')
       .parentElement.parentElement;
-    expect(toolbar).toHaveStyle({ position: 'sticky', top: '0px' });
+    let scroller = screen.getByText(/Scanning disk/).parentElement;
+    while (scroller && getComputedStyle(scroller).overflow !== 'auto') {
+      scroller = scroller.parentElement;
+    }
+    // The records own the scrollbar; the header sits outside it, so the
+    // panel's frame and the margin around it never move.
+    expect(scroller).not.toBeNull();
+    expect(scroller.contains(header)).toBe(false);
+    expect(header.parentElement).toBe(scroller.parentElement);
+    expect(scroller).toHaveStyle({ flex: '1 1 auto', minHeight: '0px' });
   });
 
   it('holds the message column still while the filters change', async () => {

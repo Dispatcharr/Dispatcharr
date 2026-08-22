@@ -458,18 +458,25 @@ const LogFileViewPage = () => {
 
   return (
     <Box p="md">
-      <Paper withBorder radius="md" p={0}>
+      <Paper
+        withBorder
+        radius="md"
+        p={0}
+        // The panel holds the viewport and scrolls its own records. Pinning the
+        // header to a scrolling page instead means the page's margin above it
+        // scrolls away and the panel's rounded top disappears under a square
+        // edge; here nothing moves but the records, so the frame stays whole.
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          height: 'calc(100vh - var(--mantine-spacing-md) * 2)',
+        }}
+      >
         <Box
-          // The panel's own header, pinned so the controls stay in reach: a
-          // tail runs to tens of viewports. Square corners inside the panel's
-          // rounded ones, on the panel's own background, so at rest it is just
-          // the top of the panel and under scroll the records pass beneath a
-          // hairline instead of a floating band with an edge of its own.
+          // The header is the top of the panel: outside the scroller, so it
+          // cannot leave, with a hairline for the records to pass beneath.
           style={{
-            position: 'sticky',
-            top: 0,
-            zIndex: 2,
-            background: 'var(--mantine-color-body)',
+            flex: '0 0 auto',
             borderBottom: '1px solid var(--mantine-color-default-border)',
             padding: 'var(--mantine-spacing-sm)',
           }}
@@ -493,7 +500,7 @@ const LogFileViewPage = () => {
                 placeholder="Filter text"
                 value={search}
                 onChange={(event) => setSearch(event.currentTarget.value)}
-                style={{ width: 180 }}
+                style={{ width: 240 }}
               />
               <Select
                 size="xs"
@@ -555,7 +562,12 @@ const LogFileViewPage = () => {
           </Group>
         </Box>
 
-        <Box p="sm">
+        <Box
+          p="sm"
+          // minHeight:0 or a flex item refuses to shrink below its content and
+          // the panel grows instead of scrolling.
+          style={{ flex: '1 1 auto', overflow: 'auto', minHeight: '0px' }}
+        >
           {loading && !content ? (
             <Loader />
           ) : !content && loadError ? (
