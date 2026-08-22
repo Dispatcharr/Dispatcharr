@@ -175,7 +175,7 @@ describe('LogFileViewPage', () => {
     // The ERROR token wears red and the block's bar marks the whole record.
     expect(screen.getByText('ERROR')).toHaveStyle({ color: '#ff6b6b' });
     expect(screen.getByText('ERROR').closest('div')).toHaveStyle({
-      borderLeft: '3px solid #ff6b6b',
+      borderLeft: '2px solid #ff6b6b',
     });
     // The whole traceback, its column-0 tail included, stays one joined text node inside the block.
     expect(screen.getByText(/Traceback/).textContent).toContain(
@@ -183,7 +183,7 @@ describe('LogFileViewPage', () => {
     );
     // The next record is its own block and does not inherit the bar.
     expect(screen.getByText(/back to normal/).closest('div')).not.toHaveStyle({
-      borderLeft: '3px solid #ff6b6b',
+      borderLeft: '2px solid #ff6b6b',
     });
   });
 
@@ -686,21 +686,21 @@ describe('LogFileViewPage', () => {
     await screen.findByText(/boom/);
     const bar = (text) => screen.getByText(text).closest('div');
     // At the Info floor both stand out.
-    expect(bar(/cache miss/)).toHaveStyle({ borderLeft: '3px solid #ffd43b' });
-    expect(bar(/boom/)).toHaveStyle({ borderLeft: '3px solid #ff6b6b' });
+    expect(bar(/cache miss/)).toHaveStyle({ borderLeft: '2px solid #ffd43b' });
+    expect(bar(/boom/)).toHaveStyle({ borderLeft: '2px solid #ff6b6b' });
     // At the Warning floor a warning is the baseline; only the error rises.
     fireEvent.change(screen.getByLabelText('Level'), {
       target: { value: '30' },
     });
     expect(bar(/cache miss/)).not.toHaveStyle({
-      borderLeft: '3px solid #ffd43b',
+      borderLeft: '2px solid #ffd43b',
     });
-    expect(bar(/boom/)).toHaveStyle({ borderLeft: '3px solid #ff6b6b' });
+    expect(bar(/boom/)).toHaveStyle({ borderLeft: '2px solid #ff6b6b' });
     // At the Error floor nothing rises, so no row wears a bar.
     fireEvent.change(screen.getByLabelText('Level'), {
       target: { value: '40' },
     });
-    expect(bar(/boom/)).not.toHaveStyle({ borderLeft: '3px solid #ff6b6b' });
+    expect(bar(/boom/)).not.toHaveStyle({ borderLeft: '2px solid #ff6b6b' });
     // The level token and message keep the colour either way.
     expect(screen.getByText(/boom/)).toHaveStyle({ color: '#ff6b6b' });
   });

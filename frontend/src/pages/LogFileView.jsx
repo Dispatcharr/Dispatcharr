@@ -127,7 +127,8 @@ const levelColor = (level) => {
   return severityColor(level) || COLORS.level;
 };
 
-// The bar spans a record block so a traceback reads as one owned unit. It marks
+// The bar spans a record block so a traceback reads as one owned unit, at the
+// weight the sidebar draws its own open-group rail. It marks
 // what rises above the floor in force: at a Warning floor every row would carry
 // one, and a bar every row wears stops telling the reader anything.
 const barColor = (level, minRank) => {
@@ -604,7 +605,7 @@ const LogFileViewPage = () => {
                             // Nothing owns these lines. Dimming them stops a run
                             // of them reading as the tail of the record above.
                             style={{
-                              borderLeft: '3px solid transparent',
+                              borderLeft: '2px solid transparent',
                               paddingLeft: 8,
                               color: COLORS.stamp,
                             }}
@@ -619,7 +620,7 @@ const LogFileViewPage = () => {
                         <div
                           key={i}
                           style={{
-                            borderLeft: `3px solid ${bc}`,
+                            borderLeft: `2px solid ${bc}`,
                             paddingLeft: `calc(8px + ${messageIndent}ch)`,
                             textIndent: `-${messageIndent}ch`,
                           }}
