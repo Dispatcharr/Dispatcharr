@@ -27,8 +27,6 @@ class RedactTextTests(SimpleTestCase):
         self.assertIn("://[provider_host]/live/[username]/[password]/", out)
 
     def test_masks_provider_and_epg_hosts_in_xc_api_urls(self):
-        # The endpoint names the role: player_api/get/panel_api are the
-        # provider API, xmltv.php serves the EPG guide.
         for endpoint in ("player_api.php", "get.php", "panel_api.php"):
             out = redact_text(
                 f"refresh http://prov.example.com/{endpoint}?username=joe&password=s3cret"
@@ -60,7 +58,6 @@ class RedactTextTests(SimpleTestCase):
             )
 
     def test_leaves_ordinary_paths_untouched(self):
-        # No Xtream type segment - must not be masked.
         for path in ("/channels", "/api/core/settings/", "/stats/events"):
             self.assertEqual(redact_text(f"GET {path}"), f"GET {path}")
 
@@ -71,7 +68,6 @@ class RedactTextTests(SimpleTestCase):
         self.assertIn("://[username]:[password]@host:8080", out)
 
     def test_masks_userinfo_with_at_in_username(self):
-        # Greedy to the last '@' so an email-shaped username doesn't leak the password.
         out = redact_text("proxy http://joe@mail.com:s3cret@host:8080/path")
         self.assertNotIn("s3cret", out)
         self.assertIn("://[username]:[password]@host:8080", out)
@@ -93,7 +89,6 @@ class RedactTextTests(SimpleTestCase):
         self.assertEqual(redact_text('token: "abc123"'), "token: [token]")
 
     def test_masks_compound_key_assignments(self):
-        # A sensitive word as a delimiter-bounded segment of a longer key.
         self.assertEqual(
             redact_text("xc_password=s3cret"), "xc_password=[xc_password]"
         )
@@ -121,7 +116,6 @@ class RedactTextTests(SimpleTestCase):
             self.assertEqual(redact_text(text), text)
 
     def test_masks_credentials_in_dict_repr(self):
-        # Quoted dict keys defeat the plain kv/query patterns.
         out = redact_text(
             "XC request params: {'username': 'joe', 'password': 'hunter2'}"
         )
@@ -168,7 +162,6 @@ class RedactTextTests(SimpleTestCase):
             self.assertIn("[authorization]", out)
 
     def test_masks_url_labeled_values(self):
-        # A bare provider base URL has no shape; the url label is the signal.
         out = redact_text("Processing XC account 2 with URL: https://portal.example")
         self.assertNotIn("portal.example", out)
         self.assertIn("URL: [url]", out)
@@ -181,7 +174,6 @@ class RedactTextTests(SimpleTestCase):
         self.assertEqual(redact_text(line), line)
 
     def test_masks_quoted_host_assignments(self):
-        # The shape requests exception text uses; port and prose survive.
         out = redact_text(
             "HTTPSConnectionPool(host='portal.example', port=443): "
             "Max retries exceeded with url: /playlist.m3u8"
@@ -193,7 +185,6 @@ class RedactTextTests(SimpleTestCase):
         self.assertIn("url: [url]", out)
 
     def test_does_not_mask_ordinary_rest_urls(self):
-        # No Xtream type segment - must not be mistaken for user/pass.
         for url in (
             "http://host.tld/api/core/settings/",
             "http://host.tld/api/channels/logos/5/cache/",
@@ -206,7 +197,6 @@ class RedactTextTests(SimpleTestCase):
         self.assertEqual(redact_text(line), line)
 
     def test_is_idempotent_over_masked_text(self):
-        # Every replacement is a fixed point, so re-sweeping masked text is a no-op.
         for line in (
             "http://host/live/joe/s3cret/1.ts",
             "proxy http://joe:s3cret@host:8080/path",
@@ -358,7 +348,6 @@ class RedactMappingTests(SimpleTestCase):
         self.assertEqual(out["Accept"], "application/json")
 
     def test_url_valued_key_masked_by_content_not_key_name(self):
-        # The credentialed URL value is masked by content; structure stays.
         out = redact_mapping(
             {"stream_url": "http://host.tld/live/joe/s3cret/1.ts"}
         )
@@ -366,7 +355,6 @@ class RedactMappingTests(SimpleTestCase):
         self.assertIn("host.tld", out["stream_url"])
 
     def test_url_keys_reduced_to_host_only(self):
-        # Any *_url value is reduced to scheme://host/... (drops path/query secrets).
         out = redact_mapping(
             {
                 "logo_url": "http://host.tld/logos/cnn.png",
@@ -381,7 +369,7 @@ class RedactMappingTests(SimpleTestCase):
         out = redact_mapping({"signature": "RAWSIG==", "sig": "abc123"})
         self.assertEqual(out["signature"], "[signature]")
         self.assertEqual(out["sig"], "[sig]")
-        # ...but sig_alg / signature_version are metadata, not secrets
+        # sig_alg / signature_version are metadata, not secrets.
         meta = redact_mapping({"sig_alg": "RS256", "signature_version": "1.0"})
         self.assertEqual(meta["sig_alg"], "RS256")
         self.assertEqual(meta["signature_version"], "1.0")
