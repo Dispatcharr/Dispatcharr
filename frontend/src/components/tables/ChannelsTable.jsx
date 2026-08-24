@@ -956,8 +956,13 @@ const ChannelsTable = ({ onReady }) => {
         id: 'name',
         accessorFn: (row) => row.effective_name ?? row.name,
         size: columnSizing.name || 200,
-        minSize: 100,
+        // Size is only for drag accounting (flex ignores it). Keep min at 0 so
+        // TanStack does not stop the handle early while Name still looks wide.
+        minSize: 0,
         grow: true,
+        // Grow columns ignore TanStack size in CSS; CustomTable transfers
+        // Name edge drags to the next fixed column (EPG) instead.
+        transferResizeToNeighbor: true,
         cell: (props) => {
           const row = props.row?.original || {};
           const overriddenLabels = listOverriddenFields(row);
@@ -1015,6 +1020,9 @@ const ChannelsTable = ({ onReady }) => {
         ),
         size: columnSizing.epg || 200,
         minSize: 120,
+        // Keep Name's leftover width stable: EPG|Group drags transfer between
+        // these two fixed columns instead of expanding EPG left into Name.
+        transferResizeToNeighbor: true,
       },
       {
         id: 'channel_group',
@@ -1030,6 +1038,8 @@ const ChannelsTable = ({ onReady }) => {
         ),
         size: columnSizing.channel_group || 200,
         minSize: 120,
+        // Last content column before fixed logo/actions: no unpaired handle.
+        enableResizing: false,
       },
       {
         id: 'logo',

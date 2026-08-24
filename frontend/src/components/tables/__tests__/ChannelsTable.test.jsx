@@ -1175,6 +1175,25 @@ describe('ChannelsTable', () => {
   // ── name column ────────────────────────────────────────────────────────────
 
   describe('name column', () => {
+    it('keeps Name as a grow column that transfers resize to its neighbor', () => {
+      setupMocks();
+      render(<ChannelsTable />);
+
+      expect(getCol('name')).toMatchObject({
+        grow: true,
+        transferResizeToNeighbor: true,
+        size: 200,
+        minSize: 0,
+      });
+      expect(getCol('epg')).toMatchObject({
+        transferResizeToNeighbor: true,
+      });
+      expect(getCol('channel_group')).toMatchObject({
+        enableResizing: false,
+      });
+      expect(getCol('filler')).toBeUndefined();
+    });
+
     it('accessorFn returns effective_name when present', () => {
       setupMocks();
       render(<ChannelsTable />);

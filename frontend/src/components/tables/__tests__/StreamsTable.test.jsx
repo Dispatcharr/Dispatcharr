@@ -438,6 +438,34 @@ describe('StreamsTable', () => {
       expect(screen.getByText('Streams')).toBeInTheDocument();
     });
 
+    it('keeps Name as a grow column that transfers resize to its neighbor', () => {
+      setupMocks();
+      render(<StreamsTable />);
+
+      const nameColumn = capturedTableOptions.columns.find(
+        (column) => column.accessorKey === 'name'
+      );
+      expect(nameColumn).toMatchObject({
+        grow: true,
+        transferResizeToNeighbor: true,
+        size: 200,
+      });
+      expect(
+        capturedTableOptions.columns.find((column) => column.id === 'group')
+      ).toMatchObject({
+        transferResizeToNeighbor: true,
+      });
+      // Default visible fixed columns end at m3u, so it has no unpaired handle.
+      expect(
+        capturedTableOptions.columns.find((column) => column.id === 'm3u')
+      ).toMatchObject({
+        enableResizing: false,
+      });
+      expect(
+        capturedTableOptions.columns.find((column) => column.id === 'filler')
+      ).toBeUndefined();
+    });
+
     it('renders the Create Stream button', () => {
       setupMocks();
       render(<StreamsTable />);

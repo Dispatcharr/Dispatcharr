@@ -5,6 +5,12 @@ import useTablePreferences from '../../../hooks/useTablePreferences';
 import { flexRender, getCoreRowModel, useReactTable, } from '@tanstack/react-table';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ChevronDown, ChevronRight } from 'lucide-react';
+import {
+  findGrowResizeNeighbor,
+  getColumnId,
+  GROW_COLUMN_ACCOUNTING_SIZE,
+  transferGrowColumnResize,
+} from './transferGrowColumnResize';
 
 const useTable = ({
   allRowIds,
@@ -30,6 +36,8 @@ const useTable = ({
   const allRowIdsRef = useRef(allRowIds);
   allRowIdsRef.current = allRowIds;
   const handleRowClickRef = useRef(null);
+  const columns = options.columns ?? [];
+  const columnVisibility = state.columnVisibility;
 
   // Use shared table preferences hook
   const { headerPinned, setHeaderPinned, tableSize, setTableSize } =
@@ -79,6 +87,112 @@ const useTable = ({
     };
   }, [handleKeyDown, handleKeyUp]);
 
+  const resizeDragRef = useRef(null);
+
+  const clearResizeDrag = useCallback(() => {
+    const drag = resizeDragRef.current;
+    resizeDragRef.current = null;
+    if (!drag?.rebaseColumnId || !setColumnSizing) {
+      return;
+    }
+    // Grow column size is only for TanStack delta accounting. Reset it after
+    // each drag so the next drag has headroom in both directions without
+    // changing the neighbor (layout ignores the grow column's size).
+    setColumnSizing((previousSizing) => {
+      if (previousSizing[drag.rebaseColumnId] === drag.rebaseSize) {
+        return previousSizing;
+      }
+      return {
+        ...previousSizing,
+        [drag.rebaseColumnId]: drag.rebaseSize,
+      };
+    });
+  }, [setColumnSizing]);
+
+  const handleColumnSizingChange = useCallback(
+    (updater) => {
+      if (!setColumnSizing) {
+        return;
+      }
+
+      setColumnSizing((previousSizing) => {
+        const nextSizing =
+          typeof updater === 'function' ? updater(previousSizing) : updater;
+
+        const resizingColumn = columns.find((column) => {
+          if (!column.transferResizeToNeighbor) {
+            return false;
+          }
+          const id = getColumnId(column);
+          if (!id) {
+            return false;
+          }
+          const previousSize = previousSizing[id] ?? column.size ?? 0;
+          const nextSize = nextSizing[id] ?? previousSize;
+          return nextSize !== previousSize;
+        });
+
+        if (!resizingColumn) {
+          return nextSizing;
+        }
+
+        const resizingColumnId = getColumnId(resizingColumn);
+        const neighbor = findGrowResizeNeighbor(
+          columns,
+          resizingColumnId,
+          columnVisibility
+        );
+        if (!neighbor) {
+          return nextSizing;
+        }
+
+        const neighborId = getColumnId(neighbor);
+        const defaults = {
+          [resizingColumnId]: resizingColumn.size ?? 150,
+          [neighborId]: neighbor.size ?? 150,
+        };
+
+        if (!resizeDragRef.current) {
+          resizeDragRef.current = {
+            columnId: resizingColumnId,
+            sourceSize:
+              previousSizing[resizingColumnId] ?? defaults[resizingColumnId],
+            neighborSize: previousSizing[neighborId] ?? defaults[neighborId],
+            rebaseColumnId: resizingColumn.grow ? resizingColumnId : null,
+            rebaseSize: resizingColumn.grow
+              ? GROW_COLUMN_ACCOUNTING_SIZE
+              : null,
+          };
+          window.addEventListener('mouseup', clearResizeDrag, { once: true });
+          window.addEventListener('touchend', clearResizeDrag, { once: true });
+          window.addEventListener('touchcancel', clearResizeDrag, {
+            once: true,
+          });
+        }
+
+        const dragStart =
+          resizeDragRef.current.columnId === resizingColumnId
+            ? {
+                sourceSize: resizeDragRef.current.sourceSize,
+                neighborSize: resizeDragRef.current.neighborSize,
+              }
+            : null;
+
+        return transferGrowColumnResize({
+          previousSizing,
+          nextSizing,
+          growColumnId: resizingColumnId,
+          neighborId,
+          defaults,
+          neighborMin: neighbor.minSize ?? 0,
+          neighborMax: neighbor.maxSize ?? Number.POSITIVE_INFINITY,
+          dragStart,
+        });
+      });
+    },
+    [clearResizeDrag, columnVisibility, columns, setColumnSizing]
+  );
+
   const table = useReactTable({
     defaultColumn: {
       minSize: 0,
@@ -95,7 +209,7 @@ const useTable = ({
     autoResetExpanded: false,
 
     onStateChange: options.onStateChange,
-    ...(setColumnSizing && { onColumnSizingChange: setColumnSizing }),
+    ...(setColumnSizing && { onColumnSizingChange: handleColumnSizingChange }),
     ...(onColumnVisibilityChange && { onColumnVisibilityChange }),
     getCoreRowModel: options.getCoreRowModel ?? getCoreRowModel(),
     enableColumnResizing: true,

@@ -167,6 +167,123 @@ describe('useTable', () => {
     });
   });
 
+  describe('grow column resize transfer', () => {
+    const columns = [
+      {
+        id: 'name',
+        size: 200,
+        grow: true,
+        transferResizeToNeighbor: true,
+      },
+      { id: 'epg', size: 200, minSize: 120, transferResizeToNeighbor: true },
+      { id: 'group', size: 200, minSize: 120, enableResizing: false },
+    ];
+
+    const getSizingUpdater = (nextSizing, extra = {}) => {
+      setupMocks();
+      const setColumnSizing = vi.fn();
+      renderHook(() =>
+        useTable({
+          allRowIds: [],
+          columns,
+          data: [],
+          columnSizing: {},
+          setColumnSizing,
+          ...extra,
+        })
+      );
+
+      const tableOptions = vi.mocked(useReactTable).mock.calls.at(-1)[0];
+      act(() => {
+        tableOptions.onColumnSizingChange(nextSizing);
+      });
+      return setColumnSizing.mock.calls[0][0];
+    };
+
+    it('transfers a grow-column resize delta to the next fixed column', () => {
+      const updateSizing = getSizingUpdater((current) => ({
+        ...current,
+        name: 250,
+      }));
+
+      expect(updateSizing({})).toEqual({ name: 250, epg: 150 });
+    });
+
+    it('transfers a fixed-column resize so the divider moves instead of eating the grow column', () => {
+      const updateSizing = getSizingUpdater((current) => ({
+        ...current,
+        epg: 250,
+      }));
+
+      expect(updateSizing({ name: 200, epg: 200, group: 200 })).toEqual({
+        name: 200,
+        epg: 250,
+        group: 150,
+      });
+    });
+
+    it('skips hidden neighbors when choosing the transfer target', () => {
+      const updateSizing = getSizingUpdater(
+        (current) => ({
+          ...current,
+          name: 250,
+        }),
+        {
+          columns: [
+            {
+              id: 'name',
+              size: 200,
+              grow: true,
+              transferResizeToNeighbor: true,
+            },
+            { id: 'epg', size: 200, minSize: 120 },
+            { id: 'group', size: 200, minSize: 120 },
+          ],
+          state: { columnVisibility: { epg: false } },
+        }
+      );
+
+      expect(updateSizing({})).toEqual({ name: 250, group: 150 });
+    });
+
+    it('keeps clamped neighbor sizing stable across further drag events', () => {
+      setupMocks();
+      const setColumnSizing = vi.fn();
+      renderHook(() =>
+        useTable({
+          allRowIds: [],
+          columns,
+          data: [],
+          columnSizing: { name: 200, epg: 200, group: 200 },
+          setColumnSizing,
+        })
+      );
+
+      const tableOptions = vi.mocked(useReactTable).mock.calls.at(-1)[0];
+      act(() => {
+        tableOptions.onColumnSizingChange((current) => ({
+          ...current,
+          name: 400,
+        }));
+      });
+      const afterFirst = setColumnSizing.mock.calls[0][0]({
+        name: 200,
+        epg: 200,
+        group: 200,
+      });
+      expect(afterFirst).toEqual({ name: 280, epg: 120, group: 200 });
+
+      act(() => {
+        tableOptions.onColumnSizingChange((current) => ({
+          ...current,
+          name: 500,
+        }));
+      });
+      const afterSecond = setColumnSizing.mock.calls[1][0](afterFirst);
+      expect(afterSecond).toEqual({ name: 280, epg: 120, group: 200 });
+    });
+  });
+
   // ── Keyboard event handling ────────────────────────────────────────────────
 
   describe('keyboard event handling', () => {

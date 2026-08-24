@@ -304,6 +304,17 @@ const StreamsTable = ({ onReady }) => {
     return merged;
   }, [storedColumnVisibility]);
 
+  // Fixed columns after Name transfer width to the next visible sibling so they
+  // do not expand left into the grow Name column. The last one has no handle.
+  const lastTransferColumnId = useMemo(() => {
+    const transferColumnIds = ['group', 'm3u', 'tvg_id', 'stats'];
+    return (
+      [...transferColumnIds]
+        .reverse()
+        .find((id) => columnVisibility[id] !== false) ?? null
+    );
+  }, [columnVisibility]);
+
   const setColumnVisibility = (newValue) => {
     if (typeof newValue === 'function') {
       setStoredColumnVisibility((prev) => {
@@ -408,7 +419,12 @@ const StreamsTable = ({ onReady }) => {
         accessorKey: 'name',
         grow: true,
         size: columnSizing.name || 200,
-        minSize: 100,
+        // Size is only for drag accounting (flex ignores it). Keep min at 0 so
+        // TanStack does not stop the handle early while Name still looks wide.
+        minSize: 0,
+        // Grow columns ignore TanStack size in CSS; CustomTable transfers
+        // Name edge drags to the next visible fixed column instead.
+        transferResizeToNeighbor: true,
         cell: ({ getValue, row }) => (
           <Flex align="center" gap={6} style={{ minWidth: 0 }}>
             <Tooltip label={getValue()} openDelay={500}>
@@ -440,6 +456,8 @@ const StreamsTable = ({ onReady }) => {
             : '',
         size: columnSizing.group || 150,
         minSize: 75,
+        transferResizeToNeighbor: lastTransferColumnId !== 'group',
+        enableResizing: lastTransferColumnId !== 'group',
         cell: ({ getValue }) => (
           <Tooltip label={getValue()} openDelay={500}>
             <Box
@@ -459,6 +477,8 @@ const StreamsTable = ({ onReady }) => {
         id: 'm3u',
         size: columnSizing.m3u || 150,
         minSize: 75,
+        transferResizeToNeighbor: lastTransferColumnId !== 'm3u',
+        enableResizing: lastTransferColumnId !== 'm3u',
         accessorFn: (row) =>
           playlists.find((playlist) => playlist.id === row.m3u_account)?.name,
         cell: ({ getValue }) => (
@@ -481,6 +501,8 @@ const StreamsTable = ({ onReady }) => {
         accessorKey: 'tvg_id',
         size: columnSizing.tvg_id || 120,
         minSize: 75,
+        transferResizeToNeighbor: lastTransferColumnId !== 'tvg_id',
+        enableResizing: lastTransferColumnId !== 'tvg_id',
         cell: ({ getValue }) => (
           <Tooltip label={getValue()} openDelay={500}>
             <Box
@@ -501,6 +523,8 @@ const StreamsTable = ({ onReady }) => {
         accessorKey: 'stream_stats',
         size: columnSizing.stats || 120,
         minSize: 75,
+        transferResizeToNeighbor: lastTransferColumnId !== 'stats',
+        enableResizing: lastTransferColumnId !== 'stats',
         cell: ({ getValue }) => {
           const stats = getValue();
           if (!stats)
@@ -537,7 +561,9 @@ const StreamsTable = ({ onReady }) => {
         },
       },
     ],
-    [channelGroups, playlists, columnSizing]
+    // Column sizing is managed by TanStack after initialization.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [channelGroups, playlists, lastTransferColumnId]
   );
 
   /**
