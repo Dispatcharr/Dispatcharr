@@ -214,8 +214,21 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
       canViewDvr: userCanViewDvr,
       canViewVod: userCanViewVod,
     });
-    return ordered.filter((item) => !hiddenNav.includes(item.id));
-  }, [navOrder, hiddenNav, isAdmin, userCanViewDvr, userCanViewVod, channelIds]);
+    return ordered.filter(
+      (item) =>
+        !hiddenNav.includes(item.id) &&
+        // Modular mode is stdout-only: no collector, no log file to browse.
+        !(item.path === '/logs' && environment.env_mode === 'modular')
+    );
+  }, [
+    navOrder,
+    hiddenNav,
+    isAdmin,
+    userCanViewDvr,
+    userCanViewVod,
+    channelIds,
+    environment.env_mode,
+  ]);
 
   const isSettingsPage = location.pathname.startsWith('/settings');
   const activeSettingsId = location.hash.replace('#', '');
