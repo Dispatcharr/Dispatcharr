@@ -277,10 +277,6 @@ const StreamsTable = ({ onReady }) => {
     'streams-table-column-sizing-v2',
     defaultStreamColumnSizing
   );
-  const resetColumnSizing = useCallback(
-    () => setColumnSizing({ ...defaultStreamColumnSizing }),
-    [setColumnSizing]
-  );
 
   // Column visibility - persisted to localStorage
   // Default visible: name, group, m3u
@@ -398,6 +394,13 @@ const StreamsTable = ({ onReady }) => {
   const setPagination = useStreamsTableStore((s) => s.setPagination);
   const sorting = useStreamsTableStore((s) => s.sorting);
   const setSorting = useStreamsTableStore((s) => s.setSorting);
+  const resetColumnSizing = useCallback(
+    () => {
+      setColumnSizing({ ...defaultStreamColumnSizing });
+      setSorting([{ id: 'name', desc: false }]);
+    },
+    [setColumnSizing, setSorting]
+  );
   const selectedStreamIds = useStreamsTableStore((s) => s.selectedStreamIds);
   const setSelectedStreamIds = useStreamsTableStore(
     (s) => s.setSelectedStreamIds

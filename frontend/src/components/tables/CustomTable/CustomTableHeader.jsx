@@ -186,8 +186,8 @@ const CustomTableHeader = ({
       {onResetColumnSizing && (
         <button
           type="button"
-          aria-label="Reset column widths"
-          title="Reset column widths"
+          aria-label="Reset Widths and Sorting"
+          title="Reset Widths and Sorting"
           onClick={(event) => {
             event.stopPropagation();
             onResetColumnSizing();

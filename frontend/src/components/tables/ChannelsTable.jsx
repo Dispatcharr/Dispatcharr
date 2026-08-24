@@ -468,8 +468,11 @@ const ChannelsTable = ({ onReady }) => {
     defaultColumnSizing
   );
   const resetColumnSizing = useCallback(
-    () => setColumnSizing({ ...defaultColumnSizing }),
-    [setColumnSizing]
+    () => {
+      setColumnSizing({ ...defaultColumnSizing });
+      setSorting([{ id: 'channel_number', desc: false }]);
+    },
+    [setColumnSizing, setSorting]
   );
 
   // M3U and EPG URL configuration state

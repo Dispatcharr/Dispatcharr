@@ -490,6 +490,7 @@ const setupMocks = ({
   epgs = {},
   hasUnassignedEPGChannels = false,
   tableOverrides = {},
+  setSorting = vi.fn(),
 } = {}) => {
   vi.mocked(useChannelsTableStore).mockImplementation((sel) =>
     sel({
@@ -503,7 +504,7 @@ const setupMocks = ({
       setSelectedChannelIds: vi.fn(),
       setExpandedChannelId: vi.fn(),
       setPagination: vi.fn(),
-      setSorting: vi.fn(),
+       setSorting,
       setAllQueryIds: vi.fn(),
     })
   );
@@ -1240,7 +1241,8 @@ describe('ChannelsTable', () => {
   describe('column sizing reset', () => {
     it('restores the persisted sizing state to the default ratios', () => {
       const setColumnSizing = vi.fn();
-      setupMocks();
+      const setSorting = vi.fn();
+      setupMocks({ setSorting });
       vi.mocked(useBrowserStorage).mockImplementation((key, defaultValue) => [
         defaultValue,
         key === 'channels-table-column-sizing-v4'
@@ -1256,6 +1258,9 @@ describe('ChannelsTable', () => {
         epg: 180,
         channel_group: 180,
       });
+      expect(setSorting).toHaveBeenCalledWith([
+        { id: 'channel_number', desc: false },
+      ]);
     });
   });
 

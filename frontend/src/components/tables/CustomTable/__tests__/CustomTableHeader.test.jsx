@@ -340,7 +340,7 @@ describe('CustomTableHeader', () => {
         />
       );
 
-      fireEvent.click(screen.getByLabelText('Reset column widths'));
+      fireEvent.click(screen.getByLabelText('Reset Widths and Sorting'));
       expect(onResetColumnSizing).toHaveBeenCalledOnce();
     });
   });

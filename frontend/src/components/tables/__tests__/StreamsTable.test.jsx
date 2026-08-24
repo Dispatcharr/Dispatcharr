@@ -334,6 +334,7 @@ const setupMocks = ({
   showVideo = vi.fn(),
   isVisible = false,
   tableSize = null,
+  setSorting = vi.fn(),
 } = {}) => {
   vi.mocked(useStreamsTableStore).mockImplementation((sel) =>
     sel({
@@ -346,7 +347,7 @@ const setupMocks = ({
       selectedStreamIds,
       setAllQueryIds: vi.fn(),
       setPagination: vi.fn(),
-      setSorting: vi.fn(),
+       setSorting,
       setSelectedStreamIds: vi.fn(),
     })
   );
@@ -469,7 +470,8 @@ describe('StreamsTable', () => {
 
     it('resets stream column sizing to the shared default ratios', () => {
       const setColumnSizing = vi.fn();
-      setupMocks();
+      const setSorting = vi.fn();
+      setupMocks({ setSorting });
       vi.mocked(useBrowserStorage).mockImplementation((key, defaultValue) => [
         defaultValue,
         key === 'streams-table-column-sizing-v2'
@@ -486,6 +488,7 @@ describe('StreamsTable', () => {
         tvg_id: 140,
         stats: 120,
       });
+      expect(setSorting).toHaveBeenCalledWith([{ id: 'name', desc: false }]);
     });
 
     it('renders the Create Stream button', () => {
