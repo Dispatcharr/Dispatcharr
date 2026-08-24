@@ -1245,7 +1245,7 @@ describe('ChannelsTable', () => {
       setupMocks({ setSorting });
       vi.mocked(useBrowserStorage).mockImplementation((key, defaultValue) => [
         defaultValue,
-        key === 'channels-table-column-sizing-v4'
+        key === 'channels-table-column-sizing'
           ? setColumnSizing
           : vi.fn(),
       ]);

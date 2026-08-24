@@ -275,7 +275,7 @@ const StreamsTable = ({ onReady }) => {
     { storage: 'session' }
   );
   const [columnSizing, setColumnSizing] = useBrowserStorage(
-    'streams-table-column-sizing-v2',
+    'streams-table-column-sizing',
     defaultStreamColumnSizing
   );
 
@@ -302,7 +302,9 @@ const StreamsTable = ({ onReady }) => {
       observer?.disconnect();
       scrollContainer.style.removeProperty('overflow-x');
     };
-  }, [columnSizing]);
+    // Re-bind when the scroll container mounts with table content. The observer
+    // itself handles size changes during column resize.
+  }, [initialDataCount]);
 
   // Column visibility - persisted to localStorage
   // Default visible: name, group, m3u
@@ -503,7 +505,6 @@ const StreamsTable = ({ onReady }) => {
         cell: ({ getValue }) => (
           <Tooltip label={getValue()} openDelay={500}>
             <Box
-              ref={tableScrollRef}
               style={{
                 whiteSpace: 'pre',
                 overflow: 'hidden',
@@ -1778,6 +1779,7 @@ const StreamsTable = ({ onReady }) => {
             }}
           >
             <Box
+              ref={tableScrollRef}
               style={{
                 flex: 1,
                 overflowY: 'auto',

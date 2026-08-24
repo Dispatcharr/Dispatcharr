@@ -474,7 +474,7 @@ describe('StreamsTable', () => {
       setupMocks({ setSorting });
       vi.mocked(useBrowserStorage).mockImplementation((key, defaultValue) => [
         defaultValue,
-        key === 'streams-table-column-sizing-v2'
+        key === 'streams-table-column-sizing'
           ? setColumnSizing
           : vi.fn(),
       ]);

@@ -205,13 +205,62 @@ describe('useTable', () => {
       expect(updateSizing({})).toMatchObject({ name: 250, epg: 150 });
     });
 
-    it('rejects a drag that would cross an adjacent column minimum', () => {
+    it('clamps a drag that would cross an adjacent column minimum', () => {
       const updateSizing = getSizingUpdater((current) => ({
         ...current,
         name: 400,
       }));
 
-      expect(updateSizing({})).toEqual({});
+      expect(updateSizing({})).toEqual({
+        name: 280,
+        epg: 120,
+        group: 200,
+      });
+    });
+
+    it('measures paired header widths once per drag', () => {
+      setupMocks();
+      const setColumnSizing = vi.fn();
+      const querySpy = vi.spyOn(document, 'querySelector').mockReturnValue({
+        getBoundingClientRect: () => ({ width: 200 }),
+      });
+
+      renderHook(() =>
+        useTable({
+          allRowIds: [],
+          columns: [],
+          data: [],
+          columnSizing: {},
+          setColumnSizing,
+          pairedColumnSizing,
+          tableId: 'test-table',
+        })
+      );
+
+      const tableOptions = vi.mocked(useReactTable).mock.calls.at(-1)[0];
+      act(() => {
+        tableOptions.onColumnSizingChange((current) => ({
+          ...current,
+          name: 220,
+        }));
+      });
+      setColumnSizing.mock.calls[0][0]({});
+
+      act(() => {
+        tableOptions.onColumnSizingChange((current) => ({
+          ...current,
+          name: 240,
+        }));
+      });
+      setColumnSizing.mock.calls[1][0]({
+        name: 220,
+        epg: 180,
+        group: 200,
+      });
+
+      // Three paired columns measured on the first tick only.
+      expect(querySpy).toHaveBeenCalledTimes(3);
+      querySpy.mockRestore();
     });
   });
 

@@ -312,7 +312,8 @@ const ChannelsTable = ({ onReady }) => {
   const rawChannels = useChannelsTableStore((s) => s.channels);
   // Drop nullish entries so a bad row can't crash row rendering.
   const data = useMemo(
-    () => (rawChannels.some((c) => !c) ? rawChannels.filter(Boolean) : rawChannels),
+    () =>
+      rawChannels.some((c) => !c) ? rawChannels.filter(Boolean) : rawChannels,
     [rawChannels]
   );
   const pageCount = useChannelsTableStore((s) => s.pageCount);
@@ -462,44 +463,16 @@ const ChannelsTable = ({ onReady }) => {
     })
   );
 
-  // Column sizing state for resizable columns
-  // Store in localStorage but with empty object as default
+  // Column sizing state for resizable columns.
   const [columnSizing, setColumnSizing] = useBrowserStorage(
-    'channels-table-column-sizing-v4',
+    'channels-table-column-sizing',
     defaultColumnSizing
   );
 
-  useEffect(() => {
-    const scrollContainer = tableScrollRef.current;
-    if (!scrollContainer) return;
-
-    const updateOverflow = () => {
-      const overflow = scrollContainer.scrollWidth - scrollContainer.clientWidth;
-      scrollContainer.style.overflowX = overflow > 1 ? 'auto' : 'hidden';
-    };
-
-    const observer =
-      typeof ResizeObserver === 'undefined'
-        ? null
-        : new ResizeObserver(updateOverflow);
-    observer?.observe(scrollContainer);
-    if (scrollContainer.firstElementChild) {
-      observer?.observe(scrollContainer.firstElementChild);
-    }
-    updateOverflow();
-
-    return () => {
-      observer?.disconnect();
-      scrollContainer.style.removeProperty('overflow-x');
-    };
-  }, [columnSizing]);
-  const resetColumnSizing = useCallback(
-    () => {
-      setColumnSizing({ ...defaultColumnSizing });
-      setSorting([{ id: 'channel_number', desc: false }]);
-    },
-    [setColumnSizing, setSorting]
-  );
+  const resetColumnSizing = useCallback(() => {
+    setColumnSizing({ ...defaultColumnSizing });
+    setSorting([{ id: 'channel_number', desc: false }]);
+  }, [setColumnSizing, setSorting]);
 
   // M3U and EPG URL configuration state
   const [m3uParams, setM3uParams] = useState({
@@ -544,6 +517,34 @@ const ChannelsTable = ({ onReady }) => {
     Object.keys(data).length > 0 || hasFetchedData.current
       ? Object.keys(data).length
       : undefined;
+
+  useEffect(() => {
+    const scrollContainer = tableScrollRef.current;
+    if (!scrollContainer) return;
+
+    const updateOverflow = () => {
+      const overflow =
+        scrollContainer.scrollWidth - scrollContainer.clientWidth;
+      scrollContainer.style.overflowX = overflow > 1 ? 'auto' : 'hidden';
+    };
+
+    const observer =
+      typeof ResizeObserver === 'undefined'
+        ? null
+        : new ResizeObserver(updateOverflow);
+    observer?.observe(scrollContainer);
+    if (scrollContainer.firstElementChild) {
+      observer?.observe(scrollContainer.firstElementChild);
+    }
+    updateOverflow();
+
+    return () => {
+      observer?.disconnect();
+      scrollContainer.style.removeProperty('overflow-x');
+    };
+    // Re-bind when the scroll container mounts with table content. The observer
+    // itself handles size changes during column resize.
+  }, [channelsTableLength, hasChannels]);
 
   /**
    * Functions
@@ -1135,14 +1136,7 @@ const ChannelsTable = ({ onReady }) => {
     // from the store, so we don't need to recreate columns when logos load.
     // Note: tvgsLoaded is intentionally excluded - EditableEPGCell handles loading state internally
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [
-      selectedProfileId,
-      channelGroups,
-      theme,
-      tvgsById,
-      epgs,
-      editChannel,
-    ]
+    [selectedProfileId, channelGroups, theme, tvgsById, epgs, editChannel]
   );
 
   const renderHeaderCell = (header) => {
