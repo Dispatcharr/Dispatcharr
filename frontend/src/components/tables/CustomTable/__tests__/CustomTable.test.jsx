@@ -194,6 +194,23 @@ describe('CustomTable', () => {
       expect(box.style.getPropertyValue('--header-grow-col-size')).toBe('');
       expect(box.style.getPropertyValue('--header-col1-size')).toBe('100px');
     });
+
+    it('injects ratio variables for ratio-based grow columns', () => {
+      const headers = [
+        {
+          ...makeHeader('grow-col', 500, true, 80),
+          column: { columnDef: { grow: true, flexRatio: true, minSize: 80 } },
+        },
+      ];
+      const table = makeTable({
+        getHeaderGroups: () => [{ headers }],
+        getFlatHeaders: () => headers,
+      });
+      render(<CustomTable table={table} />);
+      const box = screen.getByTestId('table-box');
+      expect(box.style.getPropertyValue('--header-grow-col-ratio')).toBe('500');
+    });
+
   });
 
   // ── Props forwarding ───────────────────────────────────────────────────────

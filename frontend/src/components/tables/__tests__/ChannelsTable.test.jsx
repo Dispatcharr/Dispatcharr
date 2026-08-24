@@ -490,6 +490,7 @@ const setupMocks = ({
   epgs = {},
   hasUnassignedEPGChannels = false,
   tableOverrides = {},
+  setSorting = vi.fn(),
 } = {}) => {
   vi.mocked(useChannelsTableStore).mockImplementation((sel) =>
     sel({
@@ -503,7 +504,7 @@ const setupMocks = ({
       setSelectedChannelIds: vi.fn(),
       setExpandedChannelId: vi.fn(),
       setPagination: vi.fn(),
-      setSorting: vi.fn(),
+       setSorting,
       setAllQueryIds: vi.fn(),
     })
   );
@@ -1175,6 +1176,18 @@ describe('ChannelsTable', () => {
   // ── name column ────────────────────────────────────────────────────────────
 
   describe('name column', () => {
+    it('uses a ratio to share the responsive data-column width', () => {
+      setupMocks();
+      render(<ChannelsTable />);
+
+      const col = getCol('name');
+
+      expect(col.size).toBe(240);
+      expect(col.minSize).toBe(0);
+      expect(col.grow).toBe(true);
+      expect(col.flexRatio).toBe(true);
+    });
+
     it('accessorFn returns effective_name when present', () => {
       setupMocks();
       render(<ChannelsTable />);
@@ -1192,6 +1205,62 @@ describe('ChannelsTable', () => {
       const col = getCol('name');
       const result = col.accessorFn({ effective_name: null, name: 'Original' });
       expect(result).toBe('Original');
+    });
+  });
+
+  describe('paired content columns', () => {
+    it('keeps the final paired column from exposing an unpaired resize handle', () => {
+      setupMocks();
+      render(<ChannelsTable />);
+
+      const col = getCol('channel_group');
+
+      expect(col).toMatchObject({
+        size: 180,
+        minSize: 0,
+        grow: true,
+        flexRatio: true,
+        enableResizing: false,
+      });
+    });
+  });
+
+  describe('responsive content columns', () => {
+    it('shares all available content width without a filler column', () => {
+      setupMocks();
+      render(<ChannelsTable />);
+
+      expect(getCol('channel_group')).toMatchObject({
+        grow: true,
+        flexRatio: true,
+      });
+      expect(getCol('filler')).toBeUndefined();
+    });
+  });
+
+  describe('column sizing reset', () => {
+    it('restores the persisted sizing state to the default ratios', () => {
+      const setColumnSizing = vi.fn();
+      const setSorting = vi.fn();
+      setupMocks({ setSorting });
+      vi.mocked(useBrowserStorage).mockImplementation((key, defaultValue) => [
+        defaultValue,
+        key === 'channels-table-column-sizing'
+          ? setColumnSizing
+          : vi.fn(),
+      ]);
+      render(<ChannelsTable />);
+
+      capturedTableOptions.onResetColumnSizing();
+      expect(setColumnSizing).toHaveBeenCalledWith({
+        channel_number: 40,
+        name: 240,
+        epg: 180,
+        channel_group: 180,
+      });
+      expect(setSorting).toHaveBeenCalledWith([
+        { id: 'channel_number', desc: false },
+      ]);
     });
   });
 
