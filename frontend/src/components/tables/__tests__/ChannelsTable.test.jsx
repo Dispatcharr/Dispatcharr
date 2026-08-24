@@ -1238,13 +1238,23 @@ describe('ChannelsTable', () => {
       expect(() => render(<ChannelsTable />)).not.toThrow();
     });
 
-    it('refetches when the channels array contains a nullish entry', async () => {
+    it('refetches only once while the channels array contains nullish entries', async () => {
       const channel = makeChannel({ id: 14, streams: [] });
-      setupMocks({ channels: [channel, null] });
-      render(<ChannelsTable />);
+      const channels = [channel, null];
+      setupMocks({ channels });
+      const view = render(<ChannelsTable />);
       // Once from the normal mount fetch, once from the self-heal effect.
       await waitFor(() =>
         expect(queryChannels).toHaveBeenCalledTimes(2)
+      );
+
+      setupMocks({ channels });
+      view.rerender(<ChannelsTable />);
+
+      // The regular fetch effect runs again because the test store creates a
+      // new pagination object, but the repair effect does not issue another fetch.
+      await waitFor(() =>
+        expect(queryChannels).toHaveBeenCalledTimes(3)
       );
     });
   });

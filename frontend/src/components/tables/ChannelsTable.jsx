@@ -281,6 +281,7 @@ const ChannelsTable = ({ onReady }) => {
   const theme = useMantineTheme();
   const channelGroups = useChannelsStore((s) => s.channelGroups);
   const hasSignaledReady = useRef(false);
+  const hasAttemptedChannelRepair = useRef(false);
 
   /**
    * STORES
@@ -869,7 +870,13 @@ const ChannelsTable = ({ onReady }) => {
 
   // Store still has a nullish entry beyond just this render; refetch to clear it.
   useEffect(() => {
-    if (rawChannels.some((c) => !c)) {
+    if (!rawChannels.some((c) => !c)) {
+      hasAttemptedChannelRepair.current = false;
+      return;
+    }
+
+    if (!hasAttemptedChannelRepair.current) {
+      hasAttemptedChannelRepair.current = true;
       console.warn(
         '[ChannelsTable] Detected nullish entries in channels store; refetching.'
       );

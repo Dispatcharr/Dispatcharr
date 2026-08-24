@@ -350,6 +350,10 @@ export default class API {
 
       return response;
     } catch (e) {
+      if (requestVersion !== API.channelsRequestVersion) {
+        return;
+      }
+
       // Handle invalid page error by resetting to page 1 and retrying
       if (e.body?.detail === 'Invalid page.') {
         const currentPagination = useChannelsTableStore.getState().pagination;
@@ -438,6 +442,10 @@ export default class API {
 
       return response;
     } catch (e) {
+      if (requestVersion !== API.channelsRequestVersion) {
+        return;
+      }
+
       // Handle invalid page error by resetting to page 1 and retrying
       if (e.body?.detail === 'Invalid page.') {
         const currentPagination = useChannelsTableStore.getState().pagination;
