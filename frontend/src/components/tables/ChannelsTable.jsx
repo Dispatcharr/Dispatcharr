@@ -451,6 +451,7 @@ const ChannelsTable = ({ onReady }) => {
   const fetchVersionRef = useRef(0); // Track fetch version to prevent stale updates
   const lastFetchParamsRef = useRef(null); // Track last fetch params to prevent duplicate requests
   const fetchInProgressRef = useRef(false); // Track if a fetch is currently in progress
+  const tableScrollRef = useRef(null);
 
   // Drag-and-drop sensors
   const sensors = useSensors(
@@ -467,6 +468,31 @@ const ChannelsTable = ({ onReady }) => {
     'channels-table-column-sizing-v4',
     defaultColumnSizing
   );
+
+  useEffect(() => {
+    const scrollContainer = tableScrollRef.current;
+    if (!scrollContainer) return;
+
+    const updateOverflow = () => {
+      const overflow = scrollContainer.scrollWidth - scrollContainer.clientWidth;
+      scrollContainer.style.overflowX = overflow > 1 ? 'auto' : 'hidden';
+    };
+
+    const observer =
+      typeof ResizeObserver === 'undefined'
+        ? null
+        : new ResizeObserver(updateOverflow);
+    observer?.observe(scrollContainer);
+    if (scrollContainer.firstElementChild) {
+      observer?.observe(scrollContainer.firstElementChild);
+    }
+    updateOverflow();
+
+    return () => {
+      observer?.disconnect();
+      scrollContainer.style.removeProperty('overflow-x');
+    };
+  }, [columnSizing]);
   const resetColumnSizing = useCallback(
     () => {
       setColumnSizing({ ...defaultColumnSizing });
@@ -1709,6 +1735,7 @@ const ChannelsTable = ({ onReady }) => {
               }}
             >
               <Box
+                ref={tableScrollRef}
                 style={{
                   flex: 1,
                   overflowY: 'auto',

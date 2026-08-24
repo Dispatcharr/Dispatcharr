@@ -217,6 +217,7 @@ const StreamsTable = ({ onReady }) => {
   const hasFetchedOnce = useRef(false);
   const hasFetchedPlaylists = useRef(false);
   const hasFetchedChannelGroups = useRef(false);
+  const tableScrollRef = useRef(null);
 
   /**
    * useState
@@ -277,6 +278,31 @@ const StreamsTable = ({ onReady }) => {
     'streams-table-column-sizing-v2',
     defaultStreamColumnSizing
   );
+
+  useEffect(() => {
+    const scrollContainer = tableScrollRef.current;
+    if (!scrollContainer) return;
+
+    const updateOverflow = () => {
+      const overflow = scrollContainer.scrollWidth - scrollContainer.clientWidth;
+      scrollContainer.style.overflowX = overflow > 1 ? 'auto' : 'hidden';
+    };
+
+    const observer =
+      typeof ResizeObserver === 'undefined'
+        ? null
+        : new ResizeObserver(updateOverflow);
+    observer?.observe(scrollContainer);
+    if (scrollContainer.firstElementChild) {
+      observer?.observe(scrollContainer.firstElementChild);
+    }
+    updateOverflow();
+
+    return () => {
+      observer?.disconnect();
+      scrollContainer.style.removeProperty('overflow-x');
+    };
+  }, [columnSizing]);
 
   // Column visibility - persisted to localStorage
   // Default visible: name, group, m3u
@@ -477,6 +503,7 @@ const StreamsTable = ({ onReady }) => {
         cell: ({ getValue }) => (
           <Tooltip label={getValue()} openDelay={500}>
             <Box
+              ref={tableScrollRef}
               style={{
                 whiteSpace: 'pre',
                 overflow: 'hidden',
