@@ -42,6 +42,8 @@ const SystemSettingsForm = React.memo(({ active }) => {
   useEffect(() => {
     if (settings) {
       const formValues = parseSettings(settings);
+      // An error floor already keeps critical; trace is left alone because rewriting it would raise the floor.
+      if (formValues.log_level === 'CRITICAL') formValues.log_level = 'ERROR';
 
       form.setValues(formValues);
     }
@@ -80,6 +82,54 @@ const SystemSettingsForm = React.memo(({ active }) => {
         max={1000}
         step={10}
       />
+      {!isModular && (
+        <>
+          <Select
+            label="Log Level"
+            description="How much detail to record in the logs. Container default follows the level the container was started with."
+            {...form.getInputProps('log_level')}
+            id="log_level"
+            allowDeselect={false}
+            data={[
+              { value: '', label: 'Container default' },
+              { value: 'DEBUG', label: 'Debug' },
+              { value: 'INFO', label: 'Info' },
+              { value: 'WARNING', label: 'Warning' },
+              { value: 'ERROR', label: 'Error' },
+            ]}
+          />
+          <Switch
+            label="Persist Logs to File"
+            description="Write application logs to disk. Console logging is unaffected."
+            {...form.getInputProps('log_persist', { type: 'checkbox' })}
+            id="log_persist"
+          />
+          <NumberInput
+            label="Maximum Log File Size (MB)"
+            description="Rotate the application log once it grows past this size. Older logs are kept up to the retention limit below."
+            id="log_max_mb"
+            value={form.values['log_max_mb'] || 10}
+            onChange={(value) => {
+              form.setFieldValue('log_max_mb', value);
+            }}
+            min={1}
+            max={1000}
+            step={5}
+          />
+          <NumberInput
+            label="Log Files Retained"
+            description="How many rotated log files to keep before the oldest is deleted."
+            id="log_keep"
+            value={form.values['log_keep'] || 5}
+            onChange={(value) => {
+              form.setFieldValue('log_keep', value);
+            }}
+            min={1}
+            max={50}
+            step={1}
+          />
+        </>
+      )}
       <Select
         searchable
         clearable
