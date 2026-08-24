@@ -190,7 +190,7 @@ variables=(
     DISPATCHARR_ENV DISPATCHARR_DEBUG DISPATCHARR_LOG_LEVEL DISPATCHARR_ENABLE_IP_LOOKUP
     REDIS_HOST REDIS_PORT REDIS_DB REDIS_PASSWORD REDIS_USER REDIS_IDLE_TIMEOUT REDIS_MAX_CONNECTIONS POSTGRES_DIR DISPATCHARR_PORT
     DISPATCHARR_VERSION DISPATCHARR_TIMESTAMP LIBVA_DRIVERS_PATH LIBVA_DRIVER_NAME LD_LIBRARY_PATH
-    CELERY_NICE_LEVEL UWSGI_NICE_LEVEL DJANGO_SECRET_KEY DISPATCHARR_TIME_ZONE
+    CELERY_NICE_LEVEL UWSGI_NICE_LEVEL DJANGO_SECRET_KEY DISPATCHARR_TIME_ZONE DISPATCHARR_LOG_DIR
 )
 
 # Optional variables, only propagate when set to avoid noisy warnings
@@ -235,6 +235,25 @@ fi
 # Run init scripts
 echo "Starting user setup..."
 . /app/docker/init/01-user-setup.sh
+
+# Everything below (uwsgi, celery, daphne, nginx, postgres, redis, this
+# script) flows THROUGH the log collector: it forwards each normalized line to
+# the real stdout for docker logs and files the same bytes, so both sinks carry
+# the same record. The supervisor runs inside the substitution, so the pipe read
+# end survives collector restarts. Modular mode stays stdout-only: one shared
+# /data across containers must not have one writer.
+if [[ "$DISPATCHARR_ENV" != "modular" ]]; then
+    LOG_FILE_DIR=${DISPATCHARR_LOG_DIR:-/data/logs}
+    . /app/docker/init/05-log-collector.sh
+    # Must precede the collector, which holds an O_APPEND fd on the live file.
+    archive_previous_log "$LOG_FILE_DIR"
+    # Non-recursive: an operator-set DISPATCHARR_LOG_DIR could point at a data
+    # tree (e.g. /data/db). Tolerant: root_squash mounts must not block boot.
+    chown "$PUID:$PGID" "$LOG_FILE_DIR" "$LOG_FILE_DIR"/dispatcharr.log* 2>/dev/null || true
+    exec 3>&1
+    exec > >({ supervise_log_collector \
+        "$POSTGRES_USER" "$VIRTUAL_ENV/bin/python" "$LOG_FILE_DIR"; } >&3 2>&3) 2>&1
+fi
 
 # Fix TLS client key permissions/ownership BEFORE any external PG connections.
 # Must run after 01-user-setup.sh (user exists for chown) and before
