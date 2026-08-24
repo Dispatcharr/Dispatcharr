@@ -86,6 +86,18 @@ import {
   requeryStreams,
 } from '../../utils/tables/StreamsTableUtils.js';
 
+const streamResizableColumns = [
+  { id: 'name', size: 240, minRatio: 0.12 },
+  { id: 'group', size: 170, minRatio: 0.09 },
+  { id: 'm3u', size: 170, minRatio: 0.09 },
+  { id: 'tvg_id', size: 140, minRatio: 0.09 },
+  { id: 'stats', size: 120, minRatio: 0.08 },
+];
+
+const defaultStreamColumnSizing = Object.fromEntries(
+  streamResizableColumns.map(({ id, size }) => [id, size])
+);
+
 const StreamRowActions = ({
   theme,
   row,
@@ -262,8 +274,12 @@ const StreamsTable = ({ onReady }) => {
     { storage: 'session' }
   );
   const [columnSizing, setColumnSizing] = useBrowserStorage(
-    'streams-table-column-sizing',
-    {}
+    'streams-table-column-sizing-v2',
+    defaultStreamColumnSizing
+  );
+  const resetColumnSizing = useCallback(
+    () => setColumnSizing({ ...defaultStreamColumnSizing }),
+    [setColumnSizing]
   );
 
   // Column visibility - persisted to localStorage
@@ -303,6 +319,14 @@ const StreamsTable = ({ onReady }) => {
     }
     return merged;
   }, [storedColumnVisibility]);
+
+  const pairedColumnSizing = useMemo(
+    () =>
+      streamResizableColumns.filter(({ id }) => columnVisibility[id] !== false),
+    [columnVisibility]
+  );
+  const lastResizableColumnId =
+    pairedColumnSizing[pairedColumnSizing.length - 1]?.id;
 
   const setColumnVisibility = (newValue) => {
     if (typeof newValue === 'function') {
@@ -397,18 +421,22 @@ const StreamsTable = ({ onReady }) => {
         id: 'actions',
         size: columnSizing.actions || 75,
         minSize: 65,
+        enableResizing: false,
       },
       {
         id: 'select',
         size: columnSizing.select || 30,
         minSize: 30,
+        enableResizing: false,
       },
       {
         header: 'Name',
         accessorKey: 'name',
         grow: true,
-        size: columnSizing.name || 200,
-        minSize: 100,
+        flexRatio: true,
+        size: columnSizing.name || 240,
+        minSize: 0,
+        enableResizing: lastResizableColumnId !== 'name',
         cell: ({ getValue, row }) => (
           <Flex align="center" gap={6} style={{ minWidth: 0 }}>
             <Tooltip label={getValue()} openDelay={500}>
@@ -438,8 +466,11 @@ const StreamsTable = ({ onReady }) => {
           channelGroups[row.channel_group]
             ? channelGroups[row.channel_group].name
             : '',
-        size: columnSizing.group || 150,
-        minSize: 75,
+        size: columnSizing.group || 170,
+        minSize: 0,
+        grow: true,
+        flexRatio: true,
+        enableResizing: lastResizableColumnId !== 'group',
         cell: ({ getValue }) => (
           <Tooltip label={getValue()} openDelay={500}>
             <Box
@@ -457,8 +488,11 @@ const StreamsTable = ({ onReady }) => {
       {
         header: 'M3U',
         id: 'm3u',
-        size: columnSizing.m3u || 150,
-        minSize: 75,
+        size: columnSizing.m3u || 170,
+        minSize: 0,
+        grow: true,
+        flexRatio: true,
+        enableResizing: lastResizableColumnId !== 'm3u',
         accessorFn: (row) =>
           playlists.find((playlist) => playlist.id === row.m3u_account)?.name,
         cell: ({ getValue }) => (
@@ -479,8 +513,11 @@ const StreamsTable = ({ onReady }) => {
         header: 'TVG-ID',
         id: 'tvg_id',
         accessorKey: 'tvg_id',
-        size: columnSizing.tvg_id || 120,
-        minSize: 75,
+        size: columnSizing.tvg_id || 140,
+        minSize: 0,
+        grow: true,
+        flexRatio: true,
+        enableResizing: lastResizableColumnId !== 'tvg_id',
         cell: ({ getValue }) => (
           <Tooltip label={getValue()} openDelay={500}>
             <Box
@@ -500,7 +537,10 @@ const StreamsTable = ({ onReady }) => {
         id: 'stats',
         accessorKey: 'stream_stats',
         size: columnSizing.stats || 120,
-        minSize: 75,
+        minSize: 0,
+        grow: true,
+        flexRatio: true,
+        enableResizing: lastResizableColumnId !== 'stats',
         cell: ({ getValue }) => {
           const stats = getValue();
           if (!stats)
@@ -536,8 +576,20 @@ const StreamsTable = ({ onReady }) => {
           );
         },
       },
+      {
+        // Reserve space for the header reset action after the final data column.
+        id: 'spacer',
+        size: 28,
+        minSize: 28,
+        enableResizing: false,
+        enableHiding: false,
+        header: '',
+        cell: () => null,
+      },
     ],
-    [channelGroups, playlists, columnSizing]
+    // Column sizing is managed by TanStack after initialization.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [channelGroups, playlists, lastResizableColumnId]
   );
 
   /**
@@ -1193,6 +1245,9 @@ const StreamsTable = ({ onReady }) => {
     sorting,
     columnSizing,
     setColumnSizing,
+    pairedColumnSizing,
+    tableId: 'streams-table',
+    onResetColumnSizing: resetColumnSizing,
     onColumnVisibilityChange: setColumnVisibility,
     onRowSelectionChange: onRowSelectionChange,
     manualPagination: true,

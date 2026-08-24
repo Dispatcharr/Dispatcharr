@@ -438,6 +438,56 @@ describe('StreamsTable', () => {
       expect(screen.getByText('Streams')).toBeInTheDocument();
     });
 
+    it('uses paired ratio sizing for visible stream content columns', () => {
+      setupMocks();
+      render(<StreamsTable />);
+
+      expect(capturedTableOptions.tableId).toBe('streams-table');
+      expect(capturedTableOptions.pairedColumnSizing.map(({ id }) => id)).toEqual(
+        ['name', 'group', 'm3u']
+      );
+      const nameColumn = capturedTableOptions.columns.find(
+        (column) => column.accessorKey === 'name'
+      );
+      expect(nameColumn).toMatchObject({
+        size: 240,
+        grow: true,
+        flexRatio: true,
+      });
+      expect(
+        capturedTableOptions.columns.find((column) => column.id === 'm3u')
+          .enableResizing
+      ).toBe(false);
+      expect(
+        capturedTableOptions.columns.find((column) => column.id === 'spacer')
+      ).toMatchObject({
+        size: 28,
+        minSize: 28,
+        enableResizing: false,
+      });
+    });
+
+    it('resets stream column sizing to the shared default ratios', () => {
+      const setColumnSizing = vi.fn();
+      setupMocks();
+      vi.mocked(useBrowserStorage).mockImplementation((key, defaultValue) => [
+        defaultValue,
+        key === 'streams-table-column-sizing-v2'
+          ? setColumnSizing
+          : vi.fn(),
+      ]);
+      render(<StreamsTable />);
+
+      capturedTableOptions.onResetColumnSizing();
+      expect(setColumnSizing).toHaveBeenCalledWith({
+        name: 240,
+        group: 170,
+        m3u: 170,
+        tvg_id: 140,
+        stats: 120,
+      });
+    });
+
     it('renders the Create Stream button', () => {
       setupMocks();
       render(<StreamsTable />);
