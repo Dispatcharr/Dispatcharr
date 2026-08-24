@@ -3831,7 +3831,7 @@ export default class API {
     return response.token;
   }
 
-  // A signed token lets a plain <a download> link stream the file instead of buffering it in tab memory.
+  // A signed token lets a plain <a download> link stream the file, not buffer it.
   static async downloadLogFile(name) {
     try {
       const token = await API.getLogDownloadToken(name);

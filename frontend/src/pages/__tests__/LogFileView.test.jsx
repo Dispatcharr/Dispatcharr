@@ -321,7 +321,7 @@ describe('LogFileViewPage', () => {
     API.getLogFile.mockResolvedValue({ content, truncated: true });
 
     renderPage();
-    // No wall-clock assertion: a loaded machine must not fail this, and a real hang still trips the timeout.
+    // No wall-clock assertion: slowness must not fail this, but a hang still will.
     await screen.findByText(
       /END-OF-SYNTHETIC-LOG-MARKER/,
       {},
@@ -553,7 +553,7 @@ describe('LogFileViewPage', () => {
     });
     renderPage();
     await screen.findByText(/scan slow/);
-    // Without both, the token wraps inside its own box or draws at the block's negative indent, off the left edge.
+    // Without both, the token wraps in its box or draws off the left edge.
     const opts = { whiteSpace: 'nowrap', textIndent: '0px' };
     expect(screen.getByText('2026-08-21 10:00:00,000')).toHaveStyle(opts);
     expect(screen.getByText('WARN')).toHaveStyle(opts);
@@ -780,7 +780,7 @@ describe('LogFileViewPage', () => {
   });
 
   it('keeps a record whose level the collector invented, at any floor', async () => {
-    // The collector stamps an unattributable line INFO stdout; honouring that invented level hides the tail of an ERROR traceback.
+    // INFO stdout is the collector's invention; gating on it hides an ERROR tail.
     API.getLogFile.mockResolvedValue({
       content: [
         '2026-08-21 10:00:00,000 ERROR core.tasks Traceback (most recent call last):',
@@ -802,7 +802,7 @@ describe('LogFileViewPage', () => {
   });
 
   it('leaves an unowned continuation run unowned when the order flips', async () => {
-    // Reversing entries would graft a headless continuation onto an unrelated record, inside its block and behind its bar.
+    // Reversing entries would graft a headless continuation onto another record.
     API.getLogFile.mockResolvedValue({
       content: [
         '  orphaned frame from a record the tail cut off',
@@ -823,7 +823,7 @@ describe('LogFileViewPage', () => {
   });
 
   it('keeps the byte of a single blank continuation line', async () => {
-    // Joined to '' a lone blank renders no text node, and a div with no line box drops the byte from the DOM and the copy buffer.
+    // Joined to '' a lone blank renders no text node and drops from the copy buffer.
     API.getLogFile.mockResolvedValue({
       content: [
         '2026-08-21 10:00:00,000 ERROR core.tasks Traceback (most recent call last):',
@@ -923,7 +923,7 @@ describe('LogFileViewPage', () => {
     fireEvent.change(screen.getByLabelText('Category'), {
       target: { value: 'plugins' },
     });
-    // Plugin infrastructure files with the plugins it manages, renamed so the plugins token stays third-party.
+    // Plugin infrastructure files with its plugins; the token stays third-party.
     expect(screen.getByText(/Discovered 5 plugin/)).toBeInTheDocument();
     expect(screen.getByText(/Sweep done/)).toBeInTheDocument();
     expect(screen.queryByText(/epg tick/)).not.toBeInTheDocument();
@@ -959,7 +959,7 @@ describe('LogFileViewPage', () => {
   });
 
   it('does not re-filter on every keystroke', async () => {
-    // Each pass rebuilds up to MAX_RENDER_LINES blocks, so a typed word must cost one filter, not one per letter.
+    // A pass rebuilds up to MAX_RENDER_LINES blocks: one filter per word, not letter.
     API.getLogFile.mockResolvedValue({
       content: [
         '2026-08-21 10:00:00,000 INFO core.tasks alpha',

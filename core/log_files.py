@@ -36,7 +36,7 @@ def _log_dir():
 
 def _resolve(name):
     """Resolve *name* to a real log file inside the log directory, else None."""
-    # The family check lives here, not only in the listing: DISPATCHARR_LOG_DIR may point at a directory holding more than logs.
+    # Checked here, not only in the listing: DISPATCHARR_LOG_DIR may hold more than logs.
     if not _NAME_RE.match(name) or not name.startswith(LOG_NAME_PREFIX):
         return None
     base = os.path.realpath(_log_dir())
