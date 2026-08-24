@@ -18,6 +18,9 @@ const useTable = ({
   columnSizing,
   setColumnSizing,
   onColumnVisibilityChange,
+  pairedColumnSizing,
+  tableId,
+  onResetColumnSizing,
   ...options
 }) => {
   const [selectedTableIds, setSelectedTableIds] = useState([]);
@@ -79,6 +82,85 @@ const useTable = ({
     };
   }, [handleKeyDown, handleKeyUp]);
 
+  const handlePairedColumnSizingChange = useCallback(
+    (updater) => {
+      setColumnSizing((previousSizing) => {
+        const nextSizing =
+          typeof updater === 'function' ? updater(previousSizing) : updater;
+        const columnIndex = pairedColumnSizing.findIndex(({ id, size }) => {
+          return (nextSizing[id] ?? size) !== (previousSizing[id] ?? size);
+        });
+
+        if (columnIndex === -1 || columnIndex === pairedColumnSizing.length - 1) {
+          return nextSizing;
+        }
+
+        const column = pairedColumnSizing[columnIndex];
+        const neighbor = pairedColumnSizing[columnIndex + 1];
+        const currentSizing = pairedColumnSizing.reduce((sizes, pairedColumn) => {
+          sizes[pairedColumn.id] =
+            previousSizing[pairedColumn.id] ?? pairedColumn.size;
+          return sizes;
+        }, {});
+        const measuredWidths = pairedColumnSizing.map((pairedColumn) => {
+          const header =
+            typeof document === 'undefined'
+              ? null
+              : document.querySelector(
+                  `[data-table-id="${tableId}"] [data-column-id="${pairedColumn.id}"]`
+                );
+          return header?.getBoundingClientRect().width || 0;
+        });
+        const totalWidth = measuredWidths.reduce((total, width) => total + width, 0);
+        const totalRatio = Object.values(currentSizing).reduce(
+          (total, ratio) => total + ratio,
+          0
+        );
+        const currentSize = currentSizing[column.id];
+        const requestedSize = nextSizing[column.id] ?? column.size;
+        const neighborSize = currentSizing[neighbor.id];
+        const requestedDelta = requestedSize - currentSize;
+        const ratioPerPixel = totalWidth ? totalRatio / totalWidth : 1;
+        const requestedRatioDelta = requestedDelta * ratioPerPixel;
+        const getMinimum = (pairedColumn) =>
+          pairedColumn.minRatio != null
+            ? pairedColumn.minRatio * totalRatio
+            : pairedColumn.minSize * ratioPerPixel;
+        const getMaximum = (pairedColumn) =>
+          pairedColumn.maxRatio != null
+            ? pairedColumn.maxRatio * totalRatio
+            : (pairedColumn.maxSize ?? Infinity) * ratioPerPixel;
+        const maxGrowth = Math.min(
+          getMaximum(column) - currentSize,
+          neighborSize - getMinimum(neighbor)
+        );
+        const maxShrink = Math.min(
+          currentSize - getMinimum(column),
+          getMaximum(neighbor) - neighborSize
+        );
+
+        if (
+          requestedRatioDelta > maxGrowth ||
+          requestedRatioDelta < -maxShrink
+        ) {
+          return previousSizing;
+        }
+
+        const delta = Math.max(
+          -maxShrink,
+          Math.min(requestedRatioDelta, maxGrowth)
+        );
+
+        return {
+          ...currentSizing,
+          [column.id]: currentSize + delta,
+          [neighbor.id]: neighborSize - delta,
+        };
+      });
+    },
+    [pairedColumnSizing, setColumnSizing, tableId]
+  );
+
   const table = useReactTable({
     defaultColumn: {
       minSize: 0,
@@ -95,7 +177,11 @@ const useTable = ({
     autoResetExpanded: false,
 
     onStateChange: options.onStateChange,
-    ...(setColumnSizing && { onColumnSizingChange: setColumnSizing }),
+    ...(setColumnSizing && {
+      onColumnSizingChange: pairedColumnSizing
+        ? handlePairedColumnSizingChange
+        : setColumnSizing,
+    }),
     ...(onColumnVisibilityChange && { onColumnVisibilityChange }),
     getCoreRowModel: options.getCoreRowModel ?? getCoreRowModel(),
     enableColumnResizing: true,
@@ -261,6 +347,8 @@ const useTable = ({
       setHeaderPinned,
       tableSize,
       setTableSize,
+      tableId,
+      onResetColumnSizing,
     }),
     [
       selectedTableIdsSet,
@@ -271,6 +359,8 @@ const useTable = ({
       setHeaderPinned,
       tableSize,
       setTableSize,
+      tableId,
+      onResetColumnSizing,
     ]
   );
 

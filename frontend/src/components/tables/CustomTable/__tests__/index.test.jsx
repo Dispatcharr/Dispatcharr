@@ -167,6 +167,54 @@ describe('useTable', () => {
     });
   });
 
+  describe('paired column sizing', () => {
+    const pairedColumnSizing = [
+      { id: 'name', size: 200, minSize: 100 },
+      { id: 'epg', size: 200, minSize: 120 },
+      { id: 'group', size: 200, minSize: 120 },
+    ];
+
+    const getSizingUpdater = (nextSizing) => {
+      setupMocks();
+      const setColumnSizing = vi.fn();
+      renderHook(() =>
+        useTable({
+          allRowIds: [],
+          columns: [],
+          data: [],
+          columnSizing: {},
+          setColumnSizing,
+          pairedColumnSizing,
+          tableId: 'test-table',
+        })
+      );
+
+      const tableOptions = vi.mocked(useReactTable).mock.calls.at(-1)[0];
+      act(() => {
+        tableOptions.onColumnSizingChange(nextSizing);
+      });
+      return setColumnSizing.mock.calls[0][0];
+    };
+
+    it('transfers a resize delta only to the adjacent paired column', () => {
+      const updateSizing = getSizingUpdater((current) => ({
+        ...current,
+        name: 250,
+      }));
+
+      expect(updateSizing({})).toMatchObject({ name: 250, epg: 150 });
+    });
+
+    it('rejects a drag that would cross an adjacent column minimum', () => {
+      const updateSizing = getSizingUpdater((current) => ({
+        ...current,
+        name: 400,
+      }));
+
+      expect(updateSizing({})).toEqual({});
+    });
+  });
+
   // ── Keyboard event handling ────────────────────────────────────────────────
 
   describe('keyboard event handling', () => {

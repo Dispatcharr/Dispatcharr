@@ -56,13 +56,17 @@ const MemoizedTableRow = React.memo(
                 className="td"
                 key={`td-${cell.id}`}
                 style={{
+                  boxSizing: 'border-box',
                   ...(cell.column.columnDef.grow
                     ? {
-                        flex: `${cell.column.columnDef.grow === true ? 1 : cell.column.columnDef.grow} 1 0%`,
+                        flex: cell.column.columnDef.flexRatio
+                          ? `var(--header-${cell.column.id}-ratio) 1 0%`
+                          : `${cell.column.columnDef.grow === true ? 1 : cell.column.columnDef.grow} 1 0%`,
                         minWidth: 0,
-                        ...(cell.column.columnDef.maxSize && {
+                        ...(!cell.column.columnDef.flexRatio &&
+                          cell.column.columnDef.maxSize && {
                           maxWidth: `${cell.column.columnDef.maxSize}px`,
-                        }),
+                          }),
                       }
                     : {
                         flex: `0 0 var(--header-${cell.column.id}-size)`,
