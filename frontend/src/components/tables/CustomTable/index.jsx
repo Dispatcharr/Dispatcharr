@@ -144,7 +144,10 @@ const useTable = ({
             0
           );
           metrics = {
+            columnId: column.id,
             ratioPerPixel: totalWidth ? totalRatio / totalWidth : 1,
+            startColumnSize: currentSizing[column.id],
+            startNeighborSize: currentSizing[neighbor.id],
           };
           pairedResizeMetricsRef.current = metrics;
           window.addEventListener('mouseup', clearPairedResizeMetrics, {
@@ -158,12 +161,10 @@ const useTable = ({
           });
         }
 
-        const { ratioPerPixel } = metrics;
-        const currentSize = currentSizing[column.id];
+        const { ratioPerPixel, startColumnSize, startNeighborSize } = metrics;
         const requestedSize = nextSizing[column.id] ?? column.size;
-        const neighborSize = currentSizing[neighbor.id];
-        const requestedDelta = requestedSize - currentSize;
-        const requestedRatioDelta = requestedDelta * ratioPerPixel;
+        const requestedRatioDelta =
+          (requestedSize - startColumnSize) * ratioPerPixel;
         const getMinimum = (pairedColumn) =>
           pairedColumn.minRatio != null
             ? pairedColumn.minRatio * totalRatio
@@ -173,12 +174,12 @@ const useTable = ({
             ? pairedColumn.maxRatio * totalRatio
             : (pairedColumn.maxSize ?? Infinity) * ratioPerPixel;
         const maxGrowth = Math.min(
-          getMaximum(column) - currentSize,
-          neighborSize - getMinimum(neighbor)
+          getMaximum(column) - startColumnSize,
+          startNeighborSize - getMinimum(neighbor)
         );
         const maxShrink = Math.min(
-          currentSize - getMinimum(column),
-          getMaximum(neighbor) - neighborSize
+          startColumnSize - getMinimum(column),
+          getMaximum(neighbor) - startNeighborSize
         );
         const delta = Math.max(
           -maxShrink,
@@ -191,8 +192,8 @@ const useTable = ({
 
         return {
           ...currentSizing,
-          [column.id]: currentSize + delta,
-          [neighbor.id]: neighborSize - delta,
+          [column.id]: startColumnSize + delta,
+          [neighbor.id]: startNeighborSize - delta,
         };
       });
     },
