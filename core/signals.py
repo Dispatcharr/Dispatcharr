@@ -1,9 +1,8 @@
-from celery.signals import task_prerun
-from django.core.signals import request_started
 from django.db.models.signals import pre_delete, post_delete, post_save
 from django.dispatch import receiver
 from django.core.exceptions import ValidationError
-from dispatcharr.display_timezone import refresh_display_zone, set_display_zone
+from django.conf import settings
+from dispatcharr.log_collector import apply_settings
 from .models import (
     StreamProfile,
     CoreSettings,
@@ -39,18 +38,16 @@ def cleanup_output_profile_references(sender, instance, **kwargs):
             instance.id,
         )
 
-@receiver(request_started, dispatch_uid="core_refresh_log_display_zone")
-def refresh_log_display_zone_on_request(sender, **kwargs):
-    refresh_display_zone()
-
-@task_prerun.connect(weak=False)
-def refresh_log_display_zone_on_task(**kwargs):
-    refresh_display_zone()
 
 @receiver(post_save, sender=CoreSettings)
-def refresh_log_display_zone_on_settings_change(sender, instance, **kwargs):
+def apply_log_collector_settings(sender, instance, **kwargs):
     if instance.key == SYSTEM_SETTINGS_KEY:
-        set_display_zone((instance.value or {}).get("time_zone"))
+        # A user save that goes unapplied is worth a warning; boot is not, the collector may still be starting.
+        apply_settings(
+            getattr(settings, "LOG_FILE_DIR", None),
+            instance.value,
+            warn_if_absent=True,
+        )
 
 @receiver(post_save, sender=CoreSettings)
 @receiver(post_delete, sender=CoreSettings)
