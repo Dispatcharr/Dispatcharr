@@ -513,7 +513,7 @@ const setupMocks = ({
 
   vi.mocked(useChannelsStore).mockImplementation((sel) =>
     sel({
-      channelIds: channels.map((c) => c.id),
+      channelIds: channels.filter(Boolean).map((c) => c.id),
       profiles,
       selectedProfileId,
       channelGroups,
@@ -1230,6 +1230,32 @@ describe('ChannelsTable', () => {
       expect(getRowStyles({ original: channel })).toMatchObject({
         className: expect.stringMatching(/stale/i),
       });
+    });
+
+    it('does not crash when the channels array contains a nullish entry', () => {
+      const channel = makeChannel({ id: 13, streams: [] });
+      setupMocks({ channels: [channel, null, undefined] });
+      expect(() => render(<ChannelsTable />)).not.toThrow();
+    });
+
+    it('refetches only once while the channels array contains nullish entries', async () => {
+      const channel = makeChannel({ id: 14, streams: [] });
+      const channels = [channel, null];
+      setupMocks({ channels });
+      const view = render(<ChannelsTable />);
+      // Once from the normal mount fetch, once from the self-heal effect.
+      await waitFor(() =>
+        expect(queryChannels).toHaveBeenCalledTimes(2)
+      );
+
+      setupMocks({ channels });
+      view.rerender(<ChannelsTable />);
+
+      // The regular fetch effect runs again because the test store creates a
+      // new pagination object, but the repair effect does not issue another fetch.
+      await waitFor(() =>
+        expect(queryChannels).toHaveBeenCalledTimes(3)
+      );
     });
   });
 

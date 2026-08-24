@@ -281,13 +281,19 @@ const ChannelsTable = ({ onReady }) => {
   const theme = useMantineTheme();
   const channelGroups = useChannelsStore((s) => s.channelGroups);
   const hasSignaledReady = useRef(false);
+  const hasAttemptedChannelRepair = useRef(false);
 
   /**
    * STORES
    */
 
   // store/channelsTable
-  const data = useChannelsTableStore((s) => s.channels);
+  const rawChannels = useChannelsTableStore((s) => s.channels);
+  // Drop nullish entries so a bad row can't crash row rendering.
+  const data = useMemo(
+    () => (rawChannels.some((c) => !c) ? rawChannels.filter(Boolean) : rawChannels),
+    [rawChannels]
+  );
   const pageCount = useChannelsTableStore((s) => s.pageCount);
 
   const rowClassMap = useMemo(() => {
@@ -296,7 +302,7 @@ const ChannelsTable = ({ onReady }) => {
       const hasStreams = channel.streams?.length > 0;
       if (!hasStreams) {
         map[channel.id] = 'no-streams-row';
-      } else if (channel.streams.some((s) => s.is_stale)) {
+      } else if (channel.streams?.some((s) => s.is_stale)) {
         map[channel.id] = 'has-stale-streams-row';
       }
     }
@@ -861,6 +867,22 @@ const ChannelsTable = ({ onReady }) => {
   useEffect(() => {
     fetchData();
   }, [fetchData]);
+
+  // Store still has a nullish entry beyond just this render; refetch to clear it.
+  useEffect(() => {
+    if (!rawChannels.some((c) => !c)) {
+      hasAttemptedChannelRepair.current = false;
+      return;
+    }
+
+    if (!hasAttemptedChannelRepair.current) {
+      hasAttemptedChannelRepair.current = true;
+      console.warn(
+        '[ChannelsTable] Detected nullish entries in channels store; refetching.'
+      );
+      fetchData();
+    }
+  }, [rawChannels, fetchData]);
 
   useEffect(() => {
     const profileName = profiles[selectedProfileId]?.name;

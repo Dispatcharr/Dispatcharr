@@ -85,6 +85,8 @@ const request = async (url, options = {}) => {
 
 export default class API {
   static lastQueryParams = new URLSearchParams();
+  // Shared by queryChannels/requeryChannels to drop stale, out-of-order responses.
+  static channelsRequestVersion = 0;
 
   /**
    * A static method so we can do:  await API.getAuthToken()
@@ -334,6 +336,7 @@ export default class API {
   }
 
   static async queryChannels(params) {
+    const requestVersion = ++API.channelsRequestVersion;
     try {
       API.lastQueryParams = params;
 
@@ -341,10 +344,16 @@ export default class API {
         `${host}/api/channels/channels/?${params.toString()}`
       );
 
-      useChannelsTableStore.getState().queryChannels(response, params);
+      if (requestVersion === API.channelsRequestVersion) {
+        useChannelsTableStore.getState().queryChannels(response, params);
+      }
 
       return response;
     } catch (e) {
+      if (requestVersion !== API.channelsRequestVersion) {
+        return;
+      }
+
       // Handle invalid page error by resetting to page 1 and retrying
       if (e.body?.detail === 'Invalid page.') {
         const currentPagination = useChannelsTableStore.getState().pagination;
@@ -365,7 +374,9 @@ export default class API {
             `${host}/api/channels/channels/?${newParams.toString()}`
           );
 
-          useChannelsTableStore.getState().queryChannels(response, newParams);
+          if (requestVersion === API.channelsRequestVersion) {
+            useChannelsTableStore.getState().queryChannels(response, newParams);
+          }
           return response;
         }
       }
@@ -413,6 +424,7 @@ export default class API {
   }
 
   static async requeryChannels() {
+    const requestVersion = ++API.channelsRequestVersion;
     try {
       const [response, ids] = await Promise.all([
         request(
@@ -421,13 +433,19 @@ export default class API {
         API.getAllChannelIds(API.lastQueryParams),
       ]);
 
-      useChannelsTableStore
-        .getState()
-        .queryChannels(response, API.lastQueryParams);
-      useChannelsTableStore.getState().setAllQueryIds(ids);
+      if (requestVersion === API.channelsRequestVersion) {
+        useChannelsTableStore
+          .getState()
+          .queryChannels(response, API.lastQueryParams);
+        useChannelsTableStore.getState().setAllQueryIds(ids);
+      }
 
       return response;
     } catch (e) {
+      if (requestVersion !== API.channelsRequestVersion) {
+        return;
+      }
+
       // Handle invalid page error by resetting to page 1 and retrying
       if (e.body?.detail === 'Invalid page.') {
         const currentPagination = useChannelsTableStore.getState().pagination;
@@ -450,8 +468,10 @@ export default class API {
             API.getAllChannelIds(newParams),
           ]);
 
-          useChannelsTableStore.getState().queryChannels(response, newParams);
-          useChannelsTableStore.getState().setAllQueryIds(ids);
+          if (requestVersion === API.channelsRequestVersion) {
+            useChannelsTableStore.getState().queryChannels(response, newParams);
+            useChannelsTableStore.getState().setAllQueryIds(ids);
+          }
 
           return response;
         }
