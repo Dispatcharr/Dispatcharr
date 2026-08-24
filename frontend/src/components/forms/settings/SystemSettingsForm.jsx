@@ -42,7 +42,7 @@ const SystemSettingsForm = React.memo(({ active }) => {
   useEffect(() => {
     if (settings) {
       const formValues = parseSettings(settings);
-      // An error floor already keeps critical; trace is left alone because rewriting it would raise the floor.
+      // An error floor already keeps critical; rewriting trace would raise the floor.
       if (formValues.log_level === 'CRITICAL') formValues.log_level = 'ERROR';
 
       form.setValues(formValues);

@@ -200,7 +200,7 @@ export const saveChangedSettings = async (settings, changedSettings) => {
   }
 };
 
-// Fields whose empty string is a value, not a missing entry (log_level '' follows the container's level).
+// Fields where '' is a value, not a missing entry: log_level follows the container.
 const EMPTY_VALUED_FIELDS = ['log_level'];
 
 export const getChangedSettings = (values, settings) => {
