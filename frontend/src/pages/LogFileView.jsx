@@ -30,7 +30,7 @@ const COLORS = {
   level: '#e4e4e7',
 };
 
-// Captures the separator so an absent one is not re-invented; [\s\S] because JS '.' excludes the \r real messages carry.
+// Captures the separator so it is not re-invented; [\s\S] because '.' drops \r.
 const RECORD_TOKENS =
   /^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3}(?: [+-]\d{4})?) (\S+) (\S+)( ?)([\s\S]*)$/;
 
@@ -51,11 +51,11 @@ const FIRST_PARTY = new Set([
   'proxy',
 ]);
 
-// Anything that is neither Dispatcharr's own code nor a plugin is Services, which keeps the category vocabulary closed.
+// Anything neither first-party nor a plugin is Services.
 const parseSource = (source) => {
   if (source.startsWith('apps.')) {
     const module = source.split('.')[1] || source;
-    // apps.plugins is the plugin system itself, renamed so a plugins token always means third-party code.
+    // apps.plugins is the plugin system itself, not a third-party plugin.
     if (module === 'plugins') return { module: 'plugin_sys', tier: 'plugins' };
     return { module, tier: 'app' };
   }
@@ -115,7 +115,7 @@ const levelColor = (level) => {
   return severityColor(level) || COLORS.level;
 };
 
-// The bar marks what rises above the floor: at a Warning floor every row would wear one and stop meaning anything.
+// The bar marks what rises above the floor, not everything severe.
 const barColor = (level, minRank) => {
   const color = severityColor(level);
   if (!color) return 'transparent';
@@ -124,7 +124,7 @@ const barColor = (level, minRank) => {
   return rank > minRank ? color : 'transparent';
 };
 
-// Sources the collector assigns when a line carries no level of its own.
+// Sources the collector assigns when a line has no level.
 const INVENTED_LEVEL = new Set([
   'stdout',
   'entrypoint',
@@ -165,7 +165,7 @@ const LEVEL_OPTIONS = [
   { value: '40', label: 'Error' },
 ];
 
-// Mirrors the collector's continuation rules: an open traceback claims its tail, indented and blank lines join the record above, and any other column-0 line stands alone.
+// Mirrors the collector's continuation rules.
 const TRACEBACK_HEAD = 'Traceback';
 
 const classifyLines = (lines) => {
@@ -174,7 +174,7 @@ const classifyLines = (lines) => {
   for (const line of lines) {
     const record = parseRecord(line);
     if (record) {
-      // The collector stamps an unstamped traceback header but leaves its tail at column 0.
+      // The collector stamps a traceback header but not its tail.
       inTraceback = record.message.startsWith(TRACEBACK_HEAD);
       entries.push({ line, record, kind: 'record' });
     } else if (RECORD_START.test(line)) {
@@ -209,7 +209,7 @@ const filterEntries = (entries, minRank, category, query) => {
   for (const group of groupEntries(entries)) {
     const record = group[0].record;
     if (record) {
-      // An invented level is the collector's, not the producer's: gating on it would hide the tail of a traceback the floor kept.
+      // An invented level is the collector's own, so the floor must not gate on it.
       const rank = INVENTED_LEVEL.has(record.source)
         ? undefined
         : LEVEL_RANK[record.level];
@@ -229,7 +229,7 @@ const renderContinuations = (lines) => {
   let blank = null;
   const flush = () => {
     if (!run.length) return;
-    // join() alone loses a lone blank line: React renders no text node for '', and the byte leaves the DOM and the copy buffer with it.
+    // React renders no text node for '', so a lone blank line needs its own '\n'.
     const text = run.join('\n') + (blank ? '\n' : '');
     out.push(
       <div key={out.length} style={blank ? { lineHeight: 0.35 } : undefined}>
@@ -248,7 +248,7 @@ const renderContinuations = (lines) => {
   return out;
 };
 
-// whiteSpace and textIndent inherit from the hanging block, so every column cell has to reset them.
+// whiteSpace and textIndent inherit from the hanging block; reset them here.
 const columnStyle = (width) => ({
   display: 'inline-block',
   width: `${width}ch`,
@@ -318,7 +318,7 @@ const LogFileViewPage = () => {
       : null;
   // Ephemeral by design: searches are moments, not settings.
   const [search, setSearch] = useState('');
-  // The box keeps up with typing; the filter waits for a pause, or every keystroke re-filters the whole file.
+  // The box keeps up with typing; the filter waits for a pause.
   const [query, setQuery] = useState('');
   useEffect(() => {
     const id = setTimeout(
@@ -337,7 +337,7 @@ const LogFileViewPage = () => {
     [content]
   );
 
-  // Widths come from every record, not the visible ones: tracking the filtered set would slide the message column on each keystroke.
+  // Widths come from every record; the filtered set would shift on each keystroke.
   const cols = useMemo(() => {
     let stamp = 0;
     let level = 0;
@@ -350,7 +350,7 @@ const LogFileViewPage = () => {
     }
     return {
       stamp,
-      // Floored at ERROR's display width so the column stays put while tailing.
+      // Floored at ERROR's width so the column stays put while tailing.
       level: Math.min(Math.max(level, 5), LEVEL_COL_MAX),
       module: Math.min(module, MODULE_COL_MAX),
     };
@@ -362,13 +362,13 @@ const LogFileViewPage = () => {
       kept = filterEntries(entries, minLevel, category, query);
     const hidden = Math.max(0, kept.length - MAX_RENDER_LINES);
     if (hidden) kept = kept.slice(hidden);
-    // Reversed as blocks, not entries: reversing entries first would strand an ownerless continuation run against an unrelated record.
+    // Reversed as blocks, not entries, so continuations stay with their record.
     const built = buildBlocks(kept);
     if (newestFirst) built.reverse();
     return { blocks: built, hiddenLines: hidden };
   }, [entries, newestFirst, minLevel, category, query]);
 
-  // Wrapped lines and continuations both hang under the message column.
+  // Wrapped lines and continuations hang under the message column.
   const messageIndent = cols.stamp + cols.level + cols.module + 3;
 
   const notice =
@@ -390,7 +390,7 @@ const LogFileViewPage = () => {
           if (!silent) setLoadError(false);
           return true;
         }
-        // Silent polls resolve to undefined on failure (no toast, no throw).
+        // Silent polls resolve to undefined on failure.
         if (!silent) setLoadError(true);
         return false;
       } catch {
@@ -536,7 +536,7 @@ const LogFileViewPage = () => {
 
         <Box
           p="sm"
-          // Without minHeight:0 a flex item refuses to shrink below its content and the panel grows instead of scrolling.
+          // Without minHeight:0 a flex item will not shrink below its content.
           style={{ flex: '1 1 auto', overflow: 'auto', minHeight: '0px' }}
         >
           {loading && !content ? (
@@ -558,7 +558,7 @@ const LogFileViewPage = () => {
                   'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
                 fontSize: 12,
                 lineHeight: 1.45,
-                // anywhere breaks the unbroken tokens (URLs, SQL dumps) that no space would ever break.
+                // anywhere breaks unbroken tokens like URLs and SQL dumps.
                 whiteSpace: 'pre-wrap',
                 overflowWrap: 'anywhere',
               }}
@@ -571,7 +571,7 @@ const LogFileViewPage = () => {
                         return (
                           <div
                             key={i}
-                            // Dimming stops a run of unowned lines reading as the tail of the record above.
+                            // Dimming marks these lines as unowned.
                             style={{
                               borderLeft: '2px solid transparent',
                               paddingLeft: 8,
