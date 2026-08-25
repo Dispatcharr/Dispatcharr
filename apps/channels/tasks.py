@@ -877,6 +877,11 @@ def _evaluate_series_rules_locked(tvg_id, result):
                     "title": prog.title,
                     "sub_title": prog.sub_title,
                     "description": prog.description,
+                    "original_air_date": (
+                        _original_air_date_from_custom_properties(
+                            prog.custom_properties
+                        )
+                    ),
                     "start_time": prog.start_time.isoformat(),
                     "end_time": prog.end_time.isoformat(),
                     # Stable across EPG refreshes, unlike the times above.
@@ -1167,17 +1172,94 @@ def _safe_name(s):
         return s or ""
 
 
+def _normalize_original_air_date(value):
+    """Normalize a stored EPG original-air value for safe path formatting."""
+    if value is None:
+        return ""
+
+    try:
+        raw_value = str(value).strip()
+    except Exception:
+        return ""
+
+    if not raw_value:
+        return ""
+
+    date_value = None
+    date_format = None
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw_value):
+        date_value = raw_value
+        date_format = "%Y-%m-%d"
+    elif re.fullmatch(r"\d{4}-\d{2}-\d{2}T.+", raw_value):
+        date_value = raw_value[:10]
+        date_format = "%Y-%m-%d"
+    elif re.fullmatch(r"\d{8}", raw_value):
+        date_value = raw_value
+        date_format = "%Y%m%d"
+    elif re.fullmatch(r"\d{14}(?:\s+[+-]\d{4})?", raw_value):
+        date_value = raw_value[:8]
+        date_format = "%Y%m%d"
+
+    if date_value:
+        try:
+            return datetime.strptime(date_value, date_format).strftime("%Y-%m-%d")
+        except ValueError:
+            pass
+
+    safe_value = _safe_name(raw_value).replace("..", "")
+    return safe_value.strip(" .")
+
+
+def _original_air_date_from_custom_properties(custom_properties):
+    """Read and normalize the canonical EPG original-air value."""
+    if not isinstance(custom_properties, dict):
+        return ""
+    previously_shown = (
+        custom_properties.get('previously_shown_details') or {}
+    )
+    if not isinstance(previously_shown, dict):
+        return ""
+    return _normalize_original_air_date(previously_shown.get('start'))
+
+
 def _parse_epg_tv_movie_info(program):
-    """Return tuple (is_movie, season, episode, year, sub_title) from EPG ProgramData if available."""
+    """Return TV/movie metadata stored with an EPG ProgramData entry."""
     is_movie = False
     season = None
     episode = None
     year = None
+    original_air_date = (
+        _normalize_original_air_date(program.get('original_air_date'))
+        if isinstance(program, dict)
+        else ""
+    )
     sub_title = program.get('sub_title') if isinstance(program, dict) else None
     try:
         from apps.epg.models import ProgramData
+        from django.utils.dateparse import parse_datetime
+
         prog_id = program.get('id') if isinstance(program, dict) else None
-        epg_program = ProgramData.objects.filter(id=prog_id).only('custom_properties').first() if prog_id else None
+        epg_program = (
+            ProgramData.objects.filter(id=prog_id)
+            .only('custom_properties')
+            .first()
+            if prog_id
+            else None
+        )
+        if not epg_program and isinstance(program, dict):
+            tvg_id = program.get('tvg_id')
+            program_start = parse_datetime(str(program.get('start_time') or ''))
+            program_end = parse_datetime(str(program.get('end_time') or ''))
+            if tvg_id and program_start and program_end:
+                epg_program = (
+                    ProgramData.objects.filter(
+                        tvg_id=tvg_id,
+                        start_time=program_start,
+                        end_time=program_end,
+                    )
+                    .only('custom_properties')
+                    .first()
+                )
         if epg_program and epg_program.custom_properties:
             cp = epg_program.custom_properties
             # Determine categories
@@ -1195,9 +1277,14 @@ def _parse_epg_tv_movie_info(program):
             d = cp.get('date')
             if d:
                 year = str(d)[:4]
+            epg_original_air_date = (
+                _original_air_date_from_custom_properties(cp)
+            )
+            if epg_original_air_date:
+                original_air_date = epg_original_air_date
     except Exception:
         pass
-    return is_movie, season, episode, year, sub_title
+    return is_movie, season, episode, year, sub_title, original_air_date
 
 
 def _build_output_paths(channel, program, start_time, end_time, recording_id):
@@ -1213,7 +1300,14 @@ def _build_output_paths(channel, program, start_time, end_time, recording_id):
     # Root for DVR recordings: fixed to /data/recordings inside the container
     library_root = '/data/recordings'
 
-    is_movie, season, episode, year, sub_title = _parse_epg_tv_movie_info(program)
+    (
+        is_movie,
+        season,
+        episode,
+        year,
+        sub_title,
+        original_air_date,
+    ) = _parse_epg_tv_movie_info(program)
     show = _safe_name(program.get('title') if isinstance(program, dict) else channel.name)
     title = _safe_name(program.get('title') if isinstance(program, dict) else channel.name)
     sub_title = _safe_name(sub_title)
@@ -1240,7 +1334,11 @@ def _build_output_paths(channel, program, start_time, end_time, recording_id):
         # TV fallback template when S/E are missing
         try:
             tv_fb = CoreSettings.get_dvr_tv_fallback_template()
-            rel_path = tv_fb.format(**values)
+            fallback_values = {
+                **values,
+                'original_air_date': original_air_date,
+            }
+            rel_path = tv_fb.format(**fallback_values)
         except Exception:
             # Older setting support
             try:
