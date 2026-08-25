@@ -5,7 +5,15 @@ from unittest.mock import patch
 from uuid import uuid4
 from django.db import connection
 from django.test.utils import CaptureQueriesContext
-from apps.channels.models import Channel, ChannelGroup, ChannelOverride, ChannelProfile, ChannelProfileMembership
+from apps.channels.models import (
+    Channel,
+    ChannelGroup,
+    ChannelOverride,
+    ChannelProfile,
+    ChannelProfileMembership,
+    ChannelStream,
+    Stream,
+)
 from apps.epg.models import EPGData, EPGSource
 from apps.accounts.models import User
 from apps.m3u.models import M3UAccount
@@ -129,6 +137,28 @@ class OutputM3UTest(OutputEndpointTestMixin, TestCase):
 
         self.assertEqual(response.status_code, 200, "POST with empty body should return 200 OK")
         self.assertIn("#EXTM3U", content)
+
+    def test_preserves_stream_gracenote_id_when_channel_field_is_blank(self):
+        account = M3UAccount.objects.create(name=f"source-{uuid4().hex[:8]}")
+        stream = Stream.objects.create(
+            name="Mapped Channel",
+            url="https://example.com/stream.m3u8",
+            m3u_account=account,
+            stream_hash=uuid4().hex,
+            custom_properties={"tvc-guide-stationid": "125196"},
+        )
+        channel = self._add_channel_to_profile(
+            self.profile,
+            self.group,
+            channel_number=2.0,
+            name="Mapped Channel",
+            auto_created=True,
+        )
+        ChannelStream.objects.create(channel=channel, stream=stream, order=0)
+
+        content = _response_text(self.client.get(self._m3u_url()))
+
+        self.assertIn('tvc-guide-stationid="125196"', content)
 
     def test_generate_m3u_response_post_with_body(self):
         """

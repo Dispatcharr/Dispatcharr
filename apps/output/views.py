@@ -198,11 +198,12 @@ def generate_m3u(request, profile_name=None, user=None):
     # Output format to append to proxy stream URLs (native ?output_format= or XC-style ?output=)
     output_format_param = request.GET.get('output_format') or request.GET.get('output')
 
-    # Prefetch streams only when direct URLs are requested (avoids N+1 per channel)
-    if use_direct_urls:
-        channels = channels.prefetch_related(
-            Prefetch('streams', queryset=Stream.objects.order_by('channelstream__order'))
-        )
+    # Prefetch streams for both direct URLs and metadata fallback. Gracenote IDs
+    # arrive on stream.custom_properties and must survive output even when an
+    # existing auto-created channel has not yet copied the value to its field.
+    channels = channels.prefetch_related(
+        Prefetch('streams', queryset=Stream.objects.order_by('channelstream__order'))
+    )
 
     # Get the source to use for tvg-id value
     # Options: 'channel_number' (default), 'tvg_id', 'gracenote'
@@ -264,6 +265,13 @@ def generate_m3u(request, profile_name=None, user=None):
         effective_name = channel.effective_name
         effective_tvg_id_val = channel.effective_tvg_id
         effective_tvc_guide = channel.effective_tvc_guide_stationid
+        if not effective_tvc_guide and channel.auto_created:
+            for stream in channel.streams.all():
+                effective_tvc_guide = (stream.custom_properties or {}).get(
+                    "tvc-guide-stationid"
+                )
+                if effective_tvc_guide:
+                    break
         effective_number = channel.effective_channel_number
 
         group_title = effective_group.name if effective_group else "Default"
