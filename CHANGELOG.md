@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Auto-created M3U channels preserve stream Gracenote IDs in playlist output.** When an imported stream carries `tvc-guide-stationid` in its M3U attributes, the M3U exporter now re-emits that value if the auto-created channel has not yet copied it to the channel field. Existing channel-level values and manual channels are unchanged, allowing downstream clients such as Channels DVR to match Gracenote guide data.
+
 ### Added
 
 - **Channels and Streams tables use responsive paired column sizing.** Content columns share the available table width as ratios, and dragging a divider transfers space only to its adjacent column. Ratio limits scale with the table width, resize handles stop at those limits, and each table has a reset-widths action. Channels prioritizes the Name column by default; Streams adapts its ratio budget to visible columns and reserves trailing space for its reset action. (Fixes #1169)
