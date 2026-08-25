@@ -1,4 +1,5 @@
 from django.test import TestCase, Client, SimpleTestCase, RequestFactory
+from django.http import Http404
 from django.urls import reverse
 from unittest import skipUnless
 from unittest.mock import patch
@@ -9,7 +10,15 @@ from apps.channels.models import Channel, ChannelGroup, ChannelOverride, Channel
 from apps.epg.models import EPGData, EPGSource
 from apps.accounts.models import User
 from apps.m3u.models import M3UAccount
-from apps.output.views import xc_get_live_streams, xc_get_series, xc_get_vod_streams
+from apps.output.views import (
+    xc_get_live_streams,
+    xc_get_series,
+    xc_get_series_categories,
+    xc_get_series_info,
+    xc_get_vod_categories,
+    xc_get_vod_info,
+    xc_get_vod_streams,
+)
 from apps.vod.models import (
     M3UMovieRelation,
     M3USeriesRelation,
@@ -1558,3 +1567,133 @@ class XcVodStreamsAdultContentTests(TestCase):
         )
         names = {s["name"] for s in xc_get_vod_streams(self.request, user)}
         self.assertEqual(names, {"Family Movie", "Mature Movie"})
+
+
+class XcVodAccessFlagTests(TestCase):
+    """``vod_movies_enabled`` / ``vod_series_enabled`` gate the XC VOD surface."""
+
+    def setUp(self):
+        self.factory = RequestFactory()
+        self.account = M3UAccount.objects.create(
+            name=f"vod-access-{uuid4().hex[:6]}",
+            server_url="http://example.com",
+            priority=1,
+            is_active=True,
+        )
+        self.movie_category = VODCategory.objects.create(
+            name=f"Movies {uuid4().hex[:6]}", category_type="movie"
+        )
+        self.series_category = VODCategory.objects.create(
+            name=f"Series {uuid4().hex[:6]}", category_type="series"
+        )
+        self.movie = Movie.objects.create(name="Gated Movie")
+        M3UMovieRelation.objects.create(
+            m3u_account=self.account,
+            movie=self.movie,
+            category=self.movie_category,
+            stream_id="movie-1",
+        )
+        self.series = Series.objects.create(name="Gated Series")
+        self.series_relation = M3USeriesRelation.objects.create(
+            m3u_account=self.account,
+            series=self.series,
+            category=self.series_category,
+            external_series_id="series-1",
+        )
+        self.request = self.factory.get("/player_api.php")
+
+    def _user(self, **custom_properties):
+        props = {"xc_password": "xcpass"}
+        props.update(custom_properties)
+        return User.objects.create_user(
+            username=f"xc-vod-{uuid4().hex[:8]}",
+            password="pass",
+            user_level=0,
+            custom_properties=props,
+        )
+
+    def _assert_sees_movies(self, user, expected=True):
+        categories = [c["category_name"] for c in xc_get_vod_categories(user)]
+        names = [s["name"] for s in xc_get_vod_streams(self.request, user)]
+        if expected:
+            self.assertEqual(categories, [self.movie_category.name])
+            self.assertEqual(names, ["Gated Movie"])
+        else:
+            self.assertEqual(categories, [])
+            self.assertEqual(names, [])
+
+    def _assert_sees_series(self, user, expected=True):
+        categories = [c["category_name"] for c in xc_get_series_categories(user)]
+        names = [s["name"] for s in xc_get_series(self.request, user)]
+        if expected:
+            self.assertEqual(categories, [self.series_category.name])
+            self.assertEqual(names, ["Gated Series"])
+        else:
+            self.assertEqual(categories, [])
+            self.assertEqual(names, [])
+
+    def test_absent_flags_keep_existing_access(self):
+        """Users upgrading from a build without the flags keep VOD."""
+        user = self._user()
+        self._assert_sees_movies(user)
+        self._assert_sees_series(user)
+
+    def test_flags_true_allow_vod(self):
+        user = self._user(vod_movies_enabled=True, vod_series_enabled=True)
+        self._assert_sees_movies(user)
+        self._assert_sees_series(user)
+
+    def test_movies_can_be_disabled_without_touching_series(self):
+        user = self._user(vod_movies_enabled=False)
+        self._assert_sees_movies(user, expected=False)
+        self._assert_sees_series(user)
+
+    def test_series_can_be_disabled_without_touching_movies(self):
+        user = self._user(vod_series_enabled=False)
+        self._assert_sees_series(user, expected=False)
+        self._assert_sees_movies(user)
+
+    def test_both_flags_false_empties_the_whole_vod_surface(self):
+        user = self._user(vod_movies_enabled=False, vod_series_enabled=False)
+        self._assert_sees_movies(user, expected=False)
+        self._assert_sees_series(user, expected=False)
+
+    def test_disabled_kinds_hide_detail_lookups(self):
+        """A disabled user cannot reach detail by guessing an id."""
+        no_movies = self._user(vod_movies_enabled=False)
+        with self.assertRaises(Http404):
+            xc_get_vod_info(self.request, no_movies, self.movie.id)
+        # ...but the series detail for the same user still resolves.
+        self.assertIn(
+            "info", xc_get_series_info(self.request, no_movies, self.series_relation.id)
+        )
+
+        no_series = self._user(vod_series_enabled=False)
+        with self.assertRaises(Http404):
+            xc_get_series_info(self.request, no_series, self.series_relation.id)
+        self.assertIn("info", xc_get_vod_info(self.request, no_series, self.movie.id))
+
+    def test_flags_apply_to_admins(self):
+        """The flags are admin-managed, so an admin who sets one means it."""
+        admin = User.objects.create_user(
+            username=f"xc-vod-admin-{uuid4().hex[:8]}",
+            password="pass",
+            user_level=10,
+            custom_properties={
+                "xc_password": "xcpass",
+                "vod_movies_enabled": False,
+                "vod_series_enabled": False,
+            },
+        )
+        self.assertEqual(xc_get_vod_streams(self.request, admin), [])
+        self.assertEqual(xc_get_series(self.request, admin), [])
+
+    def test_live_channels_are_unaffected(self):
+        group = ChannelGroup.objects.create(name=f"grp-{uuid4().hex[:6]}")
+        Channel.objects.create(
+            name="Live One", channel_number=1, channel_group=group, user_level=0
+        )
+        user = self._user(vod_movies_enabled=False, vod_series_enabled=False)
+        self.assertEqual(
+            [c["name"] for c in xc_get_live_streams(self.request, user)], ["Live One"]
+        )

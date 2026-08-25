@@ -51,6 +51,8 @@ export const userToFormValues = (user) => {
       : '',
     hide_adult_content: customProps.hide_adult_content || false,
     catchup_enabled: customProps.catchup_enabled !== false,
+    vod_movies_enabled: customProps.vod_movies_enabled !== false,
+    vod_series_enabled: customProps.vod_series_enabled !== false,
     epg_days: customProps.epg_days || 0,
     epg_prev_days: customProps.epg_prev_days || 0,
     allowed_ips: [
@@ -83,6 +85,12 @@ export const formValuesToPayload = (values, existingUser) => {
 
   customProps.catchup_enabled = payload.catchup_enabled !== false;
   delete payload.catchup_enabled;
+
+  customProps.vod_movies_enabled = payload.vod_movies_enabled !== false;
+  delete payload.vod_movies_enabled;
+
+  customProps.vod_series_enabled = payload.vod_series_enabled !== false;
+  delete payload.vod_series_enabled;
 
   customProps.epg_days = payload.epg_days || 0;
   delete payload.epg_days;
@@ -124,6 +132,8 @@ export const getFormInitialValues = () => {
     channel_profiles: [],
     hide_adult_content: false,
     catchup_enabled: true,
+    vod_movies_enabled: true,
+    vod_series_enabled: true,
     epg_days: 0,
     epg_prev_days: 0,
     allowed_ips: [],

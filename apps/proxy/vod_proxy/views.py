@@ -13,6 +13,12 @@ from django.http import JsonResponse, Http404, HttpResponse, HttpResponseRedirec
 from django.shortcuts import get_object_or_404
 from django.views.decorators.csrf import csrf_exempt
 from apps.vod.models import Movie, Series, Episode, M3UMovieRelation, M3UEpisodeRelation
+from apps.vod.utils import (
+    VOD_KIND_MOVIE,
+    VOD_KIND_SERIES,
+    is_vod_enabled,
+    vod_kind_for_content_type,
+)
 from apps.m3u.models import M3UAccountProfile
 from apps.proxy.vod_proxy.multi_worker_connection_manager import MultiWorkerVODConnectionManager, infer_content_type_from_url, get_vod_client_stop_key
 from .utils import get_client_info
@@ -624,6 +630,9 @@ def stream_vod(request, content_type, content_id, session_id=None, profile_id=No
         return JsonResponse({"error": "Forbidden"}, status=403)
     if user is None and hasattr(request, "user") and request.user.is_authenticated:
         user = request.user
+    vod_kind = vod_kind_for_content_type(content_type)
+    if vod_kind and not is_vod_enabled(kind=vod_kind, user=user):
+        return JsonResponse({"error": "Forbidden"}, status=403)
     logger.info(f"[VOD-REQUEST] Starting VOD stream request: {content_type}/{content_id}, session: {session_id}, profile: {profile_id}")
     logger.info(f"[VOD-REQUEST] Full request path: {request.get_full_path()}")
     logger.info(f"[VOD-REQUEST] Request method: {request.method}")
@@ -1406,7 +1415,10 @@ def stream_xc_movie(request, username, password, stream_id, extension):
     if custom_properties["xc_password"] != password:
         return Response({"error": "Invalid credentials"}, status=401)
 
-    # All authenticated users get access to VOD from all active M3U accounts
+    if not is_vod_enabled(kind=VOD_KIND_MOVIE, user=user):
+        return JsonResponse({"error": "Forbidden"}, status=403)
+
+    # Users with movie access get it from all active M3U accounts
     filters = {"movie_id": stream_id, "m3u_account__is_active": True}
 
     try:
@@ -1443,7 +1455,10 @@ def stream_xc_episode(request, username, password, stream_id, extension):
     if custom_properties["xc_password"] != password:
         return Response({"error": "Invalid credentials"}, status=401)
 
-    # All authenticated users get access to series/episodes from all active M3U accounts
+    if not is_vod_enabled(kind=VOD_KIND_SERIES, user=user):
+        return JsonResponse({"error": "Forbidden"}, status=403)
+
+    # Users with series access get episodes from all active M3U accounts
     filters = {"episode_id": stream_id, "m3u_account__is_active": True}
 
     try:

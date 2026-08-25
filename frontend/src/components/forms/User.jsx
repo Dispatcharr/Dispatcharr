@@ -268,6 +268,22 @@ const User = ({ user = null, isOpen, onClose }) => {
                   })}
                   key={form.key('catchup_enabled')}
                 />
+                <Switch
+                  label="Enable Movies"
+                  description="When disabled, this user sees no movies in the Xtream Codes API and cannot play them"
+                  {...form.getInputProps('vod_movies_enabled', {
+                    type: 'checkbox',
+                  })}
+                  key={form.key('vod_movies_enabled')}
+                />
+                <Switch
+                  label="Enable Series"
+                  description="When disabled, this user sees no series in the Xtream Codes API and cannot play episodes"
+                  {...form.getInputProps('vod_series_enabled', {
+                    type: 'checkbox',
+                  })}
+                  key={form.key('vod_series_enabled')}
+                />
               </Stack>
             </TabsPanel>
           )}
