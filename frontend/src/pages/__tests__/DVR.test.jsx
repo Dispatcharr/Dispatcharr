@@ -11,7 +11,7 @@ import dayjs from 'dayjs';
 import useChannelsStore from '../../store/channels';
 import useSettingsStore from '../../store/settings';
 import useVideoStore from '../../store/useVideoStore';
-import useLocalStorage from '../../hooks/useLocalStorage';
+import useBrowserStorage from '../../hooks/useBrowserStorage';
 import API from '../../api';
 import {
   isAfter,
@@ -28,7 +28,11 @@ import {
 vi.mock('../../store/channels');
 vi.mock('../../store/settings');
 vi.mock('../../store/useVideoStore');
-vi.mock('../../hooks/useLocalStorage');
+vi.mock('../../hooks/useBrowserStorage', () => ({
+  readStoredJSON: (key, defaultValue) => defaultValue,
+  writeStoredJSON: vi.fn(),
+  default: vi.fn((key, defaultValue) => [defaultValue, vi.fn()]),
+}));
 vi.mock('../../api');
 
 // Mock Mantine components
@@ -257,7 +261,7 @@ describe('DVRPage', () => {
     });
     useVideoStore.getState = () => defaultVideoState;
 
-    useLocalStorage.mockReturnValue(['America/New_York', vi.fn()]);
+    useBrowserStorage.mockReturnValue(['America/New_York', vi.fn()]);
   });
 
   afterEach(() => {

@@ -1,4 +1,10 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState, } from 'react';
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import StreamForm from '../forms/Stream';
 import CatchupIndicator from '../CatchupIndicator';
 import usePlaylistsStore from '../../store/playlists';
@@ -56,7 +62,7 @@ import useVideoStore from '../../store/useVideoStore';
 import useChannelsTableStore from '../../store/channelsTable';
 import useWarningsStore from '../../store/warnings';
 import { CustomTable, useTable } from './CustomTable';
-import useLocalStorage from '../../hooks/useLocalStorage';
+import useBrowserStorage from '../../hooks/useBrowserStorage';
 import ConfirmationDialog from '../ConfirmationDialog';
 import CreateChannelModal from '../modals/CreateChannelModal';
 import useStreamsTableStore from '../../store/streamsTable';
@@ -79,6 +85,18 @@ import {
   queryStreamsTable,
   requeryStreams,
 } from '../../utils/tables/StreamsTableUtils.js';
+
+const streamResizableColumns = [
+  { id: 'name', size: 240, minRatio: 0.12 },
+  { id: 'group', size: 170, minRatio: 0.09 },
+  { id: 'm3u', size: 170, minRatio: 0.09 },
+  { id: 'tvg_id', size: 140, minRatio: 0.09 },
+  { id: 'stats', size: 120, minRatio: 0.08 },
+];
+
+const defaultStreamColumnSizing = Object.fromEntries(
+  streamResizableColumns.map(({ id, size }) => [id, size])
+);
 
 const StreamRowActions = ({
   theme,
@@ -199,6 +217,7 @@ const StreamsTable = ({ onReady }) => {
   const hasFetchedOnce = useRef(false);
   const hasFetchedPlaylists = useRef(false);
   const hasFetchedChannelGroups = useRef(false);
+  const tableScrollRef = useRef(null);
 
   /**
    * useState
@@ -241,18 +260,51 @@ const StreamsTable = ({ onReady }) => {
   const [isBulkDelete, setIsBulkDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
-  const [filters, setFilters] = useState({
+  const DEFAULT_STREAMS_FILTERS = {
     name: '',
     channel_group: '',
     m3u_account: '',
+    tvg_id: '',
     unassigned: false,
     hide_stale: false,
     is_catchup: false,
-  });
-  const [columnSizing, setColumnSizing] = useLocalStorage(
-    'streams-table-column-sizing',
-    {}
+  };
+  const [filters, setFilters] = useBrowserStorage(
+    'streams-table-filters',
+    DEFAULT_STREAMS_FILTERS,
+    { storage: 'session' }
   );
+  const [columnSizing, setColumnSizing] = useBrowserStorage(
+    'streams-table-column-sizing',
+    defaultStreamColumnSizing
+  );
+
+  useEffect(() => {
+    const scrollContainer = tableScrollRef.current;
+    if (!scrollContainer) return;
+
+    const updateOverflow = () => {
+      const overflow = scrollContainer.scrollWidth - scrollContainer.clientWidth;
+      scrollContainer.style.overflowX = overflow > 1 ? 'auto' : 'hidden';
+    };
+
+    const observer =
+      typeof ResizeObserver === 'undefined'
+        ? null
+        : new ResizeObserver(updateOverflow);
+    observer?.observe(scrollContainer);
+    if (scrollContainer.firstElementChild) {
+      observer?.observe(scrollContainer.firstElementChild);
+    }
+    updateOverflow();
+
+    return () => {
+      observer?.disconnect();
+      scrollContainer.style.removeProperty('overflow-x');
+    };
+    // Re-bind when the scroll container mounts with table content. The observer
+    // itself handles size changes during column resize.
+  }, [initialDataCount]);
 
   // Column visibility - persisted to localStorage
   // Default visible: name, group, m3u
@@ -267,7 +319,7 @@ const StreamsTable = ({ onReady }) => {
     stats: false,
   };
 
-  const [storedColumnVisibility, setStoredColumnVisibility] = useLocalStorage(
+  const [storedColumnVisibility, setStoredColumnVisibility] = useBrowserStorage(
     'streams-table-column-visibility',
     null // Use null as default to detect fresh install
   );
@@ -291,6 +343,14 @@ const StreamsTable = ({ onReady }) => {
     }
     return merged;
   }, [storedColumnVisibility]);
+
+  const pairedColumnSizing = useMemo(
+    () =>
+      streamResizableColumns.filter(({ id }) => columnVisibility[id] !== false),
+    [columnVisibility]
+  );
+  const lastResizableColumnId =
+    pairedColumnSizing[pairedColumnSizing.length - 1]?.id;
 
   const setColumnVisibility = (newValue) => {
     if (typeof newValue === 'function') {
@@ -362,6 +422,13 @@ const StreamsTable = ({ onReady }) => {
   const setPagination = useStreamsTableStore((s) => s.setPagination);
   const sorting = useStreamsTableStore((s) => s.sorting);
   const setSorting = useStreamsTableStore((s) => s.setSorting);
+  const resetColumnSizing = useCallback(
+    () => {
+      setColumnSizing({ ...defaultStreamColumnSizing });
+      setSorting([{ id: 'name', desc: false }]);
+    },
+    [setColumnSizing, setSorting]
+  );
   const selectedStreamIds = useStreamsTableStore((s) => s.selectedStreamIds);
   const setSelectedStreamIds = useStreamsTableStore(
     (s) => s.setSelectedStreamIds
@@ -385,18 +452,22 @@ const StreamsTable = ({ onReady }) => {
         id: 'actions',
         size: columnSizing.actions || 75,
         minSize: 65,
+        enableResizing: false,
       },
       {
         id: 'select',
         size: columnSizing.select || 30,
         minSize: 30,
+        enableResizing: false,
       },
       {
         header: 'Name',
         accessorKey: 'name',
         grow: true,
-        size: columnSizing.name || 200,
-        minSize: 100,
+        flexRatio: true,
+        size: columnSizing.name || 240,
+        minSize: 0,
+        enableResizing: lastResizableColumnId !== 'name',
         cell: ({ getValue, row }) => (
           <Flex align="center" gap={6} style={{ minWidth: 0 }}>
             <Tooltip label={getValue()} openDelay={500}>
@@ -426,8 +497,11 @@ const StreamsTable = ({ onReady }) => {
           channelGroups[row.channel_group]
             ? channelGroups[row.channel_group].name
             : '',
-        size: columnSizing.group || 150,
-        minSize: 75,
+        size: columnSizing.group || 170,
+        minSize: 0,
+        grow: true,
+        flexRatio: true,
+        enableResizing: lastResizableColumnId !== 'group',
         cell: ({ getValue }) => (
           <Tooltip label={getValue()} openDelay={500}>
             <Box
@@ -445,8 +519,11 @@ const StreamsTable = ({ onReady }) => {
       {
         header: 'M3U',
         id: 'm3u',
-        size: columnSizing.m3u || 150,
-        minSize: 75,
+        size: columnSizing.m3u || 170,
+        minSize: 0,
+        grow: true,
+        flexRatio: true,
+        enableResizing: lastResizableColumnId !== 'm3u',
         accessorFn: (row) =>
           playlists.find((playlist) => playlist.id === row.m3u_account)?.name,
         cell: ({ getValue }) => (
@@ -467,8 +544,11 @@ const StreamsTable = ({ onReady }) => {
         header: 'TVG-ID',
         id: 'tvg_id',
         accessorKey: 'tvg_id',
-        size: columnSizing.tvg_id || 120,
-        minSize: 75,
+        size: columnSizing.tvg_id || 140,
+        minSize: 0,
+        grow: true,
+        flexRatio: true,
+        enableResizing: lastResizableColumnId !== 'tvg_id',
         cell: ({ getValue }) => (
           <Tooltip label={getValue()} openDelay={500}>
             <Box
@@ -488,7 +568,10 @@ const StreamsTable = ({ onReady }) => {
         id: 'stats',
         accessorKey: 'stream_stats',
         size: columnSizing.stats || 120,
-        minSize: 75,
+        minSize: 0,
+        grow: true,
+        flexRatio: true,
+        enableResizing: lastResizableColumnId !== 'stats',
         cell: ({ getValue }) => {
           const stats = getValue();
           if (!stats)
@@ -524,8 +607,20 @@ const StreamsTable = ({ onReady }) => {
           );
         },
       },
+      {
+        // Reserve space for the header reset action after the final data column.
+        id: 'spacer',
+        size: 28,
+        minSize: 28,
+        enableResizing: false,
+        enableHiding: false,
+        header: '',
+        cell: () => null,
+      },
     ],
-    [channelGroups, playlists, columnSizing]
+    // Column sizing is managed by TanStack after initialization.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [channelGroups, playlists, lastResizableColumnId]
   );
 
   /**
@@ -662,8 +757,10 @@ const StreamsTable = ({ onReady }) => {
       const savedStartNumber =
         localStorage.getItem('channel-numbering-start') || '1';
 
-      const startingChannelNumberValue =
-        getChannelNumberValue(savedMode, savedStartNumber);
+      const startingChannelNumberValue = getChannelNumberValue(
+        savedMode,
+        savedStartNumber
+      );
 
       await executeChannelCreation(
         startingChannelNumberValue,
@@ -756,7 +853,10 @@ const StreamsTable = ({ onReady }) => {
     }
 
     // Convert mode to API value
-    const startingChannelNumberValue = getChannelNumberValue(numberingMode, customStartNumber);
+    const startingChannelNumberValue = getChannelNumberValue(
+      numberingMode,
+      customStartNumber
+    );
 
     setChannelNumberingModalOpen(false);
     await executeChannelCreation(
@@ -857,7 +957,10 @@ const StreamsTable = ({ onReady }) => {
       const savedChannelNumber =
         localStorage.getItem('single-channel-numbering-specific') || '1';
 
-      const channelNumberValue = getChannelNumberValue(savedMode, savedChannelNumber);
+      const channelNumberValue = getChannelNumberValue(
+        savedMode,
+        savedChannelNumber
+      );
 
       await executeSingleChannelCreation(
         stream,
@@ -877,7 +980,10 @@ const StreamsTable = ({ onReady }) => {
     channelNumber = null,
     profileIds = null
   ) => {
-    const channelProfileIds = getChannelProfileIds(profileIds, selectedProfileId);
+    const channelProfileIds = getChannelProfileIds(
+      profileIds,
+      selectedProfileId
+    );
     await createChannelFromStream({
       name: stream.name,
       channel_number: channelNumber,
@@ -902,7 +1008,10 @@ const StreamsTable = ({ onReady }) => {
     }
 
     // Convert mode to API value
-    const channelNumberValue = getChannelNumberValue(singleChannelMode, specificChannelNumber);
+    const channelNumberValue = getChannelNumberValue(
+      singleChannelMode,
+      specificChannelNumber
+    );
 
     setSingleChannelModalOpen(false);
     await executeSingleChannelCreation(
@@ -1167,6 +1276,9 @@ const StreamsTable = ({ onReady }) => {
     sorting,
     columnSizing,
     setColumnSizing,
+    pairedColumnSizing,
+    tableId: 'streams-table',
+    onResetColumnSizing: resetColumnSizing,
     onColumnVisibilityChange: setColumnVisibility,
     onRowSelectionChange: onRowSelectionChange,
     manualPagination: true,
@@ -1349,7 +1461,13 @@ const StreamsTable = ({ onReady }) => {
         }));
       }
     }
-  }, [groupOptions, m3uOptions, filters.channel_group, filters.m3u_account]);
+  }, [
+    groupOptions,
+    m3uOptions,
+    filters.channel_group,
+    filters.m3u_account,
+    setFilters,
+  ]);
 
   return (
     <>
@@ -1393,7 +1511,6 @@ const StreamsTable = ({ onReady }) => {
               openDelay={500}
             >
               <Button
-                leftSection={<SquarePlus size={18} />}
                 variant={
                   selectedStreamIds.length > 0 && targetChannelId
                     ? 'light'
@@ -1418,7 +1535,7 @@ const StreamsTable = ({ onReady }) => {
                 }
                 disabled={!(selectedStreamIds.length > 0 && targetChannelId)}
               >
-                Add to Channel
+                <ListPlus size={18} />
               </Button>
             </Tooltip>
 
@@ -1427,16 +1544,13 @@ const StreamsTable = ({ onReady }) => {
               openDelay={500}
             >
               <Button
-                leftSection={<SquarePlus size={18} />}
                 variant="default"
                 size="xs"
                 onClick={createChannelsFromSelection}
                 p={5}
                 disabled={selectedStreamIds.length == 0}
               >
-                {selectedStreamIds.length <= 1
-                  ? `Create Channel (${selectedStreamIds.length})`
-                  : `Create Channels (${selectedStreamIds.length})`}
+                <SquarePlus size={18} />
               </Button>
             </Tooltip>
           </Flex>
@@ -1493,7 +1607,6 @@ const StreamsTable = ({ onReady }) => {
 
             <Tooltip label="Create a new custom stream" openDelay={500}>
               <Button
-                leftSection={<SquarePlus size={18} />}
                 variant="light"
                 size="xs"
                 onClick={() => editStream()}
@@ -1505,19 +1618,19 @@ const StreamsTable = ({ onReady }) => {
                   color: 'white',
                 }}
               >
-                Create Stream
+                <SquarePlus size={18} />
               </Button>
             </Tooltip>
 
             <Tooltip label="Delete selected stream(s)" openDelay={500}>
               <Button
-                leftSection={<SquareMinus size={18} />}
                 variant="default"
                 size="xs"
                 onClick={handleDeleteStreams}
                 disabled={selectedStreamIds.length == 0}
+                p={5}
               >
-                Delete
+                <SquareMinus size={18} />
               </Button>
             </Tooltip>
 
@@ -1666,6 +1779,7 @@ const StreamsTable = ({ onReady }) => {
             }}
           >
             <Box
+              ref={tableScrollRef}
               style={{
                 flex: 1,
                 overflowY: 'auto',

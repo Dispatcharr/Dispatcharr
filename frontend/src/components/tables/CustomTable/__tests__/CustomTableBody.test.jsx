@@ -152,6 +152,11 @@ describe('CustomTableBody', () => {
       render(<CustomTableBody {...defaultProps()} />);
       expect(document.querySelectorAll('.td')).toHaveLength(4);
     });
+
+    it('uses border-box sizing so column widths include cell padding', () => {
+      render(<CustomTableBody {...defaultProps()} />);
+      expect(document.querySelector('.td').style.boxSizing).toBe('border-box');
+    });
   });
 
   // ── Row styles ─────────────────────────────────────────────────────────────

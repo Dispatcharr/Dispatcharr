@@ -8,7 +8,9 @@ vi.mock('../../../store/epgs', () => ({ default: vi.fn() }));
 vi.mock('../../../store/warnings', () => ({ default: vi.fn() }));
 
 // ── Hook mocks ─────────────────────────────────────────────────────────────────
-vi.mock('../../../hooks/useLocalStorage', () => ({
+vi.mock('../../../hooks/useBrowserStorage', () => ({
+  readStoredJSON: (key, defaultValue) => defaultValue,
+  writeStoredJSON: vi.fn(),
   default: vi.fn(() => ['default', vi.fn()]),
 }));
 
@@ -247,7 +249,7 @@ import useWarningsStore from '../../../store/warnings';
 import { showNotification } from '../../../utils/notificationUtils.js';
 import * as EPGsTableUtils from '../../../utils/tables/EPGsTableUtils.js';
 import { useTable, CustomTable } from '../CustomTable';
-import useLocalStorage from '../../../hooks/useLocalStorage';
+import useBrowserStorage from '../../../hooks/useBrowserStorage';
 import { makeSortingChangeHandler } from '../M3uTableUtils.jsx';
 
 // ── Factories ──────────────────────────────────────────────────────────────────
@@ -293,7 +295,7 @@ const setupMocks = ({
   );
 
   const mockSetTypeFilter = vi.fn();
-  vi.mocked(useLocalStorage).mockImplementation((key, defaultValue) => {
+  vi.mocked(useBrowserStorage).mockImplementation((key, defaultValue) => {
     if (key === 'table-size') return [tableSize, vi.fn()];
     if (key === 'epg-table-type-filter') return [typeFilter, mockSetTypeFilter];
     return [defaultValue, vi.fn()];

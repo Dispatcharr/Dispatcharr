@@ -53,7 +53,8 @@ class SeriesRuleDedupBaseTestCase(TestCase):
         _set_dvr_offsets(pre_min=0, post_min=0)
 
     def _create_program(self, hours_from_now=1, title="Test Show",
-                        sub_title="Episode 1", tvg_id="test.channel.1"):
+                        sub_title="Episode 1", tvg_id="test.channel.1",
+                        custom_properties=None):
         """Create a ProgramData at the given offset."""
         start = self.now + timedelta(hours=hours_from_now)
         end = start + timedelta(hours=1)
@@ -64,6 +65,7 @@ class SeriesRuleDedupBaseTestCase(TestCase):
             end_time=end,
             title=title,
             sub_title=sub_title,
+            custom_properties=custom_properties or {},
         )
 
     def _simulate_epg_refresh(self, programs_data):
@@ -83,6 +85,7 @@ class SeriesRuleDedupBaseTestCase(TestCase):
             "end_time": prog.end_time,
             "title": prog.title,
             "sub_title": prog.sub_title,
+            "custom_properties": prog.custom_properties,
         }
 
 
@@ -116,6 +119,83 @@ class ProgramIdStabilityTests(SeriesRuleDedupBaseTestCase):
         result2 = evaluate_series_rules_impl()
         self.assertEqual(Recording.objects.count(), 1)
         self.assertEqual(result2["scheduled"], 0)
+
+    @patch("apps.channels.tasks.acquire_task_lock", return_value=True)
+    @patch("apps.channels.tasks.release_task_lock")
+    def test_series_recording_persists_original_air_date(
+        self, mock_release, mock_lock, mock_schedule, mock_artwork
+    ):
+        """Series scheduling stores the canonical date before EPG IDs can change."""
+        from apps.channels.tasks import evaluate_series_rules_impl
+
+        self._create_program(
+            hours_from_now=2,
+            custom_properties={
+                "date": "2026-08-01",
+                "previously_shown_details": {
+                    "start": "20161215000000 +0100"
+                },
+            },
+        )
+        evaluate_series_rules_impl()
+
+        program = Recording.objects.get().custom_properties["program"]
+        self.assertEqual(program["original_air_date"], "2016-12-15")
+        self.assertNotEqual(program["original_air_date"], "2026-08-01")
+
+    @patch("apps.channels.tasks.acquire_task_lock", return_value=True)
+    @patch("apps.channels.tasks.release_task_lock")
+    def test_queued_series_recording_recovers_date_after_epg_refresh(
+        self, mock_release, mock_lock, mock_schedule, mock_artwork
+    ):
+        """Pre-fix queued recordings recover metadata by stable programme keys."""
+        from apps.channels.tasks import (
+            _build_output_paths,
+            evaluate_series_rules_impl,
+        )
+
+        prog = self._create_program(
+            hours_from_now=2,
+            custom_properties={
+                "date": "2026-08-01",
+                "previously_shown_details": {"start": "2016-12-15"},
+            },
+        )
+        evaluate_series_rules_impl()
+        rec = Recording.objects.get()
+
+        # Simulate a recording queued by the previous image: it has a stale
+        # ProgramData ID and no persisted original_air_date.
+        program = rec.custom_properties["program"]
+        program.pop("original_air_date", None)
+        stale_program_id = program["id"]
+        self._simulate_epg_refresh([self._program_data_for_refresh(prog)])
+        self.assertFalse(ProgramData.objects.filter(id=stale_program_id).exists())
+
+        with patch(
+            "apps.channels.tasks.CoreSettings.get_dvr_tv_template",
+            return_value="TV/{show}/S{season:02d}E{episode:02d}.mkv",
+        ), patch(
+            "apps.channels.tasks.CoreSettings.get_dvr_tv_fallback_template",
+            return_value=(
+                "TV/{show}/{show} - {original_air_date} - {sub_title}.mkv"
+            ),
+        ), patch(
+            "apps.channels.tasks.CoreSettings.get_dvr_movie_template",
+            return_value="Movies/{title} ({year}).mkv",
+        ), patch("os.stat", side_effect=OSError), patch("os.makedirs"):
+            final_path = _build_output_paths(
+                self.channel,
+                program,
+                rec.start_time,
+                rec.end_time,
+                rec.id,
+            )[0]
+
+        self.assertTrue(final_path.endswith(
+            "TV/Test Show/Test Show - 2016-12-15 - Episode 1.mkv"
+        ))
+        self.assertNotIn("2026-08-01", final_path)
 
     @patch("apps.channels.tasks.acquire_task_lock", return_value=True)
     @patch("apps.channels.tasks.release_task_lock")

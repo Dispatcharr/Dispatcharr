@@ -408,7 +408,8 @@ describe('LogoForm', () => {
       await waitFor(() => {
         expect(LogoUtils.uploadLogo).toHaveBeenCalledWith(
           file,
-          expect.any(Object)
+          expect.any(Object),
+          false
         );
       });
     });

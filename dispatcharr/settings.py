@@ -29,6 +29,20 @@ REDIS_PORT = int(os.environ.get("REDIS_PORT", 6379))
 REDIS_DB = os.environ.get("REDIS_DB", "0")
 REDIS_USER = os.environ.get("REDIS_USER", "")
 REDIS_PASSWORD = os.environ.get("REDIS_PASSWORD", "")
+# Cap Redis TCP sockets per process-local pool. Under gevent, redis-py's default
+# unbounded ConnectionPool grows one ESTABLISHED fd per concurrent waiter.
+# BlockingConnectionPool waits instead of raising when the cap is reached.
+# Default 50 is per pool (client / buffer / pubsub / django-redis each have
+# their own); raise via REDIS_MAX_CONNECTIONS if a busy install queues.
+REDIS_MAX_CONNECTIONS = int(os.environ.get("REDIS_MAX_CONNECTIONS", "50"))
+# Seconds a greenlet waits for a free BlockingConnectionPool slot before
+# raising. Unrelated to REDIS_IDLE_TIMEOUT (server idle-client close) below.
+REDIS_POOL_TIMEOUT = float(os.environ.get("REDIS_POOL_TIMEOUT", "20"))
+# Redis-server idle-client timeout (CONFIG SET timeout / --timeout). Closes
+# pooled TCP sockets with no commands for this long. Not the pool wait above.
+# Celery BRPOP/BZPOPMIN waiters are exempt. 0 disables. Applied at
+# redis-server start (AIO) and via CONFIG SET on connect.
+REDIS_IDLE_TIMEOUT = int(os.environ.get("REDIS_IDLE_TIMEOUT", "300"))
 
 # Redis TLS configuration
 REDIS_SSL = os.environ.get("REDIS_SSL", "false").lower() == "true"
@@ -196,15 +210,22 @@ CHANNEL_LAYERS = {
     },
 }
 
-_django_redis_opts = {
-    "CLIENT_CLASS": "django_redis.client.DefaultClient",
+_django_redis_pool_kwargs = {
+    "max_connections": REDIS_MAX_CONNECTIONS,
+    "timeout": REDIS_POOL_TIMEOUT,
 }
 if REDIS_SSL:
     # rediss:// in the URL already enables SSL; pass cert paths and verify
     # settings separately via CONNECTION_POOL_KWARGS.
-    _django_redis_opts["CONNECTION_POOL_KWARGS"] = {
-        k: v for k, v in REDIS_SSL_PARAMS.items() if k != "ssl"
-    }
+    _django_redis_pool_kwargs.update(
+        {k: v for k, v in REDIS_SSL_PARAMS.items() if k != "ssl"}
+    )
+
+_django_redis_opts = {
+    "CLIENT_CLASS": "django_redis.client.DefaultClient",
+    "CONNECTION_POOL_CLASS": "redis.connection.BlockingConnectionPool",
+    "CONNECTION_POOL_KWARGS": _django_redis_pool_kwargs,
+}
 
 CACHES = {
     "default": {
@@ -393,6 +414,13 @@ CELERY_RESULT_EXPIRES = 3600  # 1 hour TTL for task results
 CELERY_BROKER_TRANSPORT_OPTIONS = {
     "visibility_timeout": 3600,  # Time in seconds that a task remains invisible during retries
 }
+
+# Kombu (Celery's broker client) keeps its own Redis connection pool per
+# process, separate from Django's RedisClient/cache pools above. It already
+# defaults to a bounded pool (10), but pin it explicitly so an upstream
+# default change can't silently let broker connections grow unbounded on
+# the autoscaled `default` worker or the 20-thread `dvr` worker.
+CELERY_BROKER_POOL_LIMIT = int(os.environ.get("CELERY_BROKER_POOL_LIMIT", "10"))
 
 CELERY_ACCEPT_CONTENT = ["json"]
 CELERY_TASK_SERIALIZER = "json"

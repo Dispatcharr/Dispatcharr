@@ -46,7 +46,7 @@ class ParseEpgIdentityTests(TestCase):
     def test_live_row_still_wins(self):
         """The existing path is untouched when the row is present."""
         prog = self._live_program({"season": 4, "episode": 11})
-        _movie, season, episode, _year, _sub = _parse_epg_tv_movie_info(
+        _movie, season, episode, _year, _sub, _oad = _parse_epg_tv_movie_info(
             {"id": prog.id, "title": "Ident Show", "season": 99, "episode": 99}
         )
         self.assertEqual((season, episode), (4, 11))
@@ -57,21 +57,21 @@ class ParseEpgIdentityTests(TestCase):
         prog_id = prog.id
         prog.delete()
 
-        _movie, season, episode, _year, _sub = _parse_epg_tv_movie_info(
+        _movie, season, episode, _year, _sub, _oad = _parse_epg_tv_movie_info(
             {"id": prog_id, "title": "Ident Show", "season": 26, "episode": 238}
         )
         self.assertEqual((season, episode), (26, 238))
 
     def test_onscreen_episode_parsed_from_snapshot(self):
         """Snapshots carrying only an onscreen string still yield an index."""
-        _movie, season, episode, _year, _sub = _parse_epg_tv_movie_info(
+        _movie, season, episode, _year, _sub, _oad = _parse_epg_tv_movie_info(
             {"id": 999999, "title": "Ident Show", "onscreen_episode": "S03E07"}
         )
         self.assertEqual((season, episode), (3, 7))
 
     def test_absent_identity_stays_none(self):
         """No identity anywhere must not invent one."""
-        _movie, season, episode, _year, _sub = _parse_epg_tv_movie_info(
+        _movie, season, episode, _year, _sub, _oad = _parse_epg_tv_movie_info(
             {"id": 999999, "title": "Ident Show"}
         )
         self.assertIsNone(season)

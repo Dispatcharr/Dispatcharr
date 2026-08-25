@@ -99,7 +99,11 @@ export default function TVChannelGuide({ startDate, endDate }) {
   const channelGroups = useChannelsStore((s) => s.channelGroups);
   const profiles = useChannelsStore((s) => s.profiles);
   const [isProgramsLoading, setIsProgramsLoading] = useState(true);
-  const logos = useLogosStore((s) => s.logos);
+
+  const enableLogoRendering = useLogosStore((s) => s.enableLogoRendering);
+  useEffect(() => {
+    enableLogoRendering();
+  }, [enableLogoRendering]);
 
   const tvgsById = useEPGsStore((s) => s.tvgsById);
   const epgs = useEPGsStore((s) => s.epgs);
@@ -1140,7 +1144,6 @@ export default function TVChannelGuide({ startDate, endDate }) {
       filteredChannels,
       programsByChannelId,
       rowHeights,
-      logos,
       renderProgram,
       handleLogoClick,
       contentWidth,
@@ -1155,7 +1158,6 @@ export default function TVChannelGuide({ startDate, endDate }) {
       filteredChannels,
       programsByChannelId,
       rowHeights,
-      logos,
       renderProgram,
       handleLogoClick,
       contentWidth,
@@ -1474,7 +1476,7 @@ export default function TVChannelGuide({ startDate, endDate }) {
 
       {/* Record choice modal */}
       {recordChoiceOpen && recordChoiceProgram && (
-        <ErrorBoundary>
+        <ErrorBoundary inline>
           <Suspense fallback={<LoadingOverlay />}>
             <ProgramRecordingModal
               opened={recordChoiceOpen}
@@ -1505,7 +1507,7 @@ export default function TVChannelGuide({ startDate, endDate }) {
 
       {/* Series rules modal */}
       {rulesOpen && (
-        <ErrorBoundary>
+        <ErrorBoundary inline>
           <Suspense fallback={<LoadingOverlay />}>
             <SeriesRecordingModal
               opened={rulesOpen}
@@ -1519,7 +1521,7 @@ export default function TVChannelGuide({ startDate, endDate }) {
 
       {/* Program detail modal */}
       {selectedProgram && (
-        <ErrorBoundary>
+        <ErrorBoundary inline>
           <Suspense fallback={<LoadingOverlay />}>
             <ProgramDetailModal
               program={selectedProgram}
