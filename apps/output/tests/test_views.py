@@ -160,6 +160,29 @@ class OutputM3UTest(OutputEndpointTestMixin, TestCase):
 
         self.assertIn('tvc-guide-stationid="125196"', content)
 
+    def test_preserves_stream_gracenote_id_in_epg_output(self):
+        account = M3UAccount.objects.create(name=f"source-{uuid4().hex[:8]}")
+        stream = Stream.objects.create(
+            name="Mapped Channel",
+            url="https://example.com/stream.m3u8",
+            m3u_account=account,
+            stream_hash=uuid4().hex,
+            custom_properties={"tvc-guide-stationid": "125196"},
+        )
+        channel = self._add_channel_to_profile(
+            self.profile,
+            self.group,
+            channel_number=2.0,
+            name="Mapped Channel",
+            auto_created=True,
+        )
+        ChannelStream.objects.create(channel=channel, stream=stream, order=0)
+
+        epg_url = reverse("output:epg_endpoint", kwargs={"profile_name": self.profile.name})
+        content = _response_text(self.client.get(f"{epg_url}?tvg_id_source=gracenote"))
+
+        self.assertIn('<channel id="125196">', content)
+
     def test_generate_m3u_response_post_with_body(self):
         """
         Test that a POST request with a non-empty body returns 403 Forbidden.

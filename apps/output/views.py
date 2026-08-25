@@ -26,7 +26,7 @@ import regex
 from core.models import CoreSettings
 from core.utils import log_system_event, build_absolute_uri_with_port
 import hashlib
-from apps.output.epg import generate_epg, generate_dummy_programs
+from apps.output.epg import generate_epg, generate_dummy_programs, stream_gracenote_id
 from apps.vod.image_proxy import (
     is_proxyable_image_url,
     prefer_relation_artwork,
@@ -198,11 +198,15 @@ def generate_m3u(request, profile_name=None, user=None):
     # Output format to append to proxy stream URLs (native ?output_format= or XC-style ?output=)
     output_format_param = request.GET.get('output_format') or request.GET.get('output')
 
-    # Prefetch streams for both direct URLs and metadata fallback. Gracenote IDs
-    # arrive on stream.custom_properties and must survive output even when an
-    # existing auto-created channel has not yet copied the value to its field.
+    if use_direct_urls:
+        stream_fields = ('id', 'custom_properties', 'url')
+    else:
+        stream_fields = ('id', 'custom_properties')
     channels = channels.prefetch_related(
-        Prefetch('streams', queryset=Stream.objects.order_by('channelstream__order'))
+        Prefetch(
+            'streams',
+            queryset=Stream.objects.only(*stream_fields).order_by('channelstream__order'),
+        )
     )
 
     # Get the source to use for tvg-id value
@@ -264,14 +268,7 @@ def generate_m3u(request, profile_name=None, user=None):
         effective_logo = channel.effective_logo_obj
         effective_name = channel.effective_name
         effective_tvg_id_val = channel.effective_tvg_id
-        effective_tvc_guide = channel.effective_tvc_guide_stationid
-        if not effective_tvc_guide and channel.auto_created:
-            for stream in channel.streams.all():
-                effective_tvc_guide = (stream.custom_properties or {}).get(
-                    "tvc-guide-stationid"
-                )
-                if effective_tvc_guide:
-                    break
+        effective_tvc_guide = channel.effective_tvc_guide_stationid or stream_gracenote_id(channel)
         effective_number = channel.effective_channel_number
 
         group_title = effective_group.name if effective_group else "Default"

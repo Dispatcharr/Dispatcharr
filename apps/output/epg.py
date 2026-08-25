@@ -31,6 +31,16 @@ _EPG_PROGRAM_YIELD_BATCH_SIZE = 1000
 _EPG_PROGRAM_DB_CHUNK_SIZE = 20000
 
 
+def stream_gracenote_id(channel):
+    """Return an imported stream Gracenote ID for an auto-created channel."""
+    if channel.auto_created and not channel.effective_tvc_guide_stationid:
+        for stream in channel.streams.all():
+            gracenote_id = (stream.custom_properties or {}).get("tvc-guide-stationid")
+            if gracenote_id:
+                return gracenote_id
+    return None
+
+
 def _programme_overlaps_export_window(start_time, end_time, lookback_cutoff, cutoff_date):
     if end_time < lookback_cutoff:
         return False
@@ -1179,7 +1189,12 @@ def generate_epg(request, profile_name=None, user=None, *, xc_catchup_prev_days=
             .exclude(hidden_from_output=True)
             .order_by("effective_channel_number")
             .prefetch_related(
-                Prefetch('streams', queryset=Stream.objects.only('id', 'name').order_by('channelstream__order'))
+                Prefetch(
+                    'streams',
+                    queryset=Stream.objects.only('id', 'name', 'custom_properties').order_by(
+                        'channelstream__order'
+                    ),
+                )
             )
         )
         channel_count = len(channels)
@@ -1242,10 +1257,13 @@ def generate_epg(request, profile_name=None, user=None, *, xc_catchup_prev_days=
                 formatted_channel_number = format_channel_number(effective_number)
 
             # Determine the channel ID based on the selected source
+            stream_guide_id = stream_gracenote_id(channel)
             if tvg_id_source == 'tvg_id' and channel.effective_tvg_id:
                 channel_id = channel.effective_tvg_id
-            elif tvg_id_source == 'gracenote' and channel.effective_tvc_guide_stationid:
-                channel_id = channel.effective_tvc_guide_stationid
+            elif tvg_id_source == 'gracenote' and (
+                channel.effective_tvc_guide_stationid or stream_guide_id
+            ):
+                channel_id = channel.effective_tvc_guide_stationid or stream_guide_id
             else:
                 channel_id = str(formatted_channel_number) if formatted_channel_number != "" else str(channel.id)
 
