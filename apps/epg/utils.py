@@ -1,9 +1,9 @@
 """
 Shared EPG utilities.
 
-Season/episode extraction, WebSocket progress updates, and SD poster proxy URL
-helpers live here so serializers, XMLTV output, and tasks can import without
-circular dependencies.
+Season/episode extraction, original-air-date helpers, WebSocket progress updates,
+and SD poster proxy URL helpers live here so serializers, XMLTV output, and tasks
+can import without circular dependencies.
 """
 
 import gc
@@ -92,6 +92,40 @@ def extract_season_episode(cp, description=None):
         if episode is None:
             episode = d_episode
     return season, episode
+
+
+def fill_original_air_date_if_missing(custom_props, candidate):
+    """
+    Set previously_shown_details.start from candidate when that field is absent.
+
+    Mutates and returns ``custom_props`` for convenience. Callers may ignore the
+    return value and rely on the in-place update.
+
+    Used for Gracenote-style episode-num system="original-air-date" and Schedules
+    Direct originalAirDate. Does not use XMLTV <date>, which is production /
+    copyright date per the DTD, not original air date.
+    """
+    if not isinstance(custom_props, dict) or candidate is None:
+        return custom_props
+
+    try:
+        value = str(candidate).strip()
+    except Exception:
+        return custom_props
+    if not value:
+        return custom_props
+
+    details = custom_props.get('previously_shown_details')
+    if isinstance(details, dict) and details.get('start'):
+        return custom_props
+
+    if isinstance(details, dict):
+        updated = dict(details)
+    else:
+        updated = {}
+    updated['start'] = value
+    custom_props['previously_shown_details'] = updated
+    return custom_props
 
 
 def send_epg_update(source_id, action, progress, **kwargs):

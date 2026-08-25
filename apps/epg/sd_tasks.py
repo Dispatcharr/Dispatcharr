@@ -29,7 +29,7 @@ from apps.epg.sd_utils import (
     sd_obtain_token,
     sd_parse_response_payload,
 )
-from apps.epg.utils import send_epg_update
+from apps.epg.utils import fill_original_air_date_if_missing, send_epg_update
 from core.utils import (
     acquire_task_lock,
     is_task_lock_held,
@@ -1688,11 +1688,14 @@ def fetch_schedules_direct(
                 if airing.get('premiere'):
                     custom_props['premiere'] = True
 
-                # Original air date — full date, not just year
+                # Original air date — full date, not just year.
+                # Keep date for year / production_date compat, and also store the
+                # canonical original-air slot used by the programme API and export.
                 original_air_date = meta.get('originalAirDate', '')
                 movie_year = meta.get('movie', {}).get('year', '')
                 if original_air_date:
                     custom_props['date'] = original_air_date
+                    fill_original_air_date_if_missing(custom_props, original_air_date)
                 elif movie_year:
                     custom_props['date'] = str(movie_year)
 

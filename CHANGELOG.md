@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **EPG original air date is stored in the canonical `previously_shown_details.start` slot more consistently.** XMLTV ingest prefers `previously-shown@start`, then falls back to `episode-num system="original-air-date"` when start is missing. Schedules Direct still writes `originalAirDate` to `date` (year / production_date compat) and now also fills `previously_shown_details.start`, so the programme API `original_air_date` field, UI Original Air, and exported `<previously-shown start="...">` work for SD the same way as for rich XMLTV guides. XMLTV `<date>` is not used as an original-air fallback (DTD production/copyright date).
 - **Creating or duplicating a channel profile now selects it in the Channels table.** The profile dropdown switches to the new profile (and persists that choice for the tab) instead of staying on the previous selection.
 - **M3U and EPG table type filters now use `sessionStorage` instead of `localStorage`.** Same keys (`m3u-table-type-filter`, `epg-table-type-filter`); they clear when the tab closes, matching other working table filters.
 - **Renamed `useLocalStorage` to `useBrowserStorage`.** The hook now supports both `localStorage` (default) and `sessionStorage` via `{ storage: 'session' }`, with shared `readStoredJSON` / `writeStoredJSON` helpers for Zustand.
