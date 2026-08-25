@@ -131,6 +131,7 @@ class DvrOriginalAirDateTemplateTests(TestCase):
             ("20161215", "2016-12-15"),
             ("20161215000000 +0100", "2016-12-15"),
             ("2016-12-15T00:00:00", "2016-12-15"),
+            ("2016-12-15 00:00:00", "2016-12-15"),
         )
         for raw_value, expected in cases:
             with self.subTest(raw_value=raw_value):

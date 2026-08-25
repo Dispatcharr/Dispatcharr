@@ -1193,6 +1193,11 @@ def _normalize_original_air_date(value):
     elif re.fullmatch(r"\d{4}-\d{2}-\d{2}T.+", raw_value):
         date_value = raw_value[:10]
         date_format = "%Y-%m-%d"
+    elif re.fullmatch(r"\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}.*", raw_value):
+        # Gracenote-style episode-num system="original-air-date"
+        # (e.g. "2026-06-24 00:00:00").
+        date_value = raw_value[:10]
+        date_format = "%Y-%m-%d"
     elif re.fullmatch(r"\d{8}", raw_value):
         date_value = raw_value
         date_format = "%Y%m%d"
