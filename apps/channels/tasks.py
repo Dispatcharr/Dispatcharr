@@ -1227,6 +1227,29 @@ def _original_air_date_from_custom_properties(custom_properties):
     return _normalize_original_air_date(previously_shown.get('start'))
 
 
+_ONSCREEN_SE_RE = re.compile(r'[sS](\d+)[eE](\d+)')
+
+
+def _fill_season_episode(season, episode, props):
+    """Fill missing season/episode from dict keys and an onscreen string."""
+    if not isinstance(props, dict):
+        return season, episode
+    if season is None:
+        season = props.get('season')
+    if episode is None:
+        episode = props.get('episode')
+    if season is None or episode is None:
+        onscreen = props.get('onscreen_episode')
+        if isinstance(onscreen, str):
+            m = _ONSCREEN_SE_RE.search(onscreen)
+            if m:
+                if season is None:
+                    season = int(m.group(1))
+                if episode is None:
+                    episode = int(m.group(2))
+    return season, episode
+
+
 def _parse_epg_tv_movie_info(program):
     """Return TV/movie metadata stored with an EPG ProgramData entry."""
     is_movie = False
@@ -1270,15 +1293,9 @@ def _parse_epg_tv_movie_info(program):
             # Determine categories
             cats = [c.lower() for c in (cp.get('categories') or []) if isinstance(c, str)]
             is_movie = 'movie' in cats or 'film' in cats
-            season = cp.get('season')
-            episode = cp.get('episode')
-            onscreen = cp.get('onscreen_episode')
-            if (season is None or episode is None) and isinstance(onscreen, str):
-                import re as _re
-                m = _re.search(r'[sS](\d+)[eE](\d+)', onscreen)
-                if m:
-                    season = season or int(m.group(1))
-                    episode = episode or int(m.group(2))
+            season, episode = _fill_season_episode(
+                cp.get('season'), cp.get('episode'), cp,
+            )
             d = cp.get('date')
             if d:
                 year = str(d)[:4]
@@ -1289,7 +1306,11 @@ def _parse_epg_tv_movie_info(program):
                 original_air_date = epg_original_air_date
     except Exception:
         pass
+    # Live ProgramData ids churn on EPG refresh; use the booking snapshot next.
+    if isinstance(program, dict):
+        season, episode = _fill_season_episode(season, episode, program)
     return is_movie, season, episode, year, sub_title, original_air_date
+
 
 
 def _build_output_paths(channel, program, start_time, end_time, recording_id):
@@ -1313,6 +1334,22 @@ def _build_output_paths(channel, program, start_time, end_time, recording_id):
         sub_title,
         original_air_date,
     ) = _parse_epg_tv_movie_info(program)
+    # Artwork prefetch may have season/episode on the Recording when the snapshot does not.
+    if season is None or episode is None:
+        try:
+            from apps.channels.models import Recording
+
+            recording = (
+                Recording.objects
+                .filter(id=recording_id)
+                .only('custom_properties')
+                .first()
+            )
+            recording_props = (recording.custom_properties or {}) if recording else {}
+            season, episode = _fill_season_episode(season, episode, recording_props)
+        except Exception:
+            pass
+
     show = _safe_name(program.get('title') if isinstance(program, dict) else channel.name)
     title = _safe_name(program.get('title') if isinstance(program, dict) else channel.name)
     sub_title = _safe_name(sub_title)
