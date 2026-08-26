@@ -771,10 +771,16 @@ def _evaluate_series_rules_locked(tvg_id, result):
 
         # Optionally filter to only brand-new episodes before grouping
         if mode == "new":
+            # Optionally treat a programme carrying neither <new/> nor
+            # <previously-shown/> as new, for feeds that only tag repeats.
+            untagged_is_new = bool(rule.get("untagged_is_new"))
             filtered = []
             for p in programs:
                 try:
-                    if (p.custom_properties or {}).get("new"):
+                    props = p.custom_properties or {}
+                    if props.get("new") or (
+                        untagged_is_new and not props.get("previously_shown")
+                    ):
                         filtered.append(p)
                 except Exception:
                     pass

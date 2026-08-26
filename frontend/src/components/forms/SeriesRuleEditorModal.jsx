@@ -3,6 +3,7 @@ import {
   Alert,
   Badge,
   Button,
+  Checkbox,
   Divider,
   Group,
   Modal,
@@ -48,6 +49,7 @@ export default function SeriesRuleEditorModal({
 
   const [tvgSelectValue, setTvgSelectValue] = useState('');
   const [mode, setMode] = useState('all');
+  const [untaggedIsNew, setUntaggedIsNew] = useState(false);
   const [title, setTitle] = useState('');
   const [titleMode, setTitleMode] = useState('exact');
   const [description, setDescription] = useState('');
@@ -79,6 +81,7 @@ export default function SeriesRuleEditorModal({
     tvgBoundRef.current = false;
     setTvgSelectValue(tvgSelectValueFromRule(initialRule));
     setMode(initialRule?.mode || 'all');
+    setUntaggedIsNew(!!initialRule?.untagged_is_new);
     setTitle(initialRule?.title || '');
     setTitleMode(initialRule?.title_mode || 'exact');
     setDescription(initialRule?.description || '');
@@ -145,6 +148,7 @@ export default function SeriesRuleEditorModal({
       title_mode: titleMode,
       description: description.trim(),
       description_mode: descriptionMode,
+      ...(mode === 'new' && untaggedIsNew ? { untagged_is_new: true } : {}),
       ...(channelId ? { channel_id: Number(channelId) } : {}),
       ...(epgSourceId ? { epg_source_id: epgSourceId } : {}),
     }),
@@ -152,6 +156,7 @@ export default function SeriesRuleEditorModal({
       tvgId,
       epgSourceId,
       mode,
+      untaggedIsNew,
       title,
       titleMode,
       description,
@@ -318,6 +323,15 @@ export default function SeriesRuleEditorModal({
               onChange={setMode}
               size="xs"
             />
+            {mode === 'new' && (
+              <Checkbox
+                size="xs"
+                label="Treat untagged episodes as new"
+                description="For guides that only tag repeats. An episode marked neither new nor previously shown counts as new."
+                checked={untaggedIsNew}
+                onChange={(e) => setUntaggedIsNew(e.currentTarget.checked)}
+              />
+            )}
           </Stack>
           <Select
             label="Pinned channel (optional)"

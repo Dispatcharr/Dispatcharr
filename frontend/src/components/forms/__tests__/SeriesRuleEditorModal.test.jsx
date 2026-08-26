@@ -71,6 +71,17 @@ vi.mock('@mantine/core', () => ({
       {children}
     </button>
   ),
+  Checkbox: ({ label, checked, onChange }) => (
+    <label>
+      <input
+        type="checkbox"
+        data-testid="checkbox-untagged-is-new"
+        checked={checked}
+        onChange={onChange}
+      />
+      {label}
+    </label>
+  ),
   Divider: () => <hr />,
   Group: ({ children }) => <div>{children}</div>,
   Modal: ({ children, opened, onClose, title }) =>
@@ -350,6 +361,37 @@ describe('SeriesRuleEditorModal', () => {
       expect(screen.getByTestId('textarea-description')).toHaveValue(
         'Pre-filled description'
       );
+    });
+
+    it('shows the untagged checkbox only for mode "new"', () => {
+      render(
+        <SeriesRuleEditorModal {...defaultProps} initialRule={initialRule} />
+      );
+      expect(
+        screen.getByTestId('checkbox-untagged-is-new')
+      ).toBeInTheDocument();
+    });
+
+    it('hides the untagged checkbox for mode "all"', () => {
+      render(
+        <SeriesRuleEditorModal
+          {...defaultProps}
+          initialRule={{ ...initialRule, mode: 'all' }}
+        />
+      );
+      expect(
+        screen.queryByTestId('checkbox-untagged-is-new')
+      ).not.toBeInTheDocument();
+    });
+
+    it('pre-checks the untagged checkbox from initialRule', () => {
+      render(
+        <SeriesRuleEditorModal
+          {...defaultProps}
+          initialRule={{ ...initialRule, untagged_is_new: true }}
+        />
+      );
+      expect(screen.getByTestId('checkbox-untagged-is-new')).toBeChecked();
     });
 
     it('uses default mode "all" when initialRule has no mode', () => {
@@ -660,6 +702,29 @@ describe('SeriesRuleEditorModal', () => {
         expect(createSeriesRule).toHaveBeenCalledWith(
           expect.objectContaining({ title: 'My Show', mode: 'all' })
         );
+      });
+    });
+
+    it('includes untagged_is_new when mode is new and the box is checked', async () => {
+      renderWithTitle();
+      fireEvent.click(screen.getByText('New only'));
+      fireEvent.click(screen.getByTestId('checkbox-untagged-is-new'));
+      fireEvent.click(screen.getByText('Save rule'));
+      await waitFor(() => {
+        expect(createSeriesRule).toHaveBeenCalledWith(
+          expect.objectContaining({ mode: 'new', untagged_is_new: true })
+        );
+      });
+    });
+
+    it('omits untagged_is_new when the box is unchecked', async () => {
+      renderWithTitle();
+      fireEvent.click(screen.getByText('New only'));
+      fireEvent.click(screen.getByText('Save rule'));
+      await waitFor(() => {
+        const call = vi.mocked(createSeriesRule).mock.calls[0][0];
+        expect(call.mode).toBe('new');
+        expect(call).not.toHaveProperty('untagged_is_new');
       });
     });
 
