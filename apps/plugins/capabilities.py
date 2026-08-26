@@ -34,6 +34,70 @@ KNOWN_CAPABILITIES: Dict[str, Dict[str, Any]] = {
         "min_manifest_version": 1,
         "max_manifest_version": None,
     },
+    "network_listener": {
+        "label": "Listen for network connections",
+        "description": "Binds a socket or web server that accepts inbound network connections.",
+        "requires_restart": True,
+        "impact": "high",
+        "min_manifest_version": 1,
+        "max_manifest_version": None,
+    },
+    "subprocess": {
+        "label": "Run host processes",
+        "description": "Starts commands or processes on the Dispatcharr host.",
+        "requires_restart": False,
+        "impact": "high",
+        "min_manifest_version": 1,
+        "max_manifest_version": None,
+    },
+    "outbound_network": {
+        "label": "Access external network services",
+        "description": "Connects to remote hosts or makes outbound HTTP requests.",
+        "requires_restart": False,
+        "impact": "high",
+        "min_manifest_version": 1,
+        "max_manifest_version": None,
+    },
+    "filesystem_write": {
+        "label": "Write outside plugin storage",
+        "description": "Writes files outside the plugin's own data directory.",
+        "requires_restart": False,
+        "impact": "high",
+        "min_manifest_version": 1,
+        "max_manifest_version": None,
+    },
+    "celery_dispatch": {
+        "label": "Dispatch approved internal tasks",
+        "description": "Queues explicitly approved Dispatcharr background tasks.",
+        "requires_restart": False,
+        "impact": "high",
+        "min_manifest_version": 1,
+        "max_manifest_version": None,
+    },
+    "proxy_internals": {
+        "label": "Use live proxy internals",
+        "description": "Uses Dispatcharr live-stream proxy implementation details.",
+        "requires_restart": False,
+        "impact": "standard",
+        "min_manifest_version": 1,
+        "max_manifest_version": None,
+    },
+    "user_data": {
+        "label": "Access user account data",
+        "description": "Reads Dispatcharr user account data.",
+        "requires_restart": False,
+        "impact": "high",
+        "min_manifest_version": 1,
+        "max_manifest_version": None,
+    },
+    "external_dependencies": {
+        "label": "Install external Python dependencies",
+        "description": "Installs declared third-party Python packages for this plugin.",
+        "requires_restart": False,
+        "impact": "high",
+        "min_manifest_version": 1,
+        "max_manifest_version": None,
+    },
 }
 
 # Manifest schema compatibility and behavior. Absent manifest_version is 0.
@@ -132,6 +196,7 @@ def describe_capabilities(capability_ids: List[str]) -> List[Dict[str, Any]]:
                 "label": info["label"],
                 "description": info["description"],
                 "requires_restart": bool(info.get("requires_restart", False)),
+                "impact": info.get("impact", "standard"),
             })
         else:
             described.append({
@@ -139,6 +204,7 @@ def describe_capabilities(capability_ids: List[str]) -> List[Dict[str, Any]]:
                 "label": f"Custom capability: {capability_id}",
                 "description": "",
                 "requires_restart": False,
+                "impact": "standard",
             })
     return described
 

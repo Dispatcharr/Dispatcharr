@@ -27,6 +27,8 @@ from .capabilities import (
     parse_manifest_version,
     manifest_version_supported,
 )
+from .context import running_as_plugin
+from .sandbox import plugin_builtins
 from .models import PluginConfig
 from .version_utils import get_plugin_status
 from version import __version__
@@ -727,7 +729,9 @@ class PluginManager:
             plugin_path = os.path.join(path, "plugin.py")
             try:
                 logger.debug(f"Importing plugin module {module_name} from {plugin_path}")
-                module = self._load_module_from_path(module_name, plugin_path, is_package=False)
+                module = self._load_module_from_path(
+                    module_name, plugin_path, is_package=False, plugin_key=key, plugin_path=path
+                )
                 if alias_name:
                     self._register_alias_module(f"{alias_name}.plugin", module, path)
                 plugin_cls = getattr(module, "Plugin", None)
@@ -742,7 +746,9 @@ class PluginManager:
             init_path = os.path.join(path, "__init__.py")
             try:
                 logger.debug(f"Importing plugin package {module_name} from {init_path}")
-                module = self._load_module_from_path(module_name, init_path, is_package=True)
+                module = self._load_module_from_path(
+                    module_name, init_path, is_package=True, plugin_key=key, plugin_path=path
+                )
                 self._register_alias_module(alias_name, module, path)
                 plugin_cls = getattr(module, "Plugin", None)
                 if plugin_cls is None:
@@ -757,7 +763,8 @@ class PluginManager:
             logger.warning(f"No Plugin class found for {key}; skipping")
             return None, package_name
 
-        instance = plugin_cls()
+        with running_as_plugin(key):
+            instance = plugin_cls()
 
         name = getattr(instance, "name", key)
         version = getattr(instance, "version", "")
@@ -1022,7 +1029,8 @@ class PluginManager:
                 raise ValueError(f"Plugin '{key}' has no runnable 'run' method")
 
             try:
-                result = run_method(action_id, params, context)
+                with running_as_plugin(key):
+                    result = run_method(action_id, params, context)
             except Exception:
                 logger.exception(f"Plugin '{key}' action '{action_id}' failed")
                 raise
@@ -1065,12 +1073,14 @@ class PluginManager:
             if callable(stop_method):
                 try:
                     with savepoint():
-                        stop_method(context)
+                        with running_as_plugin(key):
+                            stop_method(context)
                     return True
                 except TypeError:
                     try:
                         with savepoint():
-                            stop_method()
+                            with running_as_plugin(key):
+                                stop_method()
                         return True
                     except Exception:
                         logger.exception("Plugin '%s' stop() failed", key)
@@ -1085,7 +1095,8 @@ class PluginManager:
                 if "stop" in actions:
                     try:
                         with savepoint():
-                            run_method("stop", {}, context)
+                            with running_as_plugin(key):
+                                run_method("stop", {}, context)
                         return True
                     except Exception:
                         logger.exception("Plugin '%s' stop action failed", key)
@@ -1200,6 +1211,7 @@ class PluginManager:
             "actions": {a.get("id"): a for a in (lp.actions or [])},
             "report_progress": self._make_progress_reporter(lp.key, task_id=None),
             "dispatch_task": self._make_task_dispatcher(lp),
+            "dispatch_internal_task": self._make_internal_task_dispatcher(lp),
         }
 
     def _transition_to_leader(self, key: str, lp: LoadedPlugin) -> None:
@@ -1209,7 +1221,8 @@ class PluginManager:
         with self._leadership_lock:
             self._leadership_state[key] = "leader"
         try:
-            hook(self._build_leadership_context(lp))
+            with running_as_plugin(key):
+                hook(self._build_leadership_context(lp))
         except Exception:
             logger.exception(
                 "Plugin '%s' on_leader_acquired() failed; releasing leadership so "
@@ -1229,7 +1242,8 @@ class PluginManager:
             hook = getattr(lp.instance, "on_leader_lost", None)
             if callable(hook):
                 try:
-                    hook(self._build_leadership_context(lp))
+                    with running_as_plugin(key):
+                        hook(self._build_leadership_context(lp))
                 except Exception:
                     logger.exception("Plugin '%s' on_leader_lost() failed", key)
 
@@ -1558,6 +1572,7 @@ class PluginManager:
             "actions": {a.get("id"): a for a in (lp.actions or [])},
             "report_progress": self._make_progress_reporter(lp.key, task_id),
             "dispatch_task": self._make_task_dispatcher(lp),
+            "dispatch_internal_task": self._make_internal_task_dispatcher(lp),
         }
 
     def _make_progress_reporter(self, plugin_key: str, task_id: Optional[str]):
@@ -1640,6 +1655,22 @@ class PluginManager:
             return async_result.id
         return dispatch_task
 
+    def _make_internal_task_dispatcher(self, lp: LoadedPlugin):
+        """Return the allowlisted first-party task dispatcher for a plugin."""
+        def dispatch_internal_task(task_name, args=None, kwargs=None):
+            if (
+                manifest_version_enforces_sandbox(lp.manifest_schema_version)
+                and "celery_dispatch" not in (lp.capabilities or [])
+            ):
+                raise PermissionError(
+                    f"Plugin '{lp.key}' uses manifest_version={lp.manifest_schema_version} "
+                    "and called dispatch_internal_task() without declaring the "
+                    "celery_dispatch capability."
+                )
+            from .internal_tasks import dispatch_plugin_task
+            return dispatch_plugin_task(task_name, args=args, kwargs=kwargs).id
+        return dispatch_internal_task
+
     def _read_manifest(self, path: str) -> tuple[Optional[Dict[str, Any]], bool]:
         return read_plugin_manifest(path)
 
@@ -1711,7 +1742,15 @@ class PluginManager:
                 return True
         return False
 
-    def _load_module_from_path(self, module_name: str, path: str, *, is_package: bool) -> Any:
+    def _load_module_from_path(
+        self,
+        module_name: str,
+        path: str,
+        *,
+        is_package: bool,
+        plugin_key: str,
+        plugin_path: str,
+    ) -> Any:
         importlib.invalidate_caches()
         spec = importlib.util.spec_from_file_location(
             module_name,
@@ -1722,8 +1761,10 @@ class PluginManager:
         if spec is None or spec.loader is None:
             raise ImportError(f"Could not load spec for {module_name} from {path}")
         module = importlib.util.module_from_spec(spec)
+        module.__builtins__ = plugin_builtins(plugin_key, plugin_path)
         sys.modules[module_name] = module
-        spec.loader.exec_module(module)
+        with running_as_plugin(plugin_key):
+            spec.loader.exec_module(module)
         return module
 
     def _get_reload_token(self) -> float:

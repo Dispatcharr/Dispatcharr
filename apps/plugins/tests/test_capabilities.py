@@ -72,6 +72,7 @@ class DescribeCapabilitiesTests(SimpleTestCase):
             "label": "Run background tasks",
             "description": "Runs long-running or scheduled work on Dispatcharr's shared background task queue.",
             "requires_restart": False,
+            "impact": "standard",
         }])
 
     def test_persistent_service_capability_does_not_require_restart(self):
@@ -86,6 +87,7 @@ class DescribeCapabilitiesTests(SimpleTestCase):
             "label": "Custom capability: mystery_capability",
             "description": "",
             "requires_restart": False,
+            "impact": "standard",
         }])
 
 
