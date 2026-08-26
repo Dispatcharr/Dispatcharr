@@ -57,6 +57,7 @@ class PluginFieldSerializer(serializers.Serializer):
 
 class PluginCapabilitySerializer(serializers.Serializer):
     id = serializers.CharField()
+    group = serializers.CharField(required=False, default="Other")
     label = serializers.CharField()
     description = serializers.CharField(required=False, allow_blank=True)
     requires_restart = serializers.BooleanField(required=False, default=False)

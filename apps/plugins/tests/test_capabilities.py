@@ -69,6 +69,7 @@ class DescribeCapabilitiesTests(SimpleTestCase):
         result = describe_capabilities(["background_tasks"])
         self.assertEqual(result, [{
             "id": "background_tasks",
+            "group": "Execution",
             "label": "Run background tasks",
             "description": "Runs long-running or scheduled work on Dispatcharr's shared background task queue.",
             "requires_restart": False,
@@ -84,6 +85,7 @@ class DescribeCapabilitiesTests(SimpleTestCase):
         result = describe_capabilities(["mystery_capability"])
         self.assertEqual(result, [{
             "id": "mystery_capability",
+            "group": "Other",
             "label": "Custom capability: mystery_capability",
             "description": "",
             "requires_restart": False,
