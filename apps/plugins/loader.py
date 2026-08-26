@@ -28,7 +28,7 @@ from .capabilities import (
     manifest_version_supported,
 )
 from .context import running_as_plugin
-from .sandbox import plugin_builtins
+from .sandbox import plugin_builtins, stable_plugin_data_path
 from .models import PluginConfig
 from .version_utils import get_plugin_status
 from version import __version__
@@ -96,6 +96,7 @@ class LoadedPlugin:
     path: Optional[str] = None
     folder_name: Optional[str] = None
     legacy: bool = False
+    data_dir: str = ""
     # Snapshot of merged settings taken at discovery time, used only to build
     # the lightweight context passed to on_leader_acquired/on_leader_lost --
     # the leadership tick loop must not hit the DB on every tick (see
@@ -660,6 +661,7 @@ class PluginManager:
                 folder_name=entry,
                 force_reload=force_reload,
                 previous_package=previous_package,
+                storage_key=cfg.slug if cfg and cfg.slug else plugin_key,
             )
             if not lp:
                 return _make_placeholder(), None, None
@@ -701,6 +703,7 @@ class PluginManager:
         folder_name: str,
         force_reload: bool,
         previous_package: Optional[str],
+        storage_key: str,
     ) -> tuple[Optional[LoadedPlugin], Optional[str]]:
         path = os.path.abspath(path)
         # Plugin can be a package and/or contain plugin.py. Prefer plugin.py when present.
@@ -730,7 +733,12 @@ class PluginManager:
             try:
                 logger.debug(f"Importing plugin module {module_name} from {plugin_path}")
                 module = self._load_module_from_path(
-                    module_name, plugin_path, is_package=False, plugin_key=key, plugin_path=path
+                    module_name,
+                    plugin_path,
+                    is_package=False,
+                    plugin_key=key,
+                    plugin_path=path,
+                    storage_key=storage_key,
                 )
                 if alias_name:
                     self._register_alias_module(f"{alias_name}.plugin", module, path)
@@ -747,7 +755,12 @@ class PluginManager:
             try:
                 logger.debug(f"Importing plugin package {module_name} from {init_path}")
                 module = self._load_module_from_path(
-                    module_name, init_path, is_package=True, plugin_key=key, plugin_path=path
+                    module_name,
+                    init_path,
+                    is_package=True,
+                    plugin_key=key,
+                    plugin_path=path,
+                    storage_key=storage_key,
                 )
                 self._register_alias_module(alias_name, module, path)
                 plugin_cls = getattr(module, "Plugin", None)
@@ -789,6 +802,7 @@ class PluginManager:
             actions=actions,
             path=path,
             folder_name=folder_name,
+            data_dir=stable_plugin_data_path(key, path, storage_key),
         )
         return lp, package_name
 
@@ -1207,6 +1221,8 @@ class PluginManager:
         # task backing a persistent service's calls.
         return {
             "settings": lp.cached_settings,
+            "data_dir": lp.data_dir,
+            "code_dir": lp.path or "",
             "logger": logger,
             "actions": {a.get("id"): a for a in (lp.actions or [])},
             "report_progress": self._make_progress_reporter(lp.key, task_id=None),
@@ -1568,6 +1584,8 @@ class PluginManager:
         settings = self._merge_settings_with_defaults(cfg.settings or {}, lp.fields or [])
         return {
             "settings": settings,
+            "data_dir": lp.data_dir,
+            "code_dir": lp.path or "",
             "logger": logger,
             "actions": {a.get("id"): a for a in (lp.actions or [])},
             "report_progress": self._make_progress_reporter(lp.key, task_id),
@@ -1750,6 +1768,7 @@ class PluginManager:
         is_package: bool,
         plugin_key: str,
         plugin_path: str,
+        storage_key: str,
     ) -> Any:
         importlib.invalidate_caches()
         spec = importlib.util.spec_from_file_location(
@@ -1761,7 +1780,7 @@ class PluginManager:
         if spec is None or spec.loader is None:
             raise ImportError(f"Could not load spec for {module_name} from {path}")
         module = importlib.util.module_from_spec(spec)
-        module.__builtins__ = plugin_builtins(plugin_key, plugin_path)
+        module.__builtins__ = plugin_builtins(plugin_key, plugin_path, storage_key)
         sys.modules[module_name] = module
         with running_as_plugin(plugin_key):
             spec.loader.exec_module(module)

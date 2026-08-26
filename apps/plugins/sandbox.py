@@ -73,9 +73,24 @@ def _guard_module(name: str, module):
     return module
 
 
-def _plugin_open(plugin_key: str, plugin_path: str):
-    plugin_data_path = os.path.join("/data/plugins", plugin_key)
-    allowed_roots = (os.path.abspath(plugin_path), os.path.abspath(plugin_data_path))
+def stable_plugin_data_path(plugin_key: str, plugin_path: str, storage_key: str = "") -> str:
+    """Return the version-stable sibling directory owned by a plugin."""
+    plugin_path = os.path.abspath(plugin_path)
+    stable_storage_key = storage_key or plugin_key
+    if (
+        not isinstance(stable_storage_key, str)
+        or not stable_storage_key
+        or stable_storage_key in {".", ".."}
+        or os.path.basename(stable_storage_key) != stable_storage_key
+    ):
+        stable_storage_key = plugin_key
+    return os.path.join(os.path.dirname(plugin_path), f"{stable_storage_key}_data")
+
+
+def _plugin_open(plugin_key: str, plugin_path: str, storage_key: str = ""):
+    plugin_path = os.path.abspath(plugin_path)
+    stable_data_path = stable_plugin_data_path(plugin_key, plugin_path, storage_key)
+    allowed_roots = (plugin_path, stable_data_path)
 
     @wraps(builtins.open)
     def guarded_open(file, mode="r", *args, **kwargs):
@@ -90,7 +105,7 @@ def _plugin_open(plugin_key: str, plugin_path: str):
     return guarded_open
 
 
-def plugin_builtins(plugin_key: str, plugin_path: str) -> Dict[str, Any]:
+def plugin_builtins(plugin_key: str, plugin_path: str, storage_key: str = "") -> Dict[str, Any]:
     """Return a builtins mapping that guards imports made by one plugin module."""
     values = dict(vars(builtins))
     original_import = builtins.__import__
@@ -105,5 +120,5 @@ def plugin_builtins(plugin_key: str, plugin_path: str) -> Dict[str, Any]:
         return module
 
     values["__import__"] = guarded_import
-    values["open"] = _plugin_open(plugin_key, plugin_path)
+    values["open"] = _plugin_open(plugin_key, plugin_path, storage_key)
     return values
