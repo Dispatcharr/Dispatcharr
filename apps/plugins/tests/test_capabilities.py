@@ -69,11 +69,10 @@ class DescribeCapabilitiesTests(SimpleTestCase):
         result = describe_capabilities(["background_tasks"])
         self.assertEqual(result, [{
             "id": "background_tasks",
-            "group": "Execution",
+            "group": {"id": "system", "label": "System", "order": 0},
             "label": "Run background tasks",
             "description": "Runs long-running or scheduled work on Dispatcharr's shared background task queue.",
             "requires_restart": False,
-            "impact": "standard",
         }])
 
     def test_persistent_service_capability_does_not_require_restart(self):
@@ -85,11 +84,10 @@ class DescribeCapabilitiesTests(SimpleTestCase):
         result = describe_capabilities(["mystery_capability"])
         self.assertEqual(result, [{
             "id": "mystery_capability",
-            "group": "Other",
+            "group": {"id": "other", "label": "Other", "order": 99},
             "label": "Custom capability: mystery_capability",
             "description": "",
             "requires_restart": False,
-            "impact": "standard",
         }])
 
 
