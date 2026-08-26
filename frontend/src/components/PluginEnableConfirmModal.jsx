@@ -16,7 +16,7 @@ import {
 // post-import "Enable now", post-install "Enable plugin") shares one dialog
 // instance instead of drifting.
 export default function PluginEnableConfirmModal() {
-  const { opened, plugin } = usePluginStore((s) => s.enableConfirm);
+  const { opened, plugin, purpose } = usePluginStore((s) => s.enableConfirm);
   const resolveEnableConfirmation = usePluginStore(
     (s) => s.resolveEnableConfirmation
   );
@@ -28,23 +28,25 @@ export default function PluginEnableConfirmModal() {
       opened={opened}
       onClose={() => resolveEnableConfirmation(false)}
       onConfirm={() => resolveEnableConfirmation(true)}
-      title={plugin ? `Enable ${plugin.name}?` : 'Enable third-party plugins?'}
-      confirmLabel="I understand, enable"
+      title={
+        purpose === 'update'
+          ? `Approve new capabilities for ${plugin?.name}?`
+          : plugin ? `Enable ${plugin.name}?` : 'Enable third-party plugins?'
+      }
+      confirmLabel={purpose === 'update' ? 'I understand, update' : 'I understand, enable'}
       confirmColor="red"
       zIndex={300}
       message={
         <Stack gap="sm">
           <PluginSecurityWarning>
-            Plugins run server-side code with full access to your Dispatcharr
-            instance and its data. Only enable plugins from developers you
-            trust. Malicious plugins could read or modify data, call internal
-            APIs, or perform unwanted actions. Review the source or trust the
-            author before enabling.
+            {purpose === 'update'
+              ? 'This update requests additional capabilities. Declining disables the plugin and clears its previous capability approvals.'
+              : 'Plugins run server-side code with full access to your Dispatcharr instance and its data. Only enable plugins from developers you trust. Malicious plugins could read or modify data, call internal APIs, or perform unwanted actions. Review the source or trust the author before enabling.'}
           </PluginSecurityWarning>
           {capabilities.length > 0 && (
             <PluginWarningBox tone="info" icon={<ShieldCheck size={16} />}>
               <Text size="xs" fw={600} mb={4}>
-                This plugin requests:
+                {purpose === 'update' ? 'This update requests:' : 'This plugin requests:'}
               </Text>
               <List size="xs" spacing={2}>
                 {capabilities.map((cap) => (

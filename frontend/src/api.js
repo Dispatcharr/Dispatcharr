@@ -2555,8 +2555,10 @@ export default class API {
         body: data,
       });
     } catch (e) {
+      if (e.status === 409 && e.body?.error_code === 'capability_confirmation_required') {
+        return e.body;
+      }
       errorNotification('Failed to install plugin', e);
-      return null;
     }
   }
 

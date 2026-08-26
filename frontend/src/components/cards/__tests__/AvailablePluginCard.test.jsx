@@ -229,6 +229,7 @@ const setupMocks = ({ pathname = '/available-plugins' } = {}) => {
   });
   const mockInvalidatePlugins = vi.fn();
   const mockFetchAvailablePlugins = vi.fn();
+  const mockRequestEnableConfirmation = vi.fn().mockResolvedValue(true);
 
   vi.mocked(usePluginStore).mockImplementation((sel) =>
     sel({ installPlugin: mockInstallPlugin })
@@ -236,7 +237,7 @@ const setupMocks = ({ pathname = '/available-plugins' } = {}) => {
   usePluginStore.getState.mockReturnValue({
     invalidatePlugins: mockInvalidatePlugins,
     fetchAvailablePlugins: mockFetchAvailablePlugins,
-    requestEnableConfirmation: vi.fn().mockResolvedValue(true),
+    requestEnableConfirmation: mockRequestEnableConfirmation,
   });
 
   // Default: versions are compatible, no downgrade, no bad signature
@@ -259,6 +260,7 @@ const setupMocks = ({ pathname = '/available-plugins' } = {}) => {
     mockInstallPlugin,
     mockInvalidatePlugins,
     mockFetchAvailablePlugins,
+    mockRequestEnableConfirmation,
   };
 };
 
@@ -276,6 +278,36 @@ const getModalActionButton = (text) =>
 describe('AvailablePluginCard', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  it('confirms new capabilities before retrying an enabled plugin update', async () => {
+    const { mockInstallPlugin, mockRequestEnableConfirmation } = setupMocks();
+    vi.mocked(getInstallInfo).mockReturnValue({
+      isDowngrade: false,
+      isUpdate: true,
+      isBadSig: false,
+    });
+    mockInstallPlugin
+      .mockResolvedValueOnce({
+        error_code: 'capability_confirmation_required',
+        capabilities: [{ id: 'persistent_service', label: 'Run a persistent service' }],
+      })
+      .mockResolvedValueOnce({ success: true, plugin: { key: 'test-plugin', enabled: true } });
+    const plugin = makePlugin({ installed: true, install_status: 'update_available' });
+    render(<AvailablePluginCard plugin={plugin} appVersion={APP_VERSION} />);
+
+    fireEvent.click(screen.getByTestId('sized-install-button'));
+    fireEvent.click(getModalActionButton('Update'));
+
+    await waitFor(() => {
+      expect(mockRequestEnableConfirmation).toHaveBeenCalledWith(
+        expect.objectContaining({ capabilities: [{ id: 'persistent_service', label: 'Run a persistent service' }] }),
+        'update'
+      );
+      expect(mockInstallPlugin).toHaveBeenLastCalledWith(
+        expect.objectContaining({ acknowledge_capabilities: ['persistent_service'] })
+      );
+    });
   });
 
   // ── Rendering ──────────────────────────────────────────────────────────────
