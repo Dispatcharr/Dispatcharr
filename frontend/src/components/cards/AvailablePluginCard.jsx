@@ -302,6 +302,26 @@ const AvailablePluginCard = ({
     const result = await installPlugin(params);
     setInstalling(false);
     setPendingInstall(null);
+    if (result?.error_code === 'capability_confirmation_required') {
+      const confirmationPlugin = {
+        key: plugin.key || params.slug,
+        name: plugin.name,
+        capabilities: result.capabilities || [],
+      };
+      const confirmed = await usePluginStore
+        .getState()
+        .requestEnableConfirmation(confirmationPlugin, 'update');
+      if (confirmed) {
+        await executeInstall({
+          ...params,
+          acknowledge_capabilities: (result.capabilities || []).map((capability) => capability.id),
+        });
+      } else {
+        await installPlugin({ ...params, deny_capabilities: true });
+        usePluginStore.getState().invalidatePlugins?.();
+      }
+      return;
+    }
     if (result?.success) {
       setInstallAction(
         wasDowngrade ? 'downgraded' : wasInstalled ? 'updated' : 'installed'

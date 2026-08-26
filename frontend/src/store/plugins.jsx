@@ -128,22 +128,18 @@ export const usePluginStore = create((set, get) => ({
     }));
   },
 
-  // First-ever-enable confirmation: a single dialog instance (rendered by
-  // <PluginEnableConfirmModal/> in Plugins.jsx and PluginDetail.jsx) shared
-  // across every entry point that can flip PluginConfig.enabled, so the
-  // capabilities prompt can't drift between them. `requestEnableConfirmation`
-  // resolves true/false based on the user's choice in that dialog.
-  enableConfirm: { opened: false, plugin: null, resolve: null },
+  // A single dialog instance shared by enable and update capability prompts.
+  enableConfirm: { opened: false, plugin: null, purpose: 'enable', resolve: null },
 
-  requestEnableConfirmation: (plugin) => {
+  requestEnableConfirmation: (plugin, purpose = 'enable') => {
     return new Promise((resolve) => {
-      set({ enableConfirm: { opened: true, plugin, resolve } });
+      set({ enableConfirm: { opened: true, plugin, purpose, resolve } });
     });
   },
 
   resolveEnableConfirmation: (confirmed) => {
     const { resolve } = get().enableConfirm;
-    set({ enableConfirm: { opened: false, plugin: null, resolve: null } });
+    set({ enableConfirm: { opened: false, plugin: null, purpose: 'enable', resolve: null } });
     if (resolve) resolve(confirmed);
   },
 
@@ -214,7 +210,7 @@ export const usePluginStore = create((set, get) => ({
     }
   },
 
-  installPlugin: async ({ repo_id, slug, version, download_url, sha256, min_dispatcharr_version, max_dispatcharr_version, prerelease }) => {
+  installPlugin: async ({ repo_id, slug, version, download_url, sha256, min_dispatcharr_version, max_dispatcharr_version, prerelease, acknowledge_capabilities, deny_capabilities }) => {
     const result = await API.installPluginFromRepo({
       repo_id,
       slug,
@@ -224,6 +220,8 @@ export const usePluginStore = create((set, get) => ({
       min_dispatcharr_version,
       max_dispatcharr_version,
       prerelease: prerelease === true,
+      acknowledge_capabilities,
+      deny_capabilities: deny_capabilities === true,
     });
     if (result?.success) {
       await get().fetchAvailablePlugins();

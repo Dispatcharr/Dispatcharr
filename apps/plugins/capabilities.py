@@ -110,13 +110,13 @@ MANIFEST_SCHEMA_POLICIES: Dict[int, Dict[str, Any]] = {
         "enforces_sandbox": False,
     },
     1: {
-        "min_app_version": "0.28.2",
+        "min_app_version": None,
         "max_app_version": None,
         "parses_capabilities": True,
         "enforces_sandbox": False,
     },
     2: {
-        "min_app_version": "0.29.0",
+        "min_app_version": None,
         "max_app_version": None,
         "parses_capabilities": True,
         "enforces_sandbox": True,
