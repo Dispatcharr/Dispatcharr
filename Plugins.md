@@ -183,13 +183,25 @@ If `plugin.json` is missing or invalid, the plugin is treated as **legacy**:
   - `network_listener`: your plugin binds a socket or web server that accepts inbound connections.
   - `subprocess`: your plugin starts commands or processes on the Dispatcharr host.
   - `outbound_network`: your plugin connects to remote hosts or makes outbound HTTP requests.
-  - `filesystem_write`: your plugin writes outside its own `/data/plugins/<plugin-key>/` directory.
+  - `filesystem_write`: your plugin writes outside its code directory and persistent data directory.
   - `celery_dispatch`: your plugin dispatches an explicitly approved Dispatcharr background task.
   - `proxy_internals` and `user_data`: advisory disclosures for direct live-proxy internals and user-account data access. They are not currently runtime-enforced.
   - `external_dependencies`: declares that the plugin needs third-party Python packages. Dependency installation support is not yet available, so plugins must not depend on this declaration to install packages.
   - Unknown/future capability ids are ignored gracefully by older Dispatcharr builds; the registry is intentionally extensible.
 - Declaring `background_tasks` shows users an itemized capability prompt the first time they enable your plugin.
 - **`context["dispatch_task"]` is enforced for manifest version 2 and later:** calling it without the plugin having the `background_tasks` capability (declared directly, or implied by any `async: true` action) raises a `PermissionError`, surfaced to the caller as a 403. Versions `0` and `1` remain non-enforcing during the transition period. Manifest `async: true` actions never hit this check, since the capability is always inferred for them automatically.
+- **Plugin directories:** `context["code_dir"]` is the installed plugin code directory. `context["data_dir"]` is the version-stable sibling directory for durable data, named `<canonical-plugin-id>_data`. Managed plugins use their repository slug as the canonical, version-free ID; unmanaged plugins use their version-free plugin key. Both paths are available in `run()`, `stop()`, and leadership hooks, so plugins never need to derive them themselves.
+
+  ```python
+  import os
+
+  def run(self, action, params, context):
+      cache_path = os.path.join(context["data_dir"], "cache.json")
+      with open(cache_path, "w", encoding="utf-8") as cache:
+          cache.write("{}")
+  ```
+
+  For example, a plugin installed at `/data/plugins/example_plugin_1_2_3/` with canonical ID `example_plugin` receives `/data/plugins/example_plugin_data/`. Writes to other directories, such as `/tmp/output.json`, still require `filesystem_write`.
 
 ---
 
@@ -337,7 +349,7 @@ class Plugin:
                 logger.exception("Failed to stop process %s", pid)
 ```
 
-Read settings in `run` via `context["settings"]`.
+Read settings in `run` via `context["settings"]`. Use `context["code_dir"]` for bundled read-only resources and `context["data_dir"]` for durable files that must survive plugin code upgrades.
 
 ### Running a Persistent Service (Leader Election)
 
@@ -368,7 +380,7 @@ class Plugin:
 
 **Manifest version 2 and later require the capability.** Unlike `background_tasks`, nothing about `on_leader_acquired` can be inferred from the rest of the manifest, so version `2` plugins without `persistent_service` are skipped by leader election: `on_leader_acquired` is never called. Versions `0` and `1` remain non-enforcing during the transition period. Declaring the capability shows users an itemized capability prompt the first time they enable your plugin, the same as `background_tasks` (see `manifest_version` and `capabilities`, above).
 
-Dispatcharr elects one process per plugin using a Redis lease (30s TTL, renewed every 10s). If the leader process dies, another takes over within about 30s. The `context` passed here is lighter than `run()`'s: `settings` (a snapshot from discovery time, not a live read) and `logger`, no `actions`.
+Dispatcharr elects one process per plugin using a Redis lease (30s TTL, renewed every 10s). If the leader process dies, another takes over within about 30s. The `context` passed here is lighter than `run()`'s: `settings` (a snapshot from discovery time, not a live read), `code_dir`, `data_dir`, and `logger`, with no `actions`.
 
 Things every service plugin must handle:
 - **Bind failures on takeover.** The previous leader's socket may still be closing (`TIME_WAIT`) when a new leader binds. Set `SO_REUSEADDR`, and give `on_leader_acquired` its own short bind retry.

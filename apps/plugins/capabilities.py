@@ -69,7 +69,7 @@ KNOWN_CAPABILITIES: Dict[str, Dict[str, Any]] = {
     "filesystem_write": {
         "group": "storage",
         "label": "Write outside plugin storage",
-        "description": "Writes files outside the plugin's own data directory.",
+        "description": "Writes files outside the plugin's code and persistent data directories.",
         "requires_restart": False,
         "min_manifest_version": 1,
         "max_manifest_version": None,
