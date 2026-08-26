@@ -6,7 +6,7 @@ against. Pure/stdlib only, with no Django or DB dependency, so it can be
 imported by lightweight standalone tooling without pulling in Celery or
 triggering ``PluginManager``'s discovery/leadership machinery.
 """
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from .version_utils import compare_versions
 
@@ -20,6 +20,8 @@ KNOWN_CAPABILITIES: Dict[str, Dict[str, Any]] = {
         "label": "Run background tasks",
         "description": "Runs long-running or scheduled work on Dispatcharr's shared background task queue.",
         "requires_restart": False,
+        "min_manifest_version": 1,
+        "max_manifest_version": None,
     },
     "persistent_service": {
         "label": "Run a persistent background service",
@@ -29,35 +31,82 @@ KNOWN_CAPABILITIES: Dict[str, Dict[str, Any]] = {
             "on_leader_acquired/on_leader_lost."
         ),
         "requires_restart": False,
+        "min_manifest_version": 1,
+        "max_manifest_version": None,
     },
 }
 
-# manifest_version -> minimum Dispatcharr app version that understands it.
-# Absent "manifest_version" in plugin.json is treated as version 0 (every
-# plugin manifest written before this capabilities system existed). Version
-# 1 is the first schema version aware of "capabilities"/"manifest_version".
-MANIFEST_VERSION_MIN_APP_VERSION: Dict[int, str] = {
-    0: "0.0.0",
-    1: "0.28.2",
+# Manifest schema compatibility and behavior. Absent manifest_version is 0.
+# A null bound means the schema has no bound in that direction yet.
+MANIFEST_SCHEMA_POLICIES: Dict[int, Dict[str, Any]] = {
+    0: {
+        "min_app_version": None,
+        "max_app_version": None,
+        "parses_capabilities": False,
+        "enforces_sandbox": False,
+    },
+    1: {
+        "min_app_version": "0.28.2",
+        "max_app_version": None,
+        "parses_capabilities": True,
+        "enforces_sandbox": False,
+    },
+    2: {
+        "min_app_version": "0.29.0",
+        "max_app_version": None,
+        "parses_capabilities": True,
+        "enforces_sandbox": True,
+    },
 }
+
+
+def capability_supported_by_manifest_version(capability_id: str, manifest_version: int) -> bool:
+    """Whether a known capability can be parsed for a manifest version.
+
+    Unknown capability ids are retained so manifests from newer Dispatcharr
+    releases continue to degrade gracefully.
+    """
+    if not manifest_version_parses_capabilities(manifest_version):
+        return False
+
+    policy = KNOWN_CAPABILITIES.get(capability_id)
+    if policy is None:
+        return True
+
+    min_manifest_version = policy["min_manifest_version"]
+    max_manifest_version = policy["max_manifest_version"]
+    return (
+        (min_manifest_version is None or manifest_version >= min_manifest_version)
+        and (max_manifest_version is None or manifest_version <= max_manifest_version)
+    )
 
 
 def compute_effective_capabilities(manifest: Dict[str, Any]) -> List[str]:
     """Return the sorted, deduplicated set of capabilities a plugin needs.
 
-    Combines the manifest's explicit "capabilities" array with a back-compat
-    inference: any action already opting into "async": true implies
-    background_tasks, even if the plugin author never updated the
-    manifest-wide capabilities array.
+    Uses each capability's manifest-version bounds, then combines explicit
+    declarations with an inference: any action opting into "async": true
+    implies background_tasks when that capability is valid for the manifest.
     """
+    manifest_version = parse_manifest_version(manifest)
     declared = manifest.get("capabilities")
-    caps = set(c for c in declared if isinstance(c, str)) if isinstance(declared, list) else set()
+    caps = (
+        set(
+            capability_id
+            for capability_id in declared
+            if isinstance(capability_id, str)
+            and capability_supported_by_manifest_version(capability_id, manifest_version)
+        )
+        if isinstance(declared, list)
+        else set()
+    )
 
     actions = manifest.get("actions")
     if isinstance(actions, list) and any(
         isinstance(a, dict) and a.get("async") for a in actions
     ):
-        caps.add("background_tasks")
+        if capability_supported_by_manifest_version("background_tasks", manifest_version):
+            caps.add("background_tasks")
 
     return sorted(caps)
 
@@ -109,20 +158,48 @@ def parse_manifest_version(manifest: Dict[str, Any]) -> int:
     return value if value >= 0 else 0
 
 
-def min_app_version_for_manifest_version(manifest_version: int) -> str:
-    """Return the minimum Dispatcharr version required to understand a
-    given manifest_version. Unknown/future versions fall back to the
-    highest version this build knows about, so a build encountering a
-    manifest version newer than anything in the table treats it as
-    "requires at least the newest version we know how to require" rather
-    than silently assuming full compatibility."""
-    if manifest_version in MANIFEST_VERSION_MIN_APP_VERSION:
-        return MANIFEST_VERSION_MIN_APP_VERSION[manifest_version]
-    return MANIFEST_VERSION_MIN_APP_VERSION[max(MANIFEST_VERSION_MIN_APP_VERSION)]
+def manifest_schema_policy(manifest_version: int) -> Dict[str, Any]:
+    """Return the policy for a manifest version.
+
+    Future manifest versions use the latest known policy. This preserves the
+    existing best-effort compatibility behavior and keeps sandbox enforcement
+    enabled for newer manifests.
+    """
+    if manifest_version in MANIFEST_SCHEMA_POLICIES:
+        return MANIFEST_SCHEMA_POLICIES[manifest_version]
+    return MANIFEST_SCHEMA_POLICIES[max(MANIFEST_SCHEMA_POLICIES)]
+
+
+def manifest_version_enforces_sandbox(manifest_version: int) -> bool:
+    """Whether a manifest version must satisfy capability sandbox gates.
+
+    Version 0 is legacy and version 1 is the open-ended capabilities
+    transition period. Future versions remain enforcing so a newer manifest
+    does not lose protection when parsed best-effort by this build.
+    """
+    return bool(manifest_schema_policy(manifest_version)["enforces_sandbox"])
+
+
+def manifest_version_parses_capabilities(manifest_version: int) -> bool:
+    """Whether the manifest schema supports capability declarations."""
+    return bool(manifest_schema_policy(manifest_version)["parses_capabilities"])
+
+
+def min_app_version_for_manifest_version(manifest_version: int) -> Optional[str]:
+    """Return the optional lower Dispatcharr compatibility bound."""
+    return manifest_schema_policy(manifest_version)["min_app_version"]
+
+
+def max_app_version_for_manifest_version(manifest_version: int) -> Optional[str]:
+    """Return the optional upper Dispatcharr compatibility bound."""
+    return manifest_schema_policy(manifest_version)["max_app_version"]
 
 
 def manifest_version_supported(manifest_version: int, app_version: str) -> bool:
-    """True if `app_version` is >= the minimum version required to
-    understand `manifest_version`."""
-    required = min_app_version_for_manifest_version(manifest_version)
-    return compare_versions(app_version, required) >= 0
+    """True if `app_version` is within the manifest compatibility bounds."""
+    min_app_version = min_app_version_for_manifest_version(manifest_version)
+    max_app_version = max_app_version_for_manifest_version(manifest_version)
+    return (
+        (min_app_version is None or compare_versions(app_version, min_app_version) >= 0)
+        and (max_app_version is None or compare_versions(app_version, max_app_version) <= 0)
+    )

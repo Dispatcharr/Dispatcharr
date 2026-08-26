@@ -22,6 +22,7 @@ from django.utils import timezone
 from .capabilities import (
     compute_effective_capabilities,
     describe_capabilities,
+    manifest_version_enforces_sandbox,
     min_app_version_for_manifest_version,
     parse_manifest_version,
     manifest_version_supported,
@@ -1286,15 +1287,18 @@ class PluginManager:
             hook = getattr(lp.instance, "on_leader_acquired", None)
             if not callable(hook):
                 continue
-            if "persistent_service" not in (lp.capabilities or []):
+            if (
+                manifest_version_enforces_sandbox(lp.manifest_schema_version)
+                and "persistent_service" not in (lp.capabilities or [])
+            ):
                 if key not in self._leadership_capability_warned:
                     self._leadership_capability_warned.add(key)
                     logger.warning(
-                        "Plugin '%s' defines on_leader_acquired() without declaring the "
-                        "'persistent_service' capability in plugin.json; skipping leader "
-                        'election for it. Add "capabilities": ["persistent_service"] to '
-                        "the manifest to allow this.",
+                        "Plugin '%s' uses manifest_version=%s and defines "
+                        "on_leader_acquired() without declaring the persistent_service "
+                        "capability; skipping leader election for it.",
                         key,
+                        lp.manifest_schema_version,
                     )
                 continue
             try:
@@ -1598,9 +1602,9 @@ class PluginManager:
         """Lets an action hand work off to the plugins queue at runtime,
         independent of the manifest 'async' flag.
 
-        Enforced (unlike the rest of the capabilities model, which is
-        advisory-only for backward compatibility, see apps/plugins/capabilities.py):
-        a plugin must declare the background_tasks capability to use this.
+        Manifest version 2 and later must declare the background_tasks
+        capability to use this. Versions 0 and 1 remain compatible during
+        the transition period.
         Manifest actions with "async": true don't need a separate check here,
         since compute_effective_capabilities() already infers background_tasks
         from those, so lp.capabilities is guaranteed to include it whenever an
@@ -1609,11 +1613,14 @@ class PluginManager:
         declaring background_tasks (directly, or via any async action) at all.
         """
         def dispatch_task(action_id, params=None):
-            if "background_tasks" not in (lp.capabilities or []):
+            if (
+                manifest_version_enforces_sandbox(lp.manifest_schema_version)
+                and "background_tasks" not in (lp.capabilities or [])
+            ):
                 raise PermissionError(
-                    f"Plugin '{lp.key}' called dispatch_task() without declaring the "
-                    "'background_tasks' capability in plugin.json. Add "
-                    '"capabilities": ["background_tasks"] to the manifest to allow this.'
+                    f"Plugin '{lp.key}' uses manifest_version={lp.manifest_schema_version} "
+                    "and called dispatch_task() without declaring the background_tasks "
+                    "capability."
                 )
             action_def = next(
                 (a for a in (lp.actions or []) if isinstance(a, dict) and a.get("id") == action_id), None
