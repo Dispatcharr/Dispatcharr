@@ -25,6 +25,7 @@ import LogosPage from './pages/Logos';
 import VODsPage from './pages/VODs';
 import useAuthStore from './store/auth';
 import useBrowserStorage from './hooks/useBrowserStorage';
+import { useMediaQuery } from '@mantine/hooks';
 import FloatingVideo from './components/FloatingVideo';
 import { WebsocketProvider } from './WebSocket';
 import { Box, AppShell, MantineProvider } from '@mantine/core';
