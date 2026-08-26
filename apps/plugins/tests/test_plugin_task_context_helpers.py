@@ -70,12 +70,13 @@ class ReportProgressTests(SimpleTestCase):
 
 
 class DispatchTaskTests(SimpleTestCase):
-    def _lp(self, capabilities=("background_tasks",)):
+    def _lp(self, capabilities=("background_tasks",), manifest_schema_version=2):
         return LoadedPlugin(
             key="my-plugin",
             name="My Plugin",
             actions=[{"id": "do_work", "label": "Do Work"}],
             capabilities=list(capabilities),
+            manifest_schema_version=manifest_schema_version,
         )
 
     def test_raises_permission_error_without_background_tasks_capability(self):
@@ -87,6 +88,20 @@ class DispatchTaskTests(SimpleTestCase):
                 dispatch_task("do_work")
 
         mock_apply_async.assert_not_called()
+
+    def test_legacy_and_transition_manifests_can_dispatch_without_capability(self):
+        pm = PluginManager()
+        async_result = MagicMock(id="task-legacy")
+        with patch(
+            "apps.plugins.tasks.run_plugin_action_task.apply_async", return_value=async_result
+        ) as mock_apply_async, patch("apps.plugins.task_history.record_task_started"):
+            for manifest_schema_version in (0, 1):
+                dispatch_task = pm._make_task_dispatcher(
+                    self._lp(capabilities=(), manifest_schema_version=manifest_schema_version)
+                )
+                self.assertEqual(dispatch_task("do_work"), "task-legacy")
+
+        self.assertEqual(mock_apply_async.call_count, 2)
 
     def test_dispatches_to_plugins_queue_and_returns_task_id(self):
         pm = PluginManager()

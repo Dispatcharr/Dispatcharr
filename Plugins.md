@@ -169,19 +169,19 @@ If `plugin.json` is missing or invalid, the plugin is treated as **legacy**:
 
 ```
 {
-  "manifest_version": 1,
+  "manifest_version": 2,
   "name": "My Plugin",
   "capabilities": ["background_tasks"],
   ...
 }
 ```
 
-- `manifest_version` (int, optional): if omitted, your manifest is treated as version `0` (every manifest written before this field existed). Set `"manifest_version": 1` to opt into the schema documented here.
+- `manifest_version` (int, optional): controls capability parsing and sandbox enforcement. If omitted, your manifest is treated as legacy version `0`; it remains compatible and capability declarations are ignored. Version `1` is the open-ended transition period: capabilities are parsed, shown to users, and acknowledged, but sandbox measures are not enforced. Version `2` is current and enforces the capability requirements below.
 - `capabilities` (list of strings, optional): a self-declared list of what your plugin needs. Currently supported:
   - `background_tasks`: your plugin uses `context["dispatch_task"]` and/or a manifest action with `"async": true` (see "Long-Running Actions" below). Declaring it explicitly isn't required if you already set `async: true` on an action (that implies it), but is required if you *only* call `dispatch_task()` at runtime without any `async` action, since that usage can't be detected from the manifest alone.
   - Unknown/future capability ids are ignored gracefully by older Dispatcharr builds; the registry is intentionally extensible.
 - Declaring `background_tasks` shows users an itemized capability prompt the first time they enable your plugin.
-- **`context["dispatch_task"]` is enforced:** calling it without the plugin having the `background_tasks` capability (declared directly, or implied by any `async: true` action) raises a `PermissionError`, surfaced to the caller as a 403. This prevents a plugin from quietly using Dispatcharr's background task queue without declaring that it needs to. Manifest `async: true` actions never hit this check, since the capability is always inferred for them automatically.
+- **`context["dispatch_task"]` is enforced for manifest version 2 and later:** calling it without the plugin having the `background_tasks` capability (declared directly, or implied by any `async: true` action) raises a `PermissionError`, surfaced to the caller as a 403. Versions `0` and `1` remain non-enforcing during the transition period. Manifest `async: true` actions never hit this check, since the capability is always inferred for them automatically.
 
 ---
 
@@ -353,12 +353,12 @@ class Plugin:
 
 ```json
 {
-  "manifest_version": 1,
+  "manifest_version": 2,
   "capabilities": ["persistent_service"]
 }
 ```
 
-**Declaring the capability is required, not optional.** Unlike `background_tasks`, nothing about `on_leader_acquired` can be inferred from the rest of the manifest, so if `persistent_service` isn't declared, Dispatcharr skips leader election for your plugin entirely: `on_leader_acquired` is simply never called, silently, no error. This shows users an itemized capability prompt the first time they enable your plugin, the same as `background_tasks` (see `manifest_version` and `capabilities`, above).
+**Manifest version 2 and later require the capability.** Unlike `background_tasks`, nothing about `on_leader_acquired` can be inferred from the rest of the manifest, so version `2` plugins without `persistent_service` are skipped by leader election: `on_leader_acquired` is never called. Versions `0` and `1` remain non-enforcing during the transition period. Declaring the capability shows users an itemized capability prompt the first time they enable your plugin, the same as `background_tasks` (see `manifest_version` and `capabilities`, above).
 
 Dispatcharr elects one process per plugin using a Redis lease (30s TTL, renewed every 10s). If the leader process dies, another takes over within about 30s. The `context` passed here is lighter than `run()`'s: `settings` (a snapshot from discovery time, not a live read) and `logger`, no `actions`.
 

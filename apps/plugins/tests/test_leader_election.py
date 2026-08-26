@@ -13,12 +13,21 @@ from django.test import SimpleTestCase, override_settings
 from apps.plugins.loader import LoadedPlugin, PluginManager
 
 
-def _plugin_with_leader_hooks(key="leader_plugin", capabilities=("persistent_service",)):
+def _plugin_with_leader_hooks(
+    key="leader_plugin", capabilities=("persistent_service",), manifest_schema_version=2
+):
     instance = MagicMock()
     instance.on_leader_acquired = MagicMock()
     instance.on_leader_lost = MagicMock()
     return (
-        LoadedPlugin(key=key, name=key, instance=instance, loaded=True, capabilities=list(capabilities)),
+        LoadedPlugin(
+            key=key,
+            name=key,
+            instance=instance,
+            loaded=True,
+            capabilities=list(capabilities),
+            manifest_schema_version=manifest_schema_version,
+        ),
         instance,
     )
 
@@ -237,6 +246,21 @@ class LeadershipTickTests(SimpleTestCase):
         pm.try_acquire_leadership.assert_not_called()
         instance.on_leader_acquired.assert_not_called()
         self.assertNotIn("svc", pm._leadership_state)
+
+    def test_legacy_and_transition_hook_without_capability_runs(self):
+        for manifest_schema_version in (0, 1):
+            with self.subTest(manifest_schema_version=manifest_schema_version):
+                pm = PluginManager()
+                lp, instance = _plugin_with_leader_hooks(
+                    "svc", capabilities=(), manifest_schema_version=manifest_schema_version
+                )
+                pm._registry = {"svc": lp}
+                pm.try_acquire_leadership = MagicMock(return_value=True)
+
+                pm._leadership_tick()
+
+                instance.on_leader_acquired.assert_called_once()
+                self.assertEqual(pm._leadership_state["svc"], "leader")
 
     def test_hook_with_persistent_service_capability_runs(self):
         pm = PluginManager()
