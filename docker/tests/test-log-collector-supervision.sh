@@ -80,10 +80,45 @@ archive_previous_log "$NEW"
 check "creates the log directory on first boot" "0" "$(stat -c %s "$NEW/dispatcharr.log")"
 
 ###############################################################################
+echo "collector_log_name (modular roles)"
+###############################################################################
+
+check "no role gives the plain name" "dispatcharr.log" "$(collector_log_name)"
+check "a role suffixes the name" "dispatcharr.log-celery"     "$(DISPATCHARR_LOG_ROLE=celery collector_log_name)"
+# The role reaches a path, so anything but alphanumerics is dropped.
+check "a role with path characters is sanitized" "dispatcharr.log-evil"     "$(DISPATCHARR_LOG_ROLE='../ev/il' collector_log_name)"
+check "an overlong role is truncated" "dispatcharr.log-aaaaaaaaaaaaaaaa"     "$(DISPATCHARR_LOG_ROLE="$(printf 'a%.0s' $(seq 1 40))" collector_log_name)"
+
+# Two containers share /data in modular mode: archiving one must not touch the
+# other's live file or its archives.
+ROLES="$(mktemp -d)"
+trap 'rm -rf "$DIR" "$ROLES"' EXIT
+printf 'web live
+'    > "$ROLES/dispatcharr.log"
+printf 'web one
+'     > "$ROLES/dispatcharr.log.1"
+printf 'celery live
+' > "$ROLES/dispatcharr.log-celery"
+DISPATCHARR_LOG_ROLE=celery archive_previous_log "$ROLES"
+
+check "the role's live log is archived" "celery live" "$(cat "$ROLES/dispatcharr.log-celery.1")"
+check "the other container's live log is untouched" "web live" "$(cat "$ROLES/dispatcharr.log")"
+check "the other container's archive is untouched" "web one" "$(cat "$ROLES/dispatcharr.log.1")"
+check "the role gets a fresh live log" "0" "$(stat -c %s "$ROLES/dispatcharr.log-celery")"
+
+###############################################################################
 echo "supervise_log_collector"
 ###############################################################################
 
 # A clean exit means the container is shutting down, not a fault.
+run_no_user() {
+    . "$INIT_SCRIPT"
+    su() { echo "su was called"; return 0; }
+    start_log_collector "" /bin/true /tmp 2>&1
+}
+OUT="$(run_no_user)"
+absent "an empty user does not go through su" "su was called" "$OUT"
+
 run_clean_exit() {
     . "$INIT_SCRIPT"
     start_log_collector() { return 0; }

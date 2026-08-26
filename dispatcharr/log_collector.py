@@ -24,9 +24,17 @@ import time
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
-LIVE_NAME = "dispatcharr.log"
+def _role_suffix():
+    # The role reaches a filesystem path, so it is sanitized rather than trusted.
+    role = re.sub(r"[^A-Za-z0-9]", "", os.environ.get("DISPATCHARR_LOG_ROLE", ""))
+    return f"-{role[:16]}" if role else ""
+
+
+_SUFFIX = _role_suffix()
+LIVE_NAME = f"dispatcharr.log{_SUFFIX}"
+# Shared: one settings save configures every collector on this log directory.
 CONF_NAME = "collector.conf"
-PID_NAME = "collector.pid"
+PID_NAME = f"collector{_SUFFIX}.pid"
 
 _FLUSH_INTERVAL_SECONDS = 0.25
 _BATCH_BYTES = 128 * 1024
@@ -174,7 +182,8 @@ def write_conf(log_dir, persist, max_mb, keep, time_zone="UTC", level=""):
     """Write collector.conf atomically; called from the app (safe contexts only)."""
     if not log_dir:
         return
-    tmp = f"{conf_path(log_dir)}.tmp.{os.getpid()}"
+    # Pids repeat across containers sharing the directory; the role does not.
+    tmp = f"{conf_path(log_dir)}.tmp{_SUFFIX}.{os.getpid()}"
     try:
         with open(tmp, "w", encoding="utf-8") as f:
             f.write(
@@ -192,12 +201,9 @@ def write_conf(log_dir, persist, max_mb, keep, time_zone="UTC", level=""):
 def apply_settings(log_dir, values, warn_if_absent=False):
     """Push the system-settings log keys to the collector (conf + SIGHUP).
 
-    Runs on settings saves and process boot — rare, small writes. No-op in
-    modular mode: /data is shared across containers there and no collector
-    runs, so a stale pidfile must never be signalled.
+    Runs on settings saves and process boot — rare, small writes. Only this
+    container's collector can be signalled; any other reads the conf itself.
     """
-    if os.environ.get("DISPATCHARR_ENV") == "modular":
-        return
     values = values or {}
     write_conf(
         log_dir,
@@ -239,9 +245,7 @@ def collector_pid(log_dir):
 
 
 def collector_running(log_dir):
-    """Whether a collector owns the log directory; False in modular mode."""
-    if os.environ.get("DISPATCHARR_ENV") == "modular":
-        return False
+    """Whether a collector runs in this container."""
     return collector_pid(log_dir) is not None
 
 
@@ -307,6 +311,7 @@ class Collector:
         self._fs_ready = False
         self._min_rank = 0
         self._conf_applied = False
+        self._conf_stamp = None
         self._suppressed = False
         self._continuation = False
         self._in_traceback = False
@@ -545,7 +550,7 @@ class Collector:
         while True:
             self._wake.wait(_FLUSH_INTERVAL_SECONDS)
             self._wake.clear()
-            if self._reload:
+            if self._reload or self._conf_stat() != self._conf_stamp:
                 self._apply_conf()
             try:
                 self._drain()
@@ -565,8 +570,18 @@ class Collector:
         name = str(self.conf["level"]).strip().upper()
         return name if name.encode() in _LEVEL_RANK else ""
 
+    def _conf_stat(self):
+        # A save in another container cannot signal this one; the conf can.
+        try:
+            st = os.stat(conf_path(self.log_dir))
+        except OSError:
+            return None
+        return (st.st_mtime_ns, st.st_size)
+
     def _apply_conf(self):
         self._reload = False
+        # Stamped before the read, so a write that races it is caught next tick.
+        self._conf_stamp = self._conf_stat()
         # Conf first: _setup_fs only announces itself when the file sink is on.
         self.conf = read_conf(self.log_dir)
         self._setup_fs()

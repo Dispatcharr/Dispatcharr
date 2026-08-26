@@ -1,5 +1,6 @@
 """Tests for the merged-output log collector (dispatcharr.log_collector)."""
 
+import importlib
 import io
 import os
 import re
@@ -364,6 +365,23 @@ class ConfTests(SimpleTestCase):
         self.collector._drain()
         self.assertIn("level floor now CRITICAL", self.read_log())
 
+    def test_a_conf_written_elsewhere_is_noticed(self):
+        """A save in another container cannot signal this collector."""
+        log_collector.write_conf(self.log_dir, True, 10, 5)
+        self.collector._apply_conf()
+        self.assertEqual(self.collector._conf_stat(), self.collector._conf_stamp)
+        # A different length, so the stamp differs whatever the clock resolution.
+        log_collector.write_conf(self.log_dir, True, 10, 50)
+        self.assertNotEqual(self.collector._conf_stat(), self.collector._conf_stamp)
+        self.collector._apply_conf()
+        self.assertEqual(self.collector.conf["keep"], 50)
+
+    def test_an_unchanged_conf_is_not_reapplied(self):
+        """Polling must not re-apply on every tick."""
+        log_collector.write_conf(self.log_dir, True, 10, 5)
+        self.collector._apply_conf()
+        self.assertEqual(self.collector._conf_stat(), self.collector._conf_stamp)
+
     def test_level_gate_keeps_trace_below_debug(self):
         # Trace is a developer level below the UI's range: a Debug floor is above it.
         self.collector._min_rank = 10
@@ -694,10 +712,11 @@ class ApplySettingsTests(SimpleTestCase):
             },
         )
 
-    def test_modular_mode_is_a_no_op(self):
+    def test_modular_mode_still_writes_the_conf(self):
+        """Modular collects too, so a settings save must reach its conf."""
         with mock.patch.dict(log_collector.os.environ, {"DISPATCHARR_ENV": "modular"}):
             log_collector.apply_settings(self.log_dir, {"log_persist": False})
-        self.assertFalse(os.path.exists(log_collector.conf_path(self.log_dir)))
+        self.assertFalse(log_collector.read_conf(self.log_dir)["persist"])
 
     def test_collector_running_needs_a_live_collector_process(self):
         self.assertFalse(log_collector.collector_running(self.log_dir))
@@ -768,3 +787,34 @@ class ReceiverTests(TestCase):
                 "level": "",
             },
         )
+
+
+class RoleTests(SimpleTestCase):
+    """Each container collects under its own name when /data is shared."""
+
+    def test_no_role_leaves_the_names_plain(self):
+        with mock.patch.dict(log_collector.os.environ, {}, clear=False):
+            log_collector.os.environ.pop("DISPATCHARR_LOG_ROLE", None)
+            self.assertEqual(log_collector._role_suffix(), "")
+
+    def test_a_role_becomes_a_suffix(self):
+        with mock.patch.dict(log_collector.os.environ, {"DISPATCHARR_LOG_ROLE": "celery"}):
+            self.assertEqual(log_collector._role_suffix(), "-celery")
+
+    def test_a_role_reaching_a_path_is_sanitized(self):
+        with mock.patch.dict(log_collector.os.environ, {"DISPATCHARR_LOG_ROLE": "../ev/il"}):
+            self.assertEqual(log_collector._role_suffix(), "-evil")
+
+    def test_an_overlong_role_is_truncated(self):
+        with mock.patch.dict(log_collector.os.environ, {"DISPATCHARR_LOG_ROLE": "a" * 40}):
+            self.assertEqual(log_collector._role_suffix(), "-" + "a" * 16)
+
+    def test_the_suffix_reaches_the_log_and_pid_names_but_not_the_conf(self):
+        with mock.patch.dict(log_collector.os.environ, {"DISPATCHARR_LOG_ROLE": "celery"}):
+            importlib.reload(log_collector)
+            self.assertEqual(log_collector.LIVE_NAME, "dispatcharr.log-celery")
+            self.assertEqual(log_collector.PID_NAME, "collector-celery.pid")
+            # Shared on purpose: one save configures every collector on this volume.
+            self.assertEqual(log_collector.CONF_NAME, "collector.conf")
+        importlib.reload(log_collector)
+        self.assertEqual(log_collector.LIVE_NAME, "dispatcharr.log")

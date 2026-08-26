@@ -6,25 +6,39 @@
 # Sourced by entrypoint.sh, which runs the supervisor inside the process
 # substitution that owns the container's merged stdout.
 
+# Each container collects under its own name; /data is shared in modular mode.
+collector_log_name() {
+    local role
+    role="$(printf '%s' "${DISPATCHARR_LOG_ROLE:-}" | tr -cd 'A-Za-z0-9' | cut -c1-16)"
+    printf 'dispatcharr.log%s' "${role:+-$role}"
+}
+
 # Shifts, never deletes: the collector prunes per the retention setting.
 archive_previous_log() {
-    local dir="$1" n
+    local dir="$1" n name esc
+    name="$(collector_log_name)"
+    esc="${name//./\\.}"
     mkdir -p "$dir" 2>/dev/null || true
-    if [ -s "$dir/dispatcharr.log" ]; then
+    if [ -s "$dir/$name" ]; then
         # Highest index first so nothing is clobbered on the way up.
         for n in $(ls "$dir" 2>/dev/null \
-                     | sed -n 's/^dispatcharr\.log\.\([0-9][0-9]*\)$/\1/p' | sort -rn); do
-            mv "$dir/dispatcharr.log.$n" "$dir/dispatcharr.log.$((n + 1))" 2>/dev/null || true
+                     | sed -n "s/^$esc\.\([0-9][0-9]*\)$/\1/p" | sort -rn); do
+            mv "$dir/$name.$n" "$dir/$name.$((n + 1))" 2>/dev/null || true
         done
-        mv "$dir/dispatcharr.log" "$dir/dispatcharr.log.1" 2>/dev/null || true
+        mv "$dir/$name" "$dir/$name.1" 2>/dev/null || true
     fi
-    touch "$dir/dispatcharr.log" 2>/dev/null || true
+    touch "$dir/$name" 2>/dev/null || true
 }
 
 # Positional parameters, not interpolation: `su -` strips the environment, and
 # an operator-set path inside the -c string would become shell input.
 start_log_collector() {
-    su - "$1" -c 'cd /app && exec "$0" /app/dispatcharr/log_collector.py "$1"' "$2" "$3"
+    if [ -z "$1" ]; then
+        # No application user here, and `su -` would strip the role.
+        (cd /app && exec "$2" /app/dispatcharr/log_collector.py "$3")
+    else
+        su - "$1" -c 'cd /app && exec "$0" /app/dispatcharr/log_collector.py "$1"' "$2" "$3"
+    fi
 }
 
 # docker logs must outlive any collector fault: three rapid failures degrade to
