@@ -17,6 +17,7 @@ from .version_utils import compare_versions
 # capabilities which are expected to be pure runtime permission checks.
 KNOWN_CAPABILITIES: Dict[str, Dict[str, Any]] = {
     "background_tasks": {
+        "group": "Execution",
         "label": "Run background tasks",
         "description": "Runs long-running or scheduled work on Dispatcharr's shared background task queue.",
         "requires_restart": False,
@@ -24,6 +25,7 @@ KNOWN_CAPABILITIES: Dict[str, Dict[str, Any]] = {
         "max_manifest_version": None,
     },
     "persistent_service": {
+        "group": "Execution",
         "label": "Run a persistent background service",
         "description": (
             "Elected as a cluster-wide leader to run a long-lived service "
@@ -35,6 +37,7 @@ KNOWN_CAPABILITIES: Dict[str, Dict[str, Any]] = {
         "max_manifest_version": None,
     },
     "network_listener": {
+        "group": "Network",
         "label": "Listen for network connections",
         "description": "Binds a socket or web server that accepts inbound network connections.",
         "requires_restart": True,
@@ -43,6 +46,7 @@ KNOWN_CAPABILITIES: Dict[str, Dict[str, Any]] = {
         "max_manifest_version": None,
     },
     "subprocess": {
+        "group": "Execution",
         "label": "Run host processes",
         "description": "Starts commands or processes on the Dispatcharr host.",
         "requires_restart": False,
@@ -51,6 +55,7 @@ KNOWN_CAPABILITIES: Dict[str, Dict[str, Any]] = {
         "max_manifest_version": None,
     },
     "outbound_network": {
+        "group": "Network",
         "label": "Access external network services",
         "description": "Connects to remote hosts or makes outbound HTTP requests.",
         "requires_restart": False,
@@ -59,6 +64,7 @@ KNOWN_CAPABILITIES: Dict[str, Dict[str, Any]] = {
         "max_manifest_version": None,
     },
     "filesystem_write": {
+        "group": "Storage",
         "label": "Write outside plugin storage",
         "description": "Writes files outside the plugin's own data directory.",
         "requires_restart": False,
@@ -67,6 +73,7 @@ KNOWN_CAPABILITIES: Dict[str, Dict[str, Any]] = {
         "max_manifest_version": None,
     },
     "celery_dispatch": {
+        "group": "Execution",
         "label": "Dispatch approved internal tasks",
         "description": "Queues explicitly approved Dispatcharr background tasks.",
         "requires_restart": False,
@@ -75,6 +82,7 @@ KNOWN_CAPABILITIES: Dict[str, Dict[str, Any]] = {
         "max_manifest_version": None,
     },
     "proxy_internals": {
+        "group": "Data",
         "label": "Use live proxy internals",
         "description": "Uses Dispatcharr live-stream proxy implementation details.",
         "requires_restart": False,
@@ -83,6 +91,7 @@ KNOWN_CAPABILITIES: Dict[str, Dict[str, Any]] = {
         "max_manifest_version": None,
     },
     "user_data": {
+        "group": "Data",
         "label": "Access user account data",
         "description": "Reads Dispatcharr user account data.",
         "requires_restart": False,
@@ -91,6 +100,7 @@ KNOWN_CAPABILITIES: Dict[str, Dict[str, Any]] = {
         "max_manifest_version": None,
     },
     "external_dependencies": {
+        "group": "Execution",
         "label": "Install external Python dependencies",
         "description": "Installs declared third-party Python packages for this plugin.",
         "requires_restart": False,
@@ -193,6 +203,7 @@ def describe_capabilities(capability_ids: List[str]) -> List[Dict[str, Any]]:
         if info:
             described.append({
                 "id": capability_id,
+                "group": info["group"],
                 "label": info["label"],
                 "description": info["description"],
                 "requires_restart": bool(info.get("requires_restart", False)),
@@ -201,6 +212,7 @@ def describe_capabilities(capability_ids: List[str]) -> List[Dict[str, Any]]:
         else:
             described.append({
                 "id": capability_id,
+                "group": "Other",
                 "label": f"Custom capability: {capability_id}",
                 "description": "",
                 "requires_restart": False,

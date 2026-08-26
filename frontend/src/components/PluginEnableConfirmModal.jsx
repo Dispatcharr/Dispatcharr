@@ -22,6 +22,11 @@ export default function PluginEnableConfirmModal() {
   );
   const capabilities = plugin?.capabilities || [];
   const requiresRestart = capabilities.some((c) => c.requires_restart);
+  const capabilityGroups = capabilities.reduce((groups, capability) => {
+    const group = capability.group || 'Other';
+    groups[group] = [...(groups[group] || []), capability];
+    return groups;
+  }, {});
 
   return (
     <ConfirmationDialog
@@ -48,26 +53,29 @@ export default function PluginEnableConfirmModal() {
               <Text size="xs" fw={600} mb={4}>
                 {purpose === 'update' ? 'This update requests:' : 'This plugin requests:'}
               </Text>
-              <List size="xs" spacing={2}>
-                {capabilities.map((cap) => (
-                  <List.Item key={cap.id}>
-                    <Text
-                      span
-                      fw={600}
-                      size="xs"
-                      c={cap.impact === 'high' ? 'red' : undefined}
-                    >
-                      {cap.label}
+              <Stack gap={6}>
+                {Object.entries(capabilityGroups).map(([group, groupedCapabilities]) => (
+                  <div key={group}>
+                    <Text size="xs" fw={600} c="dimmed">
+                      {group}
                     </Text>
-                    {cap.description ? (
-                      <Text span size="xs" c="dimmed">
-                        {' '}
-                        &ndash; {cap.description}
-                      </Text>
-                    ) : null}
-                  </List.Item>
+                    <List size="xs" spacing={2}>
+                      {groupedCapabilities.map((cap) => (
+                        <List.Item key={cap.id}>
+                          <Text span fw={600} size="xs">
+                            {cap.label}
+                          </Text>
+                          {cap.description ? (
+                            <Text span size="xs" c="dimmed">
+                              : {cap.description}
+                            </Text>
+                          ) : null}
+                        </List.Item>
+                      ))}
+                    </List>
+                  </div>
                 ))}
-              </List>
+              </Stack>
               {requiresRestart && (
                 <>
                   <Divider my={8} />
