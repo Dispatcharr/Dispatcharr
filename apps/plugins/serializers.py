@@ -57,11 +57,10 @@ class PluginFieldSerializer(serializers.Serializer):
 
 class PluginCapabilitySerializer(serializers.Serializer):
     id = serializers.CharField()
-    group = serializers.CharField(required=False, default="Other")
+    group = serializers.DictField(required=False)
     label = serializers.CharField()
     description = serializers.CharField(required=False, allow_blank=True)
     requires_restart = serializers.BooleanField(required=False, default=False)
-    impact = serializers.ChoiceField(choices=["high", "standard"], required=False, default="standard")
 
 
 class PluginSerializer(serializers.Serializer):

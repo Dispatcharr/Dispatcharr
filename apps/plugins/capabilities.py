@@ -10,6 +10,16 @@ from typing import Any, Dict, List, Optional
 
 from .version_utils import compare_versions
 
+# Categories are ordered by severity in the confirmation UI. Keeping this
+# metadata here avoids a divergent frontend classification.
+CAPABILITY_GROUPS: Dict[str, Dict[str, Any]] = {
+    "system": {"label": "System", "order": 0},
+    "network": {"label": "Network", "order": 1},
+    "storage": {"label": "Storage", "order": 2},
+    "data": {"label": "Data", "order": 3},
+    "other": {"label": "Other", "order": 99},
+}
+
 # Each capability a plugin can declare in its manifest's "capabilities" list.
 # `requires_restart` marks capabilities that bind to infrastructure only
 # started at container boot. Granting one of these to a plugin doesn't take
@@ -17,7 +27,7 @@ from .version_utils import compare_versions
 # capabilities which are expected to be pure runtime permission checks.
 KNOWN_CAPABILITIES: Dict[str, Dict[str, Any]] = {
     "background_tasks": {
-        "group": "Execution",
+        "group": "system",
         "label": "Run background tasks",
         "description": "Runs long-running or scheduled work on Dispatcharr's shared background task queue.",
         "requires_restart": False,
@@ -25,86 +35,74 @@ KNOWN_CAPABILITIES: Dict[str, Dict[str, Any]] = {
         "max_manifest_version": None,
     },
     "persistent_service": {
-        "group": "Execution",
+        "group": "system",
         "label": "Run a persistent background service",
-        "description": (
-            "Elected as a cluster-wide leader to run a long-lived service "
-            "(e.g. bind a port or run its own loop) via "
-            "on_leader_acquired/on_leader_lost."
-        ),
+        "description": "Elected as a cluster-wide leader to run a long-lived service ",
         "requires_restart": False,
         "min_manifest_version": 1,
         "max_manifest_version": None,
     },
     "network_listener": {
-        "group": "Network",
+        "group": "network",
         "label": "Listen for network connections",
         "description": "Binds a socket or web server that accepts inbound network connections.",
         "requires_restart": True,
-        "impact": "high",
         "min_manifest_version": 1,
         "max_manifest_version": None,
     },
     "subprocess": {
-        "group": "Execution",
+        "group": "system",
         "label": "Run host processes",
         "description": "Starts commands or processes on the Dispatcharr host.",
         "requires_restart": False,
-        "impact": "high",
         "min_manifest_version": 1,
         "max_manifest_version": None,
     },
     "outbound_network": {
-        "group": "Network",
+        "group": "network",
         "label": "Access external network services",
         "description": "Connects to remote hosts or makes outbound HTTP requests.",
         "requires_restart": False,
-        "impact": "high",
         "min_manifest_version": 1,
         "max_manifest_version": None,
     },
     "filesystem_write": {
-        "group": "Storage",
+        "group": "storage",
         "label": "Write outside plugin storage",
         "description": "Writes files outside the plugin's own data directory.",
         "requires_restart": False,
-        "impact": "high",
         "min_manifest_version": 1,
         "max_manifest_version": None,
     },
     "celery_dispatch": {
-        "group": "Execution",
+        "group": "system",
         "label": "Dispatch approved internal tasks",
         "description": "Queues explicitly approved Dispatcharr background tasks.",
         "requires_restart": False,
-        "impact": "high",
         "min_manifest_version": 1,
         "max_manifest_version": None,
     },
     "proxy_internals": {
-        "group": "Data",
+        "group": "data",
         "label": "Use live proxy internals",
         "description": "Uses Dispatcharr live-stream proxy implementation details.",
         "requires_restart": False,
-        "impact": "standard",
         "min_manifest_version": 1,
         "max_manifest_version": None,
     },
     "user_data": {
-        "group": "Data",
+        "group": "data",
         "label": "Access user account data",
         "description": "Reads Dispatcharr user account data.",
         "requires_restart": False,
-        "impact": "high",
         "min_manifest_version": 1,
         "max_manifest_version": None,
     },
     "external_dependencies": {
-        "group": "Execution",
+        "group": "system",
         "label": "Install external Python dependencies",
         "description": "Installs declared third-party Python packages for this plugin.",
         "requires_restart": False,
-        "impact": "high",
         "min_manifest_version": 1,
         "max_manifest_version": None,
     },
@@ -201,22 +199,22 @@ def describe_capabilities(capability_ids: List[str]) -> List[Dict[str, Any]]:
     for capability_id in capability_ids:
         info = KNOWN_CAPABILITIES.get(capability_id)
         if info:
+            group = CAPABILITY_GROUPS[info["group"]]
             described.append({
                 "id": capability_id,
-                "group": info["group"],
+                "group": {"id": info["group"], **group},
                 "label": info["label"],
                 "description": info["description"],
                 "requires_restart": bool(info.get("requires_restart", False)),
-                "impact": info.get("impact", "standard"),
             })
         else:
+            group = CAPABILITY_GROUPS["other"]
             described.append({
                 "id": capability_id,
-                "group": "Other",
+                "group": {"id": "other", **group},
                 "label": f"Custom capability: {capability_id}",
                 "description": "",
                 "requires_restart": False,
-                "impact": "standard",
             })
     return described
 

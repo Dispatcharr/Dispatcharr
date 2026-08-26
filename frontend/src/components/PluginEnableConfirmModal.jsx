@@ -23,10 +23,21 @@ export default function PluginEnableConfirmModal() {
   const capabilities = plugin?.capabilities || [];
   const requiresRestart = capabilities.some((c) => c.requires_restart);
   const capabilityGroups = capabilities.reduce((groups, capability) => {
-    const group = capability.group || 'Other';
-    groups[group] = [...(groups[group] || []), capability];
+    const group =
+      typeof capability.group === 'object' && capability.group
+        ? capability.group
+        : { id: capability.group || 'other', label: capability.group || 'Other', order: 99 };
+    const groupId = group.id || 'other';
+    groups[groupId] = {
+      label: group.label || 'Other',
+      order: Number.isFinite(group.order) ? group.order : 99,
+      capabilities: [...(groups[groupId]?.capabilities || []), capability],
+    };
     return groups;
   }, {});
+  const sortedCapabilityGroups = Object.entries(capabilityGroups).sort(
+    ([, left], [, right]) => left.order - right.order || left.label.localeCompare(right.label)
+  );
 
   return (
     <ConfirmationDialog
@@ -54,26 +65,29 @@ export default function PluginEnableConfirmModal() {
                 {purpose === 'update' ? 'This update requests:' : 'This plugin requests:'}
               </Text>
               <Stack gap={6}>
-                {Object.entries(capabilityGroups).map(([group, groupedCapabilities]) => (
-                  <div key={group}>
-                    <Text size="xs" fw={600} c="dimmed">
-                      {group}
-                    </Text>
-                    <List size="xs" spacing={2}>
-                      {groupedCapabilities.map((cap) => (
-                        <List.Item key={cap.id}>
-                          <Text span fw={600} size="xs">
-                            {cap.label}
-                          </Text>
-                          {cap.description ? (
-                            <Text span size="xs" c="dimmed">
-                              : {cap.description}
+                {sortedCapabilityGroups.map(([groupId, group], index) => (
+                  <React.Fragment key={groupId}>
+                    {index > 0 && <Divider my={6} />}
+                    <div>
+                      <Text size="xs" fw={600} c="dimmed">
+                        {group.label}
+                      </Text>
+                      <List size="xs" spacing={2}>
+                        {group.capabilities.map((cap) => (
+                          <List.Item key={cap.id}>
+                            <Text span fw={600} size="xs">
+                              {cap.label}
                             </Text>
-                          ) : null}
-                        </List.Item>
-                      ))}
-                    </List>
-                  </div>
+                            {cap.description ? (
+                              <Text span size="xs" c="dimmed">
+                                : {cap.description}
+                              </Text>
+                            ) : null}
+                          </List.Item>
+                        ))}
+                      </List>
+                    </div>
+                  </React.Fragment>
                 ))}
               </Stack>
               {requiresRestart && (
