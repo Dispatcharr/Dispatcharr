@@ -60,6 +60,7 @@ class PluginCapabilitySerializer(serializers.Serializer):
     label = serializers.CharField()
     description = serializers.CharField(required=False, allow_blank=True)
     requires_restart = serializers.BooleanField(required=False, default=False)
+    impact = serializers.ChoiceField(choices=["high", "standard"], required=False, default="standard")
 
 
 class PluginSerializer(serializers.Serializer):

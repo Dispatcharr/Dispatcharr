@@ -179,6 +179,14 @@ If `plugin.json` is missing or invalid, the plugin is treated as **legacy**:
 - `manifest_version` (int, optional): controls capability parsing and sandbox enforcement. If omitted, your manifest is treated as legacy version `0`; it remains compatible and capability declarations are ignored. Version `1` is the open-ended transition period: capabilities are parsed, shown to users, and acknowledged, but sandbox measures are not enforced. Version `2` is current and enforces the capability requirements below.
 - `capabilities` (list of strings, optional): a self-declared list of what your plugin needs. Currently supported:
   - `background_tasks`: your plugin uses `context["dispatch_task"]` and/or a manifest action with `"async": true` (see "Long-Running Actions" below). Declaring it explicitly isn't required if you already set `async: true` on an action (that implies it), but is required if you *only* call `dispatch_task()` at runtime without any `async` action, since that usage can't be detected from the manifest alone.
+  - `persistent_service`: your plugin runs a leader-elected long-lived service (see below).
+  - `network_listener`: your plugin binds a socket or web server that accepts inbound connections.
+  - `subprocess`: your plugin starts commands or processes on the Dispatcharr host.
+  - `outbound_network`: your plugin connects to remote hosts or makes outbound HTTP requests.
+  - `filesystem_write`: your plugin writes outside its own `/data/plugins/<plugin-key>/` directory.
+  - `celery_dispatch`: your plugin dispatches an explicitly approved Dispatcharr background task.
+  - `proxy_internals` and `user_data`: advisory disclosures for direct live-proxy internals and user-account data access. They are not currently runtime-enforced.
+  - `external_dependencies`: declares that the plugin needs third-party Python packages. Dependency installation support is not yet available, so plugins must not depend on this declaration to install packages.
   - Unknown/future capability ids are ignored gracefully by older Dispatcharr builds; the registry is intentionally extensible.
 - Declaring `background_tasks` shows users an itemized capability prompt the first time they enable your plugin.
 - **`context["dispatch_task"]` is enforced for manifest version 2 and later:** calling it without the plugin having the `background_tasks` capability (declared directly, or implied by any `async: true` action) raises a `PermissionError`, surfaced to the caller as a 403. Versions `0` and `1` remain non-enforcing during the transition period. Manifest `async: true` actions never hit this check, since the capability is always inferred for them automatically.
@@ -410,6 +418,22 @@ Event hooks and non-async manual actions always run through Celery too (queued a
 **Deployment note:** `async` actions and `dispatch_task` target the `plugins` Celery queue, which is serviced by the same worker that handles everything else (`-Q celery,plugins`) in both the AIO image and the standard split-container `docker-compose.yml`. If you run a custom-mounted `entrypoint.celery.sh` or `uwsgi.ini`, make sure your worker(s) consume the `plugins` queue too, or these dispatch paths will queue work that never runs.
 
 **The default worker's concurrency ceiling is configurable.** The `celery_max_workers` system setting (default 8) controls the `--autoscale` ceiling for the shared worker that handles both core tasks and plugin tasks; see `apps/plugins/management/commands/celery_worker_max.py`. It's read once at container startup, not watched continuously: **changing it requires restarting the Celery/AIO container** to take effect.
+
+### Calling Approved Internal Tasks
+
+`context["dispatch_internal_task"]` is for the narrow case where a plugin needs a specific first-party Dispatcharr Celery task instead of one of its own declared actions. A plugin must declare `celery_dispatch` in a manifest version `2` or later, and Dispatcharr must explicitly mark the target task with `@plugin_callable_task`. Declaring the capability alone never grants access to arbitrary Celery tasks.
+
+```python
+def run(self, action, params, context):
+    if action == "refresh_source":
+        task_id = context["dispatch_internal_task"](
+            "apps.epg.tasks.refresh_epg_data",
+            args=[params["source_id"]],
+        )
+        return {"status": "started", "task_id": task_id}
+```
+
+Approved tasks are always queued on `plugins`, regardless of any queue supplied by plugin code. Currently, `apps.m3u.tasks.refresh_single_m3u_account` and `apps.epg.tasks.refresh_epg_data` are approved. Other tasks are rejected until Dispatcharr adds `@plugin_callable_task` at the task definition.
 
 ### Action Confirmation (Modal)
 Developers can request a confirmation modal per action using the `confirm` key on the action. Options:

@@ -49,7 +49,12 @@ export default function PluginEnableConfirmModal() {
               <List size="xs" spacing={2}>
                 {capabilities.map((cap) => (
                   <List.Item key={cap.id}>
-                    <Text span fw={600} size="xs">
+                    <Text
+                      span
+                      fw={600}
+                      size="xs"
+                      c={cap.impact === 'high' ? 'red' : undefined}
+                    >
                       {cap.label}
                     </Text>
                     {cap.description ? (
