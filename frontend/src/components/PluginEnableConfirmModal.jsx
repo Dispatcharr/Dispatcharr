@@ -1,5 +1,5 @@
 import React from 'react';
-import { Divider, List, Stack, Text } from '@mantine/core';
+import { Divider, List, Stack, Text, Tooltip } from '@mantine/core';
 import { ShieldCheck } from 'lucide-react';
 import ConfirmationDialog from './ConfirmationDialog.jsx';
 import { usePluginStore } from '../store/plugins.jsx';
@@ -38,7 +38,6 @@ export default function PluginEnableConfirmModal() {
   const sortedCapabilityGroups = Object.entries(capabilityGroups).sort(
     ([, left], [, right]) => left.order - right.order || left.label.localeCompare(right.label)
   );
-
   return (
     <ConfirmationDialog
       opened={opened}
@@ -65,24 +64,24 @@ export default function PluginEnableConfirmModal() {
                 {purpose === 'update' ? 'This update requests:' : 'This plugin requests:'}
               </Text>
               <Stack gap={6}>
-                {sortedCapabilityGroups.map(([groupId, group], index) => (
+                {sortedCapabilityGroups.map(([groupId, group]) => (
                   <React.Fragment key={groupId}>
-                    {index > 0 && <Divider my={6} />}
                     <div>
-                      <Text size="xs" fw={600} c="dimmed">
-                        {group.label}
-                      </Text>
-                      <List size="xs" spacing={2}>
+                      <Divider label={group.label} labelPosition="left" my={3} />
+                      <List size="xs" spacing={3}>
                         {group.capabilities.map((cap) => (
                           <List.Item key={cap.id}>
-                            <Text span fw={600} size="xs">
-                              {cap.label}
-                            </Text>
-                            {cap.description ? (
-                              <Text span size="xs" c="dimmed">
-                                : {cap.description}
+                            <Tooltip
+                              label={cap.description}
+                              disabled={!cap.description}
+                              multiline
+                              w={300}
+                              withArrow
+                            >
+                              <Text span fw={600} size="xs">
+                                {cap.label}
                               </Text>
-                            ) : null}
+                            </Tooltip>
                           </List.Item>
                         ))}
                       </List>
@@ -95,9 +94,8 @@ export default function PluginEnableConfirmModal() {
                   <Divider my={8} />
                   <Text size="xs">
                     Enabling background tasks for this plugin requires a full
-                    server restart to take effect. Enabling the plugin alone
-                    is not enough; restart the Dispatcharr container after
-                    enabling.
+                    application restart to take effect. Restart the Dispatcharr
+                    container after enabling.
                   </Text>
                 </>
               )}
