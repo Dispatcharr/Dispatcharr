@@ -102,7 +102,7 @@ const PageContent = () => {
 
 const ChannelsPage = () => {
   return (
-    <ErrorBoundary>
+    <ErrorBoundary inline>
       <PageContent />
     </ErrorBoundary>
   );

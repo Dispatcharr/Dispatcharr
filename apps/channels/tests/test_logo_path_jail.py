@@ -79,3 +79,20 @@ class LogoCachePathJailTests(TestCase):
             b"".join(response.streaming_content)
         finally:
             file_path.unlink(missing_ok=True)
+
+    def test_cache_accepts_slash_less_url(self):
+        """Clients that strip trailing slashes still get the image, not HTML or a redirect."""
+        logos_root = Path("/data/logos")
+        logos_root.mkdir(parents=True, exist_ok=True)
+        name = f"_jail_noslash_{uuid.uuid4().hex}.png"
+        file_path = logos_root / name
+        file_path.write_bytes(b"\x89PNG\r\n\x1a\n")
+        logo = Logo.objects.create(name="Noslash", url=str(file_path))
+        try:
+            response = self.client.get(f"/api/channels/logos/{logo.id}/cache")
+            self.assertEqual(response.status_code, 200)
+            self.assertFalse(response.has_header("Location"))
+            self.assertNotIn("text/html", response.get("Content-Type", ""))
+            b"".join(response.streaming_content)
+        finally:
+            file_path.unlink(missing_ok=True)

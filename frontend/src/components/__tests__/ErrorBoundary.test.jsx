@@ -1,5 +1,5 @@
-import { render, screen } from '@testing-library/react';
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import ErrorBoundary from '../ErrorBoundary';
 
 // Component that throws an error for testing
@@ -15,6 +15,10 @@ describe('ErrorBoundary', () => {
     vi.clearAllMocks();
     // Suppress console.error for cleaner test output
     vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 
   it('should render children when there is no error', () => {
@@ -83,13 +87,13 @@ describe('ErrorBoundary', () => {
     );
 
     // Verify error boundary rendered fallback UI
-    expect(container.querySelector('div')).toHaveTextContent(
+    expect(container.querySelector('[role="alert"]')).toHaveTextContent(
       'Something went wrong'
     );
   });
 
   it('should have hasError state set to false initially', () => {
-    const { container } = render(
+    render(
       <ErrorBoundary>
         <div data-testid="child">Normal content</div>
       </ErrorBoundary>
@@ -97,5 +101,52 @@ describe('ErrorBoundary', () => {
 
     // Verify children are rendered (not error state)
     expect(screen.getByTestId('child')).toBeInTheDocument();
+  });
+
+  it('copies a report with the error and React component stacks', async () => {
+    const writeText = vi.fn().mockResolvedValue();
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+
+    render(
+      <ErrorBoundary name="channels">
+        <ThrowError shouldThrow={true} />
+      </ErrorBoundary>
+    );
+
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Copy diagnostic report' })
+    );
+
+    await waitFor(() => {
+      expect(writeText).toHaveBeenCalledWith(
+        expect.stringContaining('Dispatcharr frontend error report')
+      );
+    });
+    expect(writeText).toHaveBeenCalledWith(
+      expect.stringContaining('Boundary: channels')
+    );
+    expect(writeText).toHaveBeenCalledWith(
+      expect.stringContaining('React component stack:')
+    );
+    expect(
+      screen.getByRole('button', { name: 'Copied!' })
+    ).toBeInTheDocument();
+  });
+
+  it('renders nothing when Hide is clicked', () => {
+    render(
+      <ErrorBoundary>
+        <ThrowError shouldThrow={true} />
+      </ErrorBoundary>
+    );
+
+    expect(screen.getByText('Something went wrong')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Hide' }));
+
+    expect(screen.queryByText('Something went wrong')).not.toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 });

@@ -113,6 +113,27 @@ import {
   updateProfileChannels,
 } from '../../utils/tables/ChannelsTableUtils.js';
 
+const flexibleColumns = [
+  {
+    id: 'channel_number',
+    size: 40,
+    minRatio: 30 / 640,
+    maxRatio: 100 / 640,
+  },
+  { id: 'name', size: 240, minRatio: 100 / 640 },
+  { id: 'epg', size: 180, minRatio: 120 / 640 },
+  {
+    id: 'channel_group',
+    size: 180,
+    minRatio: 120 / 640,
+    maxRatio: 300 / 640,
+  },
+];
+
+const defaultColumnSizing = Object.fromEntries(
+  flexibleColumns.map(({ id, size }) => [id, size])
+);
+
 const ChannelEnabledSwitch = React.memo(
   ({ rowId, selectedProfileId, selectedTableIds }) => {
     // Directly extract the channels set once to avoid re-renders on every change.
@@ -281,13 +302,20 @@ const ChannelsTable = ({ onReady }) => {
   const theme = useMantineTheme();
   const channelGroups = useChannelsStore((s) => s.channelGroups);
   const hasSignaledReady = useRef(false);
+  const hasAttemptedChannelRepair = useRef(false);
 
   /**
    * STORES
    */
 
   // store/channelsTable
-  const data = useChannelsTableStore((s) => s.channels);
+  const rawChannels = useChannelsTableStore((s) => s.channels);
+  // Drop nullish entries so a bad row can't crash row rendering.
+  const data = useMemo(
+    () =>
+      rawChannels.some((c) => !c) ? rawChannels.filter(Boolean) : rawChannels,
+    [rawChannels]
+  );
   const pageCount = useChannelsTableStore((s) => s.pageCount);
 
   const rowClassMap = useMemo(() => {
@@ -296,7 +324,7 @@ const ChannelsTable = ({ onReady }) => {
       const hasStreams = channel.streams?.length > 0;
       if (!hasStreams) {
         map[channel.id] = 'no-streams-row';
-      } else if (channel.streams.some((s) => s.is_stale)) {
+      } else if (channel.streams?.some((s) => s.is_stale)) {
         map[channel.id] = 'has-stale-streams-row';
       }
     }
@@ -424,6 +452,7 @@ const ChannelsTable = ({ onReady }) => {
   const fetchVersionRef = useRef(0); // Track fetch version to prevent stale updates
   const lastFetchParamsRef = useRef(null); // Track last fetch params to prevent duplicate requests
   const fetchInProgressRef = useRef(false); // Track if a fetch is currently in progress
+  const tableScrollRef = useRef(null);
 
   // Drag-and-drop sensors
   const sensors = useSensors(
@@ -434,12 +463,16 @@ const ChannelsTable = ({ onReady }) => {
     })
   );
 
-  // Column sizing state for resizable columns
-  // Store in localStorage but with empty object as default
+  // Column sizing state for resizable columns.
   const [columnSizing, setColumnSizing] = useBrowserStorage(
     'channels-table-column-sizing',
-    {}
+    defaultColumnSizing
   );
+
+  const resetColumnSizing = useCallback(() => {
+    setColumnSizing({ ...defaultColumnSizing });
+    setSorting([{ id: 'channel_number', desc: false }]);
+  }, [setColumnSizing, setSorting]);
 
   // M3U and EPG URL configuration state
   const [m3uParams, setM3uParams] = useState({
@@ -484,6 +517,34 @@ const ChannelsTable = ({ onReady }) => {
     Object.keys(data).length > 0 || hasFetchedData.current
       ? Object.keys(data).length
       : undefined;
+
+  useEffect(() => {
+    const scrollContainer = tableScrollRef.current;
+    if (!scrollContainer) return;
+
+    const updateOverflow = () => {
+      const overflow =
+        scrollContainer.scrollWidth - scrollContainer.clientWidth;
+      scrollContainer.style.overflowX = overflow > 1 ? 'auto' : 'hidden';
+    };
+
+    const observer =
+      typeof ResizeObserver === 'undefined'
+        ? null
+        : new ResizeObserver(updateOverflow);
+    observer?.observe(scrollContainer);
+    if (scrollContainer.firstElementChild) {
+      observer?.observe(scrollContainer.firstElementChild);
+    }
+    updateOverflow();
+
+    return () => {
+      observer?.disconnect();
+      scrollContainer.style.removeProperty('overflow-x');
+    };
+    // Re-bind when the scroll container mounts with table content. The observer
+    // itself handles size changes during column resize.
+  }, [channelsTableLength, hasChannels]);
 
   /**
    * Functions
@@ -862,6 +923,22 @@ const ChannelsTable = ({ onReady }) => {
     fetchData();
   }, [fetchData]);
 
+  // Store still has a nullish entry beyond just this render; refetch to clear it.
+  useEffect(() => {
+    if (!rawChannels.some((c) => !c)) {
+      hasAttemptedChannelRepair.current = false;
+      return;
+    }
+
+    if (!hasAttemptedChannelRepair.current) {
+      hasAttemptedChannelRepair.current = true;
+      console.warn(
+        '[ChannelsTable] Detected nullish entries in channels store; refetching.'
+      );
+      fetchData();
+    }
+  }, [rawChannels, fetchData]);
+
   useEffect(() => {
     const profileName = profiles[selectedProfileId]?.name;
     const profileString =
@@ -926,16 +1003,18 @@ const ChannelsTable = ({ onReady }) => {
         // override row via buildInlinePatch in EditableCell.
         accessorFn: (row) => row.effective_channel_number ?? row.channel_number,
         size: columnSizing.channel_number || 40,
-        minSize: 30,
-        maxSize: 100,
+        minSize: 0,
+        grow: true,
+        flexRatio: true,
         cell: (props) => <EditableNumberCell {...props} />,
       },
       {
         id: 'name',
         accessorFn: (row) => row.effective_name ?? row.name,
-        size: columnSizing.name || 200,
-        minSize: 100,
+        size: columnSizing.name || 240,
+        minSize: 0,
         grow: true,
+        flexRatio: true,
         cell: (props) => {
           const row = props.row?.original || {};
           const overriddenLabels = listOverriddenFields(row);
@@ -991,8 +1070,10 @@ const ChannelsTable = ({ onReady }) => {
             tvgsLoaded={tvgsLoaded}
           />
         ),
-        size: columnSizing.epg || 200,
-        minSize: 120,
+        size: columnSizing.epg || 180,
+        minSize: 0,
+        grow: true,
+        flexRatio: true,
       },
       {
         id: 'channel_group',
@@ -1006,8 +1087,11 @@ const ChannelsTable = ({ onReady }) => {
         cell: (props) => (
           <EditableGroupCell {...props} channelGroups={channelGroups} />
         ),
-        size: columnSizing.channel_group || 200,
-        minSize: 120,
+        size: columnSizing.channel_group || 180,
+        minSize: 0,
+        grow: true,
+        flexRatio: true,
+        enableResizing: false,
       },
       {
         id: 'logo',
@@ -1191,6 +1275,9 @@ const ChannelsTable = ({ onReady }) => {
     sorting,
     columnSizing,
     setColumnSizing,
+    pairedColumnSizing: flexibleColumns,
+    tableId: 'channels-table',
+    onResetColumnSizing: resetColumnSizing,
     manualPagination: true,
     manualSorting: true,
     manualFiltering: true,
@@ -1642,6 +1729,7 @@ const ChannelsTable = ({ onReady }) => {
               }}
             >
               <Box
+                ref={tableScrollRef}
                 style={{
                   flex: 1,
                   overflowY: 'auto',

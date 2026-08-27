@@ -26,7 +26,8 @@ import regex
 from core.models import CoreSettings
 from core.utils import log_system_event, build_absolute_uri_with_port
 import hashlib
-from apps.output.epg import generate_epg, generate_dummy_programs
+from apps.output.dummy_epg import generate_dummy_programs, resolve_channel_parse_name
+from apps.output.epg import generate_epg
 from apps.vod.image_proxy import (
     is_proxyable_image_url,
     prefer_relation_artwork,
@@ -796,7 +797,18 @@ def xc_get_epg(request, user, short=False):
 
     channel = None
     def _annotate(qs):
-        return with_effective_values(qs, select_related_fks=True).exclude(hidden_from_output=True)
+        return (
+            with_effective_values(qs, select_related_fks=True)
+            .exclude(hidden_from_output=True)
+            .prefetch_related(
+                Prefetch(
+                    'streams',
+                    queryset=Stream.objects.only('id', 'name').order_by(
+                        'channelstream__order'
+                    ),
+                )
+            )
+        )
 
     if user.user_level < 10:
         user_profile_count = user.channel_profiles.count()
@@ -899,18 +911,31 @@ def xc_get_epg(request, user, short=False):
 
     lookback_cutoff = now - timedelta(days=prev_days)
     forward_cutoff = now + timedelta(days=num_days) if num_days > 0 else None
+    dummy_days = num_days if num_days > 0 else 3
     effective_epg_data = channel.effective_epg_data_obj
     effective_name = channel.effective_name
+
+    # Short EPG: current/upcoming only, stop after `limit` programmes (XC default 4).
+    dummy_lookback = now if short else lookback_cutoff
+    dummy_max_programs = limit if short else None
 
     if effective_epg_data:
         # Check if this is a dummy EPG that generates on-demand
         if effective_epg_data.epg_source and effective_epg_data.epg_source.source_type == 'dummy':
             if not effective_epg_data.programs.exists():
-                # Generate on-demand using custom patterns
+                parse_name = resolve_channel_parse_name(
+                    channel,
+                    effective_epg_data.epg_source,
+                    fallback_name=effective_name,
+                )
                 programs = generate_dummy_programs(
                     channel_id=channel_id,
-                    channel_name=effective_name,
-                    epg_source=effective_epg_data.epg_source
+                    channel_name=parse_name,
+                    num_days=dummy_days,
+                    epg_source=effective_epg_data.epg_source,
+                    export_lookback=dummy_lookback,
+                    export_cutoff=forward_cutoff,
+                    max_programs=dummy_max_programs,
                 )
             else:
                 # Has stored programs, use them
@@ -938,7 +963,15 @@ def xc_get_epg(request, user, short=False):
                 programs = qs.order_by('start_time')
     else:
         # No EPG data assigned, generate default dummy
-        programs = generate_dummy_programs(channel_id=channel_id, channel_name=effective_name, epg_source=None)
+        programs = generate_dummy_programs(
+            channel_id=channel_id,
+            channel_name=effective_name,
+            num_days=dummy_days,
+            epg_source=None,
+            export_lookback=dummy_lookback,
+            export_cutoff=forward_cutoff,
+            max_programs=dummy_max_programs,
+        )
 
     output = {"epg_listings": []}
 

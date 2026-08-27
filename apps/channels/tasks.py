@@ -205,20 +205,40 @@ def _db_retry(
             time.sleep(wait)
 
 
-# PostgreSQL btree index has a limit of ~2704 bytes (1/3 of 8KB page size)
-# We use 2000 as a safe maximum to account for multibyte characters
-def validate_logo_url(logo_url, max_length=2000):
+# PostgreSQL btree index has a limit of ~2704 bytes (1/3 of 8KB page size).
+# Use 2000 bytes as a conservative maximum for the uniquely indexed value.
+def validate_logo_url(logo_url, max_length=2000, context=None):
     """
     Fast validation for logo URLs during bulk creation.
     Returns None if URL is too long (would exceed PostgreSQL btree index limit),
-    original URL otherwise.
+    original URL otherwise. Optional context identifies the owning object in
+    warnings without logging any part of the URL.
 
     PostgreSQL btree indexes have a maximum size of ~2704 bytes. URLs longer than
     this cannot be indexed and would cause database errors. These are typically
     base64-encoded images embedded in URLs.
     """
-    if logo_url and len(logo_url) > max_length:
-        logger.warning(f"Logo URL too long ({len(logo_url)} > {max_length}), skipping: {logo_url[:100]}...")
+    if not logo_url:
+        return logo_url
+
+    prefix = (
+        f"Logo URL rejected for {context}"
+        if context
+        else "Logo URL rejected"
+    )
+
+    if not isinstance(logo_url, str):
+        logger.warning("%s: value is not a string", prefix)
+        return None
+
+    encoded_length = len(logo_url.encode("utf-8"))
+    if encoded_length > max_length:
+        logger.warning(
+            "%s: encoded length %d bytes exceeds safe limit %d bytes",
+            prefix,
+            encoded_length,
+            max_length,
+        )
         return None
     return logo_url
 
@@ -786,48 +806,45 @@ def _evaluate_series_rules_locked(tvg_id, result):
                 if prog_key in existing_program_keys:
                     continue
                 # Same airing after an EPG refresh moved its boundaries.
-                # Episode identity survives a refresh, so when it exists it is
-                # authoritative and the time window is not consulted at all: an
-                # identifiable episode that is not already scheduled is a genuinely
-                # different airing, however close it sits to another one.
+                # Episode identity is checked first when present. On a miss, the
+                # start-time window still runs: identity-less bookings (e.g.
+                # snapshots from before season/episode were stored) never enter
+                # existing_episode_keys, and skipping the window for identifiable
+                # candidates would double-book the drifted listing onto one path.
                 prog_title_l = str(prog.title or "").strip().lower()
                 prog_ident = _identity_of(prog.custom_properties or {}, prog.sub_title)
                 idx_key = (str(prog.tvg_id), prog_title_l)
-                if prog_ident:
-                    if (str(prog.tvg_id), prog_title_l, prog_ident) in existing_episode_keys:
-                        continue
-                else:
-                    # No identity at all: a narrow start-time window is the only
-                    # signal left. Compared solely against other identity-less
-                    # airings, so this can never suppress an identifiable episode.
-                    # Skip only when the nearby recording's original slot is gone
-                    # from the current EPG (this candidate is its drift
-                    # replacement); if it is still listed, this candidate is a
-                    # different airing (e.g. back-to-back news). Each orphaned
-                    # entry can be claimed by only one candidate: pick the
-                    # closest unclaimed match rather than the first.
-                    try:
-                        best_entry = None
-                        best_delta = None
-                        for seen_start, seen_end in existing_program_index.get(idx_key, ()):
-                            entry = (idx_key, seen_start, seen_end)
-                            if entry in claimed_program_index_entries:
-                                continue
-                            delta = abs(seen_start - prog.start_time)
-                            if delta > DEDUP_START_TOLERANCE:
-                                continue
-                            if (
-                                seen_end is not None
-                                and (str(prog.tvg_id), seen_start, seen_end) in live_airings
-                            ):
-                                continue
-                            if best_delta is None or delta < best_delta:
-                                best_entry, best_delta = entry, delta
-                        if best_entry is not None:
-                            claimed_program_index_entries.add(best_entry)
+                if prog_ident and (
+                    (str(prog.tvg_id), prog_title_l, prog_ident) in existing_episode_keys
+                ):
+                    continue
+                # existing_program_index is identity-less only, so identifiable
+                # episodes cannot suppress each other. Match only when the nearby
+                # booking's original slot is gone from the current EPG; if it is
+                # still listed, this is a different airing. Each orphan claims at
+                # most one candidate (closest unclaimed match).
+                try:
+                    best_entry = None
+                    best_delta = None
+                    for seen_start, seen_end in existing_program_index.get(idx_key, ()):
+                        entry = (idx_key, seen_start, seen_end)
+                        if entry in claimed_program_index_entries:
                             continue
-                    except TypeError:
-                        pass  # naive/aware mismatch in stored data: fall through
+                        delta = abs(seen_start - prog.start_time)
+                        if delta > DEDUP_START_TOLERANCE:
+                            continue
+                        if (
+                            seen_end is not None
+                            and (str(prog.tvg_id), seen_start, seen_end) in live_airings
+                        ):
+                            continue
+                        if best_delta is None or delta < best_delta:
+                            best_entry, best_delta = entry, delta
+                    if best_entry is not None:
+                        claimed_program_index_entries.add(best_entry)
+                        continue
+                except TypeError:
+                    pass  # naive/aware mismatch in stored data: fall through
                 # Extra guard: DB query on the same exact program times stored
                 # in custom_properties (unadjusted, not offset-adjusted
                 # Recording.start_time/end_time).
@@ -860,6 +877,11 @@ def _evaluate_series_rules_locked(tvg_id, result):
                     "title": prog.title,
                     "sub_title": prog.sub_title,
                     "description": prog.description,
+                    "original_air_date": (
+                        _original_air_date_from_custom_properties(
+                            prog.custom_properties
+                        )
+                    ),
                     "start_time": prog.start_time.isoformat(),
                     "end_time": prog.end_time.isoformat(),
                     # Stable across EPG refreshes, unlike the times above.
@@ -1150,37 +1172,145 @@ def _safe_name(s):
         return s or ""
 
 
+def _normalize_original_air_date(value):
+    """Normalize a stored EPG original-air value for safe path formatting."""
+    if value is None:
+        return ""
+
+    try:
+        raw_value = str(value).strip()
+    except Exception:
+        return ""
+
+    if not raw_value:
+        return ""
+
+    date_value = None
+    date_format = None
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw_value):
+        date_value = raw_value
+        date_format = "%Y-%m-%d"
+    elif re.fullmatch(r"\d{4}-\d{2}-\d{2}T.+", raw_value):
+        date_value = raw_value[:10]
+        date_format = "%Y-%m-%d"
+    elif re.fullmatch(r"\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}.*", raw_value):
+        # Gracenote-style episode-num system="original-air-date"
+        # (e.g. "2026-06-24 00:00:00").
+        date_value = raw_value[:10]
+        date_format = "%Y-%m-%d"
+    elif re.fullmatch(r"\d{8}", raw_value):
+        date_value = raw_value
+        date_format = "%Y%m%d"
+    elif re.fullmatch(r"\d{14}(?:\s+[+-]\d{4})?", raw_value):
+        date_value = raw_value[:8]
+        date_format = "%Y%m%d"
+
+    if date_value:
+        try:
+            return datetime.strptime(date_value, date_format).strftime("%Y-%m-%d")
+        except ValueError:
+            pass
+
+    safe_value = _safe_name(raw_value).replace("..", "")
+    return safe_value.strip(" .")
+
+
+def _original_air_date_from_custom_properties(custom_properties):
+    """Read and normalize the canonical EPG original-air value."""
+    if not isinstance(custom_properties, dict):
+        return ""
+    previously_shown = (
+        custom_properties.get('previously_shown_details') or {}
+    )
+    if not isinstance(previously_shown, dict):
+        return ""
+    return _normalize_original_air_date(previously_shown.get('start'))
+
+
+_ONSCREEN_SE_RE = re.compile(r'[sS](\d+)[eE](\d+)')
+
+
+def _fill_season_episode(season, episode, props):
+    """Fill missing season/episode from dict keys and an onscreen string."""
+    if not isinstance(props, dict):
+        return season, episode
+    if season is None:
+        season = props.get('season')
+    if episode is None:
+        episode = props.get('episode')
+    if season is None or episode is None:
+        onscreen = props.get('onscreen_episode')
+        if isinstance(onscreen, str):
+            m = _ONSCREEN_SE_RE.search(onscreen)
+            if m:
+                if season is None:
+                    season = int(m.group(1))
+                if episode is None:
+                    episode = int(m.group(2))
+    return season, episode
+
+
 def _parse_epg_tv_movie_info(program):
-    """Return tuple (is_movie, season, episode, year, sub_title) from EPG ProgramData if available."""
+    """Return TV/movie metadata stored with an EPG ProgramData entry."""
     is_movie = False
     season = None
     episode = None
     year = None
+    original_air_date = (
+        _normalize_original_air_date(program.get('original_air_date'))
+        if isinstance(program, dict)
+        else ""
+    )
     sub_title = program.get('sub_title') if isinstance(program, dict) else None
     try:
         from apps.epg.models import ProgramData
+        from django.utils.dateparse import parse_datetime
+
         prog_id = program.get('id') if isinstance(program, dict) else None
-        epg_program = ProgramData.objects.filter(id=prog_id).only('custom_properties').first() if prog_id else None
+        epg_program = (
+            ProgramData.objects.filter(id=prog_id)
+            .only('custom_properties')
+            .first()
+            if prog_id
+            else None
+        )
+        if not epg_program and isinstance(program, dict):
+            tvg_id = program.get('tvg_id')
+            program_start = parse_datetime(str(program.get('start_time') or ''))
+            program_end = parse_datetime(str(program.get('end_time') or ''))
+            if tvg_id and program_start and program_end:
+                epg_program = (
+                    ProgramData.objects.filter(
+                        tvg_id=tvg_id,
+                        start_time=program_start,
+                        end_time=program_end,
+                    )
+                    .only('custom_properties')
+                    .first()
+                )
         if epg_program and epg_program.custom_properties:
             cp = epg_program.custom_properties
             # Determine categories
             cats = [c.lower() for c in (cp.get('categories') or []) if isinstance(c, str)]
             is_movie = 'movie' in cats or 'film' in cats
-            season = cp.get('season')
-            episode = cp.get('episode')
-            onscreen = cp.get('onscreen_episode')
-            if (season is None or episode is None) and isinstance(onscreen, str):
-                import re as _re
-                m = _re.search(r'[sS](\d+)[eE](\d+)', onscreen)
-                if m:
-                    season = season or int(m.group(1))
-                    episode = episode or int(m.group(2))
+            season, episode = _fill_season_episode(
+                cp.get('season'), cp.get('episode'), cp,
+            )
             d = cp.get('date')
             if d:
                 year = str(d)[:4]
+            epg_original_air_date = (
+                _original_air_date_from_custom_properties(cp)
+            )
+            if epg_original_air_date:
+                original_air_date = epg_original_air_date
     except Exception:
         pass
-    return is_movie, season, episode, year, sub_title
+    # Live ProgramData ids churn on EPG refresh; use the booking snapshot next.
+    if isinstance(program, dict):
+        season, episode = _fill_season_episode(season, episode, program)
+    return is_movie, season, episode, year, sub_title, original_air_date
+
 
 
 def _build_output_paths(channel, program, start_time, end_time, recording_id):
@@ -1196,7 +1326,30 @@ def _build_output_paths(channel, program, start_time, end_time, recording_id):
     # Root for DVR recordings: fixed to /data/recordings inside the container
     library_root = '/data/recordings'
 
-    is_movie, season, episode, year, sub_title = _parse_epg_tv_movie_info(program)
+    (
+        is_movie,
+        season,
+        episode,
+        year,
+        sub_title,
+        original_air_date,
+    ) = _parse_epg_tv_movie_info(program)
+    # Artwork prefetch may have season/episode on the Recording when the snapshot does not.
+    if season is None or episode is None:
+        try:
+            from apps.channels.models import Recording
+
+            recording = (
+                Recording.objects
+                .filter(id=recording_id)
+                .only('custom_properties')
+                .first()
+            )
+            recording_props = (recording.custom_properties or {}) if recording else {}
+            season, episode = _fill_season_episode(season, episode, recording_props)
+        except Exception:
+            pass
+
     show = _safe_name(program.get('title') if isinstance(program, dict) else channel.name)
     title = _safe_name(program.get('title') if isinstance(program, dict) else channel.name)
     sub_title = _safe_name(sub_title)
@@ -1223,7 +1376,11 @@ def _build_output_paths(channel, program, start_time, end_time, recording_id):
         # TV fallback template when S/E are missing
         try:
             tv_fb = CoreSettings.get_dvr_tv_fallback_template()
-            rel_path = tv_fb.format(**values)
+            fallback_values = {
+                **values,
+                'original_air_date': original_air_date,
+            }
+            rel_path = tv_fb.format(**fallback_values)
         except Exception:
             # Older setting support
             try:
