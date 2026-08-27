@@ -4214,6 +4214,7 @@ class SeriesRulePreviewAPIView(APIView):
             fields={
                 'tvg_id': serializers.CharField(required=False, allow_blank=True, help_text='Optional channel TVG ID. Omit to search across all channels.'),
                 'mode': serializers.ChoiceField(choices=['all', 'new'], default='all', required=False),
+                'untagged_is_new': serializers.BooleanField(required=False, default=False, help_text="mode 'new' only: treat a program tagged neither new nor previously-shown as new, for EPG feeds that only tag repeats"),
                 'title': serializers.CharField(required=False),
                 'title_mode': serializers.ChoiceField(choices=['exact', 'contains', 'search', 'regex'], default='exact', required=False),
                 'description': serializers.CharField(required=False),
@@ -4226,6 +4227,7 @@ class SeriesRulePreviewAPIView(APIView):
     def post(self, request):
         from apps.epg.models import ProgramData
         from apps.epg.query_utils import parse_text_query
+        from apps.channels.managers import program_is_new_for_rule
 
         data = request.data or {}
         tvg_id = str(data.get("tvg_id") or "").strip()
@@ -4294,14 +4296,10 @@ class SeriesRulePreviewAPIView(APIView):
         candidates = list(qs[:limit * 4])  # small overshoot to allow new-only filtering
         untagged_is_new = mode == "new" and bool(data.get("untagged_is_new"))
         if mode == "new":
-            # Mirrors the scheduler filter in evaluate_series_rules_impl.
-            def _is_new(p):
-                props = p.custom_properties or {}
-                return bool(props.get("new")) or (
-                    untagged_is_new and not props.get("previously_shown")
-                )
-
-            candidates = [p for p in candidates if _is_new(p)]
+            candidates = [
+                p for p in candidates
+                if program_is_new_for_rule(p.custom_properties, untagged_is_new)
+            ]
 
         total = len(candidates)
         candidates = candidates[:limit]
@@ -4319,8 +4317,7 @@ class SeriesRulePreviewAPIView(APIView):
                 "end_time": p.end_time.isoformat(),
                 "season": cp.get("season"),
                 "episode": cp.get("episode"),
-                "is_new": bool(cp.get("new"))
-                or (untagged_is_new and not cp.get("previously_shown")),
+                "is_new": program_is_new_for_rule(cp, untagged_is_new),
             })
 
         return Response({

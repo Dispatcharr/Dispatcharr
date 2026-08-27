@@ -8,11 +8,56 @@ carrying neither tag as new, for feeds that only tag repeats.
 from datetime import timedelta
 from unittest.mock import patch
 
+from django.test import SimpleTestCase
+
+from apps.channels.managers import program_is_new_for_rule
 from apps.channels.models import Recording
 from apps.channels.tests.test_series_rule_dedup import (
     SeriesRuleDedupBaseTestCase,
     _set_series_rules,
 )
+
+
+class ProgramIsNewForRuleTests(SimpleTestCase):
+    """Unit tests for the shared mode="new" predicate."""
+
+    def test_default_requires_new_tag(self):
+        self.assertTrue(program_is_new_for_rule({"new": True}))
+        self.assertFalse(program_is_new_for_rule({}))
+        self.assertFalse(program_is_new_for_rule({"previously_shown": True}))
+
+    def test_untagged_counts_when_flag_on(self):
+        self.assertTrue(program_is_new_for_rule({}, untagged_is_new=True))
+        self.assertTrue(
+            program_is_new_for_rule(
+                {"season": 1, "episode": 2}, untagged_is_new=True
+            )
+        )
+
+    def test_previously_shown_excluded_when_flag_on(self):
+        self.assertFalse(
+            program_is_new_for_rule(
+                {"previously_shown": True}, untagged_is_new=True
+            )
+        )
+
+    def test_explicit_new_wins_over_previously_shown(self):
+        self.assertTrue(
+            program_is_new_for_rule(
+                {"new": True, "previously_shown": True},
+                untagged_is_new=True,
+            )
+        )
+
+    def test_original_air_date_alone_is_untagged(self):
+        # episode-num original-air-date fills previously_shown_details without
+        # setting previously_shown; that is not a repeat tag.
+        self.assertTrue(
+            program_is_new_for_rule(
+                {"previously_shown_details": {"start": "2026-06-24"}},
+                untagged_is_new=True,
+            )
+        )
 
 
 @patch("apps.channels.tasks.prefetch_recording_artwork")
@@ -82,7 +127,10 @@ class SeriesRuleNewModeTests(SeriesRuleDedupBaseTestCase):
         from apps.channels.tasks import evaluate_series_rules_impl
 
         self._set_rule(untagged_is_new=True)
-        self._programme(2, {"previously_shown": "2026-08-01"})
+        self._programme(2, {
+            "previously_shown": True,
+            "previously_shown_details": {"start": "2026-08-01"},
+        })
         self.assertEqual(evaluate_series_rules_impl()["scheduled"], 0)
         self.assertEqual(Recording.objects.count(), 0)
 
@@ -95,8 +143,12 @@ class SeriesRuleNewModeTests(SeriesRuleDedupBaseTestCase):
 
         self._set_rule(untagged_is_new=True)
         self._programme(2, {"season": 22, "episode": 13}, sub_title="Ep 13")
-        self._programme(4, {"season": 22, "episode": 12,
-                            "previously_shown": "2026-08-18"}, sub_title="Ep 12")
+        self._programme(4, {
+            "season": 22,
+            "episode": 12,
+            "previously_shown": True,
+            "previously_shown_details": {"start": "2026-08-18"},
+        }, sub_title="Ep 12")
         self._programme(6, {"season": 22, "episode": 14}, sub_title="Ep 14")
 
         self.assertEqual(evaluate_series_rules_impl()["scheduled"], 2)
@@ -110,6 +162,10 @@ class SeriesRuleNewModeTests(SeriesRuleDedupBaseTestCase):
         from apps.channels.tasks import evaluate_series_rules_impl
 
         self._set_rule(untagged_is_new=True)
-        self._programme(2, {"new": True, "previously_shown": "2026-08-01"})
+        self._programme(2, {
+            "new": True,
+            "previously_shown": True,
+            "previously_shown_details": {"start": "2026-08-01"},
+        })
         self.assertEqual(evaluate_series_rules_impl()["scheduled"], 1)
         self.assertEqual(Recording.objects.count(), 1)

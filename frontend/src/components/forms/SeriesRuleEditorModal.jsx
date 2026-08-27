@@ -3,7 +3,6 @@ import {
   Alert,
   Badge,
   Button,
-  Checkbox,
   Divider,
   Group,
   Modal,
@@ -11,6 +10,7 @@ import {
   SegmentedControl,
   Select,
   Stack,
+  Switch,
   Text,
   Textarea,
   TextInput,
@@ -324,8 +324,7 @@ export default function SeriesRuleEditorModal({
               size="xs"
             />
             {mode === 'new' && (
-              <Checkbox
-                size="xs"
+              <Switch
                 label="Treat untagged episodes as new"
                 description="For guides that only tag repeats. An episode marked neither new nor previously shown counts as new."
                 checked={untaggedIsNew}

@@ -71,11 +71,12 @@ vi.mock('@mantine/core', () => ({
       {children}
     </button>
   ),
-  Checkbox: ({ label, checked, onChange }) => (
+  Switch: ({ label, checked, onChange }) => (
     <label>
       <input
         type="checkbox"
-        data-testid="checkbox-untagged-is-new"
+        role="switch"
+        data-testid="switch-untagged-is-new"
         checked={checked}
         onChange={onChange}
       />
@@ -363,16 +364,14 @@ describe('SeriesRuleEditorModal', () => {
       );
     });
 
-    it('shows the untagged checkbox only for mode "new"', () => {
+    it('shows the untagged switch only for mode "new"', () => {
       render(
         <SeriesRuleEditorModal {...defaultProps} initialRule={initialRule} />
       );
-      expect(
-        screen.getByTestId('checkbox-untagged-is-new')
-      ).toBeInTheDocument();
+      expect(screen.getByTestId('switch-untagged-is-new')).toBeInTheDocument();
     });
 
-    it('hides the untagged checkbox for mode "all"', () => {
+    it('hides the untagged switch for mode "all"', () => {
       render(
         <SeriesRuleEditorModal
           {...defaultProps}
@@ -380,18 +379,18 @@ describe('SeriesRuleEditorModal', () => {
         />
       );
       expect(
-        screen.queryByTestId('checkbox-untagged-is-new')
+        screen.queryByTestId('switch-untagged-is-new')
       ).not.toBeInTheDocument();
     });
 
-    it('pre-checks the untagged checkbox from initialRule', () => {
+    it('pre-checks the untagged switch from initialRule', () => {
       render(
         <SeriesRuleEditorModal
           {...defaultProps}
           initialRule={{ ...initialRule, untagged_is_new: true }}
         />
       );
-      expect(screen.getByTestId('checkbox-untagged-is-new')).toBeChecked();
+      expect(screen.getByTestId('switch-untagged-is-new')).toBeChecked();
     });
 
     it('uses default mode "all" when initialRule has no mode', () => {
@@ -705,10 +704,10 @@ describe('SeriesRuleEditorModal', () => {
       });
     });
 
-    it('includes untagged_is_new when mode is new and the box is checked', async () => {
+    it('includes untagged_is_new when mode is new and the switch is on', async () => {
       renderWithTitle();
       fireEvent.click(screen.getByText('New only'));
-      fireEvent.click(screen.getByTestId('checkbox-untagged-is-new'));
+      fireEvent.click(screen.getByTestId('switch-untagged-is-new'));
       fireEvent.click(screen.getByText('Save rule'));
       await waitFor(() => {
         expect(createSeriesRule).toHaveBeenCalledWith(
@@ -717,7 +716,7 @@ describe('SeriesRuleEditorModal', () => {
       });
     });
 
-    it('omits untagged_is_new when the box is unchecked', async () => {
+    it('omits untagged_is_new when the switch is off', async () => {
       renderWithTitle();
       fireEvent.click(screen.getByText('New only'));
       fireEvent.click(screen.getByText('Save rule'));
