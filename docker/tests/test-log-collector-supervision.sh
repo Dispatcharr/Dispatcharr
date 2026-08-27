@@ -114,10 +114,24 @@ echo "supervise_log_collector"
 run_no_user() {
     . "$INIT_SCRIPT"
     su() { echo "su was called"; return 0; }
-    start_log_collector "" /bin/true /tmp 2>&1
+    cd() { :; }  # /app exists in the image, not on a test host
+    start_log_collector "" /bin/echo /tmp 2>&1
 }
 OUT="$(run_no_user)"
 absent "an empty user does not go through su" "su was called" "$OUT"
+# As a module it would import dispatcharr/__init__.py, which imports celery,
+# into a process that exists to have neither celery nor django in it.
+contains "a rootless container runs it by path" "/app/dispatcharr/log_collector.py" "$OUT"
+absent "and never as a module" "-m dispatcharr" "$OUT"
+
+run_with_user() {
+    . "$INIT_SCRIPT"
+    su() { shift 2; echo "su-cmd: $*"; return 0; }
+    start_log_collector someuser /bin/echo /tmp 2>&1
+}
+OUT="$(run_with_user)"
+contains "the su path runs it by path too" "/app/dispatcharr/log_collector.py" "$OUT"
+absent "and never as a module either" "-m dispatcharr" "$OUT"
 
 run_clean_exit() {
     . "$INIT_SCRIPT"
