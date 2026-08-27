@@ -1,11 +1,15 @@
 """Tests for credential redaction."""
 
 import logging
+import os
 import random
 import re
+import subprocess
 import sys
 
 from django.test import SimpleTestCase
+
+from dispatcharr import log_collector
 
 from core.redaction import (
     RedactingFormatter,
@@ -499,3 +503,19 @@ class RedactingFormatterTests(SimpleTestCase):
         out = formatter.format(record)
         self.assertNotIn("s3cret", out)
         self.assertIn("/live/[username]/[password]/", out)
+
+
+class CollectorIsolationTests(SimpleTestCase):
+    """The collector is started by path so it stays free of the app package."""
+
+    def test_importing_it_as_a_script_pulls_in_neither_celery_nor_django(self):
+        pkg = os.path.dirname(os.path.abspath(log_collector.__file__))
+        code = (
+            "import sys; sys.path.insert(0, sys.argv[1]); import log_collector; "
+            "print(any(m in sys.modules for m in ('celery', 'django')))"
+        )
+        out = subprocess.run(
+            [sys.executable, "-c", code, pkg], capture_output=True, text=True
+        )
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertEqual(out.stdout.strip(), "False")
