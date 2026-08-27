@@ -30,16 +30,14 @@ archive_previous_log() {
     touch "$dir/$name" 2>/dev/null || true
 }
 
-# Run as a module from /app, the way uwsgi loads the app: by path it would get
-# /app/dispatcharr on sys.path instead of /app, and any import of a sibling
-# module would fail. Positional parameters, not interpolation: `su -` strips the
-# environment, and an operator-set path inside the -c string would be shell input.
+# Positional parameters, not interpolation: `su -` strips the environment, and
+# an operator-set path inside the -c string would become shell input.
 start_log_collector() {
     if [ -z "$1" ]; then
         # No application user here, and `su -` would strip the role.
-        (cd /app && exec "$2" -m dispatcharr.log_collector "$3")
+        (cd /app && exec "$2" /app/dispatcharr/log_collector.py "$3")
     else
-        su - "$1" -c 'cd /app && exec "$0" -m dispatcharr.log_collector "$1"' "$2" "$3"
+        su - "$1" -c 'cd /app && exec "$0" /app/dispatcharr/log_collector.py "$1"' "$2" "$3"
     fi
 }
 
