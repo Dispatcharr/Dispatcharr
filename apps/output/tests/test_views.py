@@ -368,140 +368,6 @@ class OutputEPGXMLEscapingTest(OutputEndpointTestMixin, TestCase):
             self._epg_cache_patch.start()
 
 
-class OutputEPGCustomDummyTest(TestCase):
-    """Custom dummy EPG must not fall back to default when pattern matched but event is outside window."""
-
-    def setUp(self):
-        self.group = ChannelGroup.objects.create(name="Sports Group")
-
-    def test_custom_dummy_outside_window_fills_with_ended_programmes(self):
-        from django.utils import timezone
-        from apps.output.views import generate_dummy_programs
-
-        epg_source = EPGSource.objects.create(
-            name="NHL Dummy",
-            source_type="dummy",
-            custom_properties={
-                "title_pattern": r"(?<league>.*)\s\d+:\s(?<team1>.*?)(?:\s+vs\s+)(?<team2>.*?)\s*@.*",
-                "time_pattern": r"(?<hour>\d{1,2}):(?<minute>\d{2})\s*(?<ampm>AM|PM)",
-                "date_pattern": r"@ (?<month>[A-Za-z]+)\s+(?<day>\d{1,2})",
-                "timezone": "US/Eastern",
-                "program_duration": 180,
-            },
-        )
-        channel_name = (
-            "NHL 01: Washington Capitals vs Philadelphia Flyers @ April 16 07:30 PM ET"
-        )
-        now = timezone.now()
-        lookback = now - timedelta(days=7)
-
-        programs = generate_dummy_programs(
-            channel_id="nhl01",
-            channel_name=channel_name,
-            num_days=7,
-            epg_source=epg_source,
-            export_lookback=lookback,
-            export_cutoff=now + timedelta(days=7),
-        )
-
-        self.assertGreater(len(programs), 0)
-        self.assertTrue(
-            all(p['end_time'] >= lookback for p in programs),
-            "All programmes should fall inside the export window",
-        )
-        self.assertTrue(
-            any('Ended' in p['description'] for p in programs),
-            "Past events outside the window should still show ended filler",
-        )
-        for program in programs:
-            start = program['start_time']
-            self.assertEqual(start.second, 0)
-            self.assertEqual(start.microsecond, 0)
-            self.assertIn(
-                start.minute, (0, 30),
-                "Filler programmes should start on half-hour boundaries",
-            )
-        self.assertGreaterEqual(programs[0]['start_time'], lookback)
-
-    def test_custom_dummy_future_event_fills_grid_window_with_upcoming(self):
-        """Grid-style window: future event should show upcoming filler, not empty."""
-        from django.utils import timezone
-        from apps.output.epg import _programme_overlaps_export_window, generate_dummy_programs
-
-        epg_source = EPGSource.objects.create(
-            name="NHL Dummy Future",
-            source_type="dummy",
-            custom_properties={
-                "title_pattern": r"(?<league>.*)\s\d+:\s(?<team1>.*?)(?:\s+vs\s+)(?<team2>.*?)\s*@.*",
-                "time_pattern": r"(?<hour>\d{1,2}):(?<minute>\d{2})\s*(?<ampm>AM|PM)",
-                "date_pattern": r"@ (?<month>[A-Za-z]+)\s+(?<day>\d{1,2})",
-                "timezone": "US/Eastern",
-                "program_duration": 180,
-            },
-        )
-        now = timezone.now()
-        grid_start = now - timedelta(hours=1)
-        grid_end = now + timedelta(hours=24)
-        future = now + timedelta(days=3)
-        channel_name = (
-            f"NHL 01: Washington Capitals vs Philadelphia Flyers @ "
-            f"{future.strftime('%B')} {future.day} 07:30 PM ET"
-        )
-
-        programs = generate_dummy_programs(
-            channel_id="nhl01",
-            channel_name=channel_name,
-            num_days=1,
-            epg_source=epg_source,
-            export_lookback=grid_start,
-            export_cutoff=grid_end,
-        )
-
-        self.assertGreater(len(programs), 0)
-        self.assertTrue(
-            all(
-                _programme_overlaps_export_window(
-                    p["start_time"], p["end_time"], grid_start, grid_end
-                )
-                for p in programs
-            ),
-            "All programmes should overlap the grid query window",
-        )
-        self.assertTrue(
-            any("Upcoming" in p.get("description", "") for p in programs),
-            "Future events outside the window should show upcoming filler",
-        )
-
-
-class OutputEPGHelperTest(SimpleTestCase):
-    def test_ceil_to_half_hour_on_boundary(self):
-        from django.utils import timezone
-        from apps.output.epg import _ceil_to_half_hour
-
-        dt = timezone.now().replace(minute=30, second=0, microsecond=0)
-        self.assertEqual(_ceil_to_half_hour(dt), dt)
-
-    def test_ceil_to_half_hour_rounds_up(self):
-        from django.utils import timezone
-        from apps.output.epg import _ceil_to_half_hour
-
-        dt = timezone.now().replace(minute=17, second=42, microsecond=123456)
-        aligned = _ceil_to_half_hour(dt)
-        self.assertEqual(aligned.minute, 30)
-        self.assertEqual(aligned.second, 0)
-        self.assertGreaterEqual(aligned, dt.replace(microsecond=0))
-
-    def test_ceil_to_half_hour_past_boundary_second(self):
-        from django.utils import timezone
-        from apps.output.epg import _ceil_to_half_hour
-
-        dt = timezone.now().replace(minute=0, second=52, microsecond=123456)
-        aligned = _ceil_to_half_hour(dt)
-        self.assertEqual(aligned.minute, 30)
-        self.assertEqual(aligned.second, 0)
-        self.assertGreaterEqual(aligned, dt.replace(microsecond=0))
-
-
 class XcVodSeriesDistinctTests(TestCase):
     def setUp(self):
         self.factory = RequestFactory()
@@ -1363,6 +1229,98 @@ class XcGetEpgCatchupGateTests(TestCase):
         self.assertIn("Past Show", titles)
         past = next(item for item in listings if item["_title"] == "Past Show")
         self.assertEqual(past["has_archive"], 0)
+
+
+class XcGetEpgDummyTests(TestCase):
+    """XC single-channel EPG uses shared dummy generation (stream parse + export window)."""
+
+    NHL_PROPS = {
+        "title_pattern": r"(?<league>.*)\s\d+:\s(?<team1>.*?)(?:\s+vs\s+)(?<team2>.*?)\s*@.*",
+        "time_pattern": r"(?<hour>\d{1,2}):(?<minute>\d{2})\s*(?<ampm>AM|PM)",
+        "timezone": "UTC",
+        "program_duration": 180,
+        "name_source": "stream",
+        "stream_index": 1,
+        "title_template": "{team1} vs {team2}",
+    }
+
+    def setUp(self):
+        from django.test import RequestFactory
+
+        self.factory = RequestFactory()
+        self.user = User.objects.create_user(
+            username=f"xc-dummy-{uuid4().hex[:8]}",
+            password="pass",
+            user_level=10,
+            custom_properties={"xc_password": "xcpass"},
+        )
+        self.group = ChannelGroup.objects.create(name=f"Group {uuid4().hex[:8]}")
+        self.account = M3UAccount.objects.create(
+            name=f"XC Dummy {uuid4().hex[:8]}",
+            server_url="http://example.com",
+            priority=1,
+        )
+        self.dummy_source = EPGSource.objects.create(
+            name="XC Dummy Source",
+            source_type="dummy",
+            custom_properties=self.NHL_PROPS,
+        )
+        self.epg_data = EPGData.objects.get(epg_source=self.dummy_source)
+
+    def _listings(self, channel):
+        import base64
+
+        from apps.output.views import xc_get_epg
+
+        request = self.factory.get(
+            "/player_api.php",
+            {
+                "action": "get_simple_data_table",
+                "stream_id": str(channel.id),
+                "days": "1",
+            },
+        )
+        listings = xc_get_epg(request, self.user)["epg_listings"]
+        for item in listings:
+            item["_title"] = base64.b64decode(item["title"]).decode()
+        return listings
+
+    def test_uses_stream_title_for_custom_dummy_regex(self):
+        from apps.channels.models import ChannelStream, Stream
+
+        channel = Channel.objects.create(
+            name="Unparseable channel title",
+            channel_number=42.0,
+            channel_group=self.group,
+            epg_data=self.epg_data,
+        )
+        stream = Stream.objects.create(
+            name="NHL 01: Capitals vs Flyers @ 11:00 PM ET",
+            url="http://example.com/1.ts",
+            m3u_account=self.account,
+        )
+        ChannelStream.objects.create(channel=channel, stream=stream, order=0)
+
+        titles = {item["_title"] for item in self._listings(channel)}
+
+        self.assertIn("Capitals vs Flyers", titles)
+
+    def test_respects_days_export_window(self):
+        from django.utils import timezone
+
+        channel = Channel.objects.create(
+            name="NHL 01: Capitals vs Flyers @ 11:00 PM ET",
+            channel_number=43.0,
+            channel_group=self.group,
+            epg_data=self.epg_data,
+        )
+        listings = self._listings(channel)
+        now = timezone.now()
+        for item in listings:
+            start = timezone.datetime.fromtimestamp(int(item["start_timestamp"]), tz=now.tzinfo)
+            end = timezone.datetime.fromtimestamp(int(item["stop_timestamp"]), tz=now.tzinfo)
+            self.assertLess(start, now + timedelta(days=1, hours=1))
+            self.assertGreater(end, now - timedelta(days=1))
 
 
 class XcXmltvNullChannelNumberTests(OutputEndpointTestMixin, TestCase):

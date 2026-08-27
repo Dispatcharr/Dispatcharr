@@ -2874,23 +2874,6 @@ def detect_file_format(file_path=None, content=None):
     return format_type, is_compressed, file_extension
 
 
-def generate_dummy_epg(source):
-    """
-    DEPRECATED: This function is no longer used.
-
-    Dummy EPG programs are now generated on-demand when they are requested
-    (during XMLTV export or EPG grid display), rather than being pre-generated
-    and stored in the database.
-
-    See: apps/output/views.py - generate_custom_dummy_programs()
-
-    This function remains for backward compatibility but should not be called.
-    """
-    logger.warning(f"generate_dummy_epg() called for {source.name} but this function is deprecated. "
-                   f"Dummy EPG programs are now generated on-demand.")
-    return True
-
-
 # ---------------------------------------------------------------------------
 # Byte-offset programme index (ported from dev branch)
 # These functions support fast current-program lookup for the CurrentPrograms
