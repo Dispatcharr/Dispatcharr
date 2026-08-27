@@ -771,10 +771,15 @@ def _evaluate_series_rules_locked(tvg_id, result):
 
         # Optionally filter to only brand-new episodes before grouping
         if mode == "new":
+            from apps.channels.managers import program_is_new_for_rule
+
+            untagged_is_new = bool(rule.get("untagged_is_new"))
             filtered = []
             for p in programs:
                 try:
-                    if (p.custom_properties or {}).get("new"):
+                    if program_is_new_for_rule(
+                        p.custom_properties, untagged_is_new
+                    ):
                         filtered.append(p)
                 except Exception:
                     pass
