@@ -14,7 +14,7 @@ from apps.epg.sd_api import (
 from rest_framework.decorators import action
 from drf_spectacular.utils import extend_schema, OpenApiParameter, inline_serializer
 from drf_spectacular.types import OpenApiTypes
-from django.db.models import Q
+from django.db.models import Prefetch, Q
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 from datetime import timedelta
@@ -382,6 +382,32 @@ class ProgramViewSet(SchedulesDirectPosterMixin, viewsets.ModelViewSet):
 # ─────────────────────────────
 # 3) EPG Grid View
 # ─────────────────────────────
+def custom_dummy_channels_queryset():
+    """Channels backed by a dummy EPG source, ready for on-demand generation.
+
+    Streams are prefetched in channelstream order because dummy sources configured
+    with name_source='stream' resolve their regex input by stream index; without the
+    explicit ordering the prefetch cache would fall back to Stream's own ordering
+    and pick the wrong title.
+    """
+    from apps.channels.models import Channel, Stream
+    from apps.channels.managers import with_effective_values
+
+    return with_effective_values(
+        Channel.objects.filter(epg_data__epg_source__source_type='dummy')
+        .select_related('epg_data__epg_source')
+        .prefetch_related(
+            Prefetch(
+                'streams',
+                queryset=Stream.objects.only('id', 'name').order_by(
+                    'channelstream__order'
+                ),
+            )
+        )
+        .distinct()
+    )
+
+
 class EPGGridAPIView(APIView):
     """Returns all programs airing in the next 24 hours including currently running ones and recent ones"""
 
@@ -413,36 +439,13 @@ class EPGGridAPIView(APIView):
 
         # Generate dummy programs for channels that have no EPG data OR dummy EPG sources
         from apps.channels.models import Channel
-        from apps.epg.models import EPGSource
-        from django.db.models import Q
+        from apps.channels.managers import with_effective_values
 
         # Get channels with no EPG data at all (standard dummy)
-        channels_without_epg = Channel.objects.filter(Q(epg_data__isnull=True))
-
-        # Get channels with custom dummy EPG sources (generate on-demand with patterns)
-        channels_with_custom_dummy = Channel.objects.filter(
-            epg_data__epg_source__source_type='dummy'
-        ).select_related('epg_data__epg_source').distinct()
-
-        # Log what we found
-        without_count = channels_without_epg.count()
-        custom_count = channels_with_custom_dummy.count()
-
-        if without_count > 0:
-            channel_names = [f"{ch.name} (ID: {ch.id})" for ch in channels_without_epg]
-            logger.debug(
-                f"EPGGridAPIView: Channels needing standard dummy EPG: {', '.join(channel_names)}"
-            )
-
-        if custom_count > 0:
-            channel_names = [f"{ch.name} (ID: {ch.id})" for ch in channels_with_custom_dummy]
-            logger.debug(
-                f"EPGGridAPIView: Channels needing custom dummy EPG: {', '.join(channel_names)}"
-            )
-
-        logger.debug(
-            f"EPGGridAPIView: Found {without_count} channels needing standard dummy, {custom_count} needing custom dummy EPG."
+        channels_without_epg = with_effective_values(
+            Channel.objects.filter(epg_data__isnull=True)
         )
+        channels_with_custom_dummy = custom_dummy_channels_queryset()
 
         # Serialize the regular programs using .values() to bypass DRF overhead
         programs_qs = programs.values(
@@ -472,185 +475,57 @@ class EPGGridAPIView(APIView):
             f"EPGGridAPIView: Found {len(serialized_programs)} program(s), including recently ended, currently running, and upcoming shows."
         )
 
-        # Humorous program descriptions based on time of day - same as in output/views.py
-        time_descriptions = {
-            (0, 4): [
-                "Late Night with {channel} - Where insomniacs unite!",
-                "The 'Why Am I Still Awake?' Show on {channel}",
-                "Counting Sheep - A {channel} production for the sleepless",
-            ],
-            (4, 8): [
-                "Dawn Patrol - Rise and shine with {channel}!",
-                "Early Bird Special - Coffee not included",
-                "Morning Zombies - Before coffee viewing on {channel}",
-            ],
-            (8, 12): [
-                "Mid-Morning Meetings - Pretend you're paying attention while watching {channel}",
-                "The 'I Should Be Working' Hour on {channel}",
-                "Productivity Killer - {channel}'s daytime programming",
-            ],
-            (12, 16): [
-                "Lunchtime Laziness with {channel}",
-                "The Afternoon Slump - Brought to you by {channel}",
-                "Post-Lunch Food Coma Theater on {channel}",
-            ],
-            (16, 20): [
-                "Rush Hour - {channel}'s alternative to traffic",
-                "The 'What's For Dinner?' Debate on {channel}",
-                "Evening Escapism - {channel}'s remedy for reality",
-            ],
-            (20, 24): [
-                "Prime Time Placeholder - {channel}'s finest not-programming",
-                "The 'Netflix Was Too Complicated' Show on {channel}",
-                "Family Argument Avoider - Courtesy of {channel}",
-            ],
-        }
+        # Generate and append dummy programs for channels without real EPG data.
+        from apps.output.dummy_epg import (
+            dummy_program_to_api_dict,
+            generate_dummy_programs,
+            resolve_channel_parse_name,
+        )
 
-        # Generate and append dummy programs
         dummy_programs = []
 
-        # Import the function from output.views
-        from apps.output.views import generate_dummy_programs as gen_dummy_progs
-
-        # Handle channels with CUSTOM dummy EPG sources (with patterns)
-        for channel in channels_with_custom_dummy:
-            # For dummy EPGs, ALWAYS use channel UUID to ensure unique programs per channel
-            # This prevents multiple channels assigned to the same dummy EPG from showing identical data
-            # Each channel gets its own unique program data even if they share the same EPG source
-            dummy_tvg_id = str(channel.uuid)
-
-            try:
-                # Get the custom dummy EPG source
-                epg_source = channel.epg_data.epg_source if channel.epg_data else None
-
-                logger.debug(f"Generating custom dummy programs for channel: {channel.name} (ID: {channel.id})")
-
-                # Determine which name to parse based on custom properties
-                name_to_parse = channel.name
-                if epg_source and epg_source.custom_properties:
-                    custom_props = epg_source.custom_properties
-                    name_source = custom_props.get('name_source')
-
-                    if name_source == 'stream':
-                        # Get the stream index (1-based from user, convert to 0-based)
-                        stream_index = custom_props.get('stream_index', 1) - 1
-
-                        # Get streams ordered by channelstream order
-                        channel_streams = channel.streams.all().order_by('channelstream__order')
-
-                        if channel_streams.exists() and 0 <= stream_index < channel_streams.count():
-                            stream = list(channel_streams)[stream_index]
-                            name_to_parse = stream.name
-                            logger.debug(f"Using stream name for parsing: {name_to_parse} (stream index: {stream_index})")
-                        else:
-                            logger.warning(f"Stream index {stream_index} not found for channel {channel.name}, falling back to channel name")
-                    elif name_source == 'channel':
-                        logger.debug(f"Using channel name for parsing: {name_to_parse}")
-
-                # Generate programs using custom patterns from the dummy EPG source
-                # Use the same tvg_id that will be set in the program data
-                generated = gen_dummy_progs(
-                    channel_id=dummy_tvg_id,
-                    channel_name=name_to_parse,
-                    num_days=1,
-                    program_length_hours=4,
-                    epg_source=epg_source,
-                    export_lookback=one_hour_ago,
-                    export_cutoff=twenty_four_hours_later,
-                )
-
-                # Custom dummy should always return data (either from patterns or fallback)
-                if generated:
-                    logger.debug(f"Generated {len(generated)} custom dummy programs for {channel.name}")
-                    # Convert generated programs to API format
-                    for program in generated:
-                        prog_custom = program.get('custom_properties') or {}
-                        dummy_program = {
-                            "id": f"dummy-custom-{channel.id}-{program['start_time'].hour}",
-                            "epg": {"tvg_id": dummy_tvg_id, "name": channel.name},
-                            "start_time": program['start_time'].isoformat(),
-                            "end_time": program['end_time'].isoformat(),
-                            "title": program['title'],
-                            "description": program['description'],
-                            "tvg_id": dummy_tvg_id,
-                            "sub_title": program.get('sub_title'),
-                            "custom_properties": prog_custom if prog_custom else None,
-                            "season": None,
-                            "episode": None,
-                            "is_new": prog_custom.get('new', False),
-                            "is_live": bool(prog_custom.get('live')),
-                            "is_premiere": False,
-                            "is_finale": False,
-                        }
-                        dummy_programs.append(dummy_program)
+        for queryset, id_prefix, custom_source in (
+            (channels_with_custom_dummy, 'dummy-custom', True),
+            (channels_without_epg, 'dummy-standard', False),
+        ):
+            for channel in queryset:
+                dummy_tvg_id = str(channel.uuid)
+                effective_name = channel.effective_name
+                if custom_source:
+                    epg_source = channel.epg_data.epg_source if channel.epg_data else None
+                    channel_name = resolve_channel_parse_name(
+                        channel, epg_source, fallback_name=effective_name
+                    )
                 else:
-                    logger.warning(f"No programs generated for custom dummy EPG channel: {channel.name}")
-
-            except Exception as e:
-                logger.error(
-                    f"Error creating custom dummy programs for channel {channel.name} (ID: {channel.id}): {str(e)}"
-                )
-
-        # Handle channels with NO EPG data (standard dummy with humorous descriptions)
-        for channel in channels_without_epg:
-            # For channels with no EPG, use UUID to ensure uniqueness (matches frontend logic)
-            # The frontend uses: tvgRecord?.tvg_id ?? channel.uuid
-            # Since there's no EPG data, it will fall back to UUID
-            dummy_tvg_id = str(channel.uuid)
-
-            try:
-                logger.debug(f"Generating standard dummy programs for channel: {channel.name} (ID: {channel.id})")
-
-                # Create programs every 4 hours for the next 24 hours with humorous descriptions
-                for hour_offset in range(0, 24, 4):
-                    # Use timedelta for time arithmetic instead of replace() to avoid hour overflow
-                    start_time = now + timedelta(hours=hour_offset)
-                    # Set minutes/seconds to zero for clean time blocks
-                    start_time = start_time.replace(minute=0, second=0, microsecond=0)
-                    end_time = start_time + timedelta(hours=4)
-
-                    # Get the hour for selecting a description
-                    hour = start_time.hour
-                    day = 0  # Use 0 as we're only doing 1 day
-
-                    # Find the appropriate time slot for description
-                    for time_range, descriptions in time_descriptions.items():
-                        start_range, end_range = time_range
-                        if start_range <= hour < end_range:
-                            # Pick a description using the sum of the hour and day as seed
-                            # This makes it somewhat random but consistent for the same timeslot
-                            description = descriptions[
-                                (hour + day) % len(descriptions)
-                            ].format(channel=channel.name)
-                            break
-                    else:
-                        # Fallback description if somehow no range matches
-                        description = f"Placeholder program for {channel.name} - EPG data went on vacation"
-
-                    # Create a dummy program in the same format as regular programs
-                    dummy_program = {
-                        "id": f"dummy-standard-{channel.id}-{hour_offset}",
-                        "epg": {"tvg_id": dummy_tvg_id, "name": channel.name},
-                        "start_time": start_time.isoformat(),
-                        "end_time": end_time.isoformat(),
-                        "title": f"{channel.name}",
-                        "description": description,
-                        "tvg_id": dummy_tvg_id,
-                        "sub_title": None,
-                        "custom_properties": None,
-                        "season": None,
-                        "episode": None,
-                        "is_new": False,
-                        "is_live": False,
-                        "is_premiere": False,
-                        "is_finale": False,
-                    }
-                    dummy_programs.append(dummy_program)
-
-            except Exception as e:
-                logger.error(
-                    f"Error creating standard dummy programs for channel {channel.name} (ID: {channel.id}): {str(e)}"
-                )
+                    epg_source = None
+                    channel_name = effective_name
+                try:
+                    generated = generate_dummy_programs(
+                        channel_id=dummy_tvg_id,
+                        channel_name=channel_name,
+                        num_days=1,
+                        program_length_hours=4,
+                        epg_source=epg_source,
+                        export_lookback=one_hour_ago,
+                        export_cutoff=twenty_four_hours_later,
+                    )
+                    for program in generated or []:
+                        dummy_programs.append(
+                            dummy_program_to_api_dict(
+                                channel,
+                                program,
+                                dummy_tvg_id=dummy_tvg_id,
+                                program_id_prefix=id_prefix,
+                            )
+                        )
+                except Exception as e:
+                    logger.error(
+                        "Error creating %s programs for channel %s (ID: %s): %s",
+                        id_prefix,
+                        channel.name,
+                        channel.id,
+                        e,
+                    )
 
         # Combine regular and dummy programs in place to avoid copying the large list
         serialized_programs.extend(dummy_programs)
