@@ -192,6 +192,10 @@ def _build_filler_program(
     }
 
 
+def _at_program_limit(programs, max_programs) -> bool:
+    return max_programs is not None and len(programs) >= max_programs
+
+
 def _append_filler_programs(
     programs,
     range_start,
@@ -199,9 +203,12 @@ def _append_filler_programs(
     title,
     description,
     opts: _FillerOpts,
+    max_programs=None,
 ):
     current_time = range_start
     while current_time < range_end:
+        if _at_program_limit(programs, max_programs):
+            return
         program_end_utc = min(
             current_time + timedelta(minutes=opts.duration_minutes),
             range_end,
@@ -300,7 +307,16 @@ def _localize_event_start(source_tz, current_date, time_info):
         return django_timezone.make_aware(event_start_naive, pytz.utc)
 
 
-def _append_main_event(programs, event_start_utc, event_end_utc, labels: _EventLabels, opts: _FillerOpts):
+def _append_main_event(
+    programs,
+    event_start_utc,
+    event_end_utc,
+    labels: _EventLabels,
+    opts: _FillerOpts,
+    max_programs=None,
+):
+    if _at_program_limit(programs, max_programs):
+        return
     main_props = {}
     if opts.categories:
         main_props['categories'] = opts.categories
@@ -333,6 +349,7 @@ def _generate_dated_event_timeline(
     opts: _FillerOpts,
     export_lookback,
     export_cutoff,
+    max_programs=None,
 ):
     current_date = datetime(
         date_info['year'],
@@ -362,10 +379,21 @@ def _generate_dated_event_timeline(
                 labels.upcoming_title,
                 labels.upcoming_description,
                 opts,
+                max_programs=max_programs,
             )
 
     if event_overlaps:
-        _append_main_event(programs, event_start_utc, event_end_utc, labels, opts)
+        _append_main_event(
+            programs,
+            event_start_utc,
+            event_end_utc,
+            labels,
+            opts,
+            max_programs=max_programs,
+        )
+
+    if _at_program_limit(programs, max_programs):
+        return
 
     if event_end_utc < lookback and not event_overlaps:
         _append_filler_programs(
@@ -375,6 +403,7 @@ def _generate_dated_event_timeline(
             labels.ended_title,
             labels.ended_description,
             opts,
+            max_programs=max_programs,
         )
     elif event_end_utc < window_end:
         ended_start = max(event_end_utc, lookback)
@@ -386,6 +415,7 @@ def _generate_dated_event_timeline(
                 labels.ended_title,
                 labels.ended_description,
                 opts,
+                max_programs=max_programs,
             )
 
 
@@ -400,11 +430,14 @@ def _generate_recurring_time_programs(
     opts: _FillerOpts,
     export_lookback,
     export_cutoff,
+    max_programs=None,
 ):
     lookback = export_lookback if export_lookback is not None else now
     event_happened = False
 
     for day in range(num_days):
+        if _at_program_limit(programs, max_programs):
+            return
         day_start = now + timedelta(days=day)
         day_end = day_start + timedelta(days=1)
         if export_lookback is not None:
@@ -434,8 +467,16 @@ def _generate_recurring_time_programs(
                     labels.upcoming_title,
                     labels.upcoming_description,
                     opts,
+                    max_programs=max_programs,
                 )
-            _append_main_event(programs, event_start_utc, event_end_utc, labels, opts)
+            _append_main_event(
+                programs,
+                event_start_utc,
+                event_end_utc,
+                labels,
+                opts,
+                max_programs=max_programs,
+            )
             event_happened = True
             ended_start = max(event_end_utc, day_start)
             if ended_start < day_end:
@@ -446,6 +487,7 @@ def _generate_recurring_time_programs(
                     labels.ended_title,
                     labels.ended_description,
                     opts,
+                    max_programs=max_programs,
                 )
         else:
             title = labels.ended_title if event_happened else labels.upcoming_title
@@ -453,7 +495,13 @@ def _generate_recurring_time_programs(
                 labels.ended_description if event_happened else labels.upcoming_description
             )
             _append_filler_programs(
-                programs, day_start, day_end, title, description, opts
+                programs,
+                day_start,
+                day_end,
+                title,
+                description,
+                opts,
+                max_programs=max_programs,
             )
 
 
@@ -470,6 +518,7 @@ def _generate_no_time_programs(
     title_template,
     subtitle_template,
     description_template,
+    max_programs=None,
 ):
     # Titles and metadata depend only on the matched groups, so resolve them once
     # instead of per programme block.
@@ -497,6 +546,8 @@ def _generate_no_time_programs(
     programs_per_day = max(1, int(24 / (opts.duration_minutes / 60)))
 
     for day in range(num_days):
+        if _at_program_limit(programs, max_programs):
+            return
         day_start = now + timedelta(days=day)
         day_end = day_start + timedelta(days=1)
         if export_lookback is not None:
@@ -507,6 +558,8 @@ def _generate_no_time_programs(
             continue
 
         for program_num in range(programs_per_day):
+            if _at_program_limit(programs, max_programs):
+                return
             program_start_utc = day_start + timedelta(
                 minutes=program_num * opts.duration_minutes
             )
@@ -538,6 +591,7 @@ def generate_fallback_programs(
     fallback_description,
     export_lookback=None,
     export_cutoff=None,
+    max_programs=None,
 ):
     title = fallback_title if fallback_title else channel_name
     description = (
@@ -547,8 +601,12 @@ def generate_fallback_programs(
     )
     programs = []
     for day in range(num_days):
+        if _at_program_limit(programs, max_programs):
+            break
         day_start = now + timedelta(days=day)
         for hour_offset in range(0, 24, program_length_hours):
+            if _at_program_limit(programs, max_programs):
+                break
             start_time = day_start + timedelta(hours=hour_offset)
             end_time = start_time + timedelta(hours=program_length_hours)
             if export_lookback and end_time <= export_lookback:
@@ -573,11 +631,16 @@ def generate_standard_dummy_programs(
     program_length_hours=4,
     export_lookback=None,
     export_cutoff=None,
+    max_programs=None,
 ):
     programs = []
     for day in range(num_days):
+        if _at_program_limit(programs, max_programs):
+            break
         day_start = now + timedelta(days=day)
         for hour_offset in range(0, 24, program_length_hours):
+            if _at_program_limit(programs, max_programs):
+                break
             start_time = day_start + timedelta(hours=hour_offset)
             end_time = start_time + timedelta(hours=program_length_hours)
             if export_lookback and end_time <= export_lookback:
@@ -603,6 +666,7 @@ def generate_custom_dummy_programs(
     custom_properties,
     export_lookback=None,
     export_cutoff=None,
+    max_programs=None,
 ):
     logger.debug("Generating custom dummy programs for channel: %s", channel_name)
 
@@ -872,6 +936,7 @@ def generate_custom_dummy_programs(
             opts=opts,
             export_lookback=export_lookback,
             export_cutoff=export_cutoff,
+            max_programs=max_programs,
         )
     elif time_info:
         _generate_recurring_time_programs(
@@ -884,6 +949,7 @@ def generate_custom_dummy_programs(
             opts=opts,
             export_lookback=export_lookback,
             export_cutoff=export_cutoff,
+            max_programs=max_programs,
         )
     else:
         _generate_no_time_programs(
@@ -898,6 +964,7 @@ def generate_custom_dummy_programs(
             title_template=title_template,
             subtitle_template=subtitle_template,
             description_template=description_template,
+            max_programs=max_programs,
         )
 
     logger.debug("Generated %s custom dummy programs for %s", len(programs), channel_name)
@@ -912,6 +979,7 @@ def generate_dummy_programs(
     epg_source=None,
     export_lookback=None,
     export_cutoff=None,
+    max_programs=None,
 ):
     now = django_timezone.now().replace(minute=0, second=0, microsecond=0)
 
@@ -924,6 +992,7 @@ def generate_dummy_programs(
             epg_source.custom_properties,
             export_lookback=export_lookback,
             export_cutoff=export_cutoff,
+            max_programs=max_programs,
         )
         if custom_programs is not None:
             return custom_programs
@@ -942,6 +1011,7 @@ def generate_dummy_programs(
                 fallback_description,
                 export_lookback=export_lookback,
                 export_cutoff=export_cutoff,
+                max_programs=max_programs,
             )
 
     return generate_standard_dummy_programs(
@@ -952,6 +1022,7 @@ def generate_dummy_programs(
         program_length_hours=program_length_hours,
         export_lookback=export_lookback,
         export_cutoff=export_cutoff,
+        max_programs=max_programs,
     )
 
 

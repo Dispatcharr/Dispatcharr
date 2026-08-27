@@ -915,6 +915,10 @@ def xc_get_epg(request, user, short=False):
     effective_epg_data = channel.effective_epg_data_obj
     effective_name = channel.effective_name
 
+    # Short EPG: current/upcoming only, stop after `limit` programmes (XC default 4).
+    dummy_lookback = now if short else lookback_cutoff
+    dummy_max_programs = limit if short else None
+
     if effective_epg_data:
         # Check if this is a dummy EPG that generates on-demand
         if effective_epg_data.epg_source and effective_epg_data.epg_source.source_type == 'dummy':
@@ -929,8 +933,9 @@ def xc_get_epg(request, user, short=False):
                     channel_name=parse_name,
                     num_days=dummy_days,
                     epg_source=effective_epg_data.epg_source,
-                    export_lookback=lookback_cutoff,
+                    export_lookback=dummy_lookback,
                     export_cutoff=forward_cutoff,
+                    max_programs=dummy_max_programs,
                 )
             else:
                 # Has stored programs, use them
@@ -963,8 +968,9 @@ def xc_get_epg(request, user, short=False):
             channel_name=effective_name,
             num_days=dummy_days,
             epg_source=None,
-            export_lookback=lookback_cutoff,
+            export_lookback=dummy_lookback,
             export_cutoff=forward_cutoff,
+            max_programs=dummy_max_programs,
         )
 
     output = {"epg_listings": []}

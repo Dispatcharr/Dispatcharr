@@ -263,6 +263,39 @@ class CustomDummyEpgTest(TestCase):
             )
         )
 
+    def test_max_programs_stops_generation(self):
+        epg_source = self._epg_source(name="Limited")
+        fixed_now = timezone.datetime(2026, 8, 26, 12, 0, 0, tzinfo=dt_timezone.utc)
+        event_day = fixed_now + timedelta(days=10)
+        channel_name = (
+            f"NHL 01: Capitals vs Flyers @ "
+            f"{event_day.strftime('%B')} {event_day.day} 07:00 PM ET"
+        )
+        with patch("apps.output.dummy_epg.django_timezone.now", return_value=fixed_now):
+            programs = generate_dummy_programs(
+                channel_id="nhl01",
+                channel_name=channel_name,
+                num_days=7,
+                epg_source=epg_source,
+                export_lookback=fixed_now,
+                export_cutoff=fixed_now + timedelta(days=7),
+                max_programs=4,
+            )
+        self.assertEqual(len(programs), 4)
+        self.assertTrue(all("Starting" in p["description"] or "Upcoming" in p["description"] or "Starting" in p["title"] for p in programs))
+
+    def test_standard_dummy_max_programs(self):
+        now = timezone.now().replace(minute=0, second=0, microsecond=0)
+        programs = generate_standard_dummy_programs(
+            "ch1",
+            "Test Channel",
+            now,
+            num_days=3,
+            program_length_hours=4,
+            max_programs=3,
+        )
+        self.assertEqual(len(programs), 3)
+
     def test_standard_dummy_respects_export_window(self):
         now = timezone.now().replace(minute=0, second=0, microsecond=0)
         window_start = now + timedelta(hours=2)

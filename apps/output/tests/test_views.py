@@ -1322,11 +1322,50 @@ class XcGetEpgDummyTests(TestCase):
             self.assertLess(start, now + timedelta(days=1, hours=1))
             self.assertGreater(end, now - timedelta(days=1))
 
+    def test_get_short_epg_respects_limit_for_on_demand_dummy(self):
+        import base64
 
-class XcXmltvNullChannelNumberTests(OutputEndpointTestMixin, TestCase):
-    """XC XMLTV EPG must not crash when a visible channel has no channel number."""
+        from apps.output.views import xc_get_epg
 
-    def setUp(self):
+        channel = Channel.objects.create(
+            name="NHL 01: Capitals vs Flyers @ 11:00 PM ET",
+            channel_number=44.0,
+            channel_group=self.group,
+            epg_data=self.epg_data,
+        )
+        request = self.factory.get(
+            "/player_api.php",
+            {
+                "action": "get_short_epg",
+                "stream_id": str(channel.id),
+                "limit": "4",
+            },
+        )
+        listings = xc_get_epg(request, self.user, short=True)["epg_listings"]
+
+        self.assertEqual(len(listings), 4)
+        titles = [base64.b64decode(item["title"]).decode() for item in listings]
+        self.assertTrue(any("Capitals" in title for title in titles))
+
+    def test_get_short_epg_respects_limit_for_standard_dummy(self):
+        from apps.output.views import xc_get_epg
+
+        channel = Channel.objects.create(
+            name="No EPG Channel",
+            channel_number=45.0,
+            channel_group=self.group,
+        )
+        request = self.factory.get(
+            "/player_api.php",
+            {
+                "action": "get_short_epg",
+                "stream_id": str(channel.id),
+                "limit": "3",
+            },
+        )
+        listings = xc_get_epg(request, self.user, short=True)["epg_listings"]
+
+        self.assertEqual(len(listings), 3)
         super().setUp()
         self.client = Client()
         self.user = User.objects.create_user(
