@@ -377,10 +377,12 @@ class ConfTests(SimpleTestCase):
         self.assertEqual(self.collector.conf["keep"], 50)
 
     def test_an_unchanged_conf_is_not_reapplied(self):
-        """Polling must not re-apply on every tick."""
+        """The writer polls every tick; only a changed conf may re-read it."""
         log_collector.write_conf(self.log_dir, True, 10, 5)
         self.collector._apply_conf()
-        self.assertEqual(self.collector._conf_stat(), self.collector._conf_stamp)
+        self.assertFalse(self.collector._conf_is_stale())
+        log_collector.write_conf(self.log_dir, True, 10, 50)
+        self.assertTrue(self.collector._conf_is_stale())
 
     def test_level_gate_keeps_trace_below_debug(self):
         # Trace is a developer level below the UI's range: a Debug floor is above it.

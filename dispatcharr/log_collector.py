@@ -175,6 +175,7 @@ def _resolve_pid1_zone(default):
         pass
     # Unreadable unprivileged, and the collector drops to the app user, so the
     # entrypoint's mirror of TZ is what is left before the container's own zone.
+    # It only diverges if an operator sets DISPATCHARR_TIME_ZONE and TZ apart.
     return _env_tz_zone() or default
 
 
@@ -558,7 +559,7 @@ class Collector:
         while True:
             self._wake.wait(_FLUSH_INTERVAL_SECONDS)
             self._wake.clear()
-            if self._reload or self._conf_stat() != self._conf_stamp:
+            if self._conf_is_stale():
                 self._apply_conf()
             try:
                 self._drain()
@@ -577,6 +578,12 @@ class Collector:
         # The effective floor, so an unknown level reads as no floor rather than itself.
         name = str(self.conf["level"]).strip().upper()
         return name if name.encode() in _LEVEL_RANK else ""
+
+    def _conf_is_stale(self):
+        # Polled, not signalled, so a save in another container lands too. The
+        # first poll is one tick in: until then records carry the boot zone,
+        # which is the price of the reader owning stdin before any file work.
+        return self._reload or self._conf_stat() != self._conf_stamp
 
     def _conf_stat(self):
         # A save in another container cannot signal this one; the conf can.
