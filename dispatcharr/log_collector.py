@@ -24,6 +24,7 @@ import time
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
+
 def _role_suffix():
     # The role reaches a filesystem path, so it is sanitized rather than trusted.
     role = re.sub(r"[^A-Za-z0-9]", "", os.environ.get("DISPATCHARR_LOG_ROLE", ""))
@@ -118,13 +119,18 @@ def _boot_display_zone():
     conf read. It is the same value the system time zone is seeded from, so
     the boot lines and the lines after the first SIGHUP agree.
     """
+    return _env_tz_zone() or timezone.utc
+
+
+def _env_tz_zone():
+    """The entrypoint's mirror of TZ, whitelisted through `su -`, or None."""
     name = os.environ.get("DISPATCHARR_TIME_ZONE", "").strip()
     if name:
         try:
             return ZoneInfo(name)
         except (KeyError, ValueError):
             pass
-    return timezone.utc
+    return None
 
 
 def _cap_record(line):
@@ -167,7 +173,9 @@ def _resolve_pid1_zone(default):
                     return ZoneInfo(chunk[3:].decode())
     except (OSError, KeyError, ValueError, UnicodeDecodeError):
         pass
-    return default
+    # Unreadable unprivileged, and the collector drops to the app user, so the
+    # entrypoint's mirror of TZ is what is left before the container's own zone.
+    return _env_tz_zone() or default
 
 
 def conf_path(log_dir):

@@ -789,6 +789,25 @@ class ReceiverTests(TestCase):
         )
 
 
+class Pid1ZoneTests(SimpleTestCase):
+    """nginx and the entrypoint stamp in TZ, which the collector cannot read directly."""
+
+    def test_an_unreadable_pid1_falls_back_to_the_entrypoint_mirror(self):
+        env = {"DISPATCHARR_TIME_ZONE": "Pacific/Auckland"}
+        with mock.patch.dict(log_collector.os.environ, env), mock.patch(
+            "builtins.open", side_effect=PermissionError
+        ):
+            zone = log_collector._resolve_pid1_zone(timezone.utc)
+        self.assertEqual(str(zone), "Pacific/Auckland")
+
+    def test_without_the_mirror_it_keeps_the_container_zone(self):
+        with mock.patch.dict(log_collector.os.environ, {}, clear=True), mock.patch(
+            "builtins.open", side_effect=PermissionError
+        ):
+            zone = log_collector._resolve_pid1_zone(timezone.utc)
+        self.assertIs(zone, timezone.utc)
+
+
 class RoleTests(SimpleTestCase):
     """Each container collects under its own name when /data is shared."""
 
