@@ -25,7 +25,12 @@ import time
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
-from dispatcharr.log_redaction import redact_text
+try:
+    # Started by path, so siblings import but the package does not: importing
+    # it would pull celery and django into a process built to have neither.
+    from log_redaction import redact_text
+except ImportError:
+    from dispatcharr.log_redaction import redact_text
 
 
 def _role_suffix():
