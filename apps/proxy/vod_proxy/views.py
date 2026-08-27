@@ -1446,12 +1446,6 @@ def stream_xc_episode(request, username, password, stream_id, extension):
     # All authenticated users get access to series/episodes from all active M3U accounts
     filters = {"episode_id": stream_id, "m3u_account__is_active": True}
 
-    # .first() returns None on no match -- it never raises DoesNotExist, so the
-    # previous try/except here was dead code. A stale/missing stream_id (e.g. a
-    # client's cached episode list from before a catalog refresh) fell through
-    # to episode_relation.episode.uuid on None and crashed with an unhandled
-    # AttributeError instead of a clean 404. Matches stream_xc_movie's
-    # sibling `if not movie_relation` check just above in this file.
     episode_relation = M3UEpisodeRelation.objects.select_related('episode').filter(**filters).order_by('-m3u_account__priority', 'id').first()
     if not episode_relation:
         return JsonResponse({"error": "Episode not found"}, status=404)
