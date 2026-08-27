@@ -216,12 +216,40 @@ class EPGGridDummyProgramTests(TestCase):
         self.assertIn("Oilers vs Flames", titles)
         self.assertNotIn("Jets vs Canucks", titles)
 
-    def test_unmatched_stream_index_falls_back_to_channel_name(self):
+    def test_unmatched_stream_index_falls_back_to_stream_1(self):
+        """Out-of-range stream_index uses the first stream, not the channel name."""
+        _, epg_data = self._dummy_source(
+            {
+                **NHL_PROPS,
+                "name_source": "stream",
+                "stream_index": 5,
+                "title_template": "{team1} vs {team2}",
+            }
+        )
+        channel = Channel.objects.create(
+            channel_number=13.0,
+            name="Unparseable channel name",
+            channel_group=self.group,
+            epg_data=epg_data,
+        )
+        first = self._make_stream("NHL 01: Capitals vs Flyers @ 07:00 PM ET", 1)
+        second = self._make_stream("NHL 02: Bruins vs Rangers @ 08:00 PM ET", 2)
+        ChannelStream.objects.create(channel=channel, stream=first, order=0)
+        ChannelStream.objects.create(channel=channel, stream=second, order=1)
+
+        programs = self._for_channel(self._get_grid(), channel)
+
+        self.assertTrue(programs)
+        titles = {p["title"] for p in programs}
+        self.assertIn("Capitals vs Flyers", titles)
+        self.assertNotIn("Bruins vs Rangers", titles)
+
+    def test_unmatched_stream_index_with_no_streams_uses_channel_name(self):
         _, epg_data = self._dummy_source(
             {**NHL_PROPS, "name_source": "stream", "stream_index": 5}
         )
         channel = Channel.objects.create(
-            channel_number=13.0,
+            channel_number=14.0,
             name="Fallback Channel",
             channel_group=self.group,
             epg_data=epg_data,
@@ -229,7 +257,7 @@ class EPGGridDummyProgramTests(TestCase):
 
         programs = self._for_channel(self._get_grid(), channel)
 
-        # Channel name does not match the pattern, so the standard dummy runs.
+        # No streams and channel name does not match, so standard dummy runs.
         self.assertEqual(len(programs), 6)
         self.assertEqual(programs[0]["title"], "Fallback Channel")
 

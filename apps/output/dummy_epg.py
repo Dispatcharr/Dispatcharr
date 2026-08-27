@@ -972,13 +972,32 @@ def resolve_pattern_match_name(channel, fallback_name, custom_props):
 
     Returns (name, stream_lookup_failed). stream_lookup_failed is True only when
     name_source is 'stream' but the configured index is missing or out of range.
+    In that case the first stream is used when the channel has any streams;
+    otherwise fallback_name (usually the channel display name) is returned.
     """
     if custom_props.get('name_source') != 'stream':
         return fallback_name, False
-    stream_index = custom_props.get('stream_index', 1) - 1
+    requested_index = custom_props.get('stream_index', 1)
+    stream_index = requested_index - 1
     streams = _ordered_channel_streams(channel)
     if 0 <= stream_index < len(streams):
         return streams[stream_index].name, False
+    if streams:
+        logger.warning(
+            "Stream index %s not found for channel %s (has %s stream(s)), "
+            "falling back to stream 1 (%s)",
+            requested_index,
+            fallback_name,
+            len(streams),
+            streams[0].name,
+        )
+        return streams[0].name, True
+    logger.warning(
+        "Stream index %s not found for channel %s (no streams), "
+        "falling back to channel name",
+        requested_index,
+        fallback_name,
+    )
     return fallback_name, True
 
 
@@ -992,15 +1011,9 @@ def resolve_channel_parse_name(channel, epg_source, *, fallback_name=None):
     custom_props = epg_source.custom_properties if epg_source else None
     if not custom_props:
         return display_name
-    name, stream_lookup_failed = resolve_pattern_match_name(
+    name, _stream_lookup_failed = resolve_pattern_match_name(
         channel, display_name, custom_props
     )
-    if stream_lookup_failed:
-        logger.warning(
-            "Stream index %s not found for channel %s, falling back to channel name",
-            custom_props.get('stream_index', 1) - 1,
-            display_name,
-        )
     return name
 
 

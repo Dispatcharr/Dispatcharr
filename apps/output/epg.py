@@ -222,13 +222,6 @@ def generate_epg(request, profile_name=None, user=None, *, xc_catchup_prev_days=
                             pattern_match_name,
                             stream_index,
                         )
-                    elif stream_lookup_failed:
-                        stream_index = custom_props.get('stream_index', 1) - 1
-                        logger.warning(
-                            "Stream index %s not found for channel %s, falling back to channel name",
-                            stream_index,
-                            effective_name,
-                        )
 
             if (
                 effective_epg_data
