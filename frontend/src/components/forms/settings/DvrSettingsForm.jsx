@@ -232,7 +232,7 @@ const DvrSettingsForm = React.memo(({ active }) => {
         />
         <TextInput
           label="TV Path Template"
-          description="Supports {show}, {season}, {episode}, {sub_title}, {channel}, {year}, {start}, {end}. Use format specifiers like {season:02d}. Relative paths are under your library dir."
+          description="Supports {show}, {season}, {episode}, {sub_title}, {channel}, {year}, {start}, {end}, plus {start_date} and {start_year}, {start_month}, {start_day} for the broadcast date in your system time zone. Use format specifiers like {season:02d} or {start_month:02d}. Relative paths are under your library dir."
           placeholder="TV_Shows/{show}/S{season:02d}E{episode:02d}.mkv"
           {...form.getInputProps('tv_template')}
           id="tv_template"
@@ -240,7 +240,7 @@ const DvrSettingsForm = React.memo(({ active }) => {
         />
         <TextInput
           label="TV Fallback Template"
-          description="Template used when an episode has no season/episode. Supports {show}, {sub_title}, {start}, {end}, {channel}, {year}, {original_air_date}."
+          description="Template used when an episode has no season/episode. Supports {show}, {sub_title}, {start}, {end}, {channel}, {year}, {original_air_date}, plus {start_date} and {start_year}, {start_month}, {start_day} for the broadcast date in your system time zone."
           placeholder="TV_Shows/{show}/{start}.mkv"
           {...form.getInputProps('tv_fallback_template')}
           id="tv_fallback_template"
@@ -248,7 +248,7 @@ const DvrSettingsForm = React.memo(({ active }) => {
         />
         <TextInput
           label="Movie Path Template"
-          description="Supports {title}, {year}, {channel}, {start}, {end}. Relative paths are under your library dir."
+          description="Supports {title}, {year}, {channel}, {start}, {end}, plus {start_date} and {start_year}, {start_month}, {start_day} for the broadcast date in your system time zone. Relative paths are under your library dir."
           placeholder="Movies/{title} ({year}).mkv"
           {...form.getInputProps('movie_template')}
           id="movie_template"
@@ -256,7 +256,7 @@ const DvrSettingsForm = React.memo(({ active }) => {
         />
         <TextInput
           label="Movie Fallback Template"
-          description="Template used when movie metadata is incomplete. Supports {start}, {end}, {channel}."
+          description="Template used when movie metadata is incomplete. Supports {start}, {end}, {channel}, plus {start_date} and {start_year}, {start_month}, {start_day} for the broadcast date in your system time zone."
           placeholder="Movies/{start}.mkv"
           {...form.getInputProps('movie_fallback_template')}
           id="movie_fallback_template"
