@@ -68,7 +68,6 @@ export const saveChangedSettings = async (settings, changedSettings) => {
     'log_max_mb',
     'log_keep',
     'log_persist',
-    'log_level',
     'preferred_region',
     'auto_import_mapped_files',
     'enable_ip_lookup',
@@ -200,9 +199,6 @@ export const saveChangedSettings = async (settings, changedSettings) => {
   }
 };
 
-// Fields where '' is a value, not a missing entry: log_level follows the container.
-const EMPTY_VALUED_FIELDS = ['log_level'];
-
 export const getChangedSettings = (values, settings) => {
   const changedSettings = {};
 
@@ -250,7 +246,7 @@ export const getChangedSettings = (values, settings) => {
     }
 
     // Skip empty values to avoid validation errors
-    if (!compareValue && !EMPTY_VALUED_FIELDS.includes(settingKey)) {
+    if (!compareValue) {
       continue;
     }
 
@@ -388,7 +384,6 @@ export const parseSettings = (settings) => {
       typeof systemSettings.log_persist === 'boolean'
         ? systemSettings.log_persist
         : true;
-    parsed.log_level = String(systemSettings.log_level || '');
     parsed.preferred_region = systemSettings.preferred_region ?? null;
     parsed.auto_import_mapped_files =
       typeof systemSettings.auto_import_mapped_files === 'boolean'

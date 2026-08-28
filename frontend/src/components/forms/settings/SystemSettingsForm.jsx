@@ -42,8 +42,6 @@ const SystemSettingsForm = React.memo(({ active }) => {
   useEffect(() => {
     if (settings) {
       const formValues = parseSettings(settings);
-      // An error floor already keeps critical; rewriting trace would raise the floor.
-      if (formValues.log_level === 'CRITICAL') formValues.log_level = 'ERROR';
 
       form.setValues(formValues);
     }
@@ -84,20 +82,6 @@ const SystemSettingsForm = React.memo(({ active }) => {
       />
       {!isModular && (
         <>
-          <Select
-            label="Log Level"
-            description="How much detail to record in the logs. Container default follows the level the container was started with."
-            {...form.getInputProps('log_level')}
-            id="log_level"
-            allowDeselect={false}
-            data={[
-              { value: '', label: 'Container default' },
-              { value: 'DEBUG', label: 'Debug' },
-              { value: 'INFO', label: 'Info' },
-              { value: 'WARNING', label: 'Warning' },
-              { value: 'ERROR', label: 'Error' },
-            ]}
-          />
           <Switch
             label="Persist Logs to File"
             description="Write application logs to disk. Console logging is unaffected."

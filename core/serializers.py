@@ -2,7 +2,6 @@
 import json
 import ipaddress
 
-from django.conf import settings as django_settings
 from rest_framework import serializers
 from .models import CoreSettings, UserAgent, StreamProfile, OutputProfile, DVR_SETTINGS_KEY, NETWORK_ACCESS_KEY, SYSTEM_SETTINGS_KEY
 
@@ -89,14 +88,6 @@ class CoreSettingsSerializer(serializers.ModelSerializer):
                     value["log_keep"] = _clamp_int(value["log_keep"], 5, 1, 50)
                 if "log_persist" in value:
                     value["log_persist"] = value["log_persist"] is not False
-                if "log_level" in value:
-                    level = str(value["log_level"] or "").strip().upper()
-                    # An ERROR floor already keeps critical, so critical is not a floor of its own.
-                    if level == "CRITICAL":
-                        level = "ERROR"
-                    value["log_level"] = (
-                        level if level in django_settings.LOG_LEVEL_MAP else ""
-                    )
 
         # Sanitize series_rules when DVR settings are saved through the
         # generic settings API (e.g. Settings page round-trip) to prevent

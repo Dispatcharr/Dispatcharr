@@ -144,17 +144,16 @@ describe('SettingsUtils', () => {
       });
     });
 
-    it('should route log_persist and log_level into system_settings', async () => {
+    it('should route log_persist into system_settings', async () => {
       const settings = {
         system_settings: {
           id: 3,
           key: 'system_settings',
-          value: { log_persist: true, log_level: '' },
+          value: { log_persist: true },
         },
       };
       const changedSettings = {
         log_persist: false,
-        log_level: 'DEBUG',
       };
 
       API.updateSetting.mockResolvedValue({});
@@ -166,7 +165,6 @@ describe('SettingsUtils', () => {
         key: 'system_settings',
         value: {
           log_persist: false,
-          log_level: 'DEBUG',
         },
       });
     });
@@ -385,24 +383,22 @@ describe('SettingsUtils', () => {
       expect(result.post_offset_minutes).toBe(5);
     });
 
-    it('should parse log_persist and log_level with defaults', () => {
+    it('should parse log_persist with defaults', () => {
       const stored = {
         system_settings: {
           id: 3,
           key: 'system_settings',
-          value: { log_persist: false, log_level: 'DEBUG' },
+          value: { log_persist: false },
         },
       };
       const result = SettingsUtils.parseSettings(stored);
       expect(result.log_persist).toBe(false);
-      expect(result.log_level).toBe('DEBUG');
 
       const empty = {
         system_settings: { id: 3, key: 'system_settings', value: {} },
       };
       const defaults = SettingsUtils.parseSettings(empty);
       expect(defaults.log_persist).toBe(true);
-      expect(defaults.log_level).toBe('');
     });
 
     it('should handle empty m3u_hash_key', () => {
@@ -520,15 +516,6 @@ describe('SettingsUtils', () => {
       });
     });
 
-    it('should keep an emptied log_level so it can return to the container default', () => {
-      const result = SettingsUtils.getChangedSettings(
-        { log_level: '', max_system_events: '' },
-        {}
-      );
-      expect(result).toHaveProperty('log_level', '');
-      // Other fields keep the empty-skip that avoids validation errors.
-      expect(result).not.toHaveProperty('max_system_events');
-    });
 
     it('should not detect unchanged values', () => {
       const values = {

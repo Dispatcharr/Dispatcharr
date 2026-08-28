@@ -124,7 +124,6 @@ const setupMocks = ({
     log_max_mb: 10,
     log_keep: 5,
     log_persist: true,
-    log_level: settings?.log_level ?? '',
     preferred_region: '',
     auto_import_mapped_files: true,
     enable_ip_lookup: true,
@@ -250,43 +249,13 @@ describe('SystemSettingsForm', () => {
       expect(screen.getByTestId('log_persist')).toBeInTheDocument();
     });
 
-    it('offers the levels the viewer offers, with trace and critical folded in', () => {
-      setupMocks();
-      render(<SystemSettingsForm active={true} />);
-      expect(screen.getByTestId('log_level')).toBeInTheDocument();
-      ['Container default', 'Debug', 'Info', 'Warning', 'Error'].forEach(
-        (label) => expect(screen.getByText(label)).toBeInTheDocument()
-      );
-      ['Trace', 'Critical'].forEach((label) =>
-        expect(screen.queryByText(label)).not.toBeInTheDocument()
-      );
-    });
 
-    it('reads a level saved as critical back as error', () => {
-      const { formMock } = setupMocks({
-        settings: makeSettings({ log_level: 'CRITICAL' }),
-      });
-      render(<SystemSettingsForm active={true} />);
-      expect(formMock.setValues).toHaveBeenCalledWith(
-        expect.objectContaining({ log_level: 'ERROR' })
-      );
-    });
 
-    it('leaves a developer trace level alone', () => {
-      const { formMock } = setupMocks({
-        settings: makeSettings({ log_level: 'TRACE' }),
-      });
-      render(<SystemSettingsForm active={true} />);
-      expect(formMock.setValues).toHaveBeenCalledWith(
-        expect.objectContaining({ log_level: 'TRACE' })
-      );
-    });
 
     it('hides the log file fields in modular mode', () => {
       setupMocks({ environment: makeEnvironment({ env_mode: 'modular' }) });
       render(<SystemSettingsForm active={true} />);
       expect(screen.queryByTestId('log_persist')).not.toBeInTheDocument();
-      expect(screen.queryByTestId('log_level')).not.toBeInTheDocument();
       expect(
         screen.queryByText('Maximum Log File Size (MB)')
       ).not.toBeInTheDocument();
@@ -373,7 +342,6 @@ describe('SystemSettingsForm', () => {
         log_max_mb: 10,
         log_keep: 5,
         log_persist: true,
-        log_level: '',
         preferred_region: '',
         auto_import_mapped_files: true,
         enable_ip_lookup: true,

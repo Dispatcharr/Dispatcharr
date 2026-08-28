@@ -4,7 +4,6 @@ export const getSystemSettingsFormInitialValues = () => {
     log_max_mb: 10,
     log_keep: 5,
     log_persist: true,
-    log_level: '',
     preferred_region: '',
     auto_import_mapped_files: true,
     enable_ip_lookup: true,
