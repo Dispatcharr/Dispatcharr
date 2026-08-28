@@ -3,6 +3,7 @@ import json
 from django.urls import reverse
 from apps.channels.models import Channel, ChannelProfile, ChannelGroup, Stream
 from apps.channels.utils import format_channel_number, is_catchup_enabled
+from apps.vod.utils import is_vod_movies_enabled, is_vod_series_enabled
 from django.db.models import Prefetch
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
@@ -1199,11 +1200,14 @@ def _xc_fetch_priority_distinct_relations(
 
 def xc_get_vod_categories(user):
     """Get VOD categories for XtreamCodes API"""
+    if not is_vod_movies_enabled(user=user):
+        return []
+
     from apps.vod.models import VODCategory, M3UMovieRelation
 
     response = []
 
-    # All authenticated users get access to VOD from all active M3U accounts
+    # Users with VOD access get it from all active M3U accounts
     categories = VODCategory.objects.filter(
         category_type='movie',
         m3umovierelation__m3u_account__is_active=True
@@ -1221,6 +1225,9 @@ def xc_get_vod_categories(user):
 
 def xc_get_vod_streams(request, user, category_id=None):
     """Get VOD streams (movies) for XtreamCodes API"""
+    if not is_vod_movies_enabled(user=user):
+        return []
+
     from apps.vod.models import M3UMovieRelation
 
     rel_filters = {"m3u_account__is_active": True}
@@ -1291,11 +1298,14 @@ def xc_get_vod_streams(request, user, category_id=None):
 
 def xc_get_series_categories(user):
     """Get series categories for XtreamCodes API"""
+    if not is_vod_series_enabled(user=user):
+        return []
+
     from apps.vod.models import VODCategory, M3USeriesRelation
 
     response = []
 
-    # All authenticated users get access to series from all active M3U accounts
+    # Users with VOD access get series from all active M3U accounts
     categories = VODCategory.objects.filter(
         category_type='series',
         m3useriesrelation__m3u_account__is_active=True
@@ -1313,6 +1323,9 @@ def xc_get_series_categories(user):
 
 def xc_get_series(request, user, category_id=None):
     """Get series list for XtreamCodes API"""
+    if not is_vod_series_enabled(user=user):
+        return []
+
     from apps.vod.models import M3USeriesRelation
 
     rel_filters = {"m3u_account__is_active": True}
@@ -1383,12 +1396,15 @@ def xc_get_series(request, user, category_id=None):
 
 def xc_get_series_info(request, user, series_id):
     """Get detailed series information including episodes"""
+    if not is_vod_series_enabled(user=user):
+        raise Http404()
+
     from apps.vod.models import M3USeriesRelation, M3UEpisodeRelation
 
     if not series_id:
         raise Http404()
 
-    # All authenticated users get access to series from all active M3U accounts
+    # Users with VOD access get series from all active M3U accounts
     filters = {"id": series_id, "m3u_account__is_active": True}
 
     try:
@@ -1644,6 +1660,9 @@ def xc_get_series_info(request, user, series_id):
 
 def xc_get_vod_info(request, user, vod_id):
     """Get detailed VOD (movie) information"""
+    if not is_vod_movies_enabled(user=user):
+        raise Http404()
+
     from apps.vod.models import M3UMovieRelation
     from django.utils import timezone
     from datetime import timedelta
@@ -1651,7 +1670,7 @@ def xc_get_vod_info(request, user, vod_id):
     if not vod_id:
         raise Http404()
 
-    # All authenticated users get access to VOD from all active M3U accounts
+    # Users with VOD access get it from all active M3U accounts
     filters = {"movie_id": vod_id, "m3u_account__is_active": True}
     if user.user_level < 10 and (user.custom_properties or {}).get('hide_adult_content', False):
         filters["movie__is_adult"] = False
