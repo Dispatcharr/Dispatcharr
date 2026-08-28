@@ -7,7 +7,9 @@ import logging
 from django.test import SimpleTestCase
 
 from dispatcharr import log_collector
-from dispatcharr.startup_log import canonical_formatter, startup_log
+from django.conf import settings
+
+from dispatcharr.startup_log import DisplayTimezoneFormatter, startup_log
 
 
 class StartupLogTests(SimpleTestCase):
@@ -46,7 +48,7 @@ class StartupLogTests(SimpleTestCase):
             None,
             None,
         )
-        line = canonical_formatter().format(record)
+        line = DisplayTimezoneFormatter().format(record)
         self.assertRegex(line.encode(), log_collector._PY)
 
     def test_multiline_messages_keep_their_tail_as_continuations(self):
@@ -60,7 +62,22 @@ class StartupLogTests(SimpleTestCase):
             None,
             None,
         )
-        lines = canonical_formatter().format(record).split("\n")
+        lines = DisplayTimezoneFormatter().format(record).split("\n")
         for tail in lines[1:]:
             self.assertTrue(tail == "" or tail.startswith(" "))
         self.assertIn("def xstarmap(task, it):", lines[1])
+
+    def test_formatter_stamps_in_utc_regardless_of_process_zone(self):
+        record = logging.LogRecord(
+            "core.tests", logging.INFO, __file__, 1, "message", None, None
+        )
+        record.created = 1755500000.0
+        record.msecs = 123.0
+        self.assertEqual(
+            DisplayTimezoneFormatter().format(record),
+            "2025-08-18 06:53:20,123 INFO core.tests message",
+        )
+
+    def test_the_migration_seed_source_is_still_defined(self):
+        # Migration 0020 seeds the system time zone from this setting.
+        self.assertTrue(getattr(settings, "DISPATCHARR_DISPLAY_TZ", None))

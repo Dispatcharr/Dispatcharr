@@ -13,17 +13,17 @@ def startup_log(message, level="INFO", source="dispatcharr.startup", stream=None
     print(f"{stamp} {level} {source} {message}", flush=True, file=stream or sys.stdout)
 
 
-class _CanonicalFormatter(logging.Formatter):
+class DisplayTimezoneFormatter(logging.Formatter):
+    """Stamps records in UTC; the log collector renders the display zone."""
+
     converter = time.gmtime
+
+    def __init__(self, format="%(asctime)s %(levelname)s %(name)s %(message)s", datefmt=None, style="%"):
+        super().__init__(fmt=format, datefmt=datefmt, style=style)
 
     def format(self, record):
         # Indent embedded newlines: the collector reads leading whitespace as a continuation.
         return super().format(record).replace("\n", "\n ")
-
-
-def canonical_formatter():
-    """Formatter matching the collector grammar, stamped in UTC."""
-    return _CanonicalFormatter("%(asctime)s %(levelname)s %(name)s %(message)s")
 
 
 def configure_early_logging(level):
@@ -31,7 +31,7 @@ def configure_early_logging(level):
     if isinstance(level, str):
         level = logging.getLevelNamesMapping().get(level, logging.INFO)
     handler = logging.StreamHandler(sys.stdout)
-    handler.setFormatter(canonical_formatter())
+    handler.setFormatter(DisplayTimezoneFormatter())
     # basicConfig only installs on a bare root, so a second caller just tightens the level.
     logging.basicConfig(handlers=[handler])
     logging.getLogger().setLevel(level)

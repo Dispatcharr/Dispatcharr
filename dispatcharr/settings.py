@@ -566,7 +566,7 @@ LOGGING = {
     "disable_existing_loggers": False,
     "formatters": {
         "verbose": {
-            "()": "dispatcharr.display_timezone.DisplayTimezoneFormatter",
+            "()": "dispatcharr.startup_log.DisplayTimezoneFormatter",
             "format": "{asctime} {levelname} {name} {message}",
             "style": "{",
         },
