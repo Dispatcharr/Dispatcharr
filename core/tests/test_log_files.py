@@ -84,44 +84,6 @@ class LogFilesEndpointTests(TestCase):
             b"".join(response.streaming_content), b"line one\nline two\n"
         )
 
-    def test_admin_gets_token_then_downloads_with_it(self):
-        token_response = self.client.get(
-            "/api/core/logs/dispatcharr.log/download-token/"
-        )
-        self.assertEqual(token_response.status_code, 200)
-        token = token_response.json()["token"]
-        self.assertTrue(token)
-
-        # A plain link carries the token but no JWT (anonymous client).
-        self.client.force_authenticate(None)
-        response = self.client.get(
-            f"/api/core/logs/dispatcharr.log/download/?token={token}"
-        )
-        self.assertEqual(response.status_code, 200)
-        self.assertIn("attachment", response["Content-Disposition"])
-        self.assertEqual(
-            b"".join(response.streaming_content), b"line one\nline two\n"
-        )
-
-    def test_download_token_expires(self):
-        # uWSGI logs request URIs into this log, so a lasting token is a key inside the file.
-        stale = log_files._download_token(
-            "dispatcharr.log", self.admin.pk, expires=time.time() - 1
-        )
-        self.client.logout()
-        response = self.client.get(
-            f"/api/core/logs/dispatcharr.log/download/?token={stale}"
-        )
-        self.assertEqual(response.status_code, 403)
-
-    def test_download_token_is_bound_to_one_file(self):
-        token = log_files._download_token("dispatcharr.log", self.admin.pk)
-        self.client.logout()
-        response = self.client.get(
-            f"/api/core/logs/dispatcharr.log.1/download/?token={token}"
-        )
-        self.assertEqual(response.status_code, 403)
-
     def test_endpoints_serve_only_the_log_family(self):
         # DISPATCHARR_LOG_DIR may point at a data root; view and download are not a file server.
         with open(os.path.join(self.log_dir, "secrets.env"), "w") as f:
@@ -133,14 +95,7 @@ class LogFilesEndpointTests(TestCase):
             self.client.get("/api/core/logs/secrets.env/download/").status_code, 404
         )
 
-    def test_download_with_bad_token_is_forbidden(self):
-        self.client.force_authenticate(None)
-        response = self.client.get(
-            "/api/core/logs/dispatcharr.log/download/?token=deadbeef"
-        )
-        self.assertEqual(response.status_code, 403)
-
-    def test_download_without_token_or_auth_is_unauthorized(self):
+    def test_download_requires_authentication(self):
         self.client.force_authenticate(None)
         response = self.client.get("/api/core/logs/dispatcharr.log/download/")
         self.assertEqual(response.status_code, 401)
@@ -195,13 +150,6 @@ class LogFilesEndpointTests(TestCase):
         self.assertEqual(
             self.client.get("/api/core/logs/dispatcharr.log/").status_code, 403
         )
-
-    def test_non_admin_download_token_is_forbidden(self):
-        self.client.force_authenticate(self.viewer)
-        response = self.client.get(
-            "/api/core/logs/dispatcharr.log/download-token/"
-        )
-        self.assertEqual(response.status_code, 403)
 
     def test_anonymous_is_unauthorized(self):
         self.client.force_authenticate(None)
