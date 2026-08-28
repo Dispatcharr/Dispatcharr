@@ -626,6 +626,7 @@ class CoreSettings(models.Model):
             "pre_offset_minutes": 0,
             "post_offset_minutes": 0,
             "series_rules": [],
+            "dvr_output_profile_id": None,
         })
 
     @classmethod
@@ -747,6 +748,15 @@ class CoreSettings(models.Model):
     @classmethod
     def get_hdhr_output_profile_id(cls):
         raw = cls.get_stream_settings().get("hdhr_output_profile_id")
+        try:
+            return int(raw) if raw is not None else None
+        except (ValueError, TypeError):
+            return None
+
+    @classmethod
+    def get_dvr_output_profile_id(cls):
+        """Output profile applied to DVR captures, or None to record as-is."""
+        raw = cls.get_dvr_settings().get("dvr_output_profile_id")
         try:
             return int(raw) if raw is not None else None
         except (ValueError, TypeError):

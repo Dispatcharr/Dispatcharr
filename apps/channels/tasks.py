@@ -1653,6 +1653,20 @@ def get_dvr_stream_base_url():
     return 'http://127.0.0.1:5656'
 
 
+def _dvr_capture_url(base, channel_uuid, output_profile_id=None):
+    """Build the TS proxy URL a recording captures from.
+
+    The capture runs `-c copy`, so the proxy's output profile is the only place
+    a recording can be transcoded, and the request is anonymous — no user
+    profile applies. With no id the URL is unchanged and the source is recorded
+    as-is.
+    """
+    url = f"{base}/proxy/ts/stream/{channel_uuid}"
+    if output_profile_id:
+        url = f"{url}?output_profile={output_profile_id}"
+    return url
+
+
 @shared_task
 def run_recording(recording_id, channel_id, start_time_str, end_time_str):
     """
@@ -1960,7 +1974,9 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
     _ffmpeg_retry_window = _dvr_ffmpeg_retry_window_seconds()
 
     if not interrupted and hls_dir:
-        stream_url = f"{base}/proxy/ts/stream/{channel.uuid}"
+        stream_url = _dvr_capture_url(
+            base, channel.uuid, CoreSettings.get_dvr_output_profile_id()
+        )
         logger.info(f"DVR recording {recording_id}: stream URL: {stream_url}")
         logger.info(f"DVR recording {recording_id}: HLS output dir: {hls_dir}")
         logger.info(

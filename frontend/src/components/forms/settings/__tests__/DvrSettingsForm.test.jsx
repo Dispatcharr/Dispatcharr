@@ -8,6 +8,7 @@ vi.mock('../../../../store/settings.jsx', () => {
   mock.getState = vi.fn();
   return { default: mock };
 });
+vi.mock('../../../../store/outputProfiles.jsx', () => ({ default: vi.fn() }));
 
 // ── Utility mocks ──────────────────────────────────────────────────────────────
 vi.mock('../../../../utils/pages/SettingsUtils.js', () => ({
@@ -117,6 +118,7 @@ vi.mock('@mantine/core', () => ({
 // Imports after mocks
 // ──────────────────────────────────────────────────────────────────────────────
 import useSettingsStore from '../../../../store/settings.jsx';
+import useOutputProfilesStore from '../../../../store/outputProfiles.jsx';
 import { useForm } from '@mantine/form';
 import {
   getChangedSettings,
@@ -144,7 +146,14 @@ const mockFormValues = {
   tv_fallback_template: '',
   movie_template: '',
   movie_fallback_template: '',
+  dvr_output_profile_id: null,
 };
+
+const mockOutputProfiles = [
+  { id: 1, name: 'Media Server (AC3)', is_active: true },
+  { id: 6, name: 'HEVC VAAPI Main10', is_active: true },
+  { id: 9, name: 'Retired profile', is_active: false },
+];
 
 const makeFormMock = (overrides = {}) => ({
   getInputProps: vi.fn((field, opts) => {
@@ -152,6 +161,7 @@ const makeFormMock = (overrides = {}) => ({
       return { checked: mockFormValues[field] ?? false, onChange: vi.fn() };
     return { value: mockFormValues[field] ?? '', onChange: vi.fn() };
   }),
+  values: mockFormValues,
   setValues: vi.fn(),
   setFieldValue: vi.fn(),
   getValues: vi.fn(() => mockFormValues),
@@ -170,8 +180,16 @@ const makeSettings = (overrides = {}) => ({
   ...overrides,
 });
 
-const setupMocks = ({ settings = makeSettings(), formOverrides = {} } = {}) => {
+const setupMocks = ({
+  settings = makeSettings(),
+  formOverrides = {},
+  outputProfiles = mockOutputProfiles,
+} = {}) => {
   const formMock = makeFormMock(formOverrides);
+
+  vi.mocked(useOutputProfilesStore).mockImplementation((sel) =>
+    sel({ profiles: outputProfiles })
+  );
 
   vi.mocked(useForm).mockReturnValue(formMock);
   vi.mocked(getDvrSettingsFormInitialValues).mockReturnValue(mockFormValues);
@@ -274,6 +292,33 @@ describe('DvrSettingsForm', () => {
           screen.getByTestId('movie_fallback_template')
         ).toBeInTheDocument();
       });
+    });
+
+    it('offers only active output profiles for DVR capture', async () => {
+      render(<DvrSettingsForm active={true} />);
+      await waitFor(() => {
+        expect(screen.getByTestId('dvr_output_profile_id')).toBeInTheDocument();
+      });
+
+      const values = Array.from(
+        screen.getByTestId('dvr_output_profile_id').options
+      ).map((o) => o.value);
+      expect(values).toEqual(['1', '6']);
+    });
+
+    it('stores the chosen output profile as an integer', async () => {
+      render(<DvrSettingsForm active={true} />);
+      await waitFor(() => {
+        expect(screen.getByTestId('dvr_output_profile_id')).toBeInTheDocument();
+      });
+
+      fireEvent.change(screen.getByTestId('dvr_output_profile_id'), {
+        target: { value: '6' },
+      });
+      expect(formMock.setFieldValue).toHaveBeenCalledWith(
+        'dvr_output_profile_id',
+        6
+      );
     });
 
     it('advertises original air date only for the TV fallback template', async () => {
