@@ -3,7 +3,7 @@ import json
 from django.urls import reverse
 from apps.channels.models import Channel, ChannelProfile, ChannelGroup, Stream
 from apps.channels.utils import format_channel_number, is_catchup_enabled
-from apps.vod.utils import VOD_KIND_MOVIE, VOD_KIND_SERIES, is_vod_enabled
+from apps.vod.utils import is_vod_movies_enabled, is_vod_series_enabled
 from django.db.models import Prefetch
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
@@ -1167,7 +1167,7 @@ def _xc_fetch_priority_distinct_relations(
 
 def xc_get_vod_categories(user):
     """Get VOD categories for XtreamCodes API"""
-    if not is_vod_enabled(kind=VOD_KIND_MOVIE, user=user):
+    if not is_vod_movies_enabled(user=user):
         return []
 
     from apps.vod.models import VODCategory, M3UMovieRelation
@@ -1192,7 +1192,7 @@ def xc_get_vod_categories(user):
 
 def xc_get_vod_streams(request, user, category_id=None):
     """Get VOD streams (movies) for XtreamCodes API"""
-    if not is_vod_enabled(kind=VOD_KIND_MOVIE, user=user):
+    if not is_vod_movies_enabled(user=user):
         return []
 
     from apps.vod.models import M3UMovieRelation
@@ -1265,7 +1265,7 @@ def xc_get_vod_streams(request, user, category_id=None):
 
 def xc_get_series_categories(user):
     """Get series categories for XtreamCodes API"""
-    if not is_vod_enabled(kind=VOD_KIND_SERIES, user=user):
+    if not is_vod_series_enabled(user=user):
         return []
 
     from apps.vod.models import VODCategory, M3USeriesRelation
@@ -1290,7 +1290,7 @@ def xc_get_series_categories(user):
 
 def xc_get_series(request, user, category_id=None):
     """Get series list for XtreamCodes API"""
-    if not is_vod_enabled(kind=VOD_KIND_SERIES, user=user):
+    if not is_vod_series_enabled(user=user):
         return []
 
     from apps.vod.models import M3USeriesRelation
@@ -1363,7 +1363,7 @@ def xc_get_series(request, user, category_id=None):
 
 def xc_get_series_info(request, user, series_id):
     """Get detailed series information including episodes"""
-    if not is_vod_enabled(kind=VOD_KIND_SERIES, user=user):
+    if not is_vod_series_enabled(user=user):
         raise Http404()
 
     from apps.vod.models import M3USeriesRelation, M3UEpisodeRelation
@@ -1627,7 +1627,7 @@ def xc_get_series_info(request, user, series_id):
 
 def xc_get_vod_info(request, user, vod_id):
     """Get detailed VOD (movie) information"""
-    if not is_vod_enabled(kind=VOD_KIND_MOVIE, user=user):
+    if not is_vod_movies_enabled(user=user):
         raise Http404()
 
     from apps.vod.models import M3UMovieRelation

@@ -157,3 +157,30 @@ class UserPreferencesAPITests(TestCase):
         # Stripped from input; existing False preserved. Other props still update.
         self.assertFalse(self.user.custom_properties.get("catchup_enabled"))
         self.assertEqual(self.user.custom_properties.get("theme"), "light")
+
+    def test_patch_me_cannot_set_vod_access_flags(self):
+        """vod_movies_enabled / vod_series_enabled are admin-managed; /me must not change them."""
+        self.user.custom_properties = {
+            "vod_movies_enabled": False,
+            "vod_series_enabled": False,
+            "theme": "dark",
+        }
+        self.user.save(update_fields=["custom_properties"])
+
+        response = self.client.patch(
+            self.me_url,
+            {
+                "custom_properties": {
+                    "vod_movies_enabled": True,
+                    "vod_series_enabled": True,
+                    "theme": "light",
+                }
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.user.refresh_from_db()
+        self.assertFalse(self.user.custom_properties.get("vod_movies_enabled"))
+        self.assertFalse(self.user.custom_properties.get("vod_series_enabled"))
+        self.assertEqual(self.user.custom_properties.get("theme"), "light")

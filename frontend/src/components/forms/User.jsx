@@ -270,7 +270,7 @@ const User = ({ user = null, isOpen, onClose }) => {
                 />
                 <Switch
                   label="Enable Movies"
-                  description="When disabled, this user sees no movies in the Xtream Codes API and cannot play them"
+                  description="When disabled, this user cannot list or play movies via the API or Xtream Codes"
                   {...form.getInputProps('vod_movies_enabled', {
                     type: 'checkbox',
                   })}
@@ -278,7 +278,7 @@ const User = ({ user = null, isOpen, onClose }) => {
                 />
                 <Switch
                   label="Enable Series"
-                  description="When disabled, this user sees no series in the Xtream Codes API and cannot play episodes"
+                  description="When disabled, this user cannot list or play series/episodes via the API or Xtream Codes"
                   {...form.getInputProps('vod_series_enabled', {
                     type: 'checkbox',
                   })}
