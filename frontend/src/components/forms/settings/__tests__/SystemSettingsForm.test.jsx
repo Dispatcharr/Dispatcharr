@@ -124,6 +124,7 @@ const setupMocks = ({
     log_max_mb: 5,
     log_keep: 5,
     log_persist: true,
+    log_level: settings?.log_level ?? '',
     preferred_region: '',
     auto_import_mapped_files: true,
     enable_ip_lookup: true,
@@ -250,6 +251,17 @@ describe('SystemSettingsForm', () => {
       expect(screen.getByTestId('log_persist')).toBeInTheDocument();
     });
 
+    it('offers the levels the viewer offers, with trace and critical folded in', () => {
+      setupMocks();
+      render(<SystemSettingsForm active={true} />);
+      expect(screen.getByTestId('log_level')).toBeInTheDocument();
+      ['Container default', 'Debug', 'Info', 'Warning', 'Error'].forEach(
+        (label) => expect(screen.getByText(label)).toBeInTheDocument()
+      );
+      ['Trace', 'Critical'].forEach((label) =>
+        expect(screen.queryByText(label)).not.toBeInTheDocument()
+      );
+    });
 
 
 
@@ -334,6 +346,7 @@ describe('SystemSettingsForm', () => {
         log_max_mb: 5,
         log_keep: 5,
         log_persist: true,
+        log_level: '',
         preferred_region: '',
         auto_import_mapped_files: true,
         enable_ip_lookup: true,

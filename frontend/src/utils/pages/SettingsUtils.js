@@ -76,6 +76,7 @@ const GROUP_CONFIG = {
       log_max_mb: { type: 'int', default: 5 },
       log_keep: { type: 'int', default: 5 },
       log_persist: { type: 'bool', default: true },
+      log_level: { type: 'string', default: '' },
       preferred_region: { type: 'nullable', default: null },
       auto_import_mapped_files: { type: 'bool', default: true },
       enable_ip_lookup: { type: 'bool', default: true },

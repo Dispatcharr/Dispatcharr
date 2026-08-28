@@ -90,6 +90,20 @@ const SystemSettingsForm = React.memo(({ active }) => {
         max={1000}
         step={10}
       />
+      <Select
+        label="Log Level"
+        description="How much detail to record in the logs. Container default follows the level the container was started with."
+        {...form.getInputProps('log_level')}
+        id="log_level"
+        allowDeselect={false}
+        data={[
+          { value: '', label: 'Container default' },
+          { value: 'DEBUG', label: 'Debug' },
+          { value: 'INFO', label: 'Info' },
+          { value: 'WARNING', label: 'Warning' },
+          { value: 'ERROR', label: 'Error' },
+        ]}
+      />
       <Switch
         label="Persist Logs to File"
         description="Write logs to disk for the Logs page. Console output is unaffected."

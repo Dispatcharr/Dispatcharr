@@ -24,7 +24,9 @@ class ConfTests(SimpleTestCase):
         self.addCleanup(shutil.rmtree, self.log_dir, ignore_errors=True)
 
     def test_conf_round_trip(self):
-        log_collector.write_conf(self.log_dir, False, 17, 7, "Pacific/Auckland")
+        log_collector.write_conf(
+            self.log_dir, False, 17, 7, "Pacific/Auckland", "DEBUG"
+        )
         conf = log_collector.read_conf(self.log_dir)
         self.assertEqual(
             conf,
@@ -33,6 +35,7 @@ class ConfTests(SimpleTestCase):
                 "max_mb": 17,
                 "keep": 7,
                 "time_zone": "Pacific/Auckland",
+                "level": "DEBUG",
             },
         )
 
@@ -295,6 +298,63 @@ class ConfTests(SimpleTestCase):
         names = sorted(self.collector._archive_indices())
         self.assertEqual(names, [1, 2])
 
+    def test_started_line_names_the_level_floor(self):
+        log_collector.write_conf(self.log_dir, True, 10, 5, "UTC", "WARNING")
+        self.collector._apply_conf()
+        self.collector._drain()
+        self.assertIn("started (level floor WARNING)", self.read_log())
+
+    def test_started_line_says_no_floor_when_none_is_set(self):
+        log_collector.write_conf(self.log_dir, True, 10, 5, "UTC", "")
+        self.collector._apply_conf()
+        self.collector._drain()
+        self.assertIn("started (no level floor)", self.read_log())
+
+    def test_started_line_treats_an_unrankable_level_as_no_floor(self):
+        log_collector.write_conf(self.log_dir, True, 10, 5, "UTC", "BOGUS")
+        self.collector._apply_conf()
+        self.collector._drain()
+        self.assertIn("started (no level floor)", self.read_log())
+
+    def test_a_changed_floor_is_announced_to_both_sinks(self):
+        log_collector.write_conf(self.log_dir, True, 10, 5, "UTC", "")
+        self.collector._apply_conf()
+        log_collector.write_conf(self.log_dir, True, 10, 5, "UTC", "WARNING")
+        self.collector._apply_conf()
+        self.collector._drain()
+        for content in (self.read_log(), self.read_forward()):
+            self.assertIn("level floor now WARNING", content)
+
+    def test_an_unchanged_floor_is_not_announced(self):
+        log_collector.write_conf(self.log_dir, True, 10, 5, "UTC", "WARNING")
+        self.collector._apply_conf()
+        self.collector._apply_conf()
+        self.collector._drain()
+        self.assertNotIn("level floor now", self.read_log())
+
+    def test_clearing_the_floor_is_announced(self):
+        log_collector.write_conf(self.log_dir, True, 10, 5, "UTC", "ERROR")
+        self.collector._apply_conf()
+        log_collector.write_conf(self.log_dir, True, 10, 5, "UTC", "")
+        self.collector._apply_conf()
+        self.collector._drain()
+        self.assertIn("level floor removed", self.read_log())
+
+    def test_the_floor_change_forwards_with_persistence_off(self):
+        log_collector.write_conf(self.log_dir, False, 10, 5, "UTC", "")
+        self.collector._apply_conf()
+        log_collector.write_conf(self.log_dir, False, 10, 5, "UTC", "ERROR")
+        self.collector._apply_conf()
+        self.collector._drain()
+        self.assertIn("level floor now ERROR", self.read_forward())
+        self.assertNotIn("level floor now ERROR", self.read_log())
+
+    def test_a_boot_floor_forwards_with_persistence_off(self):
+        log_collector.write_conf(self.log_dir, False, 10, 5, "UTC", "WARNING")
+        self.collector._apply_conf()
+        self.collector._drain()
+        self.assertIn("level floor now WARNING", self.read_forward())
+
     def test_a_conf_written_elsewhere_is_noticed(self):
         """A save in another container writes the conf; the poll picks it up."""
         log_collector.write_conf(self.log_dir, True, 10, 5)
@@ -315,6 +375,107 @@ class ConfTests(SimpleTestCase):
         self.assertFalse(self.collector._conf_is_stale())
         log_collector.write_conf(self.log_dir, True, 10, 50)
         self.assertTrue(self.collector._conf_is_stale())
+
+    def test_level_gate_keeps_trace_below_debug(self):
+        self.collector._min_rank = 10
+        self.feed(b"2026-08-18 13:00:00,000 +1200 TRACE core.utils fine detail" + b"\n")
+        self.feed(b"2026-08-18 13:00:01,000 +1200 DEBUG core.utils plain detail" + b"\n")
+        self.collector._drain()
+        content = self.read_log()
+        self.assertNotIn("fine detail", content)
+        self.assertIn("plain detail", content)
+
+    def test_level_gate_drops_below_floor_from_both_sinks(self):
+        self.collector._min_rank = 20
+        self.feed(
+            b"2026-08-18 01:00:00,100 DEBUG core.utils noisy\n",
+            b"2026-08-18 01:00:00,200 INFO core.utils kept\n",
+        )
+        self.collector._drain()
+        for content in (self.read_log(), self.read_forward()):
+            self.assertNotIn("noisy", content)
+            self.assertIn("kept", content)
+
+    def test_level_gate_suppresses_continuations_with_their_record(self):
+        self.collector._min_rank = 20
+        self.feed(
+            b"2026-08-18 01:00:00,100 DEBUG core.utils noisy\n",
+            b"  noisy detail\n",
+            b"2026-08-18 01:00:00,200 ERROR core.utils boom\n",
+            b"  boom detail\n",
+        )
+        self.collector._drain()
+        content = self.read_log()
+        self.assertNotIn("noisy", content)
+        self.assertIn("boom\n", content)
+        self.assertIn("  boom detail\n", content)
+
+    def test_level_gate_keeps_whole_traceback_with_its_record(self):
+        # The tail lines sit at column 0: only an open traceback keeps them attached.
+        self.collector._min_rank = 40
+        self.feed(
+            b"2026-08-18 01:00:00,100 ERROR apps.channels refresh failed\n",
+            b"Traceback (most recent call last):\n",
+            b'  File "/app/x.py", line 1, in run\n',
+            b"ValueError: bad m3u\n",
+            b"\n",
+            b"During handling of the above exception, another exception occurred:\n",
+            b"Traceback (most recent call last):\n",
+            b"RuntimeError: boom\n",
+        )
+        self.collector._drain()
+        for content in (self.read_log(), self.read_forward()):
+            self.assertIn("ValueError: bad m3u", content)
+            self.assertIn("During handling of the above exception", content)
+            self.assertIn("RuntimeError: boom", content)
+
+    def test_level_gate_releases_after_a_traceback_ends(self):
+        self.collector._min_rank = 20
+        self.feed(
+            b"2026-08-18 01:00:00,100 ERROR apps.channels refresh failed\n",
+            b"Traceback (most recent call last):\n",
+            b"ValueError: bad m3u\n",
+            b"2026-08-18 01:00:00,200 DEBUG core.utils quiet\n",
+            b"plain stdout line\n",
+        )
+        self.collector._drain()
+        content = self.read_log()
+        self.assertNotIn("quiet", content)
+        self.assertIn("plain stdout line", content)
+
+    def test_level_gate_passes_records_normalize_left_untouched(self):
+        self.collector._min_rank = 20
+        self.feed(
+            b"2026-08-18 01:00:00,100 DEBUG core.utils quiet\n",
+            b"345:M 18 Xyz 2026 01:00:07.211 # Memory overcommit must be enabled\n",
+        )
+        self.collector._drain()
+        self.assertIn("Memory overcommit", self.read_log())
+
+    def test_level_gate_never_drops_output_whose_severity_is_ours(self):
+        self.collector._min_rank = 30
+        self.feed(
+            b"2026-08-18 01:00:06 - Process uwsgi has exited!\n",
+            b"No processes started. Exiting.\n",
+            b"2026-08-18 01:00:06,000 - uwsgi_response_write_body_do(): Broken pipe"
+            b" [core/writer.c line 306] during GET /x (192.0.2.5)\n",
+            b'192.0.2.7 - admin [18/Aug/2026:03:00:00 +0200] "GET /y HTTP/1.1" 200\n',
+            b"2026-08-18 01:00:00,100 INFO core.utils routine\n",
+        )
+        self.collector._drain()
+        for content in (self.read_log(), self.read_forward()):
+            self.assertIn("Process uwsgi has exited", content)
+            self.assertIn("No processes started", content)
+            self.assertIn("Broken pipe", content)
+            self.assertIn('"GET /y HTTP/1.1"', content)
+            # A source that did state INFO is still filtered.
+            self.assertNotIn("routine", content)
+
+    def test_level_gate_passes_unknown_levels(self):
+        self.collector._min_rank = 50
+        self.feed(b"2026-08-18 01:00:00,100 NOTE core.utils odd but kept\n")
+        self.collector._drain()
+        self.assertIn("odd but kept", self.read_log())
 
     def test_marker_defers_while_tail_open(self):
         self.collector._tail_open = True
@@ -532,7 +693,12 @@ class ApplySettingsTests(SimpleTestCase):
     def test_settings_round_trip_to_conf(self):
         log_collector.apply_settings(
             self.log_dir,
-            {"log_persist": False, "log_max_mb": 15, "log_keep": 3},
+            {
+                "log_persist": False,
+                "log_max_mb": 15,
+                "log_keep": 3,
+                "log_level": "WARNING",
+            },
         )
         conf = log_collector.read_conf(self.log_dir)
         self.assertEqual(
@@ -542,6 +708,7 @@ class ApplySettingsTests(SimpleTestCase):
                 "max_mb": 15,
                 "keep": 3,
                 "time_zone": "UTC",
+                "level": "WARNING",
             },
         )
 
@@ -591,6 +758,7 @@ class ReceiverTests(TestCase):
                 "max_mb": 20,
                 "keep": 4,
                 "time_zone": "UTC",
+                "level": "",
             },
         )
 
