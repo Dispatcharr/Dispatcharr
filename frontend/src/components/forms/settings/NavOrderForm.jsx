@@ -22,11 +22,11 @@ import { restrictToVerticalAxis } from '@dnd-kit/modifiers';
 import useAuthStore from '../../../store/auth';
 import {
   NAV_ITEMS,
-  DEFAULT_ADMIN_ORDER,
-  DEFAULT_USER_ORDER,
+  getDefaultOrder,
   getOrderedNavItems,
 } from '../../../config/navigation';
 import { USER_LEVELS } from '../../../constants';
+import { canViewDvr } from '../../../utils/dvrAccess';
 
 const DraggableNavItem = ({ item, isHidden, canHide, onToggleVisibility }) => {
   const {
@@ -109,7 +109,8 @@ const NavOrderForm = ({ active }) => {
   const updateUserPreferences = useAuthStore((s) => s.updateUserPreferences);
 
   const isAdmin = user?.user_level >= USER_LEVELS.ADMIN;
-  const defaultOrder = isAdmin ? DEFAULT_ADMIN_ORDER : DEFAULT_USER_ORDER;
+  const userCanViewDvr = canViewDvr(user);
+  const defaultOrder = getDefaultOrder(isAdmin, userCanViewDvr);
 
   const [items, setItems] = useState([]);
   const [isSaving, setIsSaving] = useState(false);
@@ -127,10 +128,12 @@ const NavOrderForm = ({ active }) => {
   useEffect(() => {
     if (active) {
       const savedOrder = getNavOrder();
-      const orderedItems = getOrderedNavItems(savedOrder, isAdmin);
+      const orderedItems = getOrderedNavItems(savedOrder, isAdmin, [], {
+        canViewDvr: userCanViewDvr,
+      });
       setItems(orderedItems);
     }
-  }, [active, isAdmin, getNavOrder]);
+  }, [active, isAdmin, userCanViewDvr, getNavOrder]);
 
   // Cleanup timeout on unmount
   useEffect(() => {
@@ -169,7 +172,9 @@ const NavOrderForm = ({ active }) => {
         } catch {
           // Revert on failure
           const savedOrder = getNavOrder();
-          const orderedItems = getOrderedNavItems(savedOrder, isAdmin);
+          const orderedItems = getOrderedNavItems(savedOrder, isAdmin, [], {
+            canViewDvr: userCanViewDvr,
+          });
           setItems(orderedItems);
           notifications.show({
             title: 'Error',
@@ -182,7 +187,7 @@ const NavOrderForm = ({ active }) => {
         }
       }, 800);
     },
-    [setNavOrder, getNavOrder, isAdmin]
+    [setNavOrder, getNavOrder, isAdmin, userCanViewDvr]
   );
 
   const handleDragEnd = ({ active, over }) => {
@@ -232,7 +237,9 @@ const NavOrderForm = ({ active }) => {
     setIsSaving(true);
     try {
       await updateUserPreferences({ navOrder: defaultOrder, hiddenNav: [] });
-      const orderedItems = getOrderedNavItems(defaultOrder, isAdmin);
+      const orderedItems = getOrderedNavItems(defaultOrder, isAdmin, [], {
+        canViewDvr: userCanViewDvr,
+      });
       setItems(orderedItems);
       notifications.show({
         title: 'Navigation',

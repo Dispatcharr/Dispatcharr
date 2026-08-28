@@ -19,9 +19,16 @@ from datetime import timedelta
 from apps.accounts.permissions import (
     Authenticated,
     IsAdmin,
+    IsAdminOrDVRManager,
+    IsDVRViewer,
     IsStandardUser,
     permission_classes_by_action,
     permission_classes_by_method,
+)
+from apps.channels.dvr_access import (
+    is_dvr_manage_enabled,
+    is_dvr_view_enabled,
+    recordings_queryset_for_user,
 )
 
 from core.models import CoreSettings
@@ -3192,7 +3199,7 @@ class RecurringRecordingRuleViewSet(viewsets.ModelViewSet):
     serializer_class = RecurringRecordingRuleSerializer
 
     def get_permissions(self):
-        return [IsAdmin()]
+        return [IsAdminOrDVRManager()]
 
     def perform_create(self, serializer):
         rule = serializer.save()
@@ -3302,23 +3309,33 @@ class RecordingViewSet(viewsets.ModelViewSet):
     queryset = Recording.objects.all()
     serializer_class = RecordingSerializer
 
+    def get_queryset(self):
+        qs = super().get_queryset().select_related("channel")
+        return recordings_queryset_for_user(qs, getattr(self.request, "user", None))
+
     def get_permissions(self):
         # file/hls use AllowAny so DRF does not reject requests before auth
         # classes run; _user_can_play_recording enforces authenticated access.
         if self.action in ('file', 'hls'):
             return [AllowAny()]
+        if self.action in ('list', 'retrieve'):
+            return [IsDVRViewer()]
         if self.action in (
+            'create',
+            'update',
+            'partial_update',
+            'destroy',
             'stop',
             'extend',
             'comskip',
             'refresh_artwork',
             'update_metadata',
         ):
-            return [IsAdmin()]
+            return [IsAdminOrDVRManager()]
         try:
             return [perm() for perm in permission_classes_by_action[self.action]]
         except KeyError:
-            return [IsAdmin()]
+            return [IsAdminOrDVRManager()]
 
     def _user_can_play_recording(self, request, recording):
         """Authorization gate for recording playback (file/hls actions).
@@ -3327,10 +3344,11 @@ class RecordingViewSet(viewsets.ModelViewSet):
         unlike the XC-style endpoints these URLs carry no credentials of
         their own, so we require an authenticated session/JWT:
           * Unauthenticated requests → denied.
-          * Admins (user_level >= 10) → allowed.
-          * Authenticated non-admins → allowed only if the recording's
-            source channel is visible under their channel-profile
-            assignments and within their user_level.
+          * Admins and DVR managers → allowed.
+          * View-only users → allowed only if the recording's source
+            channel is visible under their channel-profile assignments
+            and within their user_level.
+          * Users without DVR view/manage → denied.
 
         The network_access_allowed(request, "STREAMS") check applied
         before this is a network-perimeter gate (e.g. block external IPs
@@ -3340,30 +3358,19 @@ class RecordingViewSet(viewsets.ModelViewSet):
         user = getattr(request, "user", None)
         if not user or not getattr(user, "is_authenticated", False):
             return False
-        if getattr(user, "user_level", 0) >= 10:
+        if not is_dvr_view_enabled(user=user):
+            return False
+        if is_dvr_manage_enabled(user=user):
             return True
 
         channel = getattr(recording, "channel", None)
         if channel is None:
-            # Recording with no source channel, only admins can play.
+            # Recording with no source channel, only admins/managers can play.
             return False
 
-        try:
-            user_profile_count = user.channel_profiles.count()
-        except Exception:
-            user_profile_count = 0
-
-        filters = {
-            "id": channel.id,
-            "user_level__lte": user.user_level,
-        }
-        if user_profile_count > 0:
-            filters["channelprofilemembership__enabled"] = True
-            filters["channelprofilemembership__channel_profile__in"] = (
-                user.channel_profiles.all()
-            )
-            return Channel.objects.filter(**filters).distinct().exists()
-        return Channel.objects.filter(**filters).exists()
+        return recordings_queryset_for_user(
+            Recording.objects.filter(pk=recording.pk), user
+        ).exists()
 
     @action(detail=True, methods=["post"], url_path="comskip")
     def comskip(self, request, pk=None):
@@ -3999,10 +4006,7 @@ class ComskipConfigAPIView(APIView):
 class BulkDeleteUpcomingRecordingsAPIView(APIView):
     """Delete all upcoming (future) recordings."""
     def get_permissions(self):
-        try:
-            return [perm() for perm in permission_classes_by_method[self.request.method]]
-        except KeyError:
-            return [Authenticated()]
+        return [IsAdminOrDVRManager()]
 
     def post(self, request):
         now = timezone.now()
@@ -4020,10 +4024,9 @@ class BulkDeleteUpcomingRecordingsAPIView(APIView):
 class SeriesRulesAPIView(APIView):
     """Manage DVR series recording rules (list/add)."""
     def get_permissions(self):
-        try:
-            return [perm() for perm in permission_classes_by_method[self.request.method]]
-        except KeyError:
-            return [Authenticated()]
+        if self.request.method == "GET":
+            return [IsDVRViewer()]
+        return [IsAdminOrDVRManager()]
 
     @extend_schema(
         summary="List all series rules",
@@ -4201,10 +4204,7 @@ class SeriesRulePreviewAPIView(APIView):
     within the standard 7-day evaluation horizon.
     """
     def get_permissions(self):
-        try:
-            return [perm() for perm in permission_classes_by_method[self.request.method]]
-        except KeyError:
-            return [Authenticated()]
+        return [IsAdminOrDVRManager()]
 
     @extend_schema(
         summary="Preview series rule matches",
@@ -4331,10 +4331,7 @@ class SeriesRulePreviewAPIView(APIView):
 
 class EvaluateSeriesRulesAPIView(APIView):
     def get_permissions(self):
-        try:
-            return [perm() for perm in permission_classes_by_method[self.request.method]]
-        except KeyError:
-            return [Authenticated()]
+        return [IsAdminOrDVRManager()]
 
     @extend_schema(
         summary="Evaluate series rules",
@@ -4362,10 +4359,7 @@ class BulkRemoveSeriesRecordingsAPIView(APIView):
       - scope: 'title' (default) or 'channel'
     """
     def get_permissions(self):
-        try:
-            return [perm() for perm in permission_classes_by_method[self.request.method]]
-        except KeyError:
-            return [Authenticated()]
+        return [IsAdminOrDVRManager()]
 
     @extend_schema(
         summary="Bulk remove scheduled recordings for a series",

@@ -1,5 +1,6 @@
 import { NETWORK_ACCESS_OPTIONS, USER_LEVELS } from '../../constants.js';
 import { IPV4_CIDR_REGEX, IPV6_CIDR_REGEX } from '../networkUtils.js';
+import { DVR_ACCESS } from '../dvrAccess.js';
 import API from '../../api.js';
 
 const isValidNetworkEntry = (entry) =>
@@ -53,6 +54,12 @@ export const userToFormValues = (user) => {
     catchup_enabled: customProps.catchup_enabled !== false,
     vod_movies_enabled: customProps.vod_movies_enabled !== false,
     vod_series_enabled: customProps.vod_series_enabled !== false,
+    dvr_access:
+      customProps.dvr_access === DVR_ACCESS.NONE ||
+      customProps.dvr_access === DVR_ACCESS.VIEW ||
+      customProps.dvr_access === DVR_ACCESS.MANAGE
+        ? customProps.dvr_access
+        : DVR_ACCESS.VIEW,
     epg_days: customProps.epg_days || 0,
     epg_prev_days: customProps.epg_prev_days || 0,
     allowed_ips: [
@@ -91,6 +98,24 @@ export const formValuesToPayload = (values, existingUser) => {
 
   customProps.vod_series_enabled = payload.vod_series_enabled !== false;
   delete payload.vod_series_enabled;
+
+  // DVR is a single access level for standard users and admins. Streamers
+  // have no DVR surface (unlike catchup/VOD via XC), so force none.
+  // Coerce with == so string form values ('0') match numeric USER_LEVELS.
+  const isStreamer = payload.user_level == USER_LEVELS.STREAMER;
+  if (isStreamer) {
+    customProps.dvr_access = DVR_ACCESS.NONE;
+  } else {
+    const level = payload.dvr_access;
+    customProps.dvr_access =
+      level === DVR_ACCESS.NONE || level === DVR_ACCESS.MANAGE
+        ? level
+        : DVR_ACCESS.VIEW;
+  }
+  delete payload.dvr_access;
+  // Drop any leftover dual-flag keys from earlier drafts of this feature.
+  delete customProps.dvr_view_enabled;
+  delete customProps.dvr_manage_enabled;
 
   customProps.epg_days = payload.epg_days || 0;
   delete payload.epg_days;
@@ -134,6 +159,7 @@ export const getFormInitialValues = () => {
     catchup_enabled: true,
     vod_movies_enabled: true,
     vod_series_enabled: true,
+    dvr_access: DVR_ACCESS.VIEW,
     epg_days: 0,
     epg_prev_days: 0,
     allowed_ips: [],

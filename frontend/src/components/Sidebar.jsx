@@ -32,6 +32,7 @@ import './sidebar.css';
 import useSettingsStore from '../store/settings';
 import useAuthStore from '../store/auth';
 import { USER_LEVELS } from '../constants';
+import { canViewDvr } from '../utils/dvrAccess';
 import UserForm from './forms/User';
 import NotificationCenter from './NotificationCenter';
 
@@ -202,13 +203,16 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
   const [ipRevealed, setIpRevealed] = useState(false);
 
   const isAdmin = authUser && authUser.user_level >= USER_LEVELS.ADMIN;
+  const userCanViewDvr = canViewDvr(authUser);
 
   const navOrder = getNavOrder();
   const hiddenNav = getHiddenNav();
   const navItems = useMemo(() => {
-    const ordered = getOrderedNavItems(navOrder, isAdmin, channelIds);
+    const ordered = getOrderedNavItems(navOrder, isAdmin, channelIds, {
+      canViewDvr: userCanViewDvr,
+    });
     return ordered.filter((item) => !hiddenNav.includes(item.id));
-  }, [navOrder, hiddenNav, isAdmin, channelIds]);
+  }, [navOrder, hiddenNav, isAdmin, userCanViewDvr, channelIds]);
 
   const isSettingsPage = location.pathname.startsWith('/settings');
   const activeSettingsId = location.hash.replace('#', '');

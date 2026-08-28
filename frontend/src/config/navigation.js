@@ -118,8 +118,31 @@ export const DEFAULT_USER_ORDER = [
 export const isGroupBoundary = (navItems, idx) =>
   idx > 0 && Boolean(navItems[idx].paths || navItems[idx - 1].paths);
 
-export const getOrderedNavItems = (userOrder, isAdmin, channelIds = []) => {
-  const defaultOrder = isAdmin ? DEFAULT_ADMIN_ORDER : DEFAULT_USER_ORDER;
+/**
+ * Default nav order for a user, inserting 'dvr' right after 'guide' when a
+ * standard user has DVR view/manage access. Shared by getOrderedNavItems and
+ * any caller (e.g. NavOrderForm) that needs the default order on its own,
+ * such as to reset to defaults or revert an optimistic update.
+ */
+export const getDefaultOrder = (isAdmin, canViewDvr = false) => {
+  const base = isAdmin ? DEFAULT_ADMIN_ORDER : DEFAULT_USER_ORDER;
+
+  if (isAdmin || !canViewDvr || base.includes('dvr')) {
+    return base;
+  }
+
+  const guideIdx = base.indexOf('guide');
+  const insertAt = guideIdx >= 0 ? guideIdx + 1 : base.length - 1;
+  return [...base.slice(0, insertAt), 'dvr', ...base.slice(insertAt)];
+};
+
+export const getOrderedNavItems = (
+  userOrder,
+  isAdmin,
+  channelIds = [],
+  { canViewDvr = false } = {}
+) => {
+  const defaultOrder = getDefaultOrder(isAdmin, canViewDvr);
 
   let order;
   if (userOrder && Array.isArray(userOrder) && userOrder.length > 0) {
