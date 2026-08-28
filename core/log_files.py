@@ -2,22 +2,17 @@
 Admin-only: log lines can reference provider URLs and account names.
 """
 
-import hashlib
-import hmac
 import os
 import re
-import time
 from datetime import datetime, timezone
 
 from django.conf import settings
 from django.http import FileResponse, HttpResponse
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.exceptions import NotFound
-from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 
 from apps.accounts.permissions import IsAdmin
-from dispatcharr.utils import network_access_allowed
 from dispatcharr.log_collector import collector_running
 
 # Plain filenames only: no separators, no dotfiles.
@@ -44,39 +39,6 @@ def _resolve(name):
     if os.path.dirname(path) != base or not os.path.isfile(path):
         return None
     return path
-
-
-# uWSGI logs request URIs into this very log, so a download token must expire fast.
-DOWNLOAD_TOKEN_TTL = 60
-
-
-def _sign_download(name, user_id, expires):
-    payload = f"{name}|{user_id}|{expires}"
-    return hmac.new(
-        settings.SECRET_KEY.encode(), payload.encode(), hashlib.sha256
-    ).hexdigest()[:32]
-
-
-def _download_token(name, user_id, expires=None):
-    """Short-lived token letting a plain link download *name* without the JWT.
-
-    Bound to the requesting user and to a deadline, so a token that leaks -
-    into this log, a proxy log, a browser history - is a minute of exposure
-    rather than a permanent key to the file.
-    """
-    expires = int(expires if expires is not None else time.time() + DOWNLOAD_TOKEN_TTL)
-    return f"{user_id}.{expires}.{_sign_download(name, user_id, expires)}"
-
-
-def _verify_download_token(name, token):
-    try:
-        user_id, expires, signature = str(token).split(".")
-        expires = int(expires)
-    except (AttributeError, ValueError):
-        return False
-    if expires < time.time():
-        return False
-    return hmac.compare_digest(_sign_download(name, user_id, expires), signature)
 
 
 @api_view(["GET"])
@@ -142,33 +104,8 @@ def get_log_file(request, name):
 
 @api_view(["GET"])
 @permission_classes([IsAdmin])
-def get_log_download_token(request, name):
-    """Mint a signed token for downloading *name* over a plain link."""
-    path = _resolve(name)
-    if path is None:
-        raise NotFound("Log file not found")
-    return Response({"token": _download_token(name, request.user.pk)})
-
-
-@api_view(["GET"])
-@permission_classes([AllowAny])
 def download_log_file(request, name):
-    """Stream a log file as an attachment; requires a signed ``token`` param or admin auth."""
-    # AllowAny so a plain link can carry the token, so the network gate IsAdmin would have applied is applied by hand.
-    user = request.user if request.user.is_authenticated else None
-    if not network_access_allowed(request, "UI", user):
-        return Response({"detail": "Forbidden"}, status=403)
-    token = request.query_params.get("token")
-    if token:
-        if not _verify_download_token(name, token):
-            return Response({"detail": "Invalid download token"}, status=403)
-    else:
-        if not (
-            request.user.is_authenticated
-            and getattr(request.user, "user_level", 0) >= 10
-        ):
-            return Response({"detail": "Authentication required"}, status=401)
-
+    """Stream a log file as an attachment over the authenticated session."""
     path = _resolve(name)
     if path is None:
         raise NotFound("Log file not found")

@@ -3824,25 +3824,26 @@ export default class API {
     }
   }
 
-  static async getLogDownloadToken(name) {
-    const response = await request(
-      `${host}/api/core/logs/${encodeURIComponent(name)}/download-token/`
-    );
-    return response.token;
-  }
-
-  // A signed token lets a plain <a download> link stream the file, not buffer it.
+  // Fetched over the authenticated session, so no secret ever rides in a URL.
   static async downloadLogFile(name) {
     try {
-      const token = await API.getLogDownloadToken(name);
-      const downloadUrl = `${host}/api/core/logs/${encodeURIComponent(name)}/download/?token=${encodeURIComponent(token)}`;
-
+      const response = await fetch(
+        `${host}/api/core/logs/${encodeURIComponent(name)}/download/`,
+        {
+          headers: { Authorization: `Bearer ${await API.getAuthToken()}` },
+        }
+      );
+      if (!response.ok) {
+        throw new Error(`HTTP error! Status: ${response.status}`);
+      }
+      const url = URL.createObjectURL(await response.blob());
       const link = document.createElement('a');
-      link.href = downloadUrl;
+      link.href = url;
       link.download = name;
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
+      URL.revokeObjectURL(url);
 
       return { name };
     } catch (e) {
