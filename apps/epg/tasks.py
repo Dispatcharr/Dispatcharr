@@ -31,6 +31,7 @@ from .models import EPGSource, EPGSourceIndex, EPGData, ProgramData, SDScheduleM
 from apps.epg.utils import (
     _ONSCREEN_RE,
     extract_season_episode_from_description,
+    fill_original_air_date_if_missing,
     send_epg_update,
 )
 from apps.epg.sd_utils import SD_BASE_URL
@@ -2564,7 +2565,9 @@ def extract_custom_properties(prog):
     if keywords:
         custom_props['keywords'] = keywords
 
-    # Extract episode numbers
+    # Extract episode numbers. original-air-date is applied after previously-shown
+    # so previously-shown@start remains the preferred source when both exist.
+    original_air_from_episode_num = None
     for ep_num in prog.findall('episode-num'):
         # XMLTV DTD defaults missing system to onscreen
         system = ep_num.get('system') or 'onscreen'
@@ -2598,6 +2601,8 @@ def extract_custom_properties(prog):
         elif system == 'dd_progid' and ep_num.text:
             # Store the dd_progid format
             custom_props['dd_progid'] = ep_num.text.strip()
+        elif system == 'original-air-date' and ep_num.text:
+            original_air_from_episode_num = ep_num.text.strip()
         # Add support for other systems like thetvdb.com, themoviedb.org, imdb.com
         elif system in ['thetvdb.com', 'themoviedb.org', 'imdb.com'] and ep_num.text:
             custom_props[f'{system}_id'] = ep_num.text.strip()
@@ -2774,6 +2779,10 @@ def extract_custom_properties(prog):
         if prev_shown_data:
             custom_props['previously_shown_details'] = prev_shown_data
 
+    # Fall back to episode-num system="original-air-date" only when start is absent.
+    # XMLTV <date> is intentionally not used here (production/copyright date).
+    fill_original_air_date_if_missing(custom_props, original_air_from_episode_num)
+
     return custom_props
 
 
@@ -2863,23 +2872,6 @@ def detect_file_format(file_path=None, content=None):
 
     # If we reach here, we couldn't reliably determine the format
     return format_type, is_compressed, file_extension
-
-
-def generate_dummy_epg(source):
-    """
-    DEPRECATED: This function is no longer used.
-
-    Dummy EPG programs are now generated on-demand when they are requested
-    (during XMLTV export or EPG grid display), rather than being pre-generated
-    and stored in the database.
-
-    See: apps/output/views.py - generate_custom_dummy_programs()
-
-    This function remains for backward compatibility but should not be called.
-    """
-    logger.warning(f"generate_dummy_epg() called for {source.name} but this function is deprecated. "
-                   f"Dummy EPG programs are now generated on-demand.")
-    return True
 
 
 # ---------------------------------------------------------------------------

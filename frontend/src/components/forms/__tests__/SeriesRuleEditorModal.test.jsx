@@ -71,6 +71,18 @@ vi.mock('@mantine/core', () => ({
       {children}
     </button>
   ),
+  Switch: ({ label, checked, onChange }) => (
+    <label>
+      <input
+        type="checkbox"
+        role="switch"
+        data-testid="switch-untagged-is-new"
+        checked={checked}
+        onChange={onChange}
+      />
+      {label}
+    </label>
+  ),
   Divider: () => <hr />,
   Group: ({ children }) => <div>{children}</div>,
   Modal: ({ children, opened, onClose, title }) =>
@@ -350,6 +362,35 @@ describe('SeriesRuleEditorModal', () => {
       expect(screen.getByTestId('textarea-description')).toHaveValue(
         'Pre-filled description'
       );
+    });
+
+    it('shows the untagged switch only for mode "new"', () => {
+      render(
+        <SeriesRuleEditorModal {...defaultProps} initialRule={initialRule} />
+      );
+      expect(screen.getByTestId('switch-untagged-is-new')).toBeInTheDocument();
+    });
+
+    it('hides the untagged switch for mode "all"', () => {
+      render(
+        <SeriesRuleEditorModal
+          {...defaultProps}
+          initialRule={{ ...initialRule, mode: 'all' }}
+        />
+      );
+      expect(
+        screen.queryByTestId('switch-untagged-is-new')
+      ).not.toBeInTheDocument();
+    });
+
+    it('pre-checks the untagged switch from initialRule', () => {
+      render(
+        <SeriesRuleEditorModal
+          {...defaultProps}
+          initialRule={{ ...initialRule, untagged_is_new: true }}
+        />
+      );
+      expect(screen.getByTestId('switch-untagged-is-new')).toBeChecked();
     });
 
     it('uses default mode "all" when initialRule has no mode', () => {
@@ -660,6 +701,29 @@ describe('SeriesRuleEditorModal', () => {
         expect(createSeriesRule).toHaveBeenCalledWith(
           expect.objectContaining({ title: 'My Show', mode: 'all' })
         );
+      });
+    });
+
+    it('includes untagged_is_new when mode is new and the switch is on', async () => {
+      renderWithTitle();
+      fireEvent.click(screen.getByText('New only'));
+      fireEvent.click(screen.getByTestId('switch-untagged-is-new'));
+      fireEvent.click(screen.getByText('Save rule'));
+      await waitFor(() => {
+        expect(createSeriesRule).toHaveBeenCalledWith(
+          expect.objectContaining({ mode: 'new', untagged_is_new: true })
+        );
+      });
+    });
+
+    it('omits untagged_is_new when the switch is off', async () => {
+      renderWithTitle();
+      fireEvent.click(screen.getByText('New only'));
+      fireEvent.click(screen.getByText('Save rule'));
+      await waitFor(() => {
+        const call = vi.mocked(createSeriesRule).mock.calls[0][0];
+        expect(call.mode).toBe('new');
+        expect(call).not.toHaveProperty('untagged_is_new');
       });
     });
 

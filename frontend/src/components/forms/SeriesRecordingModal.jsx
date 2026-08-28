@@ -19,7 +19,13 @@ const TITLE_MODE_LABEL = {
 const renderRuleSummary = (r) => {
   const titleMode = (r.title_mode || 'exact').toLowerCase();
   const parts = [];
-  parts.push(r.mode === 'new' ? 'New episodes' : 'Every episode');
+  if (r.mode === 'new') {
+    parts.push(
+      r.untagged_is_new ? 'New episodes (untagged as new)' : 'New episodes'
+    );
+  } else {
+    parts.push('Every episode');
+  }
   if (r.title) {
     parts.push(`${TITLE_MODE_LABEL[titleMode] || titleMode}: "${r.title}"`);
   }

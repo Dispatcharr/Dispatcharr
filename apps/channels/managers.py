@@ -109,6 +109,20 @@ def parse_optional_epg_source_id(value):
     return parsed if parsed > 0 else None
 
 
+def program_is_new_for_rule(custom_properties, untagged_is_new=False):
+    """Return True if a programme matches series-rule mode="new".
+
+    Default: only programmes tagged <new/>.
+    With untagged_is_new: also accept programmes carrying neither <new/>
+    nor <previously-shown/> (feeds that only tag repeats). An explicit
+    <new/> always counts, even alongside <previously-shown/>.
+    """
+    props = custom_properties or {}
+    if props.get("new"):
+        return True
+    return bool(untagged_is_new) and not props.get("previously_shown")
+
+
 def future_recordings_for_series(tvg_id="", title="", epg_source_id=None):
     """Upcoming recordings that belong to a series rule.
 
