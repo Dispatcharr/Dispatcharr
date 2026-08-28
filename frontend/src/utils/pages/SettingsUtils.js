@@ -76,6 +76,7 @@ const GROUP_CONFIG = {
       log_max_mb: { type: 'int', default: 10 },
       log_keep: { type: 'int', default: 5 },
       log_persist: { type: 'bool', default: true },
+      log_level: { type: 'string', default: '' },
       preferred_region: { type: 'nullable', default: null },
       auto_import_mapped_files: { type: 'bool', default: true },
       enable_ip_lookup: { type: 'bool', default: true },
@@ -84,14 +85,17 @@ const GROUP_CONFIG = {
   },
 };
 
-const toOptionalIdString = (value) =>
-  value != null ? String(value) : null;
+const toOptionalIdString = (value) => (value != null ? String(value) : null);
 
 const toIntOr = (value, fallback) =>
   typeof value === 'number' ? value : parseInt(value, 10) || fallback;
 
 const toBool = (value, fallback = false) =>
-  typeof value === 'boolean' ? value : value == null ? fallback : Boolean(value);
+  typeof value === 'boolean'
+    ? value
+    : value == null
+      ? fallback
+      : Boolean(value);
 
 const parseM3uHashKey = (hashKey) => {
   if (typeof hashKey === 'string') {
@@ -238,10 +242,7 @@ export const getChangedGroupSettings = (values, settings, groupKey) => {
     }
 
     let actualValue = values[field];
-    if (
-      group.fields[field].type === 'array' &&
-      !Array.isArray(actualValue)
-    ) {
+    if (group.fields[field].type === 'array' && !Array.isArray(actualValue)) {
       actualValue = [];
     }
 

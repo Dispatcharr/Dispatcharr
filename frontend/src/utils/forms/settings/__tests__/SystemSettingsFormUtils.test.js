@@ -16,6 +16,7 @@ describe('SystemSettingsFormUtils', () => {
         log_max_mb: 10,
         log_keep: 5,
         log_persist: true,
+        log_level: '',
       });
     });
 

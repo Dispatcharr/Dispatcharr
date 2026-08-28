@@ -8,8 +8,9 @@ instant and touches only stdout, so a dead /data can never back-pressure the
 producers; bounded memory with drop-oldest and an explicit dropped-lines
 marker absorbs disk stalls (markers are file-only: the forwarded stream never
 dropped anything). Every line is rewritten into the canonical
-"stamp [offset] LEVEL source rest" grammar. Owns rotation and pruning.
-Django-free; configured via <logdir>/config/collector.conf from apply_settings().
+"stamp [offset] LEVEL source rest" grammar and gated by the configured minimum
+level. Owns rotation and pruning. Django-free; configured via
+<logdir>/config/collector.conf from apply_settings().
 """
 
 import collections
@@ -49,10 +50,20 @@ _DEFAULT_CONF = {
     "max_mb": 10,
     "keep": 5,
     "time_zone": "",
+    "level": "",
 }
 
 # One canonical shape for every source: "stamp [offset] LEVEL source rest".
 _CANON = re.compile(rb"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3} [+-]\d{4} ")
+_TOKENS = re.compile(rb"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3}(?: [+-]\d{4})? (\S+) ")
+_LEVEL_RANK = {
+    b"TRACE": 5,
+    b"DEBUG": 10,
+    b"INFO": 20,
+    b"WARNING": 30,
+    b"ERROR": 40,
+    b"CRITICAL": 50,
+}
 _REDIS_LEVELS = {b".": b"DEBUG", b"-": b"DEBUG", b"*": b"INFO", b"#": b"WARNING"}
 # Postgres repeats its prefix on DETAIL/HINT/STATEMENT, so those arrive as
 # stamped lines that belong to the severity above them.
@@ -171,7 +182,7 @@ def pid_path(log_dir):
     return os.path.join(_config_dir(log_dir), PID_NAME)
 
 
-def write_conf(log_dir, persist, max_mb, keep, time_zone="UTC"):
+def write_conf(log_dir, persist, max_mb, keep, time_zone="UTC", level=""):
     """Write collector.conf atomically; called from the app (safe contexts only)."""
     if not log_dir:
         return
@@ -185,6 +196,7 @@ def write_conf(log_dir, persist, max_mb, keep, time_zone="UTC"):
                 f"max_mb={int(max_mb)}\n"
                 f"keep={int(keep)}\n"
                 f"time_zone={time_zone}\n"
+                f"level={level}\n"
             )
         os.replace(tmp, conf_path(log_dir))
     except OSError:
@@ -204,6 +216,7 @@ def apply_settings(log_dir, values, warn_if_absent=False):
         values.get("log_max_mb", 10) or 10,
         values.get("log_keep", 5) or 5,
         values.get("time_zone") or "UTC",
+        values.get("log_level") or "",
     )
     if warn_if_absent and not collector_running(log_dir):
         logging.getLogger(__name__).warning(
@@ -282,9 +295,13 @@ class Collector:
         self._fd = None
         self._tail_open = False
         self._fs_ready = False
+        self._min_rank = 0
+        self._conf_applied = False
         self._conf_stamp = None
+        self._suppressed = False
         self._continuation = False
         self._in_traceback = False
+        self._level_known = True
         self._pg_level = b"INFO"
         self.conf = dict(_DEFAULT_CONF)
         self._display_zone = _boot_display_zone()
@@ -311,10 +328,14 @@ class Collector:
                 line = chunk
             else:
                 line = self._normalize(chunk)
+                self._gate(line)
                 # One runaway record can evict a rotation of history, so only the
                 # file copy is capped; docker logs takes the record whole.
                 overrun = len(line) > _MAX_RECORD_BYTES
+            suppressed = self._suppressed
             mid_line = more
+            if suppressed or not line:
+                continue
             self._forward(line)
             if overrun:
                 if tail:
@@ -336,6 +357,18 @@ class Collector:
                 self._wake.set()
         self._stop = True
         self._wake.set()
+
+    def _gate(self, line):
+        # Records below the level floor drop from both sinks, their
+        # continuations with them; unknown levels always pass.
+        m = _TOKENS.match(line)
+        if m is not None:
+            rank = _LEVEL_RANK.get(m.group(1))
+            self._suppressed = (
+                self._level_known and rank is not None and rank < self._min_rank
+            )
+        elif not self._continuation:
+            self._suppressed = False
 
     def _render(self, dt):
         # Every line pays for this call, so it's field access and f-string
@@ -389,6 +422,7 @@ class Collector:
 
     def _normalize(self, raw):
         """Classify *raw* as a record or a continuation and canonicalise records."""
+        self._level_known = True
         out = self._restamp(raw)
         if out is not None:
             self._continuation = False
@@ -403,6 +437,8 @@ class Collector:
             self._continuation = True
             return raw
         self._continuation = False
+        # INFO here is this process's choice, not the source's; the gate must not act on it.
+        self._level_known = False
         return f"{self._now_stamp()} INFO stdout ".encode() + raw
 
     def _restamp(self, raw):
@@ -426,10 +462,15 @@ class Collector:
             m = _UWSGI.match(raw)
             if m:
                 dt = self._parse_naive(m.group(1), int(m.group(2)), self._container_zone)
+                # INFO here is this process's choice, not uwsgi's; gating on it
+                # would let a level floor delete every request line from both sinks.
+                self._level_known = False
                 return f"{self._render(dt)} INFO uwsgi ".encode() + raw[m.end() :]
             m = _SHELL.match(raw)
             if m:
                 dt = self._parse_naive(m.group(1), 0, self._pid1_zone)
+                # The shell states no severity; the level below is ours.
+                self._level_known = False
                 return f"{self._render(dt)} INFO entrypoint ".encode() + raw[m.end() :]
             m = _REDIS.match(raw)
             if m:
@@ -484,6 +525,8 @@ class Collector:
                     (m.group(2) + b" " + m.group(3)).decode(),
                     "%d/%b/%Y:%H:%M:%S %z",
                 )
+                # INFO here is this process's choice, not nginx's.
+                self._level_known = False
                 return (
                     f"{self._render(dt)} INFO nginx.access ".encode()
                     + m.group(1)
@@ -525,6 +568,11 @@ class Collector:
                 self._remove_pidfile()
                 return
 
+    def _floor_name(self):
+        # The effective floor, so an unknown level reads as no floor rather than itself.
+        name = str(self.conf["level"]).strip().upper()
+        return name if name.encode() in _LEVEL_RANK else ""
+
     def _conf_is_stale(self):
         # Polled, not signalled, so a save in another container lands too. The
         # first poll is one tick in: until then records carry the boot zone,
@@ -546,6 +594,13 @@ class Collector:
         # Conf first: _setup_fs only announces itself when the file sink is on.
         self.conf = read_conf(self.log_dir)
         self._setup_fs()
+        previous = self._min_rank
+        self._min_rank = _LEVEL_RANK.get(
+            str(self.conf["level"]).strip().upper().encode(), 0
+        )
+        if self._conf_applied and self._min_rank != previous:
+            self._announce_floor()
+        self._conf_applied = True
         try:
             self._display_zone = ZoneInfo(str(self.conf["time_zone"]).strip())
         except (KeyError, ValueError):
@@ -566,8 +621,11 @@ class Collector:
                 # otherwise-empty file makes the boot archive shift promote a
                 # whole rotation of stubs.
                 self._fs_ready = True
+                floor = self._floor_name()
+                note = f"level floor {floor}" if floor else "no level floor"
                 self._enqueue(
-                    f"{self._now_stamp()} INFO dispatcharr.log_collector started\n".encode()
+                    f"{self._now_stamp()} INFO dispatcharr.log_collector"
+                    f" started ({note})\n".encode()
                 )
         except OSError:
             pass
@@ -577,6 +635,15 @@ class Collector:
             os.remove(pid_path(self.log_dir))
         except OSError:
             pass
+
+    def _announce_floor(self):
+        floor = self._floor_name()
+        note = f"level floor now {floor}" if floor else "level floor removed"
+        line = f"{self._now_stamp()} INFO dispatcharr.log_collector {note}\n".encode()
+        # Never gated: a raised floor silences docker logs, which is when this matters most.
+        self._forward(line)
+        if self.conf["persist"]:
+            self._enqueue(line)
 
     def _enqueue(self, data):
         with self._lock:

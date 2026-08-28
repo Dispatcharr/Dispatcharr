@@ -143,6 +143,25 @@ describe('SettingsUtils', () => {
       expect(result.catchup_enabled).toBe(true);
     });
 
+    it('parses log_level, defaulting to the container level', () => {
+      const settings = {
+        system_settings: { value: { log_level: 'DEBUG' } },
+      };
+
+      const result = SettingsUtils.parseGroupSettings(
+        settings,
+        'system_settings'
+      );
+
+      expect(result.log_level).toBe('DEBUG');
+      expect(
+        SettingsUtils.parseGroupSettings(
+          { system_settings: { value: {} } },
+          'system_settings'
+        ).log_level
+      ).toBe('');
+    });
+
     it('applies raw field defaults when keys are missing from an existing group', () => {
       const settings = {
         dvr_settings: {
@@ -175,6 +194,20 @@ describe('SettingsUtils', () => {
   });
 
   describe('getChangedGroupSettings', () => {
+    it('reports an emptied log_level so it can return to the container level', () => {
+      const settings = {
+        system_settings: { value: { log_level: 'DEBUG' } },
+      };
+
+      const changes = SettingsUtils.getChangedGroupSettings(
+        { log_level: '' },
+        settings,
+        'system_settings'
+      );
+
+      expect(changes).toHaveProperty('log_level', '');
+    });
+
     it('diffs against the nested group value, not top-level store keys', () => {
       const settings = {
         stream_settings: {
