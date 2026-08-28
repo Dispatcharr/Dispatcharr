@@ -57,10 +57,11 @@ class MovieFilter(django_filters.FilterSet):
     year = django_filters.NumberFilter()
     year_gte = django_filters.NumberFilter(field_name="year", lookup_expr="gte")
     year_lte = django_filters.NumberFilter(field_name="year", lookup_expr="lte")
+    is_adult = django_filters.BooleanFilter()
 
     class Meta:
         model = Movie
-        fields = ['name', 'm3u_account', 'category', 'year']
+        fields = ['name', 'm3u_account', 'category', 'year', 'is_adult']
 
     def filter_category(self, queryset, name, value):
         """Custom category filter that handles 'name|type' format"""
@@ -101,9 +102,18 @@ class MovieViewSet(viewsets.ReadOnlyModelViewSet):
 
     def get_queryset(self):
         # Only return movies that have active M3U relations
-        return Movie.objects.filter(
+        qs = Movie.objects.filter(
             m3u_relations__m3u_account__is_active=True
         ).distinct().select_related('logo').prefetch_related('m3u_relations__m3u_account')
+        user = getattr(self.request, 'user', None)
+        if (
+            user is not None
+            and getattr(user, 'is_authenticated', False)
+            and user.user_level < 10
+            and (user.custom_properties or {}).get('hide_adult_content', False)
+        ):
+            qs = qs.filter(is_adult=False)
+        return qs
 
     @action(detail=True, methods=['get'], url_path='providers')
     def get_providers(self, request, pk=None):

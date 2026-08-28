@@ -1,5 +1,5 @@
-from django.urls import path, re_path, include
-from .views import m3u_endpoint, epg_endpoint, xc_get, xc_movie_stream, xc_series_stream
+from django.urls import re_path
+from .views import m3u_endpoint, epg_endpoint
 
 app_name = "output"
 

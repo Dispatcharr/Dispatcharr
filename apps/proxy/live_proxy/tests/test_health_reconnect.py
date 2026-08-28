@@ -45,6 +45,9 @@ def _make_manager(**overrides):
     sm._stable_connection_threshold = 30
     sm.current_stream_id = 100
     sm.tried_stream_ids = {100}
+    sm._failover_rotation_passes = 0
+    sm._rotation_cooldown_until = None
+    sm._had_successful_connection = True
     sm.last_data_time = 0.0
     sm._buffer_check_timers = []
     sm.transcode_process_active = False

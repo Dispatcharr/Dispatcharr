@@ -358,7 +358,7 @@ const User = ({ user = null, isOpen, onClose }) => {
               {isAdmin && (
                 <TagsInput
                   label="Allowed IPs"
-                  description="Restrict all access for this user by IP. Leave empty to inherit global settings."
+                  description="Further restrict this user by IP/CIDR within global Network Access. Leave empty to inherit global settings only."
                   placeholder="e.g. 192.168.1.1 or 192.168.1.0/24"
                   splitChars={[',', ' ']}
                   {...form.getInputProps('allowed_ips')}

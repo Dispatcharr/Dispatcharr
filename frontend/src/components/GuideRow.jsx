@@ -9,6 +9,7 @@ import {
 import { Box, Flex, Text, Tooltip } from '@mantine/core';
 import { Play } from 'lucide-react';
 import logo from '../images/logo.png';
+import LazyLogo from './LazyLogo';
 
 // Buffer in pixels beyond the viewport edges to render programs.
 // This prevents pop-in when scrolling horizontally.
@@ -58,7 +59,6 @@ const GuideRow = React.memo(({ index, style, data }) => {
     filteredChannels,
     programsByChannelId,
     rowHeights,
-    logos,
     renderProgram,
     handleLogoClick,
     contentWidth,
@@ -185,9 +185,10 @@ const GuideRow = React.memo(({ index, style, data }) => {
                 display={'flex'}
                 p={'4px 6px 14px 6px'}
               >
-                <img
-                  src={logos[channel.logo_id]?.cache_url || logo}
+                <LazyLogo
+                  logoId={channel.logo_id}
                   alt={channel.name}
+                  fallbackSrc={logo}
                   style={{
                     maxWidth: '100%',
                     maxHeight: '100%',

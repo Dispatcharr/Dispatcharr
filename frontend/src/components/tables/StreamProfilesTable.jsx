@@ -24,7 +24,7 @@ import {
   SquarePlus,
 } from 'lucide-react';
 import { CustomTable, useTable } from './CustomTable';
-import useLocalStorage from '../../hooks/useLocalStorage';
+import useBrowserStorage from '../../hooks/useBrowserStorage';
 import { showNotification } from '../../utils/notificationUtils.js';
 import { updateStreamProfile } from '../../utils/forms/StreamProfileUtils.js';
 
@@ -65,7 +65,7 @@ const StreamProfiles = () => {
 
   const streamProfiles = useStreamProfilesStore((state) => state.profiles);
   const settings = useSettingsStore((s) => s.settings);
-  const [tableSize] = useLocalStorage('table-size', 'default');
+  const [tableSize] = useBrowserStorage('table-size', 'default');
 
   const theme = useMantineTheme();
 

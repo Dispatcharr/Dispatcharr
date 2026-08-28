@@ -38,8 +38,10 @@ vi.mock('../../../store/outputProfiles', () => ({ default: vi.fn() }));
 vi.mock('../../../store/warnings', () => ({ default: vi.fn() }));
 
 // ── Hook mocks ─────────────────────────────────────────────────────────────────
-vi.mock('../../../hooks/useLocalStorage', () => ({
-  default: vi.fn(() => [{}, vi.fn()]),
+vi.mock('../../../hooks/useBrowserStorage', () => ({
+  readStoredJSON: (key, defaultValue) => defaultValue,
+  writeStoredJSON: vi.fn(),
+  default: vi.fn((key, defaultValue) => [defaultValue, vi.fn()]),
 }));
 vi.mock('../../../hooks/useSmartLogos', () => ({
   useChannelLogoSelection: vi.fn(() => ({ ensureLogosLoaded: vi.fn() })),
@@ -430,7 +432,7 @@ import useSettingsStore from '../../../store/settings';
 import useVideoStore from '../../../store/useVideoStore';
 import useOutputProfilesStore from '../../../store/outputProfiles';
 import useWarningsStore from '../../../store/warnings';
-import useLocalStorage from '../../../hooks/useLocalStorage';
+import useBrowserStorage from '../../../hooks/useBrowserStorage';
 import { useTable } from '../CustomTable';
 import {
   deleteChannel,
@@ -488,6 +490,7 @@ const setupMocks = ({
   epgs = {},
   hasUnassignedEPGChannels = false,
   tableOverrides = {},
+  setSorting = vi.fn(),
 } = {}) => {
   vi.mocked(useChannelsTableStore).mockImplementation((sel) =>
     sel({
@@ -501,7 +504,7 @@ const setupMocks = ({
       setSelectedChannelIds: vi.fn(),
       setExpandedChannelId: vi.fn(),
       setPagination: vi.fn(),
-      setSorting: vi.fn(),
+       setSorting,
       setAllQueryIds: vi.fn(),
     })
   );
@@ -511,7 +514,7 @@ const setupMocks = ({
 
   vi.mocked(useChannelsStore).mockImplementation((sel) =>
     sel({
-      channelIds: channels.map((c) => c.id),
+      channelIds: channels.filter(Boolean).map((c) => c.id),
       profiles,
       selectedProfileId,
       channelGroups,
@@ -540,7 +543,10 @@ const setupMocks = ({
     sel({ isWarningSuppressed, suppressWarning, getActionPreference })
   );
 
-  vi.mocked(useLocalStorage).mockReturnValue([{}, vi.fn()]);
+  vi.mocked(useBrowserStorage).mockImplementation((key, defaultValue) => [
+    defaultValue,
+    vi.fn(),
+  ]);
 
   const tableInstance = makeDefaultTableInstance(tableOverrides);
   vi.mocked(useTable).mockImplementation((opts) => {
@@ -937,7 +943,9 @@ describe('ChannelsTable', () => {
       fireEvent.click(screen.getByTestId('header-delete-channels'));
       fireEvent.click(screen.getByTestId('confirm-ok'));
       await waitFor(() =>
-        expect(deleteChannels).toHaveBeenCalledWith([1, 2], { stopStream: false })
+        expect(deleteChannels).toHaveBeenCalledWith([1, 2], {
+          stopStream: false,
+        })
       );
     });
 
@@ -965,7 +973,9 @@ describe('ChannelsTable', () => {
       fireEvent.click(screen.getByTestId('confirm-ok'));
 
       await waitFor(() =>
-        expect(deleteChannels).toHaveBeenCalledWith([1, 2], { stopStream: false })
+        expect(deleteChannels).toHaveBeenCalledWith([1, 2], {
+          stopStream: false,
+        })
       );
       expect(requeryChannels).toHaveBeenCalled();
       expect(setSelectedTableIds).not.toHaveBeenCalled();
@@ -989,7 +999,9 @@ describe('ChannelsTable', () => {
       render(<ChannelsTable />);
       fireEvent.click(screen.getByTestId('header-delete-channels'));
       await waitFor(() =>
-        expect(deleteChannels).toHaveBeenCalledWith([1, 2], { stopStream: false })
+        expect(deleteChannels).toHaveBeenCalledWith([1, 2], {
+          stopStream: false,
+        })
       );
       expect(screen.queryByTestId('confirm-dialog')).not.toBeInTheDocument();
     });
@@ -1164,6 +1176,18 @@ describe('ChannelsTable', () => {
   // ── name column ────────────────────────────────────────────────────────────
 
   describe('name column', () => {
+    it('uses a ratio to share the responsive data-column width', () => {
+      setupMocks();
+      render(<ChannelsTable />);
+
+      const col = getCol('name');
+
+      expect(col.size).toBe(240);
+      expect(col.minSize).toBe(0);
+      expect(col.grow).toBe(true);
+      expect(col.flexRatio).toBe(true);
+    });
+
     it('accessorFn returns effective_name when present', () => {
       setupMocks();
       render(<ChannelsTable />);
@@ -1181,6 +1205,62 @@ describe('ChannelsTable', () => {
       const col = getCol('name');
       const result = col.accessorFn({ effective_name: null, name: 'Original' });
       expect(result).toBe('Original');
+    });
+  });
+
+  describe('paired content columns', () => {
+    it('keeps the final paired column from exposing an unpaired resize handle', () => {
+      setupMocks();
+      render(<ChannelsTable />);
+
+      const col = getCol('channel_group');
+
+      expect(col).toMatchObject({
+        size: 180,
+        minSize: 0,
+        grow: true,
+        flexRatio: true,
+        enableResizing: false,
+      });
+    });
+  });
+
+  describe('responsive content columns', () => {
+    it('shares all available content width without a filler column', () => {
+      setupMocks();
+      render(<ChannelsTable />);
+
+      expect(getCol('channel_group')).toMatchObject({
+        grow: true,
+        flexRatio: true,
+      });
+      expect(getCol('filler')).toBeUndefined();
+    });
+  });
+
+  describe('column sizing reset', () => {
+    it('restores the persisted sizing state to the default ratios', () => {
+      const setColumnSizing = vi.fn();
+      const setSorting = vi.fn();
+      setupMocks({ setSorting });
+      vi.mocked(useBrowserStorage).mockImplementation((key, defaultValue) => [
+        defaultValue,
+        key === 'channels-table-column-sizing'
+          ? setColumnSizing
+          : vi.fn(),
+      ]);
+      render(<ChannelsTable />);
+
+      capturedTableOptions.onResetColumnSizing();
+      expect(setColumnSizing).toHaveBeenCalledWith({
+        channel_number: 40,
+        name: 240,
+        epg: 180,
+        channel_group: 180,
+      });
+      expect(setSorting).toHaveBeenCalledWith([
+        { id: 'channel_number', desc: false },
+      ]);
     });
   });
 
@@ -1219,6 +1299,32 @@ describe('ChannelsTable', () => {
       expect(getRowStyles({ original: channel })).toMatchObject({
         className: expect.stringMatching(/stale/i),
       });
+    });
+
+    it('does not crash when the channels array contains a nullish entry', () => {
+      const channel = makeChannel({ id: 13, streams: [] });
+      setupMocks({ channels: [channel, null, undefined] });
+      expect(() => render(<ChannelsTable />)).not.toThrow();
+    });
+
+    it('refetches only once while the channels array contains nullish entries', async () => {
+      const channel = makeChannel({ id: 14, streams: [] });
+      const channels = [channel, null];
+      setupMocks({ channels });
+      const view = render(<ChannelsTable />);
+      // Once from the normal mount fetch, once from the self-heal effect.
+      await waitFor(() =>
+        expect(queryChannels).toHaveBeenCalledTimes(2)
+      );
+
+      setupMocks({ channels });
+      view.rerender(<ChannelsTable />);
+
+      // The regular fetch effect runs again because the test store creates a
+      // new pagination object, but the repair effect does not issue another fetch.
+      await waitFor(() =>
+        expect(queryChannels).toHaveBeenCalledTimes(3)
+      );
     });
   });
 

@@ -489,7 +489,6 @@ server {
 
     location / {
         include uwsgi_params;
-        uwsgi_param HTTP_X_REAL_IP \$remote_addr;
         uwsgi_read_timeout 600;
         uwsgi_send_timeout 600;
         uwsgi_pass unix:${UWSGI_SOCKET};

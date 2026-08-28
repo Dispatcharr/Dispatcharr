@@ -8,8 +8,26 @@ import { showNotification } from '../../utils/notificationUtils';
 vi.mock('../../api');
 vi.mock('../../utils/notificationUtils');
 
+const createStorageMock = () => {
+  let store = {};
+  return {
+    getItem: vi.fn((key) => (key in store ? store[key] : null)),
+    setItem: vi.fn((key, value) => {
+      store[key] = value.toString();
+    }),
+    clear: vi.fn(() => {
+      store = {};
+    }),
+    removeItem: vi.fn((key) => {
+      delete store[key];
+    }),
+  };
+};
+
 describe('useChannelsStore', () => {
   beforeEach(() => {
+    globalThis.localStorage = createStorageMock();
+    globalThis.sessionStorage = createStorageMock();
     vi.clearAllMocks();
     // Reset store state between tests
     useChannelsStore.setState({
@@ -109,6 +127,35 @@ describe('useChannelsStore', () => {
       expect(api.getChannelProfiles).toHaveBeenCalledOnce();
       expect(result.current.profiles['1'].channels).toBeInstanceOf(Set);
       expect(result.current.profiles['1'].channels.has(1)).toBe(true);
+    });
+
+    it('should reset selectedProfileId when the selected profile is gone', async () => {
+      api.getChannelProfiles.mockResolvedValue([
+        { id: 2, name: 'Still here', channels: [] },
+      ]);
+
+      const { result } = renderHook(() => useChannelsStore());
+
+      act(() => {
+        useChannelsStore.setState({
+          selectedProfileId: '1',
+          profiles: {
+            0: { id: '0', name: 'All', channels: new Set() },
+            1: { id: 1, name: 'Gone', channels: new Set() },
+          },
+        });
+      });
+
+      await act(async () => {
+        await result.current.fetchChannelProfiles();
+      });
+
+      expect(result.current.selectedProfileId).toBe('0');
+      expect(result.current.profiles['1']).toBeUndefined();
+      expect(sessionStorage.setItem).toHaveBeenCalledWith(
+        'channels-selected-profile-id',
+        JSON.stringify('0')
+      );
     });
   });
 
@@ -219,15 +266,20 @@ describe('useChannelsStore', () => {
   });
 
   describe('profile operations', () => {
-    it('should add a profile', () => {
+    it('should add a profile and select it', () => {
       const { result } = renderHook(() => useChannelsStore());
-      const newProfile = { id: '1', name: 'Profile', channels: [1, 2] };
+      const newProfile = { id: 1, name: 'Profile', channels: [1, 2] };
 
       act(() => {
         result.current.addProfile(newProfile);
       });
 
       expect(result.current.profiles['1'].channels).toBeInstanceOf(Set);
+      expect(result.current.selectedProfileId).toBe('1');
+      expect(sessionStorage.setItem).toHaveBeenCalledWith(
+        'channels-selected-profile-id',
+        JSON.stringify('1')
+      );
     });
 
     it('should update a profile', () => {
@@ -260,6 +312,71 @@ describe('useChannelsStore', () => {
 
       expect(result.current.profiles['1']).toBeUndefined();
       expect(result.current.selectedProfileId).toBe('0');
+      expect(sessionStorage.setItem).toHaveBeenCalledWith(
+        'channels-selected-profile-id',
+        JSON.stringify('0')
+      );
+    });
+
+    it('should reset selected when deleted profile id is a number', () => {
+      // Confirmation dialog passes profile.id from the API (number), while
+      // selectedProfileId from the Select is always a string.
+      const { result } = renderHook(() => useChannelsStore());
+
+      act(() => {
+        useChannelsStore.setState({
+          profiles: {
+            0: { id: '0', name: 'All' },
+            1: { id: 1, name: 'Selected' },
+            2: { id: 2, name: 'Other' },
+          },
+          selectedProfileId: '1',
+        });
+      });
+
+      act(() => {
+        result.current.removeProfiles([1]);
+      });
+
+      expect(result.current.profiles['1']).toBeUndefined();
+      expect(result.current.selectedProfileId).toBe('0');
+      expect(sessionStorage.setItem).toHaveBeenCalledWith(
+        'channels-selected-profile-id',
+        JSON.stringify('0')
+      );
+    });
+  });
+
+  describe('setSelectedProfileId', () => {
+    it('should update and persist selected profile id', () => {
+      const { result } = renderHook(() => useChannelsStore());
+
+      act(() => {
+        result.current.setSelectedProfileId('5');
+      });
+
+      expect(result.current.selectedProfileId).toBe('5');
+      expect(sessionStorage.setItem).toHaveBeenCalledWith(
+        'channels-selected-profile-id',
+        JSON.stringify('5')
+      );
+    });
+
+    it('should fall back to All when given null or empty', () => {
+      const { result } = renderHook(() => useChannelsStore());
+
+      act(() => {
+        result.current.setSelectedProfileId('5');
+      });
+      act(() => {
+        result.current.setSelectedProfileId(null);
+      });
+
+      expect(result.current.selectedProfileId).toBe('0');
+      expect(sessionStorage.setItem).toHaveBeenCalledWith(
+        'channels-selected-profile-id',
+        JSON.stringify('0')
+      );
     });
   });
 

@@ -171,7 +171,7 @@ const StreamSettingsForm = React.memo(({ active }) => {
           id="default_stream_profile"
           name="default_stream_profile"
           label="Default Stream Profile"
-          description="Stream profile applied when a channel has no profile assigned."
+          description="Stream profile used when a channel has no profile assigned. If set to Redirect, VOD and catchup are redirected as well."
           data={streamProfiles.map((option) => ({
             value: `${option.id}`,
             label: option.name,

@@ -3,6 +3,7 @@ from django.utils import timezone
 from django.db import transaction, IntegrityError
 from django.db.models import Q
 from apps.m3u.models import M3UAccount
+from apps.m3u.utils import parse_is_adult
 from core.xtream_codes import Client as XtreamCodesClient
 from .models import (
     VODCategory, Series, Movie, Episode, VODLogo,
@@ -526,6 +527,12 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
                 'duration_secs': duration_secs,
                 'custom_properties': custom_props or None,
             }
+            # Only set is_adult when the provider actually reports it. Movies are
+            # shared across providers (matched by TMDB/IMDB/name+year), and many
+            # providers omit this key entirely; defaulting it to False here would
+            # let a sparse provider row silently clear a flag another provider set.
+            if 'is_adult' in movie_data:
+                movie_props['is_adult'] = parse_is_adult(movie_data['is_adult'])
 
             movie_keys[movie_key] = {
                 'props': movie_props,
@@ -749,7 +756,7 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
                 # First, update all fields except logo to avoid unsaved related object issues
                 Movie.objects.bulk_update(movies_to_update, [
                     'description', 'rating', 'genre', 'year', 'tmdb_id', 'imdb_id',
-                    'duration_secs', 'custom_properties'
+                    'duration_secs', 'is_adult', 'custom_properties'
                 ])
 
                 # Handle logo updates separately to avoid bulk_update issues

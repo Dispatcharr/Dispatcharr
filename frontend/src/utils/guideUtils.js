@@ -301,12 +301,24 @@ export const fetchRules = async () => {
   return await API.listSeriesRules();
 };
 
-export const getRuleByProgram = (rules, program) => {
-  return (rules || []).find(
+export const getRuleByProgram = (rules, program, epgSourceId = null) => {
+  const matches = (rules || []).filter(
     (r) =>
       String(r.tvg_id) === String(program.tvg_id) &&
       (!r.title || r.title === program.title)
   );
+  if (matches.length === 0) return undefined;
+  if (epgSourceId != null && epgSourceId !== '') {
+    const sourced = matches.find(
+      (r) => String(r.epg_source_id) === String(epgSourceId)
+    );
+    if (sourced) return sourced;
+    const unsourced = matches.find(
+      (r) => r.epg_source_id == null || r.epg_source_id === ''
+    );
+    if (unsourced) return unsourced;
+  }
+  return matches[0];
 };
 
 export const createRecording = async (values) => {
@@ -407,8 +419,8 @@ export const formatSeasonEpisode = (season, episode) => {
   return null;
 };
 
-export const deleteSeriesRuleByTvgId = async (tvg_id, title) => {
-  await API.deleteSeriesRule(tvg_id, title);
+export const deleteSeriesRuleByTvgId = async (tvg_id, title, epg_source_id) => {
+  await API.deleteSeriesRule(tvg_id, title, epg_source_id);
 };
 
 export const evaluateSeriesRulesByTvgId = async (tvg_id) => {

@@ -7,7 +7,9 @@ vi.mock('../../../store/logos', () => ({ default: vi.fn() }));
 vi.mock('../../../store/warnings', () => ({ default: vi.fn() }));
 
 // ── Hook mocks ─────────────────────────────────────────────────────────────────
-vi.mock('../../../hooks/useLocalStorage', () => ({
+vi.mock('../../../hooks/useBrowserStorage', () => ({
+  readStoredJSON: (key, defaultValue) => defaultValue,
+  writeStoredJSON: vi.fn(),
   default: vi.fn(),
 }));
 
@@ -239,7 +241,7 @@ vi.mock('lucide-react', () => ({
 // ── Imports after mocks ────────────────────────────────────────────────────────
 import useLogosStore from '../../../store/logos';
 import useWarningsStore from '../../../store/warnings';
-import useLocalStorage from '../../../hooks/useLocalStorage';
+import useBrowserStorage from '../../../hooks/useBrowserStorage';
 import { showNotification } from '../../../utils/notificationUtils.js';
 import * as LogosTableUtils from '../../../utils/tables/LogosTableUtils.js';
 import { useTable } from '../CustomTable';
@@ -283,7 +285,7 @@ const setupMocks = ({
     sel({ suppressWarning: vi.fn(), isWarningSuppressed: vi.fn(() => false) })
   );
 
-  vi.mocked(useLocalStorage).mockImplementation((key, defaultVal) => {
+  vi.mocked(useBrowserStorage).mockImplementation((key, defaultVal) => {
     if (key === 'table-size') return [tableSize, vi.fn()];
     if (key === 'logos-page-size') return [25, vi.fn()];
     return [defaultVal, vi.fn()];

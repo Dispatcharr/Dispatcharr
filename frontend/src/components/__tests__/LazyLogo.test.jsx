@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
+import { StrictMode } from 'react';
 import '@testing-library/jest-dom';
 import LazyLogo from '../LazyLogo';
 import useLogosStore from '../../store/logos';
@@ -181,6 +182,18 @@ describe('LazyLogo', () => {
       mockStore.logos = {};
 
       render(<LazyLogo logoId="logo-1" />);
+
+      vi.advanceTimersByTime(100);
+
+      expect(mockFetchLogosByIds).toHaveBeenCalledWith(['logo-1']);
+    });
+
+    it('should fetch logos when mounted in Strict Mode', () => {
+      render(
+        <StrictMode>
+          <LazyLogo logoId="logo-1" />
+        </StrictMode>
+      );
 
       vi.advanceTimersByTime(100);
 

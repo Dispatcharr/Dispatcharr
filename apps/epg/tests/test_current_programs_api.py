@@ -181,6 +181,30 @@ class CurrentProgramsAPITests(TestCase):
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn("valid integers", response.data["error"])
 
+    def test_channel_uuids_honours_epg_override(self):
+        """Hand-assigned EPG on ChannelOverride must resolve via channel_uuids."""
+        from apps.channels.models import Channel, ChannelGroup, ChannelOverride
+
+        group = ChannelGroup.objects.create(name="Override Current Prog")
+        channel = Channel.objects.create(
+            channel_number=9.0,
+            name="Provider Name",
+            channel_group=group,
+            epg_data=None,
+            auto_created=True,
+        )
+        ChannelOverride.objects.create(channel=channel, epg_data=self.epg_data)
+
+        response = self.client.post(
+            CURRENT_PROGRAMS_URL,
+            {"channel_uuids": [str(channel.uuid)]},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data), 1)
+        self.assertEqual(response.data[0]["title"], "Current Show")
+        self.assertEqual(response.data[0]["channel_uuid"], str(channel.uuid))
+
     def test_auth_required(self):
         anon_client = APIClient()
         response = anon_client.post(

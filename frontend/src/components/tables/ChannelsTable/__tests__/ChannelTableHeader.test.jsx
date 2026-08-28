@@ -1,3 +1,4 @@
+import React from 'react';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
@@ -51,12 +52,29 @@ vi.mock('../../../modals/EPGMatchModal', () => ({
     ) : null,
 }));
 
+vi.mock('../../../modals/AddToProfileModal', () => ({
+  default: ({ opened, onClose, channelIds, excludeProfileId }) =>
+    opened ? (
+      <div data-testid="add-to-profile-modal">
+        <span data-testid="add-to-profile-channel-ids">
+          {JSON.stringify(channelIds)}
+        </span>
+        <span data-testid="add-to-profile-exclude-id">{excludeProfileId}</span>
+        <button onClick={onClose}>Close Add To Profile</button>
+      </div>
+    ) : null,
+}));
+
 vi.mock('../../../ConfirmationDialog', () => ({
   default: ({ opened, onClose, onConfirm, title, loading }) =>
     opened ? (
       <div data-testid="confirmation-dialog">
         <span data-testid="dialog-title">{title}</span>
-        <button data-testid="confirm-btn" onClick={onConfirm} disabled={loading}>
+        <button
+          data-testid="confirm-btn"
+          onClick={onConfirm}
+          disabled={loading}
+        >
           Confirm
         </button>
         <button data-testid="cancel-btn" onClick={onClose}>
@@ -80,15 +98,28 @@ vi.mock('@mantine/core', () => ({
     </button>
   ),
   Box: ({ children, style }) => <div style={style}>{children}</div>,
-  Button: ({ children, onClick, disabled, variant, color }) => (
+  Button: ({ children, onClick, disabled, variant, color, ...rest }) => (
     <button
       onClick={onClick}
       disabled={disabled}
       data-variant={variant}
       data-color={color}
+      aria-label={rest['aria-label']}
     >
       {children}
     </button>
+  ),
+  Checkbox: ({ label, description, checked, onChange }) => (
+    <label>
+      <input
+        type="checkbox"
+        data-testid="checkbox"
+        checked={checked}
+        onChange={onChange}
+      />
+      {label}
+      {description ? <span>{description}</span> : null}
+    </label>
   ),
   Flex: ({ children }) => <div data-testid="flex">{children}</div>,
   Group: ({ children }) => <div data-testid="group">{children}</div>,
@@ -141,6 +172,7 @@ vi.mock('@mantine/core', () => ({
       ))}
     </select>
   ),
+  Stack: ({ children }) => <div data-testid="stack">{children}</div>,
   Text: ({ children, c }) => (
     <span data-testid="text" data-color={c}>
       {children}
@@ -154,7 +186,10 @@ vi.mock('@mantine/core', () => ({
       placeholder={placeholder}
     />
   ),
-  Tooltip: ({ children, label }) => <div data-tooltip={label}>{children}</div>,
+  Tooltip: ({ children, label }) =>
+    React.isValidElement(children)
+      ? React.cloneElement(children, { 'aria-label': label })
+      : children,
   useMantineTheme: () => ({
     tailwind: {
       green: { 5: 'green.5' },
@@ -173,6 +208,7 @@ vi.mock('lucide-react', () => ({
   Eye: () => <svg data-testid="icon-eye" />,
   EyeOff: () => <svg data-testid="icon-eye-off" />,
   Filter: () => <svg data-testid="icon-filter" />,
+  FolderPlus: () => <svg data-testid="icon-folder-plus" />,
   Lock: () => <svg data-testid="icon-lock" />,
   LockOpen: () => <svg data-testid="icon-lock-open" />,
   Pin: () => <svg data-testid="icon-pin" />,
@@ -272,8 +308,12 @@ const setupMocks = ({
 describe('ChannelTableHeader', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(ChannelsTableUtils.addChannelProfile).mockResolvedValue(undefined);
-    vi.mocked(ChannelsTableUtils.deleteChannelProfile).mockResolvedValue(undefined);
+    vi.mocked(ChannelsTableUtils.addChannelProfile).mockResolvedValue(
+      undefined
+    );
+    vi.mocked(ChannelsTableUtils.deleteChannelProfile).mockResolvedValue(
+      undefined
+    );
   });
 
   // ── Rendering ──────────────────────────────────────────────────────────────
@@ -288,27 +328,33 @@ describe('ChannelTableHeader', () => {
     it('renders profile options in the select', () => {
       setupMocks();
       render(<ChannelTableHeader {...makeDefaultProps()} />);
-      expect(screen.getByRole('option', { name: 'All Channels' })).toBeInTheDocument();
-      expect(screen.getByRole('option', { name: 'Profile A' })).toBeInTheDocument();
-      expect(screen.getByRole('option', { name: 'Profile B' })).toBeInTheDocument();
+      expect(
+        screen.getByRole('option', { name: 'All Channels' })
+      ).toBeInTheDocument();
+      expect(
+        screen.getByRole('option', { name: 'Profile A' })
+      ).toBeInTheDocument();
+      expect(
+        screen.getByRole('option', { name: 'Profile B' })
+      ).toBeInTheDocument();
     });
 
     it('renders the Edit button', () => {
       setupMocks();
       render(<ChannelTableHeader {...makeDefaultProps()} />);
-      expect(screen.getByText('Edit')).toBeInTheDocument();
+      expect(screen.getByLabelText('Edit')).toBeInTheDocument();
     });
 
     it('renders the Delete button', () => {
       setupMocks();
       render(<ChannelTableHeader {...makeDefaultProps()} />);
-      expect(screen.getByText('Delete')).toBeInTheDocument();
+      expect(screen.getByLabelText('Delete')).toBeInTheDocument();
     });
 
     it('renders the Add button', () => {
       setupMocks();
       render(<ChannelTableHeader {...makeDefaultProps()} />);
-      expect(screen.getByText('Add')).toBeInTheDocument();
+      expect(screen.getByLabelText('Add Channel')).toBeInTheDocument();
     });
 
     it('does not show Editing Mode text when not unlocked', () => {
@@ -438,8 +484,10 @@ describe('ChannelTableHeader', () => {
   describe('edit / delete / add buttons', () => {
     it('Edit button is disabled when no rows are selected', () => {
       setupMocks();
-      render(<ChannelTableHeader {...makeDefaultProps({ selectedTableIds: [] })} />);
-      expect(screen.getByText('Edit')).toBeDisabled();
+      render(
+        <ChannelTableHeader {...makeDefaultProps({ selectedTableIds: [] })} />
+      );
+      expect(screen.getByLabelText('Edit')).toBeDisabled();
     });
 
     it('Edit button is enabled when rows are selected and user is admin', () => {
@@ -449,7 +497,7 @@ describe('ChannelTableHeader', () => {
           {...makeDefaultProps({ selectedTableIds: ['ch-1'] })}
         />
       );
-      expect(screen.getByText('Edit')).not.toBeDisabled();
+      expect(screen.getByLabelText('Edit')).not.toBeDisabled();
     });
 
     it('Edit button is disabled for non-admin users even with selection', () => {
@@ -459,7 +507,7 @@ describe('ChannelTableHeader', () => {
           {...makeDefaultProps({ selectedTableIds: ['ch-1'] })}
         />
       );
-      expect(screen.getByText('Edit')).toBeDisabled();
+      expect(screen.getByLabelText('Edit')).toBeDisabled();
     });
 
     it('calls editChannel when Edit is clicked', () => {
@@ -470,14 +518,16 @@ describe('ChannelTableHeader', () => {
           {...makeDefaultProps({ selectedTableIds: ['ch-1'], editChannel })}
         />
       );
-      fireEvent.click(screen.getByText('Edit'));
+      fireEvent.click(screen.getByLabelText('Edit'));
       expect(editChannel).toHaveBeenCalled();
     });
 
     it('Delete button is disabled when no rows are selected', () => {
       setupMocks();
-      render(<ChannelTableHeader {...makeDefaultProps({ selectedTableIds: [] })} />);
-      expect(screen.getByText('Delete')).toBeDisabled();
+      render(
+        <ChannelTableHeader {...makeDefaultProps({ selectedTableIds: [] })} />
+      );
+      expect(screen.getByLabelText('Delete')).toBeDisabled();
     });
 
     it('calls deleteChannels when Delete is clicked', () => {
@@ -488,22 +538,101 @@ describe('ChannelTableHeader', () => {
           {...makeDefaultProps({ selectedTableIds: ['ch-1'], deleteChannels })}
         />
       );
-      fireEvent.click(screen.getByText('Delete'));
+      fireEvent.click(screen.getByLabelText('Delete'));
       expect(deleteChannels).toHaveBeenCalled();
     });
 
     it('Add button is disabled for non-admin users', () => {
       setupMocks({ userLevel: STANDARD });
       render(<ChannelTableHeader {...makeDefaultProps()} />);
-      expect(screen.getByText('Add')).toBeDisabled();
+      expect(screen.getByLabelText('Add Channel')).toBeDisabled();
     });
 
     it('calls editChannel with forceAdd option when Add is clicked', () => {
       const editChannel = vi.fn();
       setupMocks({ userLevel: ADMIN });
       render(<ChannelTableHeader {...makeDefaultProps({ editChannel })} />);
-      fireEvent.click(screen.getByText('Add'));
+      fireEvent.click(screen.getByLabelText('Add Channel'));
       expect(editChannel).toHaveBeenCalledWith(null, { forceAdd: true });
+    });
+
+    it('Add to Profile... button is disabled when no rows are selected', () => {
+      setupMocks({ userLevel: ADMIN });
+      render(
+        <ChannelTableHeader {...makeDefaultProps({ selectedTableIds: [] })} />
+      );
+      expect(screen.getByLabelText('Add to Profile')).toBeDisabled();
+    });
+
+    it('Add to Profile... button is enabled when rows are selected', () => {
+      setupMocks({ userLevel: ADMIN });
+      render(
+        <ChannelTableHeader
+          {...makeDefaultProps({ selectedTableIds: ['ch-1'] })}
+        />
+      );
+      expect(screen.getByLabelText('Add to Profile')).not.toBeDisabled();
+    });
+
+    it('Add to Profile... button is disabled for non-admin users even with selection', () => {
+      setupMocks({ userLevel: STANDARD });
+      render(
+        <ChannelTableHeader
+          {...makeDefaultProps({ selectedTableIds: ['ch-1'] })}
+        />
+      );
+      expect(screen.getByLabelText('Add to Profile')).toBeDisabled();
+    });
+
+    it('opens AddToProfileModal when Add to Profile... is clicked', () => {
+      setupMocks({ userLevel: ADMIN });
+      render(
+        <ChannelTableHeader
+          {...makeDefaultProps({ selectedTableIds: ['ch-1', 'ch-2'] })}
+        />
+      );
+      fireEvent.click(screen.getByLabelText('Add to Profile'));
+      expect(screen.getByTestId('add-to-profile-modal')).toBeInTheDocument();
+    });
+
+    it('passes the selected channel ids to AddToProfileModal', () => {
+      setupMocks({ userLevel: ADMIN });
+      render(
+        <ChannelTableHeader
+          {...makeDefaultProps({ selectedTableIds: ['ch-1', 'ch-2'] })}
+        />
+      );
+      fireEvent.click(screen.getByLabelText('Add to Profile'));
+      expect(
+        screen.getByTestId('add-to-profile-channel-ids')
+      ).toHaveTextContent('["ch-1","ch-2"]');
+    });
+
+    it('passes the active profile id to AddToProfileModal as excludeProfileId', () => {
+      setupMocks({ userLevel: ADMIN, selectedProfileId: '1' });
+      render(
+        <ChannelTableHeader
+          {...makeDefaultProps({ selectedTableIds: ['ch-1'] })}
+        />
+      );
+      fireEvent.click(screen.getByLabelText('Add to Profile'));
+      expect(screen.getByTestId('add-to-profile-exclude-id')).toHaveTextContent(
+        '1'
+      );
+    });
+
+    it('closes AddToProfileModal when onClose fires', () => {
+      setupMocks({ userLevel: ADMIN });
+      render(
+        <ChannelTableHeader
+          {...makeDefaultProps({ selectedTableIds: ['ch-1'] })}
+        />
+      );
+      fireEvent.click(screen.getByLabelText('Add to Profile'));
+      fireEvent.click(screen.getByText('Close Add To Profile'));
+      expect(
+        screen.queryByTestId('add-to-profile-modal')
+      ).not.toBeInTheDocument();
     });
   });
 
@@ -541,7 +670,9 @@ describe('ChannelTableHeader', () => {
 
     it('Assign #s menu item is disabled when no rows are selected', () => {
       setupMocks();
-      render(<ChannelTableHeader {...makeDefaultProps({ selectedTableIds: [] })} />);
+      render(
+        <ChannelTableHeader {...makeDefaultProps({ selectedTableIds: [] })} />
+      );
       expect(screen.getByText('Assign #s').closest('button')).toBeDisabled();
     });
 
@@ -565,7 +696,9 @@ describe('ChannelTableHeader', () => {
       );
       fireEvent.click(screen.getByText('Assign #s'));
       fireEvent.click(screen.getByText('Close Assign'));
-      expect(screen.queryByTestId('assign-numbers-modal')).not.toBeInTheDocument();
+      expect(
+        screen.queryByTestId('assign-numbers-modal')
+      ).not.toBeInTheDocument();
     });
 
     it('opens EPGMatchModal when Auto-Match EPG is clicked', () => {
@@ -597,14 +730,16 @@ describe('ChannelTableHeader', () => {
       render(<ChannelTableHeader {...makeDefaultProps()} />);
       fireEvent.click(screen.getByText('Edit Groups'));
       fireEvent.click(screen.getByText('Close Group Manager'));
-      expect(screen.queryByTestId('group-manager-modal')).not.toBeInTheDocument();
+      expect(
+        screen.queryByTestId('group-manager-modal')
+      ).not.toBeInTheDocument();
     });
   });
 
   // ── CreateProfilePopover ───────────────────────────────────────────────────
 
   describe('CreateProfilePopover', () => {
-    it('calls addChannelProfile with the typed name on submit', async () => {
+    it('calls addChannelProfile with the typed name and start_empty: false by default', async () => {
       setupMocks({ userLevel: ADMIN });
       render(<ChannelTableHeader {...makeDefaultProps()} />);
 
@@ -622,6 +757,31 @@ describe('ChannelTableHeader', () => {
       await waitFor(() => {
         expect(ChannelsTableUtils.addChannelProfile).toHaveBeenCalledWith({
           name: 'New Profile',
+          start_empty: false,
+        });
+      });
+    });
+
+    it('calls addChannelProfile with start_empty: true when "Start empty" is checked', async () => {
+      setupMocks({ userLevel: ADMIN });
+      render(<ChannelTableHeader {...makeDefaultProps()} />);
+
+      const input = screen.getByTestId('text-input');
+      fireEvent.change(input, { target: { value: 'Empty Profile' } });
+
+      const checkbox = screen.getByTestId('checkbox');
+      fireEvent.click(checkbox);
+
+      const actionIcons = screen.getAllByTestId('action-icon');
+      const submitIcon = actionIcons.find((btn) =>
+        btn.querySelector('[data-testid="icon-circle-check"]')
+      );
+      fireEvent.click(submitIcon);
+
+      await waitFor(() => {
+        expect(ChannelsTableUtils.addChannelProfile).toHaveBeenCalledWith({
+          name: 'Empty Profile',
+          start_empty: true,
         });
       });
     });
@@ -641,7 +801,9 @@ describe('ChannelTableHeader', () => {
       // We simulate this via the ConfirmationDialog confirm flow.
       render(<ChannelTableHeader {...makeDefaultProps()} />);
       // Dialog is not open by default
-      expect(screen.queryByTestId('confirmation-dialog')).not.toBeInTheDocument();
+      expect(
+        screen.queryByTestId('confirmation-dialog')
+      ).not.toBeInTheDocument();
     });
 
     it('calls deleteChannelProfile directly when warning is suppressed', async () => {
@@ -650,7 +812,9 @@ describe('ChannelTableHeader', () => {
       render(<ChannelTableHeader {...makeDefaultProps()} />);
       // When warning suppressed, executeDeleteProfile runs immediately
       // (tested indirectly - no dialog shown)
-      expect(screen.queryByTestId('confirmation-dialog')).not.toBeInTheDocument();
+      expect(
+        screen.queryByTestId('confirmation-dialog')
+      ).not.toBeInTheDocument();
     });
 
     it('calls deleteChannelProfile when confirmation dialog is confirmed', async () => {
@@ -685,7 +849,9 @@ describe('ChannelTableHeader', () => {
     it('Unlock for Editing menu item is disabled for non-admin', () => {
       setupMocks({ userLevel: STANDARD });
       render(<ChannelTableHeader {...makeDefaultProps()} />);
-      expect(screen.getByText('Unlock for Editing').closest('button')).toBeDisabled();
+      expect(
+        screen.getByText('Unlock for Editing').closest('button')
+      ).toBeDisabled();
     });
 
     it('Edit Groups is disabled for non-admin', () => {
@@ -697,7 +863,9 @@ describe('ChannelTableHeader', () => {
     it('Auto-Match EPG is disabled for non-admin', () => {
       setupMocks({ userLevel: STANDARD });
       render(<ChannelTableHeader {...makeDefaultProps()} />);
-      expect(screen.getByText('Auto-Match EPG').closest('button')).toBeDisabled();
+      expect(
+        screen.getByText('Auto-Match EPG').closest('button')
+      ).toBeDisabled();
     });
   });
 });

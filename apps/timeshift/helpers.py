@@ -433,6 +433,36 @@ def build_timeshift_url_format_b(creds, stream_id, timestamp, duration_minutes):
     )
 
 
+def client_timeshift_url_layout(request):
+    """Return ``query`` or ``path`` from the inbound catch-up URL shape.
+
+    XC clients that hit ``/streaming/timeshift.php`` get a QUERY provider URL.
+    PATH ``/timeshift/...`` and native ``/proxy/catchup/`` default to PATH,
+    the common XC archive form.
+    """
+    path = (getattr(request, "path", None) or "").lower()
+    if "timeshift.php" in path:
+        return "query"
+    return "path"
+
+
+def build_timeshift_redirect_url(
+    creds, stream_id, provider_timestamp, duration_minutes, layout,
+):
+    """Build one provider timeshift URL mirroring the client's XC layout.
+
+    Redirect mode does not cascade formats or probe; the player already chose
+    PATH vs QUERY when it hit Dispatcharr.
+    """
+    if layout == "query":
+        return build_timeshift_url_format_a(
+            creds, stream_id, provider_timestamp, duration_minutes
+        )
+    return build_timeshift_url_format_b(
+        creds, stream_id, provider_timestamp, duration_minutes
+    )
+
+
 def build_timeshift_candidate_urls(creds, stream_id, timestamp, duration_minutes):
     """Build ordered upstream URL candidates (PATH forms first, QUERY last).
 

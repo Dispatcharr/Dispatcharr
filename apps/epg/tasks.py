@@ -31,6 +31,7 @@ from .models import EPGSource, EPGSourceIndex, EPGData, ProgramData, SDScheduleM
 from apps.epg.utils import (
     _ONSCREEN_RE,
     extract_season_episode_from_description,
+    fill_original_air_date_if_missing,
     send_epg_update,
 )
 from apps.epg.sd_utils import SD_BASE_URL
@@ -60,6 +61,7 @@ from core.utils import (
     cleanup_memory,
     log_system_event,
     _is_celery_worker_context,
+    truncate_with_warning,
 )
 
 logger = logging.getLogger(__name__)
@@ -1286,9 +1288,11 @@ def parse_channels_only(source):
                         if not display_name:
                             display_name = tvg_id
 
-                        if display_name and len(display_name) > name_max_length:
-                            logger.warning(f"EPG display name too long ({len(display_name)} > {name_max_length}), truncating: {display_name[:80]}...")
-                            display_name = display_name[:name_max_length]
+                        display_name = truncate_with_warning(
+                            display_name,
+                            max_length=name_max_length,
+                            label="EPG display name",
+                        )
 
                         # Use lazy loading approach to reduce memory usage
                         if tvg_id in existing_tvg_ids:
@@ -1630,7 +1634,9 @@ def parse_programs_for_tvg_id(epg_id, force=False, _defer_retry=0):
             # cached via select_related) instead of issuing a second query mid-task.
             epg = epg_obj
 
-            if not force and not Channel.objects.filter(epg_data=epg).exists():
+            from apps.channels.managers import is_epg_mapped_to_channel
+
+            if not force and not is_epg_mapped_to_channel(epg):
                 logger.info(f"No channels matched to EPG {epg.tvg_id}")
                 return
 
@@ -1713,6 +1719,7 @@ def parse_programs_for_tvg_id(epg_id, force=False, _defer_retry=0):
             # (weeks of one channel's schedule) that this doesn't need batched flushing
             # to the DB the way the whole-source bulk parse does.
             programs_to_create = []
+            title_max_length = ProgramData._meta.get_field('title').max_length
     
             try:
                 # Open the file directly - no need to check compression
@@ -1772,7 +1779,7 @@ def parse_programs_for_tvg_id(epg_id, force=False, _defer_retry=0):
                                 epg=epg,
                                 start_time=start_time,
                                 end_time=end_time,
-                                title=title[:255],
+                                title=title[:title_max_length],
                                 description=desc,
                                 sub_title=sub_title,
                                 tvg_id=epg.tvg_id,
@@ -1838,6 +1845,10 @@ def parse_programs_for_tvg_id(epg_id, force=False, _defer_retry=0):
                 f"Replaced {deleted_count} program(s) with {len(programs_to_create)} "
                 f"for {epg.tvg_id}"
             )
+            # Programme rows changed; drop XMLTV chunk cache so /output/epg
+            # does not keep serving the pre-import guide for this station.
+            from apps.output.streaming_chunk_cache import invalidate_epg_chunk_cache
+            invalidate_epg_chunk_cache()
             programs_to_create = None
             custom_props = None
             custom_properties_json = None
@@ -1955,13 +1966,14 @@ def _flush_epg_program_staging_batch(programs_batch):
 
 
 def _epg_ids_mapped_to_channels(epg_source):
-    """EPGData ids currently assigned to at least one channel on this source."""
-    return set(
-        Channel.objects.filter(
-            epg_data__epg_source=epg_source,
-            epg_data__isnull=False,
-        ).values_list('epg_data_id', flat=True)
-    )
+    """EPGData ids currently assigned to at least one channel on this source.
+
+    Includes ChannelOverride.epg_data so hand-assigned EPG on auto-synced
+    channels is treated as mapped for import and orphan cleanup.
+    """
+    from apps.channels.managers import epg_ids_mapped_to_channels
+
+    return epg_ids_mapped_to_channels(epg_source=epg_source)
 
 
 def _delete_orphaned_epg_programs(epg_source):
@@ -2108,12 +2120,8 @@ def parse_programs_for_source(epg_source, tvg_id=None):
 
     try:
         # Only get EPG entries that are actually mapped to channels
-        mapped_epg_ids = set(
-            Channel.objects.filter(
-                epg_data__epg_source=epg_source,
-                epg_data__isnull=False
-            ).values_list('epg_data_id', flat=True)
-        )
+        # (Channel.epg_data or ChannelOverride.epg_data).
+        mapped_epg_ids = _epg_ids_mapped_to_channels(epg_source)
 
         if not mapped_epg_ids:
             total_epg_count = EPGData.objects.filter(epg_source=epg_source).count()
@@ -2136,6 +2144,8 @@ def parse_programs_for_source(epg_source, tvg_id=None):
 
         logger.info(f"Parsing programs for {mapped_count} MAPPED channels from source: {epg_source.name} "
                    f"(skipping {total_epg_count - mapped_count} unmapped EPG entries)")
+
+        title_max_length = ProgramData._meta.get_field('title').max_length
 
         # Get the file path
         file_path = epg_source.extracted_file_path if epg_source.extracted_file_path else epg_source.file_path
@@ -2256,7 +2266,7 @@ def parse_programs_for_source(epg_source, tvg_id=None):
                             epg_id=epg_id,
                             start_time=start_time,
                             end_time=end_time,
-                            title=title[:255],
+                            title=title[:title_max_length],
                             description=desc,
                             sub_title=sub_title,
                             tvg_id=channel_id,
@@ -2324,6 +2334,8 @@ def parse_programs_for_source(epg_source, tvg_id=None):
                 logger.info(
                     f"Atomic update complete: deleted {deleted_count}, inserted {total_programs} programs"
                 )
+                from apps.output.streaming_chunk_cache import invalidate_epg_chunk_cache
+                invalidate_epg_chunk_cache()
             except Exception as db_error:
                 logger.error(f"Database error during atomic update: {db_error}", exc_info=True)
                 epg_source.status = EPGSource.STATUS_ERROR
@@ -2553,7 +2565,9 @@ def extract_custom_properties(prog):
     if keywords:
         custom_props['keywords'] = keywords
 
-    # Extract episode numbers
+    # Extract episode numbers. original-air-date is applied after previously-shown
+    # so previously-shown@start remains the preferred source when both exist.
+    original_air_from_episode_num = None
     for ep_num in prog.findall('episode-num'):
         # XMLTV DTD defaults missing system to onscreen
         system = ep_num.get('system') or 'onscreen'
@@ -2587,6 +2601,8 @@ def extract_custom_properties(prog):
         elif system == 'dd_progid' and ep_num.text:
             # Store the dd_progid format
             custom_props['dd_progid'] = ep_num.text.strip()
+        elif system == 'original-air-date' and ep_num.text:
+            original_air_from_episode_num = ep_num.text.strip()
         # Add support for other systems like thetvdb.com, themoviedb.org, imdb.com
         elif system in ['thetvdb.com', 'themoviedb.org', 'imdb.com'] and ep_num.text:
             custom_props[f'{system}_id'] = ep_num.text.strip()
@@ -2763,6 +2779,10 @@ def extract_custom_properties(prog):
         if prev_shown_data:
             custom_props['previously_shown_details'] = prev_shown_data
 
+    # Fall back to episode-num system="original-air-date" only when start is absent.
+    # XMLTV <date> is intentionally not used here (production/copyright date).
+    fill_original_air_date_if_missing(custom_props, original_air_from_episode_num)
+
     return custom_props
 
 
@@ -2852,23 +2872,6 @@ def detect_file_format(file_path=None, content=None):
 
     # If we reach here, we couldn't reliably determine the format
     return format_type, is_compressed, file_extension
-
-
-def generate_dummy_epg(source):
-    """
-    DEPRECATED: This function is no longer used.
-
-    Dummy EPG programs are now generated on-demand when they are requested
-    (during XMLTV export or EPG grid display), rather than being pre-generated
-    and stored in the database.
-
-    See: apps/output/views.py - generate_custom_dummy_programs()
-
-    This function remains for backward compatibility but should not be called.
-    """
-    logger.warning(f"generate_dummy_epg() called for {source.name} but this function is deprecated. "
-                   f"Dummy EPG programs are now generated on-demand.")
-    return True
 
 
 # ---------------------------------------------------------------------------

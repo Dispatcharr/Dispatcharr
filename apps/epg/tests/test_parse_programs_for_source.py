@@ -272,3 +272,68 @@ class ParseProgramsForSourceTests(TestCase):
 
         self.assertEqual(dispatched, 1)
         mock_dispatch.assert_called_once_with({self.unmapped_epg.id})
+
+    @patch('apps.epg.tasks.log_system_event')
+    @patch('apps.epg.tasks.send_epg_update')
+    def test_override_only_epg_is_treated_as_mapped(self, _send_update, _log_event):
+        """Hand-assigned EPG on ChannelOverride must import ProgramData for XMLTV."""
+        from apps.channels.models import ChannelOverride
+
+        override_epg = EPGData.objects.create(
+            epg_source=self.source,
+            tvg_id='override.channel',
+            name='Override Channel',
+        )
+        channel = Channel.objects.create(
+            channel_number=9,
+            name='Provider Name',
+            epg_data=None,
+            auto_created=True,
+        )
+        ChannelOverride.objects.create(channel=channel, epg_data=override_epg)
+
+        programmes = (
+            _programme_xml('mapped.channel', 'Mapped Show', self.start, self.stop)
+            + _programme_xml('override.channel', 'Override Show', self.start, self.stop)
+            + _programme_xml('unmapped.channel', 'Skipped Show', self.start, self.stop)
+        )
+        self._configure_source_file(programmes)
+
+        result = parse_programs_for_source(self.source)
+
+        self.assertTrue(result)
+        self.assertEqual(ProgramData.objects.filter(epg=override_epg).count(), 1)
+        self.assertEqual(
+            ProgramData.objects.get(epg=override_epg).title,
+            'Override Show',
+        )
+        self.assertFalse(ProgramData.objects.filter(epg=self.unmapped_epg).exists())
+
+    def test_orphan_cleanup_keeps_override_mapped_programs(self):
+        from apps.channels.models import ChannelOverride
+
+        override_epg = EPGData.objects.create(
+            epg_source=self.source,
+            tvg_id='override.orphan',
+            name='Override Orphan Check',
+        )
+        channel = Channel.objects.create(
+            channel_number=9,
+            name='Provider Name',
+            epg_data=None,
+            auto_created=True,
+        )
+        ChannelOverride.objects.create(channel=channel, epg_data=override_epg)
+        late_start = self.base_time - timedelta(days=1)
+        ProgramData.objects.create(
+            epg=override_epg,
+            start_time=late_start,
+            end_time=late_start + timedelta(hours=1),
+            title='Override Programme',
+            tvg_id=override_epg.tvg_id,
+        )
+
+        deleted = _delete_orphaned_epg_programs(self.source)
+
+        self.assertEqual(deleted, 0)
+        self.assertEqual(ProgramData.objects.filter(epg=override_epg).count(), 1)

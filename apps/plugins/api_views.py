@@ -1,9 +1,7 @@
 import hashlib
-import ipaddress
 import logging
 import json
 import re
-import socket
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status, serializers
@@ -23,6 +21,7 @@ from apps.accounts.permissions import (
     Authenticated,
     permission_classes_by_method,
 )
+from core.http_security import validate_outbound_http_url
 from dispatcharr.utils import network_access_allowed
 
 from .loader import PluginManager
@@ -85,32 +84,10 @@ def _sanitize_plugin_key(value: str) -> str:
 def _validate_fetch_url(url):
     """Raise ValueError if the URL must not be fetched (SSRF prevention).
 
-    Only http and https schemes are allowed. Hostnames that resolve to
-    loopback, private, link-local, or otherwise non-routable addresses
-    are rejected.
+    Plugin installs stay strict: loopback, private, link-local, and other
+    non-routable targets are rejected.
     """
-    parsed = urlparse(url)
-    if parsed.scheme not in ("http", "https"):
-        raise ValueError(
-            f"URL scheme '{parsed.scheme}' is not allowed; only http and https are permitted."
-        )
-    hostname = parsed.hostname
-    if not hostname:
-        raise ValueError("URL has no hostname.")
-    try:
-        infos = socket.getaddrinfo(hostname, None)
-    except socket.gaierror as exc:
-        raise ValueError(f"Could not resolve hostname '{hostname}': {exc}") from exc
-    for _family, _type, _proto, _canon, sockaddr in infos:
-        addr_str = sockaddr[0]
-        try:
-            ip = ipaddress.ip_address(addr_str)
-        except ValueError:
-            continue
-        if ip.is_loopback or ip.is_link_local or ip.is_private or ip.is_reserved or ip.is_unspecified:
-            raise ValueError(
-                f"URL resolves to a non-routable address ({addr_str}) and cannot be fetched."
-            )
+    validate_outbound_http_url(url, allow_private=False, allow_loopback=False)
 
 
 def _absolutize_logo_url(request, url: str | None) -> str | None:

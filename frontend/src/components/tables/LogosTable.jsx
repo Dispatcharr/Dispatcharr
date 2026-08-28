@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import LogoForm from '../forms/Logo';
 import useLogosStore from '../../store/logos';
-import useLocalStorage from '../../hooks/useLocalStorage';
+import useBrowserStorage from '../../hooks/useBrowserStorage';
 import {
   ExternalLink,
   SquareMinus,
@@ -41,7 +41,7 @@ import {
 } from '../../utils/tables/LogosTableUtils.js';
 
 const LogoRowActions = ({ theme, row, editLogo, handleDeleteLogo }) => {
-  const [tableSize, _] = useLocalStorage('table-size', 'default');
+  const [tableSize, _] = useBrowserStorage('table-size', 'default');
 
   const onEdit = useCallback(() => {
     editLogo(row.original);
@@ -111,7 +111,7 @@ const LogosTable = () => {
   });
   const [debouncedNameFilter, setDebouncedNameFilter] = useState('');
   const [selectedRows, setSelectedRows] = useState(new Set());
-  const [pageSize, setPageSize] = useLocalStorage('logos-page-size', 25);
+  const [pageSize, setPageSize] = useBrowserStorage('logos-page-size', 25);
   const [pagination, setPagination] = useState({
     pageIndex: 0,
     pageSize: pageSize,

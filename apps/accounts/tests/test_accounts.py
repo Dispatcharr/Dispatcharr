@@ -134,7 +134,27 @@ class InitializeSuperuserTests(TestCase):
         self.assertFalse(User.objects.filter(username="other").exists())
 
     @patch.dict("os.environ", {"DISPATCHARR_SETUP_ALLOWED_IP": "203.0.113.50"})
-    def test_x_real_ip_used_for_setup_gate(self):
+    def test_spoofed_x_real_ip_ignored_without_trusted_proxy(self):
+        """Client-supplied X-Real-IP must not bypass the setup gate."""
+        response = self.client.post(
+            self.url,
+            {"username": "spoofed", "password": "testpass123"},
+            format="json",
+            REMOTE_ADDR="203.0.113.99",
+            HTTP_X_REAL_IP="203.0.113.50",
+        )
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.json()["client_ip"], "203.0.113.99")
+        self.assertFalse(User.objects.filter(username="spoofed").exists())
+
+    @patch.dict(
+        "os.environ",
+        {
+            "DISPATCHARR_SETUP_ALLOWED_IP": "203.0.113.50",
+            "DISPATCHARR_TRUSTED_PROXIES": "127.0.0.1",
+        },
+    )
+    def test_x_real_ip_used_when_peer_is_trusted_proxy(self):
         response = self.client.post(
             self.url,
             {"username": "proxied", "password": "testpass123"},

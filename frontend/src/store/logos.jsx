@@ -77,13 +77,16 @@ const useLogosStore = create((set, get) => ({
       // Handle both paginated and non-paginated responses
       const logos = getLogosArray(response);
 
-      set({
-        logos: logos.reduce((acc, logo) => {
-          acc[logo.id] = { ...logo };
-          return acc;
-        }, {}),
+      set((state) => ({
+        logos: {
+          ...state.logos,
+          ...logos.reduce((acc, logo) => {
+            acc[logo.id] = { ...logo };
+            return acc;
+          }, {}),
+        },
         isLoading: false,
-      });
+      }));
       return response;
     } catch (error) {
       console.error('Failed to fetch logos:', error);

@@ -240,3 +240,24 @@ def stream_cached_response(
         response["Content-Disposition"] = f'attachment; filename="{filename}"'
     response["Cache-Control"] = "no-cache"
     return response
+
+
+def invalidate_epg_chunk_cache():
+    """
+    Drop all XMLTV /output/epg chunk-cache entries.
+
+    EPG assignment changes (channel or override) and programme imports do not
+    change the cache key, so without this the next /output/epg can keep serving
+    stale programmes for up to DEFAULT_CACHE_TTL while XC (uncached) is already
+    correct.
+    """
+    try:
+        redis = _get_redis()
+        deleted = 0
+        for key in redis.scan_iter(match="epg_content:*", count=200):
+            redis.delete(key)
+            deleted += 1
+        if deleted:
+            logger.debug("Invalidated %s epg_content cache key(s)", deleted)
+    except Exception:
+        logger.warning("Failed to invalidate EPG chunk cache", exc_info=True)

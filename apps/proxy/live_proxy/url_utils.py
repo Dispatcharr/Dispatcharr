@@ -153,6 +153,11 @@ def generate_stream_url(
     finally:
         close_old_connections()
 
+# Bounds catastrophic backtracking on user-authored profile patterns.
+# Matches the rename / regex-preview timeout used elsewhere.
+URL_TRANSFORM_REGEX_TIMEOUT = 0.1
+
+
 def transform_url(input_url: str, search_pattern: str, replace_pattern: str) -> str:
     """
     Transform a URL using regex pattern replacement.
@@ -171,13 +176,20 @@ def transform_url(input_url: str, search_pattern: str, replace_pattern: str) -> 
         logger.debug(f"  search: {search_pattern}")
 
         # Convert JS-style backreferences in replace pattern: $<name> -> \g<name>, $1 -> \1
+        # Fixed conversion patterns only; timeout is reserved for the user search.
         safe_replace_pattern = regex.sub(r'\$<([^>]+)>', r'\\g<\1>', replace_pattern)
         safe_replace_pattern = regex.sub(r'\$(\d+)', r'\\\1', safe_replace_pattern)
         logger.debug(f"  replace: {replace_pattern}")
         logger.debug(f"  safe replace: {safe_replace_pattern}")
 
-        # Apply the transformation (regex module accepts JS-style (?<name>...) natively)
-        stream_url, match_count = regex.subn(search_pattern, safe_replace_pattern, input_url)
+        # Apply the transformation (regex module accepts JS-style (?<name>...) natively).
+        # timeout bounds ReDoS from nested quantifiers in search_pattern.
+        stream_url, match_count = regex.subn(
+            search_pattern,
+            safe_replace_pattern,
+            input_url,
+            timeout=URL_TRANSFORM_REGEX_TIMEOUT,
+        )
         if match_count == 0:
             logger.warning(f"URL pattern '{search_pattern}' did not match, falling back to original URL: {input_url}")
         else:

@@ -175,7 +175,7 @@ const DvrSettingsForm = React.memo(({ active }) => {
           data={[
             { value: 'none', label: 'None (software decode)' },
             { value: 'cuvid', label: 'NVIDIA NVDEC (--cuvid)' },
-            { value: 'qsv', label: 'Intel Quick Sync (--qsv)' },
+            { value: 'hwassist', label: 'Hardware assist (--hwassist)' },
           ]}
           {...form.getInputProps('comskip_hw_accel')}
           id="comskip_hw_accel"
@@ -240,7 +240,7 @@ const DvrSettingsForm = React.memo(({ active }) => {
         />
         <TextInput
           label="TV Fallback Template"
-          description="Template used when an episode has no season/episode. Supports {show}, {start}, {end}, {channel}, {year}."
+          description="Template used when an episode has no season/episode. Supports {show}, {sub_title}, {start}, {end}, {channel}, {year}, {original_air_date}."
           placeholder="TV_Shows/{show}/{start}.mkv"
           {...form.getInputProps('tv_fallback_template')}
           id="tv_fallback_template"

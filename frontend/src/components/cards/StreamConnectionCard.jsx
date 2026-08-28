@@ -36,6 +36,7 @@ import {
 import { CustomTable, useTable } from '../tables/CustomTable/index.jsx';
 import { TableHelper } from '../../helpers/index.jsx';
 import logo from '../../images/logo.png';
+import LazyLogo from '../LazyLogo.jsx';
 import { formatBytes, formatSpeed } from '../../utils/networkUtils.js';
 import { showNotification } from '../../utils/notificationUtils.js';
 import {
@@ -43,7 +44,6 @@ import {
   durationAccessor,
   getBufferingSpeedThreshold,
   getChannelStreams,
-  getLogoUrl,
   getM3uAccountsMap,
   getSelectedStream,
   getStartDate,
@@ -60,7 +60,6 @@ const StreamConnectionCard = ({
   clients,
   stopClient,
   stopChannel,
-  logos,
   channelsByUUID,
   channels,
   currentProgram,
@@ -465,9 +464,6 @@ const StreamConnectionCard = ({
     },
   });
 
-  // Get logo URL from the logos object if available
-  const logoUrl = getLogoUrl(channel.logo_id, logos, previewedStream);
-
   useEffect(() => {
     let isMounted = true;
     // Only fetch if we have a stream_id and NO channel.name
@@ -556,8 +552,9 @@ const StreamConnectionCard = ({
             h={70}
             display="flex"
           >
-            <img
-              src={logoUrl || logo}
+            <LazyLogo
+              logoId={channel.logo_id}
+              fallbackSrc={previewedStream?.logo_url || logo}
               style={{
                 maxWidth: '100%',
                 maxHeight: '100%',

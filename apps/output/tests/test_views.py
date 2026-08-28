@@ -5,7 +5,7 @@ from unittest.mock import patch
 from uuid import uuid4
 from django.db import connection
 from django.test.utils import CaptureQueriesContext
-from apps.channels.models import Channel, ChannelGroup, ChannelProfile, ChannelProfileMembership
+from apps.channels.models import Channel, ChannelGroup, ChannelOverride, ChannelProfile, ChannelProfileMembership
 from apps.epg.models import EPGData, EPGSource
 from apps.accounts.models import User
 from apps.m3u.models import M3UAccount
@@ -296,139 +296,76 @@ class OutputEPGXMLEscapingTest(OutputEndpointTestMixin, TestCase):
         self.assertLess(content.find('<title>First</title>'), content.find('<title>Second</title>'))
         self.assertLess(content.find('<title>Second</title>'), content.find('<title>Third</title>'))
 
-
-class OutputEPGCustomDummyTest(TestCase):
-    """Custom dummy EPG must not fall back to default when pattern matched but event is outside window."""
-
-    def setUp(self):
-        self.group = ChannelGroup.objects.create(name="Sports Group")
-
-    def test_custom_dummy_outside_window_fills_with_ended_programmes(self):
+    def test_override_epg_change_invalidates_xmltv_chunk_cache(self):
+        """
+        XC reads live ProgramData; XMLTV is chunk-cached. Changing the
+        effective EPG via ChannelOverride must drop that cache so the next
+        /output/epg emits the new station's programmes, not the previous ones.
+        """
         from django.utils import timezone
-        from apps.output.views import generate_dummy_programs
+        from apps.channels.models import ChannelOverride
+        from apps.epg.models import ProgramData
+        from django_redis import get_redis_connection
 
-        epg_source = EPGSource.objects.create(
-            name="NHL Dummy",
-            source_type="dummy",
-            custom_properties={
-                "title_pattern": r"(?<league>.*)\s\d+:\s(?<team1>.*?)(?:\s+vs\s+)(?<team2>.*?)\s*@.*",
-                "time_pattern": r"(?<hour>\d{1,2}):(?<minute>\d{2})\s*(?<ampm>AM|PM)",
-                "date_pattern": r"@ (?<month>[A-Za-z]+)\s+(?<day>\d{1,2})",
-                "timezone": "US/Eastern",
-                "program_duration": 180,
-            },
-        )
-        channel_name = (
-            "NHL 01: Washington Capitals vs Philadelphia Flyers @ April 16 07:30 PM ET"
-        )
-        now = timezone.now()
-        lookback = now - timedelta(days=7)
-
-        programs = generate_dummy_programs(
-            channel_id="nhl01",
-            channel_name=channel_name,
-            num_days=7,
-            epg_source=epg_source,
-            export_lookback=lookback,
-            export_cutoff=now + timedelta(days=7),
-        )
-
-        self.assertGreater(len(programs), 0)
-        self.assertTrue(
-            all(p['end_time'] >= lookback for p in programs),
-            "All programmes should fall inside the export window",
-        )
-        self.assertTrue(
-            any('Ended' in p['description'] for p in programs),
-            "Past events outside the window should still show ended filler",
-        )
-        for program in programs:
-            start = program['start_time']
-            self.assertEqual(start.second, 0)
-            self.assertEqual(start.microsecond, 0)
-            self.assertIn(
-                start.minute, (0, 30),
-                "Filler programmes should start on half-hour boundaries",
+        # This mixin normally bypasses Redis chunk caching; use the real path here.
+        self._epg_cache_patch.stop()
+        try:
+            epg_source = EPGSource.objects.create(name="Cache EPG Src", source_type="xmltv")
+            epg_old = EPGData.objects.create(
+                name="Old Station",
+                epg_source=epg_source,
+                tvg_id="old.station",
             )
-        self.assertGreaterEqual(programs[0]['start_time'], lookback)
+            epg_new = EPGData.objects.create(
+                name="New Station",
+                epg_source=epg_source,
+                tvg_id="new.station",
+            )
+            channel = self._add_channel(
+                channel_number=149.0,
+                name="Cache Channel",
+                tvg_id="cache.channel",
+                epg_data=epg_old,
+            )
+            now = timezone.now()
+            ProgramData.objects.create(
+                epg=epg_old,
+                start_time=now + timedelta(hours=1),
+                end_time=now + timedelta(hours=2),
+                title="OLD PROGRAMME",
+                tvg_id="old.station",
+            )
+            ProgramData.objects.create(
+                epg=epg_new,
+                start_time=now + timedelta(hours=1),
+                end_time=now + timedelta(hours=2),
+                title="NEW PROGRAMME",
+                tvg_id="new.station",
+            )
 
-    def test_custom_dummy_future_event_fills_grid_window_with_upcoming(self):
-        """Grid-style window: future event should show upcoming filler, not empty."""
-        from django.utils import timezone
-        from apps.output.epg import _programme_overlaps_export_window, generate_dummy_programs
+            url = self._epg_url("tvg_id_source=channel_number&days=7")
+            before = _response_text(self.client.get(url))
+            self.assertIn('<title>OLD PROGRAMME</title>', before)
+            self.assertNotIn('<title>NEW PROGRAMME</title>', before)
 
-        epg_source = EPGSource.objects.create(
-            name="NHL Dummy Future",
-            source_type="dummy",
-            custom_properties={
-                "title_pattern": r"(?<league>.*)\s\d+:\s(?<team1>.*?)(?:\s+vs\s+)(?<team2>.*?)\s*@.*",
-                "time_pattern": r"(?<hour>\d{1,2}):(?<minute>\d{2})\s*(?<ampm>AM|PM)",
-                "date_pattern": r"@ (?<month>[A-Za-z]+)\s+(?<day>\d{1,2})",
-                "timezone": "US/Eastern",
-                "program_duration": 180,
-            },
-        )
-        now = timezone.now()
-        grid_start = now - timedelta(hours=1)
-        grid_end = now + timedelta(hours=24)
-        future = now + timedelta(days=3)
-        channel_name = (
-            f"NHL 01: Washington Capitals vs Philadelphia Flyers @ "
-            f"{future.strftime('%B')} {future.day} 07:30 PM ET"
-        )
+            redis = get_redis_connection("default")
+            cached_before = list(redis.scan_iter(match="epg_content:*", count=200))
+            self.assertGreater(len(cached_before), 0, "XMLTV chunk cache should be warm")
 
-        programs = generate_dummy_programs(
-            channel_id="nhl01",
-            channel_name=channel_name,
-            num_days=1,
-            epg_source=epg_source,
-            export_lookback=grid_start,
-            export_cutoff=grid_end,
-        )
+            ChannelOverride.objects.create(channel=channel, epg_data=epg_new)
 
-        self.assertGreater(len(programs), 0)
-        self.assertTrue(
-            all(
-                _programme_overlaps_export_window(
-                    p["start_time"], p["end_time"], grid_start, grid_end
-                )
-                for p in programs
-            ),
-            "All programmes should overlap the grid query window",
-        )
-        self.assertTrue(
-            any("Upcoming" in p.get("description", "") for p in programs),
-            "Future events outside the window should show upcoming filler",
-        )
+            cached_after = list(redis.scan_iter(match="epg_content:*", count=200))
+            self.assertEqual(
+                len(cached_after),
+                0,
+                "Override EPG change must invalidate XMLTV chunk cache",
+            )
 
-
-class OutputEPGHelperTest(SimpleTestCase):
-    def test_ceil_to_half_hour_on_boundary(self):
-        from django.utils import timezone
-        from apps.output.epg import _ceil_to_half_hour
-
-        dt = timezone.now().replace(minute=30, second=0, microsecond=0)
-        self.assertEqual(_ceil_to_half_hour(dt), dt)
-
-    def test_ceil_to_half_hour_rounds_up(self):
-        from django.utils import timezone
-        from apps.output.epg import _ceil_to_half_hour
-
-        dt = timezone.now().replace(minute=17, second=42, microsecond=123456)
-        aligned = _ceil_to_half_hour(dt)
-        self.assertEqual(aligned.minute, 30)
-        self.assertEqual(aligned.second, 0)
-        self.assertGreaterEqual(aligned, dt.replace(microsecond=0))
-
-    def test_ceil_to_half_hour_past_boundary_second(self):
-        from django.utils import timezone
-        from apps.output.epg import _ceil_to_half_hour
-
-        dt = timezone.now().replace(minute=0, second=52, microsecond=123456)
-        aligned = _ceil_to_half_hour(dt)
-        self.assertEqual(aligned.minute, 30)
-        self.assertEqual(aligned.second, 0)
-        self.assertGreaterEqual(aligned, dt.replace(microsecond=0))
+            after = _response_text(self.client.get(url))
+            self.assertIn('<title>NEW PROGRAMME</title>', after)
+            self.assertNotIn('<title>OLD PROGRAMME</title>', after)
+        finally:
+            self._epg_cache_patch.start()
 
 
 class XcVodSeriesDistinctTests(TestCase):
@@ -1294,10 +1231,141 @@ class XcGetEpgCatchupGateTests(TestCase):
         self.assertEqual(past["has_archive"], 0)
 
 
-class XcXmltvNullChannelNumberTests(OutputEndpointTestMixin, TestCase):
-    """XC XMLTV EPG must not crash when a visible channel has no channel number."""
+class XcGetEpgDummyTests(TestCase):
+    """XC single-channel EPG uses shared dummy generation (stream parse + export window)."""
+
+    NHL_PROPS = {
+        "title_pattern": r"(?<league>.*)\s\d+:\s(?<team1>.*?)(?:\s+vs\s+)(?<team2>.*?)\s*@.*",
+        "time_pattern": r"(?<hour>\d{1,2}):(?<minute>\d{2})\s*(?<ampm>AM|PM)",
+        "timezone": "UTC",
+        "program_duration": 180,
+        "name_source": "stream",
+        "stream_index": 1,
+        "title_template": "{team1} vs {team2}",
+    }
 
     def setUp(self):
+        from django.test import RequestFactory
+
+        self.factory = RequestFactory()
+        self.user = User.objects.create_user(
+            username=f"xc-dummy-{uuid4().hex[:8]}",
+            password="pass",
+            user_level=10,
+            custom_properties={"xc_password": "xcpass"},
+        )
+        self.group = ChannelGroup.objects.create(name=f"Group {uuid4().hex[:8]}")
+        self.account = M3UAccount.objects.create(
+            name=f"XC Dummy {uuid4().hex[:8]}",
+            server_url="http://example.com",
+            priority=1,
+        )
+        self.dummy_source = EPGSource.objects.create(
+            name="XC Dummy Source",
+            source_type="dummy",
+            custom_properties=self.NHL_PROPS,
+        )
+        self.epg_data = EPGData.objects.get(epg_source=self.dummy_source)
+
+    def _listings(self, channel):
+        import base64
+
+        from apps.output.views import xc_get_epg
+
+        request = self.factory.get(
+            "/player_api.php",
+            {
+                "action": "get_simple_data_table",
+                "stream_id": str(channel.id),
+                "days": "1",
+            },
+        )
+        listings = xc_get_epg(request, self.user)["epg_listings"]
+        for item in listings:
+            item["_title"] = base64.b64decode(item["title"]).decode()
+        return listings
+
+    def test_uses_stream_title_for_custom_dummy_regex(self):
+        from apps.channels.models import ChannelStream, Stream
+
+        channel = Channel.objects.create(
+            name="Unparseable channel title",
+            channel_number=42.0,
+            channel_group=self.group,
+            epg_data=self.epg_data,
+        )
+        stream = Stream.objects.create(
+            name="NHL 01: Capitals vs Flyers @ 11:00 PM ET",
+            url="http://example.com/1.ts",
+            m3u_account=self.account,
+        )
+        ChannelStream.objects.create(channel=channel, stream=stream, order=0)
+
+        titles = {item["_title"] for item in self._listings(channel)}
+
+        self.assertIn("Capitals vs Flyers", titles)
+
+    def test_respects_days_export_window(self):
+        from django.utils import timezone
+
+        channel = Channel.objects.create(
+            name="NHL 01: Capitals vs Flyers @ 11:00 PM ET",
+            channel_number=43.0,
+            channel_group=self.group,
+            epg_data=self.epg_data,
+        )
+        listings = self._listings(channel)
+        now = timezone.now()
+        for item in listings:
+            start = timezone.datetime.fromtimestamp(int(item["start_timestamp"]), tz=now.tzinfo)
+            end = timezone.datetime.fromtimestamp(int(item["stop_timestamp"]), tz=now.tzinfo)
+            self.assertLess(start, now + timedelta(days=1, hours=1))
+            self.assertGreater(end, now - timedelta(days=1))
+
+    def test_get_short_epg_respects_limit_for_on_demand_dummy(self):
+        import base64
+
+        from apps.output.views import xc_get_epg
+
+        channel = Channel.objects.create(
+            name="NHL 01: Capitals vs Flyers @ 11:00 PM ET",
+            channel_number=44.0,
+            channel_group=self.group,
+            epg_data=self.epg_data,
+        )
+        request = self.factory.get(
+            "/player_api.php",
+            {
+                "action": "get_short_epg",
+                "stream_id": str(channel.id),
+                "limit": "4",
+            },
+        )
+        listings = xc_get_epg(request, self.user, short=True)["epg_listings"]
+
+        self.assertEqual(len(listings), 4)
+        titles = [base64.b64decode(item["title"]).decode() for item in listings]
+        self.assertTrue(any("Capitals" in title for title in titles))
+
+    def test_get_short_epg_respects_limit_for_standard_dummy(self):
+        from apps.output.views import xc_get_epg
+
+        channel = Channel.objects.create(
+            name="No EPG Channel",
+            channel_number=45.0,
+            channel_group=self.group,
+        )
+        request = self.factory.get(
+            "/player_api.php",
+            {
+                "action": "get_short_epg",
+                "stream_id": str(channel.id),
+                "limit": "3",
+            },
+        )
+        listings = xc_get_epg(request, self.user, short=True)["epg_listings"]
+
+        self.assertEqual(len(listings), 3)
         super().setUp()
         self.client = Client()
         self.user = User.objects.create_user(
@@ -1358,3 +1426,132 @@ class GenerateEpgPrevDaysTests(SimpleTestCase):
         cache_key = generate_epg(request, profile_name="test", user=None)
 
         self.assertIn(":p=0:", cache_key)
+
+    @patch("apps.output.epg.stream_cached_response")
+    @patch("apps.output.epg.Channel.objects")
+    def test_epg_cache_key_includes_request_origin(self, _channels, mock_cache):
+        from apps.output.epg import generate_epg
+
+        mock_cache.side_effect = lambda cache_key, _source, **_kwargs: cache_key
+
+        lan_key = generate_epg(
+            self.factory.get("/epg/", HTTP_HOST="192.168.1.10:9191"),
+            profile_name="test",
+            user=None,
+        )
+        public_key = generate_epg(
+            self.factory.get("/epg/", HTTP_HOST="tv.example.com"),
+            profile_name="test",
+            user=None,
+        )
+        same_lan_key = generate_epg(
+            self.factory.get("/epg/", HTTP_HOST="192.168.1.10:9191"),
+            profile_name="test",
+            user=None,
+        )
+
+        self.assertIn("origin=http://192.168.1.10:9191", lan_key)
+        self.assertIn("origin=http://tv.example.com", public_key)
+        self.assertNotEqual(lan_key, public_key)
+        self.assertEqual(lan_key, same_lan_key)
+
+
+class GenerateM3UCacheKeyTests(SimpleTestCase):
+    """M3U shared cache must not reuse absolute URLs built for a different Host."""
+
+    def setUp(self):
+        self.factory = RequestFactory()
+
+    @patch("django.core.cache.cache")
+    def test_m3u_cache_key_includes_request_origin(self, mock_cache):
+        from apps.output.views import generate_m3u
+
+        mock_cache.get.return_value = "#EXTM3U\n"
+
+        generate_m3u(
+            self.factory.get("/m3u/", HTTP_HOST="192.168.1.10:9191"),
+            profile_name="test",
+            user=None,
+        )
+        lan_key = mock_cache.get.call_args[0][0]
+
+        generate_m3u(
+            self.factory.get("/m3u/", HTTP_HOST="tv.example.com"),
+            profile_name="test",
+            user=None,
+        )
+        public_key = mock_cache.get.call_args[0][0]
+
+        generate_m3u(
+            self.factory.get("/m3u/", HTTP_HOST="192.168.1.10:9191"),
+            profile_name="test",
+            user=None,
+        )
+        same_lan_key = mock_cache.get.call_args[0][0]
+
+        self.assertTrue(lan_key.startswith("m3u_content:"))
+        self.assertIn("origin=http://192.168.1.10:9191", lan_key)
+        self.assertIn("origin=http://tv.example.com", public_key)
+        self.assertNotEqual(lan_key, public_key)
+        self.assertEqual(lan_key, same_lan_key)
+
+
+class XcVodStreamsAdultContentTests(TestCase):
+    def setUp(self):
+        self.factory = RequestFactory()
+        self.account = M3UAccount.objects.create(
+            name=f"vod-adult-{uuid4().hex[:6]}",
+            server_url="http://example.com",
+            priority=1,
+            is_active=True,
+        )
+        self.safe = Movie.objects.create(name="Family Movie", is_adult=False)
+        self.adult = Movie.objects.create(name="Mature Movie", is_adult=True)
+        M3UMovieRelation.objects.create(
+            m3u_account=self.account,
+            movie=self.safe,
+            stream_id="safe-1",
+        )
+        M3UMovieRelation.objects.create(
+            m3u_account=self.account,
+            movie=self.adult,
+            stream_id="adult-1",
+        )
+        self.request = self.factory.get("/player_api.php")
+
+    def test_vod_streams_emits_is_adult_flag(self):
+        user = User.objects.create_user(
+            username=f"xc-adult-admin-{uuid4().hex[:8]}",
+            password="pass",
+            user_level=10,
+            custom_properties={"xc_password": "xcpass"},
+        )
+        streams = {s["name"]: s for s in xc_get_vod_streams(self.request, user)}
+        self.assertEqual(streams["Family Movie"]["is_adult"], 0)
+        self.assertEqual(streams["Mature Movie"]["is_adult"], 1)
+
+    def test_hide_adult_content_filters_vod_for_non_admin(self):
+        user = User.objects.create_user(
+            username=f"xc-adult-hide-{uuid4().hex[:8]}",
+            password="pass",
+            user_level=0,
+            custom_properties={
+                "xc_password": "xcpass",
+                "hide_adult_content": True,
+            },
+        )
+        names = {s["name"] for s in xc_get_vod_streams(self.request, user)}
+        self.assertEqual(names, {"Family Movie"})
+
+    def test_admin_still_sees_adult_vod_when_hide_set(self):
+        user = User.objects.create_user(
+            username=f"xc-adult-admin-hide-{uuid4().hex[:8]}",
+            password="pass",
+            user_level=10,
+            custom_properties={
+                "xc_password": "xcpass",
+                "hide_adult_content": True,
+            },
+        )
+        names = {s["name"] for s in xc_get_vod_streams(self.request, user)}
+        self.assertEqual(names, {"Family Movie", "Mature Movie"})

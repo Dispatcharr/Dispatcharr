@@ -272,3 +272,119 @@ class VODSeriesSyncPreserveDetailsTests(TestCase):
             props.get("detailed_info", {}).get("plot"),
             "Dummy series plot for advanced detail.",
         )
+
+
+class VODMovieIsAdultSyncTests(TestCase):
+    def setUp(self):
+        self.account = M3UAccount.objects.create(
+            name="Adult XC",
+            server_url="http://example.com",
+            username="user",
+            password="pass",
+            account_type=M3UAccount.Types.XC,
+            is_active=True,
+            custom_properties={"enable_vod": True},
+        )
+        self.category = VODCategory.objects.create(
+            name="Movies",
+            category_type="movie",
+        )
+        self.cat_relation = M3UVODCategoryRelation.objects.create(
+            category=self.category,
+            m3u_account=self.account,
+            enabled=True,
+        )
+        self.categories = {
+            "10": self.category,
+            "__uncategorized__": self.category,
+        }
+        self.relations = {self.category.id: self.cat_relation}
+
+    def _process(self, **row_overrides):
+        row = {
+            "stream_id": 2001,
+            "name": "Provider Film",
+            "category_id": "10",
+            "container_extension": "mp4",
+        }
+        row.update(row_overrides)
+        process_movie_batch(
+            self.account,
+            [row],
+            self.categories,
+            self.relations,
+            scan_start_time=timezone.now(),
+        )
+
+    def test_creates_movie_is_adult_from_string_one(self):
+        self._process(is_adult="1")
+        movie = Movie.objects.get(name="Provider Film")
+        self.assertTrue(movie.is_adult)
+
+    def test_creates_movie_is_adult_from_integer_one(self):
+        self._process(is_adult=1, stream_id=2002, name="Int Adult Film")
+        movie = Movie.objects.get(name="Int Adult Film")
+        self.assertTrue(movie.is_adult)
+
+    def test_creates_movie_not_adult_from_zero(self):
+        self._process(is_adult=0, stream_id=2003, name="Safe Film")
+        movie = Movie.objects.get(name="Safe Film")
+        self.assertFalse(movie.is_adult)
+
+    def test_updates_existing_movie_is_adult(self):
+        movie = Movie.objects.create(
+            name="Provider Film",
+            tmdb_id="900010",
+            is_adult=False,
+        )
+        M3UMovieRelation.objects.create(
+            m3u_account=self.account,
+            movie=movie,
+            category=self.category,
+            stream_id="2001",
+            custom_properties={"basic_data": {"stream_id": 2001}},
+        )
+        self._process(is_adult="1", tmdb_id="900010")
+        movie.refresh_from_db()
+        self.assertTrue(movie.is_adult)
+
+    def test_sparse_provider_row_without_is_adult_key_does_not_clear_flag(self):
+        """A second provider matched to the same movie (TMDB/IMDB/name+year)
+        that simply omits is_adult from its list row must not undo a flag
+        another provider already set, matching how sparse description/genre/etc.
+        rows are ignored elsewhere in this module.
+        """
+        movie = Movie.objects.create(
+            name="Shared Adult Film",
+            tmdb_id="900011",
+            is_adult=True,
+        )
+        M3UMovieRelation.objects.create(
+            m3u_account=self.account,
+            movie=movie,
+            category=self.category,
+            stream_id="2001",
+            custom_properties={"basic_data": {"stream_id": 2001}},
+        )
+        # Provider row has no "is_adult" key at all (not 0, just absent).
+        self._process(tmdb_id="900011")
+        movie.refresh_from_db()
+        self.assertTrue(movie.is_adult)
+
+    def test_explicit_zero_from_second_provider_still_clears_flag(self):
+        """Unlike an omitted key, an explicit 0 is real signal and should apply."""
+        movie = Movie.objects.create(
+            name="Reclassified Film",
+            tmdb_id="900012",
+            is_adult=True,
+        )
+        M3UMovieRelation.objects.create(
+            m3u_account=self.account,
+            movie=movie,
+            category=self.category,
+            stream_id="2001",
+            custom_properties={"basic_data": {"stream_id": 2001}},
+        )
+        self._process(is_adult=0, tmdb_id="900012")
+        movie.refresh_from_db()
+        self.assertFalse(movie.is_adult)

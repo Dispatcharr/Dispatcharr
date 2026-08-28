@@ -220,6 +220,10 @@ _GROUP_CACHE_TTL_SECONDS = 300
 _DEFAULT_USER_AGENT_CACHE_KEY = "coresettings:default_user_agent"
 _DEFAULT_USER_AGENT_CACHE_VER_KEY = "coresettings:default_user_agent:ver"
 
+# Locked Redirect StreamProfile primary key. Stable once seeded; TTL is a
+# safety net. Empty string in cache means "not found" (distinct from miss).
+_REDIRECT_STREAM_PROFILE_ID_CACHE_KEY = "coresettings:redirect_stream_profile_id"
+
 # Connectivity / timeout only. ResponseError (WRONGTYPE) and similar must still
 # propagate. Note: redis-py's AuthenticationError / AuthorizationError subclass
 # ConnectionError, so helpers re-raise those after the catch.
@@ -504,6 +508,62 @@ class CoreSettings(models.Model):
         return cls.get_stream_settings().get("default_stream_profile")
 
     @classmethod
+    def _load_redirect_stream_profile_id(cls):
+        """Resolve the locked Redirect StreamProfile id from Postgres (no cache)."""
+        return (
+            StreamProfile.objects.filter(
+                name=REDIRECT_PROFILE_NAME, locked=True
+            )
+            .values_list("id", flat=True)
+            .first()
+        )
+
+    @classmethod
+    def get_redirect_stream_profile_id(cls):
+        """Return the locked Redirect StreamProfile id (Redis-cached).
+
+        Hot paths compare this to ``get_default_stream_profile_id()`` instead of
+        loading ``StreamProfile`` on every request. Returns ``None`` if missing.
+        """
+        cached = cls._cache_get(_REDIRECT_STREAM_PROFILE_ID_CACHE_KEY)
+        if cached is _CACHE_BACKEND_ERROR:
+            return cls._load_redirect_stream_profile_id()
+        # Hit: int/str id, or "" sentinel for not found. Miss is None.
+        if cached is not None:
+            if cached == "":
+                return None
+            try:
+                return int(cached)
+            except (TypeError, ValueError):
+                return None
+
+        value = cls._load_redirect_stream_profile_id()
+        cls._cache_set(
+            _REDIRECT_STREAM_PROFILE_ID_CACHE_KEY,
+            value if value is not None else "",
+            timeout=_GROUP_CACHE_TTL_SECONDS,
+        )
+        return value
+
+    @classmethod
+    def is_default_stream_profile_redirect(cls):
+        """True when the configured default stream profile is locked Redirect.
+
+        Uses cached stream settings (default id) and a cached Redirect profile
+        id, so warm callers avoid a per-request ``StreamProfile`` query.
+        """
+        default_id = cls.get_default_stream_profile_id()
+        if default_id is None or default_id == "":
+            return False
+        redirect_id = cls.get_redirect_stream_profile_id()
+        if redirect_id is None:
+            return False
+        try:
+            return int(default_id) == int(redirect_id)
+        except (TypeError, ValueError):
+            return False
+
+    @classmethod
     def get_default_output_format(cls):
         return cls.get_stream_settings().get("default_output_format", "mpegts")
 
@@ -600,7 +660,10 @@ class CoreSettings(models.Model):
     @classmethod
     def get_dvr_comskip_hw_accel(cls):
         hw = cls.get_dvr_settings().get("comskip_hw_accel", "none")
-        return hw if hw in ("none", "cuvid", "qsv") else "none"
+        # Legacy "qsv" never worked with the bundled binary; treat as hwassist.
+        if hw == "qsv":
+            return "hwassist"
+        return hw if hw in ("none", "cuvid", "hwassist") else "none"
 
     @classmethod
     def get_dvr_comskip_custom_path(cls):

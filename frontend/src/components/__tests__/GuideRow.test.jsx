@@ -13,6 +13,17 @@ vi.mock('../../images/logo.png', () => ({
   default: 'mocked-logo.png',
 }));
 
+// Mock LazyLogo (has its own test suite) as a plain img driven by logo-1's cache_url
+vi.mock('../LazyLogo', () => ({
+  default: ({ logoId, alt, fallbackSrc, style }) => (
+    <img
+      src={logoId === 'logo-1' ? 'https://example.com/logo.png' : fallbackSrc}
+      alt={alt}
+      style={style}
+    />
+  ),
+}));
+
 // Mock lucide-react icons
 vi.mock('lucide-react', async (importOriginal) => {
   const actual = await importOriginal();
@@ -59,17 +70,10 @@ describe('GuideRow', () => {
     end_time: '2024-01-01T11:00:00Z',
   };
 
-  const mockLogos = {
-    'logo-1': {
-      cache_url: 'https://example.com/logo.png',
-    },
-  };
-
   const mockData = {
     filteredChannels: [mockChannel],
     programsByChannelId: new Map([[mockChannel.id, [mockProgram]]]),
     rowHeights: {},
-    logos: mockLogos,
     hoveredChannelId: null,
     setHoveredChannelId: vi.fn(),
     renderProgram: vi.fn((program) => (
