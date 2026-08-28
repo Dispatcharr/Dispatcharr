@@ -24,7 +24,9 @@ class ConfTests(SimpleTestCase):
         self.addCleanup(shutil.rmtree, self.log_dir, ignore_errors=True)
 
     def test_conf_round_trip(self):
-        log_collector.write_conf(self.log_dir, False, 42, 7, "Pacific/Auckland")
+        log_collector.write_conf(
+            self.log_dir, False, 42, 7, "Pacific/Auckland", "DEBUG"
+        )
         conf = log_collector.read_conf(self.log_dir)
         self.assertEqual(
             conf,
@@ -33,6 +35,7 @@ class ConfTests(SimpleTestCase):
                 "max_mb": 42,
                 "keep": 7,
                 "time_zone": "Pacific/Auckland",
+                "level": "DEBUG",
             },
         )
 
@@ -72,7 +75,7 @@ class ConfTests(SimpleTestCase):
         )
 
     def test_conf_zone_outranks_the_boot_zone(self):
-        log_collector.write_conf(self.log_dir, True, 10, 5, "America/Denver")
+        log_collector.write_conf(self.log_dir, True, 10, 5, "America/Denver", "")
         with mock.patch.dict(
             os.environ, {"DISPATCHARR_TIME_ZONE": "Pacific/Auckland"}
         ):
@@ -261,6 +264,17 @@ class ConfTests(SimpleTestCase):
             raw = f.read()
         raw.decode("utf-8")  # raises if the cap split a sequence
 
+    def test_a_floor_never_deletes_uwsgi_or_nginx_output(self):
+        # The collector assigns those records INFO itself; gating on it erases every request line.
+        self.collector._min_rank = 30
+        self.feed(
+            b"2026-08-18 01:00:06,000 - uwsgi_response_write_body_do(): Broken pipe"
+            b" [core/writer.c line 306] during GET /x (192.0.2.5)\n"
+        )
+        self.collector._drain()
+        for content in (self.read_log(), self.read_forward()):
+            self.assertIn("Broken pipe", content)
+
     def test_record_after_an_oversize_one_survives(self):
         self.feed(
             b"2026-08-18 01:00:00,100 ERROR postgres [1] STATEMENT:  " + b"y" * 60000 + b"\n",
@@ -295,12 +309,77 @@ class ConfTests(SimpleTestCase):
         names = sorted(self.collector._archive_indices())
         self.assertEqual(names, [1, 2])
 
-    def test_a_conf_written_elsewhere_is_noticed(self):
-        """A save in another container writes the conf; the poll picks it up."""
-        log_collector.write_conf(self.log_dir, True, 10, 5)
+    def test_started_line_names_the_level_floor(self):
+        """The startup announcement states the floor it will apply."""
+        log_collector.write_conf(self.log_dir, True, 10, 5, "UTC", "WARNING")
         self.collector._apply_conf()
         self.collector._drain()
-        self.assertIn("dispatcharr.log_collector started", self.read_log())
+        self.assertIn("started (level floor WARNING)", self.read_log())
+
+    def test_started_line_says_no_floor_when_none_is_set(self):
+        """An empty level is the container default and gates nothing."""
+        log_collector.write_conf(self.log_dir, True, 10, 5, "UTC", "")
+        self.collector._apply_conf()
+        self.collector._drain()
+        self.assertIn("started (no level floor)", self.read_log())
+
+    def test_started_line_treats_an_unrankable_level_as_no_floor(self):
+        """A level the collector cannot rank gates nothing, and says so."""
+        log_collector.write_conf(self.log_dir, True, 10, 5, "UTC", "BOGUS")
+        self.collector._apply_conf()
+        self.collector._drain()
+        self.assertIn("started (no level floor)", self.read_log())
+
+    def test_a_changed_floor_is_announced_to_both_sinks(self):
+        """A reload that moves the floor says so where either reader will see it."""
+        log_collector.write_conf(self.log_dir, True, 10, 5, "UTC", "")
+        self.collector._apply_conf()
+        log_collector.write_conf(self.log_dir, True, 10, 5, "UTC", "WARNING")
+        self.collector._apply_conf()
+        self.collector._drain()
+        for content in (self.read_log(), self.read_forward()):
+            self.assertIn("level floor now WARNING", content)
+
+    def test_an_unchanged_floor_is_not_announced(self):
+        """A reload that leaves the floor alone stays silent."""
+        log_collector.write_conf(self.log_dir, True, 10, 5, "UTC", "WARNING")
+        self.collector._apply_conf()
+        self.collector._apply_conf()
+        self.collector._drain()
+        self.assertNotIn("level floor now", self.read_log())
+
+    def test_clearing_the_floor_is_announced(self):
+        """Returning to the container default is a change worth stating."""
+        log_collector.write_conf(self.log_dir, True, 10, 5, "UTC", "ERROR")
+        self.collector._apply_conf()
+        log_collector.write_conf(self.log_dir, True, 10, 5, "UTC", "")
+        self.collector._apply_conf()
+        self.collector._drain()
+        self.assertIn("level floor removed", self.read_log())
+
+    def test_the_floor_change_forwards_with_persistence_off(self):
+        """The file sink honours the toggle; the announcement still forwards."""
+        log_collector.write_conf(self.log_dir, False, 10, 5, "UTC", "")
+        self.collector._apply_conf()
+        log_collector.write_conf(self.log_dir, False, 10, 5, "UTC", "ERROR")
+        self.collector._apply_conf()
+        self.collector._drain()
+        self.assertIn("level floor now ERROR", self.read_forward())
+        self.assertNotIn("level floor now ERROR", self.read_log())
+
+    def test_the_floor_announcement_survives_its_own_floor(self):
+        """Gating the announcement would hide it exactly when the floor rises."""
+        log_collector.write_conf(self.log_dir, True, 10, 5, "UTC", "")
+        self.collector._apply_conf()
+        log_collector.write_conf(self.log_dir, True, 10, 5, "UTC", "CRITICAL")
+        self.collector._apply_conf()
+        self.collector._drain()
+        self.assertIn("level floor now CRITICAL", self.read_log())
+
+    def test_a_conf_written_elsewhere_is_noticed(self):
+        """A save in another container cannot signal this collector."""
+        log_collector.write_conf(self.log_dir, True, 10, 5)
+        self.collector._apply_conf()
         self.assertEqual(self.collector._conf_stat(), self.collector._conf_stamp)
         # A different length, so the stamp differs whatever the clock resolution.
         log_collector.write_conf(self.log_dir, True, 10, 50)
@@ -315,6 +394,110 @@ class ConfTests(SimpleTestCase):
         self.assertFalse(self.collector._conf_is_stale())
         log_collector.write_conf(self.log_dir, True, 10, 50)
         self.assertTrue(self.collector._conf_is_stale())
+
+    def test_level_gate_keeps_trace_below_debug(self):
+        # Trace is a developer level below the UI's range: a Debug floor is above it.
+        self.collector._min_rank = 10
+        self.feed(b"2026-08-18 13:00:00,000 +1200 TRACE core.utils fine detail" + b"\n")
+        self.feed(b"2026-08-18 13:00:01,000 +1200 DEBUG core.utils plain detail" + b"\n")
+        self.collector._drain()
+        content = self.read_log()
+        self.assertNotIn("fine detail", content)
+        self.assertIn("plain detail", content)
+
+    def test_level_gate_drops_below_floor_from_both_sinks(self):
+        self.collector._min_rank = 20
+        self.feed(
+            b"2026-08-18 01:00:00,100 DEBUG core.utils noisy\n",
+            b"2026-08-18 01:00:00,200 INFO core.utils kept\n",
+        )
+        self.collector._drain()
+        for content in (self.read_log(), self.read_forward()):
+            self.assertNotIn("noisy", content)
+            self.assertIn("kept", content)
+
+    def test_level_gate_suppresses_continuations_with_their_record(self):
+        self.collector._min_rank = 20
+        self.feed(
+            b"2026-08-18 01:00:00,100 DEBUG core.utils noisy\n",
+            b"  noisy detail\n",
+            b"2026-08-18 01:00:00,200 ERROR core.utils boom\n",
+            b"  boom detail\n",
+        )
+        self.collector._drain()
+        content = self.read_log()
+        self.assertNotIn("noisy", content)
+        self.assertIn("boom\n", content)
+        self.assertIn("  boom detail\n", content)
+
+    def test_level_gate_keeps_whole_traceback_with_its_record(self):
+        # The tail lines sit at column 0: only an open traceback keeps them attached.
+        self.collector._min_rank = 40
+        self.feed(
+            b"2026-08-18 01:00:00,100 ERROR apps.channels refresh failed\n",
+            b"Traceback (most recent call last):\n",
+            b'  File "/app/x.py", line 1, in run\n',
+            b"ValueError: bad m3u\n",
+            b"\n",
+            b"During handling of the above exception, another exception occurred:\n",
+            b"Traceback (most recent call last):\n",
+            b"RuntimeError: boom\n",
+        )
+        self.collector._drain()
+        for content in (self.read_log(), self.read_forward()):
+            self.assertIn("ValueError: bad m3u", content)
+            self.assertIn("During handling of the above exception", content)
+            self.assertIn("RuntimeError: boom", content)
+
+    def test_level_gate_releases_after_a_traceback_ends(self):
+        self.collector._min_rank = 20
+        self.feed(
+            b"2026-08-18 01:00:00,100 ERROR apps.channels refresh failed\n",
+            b"Traceback (most recent call last):\n",
+            b"ValueError: bad m3u\n",
+            b"2026-08-18 01:00:00,200 DEBUG core.utils quiet\n",
+            b"plain stdout line\n",
+        )
+        self.collector._drain()
+        content = self.read_log()
+        self.assertNotIn("quiet", content)
+        self.assertIn("plain stdout line", content)
+
+    def test_level_gate_passes_records_normalize_left_untouched(self):
+        # An unstamped line in a known shape is still a record, not a continuation.
+        self.collector._min_rank = 20
+        self.feed(
+            b"2026-08-18 01:00:00,100 DEBUG core.utils quiet\n",
+            b"345:M 18 Xyz 2026 01:00:07.211 # Memory overcommit must be enabled\n",
+        )
+        self.collector._drain()
+        self.assertIn("Memory overcommit", self.read_log())
+
+    def test_level_gate_never_drops_output_whose_severity_is_ours(self):
+        # The shell states no level; the INFO the collector stamps is not permission to drop.
+        self.collector._min_rank = 30
+        self.feed(
+            b"2026-08-18 01:00:06 - Process uwsgi has exited!\n",
+            b"No processes started. Exiting.\n",
+            b"2026-08-18 01:00:00,100 INFO core.utils routine\n",
+        )
+        self.collector._drain()
+        for content in (self.read_log(), self.read_forward()):
+            self.assertIn("Process uwsgi has exited", content)
+            self.assertIn("No processes started", content)
+            # A source that did state INFO is still filtered.
+            self.assertNotIn("routine", content)
+
+    def test_level_gate_passes_unknown_levels(self):
+        self.collector._min_rank = 50
+        self.feed(b"2026-08-18 01:00:00,100 NOTE core.utils odd but kept\n")
+        self.collector._drain()
+        self.assertIn("odd but kept", self.read_log())
+
+    def test_level_floor_comes_from_conf(self):
+        log_collector.write_conf(self.log_dir, True, 10, 5, level="ERROR")
+        self.collector._apply_conf()
+        self.assertEqual(self.collector._min_rank, 40)
 
     def test_marker_defers_while_tail_open(self):
         self.collector._tail_open = True
@@ -532,7 +715,12 @@ class ApplySettingsTests(SimpleTestCase):
     def test_settings_round_trip_to_conf(self):
         log_collector.apply_settings(
             self.log_dir,
-            {"log_persist": False, "log_max_mb": 25, "log_keep": 3},
+            {
+                "log_persist": False,
+                "log_max_mb": 25,
+                "log_keep": 3,
+                "log_level": "WARNING",
+            },
         )
         conf = log_collector.read_conf(self.log_dir)
         self.assertEqual(
@@ -542,6 +730,7 @@ class ApplySettingsTests(SimpleTestCase):
                 "max_mb": 25,
                 "keep": 3,
                 "time_zone": "UTC",
+                "level": "WARNING",
             },
         )
 
@@ -605,6 +794,7 @@ class ReceiverTests(TestCase):
                 "max_mb": 20,
                 "keep": 4,
                 "time_zone": "UTC",
+                "level": "",
             },
         )
 
