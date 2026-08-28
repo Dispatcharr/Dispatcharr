@@ -32,6 +32,8 @@ def get_process_role(argv: list[str] | None = None) -> str:
         return "celery-worker"
     if "daphne" in argv0:
         return "daphne"
+    if "gunicorn" in argv0:
+        return "gunicorn"
     if argv0 == "manage.py" and len(argv) > 1:
         return f"manage-{argv[1]}"
     if _is_uwsgi_worker() or argv0 == "uwsgi":

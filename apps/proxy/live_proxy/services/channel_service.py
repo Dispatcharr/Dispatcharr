@@ -461,6 +461,9 @@ class ChannelService:
                 success = manager.update_url(new_url, stream_id, m3u_profile_id)
                 logger.info(f"Stream URL changed from {old_url} to {new_url}, result: {success}")
 
+            if success:
+                manager.reset_failover_rotation_state()
+
             # Update Redis metadata based on the actual outcome.
             # On success, write the new values. On failure, restore whatever URL
             # the manager will actually reconnect to (may be old_url if the

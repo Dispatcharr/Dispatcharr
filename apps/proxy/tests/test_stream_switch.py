@@ -96,6 +96,7 @@ class OwnerPathTests(TestCase):
         result, redis, manager = self._run()
 
         manager.update_url.assert_called_once_with(NEW_URL, 144065, 7)
+        manager.reset_failover_rotation_state.assert_called_once()
         self.assertTrue(result["success"])
         self.assertTrue(result["direct_update"])
 

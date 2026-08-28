@@ -8,7 +8,7 @@ import useLogosStore from '../../store/logos';
 import useEPGsStore from '../../store/epgs';
 import useSettingsStore from '../../store/settings';
 import useVideoStore from '../../store/useVideoStore';
-import useLocalStorage from '../../hooks/useLocalStorage';
+import useBrowserStorage from '../../hooks/useBrowserStorage';
 import * as guideUtils from '../../utils/guideUtils';
 import * as recordingCardUtils from '../../utils/cards/RecordingCardUtils.js';
 import * as dateTimeUtils from '../../utils/dateTimeUtils.js';
@@ -30,7 +30,9 @@ vi.mock('../../store/settings', () => ({
 vi.mock('../../store/useVideoStore', () => ({
   default: vi.fn(),
 }));
-vi.mock('../../hooks/useLocalStorage', () => ({
+vi.mock('../../hooks/useBrowserStorage', () => ({
+  readStoredJSON: (key, defaultValue) => defaultValue,
+  writeStoredJSON: vi.fn(),
   default: vi.fn(),
 }));
 vi.mock('../../api', () => ({
@@ -305,6 +307,7 @@ describe('Guide', () => {
   let mockChannelsState;
   let mockShowVideo;
   let mockFetchRecordings;
+  let mockEnableLogoRendering;
   const now = dayjs('2024-01-15T12:00:00Z');
 
   beforeEach(() => {
@@ -347,6 +350,7 @@ describe('Guide', () => {
 
     mockShowVideo = vi.fn();
     mockFetchRecordings = vi.fn().mockResolvedValue([]);
+    mockEnableLogoRendering = vi.fn();
 
     useChannelsStore.mockImplementation((selector) => {
       const state = {
@@ -356,9 +360,15 @@ describe('Guide', () => {
       return selector ? selector(state) : state;
     });
 
-    useLogosStore.mockReturnValue({
-      'logo-1': { url: 'http://logo1.png' },
-      'logo-2': { url: 'http://logo2.png' },
+    useLogosStore.mockImplementation((selector) => {
+      const state = {
+        logos: {
+          'logo-1': { url: 'http://logo1.png' },
+          'logo-2': { url: 'http://logo2.png' },
+        },
+        enableLogoRendering: mockEnableLogoRendering,
+      };
+      return selector ? selector(state) : state;
     });
 
     useEPGsStore.mockImplementation((selector) =>
@@ -369,7 +379,7 @@ describe('Guide', () => {
 
     useSettingsStore.mockReturnValue('production');
     useVideoStore.mockReturnValue(mockShowVideo);
-    useLocalStorage.mockReturnValue(['12h', vi.fn()]);
+    useBrowserStorage.mockReturnValue(['12h', vi.fn()]);
 
     dateTimeUtils.getNow.mockReturnValue(now);
     dateTimeUtils.format.mockImplementation((date, format) => {
@@ -449,6 +459,7 @@ describe('Guide', () => {
       render(<Guide />);
 
       expect(screen.getByText('TV Guide')).toBeInTheDocument();
+      expect(mockEnableLogoRendering).toHaveBeenCalledOnce();
     });
 
     it('displays current time in header', async () => {

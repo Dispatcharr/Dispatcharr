@@ -1,8 +1,11 @@
-"""Tests for DVR recording scheduling with ClockedSchedule.
+"""Tests for DVR recording scheduling.
 
-Uses ClockedSchedule instead of apply_async with countdown because Redis
-visibility_timeout (default 3600s) causes task redelivery for long countdowns,
-leading to duplicate recordings.
+Future start times use ClockedSchedule instead of apply_async with countdown
+because Redis visibility_timeout (default 3600s) causes task redelivery for
+long countdowns, leading to duplicate recordings.
+
+Start times that are already due are dispatched with apply_async (no
+countdown) so the worker starts immediately instead of waiting on Beat.
 """
 from datetime import timedelta
 from unittest.mock import patch, MagicMock
@@ -53,9 +56,22 @@ class ScheduleRecordingTaskTests(TestCase):
         # apply_async should not have been called
         mock_run_recording.apply_async.assert_not_called()
 
+    def _assert_immediate_dispatch(self, mock_run_recording, rec, eta):
+        mock_run_recording.apply_async.reset_mock()
+        beat_name = f"dvr-recording-{rec.id}"
+        with self.captureOnCommitCallbacks(execute=True):
+            task_id = schedule_recording_task(rec, eta=eta)
+
+        self.assertTrue(task_id.startswith(f"dvr-now-{rec.id}-"))
+        mock_run_recording.apply_async.assert_called_once_with(
+            args=[rec.id, rec.channel_id, str(rec.start_time), str(rec.end_time)],
+            task_id=task_id,
+        )
+        self.assertFalse(PeriodicTask.objects.filter(name=beat_name).exists())
+
     @patch("apps.channels.signals.run_recording")
-    def test_immediate_recording_creates_periodic_task(self, mock_run_recording):
-        """Recordings starting now also use ClockedSchedule for consistency."""
+    def test_immediate_recording_dispatches_via_apply_async(self, mock_run_recording):
+        """Recordings starting now go to the worker immediately, not via Beat."""
         now = timezone.now()
         rec = Recording.objects.create(
             channel=self.channel,
@@ -63,15 +79,11 @@ class ScheduleRecordingTaskTests(TestCase):
             end_time=now + timedelta(hours=1),
         )
 
-        task_id = schedule_recording_task(rec, eta=now)
-
-        expected_name = f"dvr-recording-{rec.id}"
-        self.assertEqual(task_id, expected_name)
-        self.assertTrue(PeriodicTask.objects.filter(name=expected_name).exists())
+        self._assert_immediate_dispatch(mock_run_recording, rec, now)
 
     @patch("apps.channels.signals.run_recording")
-    def test_past_start_time_clamps_to_now(self, mock_run_recording):
-        """Recordings with past start_time get clamped to now."""
+    def test_past_start_time_dispatches_immediately(self, mock_run_recording):
+        """Recordings whose start_time is already past start now, not at Beat."""
         past_time = timezone.now() - timedelta(minutes=5)
         rec = Recording.objects.create(
             channel=self.channel,
@@ -79,13 +91,7 @@ class ScheduleRecordingTaskTests(TestCase):
             end_time=timezone.now() + timedelta(hours=1),
         )
 
-        task_id = schedule_recording_task(rec, eta=past_time)
-
-        expected_name = f"dvr-recording-{rec.id}"
-        self.assertEqual(task_id, expected_name)
-        pt = PeriodicTask.objects.get(name=expected_name)
-        # Clocked time should be >= now
-        self.assertGreaterEqual(pt.clocked.clocked_time, past_time)
+        self._assert_immediate_dispatch(mock_run_recording, rec, past_time)
 
     @patch("apps.channels.signals.run_recording")
     def test_reschedule_updates_existing_periodic_task(self, mock_run_recording):
@@ -106,6 +112,29 @@ class ScheduleRecordingTaskTests(TestCase):
         # Should still be exactly one PeriodicTask
         task_name = f"dvr-recording-{rec.id}"
         self.assertEqual(PeriodicTask.objects.filter(name=task_name).count(), 1)
+
+    @patch("apps.channels.signals.run_recording")
+    def test_due_eta_drops_existing_periodic_task(self, mock_run_recording):
+        """A due eta removes a leftover ClockedSchedule so Beat cannot also fire."""
+        future_time = timezone.now() + timedelta(hours=2)
+        rec = Recording.objects.create(
+            channel=self.channel,
+            start_time=future_time,
+            end_time=future_time + timedelta(hours=1),
+        )
+        schedule_recording_task(rec, eta=future_time)
+        beat_name = f"dvr-recording-{rec.id}"
+        self.assertTrue(PeriodicTask.objects.filter(name=beat_name).exists())
+
+        with self.captureOnCommitCallbacks(execute=True):
+            task_id = schedule_recording_task(rec, eta=timezone.now())
+
+        self.assertTrue(task_id.startswith(f"dvr-now-{rec.id}-"))
+        self.assertFalse(PeriodicTask.objects.filter(name=beat_name).exists())
+        mock_run_recording.apply_async.assert_called_once_with(
+            args=[rec.id, rec.channel_id, str(rec.start_time), str(rec.end_time)],
+            task_id=task_id,
+        )
 
     @patch("apps.channels.signals.run_recording")
     def test_naive_eta_is_made_aware(self, mock_run_recording):
@@ -275,23 +304,32 @@ class SignalIntegrationTests(TestCase):
             PeriodicTask.objects.filter(name__startswith="dvr-recording-").count(), 0
         )
 
+    @patch("apps.channels.signals.run_recording")
     @patch("apps.channels.signals.prefetch_recording_artwork")
-    def test_post_save_schedules_currently_playing_recording(self, mock_artwork):
-        """A recording with past start_time but future end_time schedules immediately."""
+    def test_post_save_dispatches_currently_playing_recording(
+        self, mock_artwork, mock_run_recording
+    ):
+        """A recording with past start_time but future end_time starts now via apply_async."""
         mock_artwork.apply_async.return_value = MagicMock()
+        mock_run_recording.apply_async.return_value = MagicMock()
 
         past_start = timezone.now() - timedelta(minutes=30)
         future_end = timezone.now() + timedelta(minutes=30)
-        rec = Recording.objects.create(
-            channel=self.channel,
-            start_time=past_start,
-            end_time=future_end,
-        )
+        with self.captureOnCommitCallbacks(execute=True):
+            rec = Recording.objects.create(
+                channel=self.channel,
+                start_time=past_start,
+                end_time=future_end,
+            )
 
         rec.refresh_from_db()
-        task_name = f"dvr-recording-{rec.id}"
-        self.assertEqual(rec.task_id, task_name)
-        self.assertTrue(PeriodicTask.objects.filter(name=task_name).exists())
+        beat_name = f"dvr-recording-{rec.id}"
+        self.assertTrue(rec.task_id.startswith(f"dvr-now-{rec.id}-"))
+        self.assertFalse(PeriodicTask.objects.filter(name=beat_name).exists())
+        mock_run_recording.apply_async.assert_called_once_with(
+            args=[rec.id, rec.channel_id, str(rec.start_time), str(rec.end_time)],
+            task_id=rec.task_id,
+        )
 
     @patch("apps.channels.signals.prefetch_recording_artwork")
     def test_post_save_skips_fully_past_recording(self, mock_artwork):
@@ -583,3 +621,4 @@ class PeriodicTaskCleanupOnExecutionTests(TestCase):
 
         self.assertFalse(PeriodicTask.objects.filter(name=task_name).exists())
         self.assertFalse(ClockedSchedule.objects.filter(id=clocked_id).exists())
+

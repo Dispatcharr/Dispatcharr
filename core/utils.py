@@ -119,6 +119,33 @@ def ensure_custom_properties_dict(value):
     return custom_properties_as_dict(value)
 
 
+def truncate_with_warning(value, max_length, *, label):
+    """Clamp a string to ``max_length``, logging a warning when truncated.
+
+    Used for provider-supplied CharField values (logo names, stream names,
+    EPG titles, etc.) so oversized input cannot abort bulk inserts with
+    ``value too long for type character varying(...)``.
+
+    ``max_length`` and ``label`` are required. Pass the model field limit
+    (e.g. ``Logo._meta.get_field("name").max_length``) and a short label
+    for log context (e.g. ``"Logo name"``).
+    """
+    if value is None:
+        return value
+    if not isinstance(value, str):
+        value = str(value)
+    if len(value) <= max_length:
+        return value
+    logger.warning(
+        "%s too long (%s > %s), truncating: %s...",
+        label,
+        len(value),
+        max_length,
+        value[:80],
+    )
+    return value[:max_length]
+
+
 class RedisClient:
     _client = None
     _buffer = None
@@ -130,7 +157,6 @@ class RedisClient:
         retry_count = 0
         while retry_count < max_retries:
             try:
-                # Get connection parameters from settings or environment
                 redis_host = os.environ.get("REDIS_HOST", getattr(settings, 'REDIS_HOST', 'localhost'))
                 redis_port = int(os.environ.get("REDIS_PORT", getattr(settings, 'REDIS_PORT', 6379)))
                 redis_db = int(os.environ.get("REDIS_DB", getattr(settings, 'REDIS_DB', 0)))

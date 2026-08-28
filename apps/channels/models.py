@@ -1149,9 +1149,35 @@ class ChannelGroupM3UAccount(models.Model):
         super().save(*args, **kwargs)
 
 
+class LogoQuerySet(models.QuerySet):
+    def bulk_create(self, objs, *args, **kwargs):
+        # bulk_create bypasses Model.save(); clamp names here so provider
+        # titles longer than varchar(255) cannot abort channel / EPG ingest.
+        from core.utils import truncate_with_warning
+
+        max_length = self.model._meta.get_field("name").max_length
+        for obj in objs:
+            obj.name = truncate_with_warning(
+                obj.name, max_length=max_length, label="Logo name"
+            )
+        return super().bulk_create(objs, *args, **kwargs)
+
+
 class Logo(models.Model):
     name = models.CharField(max_length=255)
     url = models.TextField(unique=True)
+
+    objects = LogoQuerySet.as_manager()
+
+    def save(self, *args, **kwargs):
+        from core.utils import truncate_with_warning
+
+        self.name = truncate_with_warning(
+            self.name,
+            max_length=self._meta.get_field("name").max_length,
+            label="Logo name",
+        )
+        super().save(*args, **kwargs)
 
     def __str__(self):
         return self.name

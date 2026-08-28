@@ -16,7 +16,7 @@ const PageContent = () => {
 
 const UsersPage = () => {
   return (
-    <ErrorBoundary>
+    <ErrorBoundary inline>
       <PageContent />
     </ErrorBoundary>
   );

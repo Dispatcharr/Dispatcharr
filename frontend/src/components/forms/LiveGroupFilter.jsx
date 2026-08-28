@@ -781,7 +781,7 @@ const LiveGroupFilter = ({
         group={configuringGroup}
       >
         {configuringGroup && (
-          <ErrorBoundary>
+          <ErrorBoundary inline>
             <Suspense fallback={<Loader />}>
               <AutoSyncAdvanced
                 group={configuringGroup}
@@ -807,7 +807,7 @@ const LiveGroupFilter = ({
 
       {/* Logo Upload Modal */}
       {logoModalOpen && (
-        <ErrorBoundary>
+        <ErrorBoundary inline>
           <Suspense fallback={<Loader />}>
             <LogoForm
               isOpen={logoModalOpen}

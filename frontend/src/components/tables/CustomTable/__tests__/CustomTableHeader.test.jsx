@@ -11,6 +11,10 @@ vi.mock('@tanstack/react-table', () => ({
   ),
 }));
 
+vi.mock('lucide-react', () => ({
+  RotateCcw: () => <svg data-testid="reset-icon" />,
+}));
+
 // ── MultiSelectHeaderWrapper ──────────────────────────────────────────────────
 vi.mock('../MultiSelectHeaderWrapper', () => ({
   default: ({ children }) => (
@@ -125,6 +129,11 @@ describe('CustomTableHeader', () => {
       // flexRender returns the header string (id.toUpperCase()) for unknown headers
       expect(screen.getByText('NAME')).toBeInTheDocument();
       expect(screen.getByText('STATUS')).toBeInTheDocument();
+    });
+
+    it('uses border-box sizing so column widths include cell padding', () => {
+      render(<CustomTableHeader {...defaultProps()} />);
+      expect(document.querySelector('.th').style.boxSizing).toBe('border-box');
     });
 
     it('wraps each cell in MultiSelectHeaderWrapper', () => {
@@ -299,6 +308,40 @@ describe('CustomTableHeader', () => {
         />
       );
       expect(document.querySelector('.resizer.isResizing')).toBeTruthy();
+    });
+
+    it('prevents text selection for the duration of a resize drag', () => {
+      const resizeHandler = vi.fn();
+      const header = makeHeader('name', { canResize: true });
+      header.getResizeHandler = () => resizeHandler;
+      render(
+        <CustomTableHeader
+          {...defaultProps({
+            getHeaderGroups: () => makeHeaderGroups([header]),
+          })}
+        />
+      );
+
+      fireEvent.mouseDown(document.querySelector('.resizer'));
+
+      expect(resizeHandler).toHaveBeenCalledOnce();
+      expect(document.body.style.userSelect).toBe('none');
+      fireEvent.mouseUp(window);
+      expect(document.body.style.userSelect).toBe('');
+    });
+  });
+
+  describe('column sizing reset', () => {
+    it('renders and invokes the optional reset action', () => {
+      const onResetColumnSizing = vi.fn();
+      render(
+        <CustomTableHeader
+          {...defaultProps({ onResetColumnSizing })}
+        />
+      );
+
+      fireEvent.click(screen.getByLabelText('Reset Widths and Sorting'));
+      expect(onResetColumnSizing).toHaveBeenCalledOnce();
     });
   });
 });

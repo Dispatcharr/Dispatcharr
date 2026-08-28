@@ -91,6 +91,11 @@ class ConfigHelper:
         return ConfigHelper.get('MAX_STREAM_SWITCHES', 10)
 
     @staticmethod
+    def failover_rotation_cooldown():
+        """Seconds to wait after exhausting all streams before wrapping rotation."""
+        return ConfigHelper.get('FAILOVER_ROTATION_COOLDOWN', 60)
+
+    @staticmethod
     def retry_wait_interval():
         """Get wait interval between connection retries in seconds"""
         return ConfigHelper.get('RETRY_WAIT_INTERVAL', 0.5)  # Default to 0.5 second

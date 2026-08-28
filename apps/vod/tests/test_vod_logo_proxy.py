@@ -41,3 +41,23 @@ class VODLogoProxyTestCase(TestCase):
             kwargs.get("headers"),
             {"User-Agent": "Dispatcharr-Test/1.0"},
         )
+
+    @patch("core.image_proxy.validate_outbound_http_url")
+    @patch("core.image_proxy.requests.get")
+    @patch(
+        "core.image_proxy.CoreSettings.get_default_user_agent",
+        return_value="Dispatcharr-Test/1.0",
+    )
+    def test_cache_accepts_slash_less_url(self, _mock_ua, mock_get, _mock_validate):
+        """Clients that strip trailing slashes still get the image, not a redirect."""
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.iter_content.return_value = [PNG_BYTES]
+        mock_response.headers = {"Content-Type": "image/jpeg"}
+        mock_get.return_value = mock_response
+
+        response = self.client.get(f"/api/vod/vodlogos/{self.http_logo.id}/cache")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.content, PNG_BYTES)
+        self.assertFalse(response.has_header("Location"))
