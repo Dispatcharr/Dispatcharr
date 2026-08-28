@@ -20,5 +20,6 @@ export const getDvrSettingsFormInitialValues = () => {
     comskip_hw_accel: 'none',
     pre_offset_minutes: 0,
     post_offset_minutes: 0,
+    dvr_output_profile_id: null,
   };
 };

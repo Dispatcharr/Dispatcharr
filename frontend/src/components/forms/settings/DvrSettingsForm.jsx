@@ -1,4 +1,5 @@
 import useSettingsStore from '../../../store/settings.jsx';
+import useOutputProfilesStore from '../../../store/outputProfiles.jsx';
 import React, { useEffect, useRef, useState } from 'react';
 import {
   getChangedSettings,
@@ -28,6 +29,7 @@ import { useForm } from '@mantine/form';
 
 const DvrSettingsForm = React.memo(({ active }) => {
   const settings = useSettingsStore((s) => s.settings);
+  const outputProfiles = useOutputProfilesStore((s) => s.profiles);
   const [saved, setSaved] = useState(false);
   const [comskipFile, setComskipFile] = useState(null);
   const [comskipUploadLoading, setComskipUploadLoading] = useState(false);
@@ -212,6 +214,29 @@ const DvrSettingsForm = React.memo(({ active }) => {
             ? `Using ${comskipConfig.path}`
             : 'No custom comskip.ini uploaded.'}
         </Text>
+        <Select
+          id="dvr_output_profile_id"
+          name="dvr_output_profile_id"
+          label="DVR Output Profile"
+          description="Output profile applied when capturing a recording. Leave unset to record the source as-is."
+          clearable
+          searchable
+          placeholder="No transcoding (record as-is)"
+          value={
+            form.values['dvr_output_profile_id'] != null
+              ? `${form.values['dvr_output_profile_id']}`
+              : null
+          }
+          onChange={(value) =>
+            form.setFieldValue(
+              'dvr_output_profile_id',
+              value ? parseInt(value, 10) : null
+            )
+          }
+          data={outputProfiles
+            .filter((p) => p.is_active)
+            .map((p) => ({ value: `${p.id}`, label: p.name }))}
+        />
         <NumberInput
           label="Start early (minutes)"
           description="Begin recording this many minutes before the scheduled start."

@@ -196,6 +196,50 @@ describe('SettingsUtils', () => {
       });
     });
 
+    it('should route dvr_output_profile_id to dvr_settings as an integer', async () => {
+      const settings = {
+        dvr_settings: {
+          id: 2,
+          key: 'dvr_settings',
+          value: {},
+        },
+      };
+
+      API.updateSetting.mockResolvedValue({});
+
+      await SettingsUtils.saveChangedSettings(settings, {
+        dvr_output_profile_id: '6',
+      });
+
+      expect(API.updateSetting).toHaveBeenCalledWith({
+        id: 2,
+        key: 'dvr_settings',
+        value: { dvr_output_profile_id: 6 },
+      });
+    });
+
+    it('should store a cleared dvr_output_profile_id as null', async () => {
+      const settings = {
+        dvr_settings: {
+          id: 2,
+          key: 'dvr_settings',
+          value: { dvr_output_profile_id: 6 },
+        },
+      };
+
+      API.updateSetting.mockResolvedValue({});
+
+      await SettingsUtils.saveChangedSettings(settings, {
+        dvr_output_profile_id: null,
+      });
+
+      expect(API.updateSetting).toHaveBeenCalledWith({
+        id: 2,
+        key: 'dvr_settings',
+        value: { dvr_output_profile_id: null },
+      });
+    });
+
     it('should preserve boolean types', async () => {
       const settings = {
         dvr_settings: {
