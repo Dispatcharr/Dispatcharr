@@ -1047,6 +1047,18 @@ def purge_recurring_rule_impl(rule_id: int) -> int:
     return removed
 
 
+def _system_timezone():
+    """Resolve the configured system time zone, falling back to the server's."""
+    from django.utils import timezone
+
+    tz_name = CoreSettings.get_system_time_zone()
+    try:
+        return ZoneInfo(tz_name)
+    except Exception:
+        logger.warning("Invalid or unsupported time zone '%s'; falling back to Server default", tz_name)
+        return timezone.get_current_timezone()
+
+
 def sync_recurring_rule_impl(rule_id: int, drop_existing: bool = True, horizon_days: int = 14) -> int:
     """Ensure recordings exist for a recurring rule within the scheduling horizon."""
     from django.utils import timezone
@@ -1065,12 +1077,7 @@ def sync_recurring_rule_impl(rule_id: int, drop_existing: bool = True, horizon_d
     if not days:
         return 0
 
-    tz_name = CoreSettings.get_system_time_zone()
-    try:
-        tz = ZoneInfo(tz_name)
-    except Exception:
-        logger.warning("Invalid or unsupported time zone '%s'; falling back to Server default", tz_name)
-        tz = timezone.get_current_timezone()
+    tz = _system_timezone()
     local_today = now.astimezone(tz).date()
     start_limit = rule.start_date or local_today
     end_limit = rule.end_date
@@ -1362,6 +1369,11 @@ def _build_output_paths(channel, program, start_time, end_time, recording_id):
     episode = int(episode) if episode is not None else 0
     year = year or str(start_time.year)
 
+    # Broadcast date in the system time zone, the zone sync_recurring_rule_impl
+    # already uses for local_today, so a filename cannot name a different day
+    # than the rule matched. Ints, like season, so {start_month:02d} works.
+    local_start = start_time.astimezone(_system_timezone())
+
     values = {
         'show': show,
         'title': title,
@@ -1372,6 +1384,10 @@ def _build_output_paths(channel, program, start_time, end_time, recording_id):
         'channel': _safe_name(channel.name),
         'start': start_time.strftime('%Y%m%d_%H%M%S'),
         'end': end_time.strftime('%Y%m%d_%H%M%S'),
+        'start_date': local_start.strftime('%Y-%m-%d'),
+        'start_year': local_start.year,
+        'start_month': local_start.month,
+        'start_day': local_start.day,
     }
 
     template = CoreSettings.get_dvr_movie_template() if is_movie else CoreSettings.get_dvr_tv_template()

@@ -295,6 +295,29 @@ describe('DvrSettingsForm', () => {
       ).not.toHaveTextContent('{original_air_date}');
     });
 
+    it('advertises the broadcast date placeholders on every template', async () => {
+      render(<DvrSettingsForm active={true} />);
+      await waitFor(() => {
+        expect(
+          screen.getByTestId('tv_template-description')
+        ).toBeInTheDocument();
+      });
+
+      const templateIds = [
+        'tv_template',
+        'tv_fallback_template',
+        'movie_template',
+        'movie_fallback_template',
+      ];
+      templateIds.forEach((id) => {
+        const description = screen.getByTestId(`${id}-description`);
+        expect(description).toHaveTextContent('{start_date}');
+        expect(description).toHaveTextContent('{start_year}');
+        expect(description).toHaveTextContent('{start_month}');
+        expect(description).toHaveTextContent('{start_day}');
+      });
+    });
+
     it('renders the Save button', async () => {
       render(<DvrSettingsForm active={true} />);
       await waitFor(() => {
