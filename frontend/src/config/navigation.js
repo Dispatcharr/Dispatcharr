@@ -119,30 +119,40 @@ export const isGroupBoundary = (navItems, idx) =>
   idx > 0 && Boolean(navItems[idx].paths || navItems[idx - 1].paths);
 
 /**
- * Default nav order for a user, inserting 'dvr' right after 'guide' when a
- * standard user has DVR view/manage access. Shared by getOrderedNavItems and
- * any caller (e.g. NavOrderForm) that needs the default order on its own,
- * such as to reset to defaults or revert an optimistic update.
+ * Default nav order for a user. For standard users, inserts 'vods' after
+ * 'channels' when canViewVod, and 'dvr' after 'guide' when canViewDvr.
+ * Shared by getOrderedNavItems and any caller (e.g. NavOrderForm) that needs
+ * the default order on its own, such as to reset to defaults or revert an
+ * optimistic update.
  */
-export const getDefaultOrder = (isAdmin, canViewDvr = false) => {
-  const base = isAdmin ? DEFAULT_ADMIN_ORDER : DEFAULT_USER_ORDER;
+export const getDefaultOrder = (
+  isAdmin,
+  { canViewDvr = false, canViewVod = false } = {}
+) => {
+  let order = isAdmin ? [...DEFAULT_ADMIN_ORDER] : [...DEFAULT_USER_ORDER];
 
-  if (isAdmin || !canViewDvr || base.includes('dvr')) {
-    return base;
+  if (!isAdmin && canViewVod && !order.includes('vods')) {
+    const channelsIdx = order.indexOf('channels');
+    const insertAt = channelsIdx >= 0 ? channelsIdx + 1 : 0;
+    order = [...order.slice(0, insertAt), 'vods', ...order.slice(insertAt)];
   }
 
-  const guideIdx = base.indexOf('guide');
-  const insertAt = guideIdx >= 0 ? guideIdx + 1 : base.length - 1;
-  return [...base.slice(0, insertAt), 'dvr', ...base.slice(insertAt)];
+  if (!isAdmin && canViewDvr && !order.includes('dvr')) {
+    const guideIdx = order.indexOf('guide');
+    const insertAt = guideIdx >= 0 ? guideIdx + 1 : order.length - 1;
+    order = [...order.slice(0, insertAt), 'dvr', ...order.slice(insertAt)];
+  }
+
+  return order;
 };
 
 export const getOrderedNavItems = (
   userOrder,
   isAdmin,
   channelIds = [],
-  { canViewDvr = false } = {}
+  { canViewDvr = false, canViewVod = false } = {}
 ) => {
-  const defaultOrder = getDefaultOrder(isAdmin, canViewDvr);
+  const defaultOrder = getDefaultOrder(isAdmin, { canViewDvr, canViewVod });
 
   let order;
   if (userOrder && Array.isArray(userOrder) && userOrder.length > 0) {
