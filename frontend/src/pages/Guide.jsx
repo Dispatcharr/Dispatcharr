@@ -89,6 +89,8 @@ const ProgramDetailModal = React.lazy(
 );
 import { showNotification } from '../utils/notificationUtils.js';
 import ErrorBoundary from '../components/ErrorBoundary.jsx';
+import useAuthStore from '../store/auth';
+import { canManageDvr } from '../utils/dvrAccess';
 
 export default function TVChannelGuide({ startDate, endDate }) {
   const [isChannelsLoading, setIsChannelsLoading] = useState(false);
@@ -99,6 +101,8 @@ export default function TVChannelGuide({ startDate, endDate }) {
   const channelGroups = useChannelsStore((s) => s.channelGroups);
   const profiles = useChannelsStore((s) => s.profiles);
   const [isProgramsLoading, setIsProgramsLoading] = useState(true);
+  const authUser = useAuthStore((s) => s.user);
+  const canManage = canManageDvr(authUser);
 
   const enableLogoRendering = useLogosStore((s) => s.enableLogoRendering);
   useEffect(() => {
@@ -1315,18 +1319,20 @@ export default function TVChannelGuide({ startDate, endDate }) {
             </Button>
           )}
 
-          <Button
-            variant="filled"
-            size="sm"
-            onClick={openRules}
-            style={{
-              backgroundColor: '#245043',
-            }}
-            bd={'1px solid #3BA882'}
-            color="#FFFFFF"
-          >
-            Series Rules
-          </Button>
+          {canManage && (
+            <Button
+              variant="filled"
+              size="sm"
+              onClick={openRules}
+              style={{
+                backgroundColor: '#245043',
+              }}
+              bd={'1px solid #3BA882'}
+              color="#FFFFFF"
+            >
+              Series Rules
+            </Button>
+          )}
 
           <Text size="sm" c="dimmed">
             {filteredChannels.length}{' '}
@@ -1529,7 +1535,11 @@ export default function TVChannelGuide({ startDate, endDate }) {
               recording={recordingForProgram}
               opened={!!selectedProgram}
               onClose={handleCloseModal}
-              onRecord={(program) => openRecordChoice(program, selectedChannel)}
+              onRecord={
+                canManage
+                  ? (program) => openRecordChoice(program, selectedChannel)
+                  : undefined
+              }
             />
           </Suspense>
         </ErrorBoundary>

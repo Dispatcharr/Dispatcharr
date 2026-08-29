@@ -162,6 +162,24 @@ describe('navigation config', () => {
       expect(resultIds).not.toContain('dvr');
     });
 
+    it('includes dvr for non-admin users when canViewDvr is true', () => {
+      const result = getOrderedNavItems(null, false, [], { canViewDvr: true });
+      const resultIds = result.map((item) => item.id);
+
+      expect(resultIds).toContain('dvr');
+      expect(resultIds).toContain('channels');
+      expect(resultIds).toContain('guide');
+      expect(resultIds).toContain('settings');
+      expect(resultIds.indexOf('dvr')).toBeGreaterThan(
+        resultIds.indexOf('guide')
+      );
+    });
+
+    it('keeps dvr out for non-admin users when canViewDvr is false', () => {
+      const result = getOrderedNavItems(null, false, [], { canViewDvr: false });
+      expect(result.map((item) => item.id)).not.toContain('dvr');
+    });
+
     it('filters out unknown items from saved order', () => {
       const savedOrder = [
         'channels',
