@@ -1,4 +1,4 @@
-import React, { useMemo, useCallback, useState } from 'react';
+import React, { useMemo, useCallback, useEffect, useState } from 'react';
 import API from '../../api';
 import UserForm from '../forms/User';
 import useUsersStore from '../../store/users';
@@ -6,7 +6,15 @@ import useChannelsStore from '../../store/channels';
 import useAuthStore from '../../store/auth';
 import { USER_LEVELS, USER_LEVEL_LABELS } from '../../constants';
 import useWarningsStore from '../../store/warnings';
-import { SquarePlus, SquareMinus, SquarePen, Eye, EyeOff } from 'lucide-react';
+import {
+  SquarePlus,
+  SquareMinus,
+  SquarePen,
+  Eye,
+  EyeOff,
+  Search,
+  X,
+} from 'lucide-react';
 import {
   ActionIcon,
   Box,
@@ -19,12 +27,22 @@ import {
   LoadingOverlay,
   Stack,
   Badge,
+  TextInput,
   Tooltip,
 } from '@mantine/core';
 import { CustomTable, useTable } from './CustomTable';
 import ConfirmationDialog from '../ConfirmationDialog';
 import useBrowserStorage from '../../hooks/useBrowserStorage';
 import { useDateTimeFormat, format } from '../../utils/dateTimeUtils.js';
+import {
+  makeHeaderCellRenderer,
+  makeSortingChangeHandler,
+} from './M3uTableUtils';
+import {
+  getFilteredUsers,
+  getSortedUsers,
+  getUserFullName,
+} from '../../utils/tables/UsersTableUtils.js';
 
 const deleteUser = (id) => {
   return API.deleteUser(id);
@@ -136,6 +154,18 @@ const UsersTable = () => {
   const [userToDelete, setUserToDelete] = useState(null);
   const [isLoading, setIsLoading] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [search, setSearch] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
+  // Empty array means "no column sorted" — the table falls back to its default
+  // id order. The third click on a header returns to this state.
+  const [sorting, setSorting] = useState([]);
+
+  // Debounce the search box so typing doesn't re-filter and re-sort the whole
+  // list on every keystroke.
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedSearch(search), 300);
+    return () => clearTimeout(timer);
+  }, [search]);
 
   const executeDeleteUser = useCallback(async (id) => {
     setIsLoading(true);
@@ -188,6 +218,7 @@ const UsersTable = () => {
         accessorKey: 'user_level',
         size: 120,
         minSize: 80,
+        sortable: true,
         cell: ({ getValue }) => (
           <Text size="sm">{USER_LEVEL_LABELS[getValue()]}</Text>
         ),
@@ -197,6 +228,7 @@ const UsersTable = () => {
         accessorKey: 'username',
         size: 120,
         minSize: 75,
+        sortable: true,
         cell: ({ getValue }) => (
           <Box
             style={{
@@ -214,8 +246,8 @@ const UsersTable = () => {
         header: 'Name',
         size: 125,
         minSize: 50,
-        accessorFn: (row) =>
-          `${row.first_name || ''} ${row.last_name || ''}`.trim(),
+        sortable: true,
+        accessorFn: getUserFullName,
         cell: ({ getValue }) => (
           <Box
             style={{
@@ -233,6 +265,7 @@ const UsersTable = () => {
         accessorKey: 'email',
         size: 125,
         minSize: 50,
+        sortable: true,
         cell: ({ getValue }) => (
           <Box
             style={{
@@ -248,8 +281,11 @@ const UsersTable = () => {
       {
         header: 'Date Joined',
         accessorKey: 'date_joined',
-        size: 90,
-        minSize: 90,
+        // Wide enough for the header text plus the sort control; at the old
+        // 90px the two no longer fit on one line.
+        size: 120,
+        minSize: 110,
+        sortable: true,
         cell: ({ getValue }) => {
           const date = getValue();
           return (
@@ -262,6 +298,7 @@ const UsersTable = () => {
         accessorKey: 'last_login',
         size: 175,
         minSize: 85,
+        sortable: true,
         cell: ({ getValue }) => {
           const date = getValue();
           return (
@@ -333,17 +370,20 @@ const UsersTable = () => {
     setUserModalOpen(false);
   };
 
+  // Rows actually rendered: search first (cheaper — it shrinks what has to be
+  // sorted), then sort. Copies the store array rather than sorting it in place.
   const data = useMemo(() => {
-    return users.sort((a, b) => a.id - b.id);
-  }, [users]);
+    const filtered = getFilteredUsers(users, debouncedSearch);
+    const sortColumn = sorting[0];
 
-  const renderHeaderCell = (header) => {
-    return (
-      <Text size="sm" name={header.id}>
-        {header.column.columnDef.header}
-      </Text>
-    );
-  };
+    return sortColumn
+      ? getSortedUsers(filtered, sortColumn.id, sortColumn.desc)
+      : [...filtered].sort((a, b) => a.id - b.id);
+  }, [users, debouncedSearch, sorting]);
+
+  const onSortingChange = makeSortingChangeHandler(sorting, setSorting);
+
+  const renderHeaderCell = makeHeaderCellRenderer(sorting, onSortingChange);
 
   const table = useTable({
     columns,
@@ -353,8 +393,11 @@ const UsersTable = () => {
     enableRowSelection: false,
     enableRowVirtualization: false,
     renderTopToolbar: false,
-    manualSorting: false,
-    manualFiltering: false,
+    sorting,
+    // Rows arrive already sorted and filtered by `data` above, so the table
+    // must not reorder or re-filter them itself.
+    manualSorting: true,
+    manualFiltering: true,
     manualPagination: false,
     headerCellRenderFns: {
       actions: renderHeaderCell,
@@ -407,11 +450,35 @@ const UsersTable = () => {
             <Box
               style={{
                 display: 'flex',
-                justifyContent: 'flex-end',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                gap: '16px',
                 padding: '16px',
                 borderBottom: '1px solid #3f3f46',
               }}
             >
+              <TextInput
+                placeholder="Search users..."
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                w={250}
+                size="xs"
+                leftSection={<Search size={16} />}
+                rightSection={
+                  search ? (
+                    <ActionIcon
+                      onClick={() => setSearch('')}
+                      variant="subtle"
+                      color="gray"
+                      size="sm"
+                      aria-label="Clear search"
+                    >
+                      <X size={14} />
+                    </ActionIcon>
+                  ) : null
+                }
+              />
+
               <Button
                 leftSection={<SquarePlus size={18} />}
                 variant="light"
@@ -441,7 +508,13 @@ const UsersTable = () => {
             >
               <div style={{ minWidth: '900px' }}>
                 <LoadingOverlay visible={isLoading} />
-                <CustomTable table={table} />
+                {data.length === 0 && users.length > 0 ? (
+                  <Text size="xl" c="dimmed" ta="center" py="xl">
+                    No users match this search.
+                  </Text>
+                ) : (
+                  <CustomTable table={table} />
+                )}
               </div>
             </Box>
           </Paper>
