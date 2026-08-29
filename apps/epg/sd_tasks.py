@@ -22,14 +22,21 @@ from django.utils import timezone
 
 from apps.channels.models import Channel
 from apps.epg.models import EPGData, EPGSource, ProgramData, SDProgramMD5, SDScheduleMD5
-from apps.epg.sd_utils import SD_BASE_URL, sd_authorized_request, sd_obtain_token
-from apps.epg.utils import send_epg_update
+from apps.epg.sd_utils import (
+    SD_AUTH_SOFT_CODES,
+    SD_BASE_URL,
+    sd_authorized_request,
+    sd_obtain_token,
+    sd_parse_response_payload,
+)
+from apps.epg.utils import fill_original_air_date_if_missing, send_epg_update
 from core.utils import (
     acquire_task_lock,
     is_task_lock_held,
     log_system_event,
     release_task_lock,
     TaskLockRenewer,
+    truncate_with_warning,
 )
 
 logger = logging.getLogger(__name__)
@@ -40,6 +47,15 @@ SD_PROGRAM_BATCH_SIZE = 5000
 SD_BULK_GUIDE_FETCH_THRESHOLD = 3
 SD_MAPPED_GUIDE_BATCH_DEFER_SECONDS = 90
 SD_MAPPED_GUIDE_FETCH_DEFER_MAX_RETRIES = 2
+
+
+class SDResponsePayloadError(requests.exceptions.RequestException):
+    """SD returned HTTP 200 with an embedded JSON error code instead of data."""
+
+    def __init__(self, code, message, response=None):
+        self.sd_code = code
+        super().__init__(f"SD API returned error code {code}: {message}", response=response)
+
 
 def _sd_compute_schedule_changes_from_md5(server_md5s, cached_md5s, date_list):
     """Return station_id -> [date_str] for dates whose schedule MD5 differs from cache."""
@@ -813,6 +829,33 @@ def fetch_schedules_direct(
         )
         return resp
 
+    def _sd_req_with_retry(method, url, *, max_attempts=3, backoff_seconds=2, **kwargs):
+        """
+        Call _sd_req with retry/backoff on network errors, HTTP errors, and
+        SD's own embedded JSON error codes returned with HTTP 200 (e.g.
+        SERVICE_OFFLINE/SERVICE_BUSY).
+        """
+        last_exc = None
+        for attempt in range(1, max_attempts + 1):
+            try:
+                resp = _sd_req(method, url, **kwargs)
+                resp.raise_for_status()
+                code, data = sd_parse_response_payload(resp)
+                if code is not None and code != 0:
+                    message = (data or {}).get('message') or (data or {}).get('response') or ''
+                    raise SDResponsePayloadError(code, message, response=resp)
+                return resp
+            except requests.exceptions.RequestException as e:
+                last_exc = e
+                if isinstance(e, SDResponsePayloadError) and e.sd_code not in SD_AUTH_SOFT_CODES:
+                    raise
+                if attempt < max_attempts:
+                    logger.debug(
+                        f"SD request to {url} failed (attempt {attempt}/{max_attempts}): {e}, retrying..."
+                    )
+                    time.sleep(backoff_seconds * attempt)
+        raise last_exc
+
     # -------------------------------------------------------------------------
     # Step 2: Check account status (respect OFFLINE system status)
     # -------------------------------------------------------------------------
@@ -969,7 +1012,11 @@ def fetch_schedules_direct(
         name_max_length = EPGData._meta.get_field('name').max_length
 
         for sid, info in station_map.items():
-            display_name = (info['name'] or sid)[:name_max_length]
+            display_name = truncate_with_warning(
+                info['name'] or sid,
+                max_length=name_max_length,
+                label="EPG display name",
+            )
             logo = info['logo_url']
             if logo and len(logo) > icon_max_length:
                 logo = None
@@ -1116,15 +1163,15 @@ def fetch_schedules_direct(
         mapped_station_ids[i:i + STATION_BATCH_SIZE]
         for i in range(0, len(mapped_station_ids), STATION_BATCH_SIZE)
     ]
+    md5_fetch_failed = False
     for batch in station_batches:
         try:
-            md5_response = _sd_req(
+            md5_response = _sd_req_with_retry(
                 'POST',
                 f"{SD_BASE_URL}/schedules/md5",
                 json=[{'stationID': sid, 'date': date_list} for sid in batch],
                 timeout=120,
             )
-            md5_response.raise_for_status()
             md5_data = md5_response.json()
             for sid, dates in md5_data.items():
                 for date_str, info in dates.items():
@@ -1135,6 +1182,7 @@ def fetch_schedules_direct(
                         }
         except requests.exceptions.RequestException as e:
             logger.warning(f"Failed to fetch schedule MD5s: {e}")
+            md5_fetch_failed = True
 
     # Load our cached MD5s from DB (mapped stations only)
     cached_md5s = {
@@ -1147,6 +1195,16 @@ def fetch_schedules_direct(
     changed_by_station = _sd_compute_schedule_changes_from_md5(
         server_md5s, cached_md5s, date_list,
     )
+
+    if md5_fetch_failed and not changed_by_station:
+        # The MD5 check failed for every batch, don't report a false "up to date".
+        msg = "Failed to fetch schedule MD5s from Schedules Direct, guide was not refreshed this cycle."
+        logger.warning(msg)
+        source.status = EPGSource.STATUS_ERROR
+        source.last_message = msg
+        source.save(update_fields=['status', 'last_message'])
+        send_epg_update(source.id, "parsing_programs", 100, status="error", error=msg)
+        return
 
     window_start = datetime(today.year, today.month, today.day, tzinfo=dt_timezone.utc)
     window_end = window_start + timedelta(days=SD_DAYS_TO_FETCH)
@@ -1245,13 +1303,12 @@ def fetch_schedules_direct(
         if not request_body:
             continue
         try:
-            sched_response = _sd_req(
+            sched_response = _sd_req_with_retry(
                 'POST',
                 f"{SD_BASE_URL}/schedules",
                 json=request_body,
                 timeout=120,
             )
-            sched_response.raise_for_status()
             sched_data = sched_response.json()
 
             for station_sched in sched_data:
@@ -1362,6 +1419,7 @@ def fetch_schedules_direct(
         f"{len(programs_to_fetch)} need downloading ({len(program_ids_needed) - len(programs_to_fetch)} unchanged).")
 
     program_metadata = {}
+    fetch_failed_pids = set()
     program_id_list = list(programs_to_fetch)
     total_batches = max(1, (len(program_id_list) + SD_PROGRAM_BATCH_SIZE - 1) // SD_PROGRAM_BATCH_SIZE)
 
@@ -1380,13 +1438,12 @@ def fetch_schedules_direct(
                 pass
             batch = program_id_list[batch_idx * SD_PROGRAM_BATCH_SIZE:(batch_idx + 1) * SD_PROGRAM_BATCH_SIZE]
             try:
-                prog_response = _sd_req(
+                prog_response = _sd_req_with_retry(
                     'POST',
                     f"{SD_BASE_URL}/programs",
                     json=batch,
                     timeout=120,
                 )
-                prog_response.raise_for_status()
                 prog_data = prog_response.json()
                 for prog in prog_data:
                     pid = prog.get('programID')
@@ -1400,6 +1457,7 @@ def fetch_schedules_direct(
 
             except requests.exceptions.RequestException as e:
                 logger.warning(f"Failed to fetch program metadata batch {batch_idx + 1}: {e}")
+                fetch_failed_pids.update(batch)
     else:
         logger.info("All program metadata unchanged - skipping program download.")
         send_epg_update(source.id, "parsing_programs", 80, message="Program metadata unchanged - using cached data.")
@@ -1444,6 +1502,7 @@ def fetch_schedules_direct(
     all_programs_to_create = []
     total_programs = 0
     skipped_unmapped = 0
+    title_max_length = ProgramData._meta.get_field('title').max_length
 
     for sid, airings in schedules_by_station.items():
         if sid not in mapped_tvg_ids:
@@ -1472,6 +1531,11 @@ def fetch_schedules_direct(
             meta = program_metadata.get(pid, {})
             cached_prog = existing_program_cache.get(pid) if not meta else None
 
+            if not meta and not cached_prog and pid in fetch_failed_pids:
+                # Metadata fetch failed and there's no prior data to fall back
+                # on, skip instead of writing a placeholder "No Title" row.
+                continue
+
             if cached_prog:
                 # Unchanged program — reuse cached data from before surgical delete
                 title = cached_prog['title'] or 'No Title'
@@ -1483,7 +1547,7 @@ def fetch_schedules_direct(
                 title = titles[0].get('title120', '') if titles else ''
                 if not title:
                     title = meta.get('episodeTitle150', '') or 'No Title'
-            title = title[:255]
+            title = title[:title_max_length]
 
             if not cached_prog:
                 descriptions = meta.get('descriptions', {})
@@ -1624,11 +1688,14 @@ def fetch_schedules_direct(
                 if airing.get('premiere'):
                     custom_props['premiere'] = True
 
-                # Original air date — full date, not just year
+                # Original air date — full date, not just year.
+                # Keep date for year / production_date compat, and also store the
+                # canonical original-air slot used by the programme API and export.
                 original_air_date = meta.get('originalAirDate', '')
                 movie_year = meta.get('movie', {}).get('year', '')
                 if original_air_date:
                     custom_props['date'] = original_air_date
+                    fill_original_air_date_if_missing(custom_props, original_air_date)
                 elif movie_year:
                     custom_props['date'] = str(movie_year)
 

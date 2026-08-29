@@ -24,6 +24,7 @@ import { useForm } from '@mantine/form';
 import useChannelsStore from '../../store/channels';
 import useOutputProfilesStore from '../../store/outputProfiles';
 import { USER_LEVEL_LABELS, USER_LEVELS } from '../../constants';
+import { DVR_ACCESS } from '../../utils/dvrAccess';
 import useAuthStore from '../../store/auth';
 import { copyToClipboard } from '../../utils';
 import {
@@ -268,6 +269,35 @@ const User = ({ user = null, isOpen, onClose }) => {
                   })}
                   key={form.key('catchup_enabled')}
                 />
+                <Switch
+                  label="Enable Movies"
+                  description="When disabled, this user cannot list or play movies via the API or Xtream Codes"
+                  {...form.getInputProps('vod_movies_enabled', {
+                    type: 'checkbox',
+                  })}
+                  key={form.key('vod_movies_enabled')}
+                />
+                <Switch
+                  label="Enable Series"
+                  description="When disabled, this user cannot list or play series/episodes via the API or Xtream Codes"
+                  {...form.getInputProps('vod_series_enabled', {
+                    type: 'checkbox',
+                  })}
+                  key={form.key('vod_series_enabled')}
+                />
+                {form.getValues().user_level != USER_LEVELS.STREAMER && (
+                  <Select
+                    label="DVR Access"
+                    description="None: no DVR page or playback. View: watch recordings for channels they can access (default). Manage: create, delete, and manage recordings and rules like an admin for DVR endpoints."
+                    data={[
+                      { value: DVR_ACCESS.NONE, label: 'None' },
+                      { value: DVR_ACCESS.VIEW, label: 'View' },
+                      { value: DVR_ACCESS.MANAGE, label: 'Manage' },
+                    ]}
+                    {...form.getInputProps('dvr_access')}
+                    key={form.key('dvr_access')}
+                  />
+                )}
               </Stack>
             </TabsPanel>
           )}

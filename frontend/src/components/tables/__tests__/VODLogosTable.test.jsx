@@ -6,7 +6,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 vi.mock('../../../store/vodLogos', () => ({ default: vi.fn() }));
 
 // ── Hook mocks ─────────────────────────────────────────────────────────────────
-vi.mock('../../../hooks/useLocalStorage', () => ({
+vi.mock('../../../hooks/useBrowserStorage', () => ({
+  readStoredJSON: (key, defaultValue) => defaultValue,
+  writeStoredJSON: vi.fn(),
   default: vi.fn(() => ['default', vi.fn()]),
 }));
 

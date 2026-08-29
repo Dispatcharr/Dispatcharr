@@ -33,7 +33,9 @@ vi.mock('../forms/ServerGroup', () => ({
   default: () => null,
 }));
 
-vi.mock('../../hooks/useLocalStorage', () => ({
+vi.mock('../../hooks/useBrowserStorage', () => ({
+  readStoredJSON: (key, defaultValue) => defaultValue,
+  writeStoredJSON: vi.fn(),
   default: () => ['default', vi.fn()],
 }));
 

@@ -16,7 +16,7 @@ import {
 } from '@mantine/core';
 import { Eye, EyeOff, SquareMinus, SquarePen, SquarePlus } from 'lucide-react';
 import { CustomTable, useTable } from './CustomTable';
-import useLocalStorage from '../../hooks/useLocalStorage';
+import useBrowserStorage from '../../hooks/useBrowserStorage';
 import {
   deleteOutputProfile,
   updateOutputProfile,
@@ -54,7 +54,7 @@ const OutputProfiles = () => {
   const [data, setData] = useState([]);
 
   const outputProfiles = useOutputProfilesStore((state) => state.profiles);
-  const [tableSize] = useLocalStorage('table-size', 'default');
+  const [tableSize] = useBrowserStorage('table-size', 'default');
   const theme = useMantineTheme();
 
   const columns = useMemo(

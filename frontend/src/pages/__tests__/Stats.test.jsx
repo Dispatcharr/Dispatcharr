@@ -9,7 +9,7 @@ import {
 } from '@testing-library/react';
 import StatsPage from '../Stats';
 import useStreamProfilesStore from '../../store/streamProfiles';
-import useLocalStorage from '../../hooks/useLocalStorage';
+import useBrowserStorage from '../../hooks/useBrowserStorage';
 import useChannelsStore from '../../store/channels';
 import useLogosStore from '../../store/logos';
 import {
@@ -27,7 +27,11 @@ import {
 vi.mock('../../store/channels');
 vi.mock('../../store/logos');
 vi.mock('../../store/streamProfiles');
-vi.mock('../../hooks/useLocalStorage');
+vi.mock('../../hooks/useBrowserStorage', () => ({
+  readStoredJSON: (key, defaultValue) => defaultValue,
+  writeStoredJSON: vi.fn(),
+  default: vi.fn((key, defaultValue) => [defaultValue, vi.fn()]),
+}));
 
 vi.mock('../../components/SystemEvents', () => ({
   default: () => <div data-testid="system-events">SystemEvents</div>,
@@ -165,6 +169,7 @@ describe('StatsPage', () => {
   let mockSetRefreshInterval;
   let mockSetVodStats;
   let mockSetTimeshiftStats;
+  let mockEnableLogoRendering;
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -173,6 +178,7 @@ describe('StatsPage', () => {
     mockSetRefreshInterval = vi.fn();
     mockSetVodStats = vi.fn();
     mockSetTimeshiftStats = vi.fn();
+    mockEnableLogoRendering = vi.fn();
 
     // Setup store mocks
     useChannelsStore.mockImplementation((selector) => {
@@ -199,11 +205,12 @@ describe('StatsPage', () => {
     useLogosStore.mockImplementation((selector) => {
       const state = {
         logos: mockLogos,
+        enableLogoRendering: mockEnableLogoRendering,
       };
       return selector ? selector(state) : state;
     });
 
-    useLocalStorage.mockReturnValue([5, mockSetRefreshInterval]);
+    useBrowserStorage.mockReturnValue([5, mockSetRefreshInterval]);
 
     // Setup API mocks
     fetchAllConnectionStats.mockResolvedValue(mockCombinedStats);
@@ -231,6 +238,12 @@ describe('StatsPage', () => {
         expect(mockSetChannelStats).toHaveBeenCalledWith(mockChannelStats);
         expect(mockSetVodStats).toHaveBeenCalledWith(mockVODStats);
       });
+    });
+
+    it('enables lazy logo rendering on mount', () => {
+      render(<StatsPage />);
+
+      expect(mockEnableLogoRendering).toHaveBeenCalledOnce();
     });
 
     it('displays connection counts', async () => {
@@ -278,7 +291,7 @@ describe('StatsPage', () => {
     });
 
     it('displays disabled message when interval is 0', async () => {
-      useLocalStorage.mockReturnValue([0, mockSetRefreshInterval]);
+      useBrowserStorage.mockReturnValue([0, mockSetRefreshInterval]);
       render(<StatsPage />);
 
       await screen.findByText('Refreshing disabled');
@@ -306,7 +319,7 @@ describe('StatsPage', () => {
     it('does not poll when interval is 0 but still fetches once on mount', async () => {
       vi.useFakeTimers();
 
-      useLocalStorage.mockReturnValue([0, mockSetRefreshInterval]);
+      useBrowserStorage.mockReturnValue([0, mockSetRefreshInterval]);
       render(<StatsPage />);
 
       // Should still fetch once on mount even with interval = 0

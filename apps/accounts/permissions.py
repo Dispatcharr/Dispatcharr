@@ -28,6 +28,28 @@ class IsAdmin(Authenticated):
         return request.user.user_level >= 10
 
 
+class IsAdminOrDVRManager(Authenticated):
+    """Admin or a standard user with ``dvr_access=manage``."""
+
+    def has_permission(self, request, view):
+        if not super().has_permission(request, view):
+            return False
+        from apps.channels.dvr_access import is_dvr_manage_enabled
+
+        return is_dvr_manage_enabled(user=request.user)
+
+
+class IsDVRViewer(Authenticated):
+    """Admin or a standard user with ``dvr_access`` of ``view`` or ``manage``."""
+
+    def has_permission(self, request, view):
+        if not super().has_permission(request, view):
+            return False
+        from apps.channels.dvr_access import is_dvr_view_enabled
+
+        return is_dvr_view_enabled(user=request.user)
+
+
 class IsOwnerOfObject(Authenticated):
     def has_object_permission(self, request, view, obj):
         if not super().has_permission(request, view):

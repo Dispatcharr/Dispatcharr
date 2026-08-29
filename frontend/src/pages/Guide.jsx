@@ -89,6 +89,8 @@ const ProgramDetailModal = React.lazy(
 );
 import { showNotification } from '../utils/notificationUtils.js';
 import ErrorBoundary from '../components/ErrorBoundary.jsx';
+import useAuthStore from '../store/auth';
+import { canManageDvr } from '../utils/dvrAccess';
 
 export default function TVChannelGuide({ startDate, endDate }) {
   const [isChannelsLoading, setIsChannelsLoading] = useState(false);
@@ -99,7 +101,13 @@ export default function TVChannelGuide({ startDate, endDate }) {
   const channelGroups = useChannelsStore((s) => s.channelGroups);
   const profiles = useChannelsStore((s) => s.profiles);
   const [isProgramsLoading, setIsProgramsLoading] = useState(true);
-  const logos = useLogosStore((s) => s.logos);
+  const authUser = useAuthStore((s) => s.user);
+  const canManage = canManageDvr(authUser);
+
+  const enableLogoRendering = useLogosStore((s) => s.enableLogoRendering);
+  useEffect(() => {
+    enableLogoRendering();
+  }, [enableLogoRendering]);
 
   const tvgsById = useEPGsStore((s) => s.tvgsById);
   const epgs = useEPGsStore((s) => s.epgs);
@@ -715,7 +723,10 @@ export default function TVChannelGuide({ startDate, endDate }) {
       setRecordChoiceOpen(true);
       try {
         const rules = await fetchRules();
-        const rule = getRuleByProgram(rules, program);
+        const tvgRecord = channel?.epg_data_id
+          ? tvgsById[channel.epg_data_id]
+          : null;
+        const rule = getRuleByProgram(rules, program, tvgRecord?.epg_source);
         setExistingRuleMode(rule ? rule.mode : null);
         setExistingRule(rule || null);
       } catch (error) {
@@ -724,7 +735,7 @@ export default function TVChannelGuide({ startDate, endDate }) {
 
       setRecordingForProgram(recordingsByProgramId.get(program.id) || null);
     },
-    [recordingsByProgramId]
+    [recordingsByProgramId, tvgsById]
   );
 
   const recordOne = useCallback(async (program, channel) => {
@@ -746,18 +757,27 @@ export default function TVChannelGuide({ startDate, endDate }) {
     showNotification({ title: 'Recording scheduled' });
   }, []);
 
-  const saveSeriesRule = useCallback(async (program, mode) => {
-    await createSeriesRule({
-      tvg_id: program.tvg_id,
-      mode,
-      title: program.title,
-    });
-    await evaluateSeriesRulesByTvgId(program.tvg_id);
-    // recordings_refreshed WS event triggers the debounced fetchRecordings()
-    showNotification({
-      title: mode === 'new' ? 'Record new episodes' : 'Record all episodes',
-    });
-  }, []);
+  const saveSeriesRule = useCallback(
+    async (program, mode) => {
+      const tvgRecord = recordChoiceChannel?.epg_data_id
+        ? tvgsById[recordChoiceChannel.epg_data_id]
+        : null;
+      await createSeriesRule({
+        tvg_id: program.tvg_id,
+        mode,
+        title: program.title,
+        ...(tvgRecord?.epg_source
+          ? { epg_source_id: tvgRecord.epg_source }
+          : {}),
+      });
+      await evaluateSeriesRulesByTvgId(program.tvg_id);
+      // recordings_refreshed WS event triggers the debounced fetchRecordings()
+      showNotification({
+        title: mode === 'new' ? 'Record new episodes' : 'Record all episodes',
+      });
+    },
+    [recordChoiceChannel, tvgsById]
+  );
 
   const openRules = useCallback(async () => {
     setRulesOpen(true);
@@ -1128,7 +1148,6 @@ export default function TVChannelGuide({ startDate, endDate }) {
       filteredChannels,
       programsByChannelId,
       rowHeights,
-      logos,
       renderProgram,
       handleLogoClick,
       contentWidth,
@@ -1143,7 +1162,6 @@ export default function TVChannelGuide({ startDate, endDate }) {
       filteredChannels,
       programsByChannelId,
       rowHeights,
-      logos,
       renderProgram,
       handleLogoClick,
       contentWidth,
@@ -1301,18 +1319,20 @@ export default function TVChannelGuide({ startDate, endDate }) {
             </Button>
           )}
 
-          <Button
-            variant="filled"
-            size="sm"
-            onClick={openRules}
-            style={{
-              backgroundColor: '#245043',
-            }}
-            bd={'1px solid #3BA882'}
-            color="#FFFFFF"
-          >
-            Series Rules
-          </Button>
+          {canManage && (
+            <Button
+              variant="filled"
+              size="sm"
+              onClick={openRules}
+              style={{
+                backgroundColor: '#245043',
+              }}
+              bd={'1px solid #3BA882'}
+              color="#FFFFFF"
+            >
+              Series Rules
+            </Button>
+          )}
 
           <Text size="sm" c="dimmed">
             {filteredChannels.length}{' '}
@@ -1462,7 +1482,7 @@ export default function TVChannelGuide({ startDate, endDate }) {
 
       {/* Record choice modal */}
       {recordChoiceOpen && recordChoiceProgram && (
-        <ErrorBoundary>
+        <ErrorBoundary inline>
           <Suspense fallback={<LoadingOverlay />}>
             <ProgramRecordingModal
               opened={recordChoiceOpen}
@@ -1471,6 +1491,11 @@ export default function TVChannelGuide({ startDate, endDate }) {
               recording={recordingForProgram}
               existingRuleMode={existingRuleMode}
               existingRule={existingRule}
+              epgSourceId={
+                recordChoiceChannel?.epg_data_id
+                  ? tvgsById[recordChoiceChannel.epg_data_id]?.epg_source
+                  : null
+              }
               onRecordOne={() =>
                 recordOne(recordChoiceProgram, recordChoiceChannel)
               }
@@ -1488,7 +1513,7 @@ export default function TVChannelGuide({ startDate, endDate }) {
 
       {/* Series rules modal */}
       {rulesOpen && (
-        <ErrorBoundary>
+        <ErrorBoundary inline>
           <Suspense fallback={<LoadingOverlay />}>
             <SeriesRecordingModal
               opened={rulesOpen}
@@ -1502,7 +1527,7 @@ export default function TVChannelGuide({ startDate, endDate }) {
 
       {/* Program detail modal */}
       {selectedProgram && (
-        <ErrorBoundary>
+        <ErrorBoundary inline>
           <Suspense fallback={<LoadingOverlay />}>
             <ProgramDetailModal
               program={selectedProgram}
@@ -1510,7 +1535,11 @@ export default function TVChannelGuide({ startDate, endDate }) {
               recording={recordingForProgram}
               opened={!!selectedProgram}
               onClose={handleCloseModal}
-              onRecord={(program) => openRecordChoice(program, selectedChannel)}
+              onRecord={
+                canManage
+                  ? (program) => openRecordChoice(program, selectedChannel)
+                  : undefined
+              }
             />
           </Suspense>
         </ErrorBoundary>

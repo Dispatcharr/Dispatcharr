@@ -1,11 +1,15 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import useAuthStore from '../../store/auth';
-import useLocalStorage from '../../hooks/useLocalStorage';
+import useBrowserStorage from '../../hooks/useBrowserStorage';
 import ChannelsPage from '../Channels';
 
 vi.mock('../../store/auth');
-vi.mock('../../hooks/useLocalStorage');
+vi.mock('../../hooks/useBrowserStorage', () => ({
+  readStoredJSON: (key, defaultValue) => defaultValue,
+  writeStoredJSON: vi.fn(),
+  default: vi.fn((key, defaultValue) => [defaultValue, vi.fn()]),
+}));
 vi.mock('../../components/tables/ChannelsTable', () => ({
   default: () => <div data-testid="channels-table">ChannelsTable</div>,
 }));
@@ -21,7 +25,7 @@ vi.mock('allotment', () => ({
 
 describe('ChannelsPage', () => {
   beforeEach(() => {
-    useLocalStorage.mockReturnValue([[50, 50], vi.fn()]);
+    useBrowserStorage.mockReturnValue([[50, 50], vi.fn()]);
   });
 
   it('renders nothing when user is not authenticated', () => {

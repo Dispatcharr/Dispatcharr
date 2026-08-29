@@ -11,8 +11,10 @@ import dayjs from 'dayjs';
 import useChannelsStore from '../../store/channels';
 import useSettingsStore from '../../store/settings';
 import useVideoStore from '../../store/useVideoStore';
-import useLocalStorage from '../../hooks/useLocalStorage';
+import useAuthStore from '../../store/auth';
+import useBrowserStorage from '../../hooks/useBrowserStorage';
 import API from '../../api';
+import { USER_LEVELS } from '../../constants';
 import {
   isAfter,
   isBefore,
@@ -28,7 +30,12 @@ import {
 vi.mock('../../store/channels');
 vi.mock('../../store/settings');
 vi.mock('../../store/useVideoStore');
-vi.mock('../../hooks/useLocalStorage');
+vi.mock('../../store/auth');
+vi.mock('../../hooks/useBrowserStorage', () => ({
+  readStoredJSON: (key, defaultValue) => defaultValue,
+  writeStoredJSON: vi.fn(),
+  default: vi.fn((key, defaultValue) => [defaultValue, vi.fn()]),
+}));
 vi.mock('../../api');
 
 // Mock Mantine components
@@ -204,6 +211,12 @@ describe('DVRPage', () => {
     showVideo: mockShowVideo,
   };
 
+  const defaultAuthUser = {
+    id: 1,
+    user_level: USER_LEVELS.ADMIN,
+    custom_properties: {},
+  };
+
   beforeEach(() => {
     vi.clearAllMocks();
     vi.useFakeTimers();
@@ -257,7 +270,12 @@ describe('DVRPage', () => {
     });
     useVideoStore.getState = () => defaultVideoState;
 
-    useLocalStorage.mockReturnValue(['America/New_York', vi.fn()]);
+    useAuthStore.mockImplementation((selector) => {
+      const state = { user: defaultAuthUser };
+      return selector ? selector(state) : state;
+    });
+
+    useBrowserStorage.mockReturnValue(['America/New_York', vi.fn()]);
   });
 
   afterEach(() => {

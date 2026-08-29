@@ -6,7 +6,7 @@ import utc from 'dayjs/plugin/utc';
 import timezone from 'dayjs/plugin/timezone';
 import customParseFormat from 'dayjs/plugin/customParseFormat';
 import useSettingsStore from '../store/settings';
-import useLocalStorage from '../hooks/useLocalStorage';
+import useBrowserStorage from '../hooks/useBrowserStorage';
 
 dayjs.extend(duration);
 dayjs.extend(relativeTime);
@@ -126,7 +126,7 @@ export const roundToNearest = (dateTime, minutes) => {
 
 export const useUserTimeZone = () => {
   const settings = useSettingsStore((s) => s.settings);
-  const [timeZone, setTimeZone] = useLocalStorage(
+  const [timeZone, setTimeZone] = useBrowserStorage(
     'time-zone',
     dayjs.tz?.guess
       ? dayjs.tz.guess()
@@ -174,8 +174,8 @@ export const RECURRING_DAY_OPTIONS = [
 ];
 
 export const useDateTimeFormat = () => {
-  const [timeFormatSetting] = useLocalStorage('time-format', '12h');
-  const [dateFormatSetting] = useLocalStorage('date-format', 'mdy');
+  const [timeFormatSetting] = useBrowserStorage('time-format', '12h');
+  const [dateFormatSetting] = useBrowserStorage('date-format', 'mdy');
   // Use user preference for time format
   const timeFormat = timeFormatSetting === '12h' ? 'h:mma' : 'HH:mm';
   const dateFormat = dateFormatSetting === 'mdy' ? 'MMM D' : 'D MMM';

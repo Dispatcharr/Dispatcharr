@@ -1,5 +1,6 @@
 import { Box, Center, Checkbox, Flex } from '@mantine/core';
 import { flexRender } from '@tanstack/react-table';
+import { RotateCcw } from 'lucide-react';
 import { useMemo } from 'react';
 import MultiSelectHeaderWrapper from './MultiSelectHeaderWrapper';
 import useChannelsTableStore from '../../../store/channelsTable';
@@ -13,9 +14,24 @@ const CustomTableHeader = ({
   tableCellProps,
   headerPinned = true,
   enableDragDrop = false,
+  onResetColumnSizing,
 }) => {
   const isUnlocked = useChannelsTableStore((s) => s.isUnlocked);
   const shouldEnableDrag = enableDragDrop && isUnlocked;
+  const handleResizeStart = (event, resizeHandler) => {
+    event.preventDefault();
+    document.body.style.userSelect = 'none';
+    document.body.style.webkitUserSelect = 'none';
+
+    const restoreSelection = () => {
+      document.body.style.removeProperty('user-select');
+      document.body.style.removeProperty('-webkit-user-select');
+    };
+    window.addEventListener('mouseup', restoreSelection, { once: true });
+    window.addEventListener('touchend', restoreSelection, { once: true });
+    window.addEventListener('touchcancel', restoreSelection, { once: true });
+    resizeHandler(event);
+  };
   const renderHeaderCell = (header) => {
     let content;
 
@@ -88,14 +104,19 @@ const CustomTableHeader = ({
               <Box
                 className="th"
                 key={header.id}
+                data-column-id={header.column.id}
                 style={{
+                  boxSizing: 'border-box',
                   ...(header.column.columnDef.grow
                     ? {
-                        flex: `${header.column.columnDef.grow === true ? 1 : header.column.columnDef.grow} 1 0%`,
+                        flex: header.column.columnDef.flexRatio
+                          ? `var(--header-${header.id}-ratio) 1 0%`
+                          : `${header.column.columnDef.grow === true ? 1 : header.column.columnDef.grow} 1 0%`,
                         minWidth: 0,
-                        ...(header.column.columnDef.maxSize && {
+                        ...(!header.column.columnDef.flexRatio &&
+                          header.column.columnDef.maxSize && {
                           maxWidth: `${header.column.columnDef.maxSize}px`,
-                        }),
+                          }),
                       }
                     : {
                         flex: `0 0 var(--header-${header.id}-size)`,
@@ -119,8 +140,12 @@ const CustomTableHeader = ({
                 </Flex>
                 {header.column.getCanResize() && (
                   <div
-                    onMouseDown={header.getResizeHandler()}
-                    onTouchStart={header.getResizeHandler()}
+                    onMouseDown={(event) =>
+                      handleResizeStart(event, header.getResizeHandler())
+                    }
+                    onTouchStart={(event) =>
+                      handleResizeStart(event, header.getResizeHandler())
+                    }
                     className={`resizer ${
                       header.column.getIsResizing() ? 'isResizing' : ''
                     }`}
@@ -132,6 +157,7 @@ const CustomTableHeader = ({
                       width: '8px', // Make it slightly wider
                       cursor: 'col-resize',
                       userSelect: 'none',
+                      WebkitUserSelect: 'none',
                       touchAction: 'none',
                       backgroundColor: header.column.getIsResizing()
                         ? '#3b82f6'
@@ -157,6 +183,35 @@ const CustomTableHeader = ({
           })}
         </Box>
       ))}
+      {onResetColumnSizing && (
+        <button
+          type="button"
+          aria-label="Reset Widths and Sorting"
+          title="Reset Widths and Sorting"
+          onClick={(event) => {
+            event.stopPropagation();
+            onResetColumnSizing();
+          }}
+          style={{
+            position: 'absolute',
+            top: 4,
+            right: 4,
+            display: 'inline-flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            width: 24,
+            height: 24,
+            padding: 0,
+            color: 'rgba(255, 255, 255, 0.45)',
+            background: 'transparent',
+            border: 0,
+            cursor: 'pointer',
+            zIndex: 11,
+          }}
+        >
+          <RotateCcw size={14} />
+        </button>
+      )}
     </Box>
   );
 };

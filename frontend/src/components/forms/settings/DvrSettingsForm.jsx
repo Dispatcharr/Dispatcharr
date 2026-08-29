@@ -240,7 +240,7 @@ const DvrSettingsForm = React.memo(({ active }) => {
         />
         <TextInput
           label="TV Fallback Template"
-          description="Template used when an episode has no season/episode. Supports {show}, {start}, {end}, {channel}, {year}."
+          description="Template used when an episode has no season/episode. Supports {show}, {sub_title}, {start}, {end}, {channel}, {year}, {original_air_date}."
           placeholder="TV_Shows/{show}/{start}.mkv"
           {...form.getInputProps('tv_fallback_template')}
           id="tv_fallback_template"

@@ -96,15 +96,20 @@ vi.mock('@mantine/core', () => ({
     </select>
   ),
   Text: ({ children }) => <span>{children}</span>,
-  TextInput: ({ label, id, name, placeholder, ...rest }) => (
-    <input
-      data-testid={id}
-      id={id}
-      name={name}
-      aria-label={label}
-      placeholder={placeholder}
-      onChange={(e) => rest.onChange?.(e)}
-    />
+  TextInput: ({ label, id, name, placeholder, description, ...rest }) => (
+    <>
+      <input
+        data-testid={id}
+        id={id}
+        name={name}
+        aria-label={label}
+        placeholder={placeholder}
+        onChange={(e) => rest.onChange?.(e)}
+      />
+      {description && (
+        <span data-testid={`${id}-description`}>{description}</span>
+      )}
+    </>
   ),
 }));
 
@@ -269,6 +274,25 @@ describe('DvrSettingsForm', () => {
           screen.getByTestId('movie_fallback_template')
         ).toBeInTheDocument();
       });
+    });
+
+    it('advertises original air date only for the TV fallback template', async () => {
+      render(<DvrSettingsForm active={true} />);
+      await waitFor(() => {
+        expect(
+          screen.getByTestId('tv_fallback_template-description')
+        ).toHaveTextContent('{original_air_date}');
+      });
+
+      expect(
+        screen.getByTestId('tv_template-description')
+      ).not.toHaveTextContent('{original_air_date}');
+      expect(
+        screen.getByTestId('movie_template-description')
+      ).not.toHaveTextContent('{original_air_date}');
+      expect(
+        screen.getByTestId('movie_fallback_template-description')
+      ).not.toHaveTextContent('{original_air_date}');
     });
 
     it('renders the Save button', async () => {

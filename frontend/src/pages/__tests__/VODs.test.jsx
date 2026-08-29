@@ -1,13 +1,17 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import VODsPage from '../VODs';
+import useAuthStore from '../../store/auth';
 import useVODStore from '../../store/useVODStore';
+import { USER_LEVELS } from '../../constants';
 import {
   filterCategoriesToEnabled,
   getCategoryOptions,
 } from '../../utils/pages/VODsUtils.js';
 
 vi.mock('../../store/useVODStore');
+vi.mock('../../store/auth');
 
 vi.mock('../../components/SeriesModal', () => ({
   default: ({ opened, series, onClose }) =>
@@ -84,7 +88,7 @@ vi.mock('@mantine/core', () => {
       </div>
     ),
     SegmentedControl: ({ value, onChange, data }) => (
-      <div>
+      <div data-testid="type-control">
         {data.map((item) => (
           <button
             key={item.value}
@@ -124,6 +128,21 @@ vi.mock('../../utils/pages/VODsUtils.js', () => {
   };
 });
 
+const mockAdminUser = {
+  user_level: USER_LEVELS.ADMIN,
+  custom_properties: {},
+};
+
+const renderVODsPage = (initialPath = '/vods') =>
+  render(
+    <MemoryRouter initialEntries={[initialPath]}>
+      <Routes>
+        <Route path="/vods" element={<VODsPage />} />
+        <Route path="/channels" element={<div>Channels page</div>} />
+      </Routes>
+    </MemoryRouter>
+  );
+
 describe('VODsPage', () => {
   const mockFetchContent = vi.fn();
   const mockFetchCategories = vi.fn();
@@ -152,30 +171,121 @@ describe('VODsPage', () => {
     filterCategoriesToEnabled.mockReturnValue({});
     getCategoryOptions.mockReturnValue([]);
     useVODStore.mockImplementation((selector) => selector(defaultStoreState));
+    useAuthStore.mockImplementation((selector) =>
+      selector({ user: mockAdminUser })
+    );
     localStorage.clear();
   });
 
   it('renders the page title', async () => {
-    render(<VODsPage />);
+    renderVODsPage();
     await screen.findByText('Video on Demand');
   });
 
+  it('redirects to channels when VOD access is denied', async () => {
+    useAuthStore.mockImplementation((selector) =>
+      selector({
+        user: {
+          user_level: USER_LEVELS.STANDARD,
+          custom_properties: {
+            vod_movies_enabled: false,
+            vod_series_enabled: false,
+          },
+        },
+      })
+    );
+
+    renderVODsPage();
+
+    await screen.findByText('Channels page');
+    expect(screen.queryByText('Video on Demand')).not.toBeInTheDocument();
+    expect(mockFetchContent).not.toHaveBeenCalled();
+  });
+
+  it('hides type control when only movies are enabled', async () => {
+    useAuthStore.mockImplementation((selector) =>
+      selector({
+        user: {
+          user_level: USER_LEVELS.STANDARD,
+          custom_properties: {
+            vod_movies_enabled: true,
+            vod_series_enabled: false,
+          },
+        },
+      })
+    );
+    useVODStore.mockImplementation((selector) =>
+      selector({
+        ...defaultStoreState,
+        filters: { type: 'movies', search: '', category: '' },
+      })
+    );
+
+    renderVODsPage();
+
+    await screen.findByText('Video on Demand');
+    expect(screen.queryByTestId('type-control')).not.toBeInTheDocument();
+  });
+
+  it('shows All / Movies / Series when both VOD types are enabled', async () => {
+    useAuthStore.mockImplementation((selector) =>
+      selector({
+        user: {
+          user_level: USER_LEVELS.STANDARD,
+          custom_properties: {},
+        },
+      })
+    );
+
+    renderVODsPage();
+
+    await screen.findByText('Video on Demand');
+    expect(screen.getByTestId('type-control')).toBeInTheDocument();
+    expect(screen.getByText('All')).toBeInTheDocument();
+    expect(screen.getByText('Movies')).toBeInTheDocument();
+    expect(screen.getByText('Series')).toBeInTheDocument();
+  });
+
+  it('forces movies type when series is disabled', async () => {
+    useAuthStore.mockImplementation((selector) =>
+      selector({
+        user: {
+          user_level: USER_LEVELS.STANDARD,
+          custom_properties: {
+            vod_movies_enabled: true,
+            vod_series_enabled: false,
+          },
+        },
+      })
+    );
+
+    renderVODsPage();
+
+    await waitFor(() => {
+      expect(mockSetFilters).toHaveBeenCalledWith({
+        type: 'movies',
+        category: '',
+      });
+    });
+    expect(mockFetchContent).not.toHaveBeenCalled();
+  });
+
   it('fetches categories on mount', async () => {
-    render(<VODsPage />);
+    renderVODsPage();
     await waitFor(() => {
       expect(mockFetchCategories).toHaveBeenCalledTimes(1);
     });
   });
 
   it('fetches content on mount', async () => {
-    render(<VODsPage />);
+    renderVODsPage();
     await waitFor(() => {
       expect(mockFetchContent).toHaveBeenCalledTimes(1);
     });
   });
 
   it('displays loader during initial load', async () => {
-    render(<VODsPage />);
+    renderVODsPage();
     await screen.findByTestId('loader');
   });
 
@@ -189,7 +299,7 @@ describe('VODsPage', () => {
     };
     useVODStore.mockImplementation((selector) => selector(stateWithContent));
 
-    render(<VODsPage />);
+    renderVODsPage();
 
     await waitFor(() => {
       expect(screen.getByText('Movie 1')).toBeInTheDocument();
@@ -204,7 +314,7 @@ describe('VODsPage', () => {
     };
     useVODStore.mockImplementation((selector) => selector(stateWithMovies));
 
-    render(<VODsPage />);
+    renderVODsPage();
 
     await waitFor(() => {
       expect(screen.getByTestId('vod-card')).toBeInTheDocument();
@@ -218,7 +328,7 @@ describe('VODsPage', () => {
     };
     useVODStore.mockImplementation((selector) => selector(stateWithSeries));
 
-    render(<VODsPage />);
+    renderVODsPage();
 
     await waitFor(() => {
       expect(screen.getByTestId('series-card')).toBeInTheDocument();
@@ -232,7 +342,7 @@ describe('VODsPage', () => {
     };
     useVODStore.mockImplementation((selector) => selector(stateWithMovies));
 
-    render(<VODsPage />);
+    renderVODsPage();
 
     await waitFor(() => {
       fireEvent.click(screen.getByTestId('vod-card'));
@@ -251,7 +361,7 @@ describe('VODsPage', () => {
     };
     useVODStore.mockImplementation((selector) => selector(stateWithSeries));
 
-    render(<VODsPage />);
+    renderVODsPage();
 
     await waitFor(() => {
       fireEvent.click(screen.getByTestId('series-card'));
@@ -268,7 +378,7 @@ describe('VODsPage', () => {
     };
     useVODStore.mockImplementation((selector) => selector(stateWithMovies));
 
-    render(<VODsPage />);
+    renderVODsPage();
 
     await waitFor(() => {
       fireEvent.click(screen.getByTestId('vod-card'));
@@ -288,7 +398,7 @@ describe('VODsPage', () => {
     };
     useVODStore.mockImplementation((selector) => selector(stateWithSeries));
 
-    render(<VODsPage />);
+    renderVODsPage();
 
     await waitFor(() => {
       fireEvent.click(screen.getByTestId('series-card'));
@@ -300,7 +410,7 @@ describe('VODsPage', () => {
   });
 
   it('updates filters when search input changes', async () => {
-    render(<VODsPage />);
+    renderVODsPage();
 
     const searchInput = screen.getByPlaceholderText('Search VODs...');
     fireEvent.change(searchInput, { target: { value: 'test search' } });
@@ -311,7 +421,7 @@ describe('VODsPage', () => {
   });
 
   it('updates filters and resets page when type changes', async () => {
-    render(<VODsPage />);
+    renderVODsPage();
 
     const moviesButton = screen.getByText('Movies');
     fireEvent.click(moviesButton);
@@ -328,7 +438,7 @@ describe('VODsPage', () => {
   it('updates filters and resets page when category changes', async () => {
     getCategoryOptions.mockReturnValue([{ value: 'action', label: 'Action' }]);
 
-    render(<VODsPage />);
+    renderVODsPage();
 
     const categorySelect = screen.getByLabelText('Category');
     fireEvent.change(categorySelect, { target: { value: 'action' } });
@@ -340,7 +450,7 @@ describe('VODsPage', () => {
   });
 
   it('updates page size and saves to localStorage', async () => {
-    render(<VODsPage />);
+    renderVODsPage();
 
     const pageSizeSelect = screen.getByLabelText('Page Size');
     fireEvent.change(pageSizeSelect, { target: { value: '24' } });
@@ -351,14 +461,36 @@ describe('VODsPage', () => {
     });
   });
 
-  it('loads page size from localStorage on mount', async () => {
+  it('hydrates page size from localStorage then fetches once', async () => {
     localStorage.setItem('vodsPageSize', '48');
 
-    render(<VODsPage />);
+    let storeState = { ...defaultStoreState, pageSize: 12 };
+    mockSetPageSize.mockImplementation((size) => {
+      storeState = {
+        ...storeState,
+        pageSize: Number(size),
+        currentPage: 1,
+      };
+    });
+    useVODStore.mockImplementation((selector) => selector(storeState));
+
+    renderVODsPage();
 
     await waitFor(() => {
       expect(mockSetPageSize).toHaveBeenCalledWith(48);
+      expect(mockFetchContent).toHaveBeenCalledTimes(1);
     });
+  });
+
+  it('fetches once when localStorage page size already matches', async () => {
+    localStorage.setItem('vodsPageSize', '12');
+
+    renderVODsPage();
+
+    await waitFor(() => {
+      expect(mockFetchContent).toHaveBeenCalledTimes(1);
+    });
+    expect(mockSetPageSize).not.toHaveBeenCalled();
   });
 
   it('displays pagination when total pages > 1', async () => {
@@ -370,7 +502,7 @@ describe('VODsPage', () => {
     };
     useVODStore.mockImplementation((selector) => selector(stateWithPagination));
 
-    render(<VODsPage />);
+    renderVODsPage();
 
     await waitFor(() => {
       expect(screen.getByTestId('pagination')).toBeInTheDocument();
@@ -386,7 +518,7 @@ describe('VODsPage', () => {
     };
     useVODStore.mockImplementation((selector) => selector(stateNoPagination));
 
-    render(<VODsPage />);
+    renderVODsPage();
 
     await waitFor(() => {
       expect(screen.queryByTestId('pagination')).not.toBeInTheDocument();
@@ -403,7 +535,7 @@ describe('VODsPage', () => {
     };
     useVODStore.mockImplementation((selector) => selector(stateWithPagination));
 
-    render(<VODsPage />);
+    renderVODsPage();
 
     await waitFor(() => {
       fireEvent.click(screen.getByText('Next'));
@@ -413,7 +545,7 @@ describe('VODsPage', () => {
   });
 
   it('refetches content when filters change', async () => {
-    const { rerender } = render(<VODsPage />);
+    const { rerender } = renderVODsPage();
 
     const updatedState = {
       ...defaultStoreState,
@@ -421,7 +553,14 @@ describe('VODsPage', () => {
     };
     useVODStore.mockImplementation((selector) => selector(updatedState));
 
-    rerender(<VODsPage />);
+    rerender(
+      <MemoryRouter initialEntries={['/vods']}>
+        <Routes>
+          <Route path="/vods" element={<VODsPage />} />
+          <Route path="/channels" element={<div>Channels page</div>} />
+        </Routes>
+      </MemoryRouter>
+    );
 
     await waitFor(() => {
       expect(mockFetchContent).toHaveBeenCalledTimes(2);
@@ -429,7 +568,7 @@ describe('VODsPage', () => {
   });
 
   it('refetches content when page changes', async () => {
-    const { rerender } = render(<VODsPage />);
+    const { rerender } = renderVODsPage();
 
     const updatedState = {
       ...defaultStoreState,
@@ -437,7 +576,14 @@ describe('VODsPage', () => {
     };
     useVODStore.mockImplementation((selector) => selector(updatedState));
 
-    rerender(<VODsPage />);
+    rerender(
+      <MemoryRouter initialEntries={['/vods']}>
+        <Routes>
+          <Route path="/vods" element={<VODsPage />} />
+          <Route path="/channels" element={<div>Channels page</div>} />
+        </Routes>
+      </MemoryRouter>
+    );
 
     await waitFor(() => {
       expect(mockFetchContent).toHaveBeenCalledTimes(2);
@@ -445,7 +591,7 @@ describe('VODsPage', () => {
   });
 
   it('refetches content when page size changes', async () => {
-    const { rerender } = render(<VODsPage />);
+    const { rerender } = renderVODsPage();
 
     const updatedState = {
       ...defaultStoreState,
@@ -453,7 +599,14 @@ describe('VODsPage', () => {
     };
     useVODStore.mockImplementation((selector) => selector(updatedState));
 
-    rerender(<VODsPage />);
+    rerender(
+      <MemoryRouter initialEntries={['/vods']}>
+        <Routes>
+          <Route path="/vods" element={<VODsPage />} />
+          <Route path="/channels" element={<div>Channels page</div>} />
+        </Routes>
+      </MemoryRouter>
+    );
 
     await waitFor(() => {
       expect(mockFetchContent).toHaveBeenCalledTimes(2);

@@ -7,10 +7,36 @@ from apps.m3u.models import M3UAccount
 import uuid
 
 
+class VODLogoQuerySet(models.QuerySet):
+    def bulk_create(self, objs, *args, **kwargs):
+        # bulk_create bypasses Model.save(); clamp names here so provider
+        # movie/series titles longer than varchar(255) cannot abort VOD ingest.
+        from core.utils import truncate_with_warning
+
+        max_length = self.model._meta.get_field("name").max_length
+        for obj in objs:
+            obj.name = truncate_with_warning(
+                obj.name, max_length=max_length, label="Logo name"
+            )
+        return super().bulk_create(objs, *args, **kwargs)
+
+
 class VODLogo(models.Model):
     """Logo model specifically for VOD content (movies and series)"""
     name = models.CharField(max_length=255)
     url = models.TextField(unique=True)
+
+    objects = VODLogoQuerySet.as_manager()
+
+    def save(self, *args, **kwargs):
+        from core.utils import truncate_with_warning
+
+        self.name = truncate_with_warning(
+            self.name,
+            max_length=self._meta.get_field("name").max_length,
+            label="Logo name",
+        )
+        super().save(*args, **kwargs)
 
     def __str__(self):
         return self.name

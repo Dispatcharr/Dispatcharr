@@ -35,7 +35,7 @@ import {
   Square,
   SquareCheck,
 } from 'lucide-react';
-import useLocalStorage from '../../hooks/useLocalStorage';
+import useBrowserStorage from '../../hooks/useBrowserStorage';
 import {
   useDateTimeFormat,
   format,
@@ -163,10 +163,11 @@ const M3UTable = () => {
   const suppressWarning = useWarningsStore((s) => s.suppressWarning);
 
   const theme = useMantineTheme();
-  const [tableSize] = useLocalStorage('table-size', 'default');
-  const [typeFilter, setTypeFilter] = useLocalStorage(
+  const [tableSize] = useBrowserStorage('table-size', 'default');
+  const [typeFilter, setTypeFilter] = useBrowserStorage(
     'm3u-table-type-filter',
-    ALL_ACCOUNT_TYPES
+    ALL_ACCOUNT_TYPES,
+    { storage: 'session' }
   );
   const { fullDateFormat, fullDateTimeFormat } = useDateTimeFormat();
 

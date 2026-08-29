@@ -92,6 +92,9 @@ class CatchupRedirectViewTests(SimpleTestCase):
             patch.object(views, "get_channel_catchup_streams", return_value=[stream])
         )
         stack.enter_context(
+            patch.object(views, "is_catchup_enabled", return_value=True)
+        )
+        stack.enter_context(
             patch.object(views, "resolve_catchup_duration", return_value=40)
         )
         stack.enter_context(
