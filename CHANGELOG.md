@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.30.0] - 2026-08-29
+
 ### Added
 
 - **Per-user DVR access levels.** Admins set a single **DVR Access** dropdown on the user Permissions tab (`none` / `view` / `manage`), stored as `dvr_access` in `custom_properties`. Standard users default to `view` (channel-scoped list and playback) when the key is absent; `manage` is opt-in and includes view, giving the same DVR API surface as an admin for recordings, recurring rules, series rules, stop/extend, metadata, artwork, and comskip (system comskip config stays admin-only). Streamers are excluded (no DVR UI or XC surface). The value is admin-managed only (not writable via `PATCH /me/`). The DVR nav item and manage actions in DVR / Guide follow the same gates. (Closes #1535)
