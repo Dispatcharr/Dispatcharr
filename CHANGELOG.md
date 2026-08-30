@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Users table sort and search.** The Users page can sort by User Level, Username, Name, Email, Date Joined, and Last Login (header click cycles ascending, descending, unsorted, matching M3U/EPG), and filter with a debounced search over username, full name, email, and user level label. Empty values sort last in both directions; user level sorts by privilege rather than label. - Thanks [@brendongl](https://github.com/brendongl)
+
+### Changed
+
+- **Shared table sort header helpers moved out of `M3uTableUtils`.** `makeHeaderCellRenderer` and `makeSortingChangeHandler` now live in `frontend/src/components/tables/tableSortingUtils.jsx`, since M3U, EPG, and Users all reuse them. Imports updated accordingly.
+
 ## [0.30.0] - 2026-08-29
 
 ### Added

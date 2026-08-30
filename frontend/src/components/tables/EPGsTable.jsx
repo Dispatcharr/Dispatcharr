@@ -49,7 +49,7 @@ import {
 import {
   makeHeaderCellRenderer,
   makeSortingChangeHandler,
-} from './M3uTableUtils.jsx';
+} from './tableSortingUtils.jsx';
 
 // Helper function to get status text color
 const getStatusColor = (status) => {
