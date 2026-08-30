@@ -35,8 +35,16 @@ class ConfTests(SimpleTestCase):
             },
         )
 
+    def test_write_conf_creates_the_config_subdirectory(self):
+        log_collector.write_conf(self.log_dir, True, 10, 5)
+        self.assertTrue(
+            os.path.isfile(os.path.join(self.log_dir, "config", "collector.conf"))
+        )
+
     def test_conf_clamps_garbage(self):
-        with open(log_collector.conf_path(self.log_dir), "w") as f:
+        path = log_collector.conf_path(self.log_dir)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
             f.write("persist=1\nmax_mb=99999\nkeep=abc\n")
         conf = log_collector.read_conf(self.log_dir)
         self.assertEqual(conf["max_mb"], 1000)
@@ -532,7 +540,9 @@ class ApplySettingsTests(SimpleTestCase):
     def test_collector_running_needs_a_live_collector_process(self):
         self.assertFalse(log_collector.collector_running(self.log_dir))
         # A pidfile naming this process, which is not a collector.
-        with open(log_collector.pid_path(self.log_dir), "w") as f:
+        path = log_collector.pid_path(self.log_dir)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
             f.write(str(os.getpid()))
         self.assertFalse(log_collector.collector_running(self.log_dir))
 

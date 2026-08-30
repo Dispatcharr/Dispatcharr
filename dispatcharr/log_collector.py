@@ -9,7 +9,7 @@ producers; bounded memory with drop-oldest and an explicit dropped-lines
 marker absorbs disk stalls (markers are file-only: the forwarded stream never
 dropped anything). Every line is rewritten into the canonical
 "stamp [offset] LEVEL source rest" grammar. Owns rotation and pruning.
-Django-free; configured via <logdir>/collector.conf from apply_settings().
+Django-free; configured via <logdir>/config/collector.conf from apply_settings().
 """
 
 import collections
@@ -158,12 +158,17 @@ def _resolve_pid1_zone(default):
     return _env_tz_zone() or default
 
 
+def _config_dir(log_dir):
+    # Out of the log files' way: the directory's top level holds only logs.
+    return os.path.join(log_dir, "config")
+
+
 def conf_path(log_dir):
-    return os.path.join(log_dir, CONF_NAME)
+    return os.path.join(_config_dir(log_dir), CONF_NAME)
 
 
 def pid_path(log_dir):
-    return os.path.join(log_dir, PID_NAME)
+    return os.path.join(_config_dir(log_dir), PID_NAME)
 
 
 def write_conf(log_dir, persist, max_mb, keep, time_zone="UTC"):
@@ -173,6 +178,7 @@ def write_conf(log_dir, persist, max_mb, keep, time_zone="UTC"):
     # Pids repeat across containers sharing the directory; the role does not.
     tmp = f"{conf_path(log_dir)}.tmp{_SUFFIX}.{os.getpid()}"
     try:
+        os.makedirs(_config_dir(log_dir), exist_ok=True)
         with open(tmp, "w", encoding="utf-8") as f:
             f.write(
                 f"persist={1 if persist else 0}\n"
@@ -535,7 +541,7 @@ class Collector:
         # All filesystem setup is tolerant and retried on every reload, so a
         # dead /data degrades to drain-and-drop instead of a crash loop.
         try:
-            os.makedirs(self.log_dir, exist_ok=True)
+            os.makedirs(_config_dir(self.log_dir), exist_ok=True)
             with open(pid_path(self.log_dir), "w", encoding="utf-8") as f:
                 f.write(str(os.getpid()))
             if not self._fs_ready and self.conf["persist"]:
