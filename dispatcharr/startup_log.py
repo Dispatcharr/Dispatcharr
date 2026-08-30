@@ -1,9 +1,13 @@
 """Attribute startup output that runs before logging is configured."""
 
 import logging
+import os
 import sys
 import time
 from datetime import datetime, timezone
+
+from dispatcharr.display_timezone import DisplayTimezoneFormatter as _StandaloneFormatter
+from dispatcharr.log_collector import collector_running
 
 
 def startup_log(message, level="INFO", source="dispatcharr.startup", stream=None):
@@ -13,17 +17,29 @@ def startup_log(message, level="INFO", source="dispatcharr.startup", stream=None
     print(f"{stamp} {level} {source} {message}", flush=True, file=stream or sys.stdout)
 
 
-class DisplayTimezoneFormatter(logging.Formatter):
-    """Stamps records in UTC; the log collector renders the display zone."""
+class DisplayTimezoneFormatter(_StandaloneFormatter):
+    """Stamps records in UTC when a collector renders the display zone;
+    a process nothing fronts stamps the display zone itself."""
 
     converter = time.gmtime
 
     def __init__(self, format="%(asctime)s %(levelname)s %(name)s %(message)s", datefmt=None, style="%"):
-        super().__init__(fmt=format, datefmt=datefmt, style=style)
+        super().__init__(format=format, datefmt=datefmt, style=style)
+        self._fronted = collector_running(
+            os.environ.get("DISPATCHARR_LOG_DIR", "/data/logs")
+        )
+
+    def formatTime(self, record, datefmt=None):
+        if self._fronted:
+            return logging.Formatter.formatTime(self, record, datefmt)
+        return super().formatTime(record, datefmt)
 
     def format(self, record):
-        # Indent embedded newlines: the collector reads leading whitespace as a continuation.
-        return super().format(record).replace("\n", "\n ")
+        line = logging.Formatter.format(self, record)
+        if self._fronted:
+            # Indent embedded newlines: the collector reads leading whitespace as a continuation.
+            return line.replace("\n", "\n ")
+        return line
 
 
 def configure_early_logging(level):

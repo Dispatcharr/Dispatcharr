@@ -3,13 +3,21 @@
 import contextlib
 import io
 import logging
+from unittest import mock
 
 from django.test import SimpleTestCase
 
-from dispatcharr import log_collector
+from dispatcharr import display_timezone, log_collector
 from django.conf import settings
 
 from dispatcharr.startup_log import DisplayTimezoneFormatter, startup_log
+
+
+def _formatter(fronted):
+    with mock.patch(
+        "dispatcharr.startup_log.collector_running", return_value=fronted
+    ):
+        return DisplayTimezoneFormatter()
 
 
 class StartupLogTests(SimpleTestCase):
@@ -48,7 +56,7 @@ class StartupLogTests(SimpleTestCase):
             None,
             None,
         )
-        line = DisplayTimezoneFormatter().format(record)
+        line = _formatter(fronted=True).format(record)
         self.assertRegex(line.encode(), log_collector._PY)
 
     def test_multiline_messages_keep_their_tail_as_continuations(self):
@@ -62,7 +70,7 @@ class StartupLogTests(SimpleTestCase):
             None,
             None,
         )
-        lines = DisplayTimezoneFormatter().format(record).split("\n")
+        lines = _formatter(fronted=True).format(record).split("\n")
         for tail in lines[1:]:
             self.assertTrue(tail == "" or tail.startswith(" "))
         self.assertIn("def xstarmap(task, it):", lines[1])
@@ -74,9 +82,25 @@ class StartupLogTests(SimpleTestCase):
         record.created = 1755500000.0
         record.msecs = 123.0
         self.assertEqual(
-            DisplayTimezoneFormatter().format(record),
+            _formatter(fronted=True).format(record),
             "2025-08-18 06:53:20,123 INFO core.tests message",
         )
+
+    def test_a_process_nothing_fronts_stamps_the_display_zone_itself(self):
+        formatter = _formatter(fronted=False)
+        display_timezone.set_display_zone("Pacific/Auckland")
+        self.addCleanup(
+            display_timezone._cache.update, {"zone": None, "checked": 0.0}
+        )
+        record = logging.LogRecord(
+            "core.tests", logging.INFO, __file__, 1, "message\ntail", None, None
+        )
+        record.created = 1755500000.0
+        record.msecs = 123.0
+        line = formatter.format(record)
+        self.assertTrue(line.startswith("2025-08-18 18:53:20,123"))
+        # No collector reads this stream, so tails keep their own indentation.
+        self.assertIn("\ntail", line)
 
     def test_the_migration_seed_source_is_still_defined(self):
         # Migration 0020 seeds the system time zone from this setting.
