@@ -151,7 +151,7 @@ def _select_vod_stream(
     preferred_stream_id=None,
     profile_id=None,
     session_id=None,
-    redirect_profiles=None,
+    allowed_m3u_profiles=None,
 ):
     """
     Resolve content to a provider URL and M3U profile.
@@ -170,12 +170,11 @@ def _select_vod_stream(
         return None
 
     ordered = _order_candidates(candidates, relation)
-    if redirect_profiles is not None:
+    if allowed_m3u_profiles is not None:
         candidate_profiles = [
             (cand, selected_profile)
-            for selected_profile in redirect_profiles
             for cand in ordered
-            if cand.m3u_account_id == selected_profile.m3u_account_id
+            for selected_profile in allowed_m3u_profiles.get(cand.m3u_account_id, [])
         ]
     else:
         candidate_profiles = [(cand, None) for cand in ordered]
@@ -772,7 +771,7 @@ def stream_vod(request, content_type, content_id, session_id=None, profile_id=No
 
                 # 301 to provider (no session mint, no slot hold, no probe).
                 # Capacity still gates provider selection.
-                from apps.m3u.redirect_profiles import get_redirect_profiles
+                from apps.m3u.redirect_profiles import get_allowed_m3u_profiles
 
                 selected = _select_vod_stream(
                     content_type,
@@ -780,7 +779,7 @@ def stream_vod(request, content_type, content_id, session_id=None, profile_id=No
                     preferred_m3u_account_id,
                     preferred_stream_id,
                     profile_id,
-                    redirect_profiles=get_redirect_profiles(user),
+                    allowed_m3u_profiles=get_allowed_m3u_profiles(user),
                 )
                 if not selected:
                     logger.error(
@@ -927,7 +926,7 @@ def head_vod(request, content_type, content_id, session_id=None, profile_id=None
                     client_user_agent,
                 )
                 if not matched_session_id:
-                    from apps.m3u.redirect_profiles import get_redirect_profiles
+                    from apps.m3u.redirect_profiles import get_allowed_m3u_profiles
 
                     selected = _select_vod_stream(
                         content_type,
@@ -935,7 +934,7 @@ def head_vod(request, content_type, content_id, session_id=None, profile_id=None
                         preferred_m3u_account_id,
                         preferred_stream_id,
                         profile_id,
-                        redirect_profiles=get_redirect_profiles(user),
+                        allowed_m3u_profiles=get_allowed_m3u_profiles(user),
                     )
                     if not selected:
                         logger.error(

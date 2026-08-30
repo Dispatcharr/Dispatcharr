@@ -174,6 +174,11 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
     try:
         channel = get_stream_object(channel_id)
         channel_display_name = getattr(channel, "name", None)
+        allowed_m3u_profiles = None
+        if user and channel.get_stream_profile().is_redirect():
+            from apps.m3u.redirect_profiles import get_allowed_m3u_profiles
+
+            allowed_m3u_profiles = get_allowed_m3u_profiles(user)
 
         # Generate a unique client ID
         client_id = f"client_{int(time.time() * 1000)}_{random.randint(1000, 9999)}"
@@ -303,6 +308,7 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
                     profile_value = None
                     slot_reserved = False
                     error_reason = None
+                    resolved_stream_id = None
                     attempt = 0
                     should_retry = True
 
@@ -316,7 +322,10 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
                             profile_value,
                             slot_reserved,
                             error_reason,
-                        ) = generate_stream_url(channel_id, user)
+                            resolved_stream_id,
+                        ) = generate_stream_url(
+                            channel_id, user, allowed_m3u_profiles
+                        )
 
                         if stream_url is not None:
                             logger.info(
@@ -365,7 +374,10 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
                             profile_value,
                             slot_reserved,
                             error_reason,
-                        ) = generate_stream_url(channel_id, user)
+                            resolved_stream_id,
+                        ) = generate_stream_url(
+                            channel_id, user, allowed_m3u_profiles
+                        )
                         if stream_url is not None:
                             logger.info(
                                 f"[{client_id}] Successfully obtained stream on final attempt for channel {channel_id}"
@@ -435,14 +447,10 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
                             # Track tried streams to avoid loops
                             tried_streams = {stream_id}
 
-                            from apps.m3u.redirect_profiles import get_redirect_profiles
-
-                            # A constrained Redirect user must never fail over to
-                            # another provider's credentials.
-                            alternates = (
-                                []
-                                if get_redirect_profiles(user) is not None
-                                else get_alternate_streams(channel_id, stream_id)
+                            alternates = get_alternate_streams(
+                                channel_id,
+                                resolved_stream_id,
+                                allowed_m3u_profiles,
                             )
 
                             # Try each alternate until one works
@@ -454,7 +462,7 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
 
                                 # Get stream info
                                 alt_info = get_stream_info_for_switch(
-                                    channel_id, alt["stream_id"]
+                                    channel_id, alt["stream_id"], alt["profile_id"]
                                 )
                                 if "error" in alt_info:
                                     logger.warning(

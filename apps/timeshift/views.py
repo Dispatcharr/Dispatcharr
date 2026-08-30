@@ -1717,17 +1717,16 @@ def _select_catchup_redirect_url(
     capacity (no slot reserve). URL layout mirrors the client's XC PATH vs
     QUERY request.
     """
-    from apps.m3u.redirect_profiles import get_redirect_profiles
+    from apps.m3u.redirect_profiles import get_allowed_m3u_profiles
 
-    redirect_profiles = get_redirect_profiles(user)
+    allowed_m3u_profiles = get_allowed_m3u_profiles(user)
     attempts = (
         (
             (catchup_stream, profile)
-            for profile in redirect_profiles
             for catchup_stream in catchup_streams
-            if catchup_stream.m3u_account_id == profile.m3u_account_id
+            for profile in allowed_m3u_profiles.get(catchup_stream.m3u_account_id, [])
         )
-        if redirect_profiles is not None
+        if allowed_m3u_profiles is not None
         else ((catchup_stream, None) for catchup_stream in catchup_streams)
     )
     for catchup_stream, profile in attempts:

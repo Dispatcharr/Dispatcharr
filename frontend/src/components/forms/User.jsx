@@ -98,7 +98,7 @@ const User = ({ user = null, isOpen, onClose }) => {
     if (user?.id) {
       form.setValues(userToFormValues(user));
       setSelectedRedirectProfiles(
-        (user.custom_properties?.redirect_mode_profile_ids || []).map((id) => `${id}`)
+        (user.custom_properties?.allowed_m3u_profile_ids || []).map((id) => `${id}`)
       );
 
       if (user.custom_properties?.xc_password) {
@@ -404,13 +404,13 @@ const User = ({ user = null, isOpen, onClose }) => {
                     selectedRedirectProfiles.length ? '' : 'All Profiles'
                   }
                   data={redirectProfileOptions}
-                  {...form.getInputProps('redirect_mode_profile_ids')}
+                  {...form.getInputProps('allowed_m3u_profile_ids')}
                   value={selectedRedirectProfiles}
                   onChange={(values) => {
                     setSelectedRedirectProfiles(values);
-                    form.setFieldValue('redirect_mode_profile_ids', values);
+                    form.setFieldValue('allowed_m3u_profile_ids', values);
                   }}
-                  key={form.key('redirect_mode_profile_ids')}
+                  key={form.key('allowed_m3u_profile_ids')}
                 />
               )}
               {isAdmin && (

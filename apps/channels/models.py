@@ -693,7 +693,7 @@ class Channel(models.Model):
         redis_client.delete(f"channel_stream:{self.id}")
         redis_client.delete(f"stream_profile:{stream_id}")
 
-    def get_stream(self, requester=None):
+    def get_stream(self, requester=None, allowed_m3u_profiles=None):
         """
         Finds an available stream for the requested channel and returns the selected stream and profile.
 
@@ -709,20 +709,19 @@ class Channel(models.Model):
             error_reason = "No streams assigned to channel"
             return None, None, error_reason, False
 
-        redirect_profiles = None
+        redirect_profiles = allowed_m3u_profiles
         if requester and self.get_stream_profile().is_redirect():
-            from apps.m3u.redirect_profiles import get_redirect_profiles
+            from apps.m3u.redirect_profiles import get_allowed_m3u_profiles
 
-            redirect_profiles = get_redirect_profiles(requester)
+            if redirect_profiles is None:
+                redirect_profiles = get_allowed_m3u_profiles(requester)
 
         if redirect_profiles is not None:
             # Redirect URLs are issued to individual users, so do not create a
             # channel-wide assignment that another viewer could reuse.
             streams = list(self.streams.all().order_by("channelstream__order"))
-            for profile in redirect_profiles:
-                for stream in streams:
-                    if stream.m3u_account_id != profile.m3u_account_id:
-                        continue
+            for stream in streams:
+                for profile in redirect_profiles.get(stream.m3u_account_id, []):
                     if pool_has_capacity_for_profile(profile, redis_client):
                         return stream.id, profile.id, None, False
             return None, None, "No compatible active profile found for any assigned stream", False

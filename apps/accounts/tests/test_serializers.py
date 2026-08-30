@@ -61,23 +61,23 @@ class UserSerializerValidationTests(TestCase):
             str(serializer.errors["custom_properties"]),
         )
 
-    def test_redirect_mode_profile_ids_accepts_positive_integers(self):
+    def test_allowed_m3u_profile_ids_accepts_positive_integers(self):
         serializer = UserSerializer(
             data={
                 "username": "joe",
                 "password": "testpassword123",
-                "custom_properties": {"redirect_mode_profile_ids": [3, 1]},
+                "custom_properties": {"allowed_m3u_profile_ids": [3, 1]},
             }
         )
 
         self.assertTrue(serializer.is_valid(), serializer.errors)
 
-    def test_redirect_mode_profile_ids_rejects_invalid_values(self):
+    def test_allowed_m3u_profile_ids_rejects_invalid_values(self):
         serializer = UserSerializer(
             data={
                 "username": "joe",
                 "password": "testpassword123",
-                "custom_properties": {"redirect_mode_profile_ids": [1, "2"]},
+                "custom_properties": {"allowed_m3u_profile_ids": [1, "2"]},
             }
         )
 

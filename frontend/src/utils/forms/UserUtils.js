@@ -50,7 +50,7 @@ export const userToFormValues = (user) => {
     output_profile: customProps.output_profile
       ? `${customProps.output_profile}`
       : '',
-    redirect_mode_profile_ids: (customProps.redirect_mode_profile_ids || []).map(
+    allowed_m3u_profile_ids: (customProps.allowed_m3u_profile_ids || []).map(
       (id) => `${id}`
     ),
     hide_adult_content: customProps.hide_adult_content || false,
@@ -90,10 +90,10 @@ export const formValuesToPayload = (values, existingUser) => {
     : null;
   delete payload.output_profile;
 
-  customProps.redirect_mode_profile_ids = (
-    payload.redirect_mode_profile_ids || []
+  customProps.allowed_m3u_profile_ids = (
+    payload.allowed_m3u_profile_ids || []
   ).map((id) => parseInt(id, 10));
-  delete payload.redirect_mode_profile_ids;
+  delete payload.allowed_m3u_profile_ids;
 
   customProps.hide_adult_content = payload.hide_adult_content || false;
   delete payload.hide_adult_content;
@@ -162,7 +162,7 @@ export const getFormInitialValues = () => {
     xc_password: '',
     output_format: '',
     output_profile: '',
-    redirect_mode_profile_ids: [],
+    allowed_m3u_profile_ids: [],
     channel_profiles: [],
     hide_adult_content: false,
     catchup_enabled: true,

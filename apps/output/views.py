@@ -191,8 +191,13 @@ def generate_m3u(request, profile_name=None, user=None):
     # Check if the request wants to use direct logo URLs instead of cache
     use_cached_logos = request.GET.get('cachedlogos', 'true').lower() != 'false'
 
-    # Check if direct stream URLs should be used instead of proxy
+    # Check if raw stream URLs should be used instead of proxy
     use_direct_urls = request.GET.get('direct', 'false').lower() == 'true'
+    allowed_m3u_profiles = None
+    if use_direct_urls and user is not None:
+        from apps.m3u.redirect_profiles import get_allowed_m3u_profiles
+
+        allowed_m3u_profiles = get_allowed_m3u_profiles(user)
 
     # Output profile ID to append to proxy stream URLs (triggers pre-delivery transcode)
     output_profile_id = request.GET.get('output_profile')
@@ -203,7 +208,12 @@ def generate_m3u(request, profile_name=None, user=None):
     # Prefetch streams only when direct URLs are requested (avoids N+1 per channel)
     if use_direct_urls:
         channels = channels.prefetch_related(
-            Prefetch('streams', queryset=Stream.objects.order_by('channelstream__order'))
+            Prefetch(
+                'streams',
+                queryset=Stream.objects.select_related('m3u_account').order_by(
+                    'channelstream__order'
+                ),
+            )
         )
 
     # Get the source to use for tvg-id value
@@ -251,7 +261,11 @@ def generate_m3u(request, profile_name=None, user=None):
     m3u_content = f'#EXTM3U x-tvg-url="{epg_url}" url-tvg="{epg_url}"\n'
 
     # Host/port/scheme are constant per request; precompute URL prefixes once.
-    _stream_url_prefix = None if is_xc_request else f"{_base_url}/proxy/ts/stream/"
+    _stream_url_prefix = (
+        None
+        if is_xc_request and not use_direct_urls
+        else f"{_base_url}/proxy/ts/stream/"
+    )
     _sample_logo_path = reverse("api:channels:logo-cache", args=[0])
     _logo_prefix_raw, _, _logo_suffix_raw = _sample_logo_path.partition("/0/")
     _logo_url_prefix = _base_url + _logo_prefix_raw + "/"
@@ -260,6 +274,23 @@ def generate_m3u(request, profile_name=None, user=None):
     # Start building M3U content
     channel_count = 0
     for channel in channels:
+        direct_stream = None
+        if use_direct_urls:
+            streams = channel.streams.all()
+            if allowed_m3u_profiles is not None:
+                direct_stream = next(
+                    (
+                        stream
+                        for stream in streams
+                        if stream.m3u_account_id in allowed_m3u_profiles
+                    ),
+                    None,
+                )
+                if direct_stream is None:
+                    continue
+            else:
+                direct_stream = streams[0] if streams else None
+
         channel_count += 1
         effective_group = channel.effective_channel_group_obj
         effective_logo = channel.effective_logo_obj
@@ -309,15 +340,10 @@ def generate_m3u(request, profile_name=None, user=None):
         )
 
         # Determine the stream URL based on request type
-        if is_xc_request:
-            stream_url = f"{_base_url}/live/{xc_username}/{xc_password}/{channel.id}{xc_qs_suffix}"
-        elif use_direct_urls:
-            # Try to get the first stream's direct URL
-            all_streams = channel.streams.all()
-            first_stream = all_streams[0] if all_streams else None
-            if first_stream and first_stream.url:
+        if use_direct_urls:
+            if direct_stream and direct_stream.url:
                 # Use the direct stream URL
-                stream_url = first_stream.url
+                stream_url = direct_stream.url
                 # Restore VLC-style @ for multicast UDP
                 if stream_url.startswith("udp://") and "udp://@" not in stream_url:
                     try:
@@ -328,6 +354,8 @@ def generate_m3u(request, profile_name=None, user=None):
             else:
                 # Fall back to proxy URL if no direct URL available
                 stream_url = f"{_stream_url_prefix}{channel.uuid}"
+        elif is_xc_request:
+            stream_url = f"{_base_url}/live/{xc_username}/{xc_password}/{channel.id}{xc_qs_suffix}"
         else:
             # Standard behavior - use proxy URL
             stream_url = f"{_stream_url_prefix}{channel.uuid}{proxy_qs_suffix}"
