@@ -177,14 +177,6 @@ class ConfTests(SimpleTestCase):
             os.path.exists(os.path.join(self.log_dir, log_collector.LIVE_NAME + ".3"))
         )
 
-    def test_force_rotate_rotates_below_cap(self):
-        self.feed(b"some content\n")
-        self.collector._drain()
-        self.collector._force_rotate = True
-        self.collector._drain()
-        self.assertEqual(self.read_log(), "")
-        self.assertIn("some content", self.read_log(log_collector.LIVE_NAME + ".1"))
-
     def test_reopens_when_live_file_deleted(self):
         self.feed(b"before\n")
         self.collector._drain()

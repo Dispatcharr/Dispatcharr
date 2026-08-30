@@ -279,7 +279,6 @@ class Collector:
         self._wake = threading.Event()
         self._stop = False
         self._reload = True
-        self._force_rotate = False
         self._fd = None
         self._tail_open = False
         self._fs_ready = False
@@ -293,8 +292,7 @@ class Collector:
         self._pid1_zone = timezone.utc
 
     def install_signals(self):
-        # Handlers set plain flags only: threading primitives are not signal-safe.
-        signal.signal(signal.SIGALRM, lambda *_: setattr(self, "_force_rotate", True))
+        # The handler sets a plain flag only: threading primitives are not signal-safe.
         signal.signal(signal.SIGTERM, lambda *_: setattr(self, "_stop", True))
 
     # ── reader thread: stdin -> normalize -> gate -> forward -> buffer ────
@@ -588,7 +586,7 @@ class Collector:
             elif dropped:
                 with self._lock:
                     self._dropped += dropped
-            if not batch and not self._force_rotate:
+            if not batch:
                 return
             if batch:
                 try:
@@ -644,14 +642,12 @@ class Collector:
             raise _WriteFailure(written, exc) from exc
 
     def _maybe_rotate(self):
-        force, self._force_rotate = self._force_rotate, False
         max_bytes = self.conf["max_mb"] * 1024 * 1024
         try:
             size = os.path.getsize(self.live_path)
         except OSError:
-            self._force_rotate = force
             return
-        if (not force and size <= max_bytes) or size == 0:
+        if size <= max_bytes:
             return
         self._close_fd()
         try:
