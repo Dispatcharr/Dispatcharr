@@ -1,35 +1,27 @@
 import { USER_LEVEL_LABELS } from '../../constants';
 
-// The Name column has no backing model field — it is rendered from first_name
-// and last_name. Sorting and searching both go through this helper so the
-// column, the sort order, and the search all agree on what "name" means.
+// Shared by the Name cell, sort, and search so they cannot disagree on what
+// "name" means (there is no backing model field).
 export const getUserFullName = (user) =>
   `${user.first_name || ''} ${user.last_name || ''}`.trim();
 
-// Value a column is compared on when sorting. Only the columns that need
-// something other than the raw field are listed; everything else falls through
-// to user[column].
 const getSortValue = (user, column) => {
   switch (column) {
     case 'name':
       return getUserFullName(user);
-    // user_level is stored as a number (0 Streamer / 1 Standard / 10 Admin), so
-    // comparing the raw value orders by privilege rather than alphabetically by
-    // label, which is the ordering that is actually useful here.
     default:
+      // user_level stays numeric so sort order is by privilege, not label.
       return user[column];
   }
 };
 
 export const getSortedUsers = (users, compareColumn, compareDesc) => {
-  // Copy first: `users` is the array held in the Zustand store and sort()
-  // mutates in place.
+  // Copy first: `users` is the Zustand store array and sort() mutates in place.
   return [...users].sort((a, b) => {
     const aVal = getSortValue(a, compareColumn);
     const bVal = getSortValue(b, compareColumn);
 
-    // Users with no value (never logged in, blank name) always sort last,
-    // whichever direction the column is sorted in.
+    // Empty values (never logged in, blank name) sort last in both directions.
     const aEmpty = aVal == null || aVal === '';
     const bEmpty = bVal == null || bVal === '';
     if (aEmpty && bEmpty) return 0;
@@ -49,9 +41,8 @@ export const getSortedUsers = (users, compareColumn, compareDesc) => {
   });
 };
 
-// Fields the search box matches against. The XC password is deliberately
-// excluded — it is masked in the table and matching it would let someone
-// confirm a password without revealing it.
+// XC password deliberately omitted: the column masks it, and matching would
+// let someone confirm a password without revealing it.
 const getSearchableText = (user) =>
   [
     user.username,

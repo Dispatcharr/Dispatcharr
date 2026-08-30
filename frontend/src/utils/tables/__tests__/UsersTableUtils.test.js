@@ -95,8 +95,8 @@ describe('getSortedUsers', () => {
   });
 
   it('sorts user_level numerically by privilege, not by label', () => {
-    // Numeric order is Streamer (0) → Standard (1) → Admin (10). Sorting the
-    // labels alphabetically would give Admin → Standard User → Streamer.
+    // Numeric order is Streamer (0), Standard (1), Admin (10). Alphabetical
+    // by label would be Admin, Standard User, Streamer.
     const levels = [
       makeUser({ id: 1, username: 'admin', user_level: USER_LEVELS.ADMIN }),
       makeUser({

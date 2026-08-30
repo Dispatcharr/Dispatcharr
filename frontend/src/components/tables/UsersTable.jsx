@@ -1,4 +1,4 @@
-import React, { useMemo, useCallback, useEffect, useState } from 'react';
+import React, { useMemo, useCallback, useState } from 'react';
 import API from '../../api';
 import UserForm from '../forms/User';
 import useUsersStore from '../../store/users';
@@ -34,10 +34,11 @@ import { CustomTable, useTable } from './CustomTable';
 import ConfirmationDialog from '../ConfirmationDialog';
 import useBrowserStorage from '../../hooks/useBrowserStorage';
 import { useDateTimeFormat, format } from '../../utils/dateTimeUtils.js';
+import { useDebounce } from '../../utils';
 import {
   makeHeaderCellRenderer,
   makeSortingChangeHandler,
-} from './M3uTableUtils';
+} from './tableSortingUtils';
 import {
   getFilteredUsers,
   getSortedUsers,
@@ -155,17 +156,9 @@ const UsersTable = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [search, setSearch] = useState('');
-  const [debouncedSearch, setDebouncedSearch] = useState('');
-  // Empty array means "no column sorted" — the table falls back to its default
-  // id order. The third click on a header returns to this state.
+  // Empty query uses delay 0 so the clear button restores the list immediately.
+  const debouncedSearch = useDebounce(search, search.trim() === '' ? 0 : 300);
   const [sorting, setSorting] = useState([]);
-
-  // Debounce the search box so typing doesn't re-filter and re-sort the whole
-  // list on every keystroke.
-  useEffect(() => {
-    const timer = setTimeout(() => setDebouncedSearch(search), 300);
-    return () => clearTimeout(timer);
-  }, [search]);
 
   const executeDeleteUser = useCallback(async (id) => {
     setIsLoading(true);
@@ -281,8 +274,6 @@ const UsersTable = () => {
       {
         header: 'Date Joined',
         accessorKey: 'date_joined',
-        // Wide enough for the header text plus the sort control; at the old
-        // 90px the two no longer fit on one line.
         size: 120,
         minSize: 110,
         sortable: true,
@@ -370,8 +361,6 @@ const UsersTable = () => {
     setUserModalOpen(false);
   };
 
-  // Rows actually rendered: search first (cheaper — it shrinks what has to be
-  // sorted), then sort. Copies the store array rather than sorting it in place.
   const data = useMemo(() => {
     const filtered = getFilteredUsers(users, debouncedSearch);
     const sortColumn = sorting[0];
@@ -394,8 +383,6 @@ const UsersTable = () => {
     enableRowVirtualization: false,
     renderTopToolbar: false,
     sorting,
-    // Rows arrive already sorted and filtered by `data` above, so the table
-    // must not reorder or re-filter them itself.
     manualSorting: true,
     manualFiltering: true,
     manualPagination: false,
