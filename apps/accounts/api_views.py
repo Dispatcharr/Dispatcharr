@@ -298,6 +298,7 @@ class UserViewSet(viewsets.ModelViewSet):
                 "vod_movies_enabled",
                 "vod_series_enabled",
                 "dvr_access",
+                "redirect_mode_profile_ids",
             }
             cp = request.data.get("custom_properties")
             if isinstance(cp, dict):

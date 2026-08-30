@@ -151,6 +151,7 @@ def _select_vod_stream(
     preferred_stream_id=None,
     profile_id=None,
     session_id=None,
+    redirect_profiles=None,
 ):
     """
     Resolve content to a provider URL and M3U profile.
@@ -169,7 +170,17 @@ def _select_vod_stream(
         return None
 
     ordered = _order_candidates(candidates, relation)
-    for cand in ordered:
+    if redirect_profiles is not None:
+        candidate_profiles = [
+            (cand, selected_profile)
+            for selected_profile in redirect_profiles
+            for cand in ordered
+            if cand.m3u_account_id == selected_profile.m3u_account_id
+        ]
+    else:
+        candidate_profiles = [(cand, None) for cand in ordered]
+
+    for cand, selected_profile in candidate_profiles:
         cand_account = cand.m3u_account
         cand_url = _get_stream_url_from_relation(cand)
         if not cand_url:
@@ -181,7 +192,7 @@ def _select_vod_stream(
 
         profile_result = _get_m3u_profile(
             cand_account,
-            profile_id,
+            selected_profile.id if selected_profile else profile_id,
             session_id,
         )
         if not profile_result or not profile_result[0]:
@@ -492,13 +503,19 @@ def _get_m3u_profile(m3u_account, profile_id, session_id=None):
         redis_client = RedisClient.get_client()
 
         if not redis_client:
-            logger.warning("Redis not available, falling back to default profile")
-            default_profile = M3UAccountProfile.objects.filter(
-                m3u_account=m3u_account,
-                is_active=True,
-                is_default=True
+            logger.warning("Redis not available, selecting the requested or default profile")
+            profile_filters = {
+                "m3u_account": m3u_account,
+                "is_active": True,
+            }
+            if profile_id:
+                profile_filters["id"] = profile_id
+            else:
+                profile_filters["is_default"] = True
+            selected_profile = M3UAccountProfile.objects.filter(
+                **profile_filters
             ).select_related('m3u_account__user_agent').first()
-            return (default_profile, 0) if default_profile else None
+            return (selected_profile, 0) if selected_profile else None
 
         # Check if this session already has an active connection
         if session_id:
@@ -755,12 +772,15 @@ def stream_vod(request, content_type, content_id, session_id=None, profile_id=No
 
                 # 301 to provider (no session mint, no slot hold, no probe).
                 # Capacity still gates provider selection.
+                from apps.m3u.redirect_profiles import get_redirect_profiles
+
                 selected = _select_vod_stream(
                     content_type,
                     content_id,
                     preferred_m3u_account_id,
                     preferred_stream_id,
                     profile_id,
+                    redirect_profiles=get_redirect_profiles(user),
                 )
                 if not selected:
                     logger.error(
@@ -874,7 +894,8 @@ def head_vod(request, content_type, content_id, session_id=None, profile_id=None
     """
     if not network_access_allowed(request, "STREAMS"):
         return JsonResponse({"error": "Forbidden"}, status=403)
-    if not _vod_playback_allowed(content_type, _user_from_vod_request(request)):
+    user = _user_from_vod_request(request)
+    if not _vod_playback_allowed(content_type, user):
         return JsonResponse({"error": "Forbidden"}, status=403)
 
     logger.info(f"[VOD-HEAD] HEAD request: {content_type}/{content_id}, session: {session_id}, profile: {profile_id}")
@@ -906,12 +927,15 @@ def head_vod(request, content_type, content_id, session_id=None, profile_id=None
                     client_user_agent,
                 )
                 if not matched_session_id:
+                    from apps.m3u.redirect_profiles import get_redirect_profiles
+
                     selected = _select_vod_stream(
                         content_type,
                         content_id,
                         preferred_m3u_account_id,
                         preferred_stream_id,
                         profile_id,
+                        redirect_profiles=get_redirect_profiles(user),
                     )
                     if not selected:
                         logger.error(

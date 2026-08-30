@@ -17,7 +17,11 @@ logger = logging.getLogger(__name__)
 
 # If you have an M3UAccount model in apps.m3u, you can still import it:
 from apps.m3u.models import M3UAccount
-from apps.m3u.connection_pool import reserve_profile_slot, release_profile_slot
+from apps.m3u.connection_pool import (
+    pool_has_capacity_for_profile,
+    release_profile_slot,
+    reserve_profile_slot,
+)
 
 
 # Add fallback functions if Redis isn't available
@@ -704,6 +708,24 @@ class Channel(models.Model):
         if not self.streams.exists():
             error_reason = "No streams assigned to channel"
             return None, None, error_reason, False
+
+        redirect_profiles = None
+        if requester and self.get_stream_profile().is_redirect():
+            from apps.m3u.redirect_profiles import get_redirect_profiles
+
+            redirect_profiles = get_redirect_profiles(requester)
+
+        if redirect_profiles is not None:
+            # Redirect URLs are issued to individual users, so do not create a
+            # channel-wide assignment that another viewer could reuse.
+            streams = list(self.streams.all().order_by("channelstream__order"))
+            for profile in redirect_profiles:
+                for stream in streams:
+                    if stream.m3u_account_id != profile.m3u_account_id:
+                        continue
+                    if pool_has_capacity_for_profile(profile, redis_client):
+                        return stream.id, profile.id, None, False
+            return None, None, "No compatible active profile found for any assigned stream", False
 
         # Reuse assignment only when this channel is still active in the proxy.
         # Stale channel_stream keys after stop/disconnect skip INCR and break pool

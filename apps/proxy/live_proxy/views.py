@@ -316,7 +316,7 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
                             profile_value,
                             slot_reserved,
                             error_reason,
-                        ) = generate_stream_url(channel_id)
+                        ) = generate_stream_url(channel_id, user)
 
                         if stream_url is not None:
                             logger.info(
@@ -365,7 +365,7 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
                             profile_value,
                             slot_reserved,
                             error_reason,
-                        ) = generate_stream_url(channel_id)
+                        ) = generate_stream_url(channel_id, user)
                         if stream_url is not None:
                             logger.info(
                                 f"[{client_id}] Successfully obtained stream on final attempt for channel {channel_id}"
@@ -435,8 +435,15 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
                             # Track tried streams to avoid loops
                             tried_streams = {stream_id}
 
-                            # Get alternate streams
-                            alternates = get_alternate_streams(channel_id, stream_id)
+                            from apps.m3u.redirect_profiles import get_redirect_profiles
+
+                            # A constrained Redirect user must never fail over to
+                            # another provider's credentials.
+                            alternates = (
+                                []
+                                if get_redirect_profiles(user) is not None
+                                else get_alternate_streams(channel_id, stream_id)
+                            )
 
                             # Try each alternate until one works
                             for alt in alternates:

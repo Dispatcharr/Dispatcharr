@@ -416,6 +416,7 @@ def _serve_catchup(request, user, channel, timestamp, client_duration_hint=None)
                     duration_minutes=duration_minutes,
                     layout=client_timeshift_url_layout(request),
                     redis_client=redis_client,
+                    user=user,
                 )
                 if not provider_url:
                     logger.error(
@@ -1616,7 +1617,7 @@ _CatchupProviderTarget = namedtuple(
 
 
 def _prepare_catchup_stream_attempt(
-    catchup_stream, *, timestamp, redis_client, reserve=True,
+    catchup_stream, *, timestamp, redis_client, reserve=True, profile=None,
 ):
     """Resolve one catch-up stream to a profile and provider timestamp.
 
@@ -1644,13 +1645,14 @@ def _prepare_catchup_stream_attempt(
 
     m3u_profiles = list(m3u_account.profiles.filter(is_active=True))
     default_profile = next((p for p in m3u_profiles if p.is_default), None)
-    if default_profile is None:
+    if default_profile is None and profile is None:
         logger.debug(
             "Timeshift: account %s has no active default profile, skipping",
             m3u_account.id,
         )
         return None, False
-    profile_walk = [default_profile] + [
+    timezone_profile = default_profile or profile
+    profile_walk = [profile] if profile is not None else [default_profile] + [
         p for p in m3u_profiles if not p.is_default
     ]
 
@@ -1658,7 +1660,7 @@ def _prepare_catchup_stream_attempt(
     # Use the default profile's server_info even if a non-default profile wins
     # the capacity walk (same as the historical proxy path).
     provider_tz_name = None
-    _server_info = (default_profile.custom_properties or {}).get("server_info") or {}
+    _server_info = (timezone_profile.custom_properties or {}).get("server_info") or {}
     if isinstance(_server_info, dict):
         provider_tz_name = _server_info.get("timezone")
     provider_timestamp = convert_timestamp_to_provider_tz(timestamp, provider_tz_name)
@@ -1707,7 +1709,7 @@ def _prepare_catchup_stream_attempt(
 
 
 def _select_catchup_redirect_url(
-    catchup_streams, *, timestamp, duration_minutes, layout, redis_client,
+    catchup_streams, *, timestamp, duration_minutes, layout, redis_client, user=None,
 ):
     """Pick a capacity-ok catch-up stream and build one provider URL.
 
@@ -1715,12 +1717,26 @@ def _select_catchup_redirect_url(
     capacity (no slot reserve). URL layout mirrors the client's XC PATH vs
     QUERY request.
     """
-    for catchup_stream in catchup_streams:
+    from apps.m3u.redirect_profiles import get_redirect_profiles
+
+    redirect_profiles = get_redirect_profiles(user)
+    attempts = (
+        (
+            (catchup_stream, profile)
+            for profile in redirect_profiles
+            for catchup_stream in catchup_streams
+            if catchup_stream.m3u_account_id == profile.m3u_account_id
+        )
+        if redirect_profiles is not None
+        else ((catchup_stream, None) for catchup_stream in catchup_streams)
+    )
+    for catchup_stream, profile in attempts:
         target, _capacity_blocked = _prepare_catchup_stream_attempt(
             catchup_stream,
             timestamp=timestamp,
             redis_client=redis_client,
             reserve=False,
+            profile=profile,
         )
         if target is None:
             continue

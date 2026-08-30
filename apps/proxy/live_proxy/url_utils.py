@@ -60,6 +60,7 @@ def get_stream_object(id: str):
 
 def generate_stream_url(
     channel_id: str,
+    user=None,
 ) -> Tuple[str, str, bool, Optional[int], bool, Optional[str]]:
     """
     Generate the appropriate stream URL for a channel or stream based on its profile settings.
@@ -113,7 +114,7 @@ def generate_stream_url(
         channel = channel_or_stream
 
         # Get stream and profile for this channel
-        stream_id, profile_id, error_reason, slot_reserved = channel.get_stream()
+        stream_id, profile_id, error_reason, slot_reserved = channel.get_stream(user)
 
         if not stream_id or not profile_id:
             logger.error(f"No stream available for channel {channel_id}: {error_reason}")
