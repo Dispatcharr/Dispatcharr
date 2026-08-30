@@ -22,6 +22,7 @@ import {
 import { Copy, Key, RotateCcwKey, X } from 'lucide-react';
 import { useForm } from '@mantine/form';
 import useChannelsStore from '../../store/channels';
+import usePlaylistsStore from '../../store/playlists';
 import useOutputProfilesStore from '../../store/outputProfiles';
 import { USER_LEVEL_LABELS, USER_LEVELS } from '../../constants';
 import { DVR_ACCESS } from '../../utils/dvrAccess';
@@ -40,12 +41,14 @@ import {
 
 const User = ({ user = null, isOpen, onClose }) => {
   const profiles = useChannelsStore((s) => s.profiles);
+  const m3uProfiles = usePlaylistsStore((s) => s.profiles);
   const outputProfiles = useOutputProfilesStore((s) => s.profiles);
   const authUser = useAuthStore((s) => s.user);
   const setUser = useAuthStore((s) => s.setUser);
 
   const [, setEnableXC] = useState(false);
   const [selectedProfiles, setSelectedProfiles] = useState(new Set());
+  const [selectedRedirectProfiles, setSelectedRedirectProfiles] = useState([]);
   const [generating, setGenerating] = useState(false);
   const [_generatedKey, setGeneratedKey] = useState(null);
   const [userAPIKey, setUserAPIKey] = useState(user?.api_key || null);
@@ -94,6 +97,9 @@ const User = ({ user = null, isOpen, onClose }) => {
   useEffect(() => {
     if (user?.id) {
       form.setValues(userToFormValues(user));
+      setSelectedRedirectProfiles(
+        (user.custom_properties?.redirect_mode_profile_ids || []).map((id) => `${id}`)
+      );
 
       if (user.custom_properties?.xc_password) {
         setEnableXC(true);
@@ -102,6 +108,7 @@ const User = ({ user = null, isOpen, onClose }) => {
       setUserAPIKey(user.api_key || null);
     } else {
       form.reset();
+      setSelectedRedirectProfiles([]);
     }
   }, [user]);
 
@@ -118,6 +125,23 @@ const User = ({ user = null, isOpen, onClose }) => {
   const isAdmin = authUser.user_level == USER_LEVELS.ADMIN;
   const isEditingSelf = authUser.id === user?.id;
   const showPermissions = isAdmin && !isEditingSelf;
+  const redirectProfileOptions = Object.values(m3uProfiles)
+    .flat()
+    .filter((profile, index, all) =>
+      profile.is_active && all.findIndex((item) => item.id === profile.id) === index
+    )
+    .sort((a, b) => a.id - b.id)
+    .map((profile) => {
+      const providerName = profile.account?.name || 'Unknown provider';
+      const profileName = profile.name.startsWith(providerName)
+        ? profile.name.slice(providerName.length).trim()
+        : profile.name;
+
+      return {
+        value: `${profile.id}`,
+        label: `${providerName}: ${profileName || profile.name}`,
+      };
+    });
 
   const canGenerateKey =
     authUser.user_level == USER_LEVELS.ADMIN || authUser.id === user?.id;
@@ -368,6 +392,25 @@ const User = ({ user = null, isOpen, onClose }) => {
                   ]}
                   {...form.getInputProps('output_format')}
                   key={form.key('output_format')}
+                />
+              )}
+              {isAdmin && (
+                <MultiSelect
+                  label="Redirect Mode Profiles"
+                  description="Allow these provider profiles when an XC client requests a channel using the Redirect stream profile."
+                  searchable
+                  clearable
+                  placeholder={
+                    selectedRedirectProfiles.length ? '' : 'All Profiles'
+                  }
+                  data={redirectProfileOptions}
+                  {...form.getInputProps('redirect_mode_profile_ids')}
+                  value={selectedRedirectProfiles}
+                  onChange={(values) => {
+                    setSelectedRedirectProfiles(values);
+                    form.setFieldValue('redirect_mode_profile_ids', values);
+                  }}
+                  key={form.key('redirect_mode_profile_ids')}
                 />
               )}
               {isAdmin && (

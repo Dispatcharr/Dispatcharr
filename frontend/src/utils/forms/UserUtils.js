@@ -50,6 +50,9 @@ export const userToFormValues = (user) => {
     output_profile: customProps.output_profile
       ? `${customProps.output_profile}`
       : '',
+    redirect_mode_profile_ids: (customProps.redirect_mode_profile_ids || []).map(
+      (id) => `${id}`
+    ),
     hide_adult_content: customProps.hide_adult_content || false,
     catchup_enabled: customProps.catchup_enabled !== false,
     vod_movies_enabled: customProps.vod_movies_enabled !== false,
@@ -86,6 +89,11 @@ export const formValuesToPayload = (values, existingUser) => {
     ? parseInt(payload.output_profile, 10)
     : null;
   delete payload.output_profile;
+
+  customProps.redirect_mode_profile_ids = (
+    payload.redirect_mode_profile_ids || []
+  ).map((id) => parseInt(id, 10));
+  delete payload.redirect_mode_profile_ids;
 
   customProps.hide_adult_content = payload.hide_adult_content || false;
   delete payload.hide_adult_content;
@@ -154,6 +162,7 @@ export const getFormInitialValues = () => {
     xc_password: '',
     output_format: '',
     output_profile: '',
+    redirect_mode_profile_ids: [],
     channel_profiles: [],
     hide_adult_content: false,
     catchup_enabled: true,

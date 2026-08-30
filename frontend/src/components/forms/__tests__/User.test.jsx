@@ -10,6 +10,7 @@ vi.mock('../../../constants', () => ({
 // ── Store mocks ────────────────────────────────────────────────────────────────
 vi.mock('../../../store/channels', () => ({ default: vi.fn() }));
 vi.mock('../../../store/outputProfiles', () => ({ default: vi.fn() }));
+vi.mock('../../../store/playlists', () => ({ default: vi.fn() }));
 vi.mock('../../../store/auth', () => ({ default: vi.fn() }));
 
 // ── Utility mocks ──────────────────────────────────────────────────────────────
@@ -82,9 +83,12 @@ vi.mock('@mantine/core', () => ({
         {children}
       </div>
     ) : null,
-  MultiSelect: ({ label, onChange }) => (
+  MultiSelect: ({ label, onChange, data = [] }) => (
     <div>
       <label>{label}</label>
+      {data.map((option) => (
+        <span key={option.value}>{option.label}</span>
+      ))}
       <input
         data-testid={`multiselect-${label}`}
         onChange={(e) =>
@@ -152,6 +156,7 @@ vi.mock('@mantine/core', () => ({
 // ── Imports after mocks ────────────────────────────────────────────────────────
 import useChannelsStore from '../../../store/channels';
 import useOutputProfilesStore from '../../../store/outputProfiles';
+import usePlaylistsStore from '../../../store/playlists';
 import useAuthStore from '../../../store/auth';
 import * as UserUtils from '../../../utils/forms/UserUtils.js';
 import { copyToClipboard } from '../../../utils';
@@ -177,6 +182,7 @@ const makeRegularUser = (overrides = {}) => ({
 const setupMocks = ({
   authUser = makeAdminUser(),
   profiles = {},
+  m3uProfiles = {},
   outputProfiles = [],
 } = {}) => {
   const mockSetUser = vi.fn();
@@ -184,6 +190,9 @@ const setupMocks = ({
   vi.mocked(useChannelsStore).mockImplementation((sel) => sel({ profiles }));
   vi.mocked(useOutputProfilesStore).mockImplementation((sel) =>
     sel({ profiles: outputProfiles })
+  );
+  vi.mocked(usePlaylistsStore).mockImplementation((sel) =>
+    sel({ profiles: m3uProfiles })
   );
   vi.mocked(useAuthStore).mockImplementation((sel) =>
     sel({ user: authUser, setUser: mockSetUser })
@@ -249,6 +258,24 @@ describe('User', () => {
       expect(screen.getByTestId('tab-account')).toBeInTheDocument();
       expect(screen.getByTestId('tab-epg')).toBeInTheDocument();
       expect(screen.getByTestId('tab-api')).toBeInTheDocument();
+    });
+
+    it('shows active Redirect profiles to administrators', () => {
+      setupMocks({
+        m3uProfiles: {
+          1: [
+            {
+              id: 2,
+              name: 'Provider 1 Profile B',
+              is_active: true,
+              account: { name: 'Provider 1' },
+            },
+          ],
+        },
+      });
+      render(<User isOpen={true} onClose={vi.fn()} />);
+      expect(screen.getByText('Redirect Mode Profiles')).toBeInTheDocument();
+      expect(screen.getByText('Provider 1: Profile B')).toBeInTheDocument();
     });
 
     it('shows Permissions tab when admin edits another user', () => {
