@@ -260,7 +260,7 @@ describe('User', () => {
       expect(screen.getByTestId('tab-api')).toBeInTheDocument();
     });
 
-    it('shows active Redirect profiles to administrators', () => {
+    it('shows allowed provider profiles on the Permissions tab', () => {
       setupMocks({
         m3uProfiles: {
           1: [
@@ -273,9 +273,32 @@ describe('User', () => {
           ],
         },
       });
-      render(<User isOpen={true} onClose={vi.fn()} />);
-      expect(screen.getByText('Redirect Mode Profiles')).toBeInTheDocument();
+      render(
+        <User isOpen={true} onClose={vi.fn()} user={makeRegularUser()} />
+      );
+      expect(screen.getByText('Allowed Provider Profiles')).toBeInTheDocument();
       expect(screen.getByText('Provider 1: Profile B')).toBeInTheDocument();
+    });
+
+    it('hides allowed provider profiles when admin edits themselves', () => {
+      const admin = makeAdminUser();
+      setupMocks({
+        authUser: admin,
+        m3uProfiles: {
+          1: [
+            {
+              id: 2,
+              name: 'Provider 1 Profile B',
+              is_active: true,
+              account: { name: 'Provider 1' },
+            },
+          ],
+        },
+      });
+      render(<User isOpen={true} onClose={vi.fn()} user={admin} />);
+      expect(
+        screen.queryByText('Allowed Provider Profiles')
+      ).not.toBeInTheDocument();
     });
 
     it('shows Permissions tab when admin edits another user', () => {

@@ -444,8 +444,11 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
                                 f"[{client_id}] Primary stream URL failed validation: {message}"
                             )
 
-                            # Track tried streams to avoid loops
-                            tried_streams = {stream_id}
+                            # Track tried streams to avoid loops. Use the stream
+                            # actually chosen for this request (not Redis
+                            # channel_stream), since Redirect allowlist selection
+                            # does not write a shared assignment.
+                            tried_streams = {resolved_stream_id}
 
                             alternates = get_alternate_streams(
                                 channel_id,

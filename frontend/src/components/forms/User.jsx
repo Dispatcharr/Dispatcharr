@@ -48,7 +48,7 @@ const User = ({ user = null, isOpen, onClose }) => {
 
   const [, setEnableXC] = useState(false);
   const [selectedProfiles, setSelectedProfiles] = useState(new Set());
-  const [selectedRedirectProfiles, setSelectedRedirectProfiles] = useState([]);
+  const [selectedAllowedM3uProfiles, setSelectedAllowedM3uProfiles] = useState([]);
   const [generating, setGenerating] = useState(false);
   const [_generatedKey, setGeneratedKey] = useState(null);
   const [userAPIKey, setUserAPIKey] = useState(user?.api_key || null);
@@ -97,7 +97,7 @@ const User = ({ user = null, isOpen, onClose }) => {
   useEffect(() => {
     if (user?.id) {
       form.setValues(userToFormValues(user));
-      setSelectedRedirectProfiles(
+      setSelectedAllowedM3uProfiles(
         (user.custom_properties?.allowed_m3u_profile_ids || []).map((id) => `${id}`)
       );
 
@@ -108,7 +108,7 @@ const User = ({ user = null, isOpen, onClose }) => {
       setUserAPIKey(user.api_key || null);
     } else {
       form.reset();
-      setSelectedRedirectProfiles([]);
+      setSelectedAllowedM3uProfiles([]);
     }
   }, [user]);
 
@@ -125,7 +125,7 @@ const User = ({ user = null, isOpen, onClose }) => {
   const isAdmin = authUser.user_level == USER_LEVELS.ADMIN;
   const isEditingSelf = authUser.id === user?.id;
   const showPermissions = isAdmin && !isEditingSelf;
-  const redirectProfileOptions = Object.values(m3uProfiles)
+  const allowedM3uProfileOptions = Object.values(m3uProfiles)
     .flat()
     .filter((profile, index, all) =>
       profile.is_active && all.findIndex((item) => item.id === profile.id) === index
@@ -277,6 +277,23 @@ const User = ({ user = null, isOpen, onClose }) => {
                     value: `${profile.id}`,
                   }))}
                 />
+                <MultiSelect
+                  label="Allowed Provider Profiles"
+                  description="Limit which M3U account profiles this user may use when Dispatcharr hands them a provider URL (Redirect live, and VOD/catchup when the system default is Redirect). Empty means all profiles."
+                  searchable
+                  clearable
+                  placeholder={
+                    selectedAllowedM3uProfiles.length ? '' : 'All Profiles'
+                  }
+                  data={allowedM3uProfileOptions}
+                  {...form.getInputProps('allowed_m3u_profile_ids')}
+                  value={selectedAllowedM3uProfiles}
+                  onChange={(values) => {
+                    setSelectedAllowedM3uProfiles(values);
+                    form.setFieldValue('allowed_m3u_profile_ids', values);
+                  }}
+                  key={form.key('allowed_m3u_profile_ids')}
+                />
                 <Switch
                   label="Hide Mature Content"
                   description="Hide channels marked as mature content (admin users not affected)"
@@ -392,25 +409,6 @@ const User = ({ user = null, isOpen, onClose }) => {
                   ]}
                   {...form.getInputProps('output_format')}
                   key={form.key('output_format')}
-                />
-              )}
-              {isAdmin && (
-                <MultiSelect
-                  label="Redirect Mode Profiles"
-                  description="Allow these provider profiles when an XC client requests a channel using the Redirect stream profile."
-                  searchable
-                  clearable
-                  placeholder={
-                    selectedRedirectProfiles.length ? '' : 'All Profiles'
-                  }
-                  data={redirectProfileOptions}
-                  {...form.getInputProps('allowed_m3u_profile_ids')}
-                  value={selectedRedirectProfiles}
-                  onChange={(values) => {
-                    setSelectedRedirectProfiles(values);
-                    form.setFieldValue('allowed_m3u_profile_ids', values);
-                  }}
-                  key={form.key('allowed_m3u_profile_ids')}
                 />
               )}
               {isAdmin && (
