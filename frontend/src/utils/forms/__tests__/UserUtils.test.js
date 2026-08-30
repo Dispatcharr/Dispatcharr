@@ -456,6 +456,7 @@ describe('UserUtils', () => {
         xc_password: '',
         output_format: '',
         output_profile: '',
+        allowed_m3u_profile_ids: [],
         channel_profiles: [],
         hide_adult_content: false,
         catchup_enabled: true,
