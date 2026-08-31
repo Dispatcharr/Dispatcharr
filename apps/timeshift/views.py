@@ -120,12 +120,13 @@ def timeshift_proxy(request, username, password, duration, timestamp, channel_id
 
     Session handling (``?session_id=``):
         First request with no ``session_id`` and no matching pool entry → if the
-        default stream profile is Redirect, ``302`` to a provider timeshift URL
-        mirroring this request's PATH/QUERY shape (capacity-checked, no session
-        mint); otherwise ``301`` with a minted ``session_id``. Reconnects that
-        omit ``session_id`` but fingerprint-match an in-flight or idle pool
-        entry for the same viewer are served immediately (no redirect). Reuse
-        ``session_id`` for all range/seek requests in a programme.
+        channel's effective stream profile is Redirect, ``302`` to a provider
+        timeshift URL mirroring this request's PATH/QUERY shape
+        (capacity-checked, no session mint); otherwise ``301`` with a minted
+        ``session_id``. Reconnects that omit ``session_id`` but fingerprint-match
+        an in-flight or idle pool entry for the same viewer are served
+        immediately (no redirect). Reuse ``session_id`` for all range/seek
+        requests in a programme.
     """
     return _timeshift_proxy_impl(
         request, username, password, timestamp, channel_id,
@@ -193,8 +194,8 @@ def _timeshift_proxy_impl(
         "time) plus ``Authorization: Bearer``, ``X-API-Key``, or "
         "``?token=<jwt>``. Optionally include a client ``session_id`` for "
         "provider pooling.\n\n"
-        "**No ``session_id`` and no pool match:** with the default stream "
-        "profile set to Redirect, the server responds with **302** to a "
+        "**No ``session_id`` and no pool match:** when the channel's effective "
+        "stream profile is Redirect, the server responds with **302** to a "
         "capacity-checked provider timeshift URL (PATH layout for this "
         "native endpoint). Otherwise **301** with a minted ``session_id`` "
         "(direct-auth / first play only).\n\n"
@@ -406,10 +407,10 @@ def _serve_catchup(request, user, channel, timestamp, client_duration_hint=None)
         else:
             # No pool match: Redirect hands the client a provider URL (mirroring
             # their PATH/QUERY shape) instead of minting a Dispatcharr session.
+            # Honors the channel's effective stream profile (channel override,
+            # then channel profile, then system default), matching live.
             # Established session_id requests keep proxying below.
-            from core.models import CoreSettings
-
-            if CoreSettings.is_default_stream_profile_redirect():
+            if channel.get_stream_profile().is_redirect():
                 provider_url = _select_catchup_redirect_url(
                     catchup_streams,
                     timestamp=timestamp,

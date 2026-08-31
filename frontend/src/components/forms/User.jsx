@@ -353,7 +353,7 @@ const User = ({ user = null, isOpen, onClose }) => {
                 <Stack gap="xs">
                   <MultiSelect
                     label="Allowed Provider Profiles"
-                    description="Limit which M3U account profiles this user may use when Dispatcharr hands them a provider URL (Redirect live, and VOD/catchup when the system default is Redirect). Unrestricted allows all profiles. Clearing the list denies all provider profiles."
+                    description="Limit which M3U account profiles this user may use when Dispatcharr hands them a provider URL (Redirect live/catchup via the channel's effective profile, and VOD when the system default is Redirect). Unrestricted allows all profiles. Clearing the list denies all provider profiles."
                     searchable
                     clearable
                     placeholder={

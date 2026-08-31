@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **Users table sort and search.** The Users page can sort by User Level, Username, Name, Email, Date Joined, and Last Login (header click cycles ascending, descending, unsorted, matching M3U/EPG), and filter with a debounced search over username, full name, email, and user level label. Empty values sort last in both directions; user level sorts by privilege rather than label. - Thanks [@brendongl](https://github.com/brendongl)
-- **Per-user allowed M3U profiles for Redirect.** Admins set **Allowed Provider Profiles** on the user Permissions tab (`custom_properties.allowed_m3u_profile_ids`). Tri-state: key absent means all profiles; `[]` means none; a list means only those active profiles. Redirect live playback, and VOD/catchup when the system default stream profile is Redirect, pick provider URLs only from that allowlist (channel stream order and VOD provider priority preserved; failover stays inside allowed profiles). Authenticated M3U exports with `direct=true` apply the same filter and omit channels with no allowed source. Deleting an M3U account profile scrubs its id from user allowlists while keeping an emptied list as none (not unrestricted). Admin-managed only (not writable via `PATCH /me/`). The MultiSelect is searchable, sorted alphabetically by provider then profile, and shows a dimmed `Provider:` label beside the profile name in the open list. (Closes #1528)
+- **Per-user allowed M3U profiles for Redirect.** Admins set **Allowed Provider Profiles** on the user Permissions tab (`custom_properties.allowed_m3u_profile_ids`). Tri-state: key absent means all profiles; `[]` means none; a list means only those active profiles. Redirect live and catchup (via the channel's effective stream profile), and VOD when the system default stream profile is Redirect, pick provider URLs only from that allowlist (channel stream order and VOD provider priority preserved; failover stays inside allowed profiles). Authenticated M3U exports with `direct=true` apply the same filter and omit channels with no allowed source. Deleting an M3U account profile scrubs its id from user allowlists while keeping an emptied list as none (not unrestricted). Admin-managed only (not writable via `PATCH /me/`). The MultiSelect is searchable, sorted alphabetically by provider then profile, and shows a dimmed `Provider:` label beside the profile name in the open list. (Closes #1528)
 
 ### Changed
 
@@ -18,6 +18,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Deleting an output profile clears stale references.** User `custom_properties.output_profile` overrides and the HDHR default (`stream_settings.hdhr_output_profile_id`) that pointed at the deleted profile are removed so JSON does not keep orphan IDs. Playback already ignored missing profiles; this only cleans storage.
 - **Locked output profiles cannot be deleted via the API.** Same `pre_delete` guard as locked stream profiles: deleting a `locked=True` row raises `ValidationError`, matching the UI which already disables delete for locked profiles.
 - **Output and stream profile deletes ask for confirmation.** Both tables use the shared `ConfirmationDialog` (with optional "Don't ask me again"), matching other destructive actions.
+
+### Fixed
+
+- **Catchup honors Redirect via the channel's effective stream profile.** Catchup previously only checked whether Redirect was the system default, so a channel (or override) set to Redirect still proxied. It now uses `channel.get_stream_profile().is_redirect()` like live (override, then channel profile, then system default).
 
 ## [0.30.0] - 2026-08-29
 
