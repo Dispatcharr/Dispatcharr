@@ -48,7 +48,9 @@ const User = ({ user = null, isOpen, onClose }) => {
 
   const [, setEnableXC] = useState(false);
   const [selectedProfiles, setSelectedProfiles] = useState(new Set());
-  const [selectedAllowedM3uProfiles, setSelectedAllowedM3uProfiles] = useState([]);
+  const [selectedAllowedM3uProfiles, setSelectedAllowedM3uProfiles] = useState(
+    []
+  );
   // true when allowed_m3u_profile_ids is null (key absent / ALL).
   const [allowedM3uProfilesUnrestricted, setAllowedM3uProfilesUnrestricted] =
     useState(true);
@@ -148,20 +150,40 @@ const User = ({ user = null, isOpen, onClose }) => {
   const showPermissions = isAdmin && !isEditingSelf;
   const allowedM3uProfileOptions = Object.values(m3uProfiles)
     .flat()
-    .filter((profile, index, all) =>
-      profile.is_active && all.findIndex((item) => item.id === profile.id) === index
+    .filter(
+      (profile, index, all) =>
+        profile.is_active &&
+        all.findIndex((item) => item.id === profile.id) === index
     )
-    .sort((a, b) => a.id - b.id)
     .map((profile) => {
       const providerName = profile.account?.name || 'Unknown provider';
       const profileName = profile.name.startsWith(providerName)
         ? profile.name.slice(providerName.length).trim()
         : profile.name;
+      const resolvedProfileName = profileName || profile.name;
 
       return {
         value: `${profile.id}`,
-        label: `${providerName}: ${profileName || profile.name}`,
+        // Full label for pills and search; dropdown uses renderOption.
+        label: `${providerName}: ${resolvedProfileName}`,
+        providerName,
+        profileName: resolvedProfileName,
       };
+    })
+    .sort((a, b) => {
+      const byProvider = a.providerName.localeCompare(
+        b.providerName,
+        undefined,
+        {
+          sensitivity: 'base',
+        }
+      );
+      if (byProvider !== 0) {
+        return byProvider;
+      }
+      return a.profileName.localeCompare(b.profileName, undefined, {
+        sensitivity: 'base',
+      });
     });
   // Keep orphaned allowlist IDs visible as chips until an admin clears them
   // or the scrub-on-delete signal has removed them from the user.
@@ -177,6 +199,22 @@ const User = ({ user = null, isOpen, onClose }) => {
     ...allowedM3uProfileOptions,
     ...orphanAllowedM3uOptions,
   ];
+  const renderAllowedM3uOption = ({ option }) => {
+    if (!option.providerName) {
+      return option.label;
+    }
+
+    return (
+      <Group gap={6} wrap="nowrap">
+        <Text span size="sm" c="dimmed">
+          {option.providerName}:
+        </Text>
+        <Text span size="sm" fw={500}>
+          {option.profileName}
+        </Text>
+      </Group>
+    );
+  };
 
   const canGenerateKey =
     authUser.user_level == USER_LEVELS.ADMIN || authUser.id === user?.id;
@@ -326,6 +364,7 @@ const User = ({ user = null, isOpen, onClose }) => {
                           : 'No profiles allowed'
                     }
                     data={allowedM3uSelectData}
+                    renderOption={renderAllowedM3uOption}
                     {...form.getInputProps('allowed_m3u_profile_ids')}
                     value={selectedAllowedM3uProfiles}
                     onChange={onAllowedM3uProfilesChange}

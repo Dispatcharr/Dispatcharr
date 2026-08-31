@@ -280,6 +280,49 @@ describe('User', () => {
       expect(screen.getByText('Provider 1: Profile B')).toBeInTheDocument();
     });
 
+    it('lists allowed provider profiles alphabetically by provider then profile name', () => {
+      setupMocks({
+        m3uProfiles: {
+          1: [
+            {
+              id: 90,
+              name: 'Zulu Primary',
+              is_active: true,
+              account: { name: 'Zulu TV' },
+            },
+            {
+              id: 10,
+              name: 'Alpha Backup',
+              is_active: true,
+              account: { name: 'Alpha IPTV' },
+            },
+          ],
+          2: [
+            {
+              id: 20,
+              name: 'Alpha Primary',
+              is_active: true,
+              account: { name: 'Alpha IPTV' },
+            },
+          ],
+        },
+      });
+      render(
+        <User isOpen={true} onClose={vi.fn()} user={makeRegularUser()} />
+      );
+      const multiSelect = screen.getByTestId(
+        'multiselect-Allowed Provider Profiles'
+      );
+      const labels = Array.from(
+        multiSelect.parentElement.querySelectorAll('span')
+      ).map((el) => el.textContent);
+      expect(labels).toEqual([
+        'Alpha IPTV: Alpha Backup',
+        'Alpha IPTV: Alpha Primary',
+        'Zulu TV: Zulu Primary',
+      ]);
+    });
+
     it('shows "Allow all profiles" when the user is restricted (including none)', () => {
       setupMocks();
       vi.mocked(UserUtils.userToFormValues).mockReturnValue({
