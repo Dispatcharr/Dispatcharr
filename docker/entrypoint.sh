@@ -378,11 +378,20 @@ fi
 # In modular mode Redis is external — call wait_for_redis.py here
 # because uWSGI's exec-pre runs under 'su -' which strips env vars
 # (DISPATCHARR_ENV, REDIS_HOST, etc.).
-# In AIO mode Redis is started by uWSGI (attach-daemon), so the
-# exec-pre in uwsgi.ini handles the wait + flush there instead.
+# In AIO mode the serving-era Redis is started by uWSGI (attach-daemon)
+# and the exec-pre in uwsgi.ini repeats the wait + flush for it.
 if [[ "$DISPATCHARR_ENV" == "modular" ]]; then
     echo "🔗 Modular mode: Using external Redis at ${REDIS_HOST}:${REDIS_PORT}"
     echo_with_timestamp "Waiting for Redis to be ready..."
+    python3 /app/scripts/wait_for_redis.py
+    echo "✅ Redis is ready"
+else
+    # uWSGI owns Redis, but migrate and collectstatic run first and read
+    # CoreSettings through the cache; a bootstrap instance covers that phase
+    # and hands the port back before uWSGI's attach-daemon claims it.
+    echo_with_timestamp "Starting bootstrap Redis for the migration phase..."
+    redis-server --port "$REDIS_PORT" --daemonize yes \
+        --pidfile /tmp/redis-bootstrap.pid --loglevel warning
     python3 /app/scripts/wait_for_redis.py
     echo "✅ Redis is ready"
 fi
@@ -421,6 +430,13 @@ fi
 # Run Django commands as non-root user to prevent permission issues
 su - "$POSTGRES_USER" -c "cd /app && python manage.py migrate --noinput"
 su - "$POSTGRES_USER" -c "cd /app && python manage.py collectstatic --noinput"
+
+# The attach-daemon respawns a dead child, so the port must be free first.
+if [ -f /tmp/redis-bootstrap.pid ]; then
+    bootstrap_redis_pid=$(cat /tmp/redis-bootstrap.pid)
+    kill -TERM "$bootstrap_redis_pid" 2>/dev/null || true
+    while kill -0 "$bootstrap_redis_pid" 2>/dev/null; do sleep 0.1; done
+fi
 
 # Select proper uwsgi config based on environment
 if [ "$DISPATCHARR_ENV" = "dev" ] && [ "$DISPATCHARR_DEBUG" != "true" ]; then
