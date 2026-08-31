@@ -176,7 +176,7 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
         channel_display_name = getattr(channel, "name", None)
         allowed_m3u_profiles = None
         if user and channel.get_stream_profile().is_redirect():
-            from apps.m3u.redirect_profiles import get_allowed_m3u_profiles
+            from apps.m3u.utils import get_allowed_m3u_profiles
 
             allowed_m3u_profiles = get_allowed_m3u_profiles(user)
 

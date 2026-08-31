@@ -72,6 +72,17 @@ class UserSerializerValidationTests(TestCase):
 
         self.assertTrue(serializer.is_valid(), serializer.errors)
 
+    def test_allowed_m3u_profile_ids_accepts_empty_list(self):
+        serializer = UserSerializer(
+            data={
+                "username": "joe",
+                "password": "testpassword123",
+                "custom_properties": {"allowed_m3u_profile_ids": []},
+            }
+        )
+
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+
     def test_allowed_m3u_profile_ids_rejects_invalid_values(self):
         serializer = UserSerializer(
             data={

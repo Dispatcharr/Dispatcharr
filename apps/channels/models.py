@@ -709,22 +709,21 @@ class Channel(models.Model):
             error_reason = "No streams assigned to channel"
             return None, None, error_reason, False
 
-        redirect_profiles = allowed_m3u_profiles
         if requester and self.get_stream_profile().is_redirect():
-            from apps.m3u.redirect_profiles import get_allowed_m3u_profiles
+            from apps.m3u.utils import get_allowed_m3u_profiles
 
-            if redirect_profiles is None:
-                redirect_profiles = get_allowed_m3u_profiles(requester)
+            if allowed_m3u_profiles is None:
+                allowed_m3u_profiles = get_allowed_m3u_profiles(requester)
 
-        if redirect_profiles is not None:
-            # Redirect URLs are issued to individual users, so do not create a
-            # channel-wide assignment that another viewer could reuse.
-            streams = list(self.streams.all().order_by("channelstream__order"))
-            for stream in streams:
-                for profile in redirect_profiles.get(stream.m3u_account_id, []):
-                    if pool_has_capacity_for_profile(profile, redis_client):
-                        return stream.id, profile.id, None, False
-            return None, None, "No compatible active profile found for any assigned stream", False
+            if allowed_m3u_profiles is not None:
+                # Redirect URLs are issued to individual users, so do not create a
+                # channel-wide assignment that another viewer could reuse.
+                streams = list(self.streams.all().order_by("channelstream__order"))
+                for stream in streams:
+                    for profile in allowed_m3u_profiles.get(stream.m3u_account_id, []):
+                        if pool_has_capacity_for_profile(profile, redis_client):
+                            return stream.id, profile.id, None, False
+                return None, None, "No compatible active profile found for any assigned stream", False
 
         # Reuse assignment only when this channel is still active in the proxy.
         # Stale channel_stream keys after stop/disconnect skip INCR and break pool

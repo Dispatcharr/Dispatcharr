@@ -253,7 +253,7 @@ def generate_m3u(request, profile_name=None, user=None):
     )
     allowed_m3u_profiles = None
     if use_direct_urls and user is not None:
-        from apps.m3u.redirect_profiles import get_allowed_m3u_profiles
+        from apps.m3u.utils import get_allowed_m3u_profiles
 
         allowed_m3u_profiles = get_allowed_m3u_profiles(user)
 

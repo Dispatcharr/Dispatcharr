@@ -280,6 +280,75 @@ describe('User', () => {
       expect(screen.getByText('Provider 1: Profile B')).toBeInTheDocument();
     });
 
+    it('shows "Allow all profiles" when the user is restricted (including none)', () => {
+      setupMocks();
+      vi.mocked(UserUtils.userToFormValues).mockReturnValue({
+        allowed_m3u_profile_ids: [],
+      });
+      render(
+        <User isOpen={true} onClose={vi.fn()} user={makeRegularUser()} />
+      );
+      expect(
+        screen.getByRole('button', { name: 'Allow all profiles' })
+      ).toBeInTheDocument();
+    });
+
+    it('hides "Allow all profiles" when the user is unrestricted', () => {
+      setupMocks();
+      vi.mocked(UserUtils.userToFormValues).mockReturnValue({
+        allowed_m3u_profile_ids: null,
+      });
+      render(
+        <User isOpen={true} onClose={vi.fn()} user={makeRegularUser()} />
+      );
+      expect(
+        screen.queryByRole('button', { name: 'Allow all profiles' })
+      ).not.toBeInTheDocument();
+    });
+
+    it('clicking "Allow all profiles" clears the field to null (unrestricted), not an empty allowlist', () => {
+      setupMocks();
+      vi.mocked(UserUtils.userToFormValues).mockReturnValue({
+        allowed_m3u_profile_ids: ['5'],
+      });
+      render(
+        <User isOpen={true} onClose={vi.fn()} user={makeRegularUser()} />
+      );
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Allow all profiles' })
+      );
+      expect(mockForm.setFieldValue).toHaveBeenCalledWith(
+        'allowed_m3u_profile_ids',
+        null
+      );
+      expect(
+        screen.queryByRole('button', { name: 'Allow all profiles' })
+      ).not.toBeInTheDocument();
+    });
+
+    it('clearing the allowed profiles MultiSelect sends an empty allowlist, not unrestricted', () => {
+      setupMocks();
+      vi.mocked(UserUtils.userToFormValues).mockReturnValue({
+        allowed_m3u_profile_ids: ['5'],
+      });
+      render(
+        <User isOpen={true} onClose={vi.fn()} user={makeRegularUser()} />
+      );
+      const input = screen.getByTestId(
+        'multiselect-Allowed Provider Profiles'
+      );
+      fireEvent.change(input, { target: { value: '9' } });
+      fireEvent.change(input, { target: { value: '' } });
+      expect(mockForm.setFieldValue).toHaveBeenLastCalledWith(
+        'allowed_m3u_profile_ids',
+        []
+      );
+      // Clearing must not escalate to unrestricted: the button stays visible.
+      expect(
+        screen.getByRole('button', { name: 'Allow all profiles' })
+      ).toBeInTheDocument();
+    });
+
     it('hides allowed provider profiles when admin edits themselves', () => {
       const admin = makeAdminUser();
       setupMocks({

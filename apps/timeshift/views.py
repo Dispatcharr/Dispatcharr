@@ -1717,7 +1717,7 @@ def _select_catchup_redirect_url(
     capacity (no slot reserve). URL layout mirrors the client's XC PATH vs
     QUERY request.
     """
-    from apps.m3u.redirect_profiles import get_allowed_m3u_profiles
+    from apps.m3u.utils import get_allowed_m3u_profiles
 
     allowed_m3u_profiles = get_allowed_m3u_profiles(user)
     attempts = (

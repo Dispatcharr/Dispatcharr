@@ -123,6 +123,15 @@ def cleanup_profile_notifications(sender, instance, **kwargs):
     except Exception as e:
         logger.error(f"Error cleaning up notifications for profile {instance.id}: {str(e)}")
 
+    try:
+        from apps.m3u.utils import scrub_allowed_m3u_profile_id
+
+        scrub_allowed_m3u_profile_id(instance.id)
+    except Exception as e:
+        logger.error(
+            f"Error scrubbing allowed_m3u_profile_ids for profile {instance.id}: {e}"
+        )
+
 
 @receiver(post_delete, sender=M3UAccount)
 def delete_refresh_task(sender, instance, **kwargs):
