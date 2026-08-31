@@ -124,14 +124,6 @@ const barColor = (level, minRank) => {
   return rank > minRank ? color : 'transparent';
 };
 
-// Sources the collector assigns when a line has no level.
-const INVENTED_LEVEL = new Set([
-  'stdout',
-  'entrypoint',
-  'uwsgi',
-  'nginx.access',
-]);
-
 const RECORD_START =
   /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3}(?: [+-]\d{4})? /;
 
@@ -209,10 +201,7 @@ const filterEntries = (entries, minRank, category, query) => {
   for (const group of groupEntries(entries)) {
     const record = group[0].record;
     if (record) {
-      // An invented level is the collector's own, so the floor must not gate on it.
-      const rank = INVENTED_LEVEL.has(record.source)
-        ? undefined
-        : LEVEL_RANK[record.level];
+      const rank = LEVEL_RANK[record.level];
       if (rank !== undefined && rank < minRank) continue;
       if (category !== null && record.tier !== category) continue;
     }

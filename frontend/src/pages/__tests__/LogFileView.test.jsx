@@ -779,13 +779,13 @@ describe('LogFileViewPage', () => {
     expect(screen.getByText(/back to normal/)).toBeInTheDocument();
   });
 
-  it('keeps a record whose level the collector invented, at any floor', async () => {
-    // INFO stdout is the collector's invention; gating on it hides an ERROR tail.
+  it('gates a record whose level the collector invented like any other', async () => {
+    // The floor exemption belongs to the sinks; a filtered view is reversible.
     API.getLogFile.mockResolvedValue({
       content: [
         '2026-08-21 10:00:00,000 ERROR core.tasks Traceback (most recent call last):',
         '  File "/app/x.py", line 3, in run',
-        '2026-08-21 10:00:00,001 INFO stdout ValueError: the actual failure',
+        '2026-08-21 10:00:00,001 INFO stdout Setting up PostgreSQL...',
         '2026-08-21 10:00:01,000 INFO core.tasks routine tick',
       ].join('\n'),
       truncated: false,
@@ -797,8 +797,9 @@ describe('LogFileViewPage', () => {
     });
     expect(screen.queryByText(/routine tick/)).not.toBeInTheDocument();
     expect(
-      screen.getByText(/ValueError: the actual failure/)
-    ).toBeInTheDocument();
+      screen.queryByText(/Setting up PostgreSQL/)
+    ).not.toBeInTheDocument();
+    expect(screen.getByText(/Traceback/)).toBeInTheDocument();
   });
 
   it('leaves an unowned continuation run unowned when the order flips', async () => {
