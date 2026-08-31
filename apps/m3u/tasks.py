@@ -3944,6 +3944,14 @@ def _refresh_single_m3u_account_impl(account_id):
         account.updated_at = timezone.now()
         account.save(update_fields=["status", "last_message", "updated_at"])
 
+        # Streams / auto-synced channels may have changed names, numbers,
+        # logos, or membership. Clear M3U playlist cache and XMLTV channel
+        # list cache so clients do not keep the pre-refresh snapshot.
+        from apps.output.streaming_chunk_cache import (
+            invalidate_output_caches_after_m3u_refresh,
+        )
+        invalidate_output_caches_after_m3u_refresh()
+
         # Log system event for M3U refresh
         log_system_event(
             event_type='m3u_refresh',

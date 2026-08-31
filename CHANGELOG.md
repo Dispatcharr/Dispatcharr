@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Schedules Direct and M3U refreshes invalidate output caches when they finish.** XMLTV programme import already dropped the `/output/epg` Redis chunk cache, but Schedules Direct did not, so clients could keep a stale XMLTV file for up to the cache TTL while the in-app guide already showed new programmes. SD post-refresh (programme writes, pruning, poster updates) now calls `invalidate_epg_chunk_cache`. Successful M3U refreshes clear both `m3u_content:*` and `epg_content:*` so playlist and XMLTV channel-list snapshots (names, numbers, logos after auto-sync) do not linger.
 - **Catchup honors Redirect via the channel's effective stream profile.** Catchup previously only checked whether Redirect was the system default, so a channel (or override) set to Redirect still proxied. It now uses `channel.get_stream_profile().is_redirect()` like live (override, then channel profile, then system default).
 
 ## [0.30.0] - 2026-08-29
