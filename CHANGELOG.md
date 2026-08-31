@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Shared table sort header helpers moved out of `M3uTableUtils`.** `makeHeaderCellRenderer` and `makeSortingChangeHandler` now live in `frontend/src/components/tables/tableSortingUtils.jsx`, since M3U, EPG, and Users all reuse them. Imports updated accordingly.
 - **Deleting an output profile clears stale references.** User `custom_properties.output_profile` overrides and the HDHR default (`stream_settings.hdhr_output_profile_id`) that pointed at the deleted profile are removed so JSON does not keep orphan IDs. Playback already ignored missing profiles; this only cleans storage.
+- **Output and stream profile deletes ask for confirmation.** Both tables use the shared `ConfirmationDialog` (with optional "Don't ask me again"), matching other destructive actions.
 
 ## [0.30.0] - 2026-08-29
 
