@@ -195,6 +195,38 @@ class CustomDummyEpgTest(TestCase):
         self.assertGreater(len(programs), 0)
         self.assertLessEqual(programs[0]["start_time"], now + timedelta(days=1))
 
+    def test_recurring_past_event_fills_grid_window_with_ended(self):
+        """Past day-0 event still yields ended filler within the grid window."""
+        epg_source = self._epg_source(
+            name="Daily Show Past",
+            custom_properties={
+                **NHL_PROPS,
+                "date_pattern": "",
+                "timezone": "UTC",
+            },
+        )
+        # 19:00-22:00 UTC event; request clock is past lookback of event end.
+        fixed_now = timezone.datetime(2026, 1, 15, 23, 18, 0, tzinfo=dt_timezone.utc)
+        channel_name = "NHL 01: Capitals vs Flyers @ 07:00 PM ET"
+        lookback = fixed_now - timedelta(hours=1)
+        cutoff = fixed_now + timedelta(hours=24)
+
+        with patch("apps.output.dummy_epg.django_timezone.now", return_value=fixed_now):
+            programs = generate_custom_dummy_programs(
+                channel_id="nhl01",
+                channel_name=channel_name,
+                now=fixed_now,
+                num_days=1,
+                custom_properties=epg_source.custom_properties,
+                export_lookback=lookback,
+                export_cutoff=cutoff,
+            )
+
+        self.assertGreater(len(programs), 0)
+        self.assertTrue(all(p["end_time"] >= lookback for p in programs))
+        self.assertTrue(all(p["start_time"] < cutoff for p in programs))
+        self.assertTrue(all("Ended" in (p.get("description") or "") for p in programs))
+
     def test_no_time_pattern_fills_day_blocks(self):
         epg_source = self._epg_source(
             name="Static Dummy",

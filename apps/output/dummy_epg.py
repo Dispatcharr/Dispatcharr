@@ -455,6 +455,18 @@ def _generate_recurring_time_programs(
         if not programme_overlaps_export_window(
             event_start_utc, event_end_utc, lookback, export_cutoff
         ):
+            # Past day-0 event: fill the remaining window with ended filler.
+            if day == 0 and event_end_utc < lookback:
+                _append_filler_programs(
+                    programs,
+                    day_start,
+                    day_end,
+                    labels.ended_title,
+                    labels.ended_description,
+                    opts,
+                    max_programs=max_programs,
+                )
+                event_happened = True
             continue
 
         is_event_day = day == 0
