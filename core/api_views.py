@@ -4,6 +4,7 @@ import ipaddress
 import logging
 from django.conf import settings as django_settings
 from django.db import models
+from dispatcharr.log_collector import collector_running
 from rest_framework import viewsets, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -414,6 +415,9 @@ def environment(request):
             "ip_lookup_env_disabled": ip_lookup_env_disabled,
             "ip_lookup_pending": ip_lookup_pending,
             "env_mode": os.getenv("DISPATCHARR_ENV", "aio"),
+            "log_collector_running": collector_running(
+                getattr(django_settings, "LOG_FILE_DIR", None)
+            ),
             "redis_tls": {
                 "enabled": getattr(django_settings, "REDIS_SSL", False),
                 "verify": getattr(django_settings, "REDIS_SSL_VERIFY", True),

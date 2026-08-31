@@ -551,6 +551,20 @@ class ApplySettingsTests(SimpleTestCase):
         with self.assertNoLogs("dispatcharr.log_collector", level="WARNING"):
             log_collector.apply_settings(self.log_dir, {"log_max_mb": 12})
 
+class EnvironmentFlagTests(TestCase):
+    def test_the_environment_reports_the_collector_state(self):
+        """The frontend hides collector-dependent surfaces on this flag."""
+        from django.contrib.auth import get_user_model
+        from rest_framework.test import APIClient
+
+        user = get_user_model().objects.create_user("envflag", password="pw")
+        client = APIClient()
+        client.force_authenticate(user=user)
+        with override_settings(ENABLE_IP_LOOKUP=False):
+            response = client.get("/api/core/settings/env/")
+        self.assertIs(response.data["log_collector_running"], False)
+
+
 class ReceiverTests(TestCase):
     def test_saving_system_settings_writes_conf(self):
         log_dir = tempfile.mkdtemp(prefix="dispatcharr-collector-")

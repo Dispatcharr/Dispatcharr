@@ -208,7 +208,7 @@ def apply_settings(log_dir, values, warn_if_absent=False):
     if warn_if_absent and not collector_running(log_dir):
         logging.getLogger(__name__).warning(
             "Log settings saved, but no log collector is running to apply them; "
-            "container output is unaffected and the log file is not being written."
+            "process output is unaffected and the log file is not being written."
         )
 
 

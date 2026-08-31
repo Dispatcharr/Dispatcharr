@@ -249,6 +249,16 @@ describe('SystemSettingsForm', () => {
       expect(screen.getByTestId('log_persist')).toBeInTheDocument();
     });
 
+    it('hides the log file settings when no collector runs in this deployment', () => {
+      setupMocks({
+        environment: makeEnvironment({ log_collector_running: false }),
+      });
+      render(<SystemSettingsForm active={true} />);
+      expect(screen.queryByTestId('log_persist')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('log_max_mb')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('log_keep')).not.toBeInTheDocument();
+    });
+
 
 
 
