@@ -197,6 +197,51 @@ class OutputProfile(models.Model):
         return [self.command] + shlex_split(self.parameters)
 
 
+USER_OUTPUT_PROFILE_PROP_KEY = "output_profile"
+
+
+def scrub_output_profile_id(profile_id):
+    """Remove a deleted OutputProfile id from user overrides and stream settings.
+
+    Clears ``User.custom_properties.output_profile`` when it matches the deleted
+    id (so the user falls back to no per-user transcode). Clears
+    ``hdhr_output_profile_id`` in stream settings when it matches (HDHR falls
+    back to pass-through). Only rows that reference the id are touched.
+    """
+    from django.db.models import Q
+
+    from apps.accounts.models import User
+
+    try:
+        profile_id_int = int(profile_id)
+    except (TypeError, ValueError):
+        return
+
+    # Match int or string forms stored in JSON.
+    users = User.objects.exclude(custom_properties=None).filter(
+        Q(**{f"custom_properties__{USER_OUTPUT_PROFILE_PROP_KEY}": profile_id_int})
+        | Q(**{f"custom_properties__{USER_OUTPUT_PROFILE_PROP_KEY}": str(profile_id_int)})
+    )
+    for user in users.iterator():
+        custom = user.custom_properties
+        if not isinstance(custom, dict):
+            continue
+        if USER_OUTPUT_PROFILE_PROP_KEY not in custom:
+            continue
+        updated = dict(custom)
+        updated.pop(USER_OUTPUT_PROFILE_PROP_KEY, None)
+        user.custom_properties = updated
+        user.save(update_fields=["custom_properties"])
+
+    current_hdhr = CoreSettings.get_hdhr_output_profile_id()
+    if current_hdhr is not None and current_hdhr == profile_id_int:
+        CoreSettings._update_group(
+            STREAM_SETTINGS_KEY,
+            "Stream Settings",
+            {"hdhr_output_profile_id": None},
+        )
+
+
 # Setting group keys
 STREAM_SETTINGS_KEY = "stream_settings"
 DVR_SETTINGS_KEY = "dvr_settings"

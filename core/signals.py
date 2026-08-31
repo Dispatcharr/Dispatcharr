@@ -4,12 +4,34 @@ from django.db.models.signals import pre_delete, post_delete, post_save
 from django.dispatch import receiver
 from django.core.exceptions import ValidationError
 from dispatcharr.display_timezone import refresh_display_zone, set_display_zone
-from .models import StreamProfile, CoreSettings, UserAgent, NETWORK_ACCESS_KEY, SYSTEM_SETTINGS_KEY
+from .models import (
+    StreamProfile,
+    CoreSettings,
+    OutputProfile,
+    UserAgent,
+    NETWORK_ACCESS_KEY,
+    SYSTEM_SETTINGS_KEY,
+    scrub_output_profile_id,
+)
 
 @receiver(pre_delete, sender=StreamProfile)
 def prevent_deletion_if_locked(sender, instance, **kwargs):
     if instance.locked:
         raise ValidationError("This profile is locked and cannot be deleted.")
+
+
+@receiver(post_delete, sender=OutputProfile)
+def cleanup_output_profile_references(sender, instance, **kwargs):
+    """Drop stale user and HDHR references when an output profile is deleted."""
+    try:
+        scrub_output_profile_id(instance.id)
+    except Exception:
+        import logging
+
+        logging.getLogger(__name__).exception(
+            "Error scrubbing references for deleted OutputProfile %s",
+            instance.id,
+        )
 
 @receiver(request_started, dispatch_uid="core_refresh_log_display_zone")
 def refresh_log_display_zone_on_request(sender, **kwargs):
