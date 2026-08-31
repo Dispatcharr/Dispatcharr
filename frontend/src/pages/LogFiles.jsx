@@ -61,8 +61,8 @@ const LogFilesPage = () => {
           mb="md"
           title="Log collector not running"
         >
-          These files are not being written to, and log settings saved now will
-          not take effect until it restarts. Container output is unaffected.
+          These files are not being written to, and log settings will not take
+          effect until a collector is running. Process output is unaffected.
         </Alert>
       )}
 
