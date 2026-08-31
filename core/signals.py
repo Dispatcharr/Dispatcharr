@@ -20,6 +20,12 @@ def prevent_deletion_if_locked(sender, instance, **kwargs):
         raise ValidationError("This profile is locked and cannot be deleted.")
 
 
+@receiver(pre_delete, sender=OutputProfile)
+def prevent_output_profile_deletion_if_locked(sender, instance, **kwargs):
+    if instance.locked:
+        raise ValidationError("This profile is locked and cannot be deleted.")
+
+
 @receiver(post_delete, sender=OutputProfile)
 def cleanup_output_profile_references(sender, instance, **kwargs):
     """Drop stale user and HDHR references when an output profile is deleted."""

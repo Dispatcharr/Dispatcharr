@@ -124,3 +124,26 @@ class OutputProfileScrubTests(TestCase):
 
         user.refresh_from_db()
         self.assertEqual(user.custom_properties, {"hide_adult_content": True})
+
+    def test_locked_output_profile_cannot_be_deleted(self):
+        from django.core.exceptions import ValidationError
+        from django.db import transaction
+
+        locked = OutputProfile.objects.create(
+            name="Locked Profile",
+            command="ffmpeg",
+            parameters="-i pipe:0 -c copy -f mpegts pipe:1",
+            locked=True,
+        )
+
+        # Nested atomic so the failed delete does not poison the test transaction.
+        with self.assertRaises(ValidationError):
+            with transaction.atomic():
+                locked.delete()
+
+        self.assertTrue(OutputProfile.objects.filter(id=locked.id).exists())
+
+    def test_unlocked_output_profile_can_still_be_deleted(self):
+        profile_id = self.profile.id
+        self.profile.delete()
+        self.assertFalse(OutputProfile.objects.filter(id=profile_id).exists())
