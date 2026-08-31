@@ -188,6 +188,7 @@ describe('UserUtils', () => {
       expect(result.xc_password).toBe('');
       expect(result.output_format).toBe('');
       expect(result.output_profile).toBe('');
+      expect(result.allowed_m3u_profile_ids).toBeNull();
       expect(result.hide_adult_content).toBe(false);
       expect(result.catchup_enabled).toBe(true);
       expect(result.vod_movies_enabled).toBe(true);
@@ -195,6 +196,20 @@ describe('UserUtils', () => {
       expect(result.dvr_access).toBe('view');
       expect(result.epg_days).toBe(0);
       expect(result.epg_prev_days).toBe(0);
+    });
+
+    it('maps allowed_m3u_profile_ids empty list as restricted none', () => {
+      const result = userToFormValues(
+        makeUser({ custom_properties: { allowed_m3u_profile_ids: [] } })
+      );
+      expect(result.allowed_m3u_profile_ids).toEqual([]);
+    });
+
+    it('maps allowed_m3u_profile_ids allowlist to string ids', () => {
+      const result = userToFormValues(
+        makeUser({ custom_properties: { allowed_m3u_profile_ids: [3, 7] } })
+      );
+      expect(result.allowed_m3u_profile_ids).toEqual(['3', '7']);
     });
 
     it('maps custom_properties when present', () => {
@@ -285,6 +300,39 @@ describe('UserUtils', () => {
       const result = formValuesToPayload(makeValues(), null);
       expect(result.output_profile).toBeUndefined();
       expect(result.custom_properties.output_profile).toBe(3);
+    });
+
+    it('omits allowed_m3u_profile_ids on create when unrestricted (null)', () => {
+      const result = formValuesToPayload(
+        makeValues({ allowed_m3u_profile_ids: null }),
+        null
+      );
+      expect(result.allowed_m3u_profile_ids).toBeUndefined();
+      expect(result.custom_properties.allowed_m3u_profile_ids).toBeUndefined();
+    });
+
+    it('sends null allowed_m3u_profile_ids on update so merge deletes the key', () => {
+      const result = formValuesToPayload(
+        makeValues({ allowed_m3u_profile_ids: null }),
+        { custom_properties: { allowed_m3u_profile_ids: [1] } }
+      );
+      expect(result.custom_properties.allowed_m3u_profile_ids).toBeNull();
+    });
+
+    it('keeps empty allowed_m3u_profile_ids list as restricted none', () => {
+      const result = formValuesToPayload(
+        makeValues({ allowed_m3u_profile_ids: [] }),
+        { custom_properties: {} }
+      );
+      expect(result.custom_properties.allowed_m3u_profile_ids).toEqual([]);
+    });
+
+    it('parses allowed_m3u_profile_ids allowlist as ints', () => {
+      const result = formValuesToPayload(
+        makeValues({ allowed_m3u_profile_ids: ['3', '7'] }),
+        null
+      );
+      expect(result.custom_properties.allowed_m3u_profile_ids).toEqual([3, 7]);
     });
 
     it('sets output_profile to null when empty string', () => {
@@ -456,6 +504,7 @@ describe('UserUtils', () => {
         xc_password: '',
         output_format: '',
         output_profile: '',
+        allowed_m3u_profile_ids: null,
         channel_profiles: [],
         hide_adult_content: false,
         catchup_enabled: true,

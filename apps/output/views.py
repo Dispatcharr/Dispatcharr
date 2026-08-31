@@ -55,6 +55,40 @@ def get_client_identifier(request):
 
     return client_id_hash, client_ip, user_agent
 
+
+def _direct_m3u_provider_url(streams, allowed_m3u_profiles):
+    """Resolve a provider URL for ``direct=true`` M3U output.
+
+    When ``allowed_m3u_profiles`` is set, walk streams in channel order and use
+    the first stream whose M3U account has an allowed profile, applying that
+    profile's credential/URL transform. Returns ``None`` when no stream is
+    usable (caller should omit the channel).
+
+    When unrestricted (``allowed_m3u_profiles is None``), keep historical
+    behavior: the first stream's stored URL, or ``None`` if missing.
+    """
+    from apps.proxy.live_proxy.url_utils import _resolve_live_stream_url
+
+    streams = list(streams)
+    if allowed_m3u_profiles is not None:
+        for stream in streams:
+            profiles = allowed_m3u_profiles.get(stream.m3u_account_id) or []
+            if not profiles:
+                continue
+            profile = profiles[0]
+            account = profile.m3u_account or stream.m3u_account
+            if not account:
+                continue
+            url = _resolve_live_stream_url(stream, account, profile)
+            if url:
+                return url
+        return None
+
+    stream = streams[0] if streams else None
+    if stream and stream.url:
+        return stream.url
+    return None
+
 def m3u_endpoint(request, profile_name=None, user=None):
     logger.debug("m3u_endpoint called: method=%s, profile=%s", request.method, profile_name)
     if not network_access_allowed(request, "M3U_EPG"):
@@ -191,20 +225,11 @@ def generate_m3u(request, profile_name=None, user=None):
     # Check if the request wants to use direct logo URLs instead of cache
     use_cached_logos = request.GET.get('cachedlogos', 'true').lower() != 'false'
 
-    # Check if direct stream URLs should be used instead of proxy
-    use_direct_urls = request.GET.get('direct', 'false').lower() == 'true'
-
     # Output profile ID to append to proxy stream URLs (triggers pre-delivery transcode)
     output_profile_id = request.GET.get('output_profile')
 
     # Output format to append to proxy stream URLs (native ?output_format= or XC-style ?output=)
     output_format_param = request.GET.get('output_format') or request.GET.get('output')
-
-    # Prefetch streams only when direct URLs are requested (avoids N+1 per channel)
-    if use_direct_urls:
-        channels = channels.prefetch_related(
-            Prefetch('streams', queryset=Stream.objects.order_by('channelstream__order'))
-        )
 
     # Get the source to use for tvg-id value
     # Options: 'channel_number' (default), 'tvg_id', 'gracenote'
@@ -216,6 +241,32 @@ def generate_m3u(request, profile_name=None, user=None):
     xc_password = request.GET.get('password')
     is_xc_request = user is not None and xc_username and xc_password
     _base_url = request_origin
+
+    # Raw provider URLs (`direct=true`) are for trusted/local use.
+    # Non-XC /output/m3u: always allowed (IP-locked self-host surface).
+    # XC playlists: only admins (user_level >= 10). Streamers must keep
+    # /live/... URLs so provider credentials never appear in their lineup.
+    want_direct = request.GET.get('direct', 'false').lower() == 'true'
+    use_direct_urls = want_direct and (
+        not is_xc_request
+        or (user is not None and user.user_level >= 10)
+    )
+    allowed_m3u_profiles = None
+    if use_direct_urls and user is not None:
+        from apps.m3u.utils import get_allowed_m3u_profiles
+
+        allowed_m3u_profiles = get_allowed_m3u_profiles(user)
+
+    # Prefetch streams only when direct URLs are requested (avoids N+1 per channel)
+    if use_direct_urls:
+        channels = channels.prefetch_related(
+            Prefetch(
+                'streams',
+                queryset=Stream.objects.select_related('m3u_account').order_by(
+                    'channelstream__order'
+                ),
+            )
+        )
 
     if is_xc_request:
         # This is an XC API request - use XC-style EPG URL
@@ -251,7 +302,12 @@ def generate_m3u(request, profile_name=None, user=None):
     m3u_content = f'#EXTM3U x-tvg-url="{epg_url}" url-tvg="{epg_url}"\n'
 
     # Host/port/scheme are constant per request; precompute URL prefixes once.
-    _stream_url_prefix = None if is_xc_request else f"{_base_url}/proxy/ts/stream/"
+    # XC without direct has no proxy fallback; admin XC+direct may fall back.
+    _stream_url_prefix = (
+        None
+        if is_xc_request and not use_direct_urls
+        else f"{_base_url}/proxy/ts/stream/"
+    )
     _sample_logo_path = reverse("api:channels:logo-cache", args=[0])
     _logo_prefix_raw, _, _logo_suffix_raw = _sample_logo_path.partition("/0/")
     _logo_url_prefix = _base_url + _logo_prefix_raw + "/"
@@ -260,6 +316,17 @@ def generate_m3u(request, profile_name=None, user=None):
     # Start building M3U content
     channel_count = 0
     for channel in channels:
+        direct_provider_url = None
+        if use_direct_urls:
+            direct_provider_url = _direct_m3u_provider_url(
+                channel.streams.all(), allowed_m3u_profiles
+            )
+            # Allowlisted users only get channels they can actually open with a
+            # permitted provider profile. Unrestricted direct keeps the old
+            # first-stream / proxy-fallback behavior when no URL is resolved.
+            if allowed_m3u_profiles is not None and not direct_provider_url:
+                continue
+
         channel_count += 1
         effective_group = channel.effective_channel_group_obj
         effective_logo = channel.effective_logo_obj
@@ -309,15 +376,9 @@ def generate_m3u(request, profile_name=None, user=None):
         )
 
         # Determine the stream URL based on request type
-        if is_xc_request:
-            stream_url = f"{_base_url}/live/{xc_username}/{xc_password}/{channel.id}{xc_qs_suffix}"
-        elif use_direct_urls:
-            # Try to get the first stream's direct URL
-            all_streams = channel.streams.all()
-            first_stream = all_streams[0] if all_streams else None
-            if first_stream and first_stream.url:
-                # Use the direct stream URL
-                stream_url = first_stream.url
+        if use_direct_urls:
+            if direct_provider_url:
+                stream_url = direct_provider_url
                 # Restore VLC-style @ for multicast UDP
                 if stream_url.startswith("udp://") and "udp://@" not in stream_url:
                     try:
@@ -328,6 +389,8 @@ def generate_m3u(request, profile_name=None, user=None):
             else:
                 # Fall back to proxy URL if no direct URL available
                 stream_url = f"{_stream_url_prefix}{channel.uuid}"
+        elif is_xc_request:
+            stream_url = f"{_base_url}/live/{xc_username}/{xc_password}/{channel.id}{xc_qs_suffix}"
         else:
             # Standard behavior - use proxy URL
             stream_url = f"{_stream_url_prefix}{channel.uuid}{proxy_qs_suffix}"

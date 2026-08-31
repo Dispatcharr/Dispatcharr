@@ -22,6 +22,7 @@ import {
 import { Copy, Key, RotateCcwKey, X } from 'lucide-react';
 import { useForm } from '@mantine/form';
 import useChannelsStore from '../../store/channels';
+import usePlaylistsStore from '../../store/playlists';
 import useOutputProfilesStore from '../../store/outputProfiles';
 import { USER_LEVEL_LABELS, USER_LEVELS } from '../../constants';
 import { DVR_ACCESS } from '../../utils/dvrAccess';
@@ -40,12 +41,19 @@ import {
 
 const User = ({ user = null, isOpen, onClose }) => {
   const profiles = useChannelsStore((s) => s.profiles);
+  const m3uProfiles = usePlaylistsStore((s) => s.profiles);
   const outputProfiles = useOutputProfilesStore((s) => s.profiles);
   const authUser = useAuthStore((s) => s.user);
   const setUser = useAuthStore((s) => s.setUser);
 
   const [, setEnableXC] = useState(false);
   const [selectedProfiles, setSelectedProfiles] = useState(new Set());
+  const [selectedAllowedM3uProfiles, setSelectedAllowedM3uProfiles] = useState(
+    []
+  );
+  // true when allowed_m3u_profile_ids is null (key absent / ALL).
+  const [allowedM3uProfilesUnrestricted, setAllowedM3uProfilesUnrestricted] =
+    useState(true);
   const [generating, setGenerating] = useState(false);
   const [_generatedKey, setGeneratedKey] = useState(null);
   const [userAPIKey, setUserAPIKey] = useState(user?.api_key || null);
@@ -93,7 +101,13 @@ const User = ({ user = null, isOpen, onClose }) => {
 
   useEffect(() => {
     if (user?.id) {
-      form.setValues(userToFormValues(user));
+      const values = userToFormValues(user);
+      form.setValues(values);
+      const unrestricted = values.allowed_m3u_profile_ids === null;
+      setAllowedM3uProfilesUnrestricted(unrestricted);
+      setSelectedAllowedM3uProfiles(
+        unrestricted ? [] : values.allowed_m3u_profile_ids || []
+      );
 
       if (user.custom_properties?.xc_password) {
         setEnableXC(true);
@@ -102,8 +116,24 @@ const User = ({ user = null, isOpen, onClose }) => {
       setUserAPIKey(user.api_key || null);
     } else {
       form.reset();
+      setSelectedAllowedM3uProfiles([]);
+      setAllowedM3uProfilesUnrestricted(true);
     }
   }, [user]);
+
+  const onAllowedM3uProfilesChange = (values) => {
+    // Any MultiSelect change (including clear to []) is an explicit allowlist.
+    // Never escalate to ALL from an empty chip list.
+    setAllowedM3uProfilesUnrestricted(false);
+    setSelectedAllowedM3uProfiles(values);
+    form.setFieldValue('allowed_m3u_profile_ids', values);
+  };
+
+  const allowAllM3uProfiles = () => {
+    setAllowedM3uProfilesUnrestricted(true);
+    setSelectedAllowedM3uProfiles([]);
+    form.setFieldValue('allowed_m3u_profile_ids', null);
+  };
 
   const generateXCPassword = () => {
     form.setValues({
@@ -118,6 +148,73 @@ const User = ({ user = null, isOpen, onClose }) => {
   const isAdmin = authUser.user_level == USER_LEVELS.ADMIN;
   const isEditingSelf = authUser.id === user?.id;
   const showPermissions = isAdmin && !isEditingSelf;
+  const allowedM3uProfileOptions = Object.values(m3uProfiles)
+    .flat()
+    .filter(
+      (profile, index, all) =>
+        profile.is_active &&
+        all.findIndex((item) => item.id === profile.id) === index
+    )
+    .map((profile) => {
+      const providerName = profile.account?.name || 'Unknown provider';
+      const profileName = profile.name.startsWith(providerName)
+        ? profile.name.slice(providerName.length).trim()
+        : profile.name;
+      const resolvedProfileName = profileName || profile.name;
+
+      return {
+        value: `${profile.id}`,
+        // Full label for pills and search; dropdown uses renderOption.
+        label: `${providerName}: ${resolvedProfileName}`,
+        providerName,
+        profileName: resolvedProfileName,
+      };
+    })
+    .sort((a, b) => {
+      const byProvider = a.providerName.localeCompare(
+        b.providerName,
+        undefined,
+        {
+          sensitivity: 'base',
+        }
+      );
+      if (byProvider !== 0) {
+        return byProvider;
+      }
+      return a.profileName.localeCompare(b.profileName, undefined, {
+        sensitivity: 'base',
+      });
+    });
+  // Keep orphaned allowlist IDs visible as chips until an admin clears them
+  // or the scrub-on-delete signal has removed them from the user.
+  const orphanAllowedM3uOptions = selectedAllowedM3uProfiles
+    .filter(
+      (id) => !allowedM3uProfileOptions.some((option) => option.value === id)
+    )
+    .map((id) => ({
+      value: id,
+      label: `Missing profile #${id}`,
+    }));
+  const allowedM3uSelectData = [
+    ...allowedM3uProfileOptions,
+    ...orphanAllowedM3uOptions,
+  ];
+  const renderAllowedM3uOption = ({ option }) => {
+    if (!option.providerName) {
+      return option.label;
+    }
+
+    return (
+      <Group gap={6} wrap="nowrap">
+        <Text span size="sm" c="dimmed">
+          {option.providerName}:
+        </Text>
+        <Text span size="sm" fw={500}>
+          {option.profileName}
+        </Text>
+      </Group>
+    );
+  };
 
   const canGenerateKey =
     authUser.user_level == USER_LEVELS.ADMIN || authUser.id === user?.id;
@@ -253,6 +350,37 @@ const User = ({ user = null, isOpen, onClose }) => {
                     value: `${profile.id}`,
                   }))}
                 />
+                <Stack gap="xs">
+                  <MultiSelect
+                    label="Allowed Provider Profiles"
+                    description="Limit which M3U account profiles this user may use when Dispatcharr hands them a provider URL (Redirect live, and VOD/catchup when the system default is Redirect). Unrestricted allows all profiles. Clearing the list denies all provider profiles."
+                    searchable
+                    clearable
+                    placeholder={
+                      allowedM3uProfilesUnrestricted
+                        ? 'All profiles'
+                        : selectedAllowedM3uProfiles.length
+                          ? ''
+                          : 'No profiles allowed'
+                    }
+                    data={allowedM3uSelectData}
+                    renderOption={renderAllowedM3uOption}
+                    {...form.getInputProps('allowed_m3u_profile_ids')}
+                    value={selectedAllowedM3uProfiles}
+                    onChange={onAllowedM3uProfilesChange}
+                    key={form.key('allowed_m3u_profile_ids')}
+                  />
+                  {!allowedM3uProfilesUnrestricted && (
+                    <Button
+                      variant="subtle"
+                      size="compact-sm"
+                      onClick={allowAllM3uProfiles}
+                      style={{ alignSelf: 'flex-start' }}
+                    >
+                      Allow all profiles
+                    </Button>
+                  )}
+                </Stack>
                 <Switch
                   label="Hide Mature Content"
                   description="Hide channels marked as mature content (admin users not affected)"

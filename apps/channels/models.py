@@ -17,7 +17,11 @@ logger = logging.getLogger(__name__)
 
 # If you have an M3UAccount model in apps.m3u, you can still import it:
 from apps.m3u.models import M3UAccount
-from apps.m3u.connection_pool import reserve_profile_slot, release_profile_slot
+from apps.m3u.connection_pool import (
+    pool_has_capacity_for_profile,
+    release_profile_slot,
+    reserve_profile_slot,
+)
 
 
 # Add fallback functions if Redis isn't available
@@ -689,7 +693,7 @@ class Channel(models.Model):
         redis_client.delete(f"channel_stream:{self.id}")
         redis_client.delete(f"stream_profile:{stream_id}")
 
-    def get_stream(self, requester=None):
+    def get_stream(self, requester=None, allowed_m3u_profiles=None):
         """
         Finds an available stream for the requested channel and returns the selected stream and profile.
 
@@ -704,6 +708,22 @@ class Channel(models.Model):
         if not self.streams.exists():
             error_reason = "No streams assigned to channel"
             return None, None, error_reason, False
+
+        if requester and self.get_stream_profile().is_redirect():
+            from apps.m3u.utils import get_allowed_m3u_profiles
+
+            if allowed_m3u_profiles is None:
+                allowed_m3u_profiles = get_allowed_m3u_profiles(requester)
+
+            if allowed_m3u_profiles is not None:
+                # Redirect URLs are issued to individual users, so do not create a
+                # channel-wide assignment that another viewer could reuse.
+                streams = list(self.streams.all().order_by("channelstream__order"))
+                for stream in streams:
+                    for profile in allowed_m3u_profiles.get(stream.m3u_account_id, []):
+                        if pool_has_capacity_for_profile(profile, redis_client):
+                            return stream.id, profile.id, None, False
+                return None, None, "No compatible active profile found for any assigned stream", False
 
         # Reuse assignment only when this channel is still active in the proxy.
         # Stale channel_stream keys after stop/disconnect skip INCR and break pool
