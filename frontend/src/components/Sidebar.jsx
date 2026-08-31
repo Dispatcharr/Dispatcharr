@@ -209,13 +209,29 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
 
   const navOrder = getNavOrder();
   const hiddenNav = getHiddenNav();
+  // Absent on an older backend: assume running rather than hide a working page.
+  const logCollectorRunning = environment.log_collector_running !== false;
   const navItems = useMemo(() => {
     const ordered = getOrderedNavItems(navOrder, isAdmin, channelIds, {
       canViewDvr: userCanViewDvr,
       canViewVod: userCanViewVod,
     });
-    return ordered.filter((item) => !hiddenNav.includes(item.id));
-  }, [navOrder, hiddenNav, isAdmin, userCanViewDvr, userCanViewVod, channelIds]);
+    // A deployment with no collector has no log files to browse.
+    const visible = (entry) => entry.path !== '/logs' || logCollectorRunning;
+    return ordered
+      .filter((item) => !hiddenNav.includes(item.id) && visible(item))
+      .map((item) =>
+        item.paths ? { ...item, paths: item.paths.filter(visible) } : item
+      );
+  }, [
+    navOrder,
+    hiddenNav,
+    isAdmin,
+    userCanViewDvr,
+    userCanViewVod,
+    channelIds,
+    logCollectorRunning,
+  ]);
 
   const isSettingsPage = location.pathname.startsWith('/settings');
   const activeSettingsId = location.hash.replace('#', '');

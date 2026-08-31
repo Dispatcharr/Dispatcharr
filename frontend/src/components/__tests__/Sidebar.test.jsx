@@ -303,6 +303,31 @@ describe('Sidebar', () => {
     });
   });
 
+  describe('Navigation Links - No log collector', () => {
+    it('shows Logs while the collector flag is true or absent', async () => {
+      renderSidebar();
+      fireEvent.click(screen.getByText('System'));
+      await waitFor(() => {
+        expect(screen.getByText('Logs')).toBeInTheDocument();
+      });
+    });
+
+    it('hides Logs when no collector runs in this deployment', async () => {
+      useSettingsStore.mockImplementation((selector) =>
+        selector({
+          environment: { ...mockEnvironment, log_collector_running: false },
+          version: mockVersion,
+        })
+      );
+      renderSidebar();
+      fireEvent.click(screen.getByText('System'));
+      await waitFor(() => {
+        expect(screen.getByText('Logo Manager')).toBeInTheDocument();
+      });
+      expect(screen.queryByText('Logs')).not.toBeInTheDocument();
+    });
+  });
+
   describe('Navigation Links - Regular User without DVR view', () => {
     beforeEach(() => {
       useAuthStore.mockImplementation((selector) => {
