@@ -13,6 +13,9 @@ describe('SystemSettingsFormUtils', () => {
         auto_import_mapped_files: true,
         enable_ip_lookup: true,
         catchup_enabled: true,
+        log_max_mb: 10,
+        log_keep: 5,
+        log_persist: true,
       });
     });
 
