@@ -1335,7 +1335,7 @@ def xc_get_vod_streams(request, user, category_id=None):
                 logo_id=row['movie__logo_id'],
                 logo_url_parts=_logo_url_parts,
                 url_parts=_movie_image_parts,
-            ),
+            ) or "",
             "rating": rating or "0",
             "rating_5based": round(float(rating or 0) / 2, 2) if rating else 0,
             "added": str(int(row['movie__created_at'].timestamp())),
@@ -1352,7 +1352,7 @@ def xc_get_vod_streams(request, user, category_id=None):
             "category_id": category_id_str,
             "category_ids": category_id_list,
             "container_extension": row['container_extension'] or "mp4",
-            "custom_sid": None,
+            "custom_sid": "",
             "direct_source": "",
         })
 
@@ -1429,7 +1429,7 @@ def xc_get_series(request, user, category_id=None):
                 logo_id=row['series__logo_id'],
                 logo_url_parts=_logo_url_parts,
                 url_parts=_series_image_parts,
-            ),
+            ) or "",
             "plot": row['series__description'] or "",
             "cast": custom_props.get('cast', ''),
             "director": custom_props.get('director', ''),
@@ -1569,16 +1569,18 @@ def xc_get_series_info(request, user, series_id):
         )
 
         seasons[season_num].append({
-            "id": episode.id,
+            # Real XC panels emit episode ids as strings; strict clients
+            # (e.g. iPlayTV) reject JSON numbers where they expect strings.
+            "id": str(episode.id),
             "season": season_num,
             "episode_num": episode.episode_number or 0,
             "title": episode.name,
             "container_extension": container_extension,
             "added": added_timestamp,
-            "custom_sid": None,
+            "custom_sid": "",
             "direct_source": "",
             "info": {
-                "id": int(episode.id),
+                "id": str(episode.id),
                 "name": episode.name,
                 "overview": episode.description or "",
                 "crew": str(episode.custom_properties.get('crew', "") if episode.custom_properties else ""),
@@ -1882,7 +1884,7 @@ def xc_get_vod_info(request, user, vod_id):
             "category_id": str(movie_relation.category.id) if movie_relation.category else "0",
             "category_ids": [int(movie_relation.category.id)] if movie_relation.category else [],
             "container_extension": movie_relation.container_extension or "mp4",
-            "custom_sid": None,
+            "custom_sid": "",
             "direct_source": "",
         }
     }

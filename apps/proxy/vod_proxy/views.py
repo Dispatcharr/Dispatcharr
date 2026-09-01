@@ -24,7 +24,7 @@ from apps.accounts.models import User
 from apps.accounts.permissions import IsAdmin
 from rest_framework_simplejwt.authentication import JWTAuthentication
 from apps.accounts.authentication import ApiKeyAuthentication, QueryParamJWTAuthentication
-from apps.proxy.utils import check_user_stream_limits
+from apps.proxy.utils import check_user_stream_limits, get_user_active_connections
 from dispatcharr.utils import network_access_allowed
 from core.utils import dispatcharr_user_agent
 
@@ -678,6 +678,40 @@ def _vod_playback_allowed(content_type, user):
     return True
 
 
+def _displace_own_vod_stream(user, content_id, requesting_session_id):
+    """Same-user same-content takeover: when a seek/reopen cannot get a
+    provider slot because the viewer's own stream still holds it, signal
+    that stream to stop so the new request can take over (mirrors the
+    timeshift scrub preemption). Returns the displaced client ids."""
+    displaced = []
+    try:
+        connections = get_user_active_connections(user.id)
+    except Exception as e:
+        logger.warning(f"[VOD-TAKEOVER] Could not list connections: {e}")
+        return displaced
+    redis_client = MultiWorkerVODConnectionManager.get_instance().redis_client
+    if not redis_client:
+        return displaced
+    for conn in connections:
+        if conn.get('type') in ('live', 'timeshift'):
+            continue
+        if str(conn.get('media_id') or '') != str(content_id):
+            continue
+        cid = conn.get('client_id')
+        if not cid:
+            continue
+        try:
+            redis_client.setex(get_vod_client_stop_key(cid), 60, "true")
+            displaced.append(cid)
+            logger.info(
+                f"[VOD-TAKEOVER] Displacing own stream {cid} on media {content_id} "
+                f"for seek/reopen by session {requesting_session_id}"
+            )
+        except Exception as e:
+            logger.warning(f"[VOD-TAKEOVER] Failed to signal {cid}: {e}")
+    return displaced
+
+
 @api_view(["GET"])
 @authentication_classes([JWTAuthentication, ApiKeyAuthentication, QueryParamJWTAuthentication])
 @permission_classes([AllowAny])
@@ -867,6 +901,35 @@ def stream_vod(request, content_type, content_id, session_id=None, profile_id=No
             profile_id,
             session_id,
         )
+        if not selected and user:
+            # Displace the viewer's own same-content stream if one holds the
+            # slot (seek/reopen), then retry regardless: players open several
+            # parallel probe connections at start-up which hold the slot for
+            # well under a second, so a brief bounded wait beats an instant
+            # 503 that makes the client abort playback entirely.
+            displaced = _displace_own_vod_stream(user, content_id, session_id)
+            for _ in range(10):
+                time.sleep(0.3)
+                selected = _select_vod_stream(
+                    content_type,
+                    content_id,
+                    preferred_m3u_account_id,
+                    preferred_stream_id,
+                    profile_id,
+                    session_id,
+                )
+                if selected:
+                    break
+            # Consume our own displacement signals so the new stream
+            # (possibly reusing the same session id) never reads a stale
+            # kill order meant for its predecessor.
+            _rc = MultiWorkerVODConnectionManager.get_instance().redis_client
+            for _cid in displaced:
+                try:
+                    if _rc:
+                        _rc.delete(get_vod_client_stop_key(_cid))
+                except Exception:
+                    pass
         if not selected:
             logger.error(
                 "[VOD-ERROR] No available provider with capacity for %s %s",

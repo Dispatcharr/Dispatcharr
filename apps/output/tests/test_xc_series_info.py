@@ -107,6 +107,30 @@ class XCGetSeriesInfoTests(TestCase):
         info = self._info(self.relation_a.id)
         self.assertEqual(info['episodes'][1][0]['container_extension'], 'mp4')
 
+    def test_episode_payload_has_no_nulls_and_string_ids(self):
+        # Strict XC clients (e.g. iPlayTV on Apple TV) reject JSON null where
+        # a string is expected and reject numeric episode ids; real panels
+        # emit strings and empty strings for absent values.
+        info = self._info(self.relation_a.id)
+
+        def assert_no_null(node, path):
+            if isinstance(node, dict):
+                for key, value in node.items():
+                    assert_no_null(value, f"{path}.{key}")
+            elif isinstance(node, list):
+                for index, value in enumerate(node):
+                    assert_no_null(value, f"{path}[{index}]")
+            else:
+                self.assertIsNotNone(node, f"null value at {path}")
+
+        self.assertTrue(info['episodes'])
+        for season, episodes in info['episodes'].items():
+            for episode in episodes:
+                assert_no_null(episode, f"episodes[{season}]")
+                self.assertIsInstance(episode['id'], str)
+                self.assertIsInstance(episode['info']['id'], str)
+                self.assertEqual(episode['custom_sid'], "")
+
     def test_episode_artwork_prefers_higher_priority_relation(self):
         self.s1e1.custom_properties = {
             'movie_image': 'https://cdn.example.com/stale.jpg',

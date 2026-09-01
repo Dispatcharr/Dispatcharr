@@ -689,7 +689,7 @@ class XcVodSeriesRegressionTests(TestCase):
         self.assertEqual(stream["stream_type"], "movie")
         self.assertEqual(stream["stream_id"], movie.id)
         self.assertEqual(stream["rating_5based"], 5.0)
-        self.assertEqual(stream["custom_sid"], None)
+        self.assertEqual(stream["custom_sid"], "")
         self.assertEqual(stream["direct_source"], "")
 
     def test_vod_streams_null_optional_fields(self):
@@ -704,7 +704,8 @@ class XcVodSeriesRegressionTests(TestCase):
 
         stream = xc_get_vod_streams(self.request, self.user)[0]
 
-        self.assertIsNone(stream["stream_icon"])
+        # Strict XC clients reject JSON null where a string is expected.
+        self.assertEqual(stream["stream_icon"], "")
         self.assertEqual(stream["category_id"], "0")
         self.assertEqual(stream["category_ids"], [])
         self.assertEqual(stream["container_extension"], "mp4")
@@ -993,7 +994,8 @@ class XcVodSeriesRegressionTests(TestCase):
 
         row = xc_get_series(self.request, self.user)[0]
 
-        self.assertIsNone(row["cover"])
+        # Strict XC clients reject JSON null where a string is expected.
+        self.assertEqual(row["cover"], "")
         self.assertEqual(row["category_id"], "0")
         self.assertEqual(row["category_ids"], [])
         self.assertEqual(row["release_date"], "")
