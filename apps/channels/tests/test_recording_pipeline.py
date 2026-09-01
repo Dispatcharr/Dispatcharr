@@ -11,6 +11,8 @@ Covers:
   8. Frontend recording-status data contract
 """
 import os
+import shutil
+import unittest
 import datetime as dt
 from datetime import timedelta
 from unittest.mock import MagicMock, patch
@@ -575,6 +577,125 @@ class ConcatFlagsTests(TestCase):
         self.assertIn("_dvr_build_hls_concat_cmd", source)
 
 
+# =========================================================================
+# 5b. Bitcat single-pass remux (seamless splices) + output verification
+# =========================================================================
+
+class BitcatRemuxTests(TestCase):
+    """Verify the bitcat + single-pass remux path (replaces the concat demuxer
+    for the common case) and the output verifier guarding the fallback."""
+
+    def test_bitcat_remux_cmd_structure(self):
+        from apps.channels.tasks import _dvr_build_bitcat_remux_cmd
+
+        cmd = _dvr_build_bitcat_remux_cmd("/data/combined.ts", "/data/out.mkv")
+        self.assertEqual(cmd[0], "ffmpeg")
+        self.assertIn("-i", cmd)
+        self.assertEqual(cmd[cmd.index("-i") + 1], "/data/combined.ts")
+        self.assertIn("-c", cmd)
+        self.assertEqual(cmd[cmd.index("-c") + 1], "copy")
+        self.assertIn("-avoid_negative_ts", cmd)
+        self.assertEqual(cmd[cmd.index("-avoid_negative_ts") + 1], "make_zero")
+        self.assertEqual(cmd[-1], "/data/out.mkv")
+        # single mpegts input — no concat demuxer
+        self.assertNotIn("concat", cmd)
+        # extra args (e.g. for MP4 fallback) are honoured and placed pre-output
+        cmd2 = _dvr_build_bitcat_remux_cmd("/data/c.ts", "/data/o.mp4",
+                                     extra_args=["-bsf:a", "aac_adtstoasc"])
+        self.assertIn("aac_adtstoasc", cmd2)
+        self.assertEqual(cmd2[-1], "/data/o.mp4")
+
+    def test_bitcat_segments_copies_in_order(self):
+        import tempfile
+        from apps.channels.tasks import _dvr_bitcat_segments
+
+        with tempfile.TemporaryDirectory() as tmp:
+            segs = []
+            for i in range(3):
+                p = os.path.join(tmp, f"seg_{i:05d}.ts")
+                with open(p, "wb") as f:
+                    f.write(bytes([i]) * 188)  # one fake TS packet each
+                segs.append(p)
+            dest = os.path.join(tmp, "combined.ts")
+            self.assertTrue(_dvr_bitcat_segments(segs, dest))
+            with open(dest, "rb") as f:
+                data = f.read()
+        self.assertEqual(len(data), 3 * 188)
+        self.assertEqual(data[:188], b"\x00" * 188)
+        self.assertEqual(data[188:376], b"\x01" * 188)
+        self.assertEqual(data[376:], b"\x02" * 188)
+
+    def test_bitcat_segments_missing_source_fails_cleanly(self):
+        import tempfile
+        from apps.channels.tasks import _dvr_bitcat_segments
+
+        with tempfile.TemporaryDirectory() as tmp:
+            seg = os.path.join(tmp, "seg_00000.ts")
+            with open(seg, "wb") as f:
+                f.write(b"\x00" * 188)
+            dest = os.path.join(tmp, "combined.ts")
+            self.assertFalse(_dvr_bitcat_segments(
+                [seg, os.path.join(tmp, "missing.ts")], dest))
+            self.assertFalse(os.path.exists(dest), "partial output must be removed")
+
+    def test_verify_rejects_empty_and_garbage_files(self):
+        import tempfile
+        from apps.channels.tasks import _dvr_verify_concat_output
+
+        with tempfile.TemporaryDirectory() as tmp:
+            empty = os.path.join(tmp, "empty.mkv")
+            open(empty, "wb").close()
+            self.assertFalse(_dvr_verify_concat_output(empty))
+            garbage = os.path.join(tmp, "garbage.mkv")
+            with open(garbage, "wb") as f:
+                f.write(b"not a matroska file at all" * 10)
+            self.assertFalse(_dvr_verify_concat_output(garbage))
+
+    @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"),
+                         "ffmpeg/ffprobe not available")
+    def test_verify_accepts_seamless_rejects_discontinuous(self):
+        """End-to-end: verifier accepts a clean MKV and rejects one spliced
+        with a large gap (simulates a botched re-base at a splice)."""
+        import subprocess
+        import tempfile
+        from apps.channels.tasks import _dvr_verify_concat_output
+
+        with tempfile.TemporaryDirectory() as tmp:
+            clean = os.path.join(tmp, "clean.mkv")
+            subprocess.run(
+                ["ffmpeg", "-y", "-v", "error",
+                 "-f", "lavfi", "-i", "testsrc2=size=64x64:rate=25",
+                 "-f", "lavfi", "-i", "sine=frequency=440", "-t", "2",
+                 "-c:v", "libx264", "-c:a", "aac", clean],
+                check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            self.assertTrue(_dvr_verify_concat_output(clean))
+
+            # Punch a real 0.5 s hole out of the audio track (timestamps keep
+            # the gap) -> large audio delta -> reject
+            gappy = os.path.join(tmp, "gappy.mkv")
+            subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", clean, "-c:v", "copy",
+                            "-af", "aselect='not(between(t,1,1.5))'", "-c:a", "aac", gappy],
+                           check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            self.assertFalse(_dvr_verify_concat_output(gappy))
+
+    def test_run_recording_uses_bitcat_path_with_concat_fallback(self):
+        import inspect
+        from apps.channels.tasks import run_recording
+
+        source = inspect.getsource(run_recording)
+        self.assertIn("_dvr_bitcat_segments", source)
+        self.assertIn("_dvr_build_bitcat_remux_cmd", source)
+        self.assertIn("_dvr_verify_concat_output", source)
+        # concat demuxer retained as fallback
+        self.assertIn("_dvr_build_hls_concat_cmd", source)
+
+    def test_recover_recordings_uses_bitcat_path_with_concat_fallback(self):
+        import inspect
+        from apps.channels.tasks import recover_recordings_on_startup
+
+        source = inspect.getsource(recover_recordings_on_startup)
+        self.assertIn("_dvr_bitcat_segments", source)
+        self.assertIn("_dvr_build_hls_concat_cmd", source)
 # =========================================================================
 # 6. Recovery skip-list
 # =========================================================================

@@ -1576,6 +1576,99 @@ def _dvr_build_hls_concat_cmd(concat_list_path, output_path, extra_args=None):
     return cmd
 
 
+def _dvr_build_bitcat_remux_cmd(combined_ts_path, output_path, extra_args=None):
+    """Build a single-pass FFmpeg remux command for a bit-concatenated MPEG-TS stream.
+
+    All HLS ``.ts`` segments are byte-concatenated into one file and remuxed by a
+    single mpegts demuxer instance.  Unlike the concat *demuxer* — which demuxes
+    each segment as a separate input and re-times each file against an estimated
+    duration, baking a ~40 ms A/V discontinuity into every splice — one demuxer
+    sees the segments' continuous DTS timeline and stays seamless.  FFmpeg restart
+    splices (timeline rewinds) are re-based by the mpegts PCR-discontinuity logic.
+    """
+    cmd = [
+        "ffmpeg", "-y",
+        "-err_detect", "ignore_err",
+        "-i", combined_ts_path,
+        "-c", "copy",
+        "-avoid_negative_ts", "make_zero",
+    ]
+    if extra_args:
+        cmd.extend(extra_args)
+    cmd.append(output_path)
+    return cmd
+
+def _dvr_bitcat_segments(segments, dest_path):
+    """Bit-concatenate MPEG-TS *segments* (in playlist order) into *dest_path*.
+
+    The segments are plain 188-byte MPEG-TS streams written by the DVR FFmpeg
+    pipeline, so a raw byte copy is a valid single stream: each segment carries
+    its own PAT/PMT and the mpegts demuxer re-syncs on discontinuities.
+    Returns True on success; any failure removes a partial *dest_path*.
+    """
+    try:
+        with open(dest_path, "wb") as _out:
+            for _seg in segments:
+                with open(_seg, "rb") as _src:
+                    shutil.copyfileobj(_src, _out)
+        return os.path.exists(dest_path) and os.path.getsize(dest_path) > 0
+    except Exception as _be:
+        logger.debug(f"DVR bitcat segments -> {dest_path} failed: {_be}")
+        try:
+            if os.path.exists(dest_path):
+                os.remove(dest_path)
+        except OSError:
+            pass
+        return False
+def _dvr_verify_concat_output(path, max_gap_seconds=0.1, monotonic_tolerance=0.01):
+    """Verify DTS continuity of a finalized MKV (audio track, else video).
+
+    A botched re-base (FFmpeg restart splice, 33-bit DTS wrap on >19 h
+    recordings, inconsistent PCR) shows up as one huge forward jump or a
+    backwards step in the demuxed timestamps.  Returns True when every
+    inter-packet delta lies within ``[tolerance, max_gap]``; False on any
+    violation, unreadable file, or ffprobe failure.  Called only on the
+    single-pass (bitcat) output — the concat-demuxer fallback is the status
+    quo and is never verified.
+    """
+    try:
+        streams = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "stream=codec_type",
+             "-of", "csv=p=0", path],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=60,
+        )
+        types = [l.strip() for l in streams.stdout.splitlines() if l.strip()]
+        sel = "a:0" if "audio" in types else ("v:0" if "video" in types else None)
+        if sel is None:
+            return False
+        res = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", sel,
+             "-show_entries", "packet=dts_time", "-of", "csv=p=0", path],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+        if res.returncode != 0:
+            return False
+        prev = None
+        for _line in res.stdout.splitlines():
+            _v = _line.split(",")[0].strip()
+            if not _v or _v == "N/A":
+                continue
+            _ts = float(_v)
+            if prev is not None:
+                _delta = _ts - prev
+                if _delta < -monotonic_tolerance or _delta > max_gap_seconds:
+                    logger.debug(
+                        f"DVR verify {os.path.basename(path)}: bad delta "
+                        f"{_delta:+.4f}s at ts {_ts:.3f}s"
+                    )
+                    return False
+            prev = _ts
+        return prev is not None
+    except Exception as _ve:
+        logger.debug(f"DVR verify {path} failed: {_ve}")
+        return False
+
+
 def _dvr_drain_ffmpeg_stderr(proc, rec_id, tail):
     """Drain FFmpeg stderr in a background thread (see run_recording for rationale)."""
     try:
@@ -2477,21 +2570,68 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
 
     if segments:
         concat_list_path = os.path.join(hls_dir, "concat.txt")
+        combined_ts_path = os.path.join(hls_dir, f".dvr_{recording_id}_combined.ts")
         try:
             with open(concat_list_path, "w") as _cl:
                 for seg in segments:
                     _escaped = seg.replace("'", "'\\''")
                     _cl.write(f"file '{_escaped}'\n")
 
-            concat_result = subprocess.run(
-                _dvr_build_hls_concat_cmd(concat_list_path, final_path),
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-            )
-            _ok = (
-                concat_result.returncode == 0
-                and os.path.exists(final_path)
-                and os.path.getsize(final_path) > 0
-            )
+            _ok = False
+            _method = None
+            # Method 1: bitcat the segments into one MPEG-TS stream and remux
+            # it in a single pass.  The concat *demuxer* below demuxes each
+            # segment as a separate mpegts input and re-times each file
+            # against an estimated duration, which bakes a ~40 ms A/V
+            # discontinuity into every segment splice (audible as periodic
+            # audio dropouts in strict players such as Firefox).  One mpegts
+            # demuxer sees the segments' continuous DTS timeline and stays
+            # seamless; FFmpeg restart splices are re-based by its
+            # PCR-discontinuity handling.  The output is verified before it
+            # is accepted (see _dvr_verify_concat_output).
+            _bc_res = None
+            if _dvr_bitcat_segments(segments, combined_ts_path):
+                _bc_res = subprocess.run(
+                    _dvr_build_bitcat_remux_cmd(combined_ts_path, final_path),
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                )
+                _ok = (
+                    _bc_res.returncode == 0
+                    and os.path.exists(final_path)
+                    and os.path.getsize(final_path) > 0
+                    and _dvr_verify_concat_output(final_path)
+                )
+                if _ok:
+                    _method = "bitcat"
+                else:
+                    logger.warning(
+                        f"DVR recording {recording_id}: bitcat remux failed or "
+                        f"verification rejected the output "
+                        f"(rc={_bc_res.returncode}); falling back to the concat "
+                        f"demuxer. stderr: {(_bc_res.stderr or '')[:300]}"
+                    )
+                    try:
+                        if os.path.exists(final_path) and os.path.getsize(final_path) == 0:
+                            os.remove(final_path)
+                    except OSError:
+                        pass
+
+            # Method 2: concat demuxer (previous behaviour).  Retains the
+            # per-splice dropouts, but is the reference path for any stream
+            # shape the single-pass remux cannot verify cleanly (e.g. 33-bit
+            # DTS wrap on >19 h recordings, unusual PCR re-bases).
+            if not _ok:
+                concat_result = subprocess.run(
+                    _dvr_build_hls_concat_cmd(concat_list_path, final_path),
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                )
+                _ok = (
+                    concat_result.returncode == 0
+                    and os.path.exists(final_path)
+                    and os.path.getsize(final_path) > 0
+                )
+                if _ok:
+                    _method = "concat"
             _fallback_used = False
             # MP4-intermediate fallback: some MPEG-TS streams (parameter set
             # changes mid-stream, weird PMT updates, audio discontinuities)
@@ -2575,11 +2715,20 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
                         f"({os.path.getsize(final_path):,} bytes)"
                     )
                 else:
-                    logger.info(
-                        f"DVR recording {recording_id}: HLS\u2192MKV concat succeeded \u2014 "
-                        f"{len(segments)} segments \u2192 {os.path.basename(final_path)} "
-                        f"({os.path.getsize(final_path):,} bytes)"
-                    )
+                    if _method == "bitcat":
+                        logger.info(
+                            f"DVR recording {recording_id}: HLS\u2192MKV single-pass "
+                            f"(bitcat) remux succeeded \u2014 seamless timeline \u2014 "
+                            f"{len(segments)} segments \u2192 {os.path.basename(final_path)} "
+                            f"({os.path.getsize(final_path):,} bytes)"
+                        )
+                    else:
+                        logger.info(
+                            f"DVR recording {recording_id}: HLS\u2192MKV concat-demuxer "
+                            f"remux succeeded (legacy per-splice dropouts apply) \u2014 "
+                            f"{len(segments)} segments \u2192 {os.path.basename(final_path)} "
+                            f"({os.path.getsize(final_path):,} bytes)"
+                        )
                 # Update DB so *new* client requests go to /file/ (the final MKV)
                 # rather than the soon-to-be-removed /hls/ endpoint.  Important:
                 # we do NOT clear _hls_dir here, active viewers still in the
@@ -2645,18 +2794,20 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
                     logger.warning(f"DVR recording {recording_id}: post-rmtree DB update failed: {_post_e}")
             else:
                 logger.error(
-                    f"DVR recording {recording_id}: all HLS\u2192MKV concat attempts "
-                    f"failed (direct rc={concat_result.returncode}, MP4 fallback also "
-                    f"failed). Keeping HLS segments for recovery. stderr: "
+                    f"DVR recording {recording_id}: all HLS\u2192MKV remux attempts "
+                    f"failed (bitcat rc={getattr(_bc_res, 'returncode', 'n/a')}, "
+                    f"concat rc={getattr(concat_result, 'returncode', 'n/a')}, MP4 "
+                    f"fallback also failed). Keeping HLS segments for recovery. stderr: "
                     f"{(concat_result.stderr or '')[:500]}"
                 )
         except Exception as _ce:
             logger.error(f"DVR recording {recording_id}: concat exception: {_ce}")
         finally:
-            try:
-                os.remove(concat_list_path)
-            except OSError:
-                pass
+            for _tmp in (concat_list_path, combined_ts_path):
+                try:
+                    os.remove(_tmp)
+                except OSError:
+                    pass
     else:
         logger.warning(f"DVR recording {recording_id}: no HLS segments found. Nothing to concat")
 
@@ -2960,16 +3111,38 @@ def recover_recordings_on_startup():
                         )
                         os.makedirs(os.path.dirname(mkv_path), exist_ok=True)
                         _concat_txt = os.path.join(hls_dir_path, "concat.txt")
+                        _combined_ts = os.path.join(hls_dir_path, f".dvr_{rec.id}_combined.ts")
                         try:
                             with open(_concat_txt, "w") as _cl:
                                 for _s in _segs:
                                     _escaped = _s.replace("'", "'\\''")
                                     _cl.write(f"file '{_escaped}'\n")
-                            _res = subprocess.run(
-                                _dvr_build_hls_concat_cmd(_concat_txt, mkv_path),
-                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                            )
-                            if _res.returncode == 0 and os.path.exists(mkv_path) and os.path.getsize(mkv_path) > 0:
+                            # Single-pass (bitcat) remux first — seamless splices;
+                            # verified output only.  Concat demuxer is the
+                            # fallback (see run_recording for the rationale).
+                            _ok_remux = False
+                            if _dvr_bitcat_segments(_segs, _combined_ts):
+                                _res = subprocess.run(
+                                    _dvr_build_bitcat_remux_cmd(_combined_ts, mkv_path),
+                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                                )
+                                _ok_remux = (
+                                    _res.returncode == 0
+                                    and os.path.exists(mkv_path)
+                                    and os.path.getsize(mkv_path) > 0
+                                    and _dvr_verify_concat_output(mkv_path)
+                                )
+                            if not _ok_remux:
+                                _res = subprocess.run(
+                                    _dvr_build_hls_concat_cmd(_concat_txt, mkv_path),
+                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                                )
+                                _ok_remux = (
+                                    _res.returncode == 0
+                                    and os.path.exists(mkv_path)
+                                    and os.path.getsize(mkv_path) > 0
+                                )
+                            if _ok_remux:
                                 cp["status"] = "interrupted"
                                 cp["interrupted_reason"] = "server_restarted_after_end"
                                 cp["remux_success"] = True
@@ -2978,14 +3151,14 @@ def recover_recordings_on_startup():
                                 except OSError:
                                     pass
                                 logger.info(
-                                    f"recover_recordings_on_startup: recording {rec.id} HLS\u2192MKV concat succeeded"
+                                    f"recover_recordings_on_startup: recording {rec.id} HLS\u2192MKV remux succeeded"
                                 )
                             else:
                                 cp["status"] = "interrupted"
                                 cp["interrupted_reason"] = "server_restarted_after_end"
                                 cp["remux_success"] = False
                                 logger.warning(
-                                    f"recover_recordings_on_startup: recording {rec.id} concat failed, keeping HLS dir"
+                                    f"recover_recordings_on_startup: recording {rec.id} remux failed (bitcat + concat), keeping HLS dir"
                                 )
                         except Exception as _ce:
                             cp["status"] = "interrupted"
@@ -2995,10 +3168,11 @@ def recover_recordings_on_startup():
                                 f"recover_recordings_on_startup: recording {rec.id} concat error: {_ce}"
                             )
                         finally:
-                            try:
-                                os.remove(_concat_txt)
-                            except OSError:
-                                pass
+                            for _tmp in (_concat_txt, _combined_ts):
+                                try:
+                                    os.remove(_tmp)
+                                except OSError:
+                                    pass
                     else:
                         cp["status"] = "interrupted"
                         cp["interrupted_reason"] = "server_restarted_after_end"
