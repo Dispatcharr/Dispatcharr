@@ -20,7 +20,7 @@ import signal
 import sys
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 
@@ -338,11 +338,22 @@ class Collector:
         self._wake.set()
 
     def _render(self, dt):
+        # Every line pays for this call, so it's field access and f-string
+        # padding instead of strftime; utcoffset() beats a second strftime
+        # call for the zone suffix. Both agree with strftime for any real
+        # (post-1970) timestamp; they only part ways on pre-standard-zone
+        # LMT offsets, which a container's clock can never produce.
         dt = dt.astimezone(self._display_zone)
-        base = f"{dt.strftime('%Y-%m-%d %H:%M:%S')},{dt.microsecond // 1000:03d}"
-        offset = dt.strftime("%z")
-        if offset and offset != "+0000":
-            return f"{base} {offset}"
+        base = (
+            f"{dt.year:04d}-{dt.month:02d}-{dt.day:02d} "
+            f"{dt.hour:02d}:{dt.minute:02d}:{dt.second:02d},{dt.microsecond // 1000:03d}"
+        )
+        off = dt.utcoffset()
+        if off and off != timedelta():
+            total_min = int(off.total_seconds() // 60)
+            sign = "+" if total_min >= 0 else "-"
+            total_min = abs(total_min)
+            return f"{base} {sign}{total_min // 60:02d}{total_min % 60:02d}"
         return base
 
     def _now_stamp(self):
@@ -364,6 +375,15 @@ class Collector:
         return self._container_zone
 
     def _parse_naive(self, stamp, ms, zone, fmt="%Y-%m-%d %H:%M:%S"):
+        if fmt == "%Y-%m-%d %H:%M:%S" and len(stamp) == 19:
+            # Fixed-width ISO stamps dominate the stream; int slices beat strptime.
+            y = int(stamp[0:4])
+            mo = int(stamp[5:7])
+            d = int(stamp[8:10])
+            h = int(stamp[11:13])
+            mi = int(stamp[14:16])
+            s = int(stamp[17:19])
+            return datetime(y, mo, d, h, mi, s, ms * 1000, tzinfo=zone)
         dt = datetime.strptime(stamp.decode(), fmt)
         return dt.replace(microsecond=ms * 1000, tzinfo=zone)
 
