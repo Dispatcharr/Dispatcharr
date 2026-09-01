@@ -175,6 +175,57 @@ absent "long-lived failures never degrade" "falling back to passthrough" "$OUT"
 contains "keeps restarting a long-lived collector" "attempts=6" "$OUT"
 
 ###############################################################################
+echo "stop_log_collector"
+###############################################################################
+
+DIR="$(mktemp -d)"
+OUTFILE="$(mktemp)"
+trap 'rm -rf "$DIR" "$OUTFILE"' EXIT
+mkdir -p "$DIR/config"
+
+bash "$SCRIPT_DIR/_stop_collector_case.sh" "$INIT_SCRIPT" "$DIR" >"$OUTFILE" 2>&1 &
+BPID=$!
+sleep 0.3
+kill -TERM "$BPID"
+if ! wait "$BPID"; then
+    echo "  FAIL  shutdown finishes without waiting for SIGKILL"
+    echo "        wait failed or timed out"
+    FAILED=$((FAILED + 1))
+else
+    OUT="$(cat "$OUTFILE")"
+    contains "shutdown finishes without waiting for SIGKILL" "cleanup-done" "$OUT"
+fi
+
+check "collector pid file path has no role" \
+    "$DIR/config/collector.pid" "$(collector_pid_file "$DIR")"
+check "collector pid file path with role" \
+    "$DIR/config/collector-celery.pid" "$(DISPATCHARR_LOG_ROLE=celery collector_pid_file "$DIR")"
+
+###############################################################################
+echo "wait_log_collector"
+###############################################################################
+
+WAIT_DIR="$(mktemp -d)"
+mkdir -p "$WAIT_DIR/config"
+(
+    sleep 0.3
+    exit 0
+) &
+echo $! > "$WAIT_DIR/config/collector.pid"
+t0=$SECONDS
+wait_log_collector "$WAIT_DIR"
+elapsed=$((SECONDS - t0))
+rm -rf "$WAIT_DIR"
+if [ "$elapsed" -lt 2 ]; then
+    echo "  PASS  wait_log_collector returns after the pid exits"
+    PASSED=$((PASSED + 1))
+else
+    echo "  FAIL  wait_log_collector returns after the pid exits"
+    echo "        took ${elapsed}s"
+    FAILED=$((FAILED + 1))
+fi
+
+###############################################################################
 echo
 echo "passed: $PASSED  failed: $FAILED"
 [ "$FAILED" -eq 0 ]

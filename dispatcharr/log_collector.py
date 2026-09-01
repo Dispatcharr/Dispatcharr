@@ -398,8 +398,7 @@ class Collector:
             self._continuation = True
             self._in_traceback = True
             return raw
-        # Unmatched lines during a traceback, or indented tails, pass through raw.
-        # _restamp runs first above so the next real record recovers cleanly.
+        # _restamp runs first so the stream recovers after a traceback.
         if self._in_traceback or _CONTINUATION.match(raw):
             self._continuation = True
             return raw
@@ -719,9 +718,10 @@ class Collector:
         self.install_signals()
         self._container_zone = _resolve_container_zone()
         self._pid1_zone = _resolve_pid1_zone(self._container_zone)
-        reader = threading.Thread(target=self.reader, args=(stream,), daemon=True)
+        reader = threading.Thread(target=self.reader, args=(stream,), name="log-collector-reader")
         reader.start()
         self.writer()
+        reader.join(timeout=5.0)
 
 
 def main(argv):

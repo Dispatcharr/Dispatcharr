@@ -10,6 +10,7 @@ cleanup() {
     if $_cleanup_done; then return; fi
     _cleanup_done=true
     set +e  # Disable exit-on-error so cleanup always runs fully
+    stop_log_collector
     echo "🔥 Cleanup triggered! Stopping services..."
 
     # Explicitly stop uwsgi workers - children of 'su' wrapper, not tracked in pids[]
@@ -53,8 +54,12 @@ cleanup() {
         su - "$POSTGRES_USER" -c "$PG_BINDIR/pg_ctl -D ${POSTGRES_DIR} stop -m immediate" 2>/dev/null || true
     fi
 
-    wait
+    if [ ${#pids[@]} -gt 0 ]; then
+        wait "${pids[@]}" 2>/dev/null || true
+    fi
+    wait_log_collector "${LOG_FILE_DIR:-/data/logs}"
     echo "✅ All processes stopped cleanly."
+    exit 0
 }
 
 # Catch termination signals (CTRL+C, Docker Stop, etc.)

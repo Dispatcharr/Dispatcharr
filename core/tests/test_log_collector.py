@@ -6,6 +6,7 @@ import os
 import re
 import shutil
 import tempfile
+import threading
 from datetime import timezone
 from unittest import mock
 from zoneinfo import ZoneInfo
@@ -188,6 +189,16 @@ class ConfTests(SimpleTestCase):
     def test_reader_eof_requests_stop(self):
         self.collector.reader(io.BytesIO(b"line\n"))
         self.assertTrue(self.collector._stop)
+
+    def test_run_joins_reader_on_stdin_eof(self):
+        done = threading.Thread(
+            target=self.collector.run,
+            args=(io.BytesIO(b"2026-08-18 01:00:00,000 INFO core.tasks tick\n"),),
+            daemon=True,
+        )
+        done.start()
+        done.join(timeout=5.0)
+        self.assertFalse(done.is_alive())
 
     def test_both_sinks_get_the_same_bytes(self):
         self.feed(b"one line\n")

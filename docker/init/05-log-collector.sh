@@ -41,6 +41,37 @@ start_log_collector() {
     fi
 }
 
+collector_pid_file() {
+    local dir="$1" role suffix
+    role="$(printf '%s' "${DISPATCHARR_LOG_ROLE:-}" | tr -cd 'A-Za-z0-9' | cut -c1-16)"
+    suffix="${role:+-$role}"
+    printf '%s/config/collector%s.pid' "$dir" "$suffix"
+}
+
+# Close the collector pipe (no SIGTERM: races readline during drain).
+stop_log_collector() {
+    if [ -e /dev/fd/3 ] 2>/dev/null; then
+        exec 1>&3 2>&3
+    fi
+}
+
+# Brief pidfile poll so the file sink can flush before PID 1 exits.
+wait_log_collector() {
+    local dir="${1:-${LOG_FILE_DIR:-/data/logs}}" pid_file pid waited=0
+    pid_file="$(collector_pid_file "$dir")"
+    if [ ! -f "$pid_file" ]; then
+        return 0
+    fi
+    pid="$(tr -d ' \n\r' < "$pid_file")"
+    if [ -z "$pid" ] || ! kill -0 "$pid" 2>/dev/null; then
+        return 0
+    fi
+    while [ "$waited" -lt 20 ] && kill -0 "$pid" 2>/dev/null; do
+        sleep 0.1
+        waited=$((waited + 1))
+    done
+}
+
 # docker logs must outlive any collector fault: three rapid failures degrade to
 # a plain cat passthrough rather than a restart loop that drops the stream.
 supervise_log_collector() {
