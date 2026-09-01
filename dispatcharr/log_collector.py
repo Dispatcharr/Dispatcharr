@@ -398,8 +398,8 @@ class Collector:
             self._continuation = True
             self._in_traceback = True
             return raw
-        # A traceback's tail sits at column 0 (exception line, chained-exception
-        # separator, blank line), so an open traceback claims it.
+        # Unmatched lines during a traceback, or indented tails, pass through raw.
+        # _restamp runs first above so the next real record recovers cleanly.
         if self._in_traceback or _CONTINUATION.match(raw):
             self._continuation = True
             return raw
@@ -416,10 +416,6 @@ class Collector:
         try:
             if _CANON.match(raw):
                 return raw
-            m = _UWSGI.match(raw)
-            if m:
-                dt = self._parse_naive(m.group(1), int(m.group(2)), self._container_zone)
-                return f"{self._render(dt)} INFO uwsgi ".encode() + raw[m.end() :]
             m = _PY_REQ.match(raw)
             if m:
                 dt = self._parse_naive(m.group(1), int(m.group(2)), self._container_zone)
@@ -428,6 +424,10 @@ class Collector:
             if m:
                 dt = self._parse_naive(m.group(1), int(m.group(2)), timezone.utc)
                 return f"{self._render(dt)} ".encode() + raw[m.end() :]
+            m = _UWSGI.match(raw)
+            if m:
+                dt = self._parse_naive(m.group(1), int(m.group(2)), self._container_zone)
+                return f"{self._render(dt)} INFO uwsgi ".encode() + raw[m.end() :]
             m = _SHELL.match(raw)
             if m:
                 dt = self._parse_naive(m.group(1), 0, self._pid1_zone)

@@ -400,6 +400,17 @@ class NormalizationTests(SimpleTestCase):
         for line in (b"ValueError: bad m3u\n", b"\n", b"During handling\n"):
             self.assertEqual(self.collector._normalize(line), line)
 
+    def test_python_log_after_traceback_is_renormalized(self):
+        self.collector._normalize(b"2026-08-18 01:00:00,100 ERROR apps.x boom\n")
+        self.collector._normalize(b"Traceback (most recent call last):\n")
+        self.collector._normalize(b'  File "/app/x.py", line 1\n')
+        self.collector._normalize(b"ValueError: bad m3u\n")
+        self.collector._normalize(b"\n")
+        out = self.norm(b"2026-08-18 01:00:00,200 INFO apps.x recovered\n")
+        self.assertEqual(
+            out, "2026-08-18 13:00:00,200 +1200 INFO apps.x recovered\n"
+        )
+
     def test_nginx_error_stamp_rewritten(self):
         out = self.norm(b"2026/08/18 01:00:00 [notice] 1#1: start worker\n")
         self.assertEqual(
