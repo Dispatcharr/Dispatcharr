@@ -1,0 +1,93 @@
+#!/bin/bash
+#
+# Log collector startup: archive the previous run's file, then supervise the
+# collector process for the life of the container.
+#
+# Sourced by entrypoint.sh, which runs the supervisor inside the process
+# substitution that owns the container's merged stdout.
+
+# Each container collects under its own name; /data is shared in modular mode.
+collector_log_name() {
+    local role
+    role="$(printf '%s' "${DISPATCHARR_LOG_ROLE:-}" | tr -cd 'A-Za-z0-9' | cut -c1-16)"
+    printf 'dispatcharr.log%s' "${role:+-$role}"
+}
+
+# Shifts, never deletes: the collector prunes per the retention setting.
+archive_previous_log() {
+    local dir="$1" n name esc
+    name="$(collector_log_name)"
+    esc="${name//./\\.}"
+    mkdir -p "$dir" 2>/dev/null || true
+    if [ -s "$dir/$name" ]; then
+        # Highest index first so nothing is clobbered on the way up.
+        for n in $(ls "$dir" 2>/dev/null \
+                     | sed -n "s/^$esc\.\([0-9][0-9]*\)$/\1/p" | sort -rn); do
+            mv "$dir/$name.$n" "$dir/$name.$((n + 1))" 2>/dev/null || true
+        done
+        mv "$dir/$name" "$dir/$name.1" 2>/dev/null || true
+    fi
+    touch "$dir/$name" 2>/dev/null || true
+}
+
+# Positional parameters, not interpolation: `su -` strips the environment, and
+# an operator-set path inside the -c string would become shell input.
+start_log_collector() {
+    if [ -z "$1" ]; then
+        # No application user here, and `su -` would strip the role.
+        (cd /app && exec "$2" /app/dispatcharr/log_collector.py "$3")
+    else
+        su - "$1" -c 'cd /app && exec "$0" /app/dispatcharr/log_collector.py "$1"' "$2" "$3"
+    fi
+}
+
+collector_pid_file() {
+    local dir="$1" role suffix
+    role="$(printf '%s' "${DISPATCHARR_LOG_ROLE:-}" | tr -cd 'A-Za-z0-9' | cut -c1-16)"
+    suffix="${role:+-$role}"
+    printf '%s/config/collector%s.pid' "$dir" "$suffix"
+}
+
+# Close the collector pipe (no SIGTERM: races readline during drain).
+stop_log_collector() {
+    if [ -e /dev/fd/3 ] 2>/dev/null; then
+        exec 1>&3 2>&3
+    fi
+}
+
+# Brief pidfile poll so the file sink can flush before PID 1 exits.
+wait_log_collector() {
+    local dir="${1:-${LOG_FILE_DIR:-/data/logs}}" pid_file pid waited=0
+    pid_file="$(collector_pid_file "$dir")"
+    if [ ! -f "$pid_file" ]; then
+        return 0
+    fi
+    pid="$(tr -d ' \n\r' < "$pid_file")"
+    if [ -z "$pid" ] || ! kill -0 "$pid" 2>/dev/null; then
+        return 0
+    fi
+    while [ "$waited" -lt 20 ] && kill -0 "$pid" 2>/dev/null; do
+        sleep 0.1
+        waited=$((waited + 1))
+    done
+}
+
+# docker logs must outlive any collector fault: three rapid failures degrade to
+# a plain cat passthrough rather than a restart loop that drops the stream.
+supervise_log_collector() {
+    local user="$1" python="$2" dir="$3"
+    local failures=0 started
+    while :; do
+        started=$SECONDS
+        start_log_collector "$user" "$python" "$dir" && break
+        # A long-lived collector that dies is a fresh fault, not a crash loop.
+        if [ $((SECONDS - started)) -ge 30 ]; then failures=0; fi
+        failures=$((failures + 1))
+        if [ "$failures" -ge 3 ]; then
+            echo "log collector failing repeatedly; falling back to passthrough"
+            exec cat
+        fi
+        echo "log collector exited abnormally; restarting"
+        sleep "${LOG_COLLECTOR_RESTART_DELAY:-0.2}"
+    done
+}

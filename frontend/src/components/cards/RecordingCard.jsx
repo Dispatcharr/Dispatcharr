@@ -63,7 +63,8 @@ const areRecordingPropsEqual = (prev, next) => {
     pcp.output_file_url === ncp.output_file_url &&
     pcp.comskip?.status === ncp.comskip?.status &&
     pcp.program?.title === ncp.program?.title &&
-    prev.channel?.id === next.channel?.id
+    prev.channel?.id === next.channel?.id &&
+    prev.canManage === next.canManage
   );
 };
 
@@ -72,6 +73,7 @@ const RecordingCard = ({
   onOpenDetails,
   onOpenRecurring,
   channel: channelProp = null,
+  canManage = true,
 }) => {
   const env_mode = useSettingsStore((s) => s.environment.env_mode);
   const showVideo = useVideoStore((s) => s.showVideo);
@@ -365,7 +367,7 @@ const RecordingCard = ({
         </Group>
 
         <Group gap={4}>
-          {isInProgress && (
+          {canManage && isInProgress && (
             <Tooltip label="Extend recording">
               <Box display="inline-flex">
                 <Menu withinPortal position="bottom-end" shadow="md">
@@ -395,7 +397,7 @@ const RecordingCard = ({
               </Box>
             </Tooltip>
           )}
-          {isInProgress && (
+          {canManage && isInProgress && (
             <Tooltip label="Stop recording (keep partial content)">
               <ActionIcon
                 variant="transparent"
@@ -407,24 +409,26 @@ const RecordingCard = ({
               </ActionIcon>
             </Tooltip>
           )}
-          <Tooltip
-            label={
-              isInProgress
-                ? 'Cancel & delete'
-                : isUpcoming
-                  ? 'Cancel'
-                  : 'Delete'
-            }
-          >
-            <ActionIcon
-              variant="transparent"
-              color="red.9"
-              onMouseDown={(e) => e.stopPropagation()}
-              onClick={handleDeleteClick}
+          {canManage && (
+            <Tooltip
+              label={
+                isInProgress
+                  ? 'Cancel & delete'
+                  : isUpcoming
+                    ? 'Cancel'
+                    : 'Delete'
+              }
             >
-              <SquareX size="20" />
-            </ActionIcon>
-          </Tooltip>
+              <ActionIcon
+                variant="transparent"
+                color="red.9"
+                onMouseDown={(e) => e.stopPropagation()}
+                onClick={handleDeleteClick}
+              >
+                <SquareX size="20" />
+              </ActionIcon>
+            </Tooltip>
+          )}
         </Group>
       </Flex>
 
@@ -500,7 +504,8 @@ const RecordingCard = ({
             {isInProgress && <WatchLive />}
 
             {!isUpcoming && <WatchRecording />}
-            {!isUpcoming &&
+            {canManage &&
+              !isUpcoming &&
               (customProps?.status === 'completed' ||
                 customProps?.status === 'stopped' ||
                 customProps?.status === 'interrupted') &&

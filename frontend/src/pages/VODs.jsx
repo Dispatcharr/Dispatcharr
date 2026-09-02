@@ -1,4 +1,5 @@
-import React, { Suspense, useEffect, useState } from 'react';
+import React, { Suspense, useEffect, useMemo, useState } from 'react';
+import { Navigate } from 'react-router-dom';
 import {
   Box,
   Flex,
@@ -16,12 +17,18 @@ import {
 } from '@mantine/core';
 import { Search } from 'lucide-react';
 import { useDisclosure } from '@mantine/hooks';
+import useAuthStore from '../store/auth';
 import useVODStore from '../store/useVODStore';
 import ErrorBoundary from '../components/ErrorBoundary.jsx';
 import {
   filterCategoriesToEnabled,
   getCategoryOptions,
 } from '../utils/pages/VODsUtils.js';
+import {
+  canViewVod,
+  isVodMoviesEnabled,
+  isVodSeriesEnabled,
+} from '../utils/vodAccess';
 const SeriesModal = React.lazy(() => import('../components/SeriesModal'));
 const VODModal = React.lazy(() => import('../components/VODModal'));
 const VODCard = React.lazy(() => import('../components/cards/VODCard'));
@@ -51,6 +58,11 @@ const useCardColumns = () => {
 };
 
 const VODsPage = () => {
+  const authUser = useAuthStore((s) => s.user);
+  const moviesEnabled = isVodMoviesEnabled(authUser);
+  const seriesEnabled = isVodSeriesEnabled(authUser);
+  const vodAllowed = canViewVod(authUser);
+
   const currentPageContent = useVODStore((s) => s.currentPageContent); // Direct subscription
   const allCategories = useVODStore((s) => s.categories);
   const filters = useVODStore((s) => s.filters);
@@ -60,22 +72,25 @@ const VODsPage = () => {
   const setFilters = useVODStore((s) => s.setFilters);
   const setPage = useVODStore((s) => s.setPage);
   const setPageSize = useVODStore((s) => s.setPageSize);
+  const fetchContent = useVODStore((s) => s.fetchContent);
+  const fetchCategories = useVODStore((s) => s.fetchCategories);
 
-  // Persist page size in localStorage
+  // Hydrate page size from localStorage before the first content fetch so a
+  // stored size that differs from the store default does not cause a refetch.
+  const [pageSizeReady, setPageSizeReady] = useState(false);
   useEffect(() => {
     const stored = localStorage.getItem('vodsPageSize');
     if (stored && !isNaN(Number(stored)) && Number(stored) !== pageSize) {
       setPageSize(Number(stored));
     }
-    // eslint-disable-next-line
+    setPageSizeReady(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- mount-only hydrate
   }, []);
 
   const handlePageSizeChange = (value) => {
     setPageSize(Number(value));
     localStorage.setItem('vodsPageSize', value);
   };
-  const fetchContent = useVODStore((s) => s.fetchContent);
-  const fetchCategories = useVODStore((s) => s.fetchCategories);
 
   // const showVideo = useVideoStore((s) => s.showVideo); - removed as unused
   const [selectedSeries, setSelectedSeries] = useState(null);
@@ -90,6 +105,35 @@ const VODsPage = () => {
   const columns = useCardColumns();
   const [categories, setCategories] = useState({});
 
+  const typeOptions = useMemo(() => {
+    const options = [];
+    if (moviesEnabled && seriesEnabled) {
+      options.push({ label: 'All', value: 'all' });
+    }
+    if (moviesEnabled) {
+      options.push({ label: 'Movies', value: 'movies' });
+    }
+    if (seriesEnabled) {
+      options.push({ label: 'Series', value: 'series' });
+    }
+    return options;
+  }, [moviesEnabled, seriesEnabled]);
+
+  // When only one content type is allowed, lock the store filter to it.
+  // Fetch waits until the lock matches so we do not load the unified
+  // "all" catalog first and then immediately refetch.
+  const requiredType =
+    moviesEnabled && !seriesEnabled
+      ? 'movies'
+      : seriesEnabled && !moviesEnabled
+        ? 'series'
+        : null;
+
+  useEffect(() => {
+    if (!vodAllowed || !requiredType || filters.type === requiredType) return;
+    setFilters({ type: requiredType, category: '' });
+  }, [vodAllowed, requiredType, filters.type, setFilters]);
+
   // Helper function to get display data based on current filters
   const getDisplayData = () => {
     return (currentPageContent || []).map((item) => ({
@@ -103,12 +147,27 @@ const VODsPage = () => {
   }, [allCategories]);
 
   useEffect(() => {
+    if (!vodAllowed) return;
     fetchCategories();
-  }, [fetchCategories]);
+  }, [vodAllowed, fetchCategories]);
 
   useEffect(() => {
+    if (!vodAllowed || !pageSizeReady) return;
+    if (requiredType && filters.type !== requiredType) return;
     fetchContent().finally(() => setInitialLoad(false));
-  }, [filters, currentPage, pageSize, fetchContent]);
+  }, [
+    vodAllowed,
+    pageSizeReady,
+    requiredType,
+    filters,
+    currentPage,
+    pageSize,
+    fetchContent,
+  ]);
+
+  if (!vodAllowed) {
+    return <Navigate to="/channels" replace />;
+  }
 
   const handleVODCardClick = (vod) => {
     setSelectedVOD(vod);
@@ -134,6 +193,7 @@ const VODsPage = () => {
   const categoryOptions = getCategoryOptions(categories, filters);
 
   const totalPages = Math.ceil(totalCount / pageSize);
+  const showTypeControl = typeOptions.length > 1;
 
   return (
     <Box p="md" id="vods-container">
@@ -144,15 +204,13 @@ const VODsPage = () => {
 
         {/* Filters */}
         <Group spacing="md" align="end">
-          <SegmentedControl
-            value={filters.type}
-            onChange={handleTypeChange}
-            data={[
-              { label: 'All', value: 'all' },
-              { label: 'Movies', value: 'movies' },
-              { label: 'Series', value: 'series' },
-            ]}
-          />
+          {showTypeControl && (
+            <SegmentedControl
+              value={filters.type}
+              onChange={handleTypeChange}
+              data={typeOptions}
+            />
+          )}
 
           <TextInput
             placeholder="Search VODs..."

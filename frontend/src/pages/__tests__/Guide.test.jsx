@@ -8,11 +8,13 @@ import useLogosStore from '../../store/logos';
 import useEPGsStore from '../../store/epgs';
 import useSettingsStore from '../../store/settings';
 import useVideoStore from '../../store/useVideoStore';
+import useAuthStore from '../../store/auth';
 import useBrowserStorage from '../../hooks/useBrowserStorage';
 import * as guideUtils from '../../utils/guideUtils';
 import * as recordingCardUtils from '../../utils/cards/RecordingCardUtils.js';
 import * as dateTimeUtils from '../../utils/dateTimeUtils.js';
 import userEvent from '@testing-library/user-event';
+import { USER_LEVELS } from '../../constants';
 
 // Mock dependencies
 vi.mock('../../store/channels', () => ({
@@ -28,6 +30,9 @@ vi.mock('../../store/settings', () => ({
   default: vi.fn(),
 }));
 vi.mock('../../store/useVideoStore', () => ({
+  default: vi.fn(),
+}));
+vi.mock('../../store/auth', () => ({
   default: vi.fn(),
 }));
 vi.mock('../../hooks/useBrowserStorage', () => ({
@@ -379,6 +384,16 @@ describe('Guide', () => {
 
     useSettingsStore.mockReturnValue('production');
     useVideoStore.mockReturnValue(mockShowVideo);
+    useAuthStore.mockImplementation((selector) => {
+      const state = {
+        user: {
+          id: 1,
+          user_level: USER_LEVELS.ADMIN,
+          custom_properties: {},
+        },
+      };
+      return selector ? selector(state) : state;
+    });
     useBrowserStorage.mockReturnValue(['12h', vi.fn()]);
 
     dateTimeUtils.getNow.mockReturnValue(now);

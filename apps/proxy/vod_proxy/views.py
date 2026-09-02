@@ -13,10 +13,12 @@ from django.http import JsonResponse, Http404, HttpResponse, HttpResponseRedirec
 from django.shortcuts import get_object_or_404
 from django.views.decorators.csrf import csrf_exempt
 from apps.vod.models import Movie, Series, Episode, M3UMovieRelation, M3UEpisodeRelation
+from apps.vod.utils import is_vod_movies_enabled, is_vod_series_enabled
 from apps.m3u.models import M3UAccountProfile
 from apps.proxy.vod_proxy.multi_worker_connection_manager import MultiWorkerVODConnectionManager, infer_content_type_from_url, get_vod_client_stop_key
 from .utils import get_client_info
 from rest_framework.decorators import api_view, authentication_classes, permission_classes
+from rest_framework.response import Response
 from rest_framework.permissions import AllowAny
 from apps.accounts.models import User
 from apps.accounts.permissions import IsAdmin
@@ -149,6 +151,7 @@ def _select_vod_stream(
     preferred_stream_id=None,
     profile_id=None,
     session_id=None,
+    allowed_m3u_profiles=None,
 ):
     """
     Resolve content to a provider URL and M3U profile.
@@ -167,7 +170,16 @@ def _select_vod_stream(
         return None
 
     ordered = _order_candidates(candidates, relation)
-    for cand in ordered:
+    if allowed_m3u_profiles is not None:
+        candidate_profiles = [
+            (cand, selected_profile)
+            for cand in ordered
+            for selected_profile in allowed_m3u_profiles.get(cand.m3u_account_id, [])
+        ]
+    else:
+        candidate_profiles = [(cand, None) for cand in ordered]
+
+    for cand, selected_profile in candidate_profiles:
         cand_account = cand.m3u_account
         cand_url = _get_stream_url_from_relation(cand)
         if not cand_url:
@@ -177,10 +189,16 @@ def _select_vod_stream(
             )
             continue
 
+        restrict_to_profile_ids = (
+            {p.id for p in allowed_m3u_profiles.get(cand.m3u_account_id, [])}
+            if allowed_m3u_profiles is not None
+            else None
+        )
         profile_result = _get_m3u_profile(
             cand_account,
-            profile_id,
+            selected_profile.id if selected_profile else profile_id,
             session_id,
+            restrict_to_profile_ids=restrict_to_profile_ids,
         )
         if not profile_result or not profile_result[0]:
             logger.warning(
@@ -470,13 +488,17 @@ def _get_stream_url_from_relation(relation):
         logger.error(f"[VOD-URL] Error getting stream URL from relation: {e}", exc_info=True)
         return None
 
-def _get_m3u_profile(m3u_account, profile_id, session_id=None):
+def _get_m3u_profile(m3u_account, profile_id, session_id=None, restrict_to_profile_ids=None):
     """Get appropriate M3U profile for streaming using Redis-based viewer counts
 
     Args:
         m3u_account: M3UAccount instance
         profile_id: Optional specific profile ID requested
         session_id: Optional session ID to check for existing connections
+        restrict_to_profile_ids: When set, only these profile IDs on this account
+            may be selected (session reuse and capacity fallback included). Used
+            for the Redirect-mode allowlist so a full/unavailable allowed profile
+            never falls back to a profile the caller isn't permitted to use.
 
     Returns:
         tuple: (M3UAccountProfile, current_connections) or None if no profile found
@@ -490,13 +512,29 @@ def _get_m3u_profile(m3u_account, profile_id, session_id=None):
         redis_client = RedisClient.get_client()
 
         if not redis_client:
-            logger.warning("Redis not available, falling back to default profile")
-            default_profile = M3UAccountProfile.objects.filter(
-                m3u_account=m3u_account,
-                is_active=True,
-                is_default=True
+            logger.warning("Redis not available, selecting the requested or default profile")
+            profile_filters = {
+                "m3u_account": m3u_account,
+                "is_active": True,
+            }
+            if restrict_to_profile_ids is not None:
+                profile_filters["id__in"] = restrict_to_profile_ids
+            if profile_id:
+                profile_filters["id"] = profile_id
+            else:
+                profile_filters["is_default"] = True
+            selected_profile = M3UAccountProfile.objects.filter(
+                **profile_filters
             ).select_related('m3u_account__user_agent').first()
-            return (default_profile, 0) if default_profile else None
+            if not selected_profile and restrict_to_profile_ids is not None:
+                # Requested/default profile isn't in the allowlist; fall back to
+                # any allowed profile on this account rather than failing outright.
+                profile_filters.pop("id", None)
+                profile_filters.pop("is_default", None)
+                selected_profile = M3UAccountProfile.objects.filter(
+                    **profile_filters
+                ).select_related('m3u_account__user_agent').first()
+            return (selected_profile, 0) if selected_profile else None
 
         # Check if this session already has an active connection
         if session_id:
@@ -507,6 +545,11 @@ def _get_m3u_profile(m3u_account, profile_id, session_id=None):
                 existing_profile_id = connection_data.get('m3u_profile_id')
                 if existing_profile_id:
                     try:
+                        if (
+                            restrict_to_profile_ids is not None
+                            and int(existing_profile_id) not in restrict_to_profile_ids
+                        ):
+                            raise M3UAccountProfile.DoesNotExist
                         existing_profile = M3UAccountProfile.objects.select_related(
                             'm3u_account__user_agent'
                         ).get(
@@ -521,7 +564,7 @@ def _get_m3u_profile(m3u_account, profile_id, session_id=None):
                         logger.info(f"[PROFILE-SELECTION] Session {session_id} reusing existing profile {existing_profile.id}: {current_connections}/{existing_profile.max_streams} connections")
                         return (existing_profile, current_connections)
                     except (M3UAccountProfile.DoesNotExist, ValueError):
-                        logger.warning(f"[PROFILE-SELECTION] Session {session_id} has invalid profile ID {existing_profile_id}, selecting new profile")
+                        logger.warning(f"[PROFILE-SELECTION] Session {session_id} has invalid or disallowed profile ID {existing_profile_id}, selecting new profile")
                     except Exception as e:
                         logger.warning(f"[PROFILE-SELECTION] Error checking existing profile for session {session_id}: {e}")
                 else:
@@ -530,7 +573,9 @@ def _get_m3u_profile(m3u_account, profile_id, session_id=None):
                     )
 
         # If specific profile requested, try to use it
-        if profile_id:
+        if profile_id and (
+            restrict_to_profile_ids is None or profile_id in restrict_to_profile_ids
+        ):
             try:
                 profile = M3UAccountProfile.objects.select_related(
                     'm3u_account__user_agent'
@@ -553,14 +598,24 @@ def _get_m3u_profile(m3u_account, profile_id, session_id=None):
             m3u_account=m3u_account,
             is_active=True
         ).select_related('m3u_account__user_agent')
+        if restrict_to_profile_ids is not None:
+            m3u_profiles = m3u_profiles.filter(id__in=restrict_to_profile_ids)
 
         default_profile = m3u_profiles.filter(is_default=True).first()
         if not default_profile:
-            logger.error(f"[PROFILE-SELECTION] No default profile found for M3U account {m3u_account.id}")
-            return None
-
-        # Check profiles in order: default first, then others
-        profiles = [default_profile] + list(m3u_profiles.filter(is_default=False))
+            if restrict_to_profile_ids is not None:
+                # No allowed profile is flagged default; fall through to
+                # capacity-order the allowed set instead of failing outright.
+                profiles = list(m3u_profiles)
+                if not profiles:
+                    logger.error(f"[PROFILE-SELECTION] No allowed profile found for M3U account {m3u_account.id}")
+                    return None
+            else:
+                logger.error(f"[PROFILE-SELECTION] No default profile found for M3U account {m3u_account.id}")
+                return None
+        else:
+            # Check profiles in order: default first, then others
+            profiles = [default_profile] + list(m3u_profiles.filter(is_default=False))
 
         for profile in profiles:
             current_connections = get_profile_connection_count(profile, redis_client)
@@ -607,6 +662,22 @@ def _transform_url(original_url, m3u_profile):
         logger.error(f"Error transforming URL: {e}")
         return original_url
 
+def _user_from_vod_request(request, user=None):
+    """Prefer an explicit user, then an authenticated request.user, else None."""
+    if user is None and hasattr(request, "user") and request.user.is_authenticated:
+        return request.user
+    return user
+
+
+def _vod_playback_allowed(content_type, user):
+    """True when *user* is allowed to play this proxy content_type."""
+    if content_type == "movie":
+        return is_vod_movies_enabled(user=user)
+    if content_type in ("series", "episode"):
+        return is_vod_series_enabled(user=user)
+    return True
+
+
 @api_view(["GET"])
 @authentication_classes([JWTAuthentication, ApiKeyAuthentication, QueryParamJWTAuthentication])
 @permission_classes([AllowAny])
@@ -622,8 +693,9 @@ def stream_vod(request, content_type, content_id, session_id=None, profile_id=No
     """
     if not network_access_allowed(request, "STREAMS"):
         return JsonResponse({"error": "Forbidden"}, status=403)
-    if user is None and hasattr(request, "user") and request.user.is_authenticated:
-        user = request.user
+    user = _user_from_vod_request(request, user)
+    if not _vod_playback_allowed(content_type, user):
+        return JsonResponse({"error": "Forbidden"}, status=403)
     logger.info(f"[VOD-REQUEST] Starting VOD stream request: {content_type}/{content_id}, session: {session_id}, profile: {profile_id}")
     logger.info(f"[VOD-REQUEST] Full request path: {request.get_full_path()}")
     logger.info(f"[VOD-REQUEST] Request method: {request.method}")
@@ -736,12 +808,15 @@ def stream_vod(request, content_type, content_id, session_id=None, profile_id=No
 
                 # 301 to provider (no session mint, no slot hold, no probe).
                 # Capacity still gates provider selection.
+                from apps.m3u.utils import get_allowed_m3u_profiles
+
                 selected = _select_vod_stream(
                     content_type,
                     content_id,
                     preferred_m3u_account_id,
                     preferred_stream_id,
                     profile_id,
+                    allowed_m3u_profiles=get_allowed_m3u_profiles(user),
                 )
                 if not selected:
                     logger.error(
@@ -855,6 +930,9 @@ def head_vod(request, content_type, content_id, session_id=None, profile_id=None
     """
     if not network_access_allowed(request, "STREAMS"):
         return JsonResponse({"error": "Forbidden"}, status=403)
+    user = _user_from_vod_request(request)
+    if not _vod_playback_allowed(content_type, user):
+        return JsonResponse({"error": "Forbidden"}, status=403)
 
     logger.info(f"[VOD-HEAD] HEAD request: {content_type}/{content_id}, session: {session_id}, profile: {profile_id}")
 
@@ -885,12 +963,15 @@ def head_vod(request, content_type, content_id, session_id=None, profile_id=None
                     client_user_agent,
                 )
                 if not matched_session_id:
+                    from apps.m3u.utils import get_allowed_m3u_profiles
+
                     selected = _select_vod_stream(
                         content_type,
                         content_id,
                         preferred_m3u_account_id,
                         preferred_stream_id,
                         profile_id,
+                        allowed_m3u_profiles=get_allowed_m3u_profiles(user),
                     )
                     if not selected:
                         logger.error(
@@ -1406,7 +1487,10 @@ def stream_xc_movie(request, username, password, stream_id, extension):
     if custom_properties["xc_password"] != password:
         return Response({"error": "Invalid credentials"}, status=401)
 
-    # All authenticated users get access to VOD from all active M3U accounts
+    if not is_vod_movies_enabled(user=user):
+        return JsonResponse({"error": "Forbidden"}, status=403)
+
+    # Users with movie access get it from all active M3U accounts
     filters = {"movie_id": stream_id, "m3u_account__is_active": True}
 
     try:
@@ -1443,7 +1527,10 @@ def stream_xc_episode(request, username, password, stream_id, extension):
     if custom_properties["xc_password"] != password:
         return Response({"error": "Invalid credentials"}, status=401)
 
-    # All authenticated users get access to series/episodes from all active M3U accounts
+    if not is_vod_series_enabled(user=user):
+        return JsonResponse({"error": "Forbidden"}, status=403)
+
+    # Users with series access get episodes from all active M3U accounts
     filters = {"episode_id": stream_id, "m3u_account__is_active": True}
 
     episode_relation = M3UEpisodeRelation.objects.select_related('episode').filter(**filters).order_by('-m3u_account__priority', 'id').first()

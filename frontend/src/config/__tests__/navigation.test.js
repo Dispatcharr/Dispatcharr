@@ -151,15 +151,65 @@ describe('navigation config', () => {
 
       const resultIds = result.map((item) => item.id);
 
-      // Should only include non-admin items
+      // Should only include non-admin items (vods/dvr need access flags)
       expect(resultIds).toContain('channels');
       expect(resultIds).toContain('guide');
       expect(resultIds).toContain('settings');
 
-      // Should not include admin-only items
+      // Should not include admin-only items when access flags are off
       expect(resultIds).not.toContain('vods');
       expect(resultIds).not.toContain('sources');
       expect(resultIds).not.toContain('dvr');
+    });
+
+    it('includes dvr for non-admin users when canViewDvr is true', () => {
+      const result = getOrderedNavItems(null, false, [], { canViewDvr: true });
+      const resultIds = result.map((item) => item.id);
+
+      expect(resultIds).toContain('dvr');
+      expect(resultIds).toContain('channels');
+      expect(resultIds).toContain('guide');
+      expect(resultIds).toContain('settings');
+      expect(resultIds.indexOf('dvr')).toBeGreaterThan(
+        resultIds.indexOf('guide')
+      );
+    });
+
+    it('keeps dvr out for non-admin users when canViewDvr is false', () => {
+      const result = getOrderedNavItems(null, false, [], { canViewDvr: false });
+      expect(result.map((item) => item.id)).not.toContain('dvr');
+    });
+
+    it('includes vods for non-admin users when canViewVod is true', () => {
+      const result = getOrderedNavItems(null, false, [], { canViewVod: true });
+      const resultIds = result.map((item) => item.id);
+
+      expect(resultIds).toContain('vods');
+      expect(resultIds.indexOf('vods')).toBeGreaterThan(
+        resultIds.indexOf('channels')
+      );
+      expect(resultIds.indexOf('vods')).toBeLessThan(
+        resultIds.indexOf('guide')
+      );
+    });
+
+    it('keeps vods out for non-admin users when canViewVod is false', () => {
+      const result = getOrderedNavItems(null, false, [], { canViewVod: false });
+      expect(result.map((item) => item.id)).not.toContain('vods');
+    });
+
+    it('includes both vods and dvr when both access flags are true', () => {
+      const result = getOrderedNavItems(null, false, [], {
+        canViewDvr: true,
+        canViewVod: true,
+      });
+      expect(result.map((item) => item.id)).toEqual([
+        'channels',
+        'vods',
+        'guide',
+        'dvr',
+        'settings',
+      ]);
     });
 
     it('filters out unknown items from saved order', () => {

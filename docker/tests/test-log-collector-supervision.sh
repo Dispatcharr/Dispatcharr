@@ -1,0 +1,231 @@
+#!/bin/bash
+#
+# Unit tests for docker/init/05-log-collector.sh: the boot archive shift and the
+# collector supervision loop. The collector invocation is stubbed, so no Docker
+# and no image build.
+#
+# Usage:
+#   bash docker/tests/test-log-collector-supervision.sh
+
+set -uo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+INIT_SCRIPT="$SCRIPT_DIR/../init/05-log-collector.sh"
+PASSED=0
+FAILED=0
+
+# Keep the restart backoff out of the runtime.
+export LOG_COLLECTOR_RESTART_DELAY=0
+
+check() {
+    local label="$1" expected="$2" actual="$3"
+    if [ "$expected" = "$actual" ]; then
+        echo "  PASS  $label"
+        PASSED=$((PASSED + 1))
+    else
+        echo "  FAIL  $label"
+        echo "        expected: $expected"
+        echo "        actual:   $actual"
+        FAILED=$((FAILED + 1))
+    fi
+}
+
+contains() {
+    local label="$1" needle="$2" haystack="$3"
+    case "$haystack" in
+        *"$needle"*) echo "  PASS  $label"; PASSED=$((PASSED + 1)) ;;
+        *) echo "  FAIL  $label"; echo "        wanted to find: $needle"
+           echo "        in: $haystack"; FAILED=$((FAILED + 1)) ;;
+    esac
+}
+
+absent() {
+    local label="$1" needle="$2" haystack="$3"
+    case "$haystack" in
+        *"$needle"*) echo "  FAIL  $label"; echo "        unexpectedly found: $needle"
+                     FAILED=$((FAILED + 1)) ;;
+        *) echo "  PASS  $label"; PASSED=$((PASSED + 1)) ;;
+    esac
+}
+
+###############################################################################
+echo "archive_previous_log"
+###############################################################################
+# shellcheck source=../init/05-log-collector.sh
+. "$INIT_SCRIPT"
+
+DIR="$(mktemp -d)"
+trap 'rm -rf "$DIR"' EXIT
+
+printf 'live\n' > "$DIR/dispatcharr.log"
+printf 'one\n' > "$DIR/dispatcharr.log.1"
+printf 'two\n' > "$DIR/dispatcharr.log.2"
+archive_previous_log "$DIR"
+
+check "live log becomes .1" "live" "$(cat "$DIR/dispatcharr.log.1")"
+check "old .1 shifts to .2" "one" "$(cat "$DIR/dispatcharr.log.2")"
+check "old .2 shifts to .3, nothing clobbered" "two" "$(cat "$DIR/dispatcharr.log.3")"
+check "a fresh live log is left in place" "0" "$(stat -c %s "$DIR/dispatcharr.log")"
+
+# With persistence off the collector never writes, so shifting on every boot
+# would walk real archives off the end of the retention.
+rm -f "$DIR"/dispatcharr.log*
+: > "$DIR/dispatcharr.log"
+printf 'keep me\n' > "$DIR/dispatcharr.log.1"
+archive_previous_log "$DIR"
+check "an empty live log does not shift the archives" "keep me" "$(cat "$DIR/dispatcharr.log.1")"
+
+NEW="$DIR/fresh/logs"
+archive_previous_log "$NEW"
+check "creates the log directory on first boot" "0" "$(stat -c %s "$NEW/dispatcharr.log")"
+
+###############################################################################
+echo "collector_log_name (modular roles)"
+###############################################################################
+
+check "no role gives the plain name" "dispatcharr.log" "$(collector_log_name)"
+check "a role suffixes the name" "dispatcharr.log-celery"     "$(DISPATCHARR_LOG_ROLE=celery collector_log_name)"
+# The role reaches a path, so anything but alphanumerics is dropped.
+check "a role with path characters is sanitized" "dispatcharr.log-evil"     "$(DISPATCHARR_LOG_ROLE='../ev/il' collector_log_name)"
+check "an overlong role is truncated" "dispatcharr.log-aaaaaaaaaaaaaaaa"     "$(DISPATCHARR_LOG_ROLE="$(printf 'a%.0s' $(seq 1 40))" collector_log_name)"
+
+# Two containers share /data in modular mode: archiving one must not touch the
+# other's live file or its archives.
+ROLES="$(mktemp -d)"
+trap 'rm -rf "$DIR" "$ROLES"' EXIT
+printf 'web live
+'    > "$ROLES/dispatcharr.log"
+printf 'web one
+'     > "$ROLES/dispatcharr.log.1"
+printf 'celery live
+' > "$ROLES/dispatcharr.log-celery"
+DISPATCHARR_LOG_ROLE=celery archive_previous_log "$ROLES"
+
+check "the role's live log is archived" "celery live" "$(cat "$ROLES/dispatcharr.log-celery.1")"
+check "the other container's live log is untouched" "web live" "$(cat "$ROLES/dispatcharr.log")"
+check "the other container's archive is untouched" "web one" "$(cat "$ROLES/dispatcharr.log.1")"
+check "the role gets a fresh live log" "0" "$(stat -c %s "$ROLES/dispatcharr.log-celery")"
+
+###############################################################################
+echo "supervise_log_collector"
+###############################################################################
+
+# A clean exit means the container is shutting down, not a fault.
+run_no_user() {
+    . "$INIT_SCRIPT"
+    su() { echo "su was called"; return 0; }
+    cd() { :; }  # /app exists in the image, not on a test host
+    start_log_collector "" /bin/echo /tmp 2>&1
+}
+OUT="$(run_no_user)"
+absent "an empty user does not go through su" "su was called" "$OUT"
+# As a module it would import dispatcharr/__init__.py, which imports celery,
+# into a process that exists to have neither celery nor django in it.
+contains "a rootless container runs it by path" "/app/dispatcharr/log_collector.py" "$OUT"
+absent "and never as a module" "-m dispatcharr" "$OUT"
+
+run_with_user() {
+    . "$INIT_SCRIPT"
+    su() { shift 2; echo "su-cmd: $*"; return 0; }
+    start_log_collector someuser /bin/echo /tmp 2>&1
+}
+OUT="$(run_with_user)"
+contains "the su path runs it by path too" "/app/dispatcharr/log_collector.py" "$OUT"
+absent "and never as a module either" "-m dispatcharr" "$OUT"
+
+run_clean_exit() {
+    . "$INIT_SCRIPT"
+    start_log_collector() { return 0; }
+    supervise_log_collector user python /tmp 2>&1
+    echo "supervisor returned"
+}
+OUT="$(run_clean_exit)"
+contains "a clean exit returns" "supervisor returned" "$OUT"
+absent "a clean exit does not restart" "restarting" "$OUT"
+
+run_two_failures() {
+    . "$INIT_SCRIPT"
+    ATTEMPT=0
+    start_log_collector() {
+        ATTEMPT=$((ATTEMPT + 1))
+        [ "$ATTEMPT" -gt 2 ]
+    }
+    supervise_log_collector user python /tmp 2>&1
+    echo "attempts=$ATTEMPT"
+}
+OUT="$(run_two_failures)"
+contains "restarts after a failure" "log collector exited abnormally; restarting" "$OUT"
+contains "recovers on the third attempt" "attempts=3" "$OUT"
+absent "does not degrade after two failures" "falling back to passthrough" "$OUT"
+
+# The timeout is an assertion: a supervisor that never degrades restarts
+# forever, so a timeout here is a failure, not a flake.
+OUT="$(timeout 5 bash "$SCRIPT_DIR/_supervisor_case.sh" "$INIT_SCRIPT" always-fails 2>&1)"
+DEGRADE_RC=$?
+check "degradation terminates rather than restarting forever" "0" "$DEGRADE_RC"
+contains "degrades after three rapid failures" "falling back to passthrough" "$OUT"
+contains "passthrough carries stdin to stdout" "a line the collector never saw" "$OUT"
+
+# Capped for the same reason: if the counter stops resetting this degrades,
+# and a degraded supervisor replaces itself with cat.
+OUT="$(timeout 5 bash "$SCRIPT_DIR/_supervisor_case.sh" "$INIT_SCRIPT" slow-failures 2>&1)"
+SLOW_RC=$?
+check "a long-lived collector is restarted, not degraded" "0" "$SLOW_RC"
+absent "long-lived failures never degrade" "falling back to passthrough" "$OUT"
+contains "keeps restarting a long-lived collector" "attempts=6" "$OUT"
+
+###############################################################################
+echo "stop_log_collector"
+###############################################################################
+
+DIR="$(mktemp -d)"
+OUTFILE="$(mktemp)"
+trap 'rm -rf "$DIR" "$OUTFILE"' EXIT
+mkdir -p "$DIR/config"
+
+bash "$SCRIPT_DIR/_stop_collector_case.sh" "$INIT_SCRIPT" "$DIR" >"$OUTFILE" 2>&1 &
+BPID=$!
+sleep 0.3
+kill -TERM "$BPID"
+if ! wait "$BPID"; then
+    echo "  FAIL  shutdown finishes without waiting for SIGKILL"
+    echo "        wait failed or timed out"
+    FAILED=$((FAILED + 1))
+else
+    OUT="$(cat "$OUTFILE")"
+    contains "shutdown finishes without waiting for SIGKILL" "cleanup-done" "$OUT"
+fi
+
+check "collector pid file path has no role" \
+    "$DIR/config/collector.pid" "$(collector_pid_file "$DIR")"
+check "collector pid file path with role" \
+    "$DIR/config/collector-celery.pid" "$(DISPATCHARR_LOG_ROLE=celery collector_pid_file "$DIR")"
+
+###############################################################################
+echo "wait_log_collector"
+###############################################################################
+
+WAIT_DIR="$(mktemp -d)"
+mkdir -p "$WAIT_DIR/config"
+(
+    sleep 0.3
+    exit 0
+) &
+echo $! > "$WAIT_DIR/config/collector.pid"
+t0=$SECONDS
+wait_log_collector "$WAIT_DIR"
+elapsed=$((SECONDS - t0))
+rm -rf "$WAIT_DIR"
+if [ "$elapsed" -lt 2 ]; then
+    echo "  PASS  wait_log_collector returns after the pid exits"
+    PASSED=$((PASSED + 1))
+else
+    echo "  FAIL  wait_log_collector returns after the pid exits"
+    echo "        took ${elapsed}s"
+    FAILED=$((FAILED + 1))
+fi
+
+###############################################################################
+echo
+echo "passed: $PASSED  failed: $FAILED"
+[ "$FAILED" -eq 0 ]

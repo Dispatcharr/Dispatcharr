@@ -414,3 +414,64 @@ class SelectVodStreamTests(SimpleTestCase):
         self.assertEqual(selected["final_stream_url"], "http://final/movie.mp4")
         self.assertNotIn("user_agent", selected)
         mock_profile.assert_called_once()
+
+    @patch(
+        "apps.proxy.vod_proxy.views._transform_url",
+        return_value="http://final/movie.mp4",
+    )
+    @patch("apps.proxy.vod_proxy.views._get_m3u_profile")
+    @patch(
+        "apps.proxy.vod_proxy.views._get_stream_url_from_relation",
+        return_value="http://upstream/movie.mp4",
+    )
+    @patch("apps.proxy.vod_proxy.views._get_content_and_relation")
+    def test_select_restricts_get_m3u_profile_to_allowed_ids(
+        self,
+        mock_content,
+        _stream_url,
+        mock_profile,
+        _transform,
+    ):
+        # Redirect-mode allowlist must reach _get_m3u_profile as
+        # restrict_to_profile_ids so its own capacity fallback can't
+        # silently pick a profile outside the allowlist.
+        relation = MagicMock()
+        relation.m3u_account.name = "Provider"
+        relation.m3u_account.priority = 10
+        relation.m3u_account_id = 42
+        movie = MagicMock()
+        mock_content.return_value = (movie, relation, [relation])
+        allowed_profile = MagicMock(id=7)
+        mock_profile.return_value = (MagicMock(), 0)
+
+        from apps.proxy.vod_proxy.views import _select_vod_stream
+
+        selected = _select_vod_stream(
+            "movie",
+            "uuid",
+            allowed_m3u_profiles={42: [allowed_profile]},
+        )
+
+        self.assertIsNotNone(selected)
+        mock_profile.assert_called_once_with(
+            relation.m3u_account, 7, None, restrict_to_profile_ids={7}
+        )
+
+    @patch("apps.proxy.vod_proxy.views._get_m3u_profile")
+    @patch("apps.proxy.vod_proxy.views._get_content_and_relation")
+    def test_select_returns_none_when_no_profile_allowed_for_account(
+        self, mock_content, mock_profile
+    ):
+        relation = MagicMock()
+        relation.m3u_account_id = 42
+        movie = MagicMock()
+        mock_content.return_value = (movie, relation, [relation])
+
+        from apps.proxy.vod_proxy.views import _select_vod_stream
+
+        selected = _select_vod_stream(
+            "movie", "uuid", allowed_m3u_profiles={}
+        )
+
+        self.assertIsNone(selected)
+        mock_profile.assert_not_called()

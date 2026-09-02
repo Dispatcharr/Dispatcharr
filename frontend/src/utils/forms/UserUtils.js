@@ -1,5 +1,6 @@
 import { NETWORK_ACCESS_OPTIONS, USER_LEVELS } from '../../constants.js';
 import { IPV4_CIDR_REGEX, IPV6_CIDR_REGEX } from '../networkUtils.js';
+import { DVR_ACCESS } from '../dvrAccess.js';
 import API from '../../api.js';
 
 const isValidNetworkEntry = (entry) =>
@@ -49,8 +50,26 @@ export const userToFormValues = (user) => {
     output_profile: customProps.output_profile
       ? `${customProps.output_profile}`
       : '',
+    // null = unrestricted (key absent). Array (including []) = explicit allowlist.
+    allowed_m3u_profile_ids: Object.prototype.hasOwnProperty.call(
+      customProps,
+      'allowed_m3u_profile_ids'
+    )
+      ? (Array.isArray(customProps.allowed_m3u_profile_ids)
+          ? customProps.allowed_m3u_profile_ids
+          : []
+        ).map((id) => `${id}`)
+      : null,
     hide_adult_content: customProps.hide_adult_content || false,
     catchup_enabled: customProps.catchup_enabled !== false,
+    vod_movies_enabled: customProps.vod_movies_enabled !== false,
+    vod_series_enabled: customProps.vod_series_enabled !== false,
+    dvr_access:
+      customProps.dvr_access === DVR_ACCESS.NONE ||
+      customProps.dvr_access === DVR_ACCESS.VIEW ||
+      customProps.dvr_access === DVR_ACCESS.MANAGE
+        ? customProps.dvr_access
+        : DVR_ACCESS.VIEW,
     epg_days: customProps.epg_days || 0,
     epg_prev_days: customProps.epg_prev_days || 0,
     allowed_ips: [
@@ -78,11 +97,56 @@ export const formValuesToPayload = (values, existingUser) => {
     : null;
   delete payload.output_profile;
 
+  // Tri-state: null deletes the key (ALL). [] keeps the key (NONE).
+  // [ids] is an explicit allowlist. Omit the key on create so we never
+  // persist null; on update send null so the serializer merge removes it.
+  if (
+    !Object.prototype.hasOwnProperty.call(payload, 'allowed_m3u_profile_ids') ||
+    payload.allowed_m3u_profile_ids === null
+  ) {
+    if (existingUser) {
+      customProps.allowed_m3u_profile_ids = null;
+    } else {
+      delete customProps.allowed_m3u_profile_ids;
+    }
+  } else {
+    customProps.allowed_m3u_profile_ids = (
+      Array.isArray(payload.allowed_m3u_profile_ids)
+        ? payload.allowed_m3u_profile_ids
+        : []
+    ).map((id) => parseInt(id, 10));
+  }
+  delete payload.allowed_m3u_profile_ids;
+
   customProps.hide_adult_content = payload.hide_adult_content || false;
   delete payload.hide_adult_content;
 
   customProps.catchup_enabled = payload.catchup_enabled !== false;
   delete payload.catchup_enabled;
+
+  customProps.vod_movies_enabled = payload.vod_movies_enabled !== false;
+  delete payload.vod_movies_enabled;
+
+  customProps.vod_series_enabled = payload.vod_series_enabled !== false;
+  delete payload.vod_series_enabled;
+
+  // DVR is a single access level for standard users and admins. Streamers
+  // have no DVR surface (unlike catchup/VOD via XC), so force none.
+  // Coerce with == so string form values ('0') match numeric USER_LEVELS.
+  const isStreamer = payload.user_level == USER_LEVELS.STREAMER;
+  if (isStreamer) {
+    customProps.dvr_access = DVR_ACCESS.NONE;
+  } else {
+    const level = payload.dvr_access;
+    customProps.dvr_access =
+      level === DVR_ACCESS.NONE || level === DVR_ACCESS.MANAGE
+        ? level
+        : DVR_ACCESS.VIEW;
+  }
+  delete payload.dvr_access;
+  // Drop any leftover dual-flag keys from earlier drafts of this feature.
+  delete customProps.dvr_view_enabled;
+  delete customProps.dvr_manage_enabled;
 
   customProps.epg_days = payload.epg_days || 0;
   delete payload.epg_days;
@@ -121,9 +185,13 @@ export const getFormInitialValues = () => {
     xc_password: '',
     output_format: '',
     output_profile: '',
+    allowed_m3u_profile_ids: null,
     channel_profiles: [],
     hide_adult_content: false,
     catchup_enabled: true,
+    vod_movies_enabled: true,
+    vod_series_enabled: true,
+    dvr_access: DVR_ACCESS.VIEW,
     epg_days: 0,
     epg_prev_days: 0,
     allowed_ips: [],

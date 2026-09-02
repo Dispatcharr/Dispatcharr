@@ -5,7 +5,8 @@ channels that have no EPG data (standard dummy) or a dummy EPG source (custom
 regex dummy).
 """
 
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone as dt_timezone
+from unittest import mock
 
 from django.contrib.auth import get_user_model
 from django.db import connection
@@ -32,6 +33,9 @@ NHL_PROPS = {
     "program_duration": 180,
 }
 
+# Mid-day so evening fixture events are still ahead of the request clock.
+FIXED_NOW = datetime(2026, 1, 15, 12, 0, tzinfo=dt_timezone.utc)
+
 
 class EPGGridDummyProgramTests(TestCase):
     def setUp(self):
@@ -56,7 +60,8 @@ class EPGGridDummyProgramTests(TestCase):
         )
 
     def _get_grid(self):
-        response = self.client.get(GRID_URL)
+        with mock.patch.object(timezone, "now", return_value=FIXED_NOW):
+            response = self.client.get(GRID_URL)
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         return response.data["data"]
 
@@ -173,15 +178,14 @@ class EPGGridDummyProgramTests(TestCase):
             epg_data=epg_data,
         )
 
-        now = timezone.now()
         programs = self._for_channel(self._get_grid(), channel)
 
         self.assertTrue(programs)
         for program in programs:
             start = timezone.datetime.fromisoformat(program["start_time"])
             end = timezone.datetime.fromisoformat(program["end_time"])
-            self.assertLess(start, now + timedelta(hours=24))
-            self.assertGreater(end, now - timedelta(hours=1, minutes=5))
+            self.assertLess(start, FIXED_NOW + timedelta(hours=24))
+            self.assertGreater(end, FIXED_NOW - timedelta(hours=1, minutes=5))
 
     def test_stream_name_source_resolves_by_channelstream_order(self):
         """stream_index must follow channelstream order, not Stream's own ordering.
@@ -276,11 +280,10 @@ class EPGGridDummyProgramTests(TestCase):
             channel_group=self.group,
             epg_data=epg_data,
         )
-        now = timezone.now()
         ProgramData.objects.create(
             epg=epg_data,
-            start_time=now - timedelta(minutes=30),
-            end_time=now + timedelta(minutes=30),
+            start_time=FIXED_NOW - timedelta(minutes=30),
+            end_time=FIXED_NOW + timedelta(minutes=30),
             title="Live Show",
             description="Airing now",
             tvg_id="real.channel",
