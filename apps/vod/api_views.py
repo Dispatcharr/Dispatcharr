@@ -38,7 +38,7 @@ from .image_proxy import (
     vodlogo_cache_url,
 )
 from .tasks import refresh_series_episodes, refresh_movie_advanced_data
-from .utils import is_vod_movies_enabled, is_vod_series_enabled
+from .utils import is_vod_movies_enabled, is_vod_series_enabled, parse_category_filter_value
 from django.utils import timezone
 from datetime import timedelta
 
@@ -77,16 +77,16 @@ class MovieFilter(django_filters.FilterSet):
         if not value:
             return queryset
 
-        # Handle the format 'category_name|category_type'
-        if '|' in value:
-            category_name, category_type = value.rsplit('|', 1)
+        # A category name may itself contain '|', so only treat the trailing token as a
+        # category type when it is a real one; otherwise the whole value is the name (#1603).
+        valid_types = {choice[0] for choice in VODCategory.CATEGORY_TYPE_CHOICES}
+        category_name, category_type = parse_category_filter_value(value, valid_types)
+        if category_type is not None:
             return queryset.filter(
                 m3u_relations__category__name=category_name,
-                m3u_relations__category__category_type=category_type
+                m3u_relations__category__category_type=category_type,
             )
-        else:
-            # Fallback: treat as category name only
-            return queryset.filter(m3u_relations__category__name=value)
+        return queryset.filter(m3u_relations__category__name=category_name)
 
 
 class MovieViewSet(viewsets.ReadOnlyModelViewSet):
@@ -301,16 +301,16 @@ class SeriesFilter(django_filters.FilterSet):
         if not value:
             return queryset
 
-        # Handle the format 'category_name|category_type'
-        if '|' in value:
-            category_name, category_type = value.rsplit('|', 1)
+        # A category name may itself contain '|', so only treat the trailing token as a
+        # category type when it is a real one; otherwise the whole value is the name (#1603).
+        valid_types = {choice[0] for choice in VODCategory.CATEGORY_TYPE_CHOICES}
+        category_name, category_type = parse_category_filter_value(value, valid_types)
+        if category_type is not None:
             return queryset.filter(
                 m3u_relations__category__name=category_name,
-                m3u_relations__category__category_type=category_type
+                m3u_relations__category__category_type=category_type,
             )
-        else:
-            # Fallback: treat as category name only
-            return queryset.filter(m3u_relations__category__name=value)
+        return queryset.filter(m3u_relations__category__name=category_name)
 
 
 class EpisodeViewSet(viewsets.ReadOnlyModelViewSet):
@@ -804,31 +804,33 @@ class UnifiedContentViewSet(viewsets.ReadOnlyModelViewSet):
                     series_params.append(search_param)
 
             if category:
-                if '|' in category:
-                    cat_name, cat_type = category.rsplit('|', 1)
-                    if cat_type == 'movie':
-                        if movies_allowed:
-                            where_conditions[0] += " AND movies.id IN (SELECT movie_id FROM vod_m3umovierelation mmr JOIN vod_vodcategory c ON mmr.category_id = c.id WHERE c.name = %s)"
-                            movie_params.append(cat_name)
-                        else:
-                            where_conditions[0] = "1=0"
-                        where_conditions[1] = "1=0"  # Exclude series
-                        series_params = []  # no params needed for "1=0"
-                    elif cat_type == 'series':
-                        if series_allowed:
-                            where_conditions[1] += " AND series.id IN (SELECT series_id FROM vod_m3useriesrelation msr JOIN vod_vodcategory c ON msr.category_id = c.id WHERE c.name = %s)"
-                            series_params.append(cat_name)
-                        else:
-                            where_conditions[1] = "1=0"
-                        where_conditions[0] = "1=0"  # Exclude movies
-                        movie_params = []  # no params needed for "1=0"
+                # A category name may itself contain '|', so only treat the trailing token as a
+                # category type when it is a real one; otherwise the whole value is the name (#1603).
+                valid_types = {choice[0] for choice in VODCategory.CATEGORY_TYPE_CHOICES}
+                cat_name, cat_type = parse_category_filter_value(category, valid_types)
+                if cat_type == 'movie':
+                    if movies_allowed:
+                        where_conditions[0] += " AND movies.id IN (SELECT movie_id FROM vod_m3umovierelation mmr JOIN vod_vodcategory c ON mmr.category_id = c.id WHERE c.name = %s)"
+                        movie_params.append(cat_name)
+                    else:
+                        where_conditions[0] = "1=0"
+                    where_conditions[1] = "1=0"  # Exclude series
+                    series_params = []  # no params needed for "1=0"
+                elif cat_type == 'series':
+                    if series_allowed:
+                        where_conditions[1] += " AND series.id IN (SELECT series_id FROM vod_m3useriesrelation msr JOIN vod_vodcategory c ON msr.category_id = c.id WHERE c.name = %s)"
+                        series_params.append(cat_name)
+                    else:
+                        where_conditions[1] = "1=0"
+                    where_conditions[0] = "1=0"  # Exclude movies
+                    movie_params = []  # no params needed for "1=0"
                 else:
                     if movies_allowed:
                         where_conditions[0] += " AND movies.id IN (SELECT movie_id FROM vod_m3umovierelation mmr JOIN vod_vodcategory c ON mmr.category_id = c.id WHERE c.name = %s)"
-                        movie_params.append(category)
+                        movie_params.append(cat_name)
                     if series_allowed:
                         where_conditions[1] += " AND series.id IN (SELECT series_id FROM vod_m3useriesrelation msr JOIN vod_vodcategory c ON msr.category_id = c.id WHERE c.name = %s)"
-                        series_params.append(category)
+                        series_params.append(cat_name)
 
             params = movie_params + series_params
 
