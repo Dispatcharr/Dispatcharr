@@ -9,6 +9,35 @@ echo_with_timestamp() {
   echo "$(date '+%Y-%m-%d %H:%M:%S') - $1"
 }
 
+WORKER_COUNT_MIN=1
+WORKER_COUNT_MAX=20
+
+validate_worker_count() {
+  local name="$1"
+  local value="$2"
+
+  if ! [[ "$value" =~ ^[0-9]+$ ]]; then
+    echo "ERROR: ${name} must be a positive integer between ${WORKER_COUNT_MIN} and ${WORKER_COUNT_MAX} (got: '${value}')"
+    exit 1
+  fi
+  if [ "$value" -lt "$WORKER_COUNT_MIN" ] || [ "$value" -gt "$WORKER_COUNT_MAX" ]; then
+    echo "ERROR: ${name} must be between ${WORKER_COUNT_MIN} and ${WORKER_COUNT_MAX} (got: ${value})"
+    exit 1
+  fi
+}
+
+configure_celery_autoscale_workers() {
+  CELERY_MAX_WORKERS="${CELERY_MAX_WORKERS:-6}"
+  CELERY_MIN_WORKERS="${CELERY_MIN_WORKERS:-1}"
+  validate_worker_count "CELERY_MAX_WORKERS" "$CELERY_MAX_WORKERS"
+  validate_worker_count "CELERY_MIN_WORKERS" "$CELERY_MIN_WORKERS"
+  if [ "$CELERY_MIN_WORKERS" -gt "$CELERY_MAX_WORKERS" ]; then
+    echo "ERROR: CELERY_MIN_WORKERS (${CELERY_MIN_WORKERS}) cannot exceed CELERY_MAX_WORKERS (${CELERY_MAX_WORKERS})"
+    exit 1
+  fi
+  export CELERY_MAX_WORKERS CELERY_MIN_WORKERS
+}
+
 # The collector renders every source in this zone; entrypoint.sh derives it the
 # same way for the web container.
 export DISPATCHARR_TIME_ZONE
@@ -95,6 +124,9 @@ done
 echo 'Migrations complete, starting Celery...'
 celery -A dispatcharr beat -l info &
 
+# Celery prefork autoscale (override to tune memory vs throughput; range: 1-20)
+configure_celery_autoscale_workers
+
 # Default to nice level 5 (lower priority) - safe for unprivileged containers
 # Negative values require SYS_NICE capability
 NICE_LEVEL="${CELERY_NICE_LEVEL:-5}"
@@ -105,4 +137,4 @@ fi
 # DVR worker: thread pool for the long-running, I/O-bound run_recording task.
 nice -n "$NICE_LEVEL" celery -A dispatcharr worker -Q dvr -n dvr@%h --pool=threads --concurrency=20 -l info &
 # Default prefork worker: every queue except `dvr`.
-nice -n "$NICE_LEVEL" celery -A dispatcharr worker -Q celery -n default@%h --autoscale=6,1 -l info
+nice -n "$NICE_LEVEL" celery -A dispatcharr worker -Q celery -n default@%h --autoscale="$CELERY_MAX_WORKERS,$CELERY_MIN_WORKERS" -l info

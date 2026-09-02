@@ -74,6 +74,42 @@ echo_with_timestamp() {
     echo "$(date '+%Y-%m-%d %H:%M:%S') - $1"
 }
 
+WORKER_COUNT_MIN=1
+WORKER_COUNT_MAX=20
+
+validate_worker_count() {
+    local name="$1"
+    local value="$2"
+
+    if ! [[ "$value" =~ ^[0-9]+$ ]]; then
+        echo "ERROR: ${name} must be a positive integer between ${WORKER_COUNT_MIN} and ${WORKER_COUNT_MAX} (got: '${value}')"
+        exit 1
+    fi
+    if [ "$value" -lt "$WORKER_COUNT_MIN" ] || [ "$value" -gt "$WORKER_COUNT_MAX" ]; then
+        echo "ERROR: ${name} must be between ${WORKER_COUNT_MIN} and ${WORKER_COUNT_MAX} (got: ${value})"
+        exit 1
+    fi
+}
+
+configure_uwsgi_workers() {
+    local default="$1"
+    UWSGI_WORKERS="${UWSGI_WORKERS:-$default}"
+    validate_worker_count "UWSGI_WORKERS" "$UWSGI_WORKERS"
+    export UWSGI_WORKERS
+}
+
+configure_celery_autoscale_workers() {
+    CELERY_MAX_WORKERS="${CELERY_MAX_WORKERS:-6}"
+    CELERY_MIN_WORKERS="${CELERY_MIN_WORKERS:-1}"
+    validate_worker_count "CELERY_MAX_WORKERS" "$CELERY_MAX_WORKERS"
+    validate_worker_count "CELERY_MIN_WORKERS" "$CELERY_MIN_WORKERS"
+    if [ "$CELERY_MIN_WORKERS" -gt "$CELERY_MAX_WORKERS" ]; then
+        echo "ERROR: CELERY_MIN_WORKERS (${CELERY_MIN_WORKERS}) cannot exceed CELERY_MAX_WORKERS (${CELERY_MAX_WORKERS})"
+        exit 1
+    fi
+    export CELERY_MAX_WORKERS CELERY_MIN_WORKERS
+}
+
 # Set PostgreSQL environment variables
 export POSTGRES_DB=${POSTGRES_DB:-dispatcharr}
 export POSTGRES_USER=${POSTGRES_USER:-dispatch}
@@ -136,6 +172,14 @@ CELERY_NICE_ABSOLUTE=${CELERY_NICE_LEVEL:-5}
 # Celery is spawned by uWSGI, so we need to add the offset to reach the desired absolute value
 export CELERY_NICE_LEVEL=$((CELERY_NICE_ABSOLUTE - UWSGI_NICE_LEVEL))
 
+# Worker count configuration (override to tune memory vs throughput; range: 1-20)
+if [ "$DISPATCHARR_DEBUG" = "true" ]; then
+    configure_uwsgi_workers 1
+else
+    configure_uwsgi_workers 4
+fi
+configure_celery_autoscale_workers
+
 # Set LIBVA_DRIVER_NAME if user has specified it
 if [ -v LIBVA_DRIVER_NAME ]; then
     export LIBVA_DRIVER_NAME
@@ -195,7 +239,8 @@ variables=(
     DISPATCHARR_ENV DISPATCHARR_DEBUG DISPATCHARR_LOG_LEVEL DISPATCHARR_ENABLE_IP_LOOKUP
     REDIS_HOST REDIS_PORT REDIS_DB REDIS_PASSWORD REDIS_USER REDIS_IDLE_TIMEOUT REDIS_MAX_CONNECTIONS POSTGRES_DIR DISPATCHARR_PORT
     DISPATCHARR_VERSION DISPATCHARR_TIMESTAMP LIBVA_DRIVERS_PATH LIBVA_DRIVER_NAME LD_LIBRARY_PATH
-    CELERY_NICE_LEVEL UWSGI_NICE_LEVEL DJANGO_SECRET_KEY DISPATCHARR_TIME_ZONE DISPATCHARR_LOG_DIR
+    CELERY_NICE_LEVEL UWSGI_NICE_LEVEL CELERY_MAX_WORKERS CELERY_MIN_WORKERS UWSGI_WORKERS
+    DJANGO_SECRET_KEY DISPATCHARR_TIME_ZONE DISPATCHARR_LOG_DIR
 )
 
 # Optional variables, only propagate when set to avoid noisy warnings
