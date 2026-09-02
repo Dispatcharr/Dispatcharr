@@ -31,3 +31,19 @@ def is_vod_series_enabled(*, user=None):
     ``custom_properties.vod_series_enabled``.
     """
     return _is_vod_access_enabled(prop_key=_VOD_SERIES_ENABLED, user=user)
+
+
+def parse_category_filter_value(value, valid_types):
+    """Split a ``name|type`` category filter value into ``(name, type)``.
+
+    The trailing token is only treated as a category type when it is one of ``valid_types``.
+    Otherwise the whole value is the category name, so a category whose name itself contains
+    ``|`` (for example ``"|EN| 4K Movies"``) is not mis-split into a bogus name and type (#1603).
+
+    Returns a ``(name, type_or_None)`` tuple.
+    """
+    if "|" in value:
+        name, _, suffix = value.rpartition("|")
+        if suffix in valid_types:
+            return name, suffix
+    return value, None
