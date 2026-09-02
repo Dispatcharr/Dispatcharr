@@ -75,11 +75,20 @@ const request = async (url, options = {}) => {
     throw error;
   }
 
+  // 204 / empty bodies are success with no payload. Return null, not '',
+  // so callers that destructure the result don't silently get undefined fields.
+  const text = await response.text();
+  if (!text) {
+    return null;
+  }
   try {
-    const retval = await response.json();
-    return retval;
+    return JSON.parse(text);
   } catch (e) {
-    return '';
+    const error = new Error('Invalid JSON response');
+    error.status = response.status;
+    error.response = response;
+    error.body = text;
+    throw error;
   }
 };
 
@@ -335,17 +344,55 @@ export default class API {
     }
   }
 
+  /**
+   * ChannelPagination returns a bare array when neither page nor page_size is
+   * present. Table queries must always send both so the store receives
+   * { results, count } instead of an array that would wipe channels to undefined.
+   */
+  static ensureChannelsTableParams(params) {
+    const next = new URLSearchParams(params || undefined);
+    if (!next.get('page')) {
+      next.set('page', '1');
+    }
+    if (!next.get('page_size')) {
+      const pageSize =
+        useChannelsTableStore.getState().pagination?.pageSize || 50;
+      next.set('page_size', String(pageSize));
+    }
+    if (!next.get('include_streams')) {
+      next.set('include_streams', 'true');
+    }
+    return next;
+  }
+
+  /**
+   * Accept only a paginated channels payload for the table store. A bare array
+   * (legacy / unpaginated) must not be destructured as { results }.
+   */
+  static applyChannelsTableResponse(response, params) {
+    if (!response || !Array.isArray(response.results)) {
+      console.warn(
+        '[API] Ignoring channels response without a results array',
+        response
+      );
+      return false;
+    }
+    useChannelsTableStore.getState().queryChannels(response, params);
+    return true;
+  }
+
   static async queryChannels(params) {
     const requestVersion = ++API.channelsRequestVersion;
     try {
-      API.lastQueryParams = params;
+      const queryParams = API.ensureChannelsTableParams(params);
+      API.lastQueryParams = queryParams;
 
       const response = await request(
-        `${host}/api/channels/channels/?${params.toString()}`
+        `${host}/api/channels/channels/?${queryParams.toString()}`
       );
 
       if (requestVersion === API.channelsRequestVersion) {
-        useChannelsTableStore.getState().queryChannels(response, params);
+        API.applyChannelsTableResponse(response, queryParams);
       }
 
       return response;
@@ -367,15 +414,16 @@ export default class API {
           });
 
           // Update params to page 1 and retry
-          const newParams = new URLSearchParams(params);
+          const newParams = API.ensureChannelsTableParams(params);
           newParams.set('page', '1');
+          API.lastQueryParams = newParams;
 
           const response = await request(
             `${host}/api/channels/channels/?${newParams.toString()}`
           );
 
           if (requestVersion === API.channelsRequestVersion) {
-            useChannelsTableStore.getState().queryChannels(response, newParams);
+            API.applyChannelsTableResponse(response, newParams);
           }
           return response;
         }
@@ -426,17 +474,19 @@ export default class API {
   static async requeryChannels() {
     const requestVersion = ++API.channelsRequestVersion;
     try {
+      // lastQueryParams may still be empty if a WebSocket refresh races the
+      // first ChannelsTable fetch (common after restore/reload). Always send
+      // page + page_size so ChannelPagination does not return a bare array.
+      const queryParams = API.ensureChannelsTableParams(API.lastQueryParams);
+      API.lastQueryParams = queryParams;
+
       const [response, ids] = await Promise.all([
-        request(
-          `${host}/api/channels/channels/?${API.lastQueryParams.toString()}`
-        ),
-        API.getAllChannelIds(API.lastQueryParams),
+        request(`${host}/api/channels/channels/?${queryParams.toString()}`),
+        API.getAllChannelIds(queryParams),
       ]);
 
       if (requestVersion === API.channelsRequestVersion) {
-        useChannelsTableStore
-          .getState()
-          .queryChannels(response, API.lastQueryParams);
+        API.applyChannelsTableResponse(response, queryParams);
         useChannelsTableStore.getState().setAllQueryIds(ids);
       }
 
@@ -459,7 +509,7 @@ export default class API {
           });
 
           // Update params to page 1 and retry
-          const newParams = new URLSearchParams(API.lastQueryParams);
+          const newParams = API.ensureChannelsTableParams(API.lastQueryParams);
           newParams.set('page', '1');
           API.lastQueryParams = newParams;
 
@@ -469,7 +519,7 @@ export default class API {
           ]);
 
           if (requestVersion === API.channelsRequestVersion) {
-            useChannelsTableStore.getState().queryChannels(response, newParams);
+            API.applyChannelsTableResponse(response, newParams);
             useChannelsTableStore.getState().setAllQueryIds(ids);
           }
 
