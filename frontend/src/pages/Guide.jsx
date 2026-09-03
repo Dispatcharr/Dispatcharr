@@ -205,9 +205,13 @@ export default function TVChannelGuide({ startDate, endDate }) {
           if (firstGroup?.name) params.set('channel_group', firstGroup.name);
         }
 
-        // Profile filter
-        if (selectedProfileId && selectedProfileId !== 'all') {
-          params.set('channel_profile_id', String(selectedProfileId));
+        // Profile filter (shared with the programs request so scopes match).
+        const profileParam =
+          selectedProfileId && selectedProfileId !== 'all'
+            ? String(selectedProfileId)
+            : null;
+        if (profileParam) {
+          params.set('channel_profile_id', profileParam);
         }
 
         // Search filter
@@ -215,11 +219,14 @@ export default function TVChannelGuide({ startDate, endDate }) {
           params.set('search', searchQuery.trim());
         }
 
-        // Fetch channels and programs in parallel — programs don't depend
-        // on channels so there's no reason to wait for one before the other.
+        // Fetch channels and programs in parallel.
+        const programParams = new URLSearchParams();
+        if (profileParam) {
+          programParams.set('channel_profile_id', profileParam);
+        }
         const [channels, programData] = await Promise.all([
           API.getChannelsSummary(params),
-          fetchPrograms(),
+          fetchPrograms(programParams),
         ]);
 
         if (cancelled) return;

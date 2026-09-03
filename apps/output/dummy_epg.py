@@ -1055,6 +1055,40 @@ def _ordered_channel_streams(channel):
     return list(channel.streams.all().order_by('channelstream__order'))
 
 
+def _source_uses_stream_name(channel):
+    epg = getattr(channel, 'effective_epg_data_obj', None)
+    if epg is None:
+        epg = getattr(channel, 'epg_data', None)
+    source = epg.epg_source if epg else None
+    props = (source.custom_properties if source else None) or {}
+    return props.get('name_source') == 'stream'
+
+
+def prefetch_streams_for_stream_named_sources(channels):
+    """Batch-load ordered streams only for sources that read stream titles.
+
+    Callers (XMLTV export, grid, XC) should use this instead of prefetching
+    streams for every channel. Checking ``name_source`` in Python is cheap;
+    loading stream rows for thousands of real-EPG channels is not.
+    """
+    from django.db.models import Prefetch, prefetch_related_objects
+
+    from apps.channels.models import Stream
+
+    need_streams = [ch for ch in channels if _source_uses_stream_name(ch)]
+    if not need_streams:
+        return
+    prefetch_related_objects(
+        need_streams,
+        Prefetch(
+            'streams',
+            queryset=Stream.objects.only('id', 'name').order_by(
+                'channelstream__order'
+            ),
+        ),
+    )
+
+
 def resolve_pattern_match_name(channel, fallback_name, custom_props):
     """Name used for custom dummy EPG regex matching (channel or stream title).
 
@@ -1109,11 +1143,9 @@ def dummy_program_to_api_dict(channel, program, *, dummy_tvg_id, program_id_pref
     """Convert a generated dummy program dict to EPG grid API format."""
     prog_custom = program.get('custom_properties') or {}
     start = program['start_time']
-    display_name = getattr(channel, 'effective_name', channel.name)
     start_key = start.strftime('%Y%m%dT%H%M%S')
     return {
         "id": f"{program_id_prefix}-{channel.id}-{start_key}",
-        "epg": {"tvg_id": dummy_tvg_id, "name": display_name},
         "start_time": start.isoformat(),
         "end_time": program['end_time'].isoformat(),
         "title": program['title'],

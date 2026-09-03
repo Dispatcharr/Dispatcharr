@@ -17,7 +17,7 @@ import math
 from datetime import datetime, time, timedelta
 
 from django.core.serializers.json import DjangoJSONEncoder
-from django.db.models import Prefetch
+from django.db.models.fields.json import KeyTransform
 from django.http import StreamingHttpResponse
 from django.utils import timezone
 from django.utils.dateparse import parse_date, parse_datetime
@@ -29,12 +29,13 @@ from rest_framework.views import APIView
 
 from apps.accounts.permissions import Authenticated, permission_classes_by_method
 from apps.channels.managers import with_effective_values
-from apps.channels.models import Channel, Stream
+from apps.channels.models import Channel
 from apps.epg.models import ProgramData
 from apps.epg.serializers import EPGGridResponseSerializer
 from apps.output.dummy_epg import (
     dummy_program_to_api_dict,
     generate_dummy_programs,
+    prefetch_streams_for_stream_named_sources,
     resolve_channel_parse_name,
 )
 from core.utils import spawn_memory_trim
@@ -190,33 +191,89 @@ def _dummy_generation_span(now, lookback, cutoff):
     return truncated_now, _days_covering(cutoff - now)
 
 
-def custom_dummy_channels_queryset():
-    """Channels backed by a dummy EPG source, ready for on-demand generation.
-
-    Streams are prefetched in channelstream order because dummy sources configured
-    with name_source='stream' resolve their regex input by stream index; without the
-    explicit ordering the prefetch cache would fall back to Stream's own ordering
-    and pick the wrong title.
-    """
-    return with_effective_values(
-        Channel.objects.filter(epg_data__epg_source__source_type='dummy')
-        .select_related('epg_data__epg_source')
-        .prefetch_related(
-            Prefetch(
-                'streams',
-                queryset=Stream.objects.only('id', 'name').order_by(
-                    'channelstream__order'
-                ),
-            )
+def _parse_channel_profile_id(params):
+    """Return an optional channel profile id, or raise ``GridWindowError``."""
+    raw = params.get('channel_profile_id')
+    if raw is None or raw == '' or str(raw).lower() == 'all':
+        return None
+    try:
+        profile_id = int(raw)
+    except (TypeError, ValueError) as exc:
+        raise GridWindowError(
+            f"Invalid integer for channel_profile_id: {raw}."
+        ) from exc
+    if profile_id < 1:
+        raise GridWindowError(
+            f"Invalid channel_profile_id: {raw}."
         )
-        .distinct()
+    return profile_id
+
+
+def _visible_channels_queryset(user, profile_id=None):
+    """Channels the caller may see, matching the TV Guide summary filters.
+
+    Default (no profile) is the guide's ALL view: every non-hidden channel the
+    user is allowed to access by ``user_level`` (and adult-content preference).
+    When ``profile_id`` is set, membership must be enabled for that profile.
+    Effective EPG / name / tvg fields come from ``with_effective_values``.
+
+    Streams are not prefetched here: only custom dummy sources with
+    ``name_source='stream'`` need them, and that happens after partitioning.
+    """
+    qs = Channel.objects.filter(hidden_from_output=False)
+    if user is not None and getattr(user, 'user_level', 10) < 10:
+        qs = qs.filter(user_level__lte=user.user_level)
+        custom_props = getattr(user, 'custom_properties', None) or {}
+        if custom_props.get('hide_adult_content', False):
+            qs = qs.filter(is_adult=False)
+    if profile_id is not None:
+        qs = qs.filter(
+            channelprofilemembership__channel_profile_id=profile_id,
+            channelprofilemembership__enabled=True,
+        ).distinct()
+    return with_effective_values(
+        qs.select_related(
+            'epg_data__epg_source',
+            'override__epg_data__epg_source',
+        ),
+        select_related_fks=True,
     )
 
 
+def _partition_visible_channels(channels_qs):
+    """Split visible channels into real-EPG ids vs dummy-generation lists.
+
+    Uses each channel's effective EPG assignment (override wins). Shared EPG
+    rows stay shared: one Programme set can still fan out to many channels on
+    the client via ``tvg_id``.
+    """
+    epg_ids = set()
+    dummy_custom = []
+    no_epg = []
+    for channel in channels_qs:
+        epg = channel.effective_epg_data_obj
+        if epg is None:
+            no_epg.append(channel)
+            continue
+        source = epg.epg_source
+        if source is not None and source.source_type == 'dummy':
+            dummy_custom.append(channel)
+        else:
+            epg_ids.add(epg.id)
+    return epg_ids, dummy_custom, no_epg
+
+
+def _premiere_text_value(raw):
+    if raw is None:
+        return ''
+    if isinstance(raw, str):
+        return raw
+    return str(raw)
+
+
 def _program_value_to_dict(p):
-    """Convert one ``ProgramData.values()`` row into a grid response dict."""
-    cp = p['custom_properties'] or {}
-    premiere_text = cp.get('premiere_text', '')
+    """Convert one annotated grid ``.values()`` row into a response dict."""
+    premiere_text = _premiere_text_value(p.get('premiere_text'))
     return {
         'id': p['id'],
         'start_time': p['start_time'],
@@ -225,25 +282,39 @@ def _program_value_to_dict(p):
         'sub_title': p['sub_title'],
         'description': p['description'],
         'tvg_id': p['tvg_id'],
-        'season': cp.get('season'),
-        'episode': cp.get('episode'),
-        'is_new': bool(cp.get('new')),
-        'is_live': bool(cp.get('live')),
-        'is_premiere': bool(cp.get('premiere')),
+        'season': p.get('season'),
+        'episode': p.get('episode'),
+        'is_new': bool(p.get('flag_new')),
+        'is_live': bool(p.get('flag_live')),
+        'is_premiere': bool(p.get('flag_premiere')),
         'is_finale': bool(premiere_text and 'finale' in premiere_text.lower()),
     }
 
 
-def _iter_real_program_dicts(lookback, cutoff):
-    """Yield real programs overlapping the window without caching the queryset."""
+def _iter_real_program_dicts(lookback, cutoff, epg_ids):
+    """Yield stored programs for the caller's visible, non-dummy EPG rows."""
+    if not epg_ids:
+        return
+
     programs_qs = (
         ProgramData.objects.filter(
+            epg_id__in=epg_ids,
             end_time__gt=lookback,
             start_time__lt=cutoff,
         )
+        .annotate(
+            season=KeyTransform('season', 'custom_properties'),
+            episode=KeyTransform('episode', 'custom_properties'),
+            flag_new=KeyTransform('new', 'custom_properties'),
+            flag_live=KeyTransform('live', 'custom_properties'),
+            flag_premiere=KeyTransform('premiere', 'custom_properties'),
+            premiere_text=KeyTransform('premiere_text', 'custom_properties'),
+        )
         .values(
             'id', 'start_time', 'end_time', 'title', 'sub_title',
-            'description', 'tvg_id', 'custom_properties',
+            'description', 'tvg_id',
+            'season', 'episode',
+            'flag_new', 'flag_live', 'flag_premiere', 'premiere_text',
         )
         .iterator(chunk_size=_GRID_DB_ITERATOR_CHUNK_SIZE)
     )
@@ -251,79 +322,81 @@ def _iter_real_program_dicts(lookback, cutoff):
         yield _program_value_to_dict(row)
 
 
-def _iter_dummy_program_dicts(lookback, cutoff, dummy_start, dummy_days):
-    """Yield on-demand dummy programs for channels that need them."""
-    channels_without_epg = with_effective_values(
-        Channel.objects.filter(epg_data__isnull=True)
-    )
-    channels_with_custom_dummy = custom_dummy_channels_queryset()
+def _iter_dummy_for_channels(
+    channels, id_prefix, *, custom_source, lookback, cutoff, dummy_start, dummy_days
+):
+    """Yield on-demand dummy programs for a prepared channel list."""
+    if custom_source:
+        prefetch_streams_for_stream_named_sources(channels)
 
-    for queryset, id_prefix, custom_source in (
-        (channels_with_custom_dummy, 'dummy-custom', True),
-        (channels_without_epg, 'dummy-standard', False),
-    ):
-        for channel in queryset:
-            dummy_tvg_id = str(channel.uuid)
-            effective_name = channel.effective_name
-            if custom_source:
-                epg_source = (
-                    channel.epg_data.epg_source if channel.epg_data else None
-                )
-                channel_name = resolve_channel_parse_name(
-                    channel, epg_source, fallback_name=effective_name
-                )
-            else:
-                epg_source = None
-                channel_name = effective_name
-            try:
-                generated = generate_dummy_programs(
-                    channel_id=dummy_tvg_id,
-                    channel_name=channel_name,
-                    num_days=dummy_days,
-                    program_length_hours=4,
-                    epg_source=epg_source,
-                    export_lookback=lookback,
-                    export_cutoff=cutoff,
-                    generation_start=dummy_start,
-                )
-            except Exception:
-                logger.exception(
-                    "Error creating %s programs for channel %s (ID: %s)",
-                    id_prefix,
-                    channel.name,
-                    channel.id,
-                )
-                continue
+    for channel in channels:
+        dummy_tvg_id = str(channel.uuid)
+        effective_name = channel.effective_name
+        if custom_source:
+            epg = channel.effective_epg_data_obj
+            epg_source = epg.epg_source if epg else None
+            channel_name = resolve_channel_parse_name(
+                channel, epg_source, fallback_name=effective_name
+            )
+        else:
+            epg_source = None
+            channel_name = effective_name
+        try:
+            generated = generate_dummy_programs(
+                channel_id=dummy_tvg_id,
+                channel_name=channel_name,
+                num_days=dummy_days,
+                program_length_hours=4,
+                epg_source=epg_source,
+                export_lookback=lookback,
+                export_cutoff=cutoff,
+                generation_start=dummy_start,
+            )
+        except Exception:
+            logger.exception(
+                "Error creating %s programs for channel %s (ID: %s)",
+                id_prefix,
+                channel.name,
+                channel.id,
+            )
+            continue
 
-            for program in generated or []:
-                yield dummy_program_to_api_dict(
-                    channel,
-                    program,
-                    dummy_tvg_id=dummy_tvg_id,
-                    program_id_prefix=id_prefix,
-                )
+        for program in generated or []:
+            yield dummy_program_to_api_dict(
+                channel,
+                program,
+                dummy_tvg_id=dummy_tvg_id,
+                program_id_prefix=id_prefix,
+            )
 
 
 def _encode_program_batch(programs, *, first):
-    """JSON-encode *programs* as array elements, with a leading comma when needed."""
+    """JSON-encode *programs* as array elements for the streamed ``data`` list.
+
+    Encodes the whole batch in one ``json.dumps`` call (then strips the list
+    brackets) so clients still receive the same compact JSON document as
+    per-object encoding, without a dumps-per-row tax.
+    """
     if not programs:
         return b'', first
 
-    parts = []
-    for program in programs:
-        encoded = json.dumps(
-            program, cls=DjangoJSONEncoder, separators=(',', ':')
-        )
-        if first:
-            parts.append(encoded)
-            first = False
-        else:
-            parts.append(',')
-            parts.append(encoded)
-    return ''.join(parts).encode('utf-8'), first
+    encoded = json.dumps(programs, cls=DjangoJSONEncoder, separators=(',', ':'))
+    # encoded is "[...]" ; strip brackets to splice into the outer data array.
+    body = encoded[1:-1].encode('utf-8')
+    if first:
+        return body, False
+    return b',' + body, False
 
 
-def _iter_grid_json_chunks(lookback, cutoff, now):
+def _iter_grid_json_chunks(
+    lookback,
+    cutoff,
+    now,
+    *,
+    epg_ids,
+    dummy_custom_channels,
+    no_epg_channels,
+):
     """Yield UTF-8 chunks of ``{"data":[...]}`` without buffering every program."""
     yield b'{"data":['
 
@@ -334,7 +407,7 @@ def _iter_grid_json_chunks(lookback, cutoff, now):
     dummy_start, dummy_days = _dummy_generation_span(now, lookback, cutoff)
 
     try:
-        for program in _iter_real_program_dicts(lookback, cutoff):
+        for program in _iter_real_program_dicts(lookback, cutoff, epg_ids):
             batch.append(program)
             real_count += 1
             if len(batch) >= _GRID_JSON_YIELD_BATCH_SIZE:
@@ -343,8 +416,31 @@ def _iter_grid_json_chunks(lookback, cutoff, now):
                 if chunk:
                     yield chunk
 
-        for program in _iter_dummy_program_dicts(
-            lookback, cutoff, dummy_start, dummy_days
+        for program in _iter_dummy_for_channels(
+            dummy_custom_channels,
+            'dummy-custom',
+            custom_source=True,
+            lookback=lookback,
+            cutoff=cutoff,
+            dummy_start=dummy_start,
+            dummy_days=dummy_days,
+        ):
+            batch.append(program)
+            dummy_count += 1
+            if len(batch) >= _GRID_JSON_YIELD_BATCH_SIZE:
+                chunk, first = _encode_program_batch(batch, first=first)
+                batch.clear()
+                if chunk:
+                    yield chunk
+
+        for program in _iter_dummy_for_channels(
+            no_epg_channels,
+            'dummy-standard',
+            custom_source=False,
+            lookback=lookback,
+            cutoff=cutoff,
+            dummy_start=dummy_start,
+            dummy_days=dummy_days,
         ):
             batch.append(program)
             dummy_count += 1
@@ -387,11 +483,15 @@ class EPGGridAPIView(APIView):
 
     @extend_schema(
         description=(
-            "Retrieve programs overlapping a time window. With no query "
-            "parameters the window is the previous hour through the next "
-            "24 hours (recently ended, currently airing, and upcoming). "
+            "Retrieve programs overlapping a time window for channels the "
+            "caller can see. With no query parameters the window is the "
+            "previous hour through the next 24 hours (recently ended, "
+            "currently airing, and upcoming). "
             "Use ``days``/``prev_days`` for XMLTV-style relative offsets, "
-            "or ``start``/``end`` (ISO 8601) for an explicit range."
+            "or ``start``/``end`` (ISO 8601) for an explicit range. "
+            "Optional ``channel_profile_id`` limits output to that profile "
+            "(default: all channels the user may access). EPG assignments "
+            "honor channel overrides."
         ),
         parameters=[
             OpenApiParameter(
@@ -432,6 +532,15 @@ class EPGGridAPIView(APIView):
                     "Omitted with start present: defaults to start plus 24 hours."
                 ),
             ),
+            OpenApiParameter(
+                'channel_profile_id',
+                OpenApiTypes.INT,
+                description=(
+                    "Limit programmes to channels enabled in this profile. "
+                    "Omitted or ``all``: every non-hidden channel the caller "
+                    "may access (same default as the TV Guide)."
+                ),
+            ),
         ],
         responses={200: EPGGridResponseSerializer},
     )
@@ -439,19 +548,36 @@ class EPGGridAPIView(APIView):
         now = timezone.now()
         try:
             lookback, cutoff = _resolve_epg_grid_window(request, now=now)
+            profile_id = _parse_channel_profile_id(request.query_params)
         except GridWindowError as exc:
             return Response(
                 {"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST
             )
 
+        epg_ids, dummy_custom, no_epg = _partition_visible_channels(
+            _visible_channels_queryset(request.user, profile_id)
+        )
+
         logger.debug(
-            "EPGGridAPIView: Querying programs between %s and %s.",
+            "EPGGridAPIView: Querying programs between %s and %s "
+            "(profile=%s, epg_rows=%s, dummy_custom=%s, no_epg=%s).",
             lookback,
             cutoff,
+            profile_id if profile_id is not None else 'all',
+            len(epg_ids),
+            len(dummy_custom),
+            len(no_epg),
         )
 
         return StreamingHttpResponse(
-            _iter_grid_json_chunks(lookback, cutoff, now),
+            _iter_grid_json_chunks(
+                lookback,
+                cutoff,
+                now,
+                epg_ids=epg_ids,
+                dummy_custom_channels=dummy_custom,
+                no_epg_channels=no_epg,
+            ),
             content_type='application/json',
             status=status.HTTP_200_OK,
         )

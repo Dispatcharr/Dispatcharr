@@ -113,8 +113,8 @@ class ProgramDataSerializer(serializers.ModelSerializer):
 class EPGGridProgramSerializer(serializers.Serializer):
     """One programme object in ``GET /api/epg/grid/``.
 
-    Matches the streamed JSON fields. Dummy-only extras (``epg``,
-    ``custom_properties``) are omitted for stored ProgramData rows.
+    Matches the streamed JSON fields. ``custom_properties`` is present on
+    dummy programmes only (null when empty) and omitted for stored rows.
     """
 
     id = serializers.CharField(
@@ -135,10 +135,6 @@ class EPGGridProgramSerializer(serializers.Serializer):
     is_live = serializers.BooleanField()
     is_premiere = serializers.BooleanField()
     is_finale = serializers.BooleanField()
-    epg = serializers.DictField(
-        required=False,
-        help_text="Present on dummy programmes only: tvg_id and display name.",
-    )
     custom_properties = serializers.JSONField(
         required=False,
         allow_null=True,
