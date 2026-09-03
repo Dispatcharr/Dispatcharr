@@ -992,8 +992,13 @@ def generate_dummy_programs(
     export_lookback=None,
     export_cutoff=None,
     max_programs=None,
+    generation_start=None,
 ):
-    now = django_timezone.now().replace(minute=0, second=0, microsecond=0)
+    now = (
+        generation_start
+        if generation_start is not None
+        else django_timezone.now().replace(minute=0, second=0, microsecond=0)
+    )
 
     if epg_source and epg_source.source_type == 'dummy' and epg_source.custom_properties:
         custom_programs = generate_custom_dummy_programs(

@@ -1,6 +1,7 @@
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
-from .api_views import EPGSourceViewSet, ProgramViewSet, EPGGridAPIView, EPGImportAPIView, EPGDataViewSet, CurrentProgramsAPIView
+from .api_grid import EPGGridAPIView
+from .api_views import EPGSourceViewSet, ProgramViewSet, EPGImportAPIView, EPGDataViewSet, CurrentProgramsAPIView
 
 app_name = 'epg'
 
