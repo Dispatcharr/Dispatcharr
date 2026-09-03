@@ -5,11 +5,13 @@ channels that have no EPG data (standard dummy) or a dummy EPG source (custom
 regex dummy).
 """
 
+import json
 from datetime import datetime, timedelta, timezone as dt_timezone
 from unittest import mock
 
 from django.contrib.auth import get_user_model
 from django.db import connection
+from django.http import StreamingHttpResponse
 from django.test import TestCase
 from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
@@ -25,6 +27,22 @@ from apps.output.dummy_epg import resolve_channel_parse_name
 User = get_user_model()
 
 GRID_URL = "/api/epg/grid/"
+
+
+def _parse_grid_body(response):
+    """Parse the grid JSON body from a DRF or streamed Django response."""
+    data = getattr(response, "data", None)
+    if isinstance(data, dict) and "data" in data:
+        return data
+    if getattr(response, "streaming", False):
+        raw = b"".join(response.streaming_content)
+    else:
+        raw = response.content
+    return json.loads(raw)
+
+
+def _grid_programs(response):
+    return _parse_grid_body(response)["data"]
 
 NHL_PROPS = {
     "title_pattern": r"(?<league>.*)\s\d+:\s(?<team1>.*?)(?:\s+vs\s+)(?<team2>.*?)\s*@.*",
@@ -63,7 +81,8 @@ class EPGGridDummyProgramTests(TestCase):
         with mock.patch.object(timezone, "now", return_value=FIXED_NOW):
             response = self.client.get(GRID_URL)
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        return response.data["data"]
+        self.assertTrue(getattr(response, "streaming", False))
+        return _grid_programs(response)
 
     @staticmethod
     def _for_channel(programs, channel):
@@ -142,6 +161,19 @@ class EPGGridDummyProgramTests(TestCase):
 
         ids = [p["id"] for p in self._get_grid()]
         self.assertEqual(len(ids), len(set(ids)))
+
+    def test_dummy_ids_are_unique_across_days(self):
+        """Hour-only dummy ids would collide on the same clock time next day."""
+        Channel.objects.create(
+            channel_number=1.0, name="No EPG Channel", channel_group=self.group
+        )
+        with mock.patch.object(timezone, "now", return_value=FIXED_NOW):
+            response = self.client.get(GRID_URL, {"days": "3"})
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        ids = [p["id"] for p in _grid_programs(response)]
+        self.assertGreater(len(ids), 6)
+        self.assertEqual(len(ids), len(set(ids)))
+        self.assertTrue(any("T" in str(pid) for pid in ids))
 
     def test_custom_dummy_channel_uses_regex_derived_titles(self):
         _, epg_data = self._dummy_source(
@@ -404,7 +436,8 @@ class EPGGridWindowParamTests(TestCase):
 
         response = self._get_grid()
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        titles = [p["title"] for p in response.data["data"]]
+        self.assertTrue(getattr(response, "streaming", False))
+        titles = [p["title"] for p in _grid_programs(response)]
         self.assertIn("Currently On", titles)
         self.assertIn("Tonight", titles)
         self.assertNotIn("Old", titles)
@@ -416,14 +449,14 @@ class EPGGridWindowParamTests(TestCase):
         far_future = self._create_program(30, title="Day 2 Show")
         response = self._get_grid({"days": "2"})
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        titles = [p["title"] for p in response.data["data"]]
+        titles = [p["title"] for p in _grid_programs(response)]
         self.assertIn("Day 2 Show", titles)
 
     def test_prev_days_extends_lookback(self):
         old = self._create_program(-20, title="Yesterday Show")
         response = self._get_grid({"prev_days": "1"})
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        titles = [p["title"] for p in response.data["data"]]
+        titles = [p["title"] for p in _grid_programs(response)]
         self.assertIn("Yesterday Show", titles)
 
     def test_days_zero_treated_as_one(self):
@@ -436,7 +469,7 @@ class EPGGridWindowParamTests(TestCase):
         recently_ended = self._create_program(-1, 0.5, title="Just Ended")
         response = self._get_grid({"prev_days": "0"})
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        titles = [p["title"] for p in response.data["data"]]
+        titles = [p["title"] for p in _grid_programs(response)]
         self.assertNotIn("Just Ended", titles)
 
     def test_days_and_prev_days_together(self):
@@ -444,7 +477,7 @@ class EPGGridWindowParamTests(TestCase):
         far = self._create_program(30, title="Tomorrow Night")
         response = self._get_grid({"days": "2", "prev_days": "1"})
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        titles = [p["title"] for p in response.data["data"]]
+        titles = [p["title"] for p in _grid_programs(response)]
         self.assertIn("Yesterday", titles)
         self.assertIn("Tomorrow Night", titles)
 
@@ -466,7 +499,7 @@ class EPGGridWindowParamTests(TestCase):
         prog = self._create_program(30, title="Tomorrow Show")
         response = self._get_grid({"start": tomorrow_start, "end": tomorrow_end})
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        titles = [p["title"] for p in response.data["data"]]
+        titles = [p["title"] for p in _grid_programs(response)]
         self.assertIn("Tomorrow Show", titles)
 
     def test_absolute_start_only_defaults_end_to_plus_24h(self):
@@ -474,7 +507,7 @@ class EPGGridWindowParamTests(TestCase):
         future = self._create_program(12, title="Later Today")
         response = self._get_grid({"start": start})
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        titles = [p["title"] for p in response.data["data"]]
+        titles = [p["title"] for p in _grid_programs(response)]
         self.assertIn("Later Today", titles)
 
     def test_absolute_end_only_defaults_start_to_minus_1h(self):
@@ -482,7 +515,7 @@ class EPGGridWindowParamTests(TestCase):
         current = self._create_program(-0.5, title="On Now")
         response = self._get_grid({"end": end})
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        titles = [p["title"] for p in response.data["data"]]
+        titles = [p["title"] for p in _grid_programs(response)]
         self.assertIn("On Now", titles)
 
     def test_absolute_overrides_days(self):
@@ -492,7 +525,7 @@ class EPGGridWindowParamTests(TestCase):
         far = self._create_program(30, title="Far Away")
         response = self._get_grid({"start": start, "end": end, "days": "5"})
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        titles = [p["title"] for p in response.data["data"]]
+        titles = [p["title"] for p in _grid_programs(response)]
         self.assertNotIn("Far Away", titles)
 
     def test_bare_date_accepted_as_start(self):
@@ -553,7 +586,7 @@ class EPGGridDummyWindowCoverageTests(TestCase):
             response = self.client.get(GRID_URL, params or {})
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         return [
-            p for p in response.data["data"] if p["tvg_id"] == str(self.channel.uuid)
+            p for p in _grid_programs(response) if p["tvg_id"] == str(self.channel.uuid)
         ]
 
     @staticmethod
@@ -598,5 +631,54 @@ class EPGGridDummyWindowCoverageTests(TestCase):
         cutoff = UNALIGNED_NOW + timedelta(days=3)
         self.assertGreaterEqual(self._latest_end(programs), cutoff)
 
+
+class EPGGridStreamingResponseTests(TestCase):
+    """Successful grid responses stream JSON while preserving the public shape."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(
+            username="streamuser", password="testpass123"
+        )
+        self.user.user_level = 10
+        self.user.save()
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+        self.group = ChannelGroup.objects.create(name="Stream Group")
+
+    def test_empty_window_streams_valid_empty_data_array(self):
+        with mock.patch.object(timezone, "now", return_value=FIXED_NOW):
+            response = self.client.get(GRID_URL)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIsInstance(response, StreamingHttpResponse)
+        self.assertTrue(response.streaming)
+        self.assertEqual(response["Content-Type"], "application/json")
+        body = _parse_grid_body(response)
+        self.assertEqual(body, {"data": []})
+
+    def test_streamed_body_matches_legacy_envelope_with_programs(self):
+        Channel.objects.create(
+            channel_number=1.0, name="No EPG Channel", channel_group=self.group
+        )
+        with mock.patch.object(timezone, "now", return_value=FIXED_NOW):
+            response = self.client.get(GRID_URL)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(response.streaming)
+        body = _parse_grid_body(response)
+        self.assertIn("data", body)
+        self.assertIsInstance(body["data"], list)
+        self.assertEqual(len(body["data"]), 6)
+        for program in body["data"]:
+            self.assertIn("start_time", program)
+            self.assertIn("end_time", program)
+            self.assertIn("title", program)
+            # Datetimes must remain parseable by guide clients / dayjs.
+            timezone.datetime.fromisoformat(program["start_time"])
+            timezone.datetime.fromisoformat(program["end_time"])
+
+    def test_invalid_params_still_return_non_streaming_json_error(self):
+        response = self.client.get(GRID_URL, {"days": "abc"})
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertFalse(getattr(response, "streaming", False))
+        self.assertIn("error", response.data)
 
 

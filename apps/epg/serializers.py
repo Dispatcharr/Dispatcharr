@@ -109,6 +109,49 @@ class ProgramDataSerializer(serializers.ModelSerializer):
         data['is_finale'] = bool(premiere_text and 'finale' in premiere_text.lower())
         return data
 
+
+class EPGGridProgramSerializer(serializers.Serializer):
+    """One programme object in ``GET /api/epg/grid/``.
+
+    Matches the streamed JSON fields. Dummy-only extras (``epg``,
+    ``custom_properties``) are omitted for stored ProgramData rows.
+    """
+
+    id = serializers.CharField(
+        help_text=(
+            "Stored programme primary key, or a synthetic dummy id "
+            "(prefix-channelId-YYYYMMDDTHHMMSS)."
+        )
+    )
+    start_time = serializers.DateTimeField()
+    end_time = serializers.DateTimeField()
+    title = serializers.CharField(allow_null=True, required=False)
+    sub_title = serializers.CharField(allow_null=True, required=False)
+    description = serializers.CharField(allow_null=True, required=False)
+    tvg_id = serializers.CharField(allow_null=True, required=False)
+    season = serializers.IntegerField(allow_null=True, required=False)
+    episode = serializers.IntegerField(allow_null=True, required=False)
+    is_new = serializers.BooleanField()
+    is_live = serializers.BooleanField()
+    is_premiere = serializers.BooleanField()
+    is_finale = serializers.BooleanField()
+    epg = serializers.DictField(
+        required=False,
+        help_text="Present on dummy programmes only: tvg_id and display name.",
+    )
+    custom_properties = serializers.JSONField(
+        required=False,
+        allow_null=True,
+        help_text="Present on dummy programmes only. Null when empty.",
+    )
+
+
+class EPGGridResponseSerializer(serializers.Serializer):
+    """Envelope for ``GET /api/epg/grid/``."""
+
+    data = EPGGridProgramSerializer(many=True)
+
+
 class ProgramDetailSerializer(ProgramDataSerializer):
     """Rich serializer for program detail view — extends slim serializer with full custom_properties."""
 

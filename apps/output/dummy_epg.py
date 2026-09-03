@@ -1110,8 +1110,9 @@ def dummy_program_to_api_dict(channel, program, *, dummy_tvg_id, program_id_pref
     prog_custom = program.get('custom_properties') or {}
     start = program['start_time']
     display_name = getattr(channel, 'effective_name', channel.name)
+    start_key = start.strftime('%Y%m%dT%H%M%S')
     return {
-        "id": f"{program_id_prefix}-{channel.id}-{start.hour}-{start.minute}",
+        "id": f"{program_id_prefix}-{channel.id}-{start_key}",
         "epg": {"tvg_id": dummy_tvg_id, "name": display_name},
         "start_time": start.isoformat(),
         "end_time": program['end_time'].isoformat(),
