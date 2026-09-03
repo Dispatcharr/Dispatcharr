@@ -470,7 +470,7 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
                   </UnstyledButton>
                 </Group>
                 <ActionIcon variant="transparent" color="white" size="xs">
-                  <LogOut onClick={logout} />
+                  <LogOut onClick={() => logout({ explicit: true })} />
                 </ActionIcon>
               </Group>
             )}
