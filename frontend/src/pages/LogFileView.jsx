@@ -172,24 +172,26 @@ const TRACEBACK_HEAD = 'Traceback';
 
 // Returns the trailing traceback state so the next chunk can resume in it: a
 // traceback split across two polls would otherwise lose its unindented tail.
+// Ids survive the head slice and the reversal, so React inserts only new rows.
+let nextEntryId = 0;
+
 const classifyLines = (lines, inTraceback = false) => {
   const entries = [];
   for (const line of lines) {
     const record = parseRecord(line);
+    let kind = 'standalone';
     if (record) {
       inTraceback = false;
-      entries.push({ line, record, kind: 'record' });
+      kind = 'record';
     } else if (RECORD_START.test(line)) {
       inTraceback = false;
-      entries.push({ line, record: null, kind: 'standalone' });
     } else if (line.startsWith(TRACEBACK_HEAD)) {
       inTraceback = true;
-      entries.push({ line, record: null, kind: 'continuation' });
+      kind = 'continuation';
     } else if (inTraceback || /^[ \t]/.test(line) || line === '') {
-      entries.push({ line, record: null, kind: 'continuation' });
-    } else {
-      entries.push({ line, record: null, kind: 'standalone' });
+      kind = 'continuation';
     }
+    entries.push({ id: nextEntryId++, line, record, kind });
   }
   return { entries, inTraceback };
 };
@@ -293,12 +295,12 @@ const buildBlocks = (entries) => {
   for (const entry of entries) {
     const last = blocks[blocks.length - 1];
     if (entry.record) {
-      blocks.push({ record: entry.record, continuations: [] });
+      blocks.push({ id: entry.id, record: entry.record, continuations: [] });
     } else if (entry.kind === 'continuation' && last) {
       if (last.record) last.continuations.push(entry.line);
       else last.lines.push(entry.line);
     } else {
-      blocks.push({ lines: [entry.line] });
+      blocks.push({ id: entry.id, lines: [entry.line] });
     }
   }
   return blocks;
@@ -335,18 +337,18 @@ const LogBody = React.memo(
         {empty
           ? emptyState('(empty)')
           : blocks.length
-            ? blocks.map((block, i) => {
+            ? blocks.map((block) => {
                 if (!block.record) {
                   return (
                     // Dimming marks these lines as unowned.
-                    <div key={i} style={styles.plain}>
+                    <div key={block.id} style={styles.plain}>
                       {block.lines.join('\n')}
                     </div>
                   );
                 }
                 const rowStyle = styles.forLevel(block.record.level);
                 return (
-                  <div key={i} style={rowStyle.row}>
+                  <div key={block.id} style={rowStyle.row}>
                     <span style={styles.stamp}>{block.record.stamp}</span>{' '}
                     <span style={rowStyle.level} title={block.record.level}>
                       {levelLabel(block.record.level)}
