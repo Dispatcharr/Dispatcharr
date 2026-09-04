@@ -544,17 +544,16 @@ const LogFileViewPage = () => {
   // append. A reset (rotation or first load) replaces the buffer instead.
   const applyResponse = useCallback((response) => {
     cursorRef.current = response.cursor || null;
+    const lines = response.content ? response.content.split('\n') : [];
+    // The body ends on a newline, so the split leaves a trailing empty line.
+    if (lines[lines.length - 1] === '') lines.pop();
     if (response.reset !== false) {
-      const lines = response.content ? response.content.split('\n') : [];
       const { entries: next, inTraceback } = classifyLines(lines);
       tracebackRef.current = inTraceback;
       setBuffer(trimBuffer(next, byteLength(next), response.truncated));
       return;
     }
-    if (!response.content) return;
-    // The delta ends on a newline, so the split leaves a trailing empty line.
-    const lines = response.content.split('\n');
-    if (lines[lines.length - 1] === '') lines.pop();
+    if (!lines.length) return;
     const { entries: added, inTraceback } = classifyLines(
       lines,
       tracebackRef.current
