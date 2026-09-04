@@ -453,6 +453,28 @@ describe('LogFileViewPage', () => {
     }
   });
 
+  it('pauses after three failed polls without touching the stored interval', async () => {
+    vi.useFakeTimers();
+    try {
+      renderPage();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      fireEvent.change(screen.getByLabelText('Auto Refresh'), {
+        target: { value: '5' },
+      });
+      API.getLogFile.mockResolvedValue(undefined);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(16000);
+      });
+      expect(API.getLogFile).toHaveBeenCalledTimes(4);
+      expect(localStorage.getItem('log-viewer-refresh-interval')).toBe('5');
+      expect(screen.getByLabelText('Auto Refresh')).toHaveValue('0');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('defaults the level floor to Info', async () => {
     API.getLogFile.mockResolvedValue({
       content: [
