@@ -31,7 +31,8 @@ def _role_suffix():
 
 
 _SUFFIX = _role_suffix()
-LIVE_NAME = f"dispatcharr.log{_SUFFIX}"
+BASE_NAME = "dispatcharr.log"
+LIVE_NAME = f"{BASE_NAME}{_SUFFIX}"
 # Shared: one settings save configures every collector on this log directory.
 CONF_NAME = "collector.conf"
 PID_NAME = f"collector{_SUFFIX}.pid"
