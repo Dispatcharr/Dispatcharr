@@ -1,6 +1,7 @@
 import React, {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -131,6 +132,9 @@ const SEARCH_DEBOUNCE_MS = 200;
 
 // Bounds the DOM for low-end TV browsers.
 const MAX_RENDER_LINES = 5000;
+
+// How close to the live edge still counts as watching it.
+const FOLLOW_SLACK_PX = 50;
 
 const LEVEL_COL_MAX = 12;
 const MODULE_COL_MAX = 12;
@@ -320,6 +324,9 @@ const LogFileViewPage = () => {
 
   const loadingRef = useRef(false);
   const failuresRef = useRef(0);
+  const viewportRef = useRef(null);
+  // Open at the live edge, and keep following until the reader scrolls away.
+  const followingRef = useRef(true);
 
   const entries = useMemo(
     () => classifyLines(content ? content.split('\n') : []),
@@ -356,6 +363,23 @@ const LogFileViewPage = () => {
     if (newestFirst) built.reverse();
     return { blocks: built, hiddenLines: hidden };
   }, [entries, newestFirst, minLevel, category, query]);
+
+  // Newest sits at whichever end the order puts it.
+  const onViewportScroll = useCallback(() => {
+    const el = viewportRef.current;
+    if (!el) return;
+    followingRef.current = newestFirst
+      ? el.scrollTop <= FOLLOW_SLACK_PX
+      : el.scrollHeight - el.scrollTop - el.clientHeight <= FOLLOW_SLACK_PX;
+  }, [newestFirst]);
+
+  // A refresh replaces the content wholesale, so a fixed scrollTop drifts back
+  // through history. Re-pin to the live edge for a reader who was watching it.
+  useLayoutEffect(() => {
+    const el = viewportRef.current;
+    if (!el || !followingRef.current) return;
+    el.scrollTop = newestFirst ? 0 : el.scrollHeight;
+  }, [blocks, newestFirst]);
 
   // Wrapped lines and continuations hang under the message column.
   const messageIndent = cols.stamp + cols.level + cols.module + 3;
@@ -525,6 +549,8 @@ const LogFileViewPage = () => {
 
         <Box
           p="sm"
+          ref={viewportRef}
+          onScroll={onViewportScroll}
           // Without minHeight:0 a flex item will not shrink below its content.
           style={{ flex: '1 1 auto', overflow: 'auto', minHeight: '0px' }}
         >
