@@ -120,22 +120,19 @@ class LogFilesEndpointTests(TestCase):
 
     def test_cursor_withholds_a_line_still_being_written(self):
         live = os.path.join(self.log_dir, "dispatcharr.log")
-        first = self.client.get("/api/core/logs/dispatcharr.log/").json()
         with open(live, "a") as f:
             f.write("complete\npartial-so-far")
-
-        second = self.client.get(
-            "/api/core/logs/dispatcharr.log/", {"cursor": first["cursor"]}
-        ).json()
+        first = self.client.get("/api/core/logs/dispatcharr.log/").json()
         # The fragment is held back; the cursor stays in front of it.
-        self.assertEqual(second["content"], "complete\n")
+        self.assertEqual(first["content"], "line one\nline two\ncomplete\n")
 
         with open(live, "a") as f:
             f.write("-and-the-rest\n")
-        third = self.client.get(
-            "/api/core/logs/dispatcharr.log/", {"cursor": second["cursor"]}
+        second = self.client.get(
+            "/api/core/logs/dispatcharr.log/", {"cursor": first["cursor"]}
         ).json()
-        self.assertEqual(third["content"], "partial-so-far-and-the-rest\n")
+        self.assertFalse(second["reset"])
+        self.assertEqual(second["content"], "partial-so-far-and-the-rest\n")
 
     def test_cursor_from_a_rotated_file_resets_instead_of_skipping(self):
         """A stale offset must not be resumed against a different inode."""
