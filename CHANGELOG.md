@@ -38,6 +38,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Schedules Direct and M3U refreshes invalidate output caches when they finish.** XMLTV programme import already dropped the `/output/epg` Redis chunk cache, but Schedules Direct did not, so clients could keep a stale XMLTV file for up to the cache TTL while the in-app guide already showed new programmes. SD post-refresh (programme writes, pruning, poster updates) now calls `invalidate_epg_chunk_cache`. Successful M3U refreshes clear both `m3u_content:*` and `epg_content:*` so playlist and XMLTV channel-list snapshots (names, numbers, logos after auto-sync) do not linger.
 - **Catchup honors Redirect via the channel's effective stream profile.** Catchup previously only checked whether Redirect was the system default, so a channel (or override) set to Redirect still proxied. It now uses `channel.get_stream_profile().is_redirect()` like live (override, then channel profile, then system default).
 
+### Security
+
+- **DVR recording storage paths are server-owned and confined to `/data/recordings`.** `RecordingSerializer` strips client-supplied `file_path`, `_hls_dir`, `file_name`, `file_url`, and `output_file_url` on create and preserves existing values on update. Playback and delete resolve paths through `resolve_safe_local_data_path` so a DVR manager cannot read or delete files outside the recordings root via poisoned `custom_properties`.
+- **Plugin manifest and zip downloads re-validate every redirect hop.** Shared `get_with_validated_redirects` disables automatic redirects and runs the existing SSRF checks (no private/loopback by default) on each `Location` before following it, closing the gap where only the initial URL was validated.
+- **Forwarded Host and scheme are trusted only from configured proxies.** `get_host_and_port` / `build_absolute_uri_with_port` use the same `request_from_trusted_proxy` gate as client IP detection, so `X-Forwarded-Host` / `X-Forwarded-Proto` from an untrusted peer cannot rewrite absolute URLs in M3U, EPG, HDHR, or similar responses.
+- **Stream rehash is admin-only.** `POST` to the rehash-streams endpoint requires `IsAdmin` instead of any authenticated user.
+- **Modular Compose no longer publishes Postgres to the host.** The `db` service keeps `5432` on the Docker network only (`POSTGRES_HOST=db`); web and celery still connect as before.
+
 ## [0.30.0] - 2026-08-29
 
 ### Added
