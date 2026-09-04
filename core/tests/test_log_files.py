@@ -239,6 +239,7 @@ class LogFilesEndpointTests(TestCase):
         self.assertIsNone(log_files._resolve("/etc/passwd"))
         self.assertIsNone(log_files._resolve(".hidden"))
         self.assertIsNone(log_files._resolve("sub/dir.log"))
+        self.assertIsNone(log_files._resolve("dispatcharr.log\n"))
         self.assertEqual(
             log_files._resolve("dispatcharr.log"),
             os.path.realpath(os.path.join(self.log_dir, "dispatcharr.log")),
