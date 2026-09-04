@@ -251,8 +251,8 @@ describe('LogFileViewPage', () => {
   });
 
   it('shows a load error with Retry and recovers when Retry succeeds', async () => {
-    // getLogFile resolves undefined on failure (see api.js catch path).
-    API.getLogFile.mockResolvedValue(undefined);
+    // A non-silent failure rejects once errorNotification has toasted.
+    API.getLogFile.mockRejectedValue(new Error('HTTP error! Status: 500'));
     renderPage();
     await waitFor(() => {
       expect(screen.getByText(/Failed to load/)).toBeInTheDocument();
@@ -782,10 +782,11 @@ describe('LogFileViewPage', () => {
     );
   });
 
-  it('claims the column-0 tail of a traceback the collector stamped', async () => {
+  it('claims the column-0 tail of an unstamped traceback', async () => {
     API.getLogFile.mockResolvedValue({
       content: [
-        '2026-08-21 10:00:00,000 INFO stdout Traceback (most recent call last):',
+        '2026-08-21 10:00:00,000 INFO stdout unhandled error in worker',
+        'Traceback (most recent call last):',
         '  File "/app/x.py", line 12, in run',
         'ValueError: bad feed',
         'During handling of the above exception, another exception occurred:',
@@ -853,7 +854,8 @@ describe('LogFileViewPage', () => {
     // Joined to '' a lone blank renders no text node and drops from the copy buffer.
     API.getLogFile.mockResolvedValue({
       content: [
-        '2026-08-21 10:00:00,000 ERROR core.tasks Traceback (most recent call last):',
+        '2026-08-21 10:00:00,000 ERROR core.tasks refresh failed',
+        'Traceback (most recent call last):',
         '',
         'ValueError: bad feed',
       ].join('\n'),
@@ -862,7 +864,7 @@ describe('LogFileViewPage', () => {
     renderPage();
     await screen.findByText(/Traceback/);
     const segments = screen.getByText(/ValueError/).parentElement;
-    const blank = segments.children[0];
+    const blank = segments.children[1];
     expect(blank).toHaveStyle({ lineHeight: '0.35' });
     expect(blank.textContent).toBe('\n');
   });
@@ -1158,7 +1160,8 @@ describe('LogFileViewPage', () => {
   it('keeps a traceback whole when it straddles two deltas', async () => {
     API.getLogFile.mockResolvedValue({
       content:
-        '2026-08-21 10:00:00,000 ERROR apps.epg Traceback (most recent call last):\n' +
+        '2026-08-21 10:00:00,000 ERROR apps.epg refresh failed\n' +
+        'Traceback (most recent call last):\n' +
         '  File "/app/x.py", line 1, in run\n',
       truncated: false,
       cursor: '99-80',

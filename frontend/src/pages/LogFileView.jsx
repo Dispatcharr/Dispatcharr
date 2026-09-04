@@ -177,8 +177,7 @@ const classifyLines = (lines, inTraceback = false) => {
   for (const line of lines) {
     const record = parseRecord(line);
     if (record) {
-      // The collector stamps a traceback header but not its tail.
-      inTraceback = record.message.startsWith(TRACEBACK_HEAD);
+      inTraceback = false;
       entries.push({ line, record, kind: 'record' });
     } else if (RECORD_START.test(line)) {
       inTraceback = false;
@@ -456,9 +455,7 @@ const LogFileViewPage = () => {
   }, [entries]);
 
   const { blocks, hiddenLines } = useMemo(() => {
-    let kept = entries;
-    if (minLevel || category !== null || matcher)
-      kept = filterEntries(entries, minLevel, category, matcher);
+    let kept = filterEntries(entries, minLevel, category, matcher);
     const hidden = Math.max(0, kept.length - MAX_RENDER_LINES);
     if (hidden) kept = kept.slice(hidden);
     // Reversed as blocks, not entries, so continuations stay with their record.
@@ -581,14 +578,11 @@ const LogFileViewPage = () => {
         // Superseded: a newer load owns the cursor, and applying this one
         // would append a delta the newer response already carried.
         if (version !== requestRef.current) return true;
-        if (response) {
-          applyResponse(response);
-          if (!silent) setLoadError(false);
-          return true;
-        }
         // Silent polls resolve to undefined on failure.
-        if (!silent) setLoadError(true);
-        return false;
+        if (!response) return false;
+        applyResponse(response);
+        if (!silent) setLoadError(false);
+        return true;
       } catch {
         // getLogFile has already toasted.
         if (!silent) setLoadError(true);
