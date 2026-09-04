@@ -18,6 +18,7 @@ const LogFilesPage = () => {
   const [files, setFiles] = useState([]);
   const [collectorRunning, setCollectorRunning] = useState(true);
   const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState(false);
   // The whole body arrives before the browser saves anything; say so.
   const [downloading, setDownloading] = useState(null);
   const { fullDateTimeFormat } = useDateTimeFormat();
@@ -30,9 +31,11 @@ const LogFilesPage = () => {
         setFiles(response.files || []);
         // Absent on an older backend: assume running rather than cry wolf.
         setCollectorRunning(response.collector_running !== false);
+        setLoadError(false);
       }
     } catch {
       // errorNotification already surfaced the failure
+      setLoadError(true);
     } finally {
       setLoading(false);
     }
@@ -116,8 +119,13 @@ const LogFilesPage = () => {
           {files.length === 0 && !loading && (
             <Table.Tr>
               <Table.Td colSpan={4}>
-                <Text size="sm" c="dimmed" ta="center" py="md">
-                  No log files yet
+                <Text
+                  size="sm"
+                  c={loadError ? 'red' : 'dimmed'}
+                  ta="center"
+                  py="md"
+                >
+                  {loadError ? 'Failed to load log files' : 'No log files yet'}
                 </Text>
               </Table.Td>
             </Table.Tr>
