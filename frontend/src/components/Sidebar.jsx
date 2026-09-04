@@ -209,20 +209,14 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
 
   const navOrder = getNavOrder();
   const hiddenNav = getHiddenNav();
-  // A missing flag counts as running.
-  const logCollectorRunning = environment.log_collector_running !== false;
+  const logCollectorRunning = environment.log_collector_running;
   const navItems = useMemo(() => {
     const ordered = getOrderedNavItems(navOrder, isAdmin, channelIds, {
       canViewDvr: userCanViewDvr,
       canViewVod: userCanViewVod,
+      logCollectorRunning,
     });
-    // A deployment with no collector has no log files to browse.
-    const visible = (entry) => entry.path !== '/logs' || logCollectorRunning;
-    return ordered
-      .filter((item) => !hiddenNav.includes(item.id) && visible(item))
-      .map((item) =>
-        item.paths ? { ...item, paths: item.paths.filter(visible) } : item
-      );
+    return ordered.filter((item) => !hiddenNav.includes(item.id));
   }, [
     navOrder,
     hiddenNav,
