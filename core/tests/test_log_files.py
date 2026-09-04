@@ -1,7 +1,6 @@
 """Tests for the log file browsing endpoints (System > Logs)."""
 
 import os
-import time
 import shutil
 import tempfile
 from unittest import mock
@@ -14,6 +13,12 @@ from core import log_files
 
 
 class LogFilesEndpointTests(TestCase):
+    URLS = (
+        "/api/core/logs/",
+        "/api/core/logs/dispatcharr.log/",
+        "/api/core/logs/dispatcharr.log/download/",
+    )
+
     @classmethod
     def setUpTestData(cls):
         User = get_user_model()
@@ -227,11 +232,6 @@ class LogFilesEndpointTests(TestCase):
             self.client.get("/api/core/logs/secrets.env/download/").status_code, 404
         )
 
-    def test_download_requires_authentication(self):
-        self.client.force_authenticate(None)
-        response = self.client.get("/api/core/logs/dispatcharr.log/download/")
-        self.assertEqual(response.status_code, 401)
-
     def test_resolver_rejects_traversal_and_dotfiles(self):
         # A traversal URL never reaches this view; it decodes to a slashed path the SPA serves.
         self.assertIsNone(log_files._resolve("../secret.txt"))
@@ -262,16 +262,6 @@ class LogFilesEndpointTests(TestCase):
         self.assertNotIn("escape.log", names)
         self.assertEqual(names, {"dispatcharr.log", "dispatcharr.log.1"})
 
-    def test_traversal_name_that_reaches_the_view_is_404(self):
-        # Only slash-free names route here, so this is the closest a URL gets.
-        secret = os.path.join(self.log_dir, os.pardir, "secret.txt")
-        with open(secret, "w") as f:
-            f.write("TOP SECRET")
-        self.addCleanup(os.remove, secret)
-        response = self.client.get("/api/core/logs/.hidden/")
-        self.assertEqual(response.status_code, 404)
-        self.assertNotIn(b"TOP SECRET", response.content)
-
     def test_missing_file_is_404(self):
         response = self.client.get("/api/core/logs/nope.log/")
         self.assertEqual(response.status_code, 404)
@@ -286,11 +276,10 @@ class LogFilesEndpointTests(TestCase):
 
     def test_non_admin_is_forbidden(self):
         self.client.force_authenticate(self.viewer)
-        self.assertEqual(self.client.get("/api/core/logs/").status_code, 403)
-        self.assertEqual(
-            self.client.get("/api/core/logs/dispatcharr.log/").status_code, 403
-        )
+        for url in self.URLS:
+            self.assertEqual(self.client.get(url).status_code, 403, url)
 
     def test_anonymous_is_unauthorized(self):
         self.client.force_authenticate(None)
-        self.assertIn(self.client.get("/api/core/logs/").status_code, (401, 403))
+        for url in self.URLS:
+            self.assertEqual(self.client.get(url).status_code, 401, url)
