@@ -116,6 +116,8 @@ def _resolve_output_format(user, force=None, request=None):
         'ts':     'mpegts',
         'fmp4':   'fmp4',
         'mp4':    'fmp4',
+        'hls':    'hls',
+        'm3u8':   'hls',
     }
     if force:
         return force
@@ -727,7 +729,27 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
                 {"error": "Channel resources unavailable"}, status=503
             )
 
-        if resolved_output_format == 'fmp4':
+        if resolved_output_format == 'hls':
+            # HLS is pull-based: no long-lived response. Start the segmenter
+            # and redirect to the client-scoped playlist so reloads and
+            # relative segment URIs resolve against a URL that carries the
+            # client_id (each request touches the client record; the ghost
+            # reaper handles disconnect, same as every other client type).
+            if not proxy_server.ensure_output_format(
+                channel_id, resolved_format,
+                source_buffer=source_buffer if resolved_output_profile else None,
+            ):
+                if _client_pre_registered:
+                    _drop_pre_registered_client(proxy_server, channel_id, client_id)
+                return JsonResponse(
+                    {"error": "Failed to start output format segmenter"}, status=500
+                )
+            # Hardcoded mount path, matching how generate_m3u builds
+            # /proxy/ts/stream/ URLs (apps/output/views.py).
+            return HttpResponseRedirect(
+                f"/proxy/hls/{channel_id}/{client_id}/index.m3u8"
+            )
+        elif resolved_output_format == 'fmp4':
             if not proxy_server.ensure_output_format(
                 channel_id, resolved_format,
                 source_buffer=source_buffer if resolved_output_profile else None,
@@ -839,6 +861,8 @@ def stream_xc(request, username, password, channel_id):
             force_format = 'fmp4'
         elif extension.lower() == '.ts':
             force_format = 'mpegts'
+        elif extension.lower() == '.m3u8':
+            force_format = 'hls'
         else:
             force_format = None
         return stream_ts(request._request, str(channel.uuid), user, force_output_format=force_format)
@@ -1210,4 +1234,173 @@ def next_stream(request, channel_id):
         logger.error(f"Failed to switch to next stream: {e}", exc_info=True)
         return JsonResponse({"error": str(e)}, status=500)
     finally:
+        close_old_connections()
+
+
+# ---------------------------------------------------------------------------
+# HLS output endpoints
+#
+# HLS clients are pull-based: there is no long-lived response whose generator
+# can observe a disconnect. Instead, every playlist/segment request touches
+# the client's Redis record (last_active + TTLs), so a player that polls the
+# playlist keeps its client alive and a player that stops gets reaped by the
+# existing ghost-client heartbeat, which feeds the existing zero-clients
+# shutdown chain. No new teardown machinery.
+# ---------------------------------------------------------------------------
+
+def _hls_resolved_format(client_hash):
+    """Compose the output manager key from the client's registered format."""
+    profile_id = (client_hash or {}).get("output_profile_id") or ""
+    return f"hls:p{profile_id}" if profile_id else "hls"
+
+
+def _hls_touch_client(channel_id, client_id):
+    """
+    Refresh the client's activity record; returns the client hash, or None
+    when the record has lapsed (e.g. a player paused past the ghost window).
+
+    A lapsed client is deliberately NOT re-registered here: the expired hash
+    carried the client's output format/profile binding, and recreating it
+    from nothing would silently rebind a profiled client (hls:p3) to the
+    plain output. The caller answers 410 instead, so the player re-enters
+    through the normal stream_ts handshake, which rebuilds a complete record.
+    """
+    from .config_helper import ConfigHelper
+
+    proxy_server = ProxyServer.get_instance()
+    redis_client = proxy_server.redis_client
+
+    client_key = RedisKeys.client_metadata(channel_id, client_id)
+    clients_key = RedisKeys.clients(channel_id)
+
+    client_hash = redis_client.hgetall(client_key)
+    if not client_hash:
+        # Drop any stale set entry so it cannot linger as a phantom consumer.
+        redis_client.srem(clients_key, client_id)
+        return None
+
+    ttl = ConfigHelper.get('CLIENT_RECORD_TTL', 60)
+    pipe = redis_client.pipeline(transaction=False)
+    pipe.hset(client_key, "last_active", str(time.time()))
+    pipe.expire(client_key, ttl)
+    pipe.sadd(clients_key, client_id)
+    pipe.expire(clients_key, ttl)
+    pipe.execute()
+    return client_hash
+
+
+def _hls_session_gone(channel_id, client_id):
+    """True when the channel or this specific client has been stopped."""
+    proxy_server = ProxyServer.get_instance()
+    redis_client = proxy_server.redis_client
+    if not redis_client:
+        return False
+    if redis_client.exists(RedisKeys.channel_stopping(channel_id)):
+        return True
+    if redis_client.exists(RedisKeys.client_stop(channel_id, client_id)):
+        return True
+    return False
+
+
+@api_view(["GET"])
+@permission_classes([AllowAny])
+def hls_playlist(request, channel_id, client_id):
+    """Rolling live media playlist for one HLS client."""
+    try:
+        if not network_access_allowed(request, "STREAMS"):
+            return Response({"error": "Forbidden"}, status=403)
+
+        if _hls_session_gone(channel_id, client_id):
+            return JsonResponse({"error": "Stream stopped"}, status=410)
+
+        proxy_server = ProxyServer.get_instance()
+        redis_client = proxy_server.redis_client
+        if not redis_client:
+            return JsonResponse({"error": "Proxy unavailable"}, status=503)
+
+        client_hash = _hls_touch_client(channel_id, client_id)
+        if not client_hash:
+            # Record lapsed; no guessing (see _hls_touch_client). The player
+            # re-enters via the stream URL, which rebuilds its registration.
+            return JsonResponse({"error": "Session expired"}, status=410)
+
+        fmt = _hls_resolved_format(client_hash)
+
+        # The segmenter needs a couple of segments after a cold start; wait
+        # briefly (gevent-friendly) instead of bouncing the player.
+        playlist_key = RedisKeys.output_playlist(channel_id, fmt)
+        deadline = time.time() + 10
+        playlist_json = redis_client.get(playlist_key)
+        while not playlist_json and time.time() < deadline:
+            state = redis_client.get(RedisKeys.output_state(channel_id, fmt))
+            if state == 'stopped' or _hls_session_gone(channel_id, client_id):
+                return JsonResponse({"error": "Stream stopped"}, status=410)
+            gevent.sleep(0.25)
+            playlist_json = redis_client.get(playlist_key)
+
+        if not playlist_json:
+            response = JsonResponse({"error": "Stream not ready"}, status=503)
+            response["Retry-After"] = "2"
+            return response
+
+        from .output.hls.segmenter import render_media_playlist
+        try:
+            state = json.loads(playlist_json)
+            body = render_media_playlist(
+                state.get("window", []),
+                state.get("target", 4),
+                adv_target=state.get("adv_target"),
+            )
+        except (ValueError, KeyError) as e:
+            logger.error(f"[{client_id}] Malformed HLS playlist state for {channel_id}: {e}")
+            return JsonResponse({"error": "Playlist unavailable"}, status=500)
+
+        response = HttpResponse(body, content_type="application/vnd.apple.mpegurl")
+        response["Cache-Control"] = "no-cache"
+        return response
+    finally:
+        # Settings lookup above hits the ORM; this endpoint is polled every
+        # few seconds per client, so release stale connections promptly.
+        close_old_connections()
+
+
+@api_view(["GET"])
+@permission_classes([AllowAny])
+def hls_segment(request, channel_id, client_id, seq):
+    """One HLS media segment, fetched by media sequence number from Redis."""
+    try:
+        if not network_access_allowed(request, "STREAMS"):
+            return Response({"error": "Forbidden"}, status=403)
+
+        if _hls_session_gone(channel_id, client_id):
+            return JsonResponse({"error": "Stream stopped"}, status=410)
+
+        proxy_server = ProxyServer.get_instance()
+        if not proxy_server.redis_client:
+            return JsonResponse({"error": "Proxy unavailable"}, status=503)
+
+        client_hash = _hls_touch_client(channel_id, client_id)
+        if not client_hash:
+            # Record lapsed; no guessing (see _hls_touch_client). The player
+            # re-enters via the stream URL, which rebuilds its registration.
+            return JsonResponse({"error": "Session expired"}, status=410)
+
+        fmt = _hls_resolved_format(client_hash)
+
+        from core.utils import RedisClient
+        redis_buffer = RedisClient.get_buffer()
+        if not redis_buffer:
+            return JsonResponse({"error": "Proxy unavailable"}, status=503)
+
+        data = redis_buffer.get(RedisKeys.output_buffer_chunk(channel_id, fmt, int(seq)))
+        if not data:
+            # Expired out of the rolling window (player fell too far behind).
+            return JsonResponse({"error": "Segment expired"}, status=404)
+
+        response = HttpResponse(data, content_type="video/mp2t")
+        response["Cache-Control"] = "no-cache"
+        return response
+    finally:
+        # Settings lookup above hits the ORM; this endpoint is polled every
+        # few seconds per client, so release stale connections promptly.
         close_old_connections()
