@@ -138,6 +138,7 @@ const MAX_RENDER_LINES = 5000;
 // per-entry object overhead a flood of very short lines would other run up.
 const MAX_BUFFER_BYTES = 5 * 1024 * 1024;
 const MAX_BUFFER_LINES = 50000;
+const EMPTY_BUFFER = { entries: [], bytes: 0, truncated: false };
 
 // How close to the live edge still counts as watching it.
 const FOLLOW_SLACK_PX = 50;
@@ -269,7 +270,7 @@ const byteLength = (entries) => {
 };
 
 // Drops from the head until both bounds hold, paying only for what it drops.
-const trimBuffer = (entries, bytes) => {
+const trimBuffer = (entries, bytes, truncated) => {
   let drop = 0;
   while (
     drop < entries.length &&
@@ -278,7 +279,9 @@ const trimBuffer = (entries, bytes) => {
     bytes -= entries[drop].line.length + 1;
     drop += 1;
   }
-  return drop ? { entries: entries.slice(drop), bytes } : { entries, bytes };
+  return drop
+    ? { entries: entries.slice(drop), bytes, truncated: true }
+    : { entries, bytes, truncated };
 };
 
 const emptyState = (message) => (
@@ -372,9 +375,8 @@ const LogBody = React.memo(
 const LogFileViewPage = () => {
   const { name } = useParams();
   // The byte total rides with the entries so trimming never rescans them.
-  const [buffer, setBuffer] = useState({ entries: [], bytes: 0 });
+  const [buffer, setBuffer] = useState(EMPTY_BUFFER);
   const entries = buffer.entries;
-  const [truncated, setTruncated] = useState(false);
   const [loading, setLoading] = useState(true);
   const [refreshSetting, setRefreshSetting] = useBrowserStorage(
     'log-viewer-refresh-interval',
@@ -536,7 +538,7 @@ const LogFileViewPage = () => {
   const notice =
     hiddenLines > 0
       ? `Showing the last ${MAX_RENDER_LINES.toLocaleString()} lines`
-      : truncated
+      : buffer.truncated
         ? 'Large file — showing the last 5 MB'
         : null;
 
@@ -548,8 +550,7 @@ const LogFileViewPage = () => {
       const lines = response.content ? response.content.split('\n') : [];
       const { entries: next, inTraceback } = classifyLines(lines);
       tracebackRef.current = inTraceback;
-      setTruncated(response.truncated);
-      setBuffer({ entries: next, bytes: byteLength(next) });
+      setBuffer(trimBuffer(next, byteLength(next), response.truncated));
       return;
     }
     if (!response.content) return;
@@ -562,7 +563,11 @@ const LogFileViewPage = () => {
     );
     tracebackRef.current = inTraceback;
     setBuffer((prev) =>
-      trimBuffer(prev.entries.concat(added), prev.bytes + byteLength(added))
+      trimBuffer(
+        prev.entries.concat(added),
+        prev.bytes + byteLength(added),
+        prev.truncated
+      )
     );
   }, []);
 
@@ -605,6 +610,8 @@ const LogFileViewPage = () => {
     requestRef.current += 1;
     cursorRef.current = null;
     tracebackRef.current = false;
+    setBuffer(EMPTY_BUFFER);
+    setLoadError(false);
     load();
   }, [load]);
 
