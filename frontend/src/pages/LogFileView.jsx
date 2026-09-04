@@ -23,6 +23,7 @@ import { notifications } from '@mantine/notifications';
 import API from '../api';
 import DownloadLogButton from '../components/DownloadLogButton';
 import useBrowserStorage from '../hooks/useBrowserStorage';
+import { useDebounce } from '../utils';
 
 const COLORS = {
   error: '#ff6b6b',
@@ -458,11 +459,7 @@ const LogFileViewPage = () => {
   // Ephemeral by design: searches are moments, not settings.
   const [search, setSearch] = useState('');
   // The box keeps up with typing; the filter waits for a pause.
-  const [query, setQuery] = useState('');
-  useEffect(() => {
-    const id = setTimeout(() => setQuery(search.trim()), SEARCH_DEBOUNCE_MS);
-    return () => clearTimeout(id);
-  }, [search]);
+  const query = useDebounce(search.trim(), SEARCH_DEBOUNCE_MS);
   const matcher = useMemo(
     () => (query ? new RegExp(escapeRegExp(query), 'i') : null),
     [query]
