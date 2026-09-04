@@ -29,6 +29,14 @@ def _log_dir():
     return getattr(settings, "LOG_FILE_DIR", None) or "/data/logs"
 
 
+def _at_line_start(f, offset):
+    """Whether *offset* sits just past a newline, i.e. begins a record."""
+    if offset == 0:
+        return True
+    f.seek(offset - 1)
+    return f.read(1) == b"\n"
+
+
 def _resolve(name):
     """Resolve *name* to a real log file inside the log directory, else None."""
     # Checked here, not only in the listing: DISPATCHARR_LOG_DIR may hold more than logs.
@@ -85,21 +93,45 @@ def get_log_file(request, name):
     if path is None:
         raise NotFound("Log file not found")
 
+    cursor = request.GET.get("cursor", "")
     with open(path, "rb") as f:
-        # Size comes from the open handle, so a rotation cannot land between
-        # the two and leave us seeking past the end of a fresh, empty file.
-        size = os.fstat(f.fileno()).st_size
-        truncated = size > MAX_VIEW_BYTES
+        # Identity and size come from the open handle, so a rotation cannot land
+        # between them and leave us seeking past the end of a fresh, empty file.
+        stat = os.fstat(f.fileno())
+        start, reset = 0, True
+        if cursor:
+            prev_inode, _, prev_end = cursor.partition("-")
+            # A new inode is a rotation: the old offset means nothing in the new
+            # file, and resuming at it would skip content or freeze the view.
+            if prev_inode == str(stat.st_ino) and prev_end.isdigit():
+                offset = min(int(prev_end), stat.st_size)
+                # Rotation frees inodes for reuse, so identity alone can be
+                # fooled; an offset mid-line did not come from this file.
+                if _at_line_start(f, offset):
+                    start, reset = offset, False
+        # A tab that slept asks for more than we serve; fall back to the tail.
+        truncated = stat.st_size - start > MAX_VIEW_BYTES
         if truncated:
-            f.seek(size - MAX_VIEW_BYTES)
-            data = f.read(MAX_VIEW_BYTES)
-            # Start at a line boundary so the client never sees a torn line.
-            newline = data.find(b"\n")
-            if newline >= 0:
-                data = data[newline + 1 :]
-        else:
-            data = f.read()
+            start, reset = stat.st_size - MAX_VIEW_BYTES, True
+        f.seek(start)
+        # Bounded by the size this handle reported, so concurrent appends
+        # cannot push the body past the cap the response advertises.
+        data = f.read(stat.st_size - start)
+
+    if reset and start:
+        # Start at a line boundary so the client never sees a torn line.
+        newline = data.find(b"\n")
+        if newline >= 0:
+            start += newline + 1
+            data = data[newline + 1 :]
+    elif not reset:
+        # Mid-write, the tail is a fragment; it arrives whole on the next poll.
+        end = data.rfind(b"\n")
+        data = data[: end + 1] if end >= 0 else b""
+
     response = HttpResponse(data, content_type="text/plain; charset=utf-8")
+    response["X-Log-Cursor"] = f"{stat.st_ino}-{start + len(data)}"
+    response["X-Log-Reset"] = "1" if reset else "0"
     response["X-Log-Truncated"] = "1" if truncated else "0"
     return response
 

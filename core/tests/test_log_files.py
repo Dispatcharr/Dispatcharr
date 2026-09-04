@@ -104,6 +104,82 @@ class LogFilesEndpointTests(TestCase):
         self.assertEqual(response.content, b"new\n")
         self.assertEqual(response["X-Log-Truncated"], "0")
 
+    def test_cursor_returns_only_bytes_written_since(self):
+        live = os.path.join(self.log_dir, "dispatcharr.log")
+        first = self.client.get("/api/core/logs/dispatcharr.log/")
+        self.assertEqual(first["X-Log-Reset"], "1")
+        with open(live, "a") as f:
+            f.write("line three\n")
+
+        second = self.client.get(
+            "/api/core/logs/dispatcharr.log/", {"cursor": first["X-Log-Cursor"]}
+        )
+        self.assertEqual(second["X-Log-Reset"], "0")
+        self.assertEqual(second.content, b"line three\n")
+
+    def test_cursor_withholds_a_line_still_being_written(self):
+        live = os.path.join(self.log_dir, "dispatcharr.log")
+        first = self.client.get("/api/core/logs/dispatcharr.log/")
+        with open(live, "a") as f:
+            f.write("complete\npartial-so-far")
+
+        second = self.client.get(
+            "/api/core/logs/dispatcharr.log/", {"cursor": first["X-Log-Cursor"]}
+        )
+        # The fragment is held back; the cursor stays in front of it.
+        self.assertEqual(second.content, b"complete\n")
+
+        with open(live, "a") as f:
+            f.write("-and-the-rest\n")
+        third = self.client.get(
+            "/api/core/logs/dispatcharr.log/", {"cursor": second["X-Log-Cursor"]}
+        )
+        self.assertEqual(third.content, b"partial-so-far-and-the-rest\n")
+
+    def test_cursor_from_a_rotated_file_resets_instead_of_skipping(self):
+        """A stale offset must not be resumed against a different inode."""
+        live = os.path.join(self.log_dir, "dispatcharr.log")
+        first = self.client.get("/api/core/logs/dispatcharr.log/")
+
+        # The collector's rotation, then a new file grown past the old offset.
+        os.replace(live, live + ".9")
+        with open(live, "w") as f:
+            f.write("fresh one\nfresh two\nfresh three\n")
+
+        second = self.client.get(
+            "/api/core/logs/dispatcharr.log/", {"cursor": first["X-Log-Cursor"]}
+        )
+        self.assertEqual(second["X-Log-Reset"], "1")
+        # Every line of the new file, not the slice past a meaningless offset.
+        self.assertEqual(
+            second.content, b"fresh one\nfresh two\nfresh three\n"
+        )
+
+    def test_cursor_beyond_a_gap_falls_back_to_the_tail(self):
+        """A tab that slept must not be handed more than the view cap."""
+        live = os.path.join(self.log_dir, "dispatcharr.log")
+        first = self.client.get("/api/core/logs/dispatcharr.log/")
+        with open(live, "ab") as f:
+            f.write((b"x" * 99 + b"\n") * 40)
+
+        with mock.patch.object(log_files, "MAX_VIEW_BYTES", 1000):
+            response = self.client.get(
+                "/api/core/logs/dispatcharr.log/",
+                {"cursor": first["X-Log-Cursor"]},
+            )
+        self.assertEqual(response["X-Log-Truncated"], "1")
+        self.assertEqual(response["X-Log-Reset"], "1")
+        self.assertLessEqual(len(response.content), 1000)
+
+    def test_cursor_is_ignored_when_malformed(self):
+        for bad in ("", "garbage", "12-", "-5", "abc-def"):
+            response = self.client.get(
+                "/api/core/logs/dispatcharr.log/", {"cursor": bad}
+            )
+            self.assertEqual(response.status_code, 200, bad)
+            self.assertEqual(response["X-Log-Reset"], "1", bad)
+            self.assertEqual(response.content, b"line one\nline two\n", bad)
+
     def test_download_sets_attachment_disposition(self):
         response = self.client.get("/api/core/logs/dispatcharr.log/download/")
         self.assertEqual(response.status_code, 200)
