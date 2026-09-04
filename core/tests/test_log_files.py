@@ -93,7 +93,7 @@ class LogFilesEndpointTests(TestCase):
 
     def test_view_sizes_the_open_handle_not_the_path(self):
         """A rotation between sizing and reading must not empty the view."""
-        live = os.path.join(self.log_dir, "dispatcharr.log")
+        live = os.path.realpath(os.path.join(self.log_dir, "dispatcharr.log"))
         with open(live, "wb") as f:
             f.write(b"old\n" * 500)
 
