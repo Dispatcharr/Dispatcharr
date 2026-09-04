@@ -475,11 +475,9 @@ const LogFileViewPage = () => {
         : null;
 
   // Only new bytes arrive once a cursor is held, so classify only those and
-  // append. A reset (rotation, first load, or a backend without the headers)
-  // replaces the buffer instead.
+  // append. A reset (rotation or first load) replaces the buffer instead.
   const applyResponse = useCallback((response) => {
     cursorRef.current = response.cursor || null;
-    // Absent on an older backend: replace rather than append to a stale buffer.
     if (response.reset !== false) {
       const lines = response.content ? response.content.split('\n') : [];
       const { entries: next, inTraceback } = classifyLines(lines);

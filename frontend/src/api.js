@@ -3796,32 +3796,9 @@ export default class API {
   static async getLogFile(name, { silent = false, cursor = null } = {}) {
     try {
       const query = cursor ? `?cursor=${encodeURIComponent(cursor)}` : '';
-      const response = await fetch(
-        `${host}/api/core/logs/${encodeURIComponent(name)}/${query}`,
-        {
-          headers: { Authorization: `Bearer ${await API.getAuthToken()}` },
-        }
+      return await request(
+        `${host}/api/core/logs/${encodeURIComponent(name)}/${query}`
       );
-      if (!response.ok) {
-        const error = new Error(`HTTP error! Status: ${response.status}`);
-        let errorBody = await response.text();
-        try {
-          errorBody = JSON.parse(errorBody);
-        } catch {
-          // If parsing fails, leave errorBody as the raw text
-        }
-        error.status = response.status;
-        error.response = response;
-        error.body = errorBody;
-        throw error;
-      }
-      return {
-        content: await response.text(),
-        truncated: response.headers.get('X-Log-Truncated') === '1',
-        cursor: response.headers.get('X-Log-Cursor'),
-        // A backend without the cursor headers replaces the buffer every poll.
-        reset: response.headers.get('X-Log-Reset') !== '0',
-      };
     } catch (e) {
       if (!silent) {
         errorNotification('Failed to retrieve log file', e);

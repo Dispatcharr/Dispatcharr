@@ -56,12 +56,12 @@ class LogFilesEndpointTests(TestCase):
         response = self.client.get("/api/core/logs/")
         self.assertFalse(response.json()["collector_running"])
 
-    def test_view_returns_plain_text(self):
+    def test_view_returns_the_tail(self):
         response = self.client.get("/api/core/logs/dispatcharr.log/")
         self.assertEqual(response.status_code, 200)
-        self.assertIn("text/plain", response["Content-Type"])
-        self.assertEqual(response.content, b"line one\nline two\n")
-        self.assertEqual(response["X-Log-Truncated"], "0")
+        payload = response.json()
+        self.assertEqual(payload["content"], "line one\nline two\n")
+        self.assertFalse(payload["truncated"])
 
     def test_view_truncates_large_files_at_line_boundary(self):
         big = os.path.join(self.log_dir, "dispatcharr.log.big")
@@ -71,11 +71,12 @@ class LogFilesEndpointTests(TestCase):
                 f.write(line)
         response = self.client.get("/api/core/logs/dispatcharr.log.big/")
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response["X-Log-Truncated"], "1")
-        self.assertLessEqual(len(response.content), log_files.MAX_VIEW_BYTES)
+        payload = response.json()
+        self.assertTrue(payload["truncated"])
+        self.assertLessEqual(len(payload["content"]), log_files.MAX_VIEW_BYTES)
         # Line-boundary start: content begins with a full line
-        self.assertTrue(response.content.startswith(b"x"))
-        self.assertEqual(len(response.content) % 100, 0)
+        self.assertTrue(payload["content"].startswith("x"))
+        self.assertEqual(len(payload["content"]) % 100, 0)
 
     def test_view_sizes_the_open_handle_not_the_path(self):
         """A rotation between sizing and reading must not empty the view."""
@@ -101,45 +102,45 @@ class LogFilesEndpointTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         # Sized from the handle: the fresh file is served whole, not seeked past.
-        self.assertEqual(response.content, b"new\n")
-        self.assertEqual(response["X-Log-Truncated"], "0")
+        self.assertEqual(response.json()["content"], "new\n")
+        self.assertFalse(response.json()["truncated"])
 
     def test_cursor_returns_only_bytes_written_since(self):
         live = os.path.join(self.log_dir, "dispatcharr.log")
-        first = self.client.get("/api/core/logs/dispatcharr.log/")
-        self.assertEqual(first["X-Log-Reset"], "1")
+        first = self.client.get("/api/core/logs/dispatcharr.log/").json()
+        self.assertTrue(first["reset"])
         with open(live, "a") as f:
             f.write("line three\n")
 
         second = self.client.get(
-            "/api/core/logs/dispatcharr.log/", {"cursor": first["X-Log-Cursor"]}
-        )
-        self.assertEqual(second["X-Log-Reset"], "0")
-        self.assertEqual(second.content, b"line three\n")
+            "/api/core/logs/dispatcharr.log/", {"cursor": first["cursor"]}
+        ).json()
+        self.assertFalse(second["reset"])
+        self.assertEqual(second["content"], "line three\n")
 
     def test_cursor_withholds_a_line_still_being_written(self):
         live = os.path.join(self.log_dir, "dispatcharr.log")
-        first = self.client.get("/api/core/logs/dispatcharr.log/")
+        first = self.client.get("/api/core/logs/dispatcharr.log/").json()
         with open(live, "a") as f:
             f.write("complete\npartial-so-far")
 
         second = self.client.get(
-            "/api/core/logs/dispatcharr.log/", {"cursor": first["X-Log-Cursor"]}
-        )
+            "/api/core/logs/dispatcharr.log/", {"cursor": first["cursor"]}
+        ).json()
         # The fragment is held back; the cursor stays in front of it.
-        self.assertEqual(second.content, b"complete\n")
+        self.assertEqual(second["content"], "complete\n")
 
         with open(live, "a") as f:
             f.write("-and-the-rest\n")
         third = self.client.get(
-            "/api/core/logs/dispatcharr.log/", {"cursor": second["X-Log-Cursor"]}
-        )
-        self.assertEqual(third.content, b"partial-so-far-and-the-rest\n")
+            "/api/core/logs/dispatcharr.log/", {"cursor": second["cursor"]}
+        ).json()
+        self.assertEqual(third["content"], "partial-so-far-and-the-rest\n")
 
     def test_cursor_from_a_rotated_file_resets_instead_of_skipping(self):
         """A stale offset must not be resumed against a different inode."""
         live = os.path.join(self.log_dir, "dispatcharr.log")
-        first = self.client.get("/api/core/logs/dispatcharr.log/")
+        first = self.client.get("/api/core/logs/dispatcharr.log/").json()
 
         # The collector's rotation, then a new file grown past the old offset.
         os.replace(live, live + ".9")
@@ -147,29 +148,26 @@ class LogFilesEndpointTests(TestCase):
             f.write("fresh one\nfresh two\nfresh three\n")
 
         second = self.client.get(
-            "/api/core/logs/dispatcharr.log/", {"cursor": first["X-Log-Cursor"]}
-        )
-        self.assertEqual(second["X-Log-Reset"], "1")
+            "/api/core/logs/dispatcharr.log/", {"cursor": first["cursor"]}
+        ).json()
+        self.assertTrue(second["reset"])
         # Every line of the new file, not the slice past a meaningless offset.
-        self.assertEqual(
-            second.content, b"fresh one\nfresh two\nfresh three\n"
-        )
+        self.assertEqual(second["content"], "fresh one\nfresh two\nfresh three\n")
 
     def test_cursor_beyond_a_gap_falls_back_to_the_tail(self):
         """A tab that slept must not be handed more than the view cap."""
         live = os.path.join(self.log_dir, "dispatcharr.log")
-        first = self.client.get("/api/core/logs/dispatcharr.log/")
+        first = self.client.get("/api/core/logs/dispatcharr.log/").json()
         with open(live, "ab") as f:
             f.write((b"x" * 99 + b"\n") * 40)
 
         with mock.patch.object(log_files, "MAX_VIEW_BYTES", 1000):
-            response = self.client.get(
-                "/api/core/logs/dispatcharr.log/",
-                {"cursor": first["X-Log-Cursor"]},
-            )
-        self.assertEqual(response["X-Log-Truncated"], "1")
-        self.assertEqual(response["X-Log-Reset"], "1")
-        self.assertLessEqual(len(response.content), 1000)
+            payload = self.client.get(
+                "/api/core/logs/dispatcharr.log/", {"cursor": first["cursor"]}
+            ).json()
+        self.assertTrue(payload["truncated"])
+        self.assertTrue(payload["reset"])
+        self.assertLessEqual(len(payload["content"]), 1000)
 
     def test_cursor_is_ignored_when_malformed(self):
         for bad in ("", "garbage", "12-", "-5", "abc-def"):
@@ -177,8 +175,8 @@ class LogFilesEndpointTests(TestCase):
                 "/api/core/logs/dispatcharr.log/", {"cursor": bad}
             )
             self.assertEqual(response.status_code, 200, bad)
-            self.assertEqual(response["X-Log-Reset"], "1", bad)
-            self.assertEqual(response.content, b"line one\nline two\n", bad)
+            self.assertTrue(response.json()["reset"], bad)
+            self.assertEqual(response.json()["content"], "line one\nline two\n", bad)
 
     def test_download_sets_attachment_disposition(self):
         response = self.client.get("/api/core/logs/dispatcharr.log/download/")
