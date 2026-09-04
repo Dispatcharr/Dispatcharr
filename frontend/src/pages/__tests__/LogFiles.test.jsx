@@ -79,20 +79,20 @@ describe('LogFilesPage', () => {
       expect(screen.getByText('dispatcharr.log')).toBeInTheDocument();
     });
     expect(screen.getByText('dispatcharr.log.1')).toBeInTheDocument();
-    expect(screen.getByText('2.0 KB')).toBeInTheDocument();
-    expect(screen.getByText('5.0 MB')).toBeInTheDocument();
+    expect(screen.getByText('2.00 KB')).toBeInTheDocument();
+    expect(screen.getByText('5.00 MB')).toBeInTheDocument();
   });
 
   it('right-aligns sizes and keeps the exact count a hover away', async () => {
     API.getLogFiles.mockResolvedValue(files);
     renderPage();
-    await screen.findByText('2.0 KB');
+    await screen.findByText('2.00 KB');
     expect(screen.getByText('Size')).toHaveAttribute('data-align', 'right');
-    expect(screen.getByText('2.0 KB').closest('td')).toHaveAttribute(
+    expect(screen.getByText('2.00 KB').closest('td')).toHaveAttribute(
       'data-align',
       'right'
     );
-    expect(screen.getByText('5.0 MB')).toHaveAttribute(
+    expect(screen.getByText('5.00 MB')).toHaveAttribute(
       'title',
       '5,242,880 bytes'
     );
