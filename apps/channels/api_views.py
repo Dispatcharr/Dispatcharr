@@ -11,8 +11,8 @@ from drf_spectacular.types import OpenApiTypes
 from rest_framework import serializers
 from django.shortcuts import get_object_or_404, get_list_or_404
 from django.db import connection, transaction
-from django.db.models import Count, F, Prefetch
-from django.db.models import Q
+from django.db.models import Count, F, Prefetch, Q
+from django.db.models.functions import Coalesce
 import os, json, requests, logging, mimetypes, threading, time
 from urllib.parse import urlencode
 from datetime import timedelta
@@ -655,14 +655,40 @@ class ChannelGroupViewSet(viewsets.ModelViewSet):
         # `distinct=True` is required when multiple reverse-FK annotations
         # share the same queryset to avoid row-multiplication artifacts.
         # m3u_accounts is still prefetched for the nested serializer data.
+        user = getattr(self.request, 'user', None)
+        self._visible_group_counts = None
+
+        # Non-admins only see groups that contain at least one channel they
+        # can activate (user_level + optional adult hide).
+        if user is not None and getattr(user, 'user_level', 10) < 10:
+            visible = Channel.objects.filter(user_level__lte=user.user_level)
+            custom_props = getattr(user, 'custom_properties', None) or {}
+            if custom_props.get('hide_adult_content', False):
+                visible = visible.filter(is_adult=False)
+            rows = (
+                visible.annotate(
+                    gid=Coalesce(
+                        'override__channel_group_id',
+                        'channel_group_id',
+                    )
+                )
+                .filter(gid__isnull=False)
+                .values('gid')
+                .annotate(c=Count('id'))
+            )
+            self._visible_group_counts = {
+                row['gid']: row['c'] for row in rows
+            }
+            return ChannelGroup.objects.filter(
+                pk__in=self._visible_group_counts.keys()
+            ).only('id', 'name')
+
         return (
-            ChannelGroup.objects
-            .annotate(
+            ChannelGroup.objects.annotate(
                 channel_count=Count('channels', distinct=True),
                 m3u_account_count=Count('m3u_accounts', distinct=True),
             )
             .prefetch_related('m3u_accounts')
-            .all()
         )
 
     def list(self, request, *args, **kwargs):
@@ -672,6 +698,24 @@ class ChannelGroupViewSet(viewsets.ModelViewSet):
         # populated together, then extract IDs from the in-memory objects.
         # A second .values_list() call would fire a separate SQL query.
         groups = list(queryset)
+
+        # Non-admin path: counts already computed via GROUP BY; skip m3u nest
+        # and stream-count aggregation (provider group tooling is admin-only).
+        counts = getattr(self, '_visible_group_counts', None)
+        if counts is not None:
+            return Response(
+                [
+                    {
+                        'id': g.id,
+                        'name': g.name,
+                        'channel_count': counts.get(g.id, 0),
+                        'm3u_account_count': 0,
+                        'm3u_accounts': [],
+                    }
+                    for g in groups
+                ]
+            )
+
         group_ids = [g.id for g in groups]
 
         # Pre-aggregate stream counts for all (account, group) pairs in a
@@ -1005,6 +1049,10 @@ class ChannelViewSet(viewsets.ModelViewSet):
         q_filters = Q()
 
         channel_profile_id = self.request.query_params.get("channel_profile_id")
+        if channel_profile_id is not None and (
+            channel_profile_id == "" or str(channel_profile_id).lower() == "all"
+        ):
+            channel_profile_id = None
         show_disabled_param = self.request.query_params.get("show_disabled", None)
         only_streamless = self.request.query_params.get("only_streamless", None)
         only_stale = self.request.query_params.get("only_stale", None)
@@ -1048,23 +1096,36 @@ class ChannelViewSet(viewsets.ModelViewSet):
             elif visibility_filter != "all":
                 q_filters &= Q(hidden_from_output=False)
 
+        profile_union_applied = False
         if self.request.user.user_level < 10:
             filters["user_level__lte"] = self.request.user.user_level
             # Hide adult content if user preference is set
             custom_props = self.request.user.custom_properties or {}
             if custom_props.get('hide_adult_content', False):
                 filters["is_adult"] = False
+            # Without an explicit profile, list/summary/get_ids are limited to
+            # enabled memberships in the user's assigned profiles. Retrieve /
+            # update / destroy remain reachable by channel id.
+            if (
+                self.action in ("list", "get_ids", "summary")
+                and not channel_profile_id
+                and self.request.user.channel_profiles.exists()
+            ):
+                q_filters &= Q(
+                    channelprofilemembership__channel_profile__in=(
+                        self.request.user.channel_profiles.all()
+                    ),
+                    channelprofilemembership__enabled=True,
+                )
+                profile_union_applied = True
 
         if filters:
             qs = qs.filter(**filters)
         if q_filters:
             qs = qs.filter(q_filters)
 
-        # DISTINCT is only needed when a filter joins to a one-to-many table
-        # and can produce duplicate channel rows. channel_profile_id joins
-        # channelprofilemembership; only_stale joins streams. All other
-        # filters use FK or one-to-one joins that cannot produce duplicates.
-        if channel_profile_id or only_stale:
+        # DISTINCT when a join can duplicate channel rows.
+        if channel_profile_id or only_stale or profile_union_applied:
             return qs.distinct()
         return qs
 

@@ -50,6 +50,7 @@ import {
   filterGuideChannels,
   formatSeasonEpisode,
   formatTime,
+  getGroupOptions,
   getProfileOptions,
   getRuleByProgram,
   HOUR_WIDTH,
@@ -186,6 +187,10 @@ export default function TVChannelGuide({ startDate, endDate }) {
     }
   }, [allowAllGroups, channelGroups, selectedGroupId]);
 
+  // Group changes are client-side when All is allowed; only refetch when the
+  // forced single-group API path needs a different group.
+  const groupRefetchKey = allowAllGroups ? 'all' : selectedGroupId;
+
   // Fetch channels on demand based on filters
   useEffect(() => {
     let cancelled = false;
@@ -193,21 +198,25 @@ export default function TVChannelGuide({ startDate, endDate }) {
       try {
         setIsChannelsLoading(true);
         const params = new URLSearchParams();
-        // Group filter by name, if not 'all'
-        if (selectedGroupId !== 'all') {
-          const group = channelGroups[Number(selectedGroupId)];
+        // When All groups is allowed, fetch the whole profile-scoped channel
+        // set and apply the group dropdown filter in the browser. Only ask the
+        // API for a specific group when All is disabled (channel count above
+        // MAX_ALL_CHANNELS).
+        if (!allowAllGroups) {
+          const group =
+            selectedGroupId !== 'all'
+              ? channelGroups[Number(selectedGroupId)]
+              : Object.values(channelGroups).find((g) => g?.hasChannels);
           if (group?.name) params.set('channel_group', group.name);
-        } else if (!allowAllGroups) {
-          // If 'all' is not allowed, fall back to first available group
-          const firstGroup = Object.values(channelGroups).find(
-            (g) => g?.hasChannels
-          );
-          if (firstGroup?.name) params.set('channel_group', firstGroup.name);
         }
 
-        // Profile filter
-        if (selectedProfileId && selectedProfileId !== 'all') {
-          params.set('channel_profile_id', String(selectedProfileId));
+        // Profile filter (shared with the programs request so scopes match).
+        const profileParam =
+          selectedProfileId && selectedProfileId !== 'all'
+            ? String(selectedProfileId)
+            : null;
+        if (profileParam) {
+          params.set('channel_profile_id', profileParam);
         }
 
         // Search filter
@@ -215,11 +224,14 @@ export default function TVChannelGuide({ startDate, endDate }) {
           params.set('search', searchQuery.trim());
         }
 
-        // Fetch channels and programs in parallel — programs don't depend
-        // on channels so there's no reason to wait for one before the other.
+        // Fetch channels and programs in parallel.
+        const programParams = new URLSearchParams();
+        if (profileParam) {
+          programParams.set('channel_profile_id', profileParam);
+        }
         const [channels, programData] = await Promise.all([
           API.getChannelsSummary(params),
-          fetchPrograms(),
+          fetchPrograms(programParams),
         ]);
 
         if (cancelled) return;
@@ -241,13 +253,8 @@ export default function TVChannelGuide({ startDate, endDate }) {
     return () => {
       cancelled = true;
     };
-  }, [
-    allowAllGroups,
-    channelGroups,
-    searchQuery,
-    selectedGroupId,
-    selectedProfileId,
-  ]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [allowAllGroups, channelGroups, searchQuery, selectedProfileId, groupRefetchKey]);
 
   // Apply filters when search, group, or profile changes
   const filteredChannels = useMemo(() => {
@@ -267,6 +274,26 @@ export default function TVChannelGuide({ startDate, endDate }) {
     guideChannels,
     profiles,
   ]);
+
+  // Groups present on the loaded (profile-scoped) channels only.
+  const groupOptions = useMemo(() => {
+    const opts = getGroupOptions(channelGroups, guideChannels);
+    if (!allowAllGroups) {
+      return opts.filter((o) => o.value !== 'all');
+    }
+    return opts;
+  }, [channelGroups, guideChannels, allowAllGroups]);
+
+  // Drop a selected group that is no longer in the visible set (profile change).
+  useEffect(() => {
+    if (selectedGroupId === 'all') return;
+    const stillVisible = groupOptions.some(
+      (o) => o.value === String(selectedGroupId)
+    );
+    if (!stillVisible) {
+      setSelectedGroupId('all');
+    }
+  }, [groupOptions, selectedGroupId]);
 
   // Use start/end from props or default to "today at midnight" +24h
   const defaultStart = initializeTime(startDate || startOfDay(getNow()));
@@ -1182,21 +1209,6 @@ export default function TVChannelGuide({ startDate, endDate }) {
       listRef.current.scrollToItem(0);
     }
   }, [searchQuery, selectedGroupId, selectedProfileId]);
-
-  // Group options: show all groups; gate 'All' if too many channels
-  const groupOptions = useMemo(() => {
-    const opts = [];
-    if (allowAllGroups) {
-      opts.push({ value: 'all', label: 'All Channel Groups' });
-    }
-    const groupsArr = Object.values(channelGroups)
-      .filter((g) => g?.hasChannels)
-      .sort((a, b) => (a?.name || '').localeCompare(b?.name || ''));
-    groupsArr.forEach((g) => {
-      opts.push({ value: String(g.id), label: g.name });
-    });
-    return opts;
-  }, [channelGroups, allowAllGroups]);
 
   // Create profile options for dropdown
   const profileOptions = useMemo(() => getProfileOptions(profiles), [profiles]);
