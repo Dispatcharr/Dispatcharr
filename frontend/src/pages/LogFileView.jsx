@@ -41,7 +41,7 @@ const LEVEL_RANK = {
   INFO: 20,
   WARNING: 30,
   ERROR: 40,
-  CRITICAL: 50,
+  CRITICAL: 40,
 };
 
 const FIRST_PARTY = new Set([
@@ -120,9 +120,7 @@ const levelColor = (level) => {
 const barColor = (level, minRank) => {
   const color = severityColor(level);
   if (!color) return 'transparent';
-  // CRITICAL displays as ERROR, so it answers to ERROR's floor.
-  const rank = level === 'CRITICAL' ? LEVEL_RANK.ERROR : LEVEL_RANK[level];
-  return rank > minRank ? color : 'transparent';
+  return LEVEL_RANK[level] > minRank ? color : 'transparent';
 };
 
 const RECORD_START =
