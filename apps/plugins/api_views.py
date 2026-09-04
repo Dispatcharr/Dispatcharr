@@ -22,6 +22,7 @@ from apps.accounts.permissions import (
     permission_classes_by_method,
 )
 from core.http_security import get_with_validated_redirects
+from core.utils import build_absolute_uri_with_port
 from dispatcharr.utils import network_access_allowed
 
 from .loader import PluginManager
@@ -87,7 +88,7 @@ def _absolutize_logo_url(request, url: str | None) -> str | None:
     parsed = urlparse(url)
     if parsed.scheme:
         return url
-    return request.build_absolute_uri(url)
+    return build_absolute_uri_with_port(request, url)
 
 
 class PluginAuthMixin:
