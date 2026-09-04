@@ -75,6 +75,11 @@ const request = async (url, options = {}) => {
     throw error;
   }
 
+  // { raw: true } hands back the Response for a caller that wants a blob.
+  if (options.raw) {
+    return response;
+  }
+
   // 204 / empty bodies are success with no payload. Return null, not '',
   // so callers that destructure the result don't silently get undefined fields.
   const text = await response.text();
@@ -3808,15 +3813,10 @@ export default class API {
 
   static async downloadLogFile(name) {
     try {
-      const response = await fetch(
+      const response = await request(
         `${host}/api/core/logs/${encodeURIComponent(name)}/download/`,
-        {
-          headers: { Authorization: `Bearer ${await API.getAuthToken()}` },
-        }
+        { raw: true }
       );
-      if (!response.ok) {
-        throw new Error(`HTTP error! Status: ${response.status}`);
-      }
       const url = URL.createObjectURL(await response.blob());
       const link = document.createElement('a');
       link.href = url;
