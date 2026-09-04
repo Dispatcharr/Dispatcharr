@@ -138,8 +138,9 @@ def get_log_file(request, name):
             prev_inode, _, prev_end = cursor.partition("-")
             # A new inode is a rotation: the old offset means nothing in the new
             # file, and resuming at it would skip content or freeze the view.
-            if prev_inode == str(stat.st_ino) and prev_end.isdigit():
-                offset = min(int(prev_end), stat.st_size)
+            valid = len(prev_end) < 20 and prev_end.isdecimal()
+            if prev_inode == str(stat.st_ino) and valid:
+                offset = int(prev_end)
                 # Rotation frees inodes for reuse, so identity alone can be
                 # fooled; an offset mid-line did not come from this file.
                 if _at_line_start(f, offset):

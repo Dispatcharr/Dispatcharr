@@ -166,8 +166,33 @@ class LogFilesEndpointTests(TestCase):
         self.assertTrue(payload["reset"])
         self.assertLessEqual(len(payload["content"]), 1000)
 
+    def test_cursor_past_the_end_of_the_same_inode_resets(self):
+        """In-place truncation or inode reuse leaves the offset beyond EOF."""
+        live = os.path.join(self.log_dir, "dispatcharr.log")
+        first = self.client.get("/api/core/logs/dispatcharr.log/").json()
+        with open(live, "w") as f:
+            f.write("fresh\n")
+
+        second = self.client.get(
+            "/api/core/logs/dispatcharr.log/", {"cursor": first["cursor"]}
+        ).json()
+        self.assertTrue(second["reset"])
+        self.assertEqual(second["content"], "fresh\n")
+
+    def test_cursor_mid_line_on_the_same_inode_resets(self):
+        inode = os.stat(os.path.join(self.log_dir, "dispatcharr.log")).st_ino
+        payload = self.client.get(
+            "/api/core/logs/dispatcharr.log/", {"cursor": f"{inode}-5"}
+        ).json()
+        self.assertTrue(payload["reset"])
+        self.assertEqual(payload["content"], "line one\nline two\n")
+
     def test_cursor_is_ignored_when_malformed(self):
-        for bad in ("", "garbage", "12-", "-5", "abc-def"):
+        inode = os.stat(os.path.join(self.log_dir, "dispatcharr.log")).st_ino
+        bad_cursors = ("", "garbage", "12-", "-5", "abc-def")
+        # Characters isdigit() accepts but int() rejects, and int()'s digit limit.
+        bad_cursors += (f"{inode}-\u00b2", f"{inode}-" + "9" * 5000)
+        for bad in bad_cursors:
             response = self.client.get(
                 "/api/core/logs/dispatcharr.log/", {"cursor": bad}
             )
