@@ -21,6 +21,7 @@ import {
 } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import API from '../api';
+import DownloadLogButton from '../components/DownloadLogButton';
 import useBrowserStorage from '../hooks/useBrowserStorage';
 
 const COLORS = {
@@ -421,8 +422,6 @@ const LogFileViewPage = () => {
     [query]
   );
   const [loadError, setLoadError] = useState(false);
-  // The whole body arrives before the browser saves anything; say so.
-  const [downloading, setDownloading] = useState(false);
 
   const loadingRef = useRef(false);
   const failuresRef = useRef(0);
@@ -725,22 +724,7 @@ const LogFileViewPage = () => {
               >
                 Refresh
               </Button>
-              <Button
-                size="xs"
-                variant="subtle"
-                loading={downloading}
-                onClick={async () => {
-                  setDownloading(true);
-                  try {
-                    await API.downloadLogFile(name);
-                  } finally {
-                    setDownloading(false);
-                  }
-                }}
-                style={{ marginTop: 'auto' }}
-              >
-                Download
-              </Button>
+              <DownloadLogButton name={name} style={{ marginTop: 'auto' }} />
             </Group>
           </Group>
         </Box>

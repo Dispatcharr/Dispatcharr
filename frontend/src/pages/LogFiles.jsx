@@ -11,6 +11,7 @@ import {
   Title,
 } from '@mantine/core';
 import API from '../api';
+import DownloadLogButton from '../components/DownloadLogButton';
 import { useDateTimeFormat, format } from '../utils/dateTimeUtils.js';
 import { formatBytes } from '../utils/networkUtils.js';
 
@@ -19,8 +20,6 @@ const LogFilesPage = () => {
   const [collectorRunning, setCollectorRunning] = useState(true);
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState(false);
-  // The whole body arrives before the browser saves anything; say so.
-  const [downloading, setDownloading] = useState(null);
   const { fullDateTimeFormat } = useDateTimeFormat();
 
   const load = useCallback(async () => {
@@ -97,22 +96,8 @@ const LogFilesPage = () => {
                   {formatBytes(file.size)}
                 </Text>
               </Table.Td>
-              <Table.Td align="right">
-                <Button
-                  variant="subtle"
-                  size="xs"
-                  loading={downloading === file.name}
-                  onClick={async () => {
-                    setDownloading(file.name);
-                    try {
-                      await API.downloadLogFile(file.name);
-                    } finally {
-                      setDownloading(null);
-                    }
-                  }}
-                >
-                  Download
-                </Button>
+              <Table.Td ta="right">
+                <DownloadLogButton name={file.name} />
               </Table.Td>
             </Table.Tr>
           ))}
