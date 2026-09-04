@@ -824,4 +824,43 @@ describe('Guide', () => {
       vi.setSystemTime(new Date('2024-01-15T12:00:00Z'));
     });
   });
+
+  describe('Time window loading', () => {
+    it('requests the initial now−1h → now+24h grid window', async () => {
+      vi.useRealTimers();
+      guideUtils.fetchPrograms.mockClear();
+
+      render(<Guide />);
+
+      await waitFor(() => {
+        expect(guideUtils.fetchPrograms).toHaveBeenCalled();
+      });
+
+      const params = guideUtils.fetchPrograms.mock.calls[0][0];
+      expect(params).toBeInstanceOf(URLSearchParams);
+      const start = Date.parse(params.get('start'));
+      const end = Date.parse(params.get('end'));
+      const nowMs = now.valueOf();
+      expect(start).toBe(nowMs - 60 * 60 * 1000);
+      expect(end).toBe(nowMs + 24 * 60 * 60 * 1000);
+    });
+
+    it('does not refetch channels on the initial program window load alone', async () => {
+      vi.useRealTimers();
+      API.getChannelsSummary.mockClear();
+      guideUtils.fetchPrograms.mockClear();
+
+      render(<Guide />);
+
+      await waitFor(() => {
+        expect(API.getChannelsSummary).toHaveBeenCalled();
+        expect(guideUtils.fetchPrograms).toHaveBeenCalled();
+      });
+
+      const channelCalls = API.getChannelsSummary.mock.calls.length;
+      // Allow React StrictMode double-invoke; time-extend must not add channel fetches.
+      expect(channelCalls).toBeLessThanOrEqual(2);
+      expect(API.getChannelsSummary).toHaveBeenCalledTimes(channelCalls);
+    });
+  });
 });
