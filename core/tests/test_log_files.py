@@ -4,6 +4,7 @@ import os
 import time
 import shutil
 import tempfile
+from unittest import mock
 
 from django.contrib.auth import get_user_model
 from django.test import TestCase, override_settings
@@ -75,6 +76,33 @@ class LogFilesEndpointTests(TestCase):
         # Line-boundary start: content begins with a full line
         self.assertTrue(response.content.startswith(b"x"))
         self.assertEqual(len(response.content) % 100, 0)
+
+    def test_view_sizes_the_open_handle_not_the_path(self):
+        """A rotation between sizing and reading must not empty the view."""
+        live = os.path.join(self.log_dir, "dispatcharr.log")
+        with open(live, "wb") as f:
+            f.write(b"old\n" * 500)
+
+        real_open = open
+
+        def rotating_open(path, *args, **kwargs):
+            # Rotate exactly once, the way the collector does, as the view opens.
+            if path == live and not getattr(rotating_open, "fired", False):
+                rotating_open.fired = True
+                os.replace(live, live + ".9")
+                with real_open(live, "wb") as fresh:
+                    fresh.write(b"new\n")
+            return real_open(path, *args, **kwargs)
+
+        with mock.patch.object(log_files, "MAX_VIEW_BYTES", 100), mock.patch(
+            "core.log_files.open", rotating_open, create=True
+        ):
+            response = self.client.get("/api/core/logs/dispatcharr.log/")
+
+        self.assertEqual(response.status_code, 200)
+        # Sized from the handle: the fresh file is served whole, not seeked past.
+        self.assertEqual(response.content, b"new\n")
+        self.assertEqual(response["X-Log-Truncated"], "0")
 
     def test_download_sets_attachment_disposition(self):
         response = self.client.get("/api/core/logs/dispatcharr.log/download/")

@@ -85,9 +85,11 @@ def get_log_file(request, name):
     if path is None:
         raise NotFound("Log file not found")
 
-    size = os.path.getsize(path)
-    truncated = size > MAX_VIEW_BYTES
     with open(path, "rb") as f:
+        # Size comes from the open handle, so a rotation cannot land between
+        # the two and leave us seeking past the end of a fresh, empty file.
+        size = os.fstat(f.fileno()).st_size
+        truncated = size > MAX_VIEW_BYTES
         if truncated:
             f.seek(size - MAX_VIEW_BYTES)
             data = f.read(MAX_VIEW_BYTES)
