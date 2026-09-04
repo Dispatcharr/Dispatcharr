@@ -87,7 +87,7 @@ def list_log_files(request):
                 ).isoformat(),
             }
         )
-    files.sort(key=lambda f: f["modified"], reverse=True)
+    files.sort(key=lambda f: (f["modified"], f["name"]), reverse=True)
     return Response(
         {
             "path": base,
