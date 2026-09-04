@@ -387,6 +387,7 @@ const LogFileViewPage = () => {
   )
     ? refreshSetting
     : 0;
+  const [paused, setPaused] = useState(false);
   const [newestFirst, setNewestFirst] = useBrowserStorage(
     'log-viewer-newest-first',
     false
@@ -612,7 +613,7 @@ const LogFileViewPage = () => {
   }, [load]);
 
   useEffect(() => {
-    if (!refreshSeconds) return undefined;
+    if (!refreshSeconds || paused) return undefined;
     failuresRef.current = 0;
     const id = setInterval(async () => {
       if (document.hidden || loadingRef.current) return;
@@ -622,11 +623,11 @@ const LogFileViewPage = () => {
       } else {
         failuresRef.current += 1;
         if (failuresRef.current >= 3) {
-          setRefreshSetting(0);
+          setPaused(true);
           notifications.show({
             title: 'Auto-refresh paused',
             message:
-              'Stopped auto-refresh after repeated errors loading the log.',
+              'Paused auto-refresh after repeated errors loading the log.',
             color: 'yellow',
             autoClose: 6000,
           });
@@ -634,7 +635,7 @@ const LogFileViewPage = () => {
       }
     }, refreshSeconds * 1000);
     return () => clearInterval(id);
-  }, [refreshSeconds, setRefreshSetting, load]);
+  }, [refreshSeconds, paused, load]);
 
   return (
     <Box p="md">
@@ -709,8 +710,11 @@ const LogFileViewPage = () => {
               <Select
                 size="xs"
                 label="Auto Refresh"
-                value={refreshSeconds.toString()}
-                onChange={(value) => setRefreshSetting(parseInt(value))}
+                value={paused ? '0' : refreshSeconds.toString()}
+                onChange={(value) => {
+                  setPaused(false);
+                  setRefreshSetting(parseInt(value));
+                }}
                 allowDeselect={false}
                 data={REFRESH_OPTIONS}
                 style={{ width: 120 }}
