@@ -43,7 +43,7 @@ def _resolve(name):
     """Resolve *name* to a real log file inside the log directory, else None."""
     # DISPATCHARR_LOG_DIR may hold more than logs.
     log_dir = settings.LOG_FILE_DIR
-    if not log_dir or not _NAME_RE.match(name) or not name.startswith(BASE_NAME):
+    if not log_dir or not _NAME_RE.fullmatch(name) or not name.startswith(BASE_NAME):
         return None
     base = os.path.realpath(log_dir)
     path = os.path.realpath(os.path.join(base, name))
