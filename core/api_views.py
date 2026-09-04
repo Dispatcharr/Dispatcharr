@@ -453,7 +453,7 @@ def version(request):
     description="Trigger rehashing of all streams",
 )
 @api_view(["POST"])
-@permission_classes([Authenticated])
+@permission_classes([IsAdmin])
 def rehash_streams_endpoint(request):
     """Trigger the rehash streams task"""
     try:
