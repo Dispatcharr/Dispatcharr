@@ -120,9 +120,17 @@ until python manage.py migrate --check >/dev/null 2>&1; do
     MIG_WAITED=$((MIG_WAITED + 2))
 done
 
+# Celery reprints its banner in every worker and beat process. Keep it for the
+# levels that asked for detail; the flag is empty otherwise.
+case "${DISPATCHARR_LOG_LEVEL^^}" in
+    DEBUG|TRACE) CELERY_BANNER="" ;;
+    *) CELERY_BANNER="--quiet" ;;
+esac
+
 # Start Celery
 echo 'Migrations complete, starting Celery...'
-celery -A dispatcharr beat -l info &
+# Unquoted so an empty banner flag disappears instead of becoming an argument.
+celery $CELERY_BANNER -A dispatcharr beat -l info &
 
 # Celery prefork autoscale (override to tune memory vs throughput; range: 1-20)
 configure_celery_autoscale_workers
@@ -135,6 +143,6 @@ if [ "$NICE_LEVEL" -lt 0 ] 2>/dev/null; then
 fi
 
 # DVR worker: thread pool for the long-running, I/O-bound run_recording task.
-nice -n "$NICE_LEVEL" celery -A dispatcharr worker -Q dvr -n dvr@%h --pool=threads --concurrency=20 -l info &
+nice -n "$NICE_LEVEL" celery $CELERY_BANNER -A dispatcharr worker -Q dvr -n dvr@%h --pool=threads --concurrency=20 -l info &
 # Default prefork worker: every queue except `dvr`.
-nice -n "$NICE_LEVEL" celery -A dispatcharr worker -Q celery -n default@%h --autoscale="$CELERY_MAX_WORKERS,$CELERY_MIN_WORKERS" -l info
+nice -n "$NICE_LEVEL" celery $CELERY_BANNER -A dispatcharr worker -Q celery -n default@%h --autoscale="$CELERY_MAX_WORKERS,$CELERY_MIN_WORKERS" -l info
