@@ -773,6 +773,77 @@ class ChannelListIncludeStreamsQueryTests(TestCase):
         )
 
 
+class ChannelAssignedProfileScopeTests(TestCase):
+    """Non-admin with assigned profiles: list/summary/get_ids are limited to
+    enabled memberships in those profiles; retrieve by id is not.
+    """
+
+    def setUp(self):
+        from apps.channels.models import ChannelProfile, ChannelProfileMembership
+
+        self.group = ChannelGroup.objects.create(name="Profile Scope Group")
+        self.in_profile = Channel.objects.create(
+            channel_number=1.0, name="In Profile", channel_group=self.group,
+        )
+        self.out_of_profile = Channel.objects.create(
+            channel_number=2.0, name="Out Of Profile", channel_group=self.group,
+        )
+
+        # Profile creation auto-adds enabled memberships for every existing
+        # channel; disable the one we want excluded.
+        self.profile = ChannelProfile.objects.create(name="Assigned Profile")
+        ChannelProfileMembership.objects.filter(
+            channel_profile=self.profile, channel=self.out_of_profile,
+        ).update(enabled=False)
+
+        self.user = User.objects.create_user(username="profile_scoped", password="x")
+        self.user.user_level = User.UserLevel.STANDARD
+        self.user.save()
+        self.user.channel_profiles.add(self.profile)
+
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+    def test_summary_limited_to_assigned_profile_union(self):
+        response = self.client.get("/api/channels/channels/summary/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        ids = {row["id"] for row in response.json()}
+        self.assertEqual(ids, {self.in_profile.id})
+
+    def test_list_limited_to_assigned_profile_union(self):
+        response = self.client.get(
+            "/api/channels/channels/", {"page": 1, "page_size": 50}
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        ids = {row["id"] for row in response.data["results"]}
+        self.assertEqual(ids, {self.in_profile.id})
+
+    def test_retrieve_reaches_channel_outside_assigned_profile(self):
+        response = self.client.get(
+            f"/api/channels/channels/{self.out_of_profile.id}/"
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["id"], self.out_of_profile.id)
+
+    def test_explicit_profile_id_still_scopes_by_membership(self):
+        response = self.client.get(
+            "/api/channels/channels/summary/",
+            {"channel_profile_id": self.profile.id},
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        ids = {row["id"] for row in response.json()}
+        self.assertEqual(ids, {self.in_profile.id})
+
+    def test_profile_id_all_uses_assigned_profile_union(self):
+        response = self.client.get(
+            "/api/channels/channels/summary/",
+            {"channel_profile_id": "all"},
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        ids = {row["id"] for row in response.json()}
+        self.assertEqual(ids, {self.in_profile.id})
+
+
 class ChannelListOnlyCatchupFilterTests(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(username="catchup_filter", password="x")

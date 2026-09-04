@@ -210,33 +210,46 @@ def _parse_channel_profile_id(params):
 
 
 def _visible_channels_queryset(user, profile_id=None):
-    """Channels the caller may see, matching the TV Guide summary filters.
+    """Return non-hidden channels the caller may see for grid programmes.
 
-    Default (no profile) is the guide's ALL view: every non-hidden channel the
-    user is allowed to access by ``user_level`` (and adult-content preference).
-    When ``profile_id`` is set, membership must be enabled for that profile.
-    Effective EPG / name / tvg fields come from ``with_effective_values``.
+    ``user``: request user (or None). Non-admins are capped by ``user_level``
+    and optional adult-content hide. If they have assigned channel profiles,
+    only enabled memberships in those profiles are included (and an explicit
+    ``profile_id`` must be one of them). Admins see all non-hidden channels.
 
-    Streams are not prefetched here: only custom dummy sources with
-    ``name_source='stream'`` need them, and that happens after partitioning.
+    ``profile_id``: optional channel profile primary key. When set, only
+    channels with an enabled membership in that profile are returned.
     """
     qs = Channel.objects.filter(hidden_from_output=False)
+    assigned_profiles = None
     if user is not None and getattr(user, 'user_level', 10) < 10:
         qs = qs.filter(user_level__lte=user.user_level)
         custom_props = getattr(user, 'custom_properties', None) or {}
         if custom_props.get('hide_adult_content', False):
             qs = qs.filter(is_adult=False)
+        if user.channel_profiles.exists():
+            assigned_profiles = user.channel_profiles.all()
+
     if profile_id is not None:
+        if assigned_profiles is not None and not assigned_profiles.filter(
+            pk=profile_id
+        ).exists():
+            return qs.none()
         qs = qs.filter(
             channelprofilemembership__channel_profile_id=profile_id,
             channelprofilemembership__enabled=True,
         ).distinct()
+    elif assigned_profiles is not None:
+        qs = qs.filter(
+            channelprofilemembership__channel_profile__in=assigned_profiles,
+            channelprofilemembership__enabled=True,
+        ).distinct()
+
     return with_effective_values(
         qs.select_related(
             'epg_data__epg_source',
             'override__epg_data__epg_source',
         ),
-        select_related_fks=True,
     )
 
 
@@ -380,7 +393,12 @@ def _encode_program_batch(programs, *, first):
     if not programs:
         return b'', first
 
-    encoded = json.dumps(programs, cls=DjangoJSONEncoder, separators=(',', ':'))
+    encoded = json.dumps(
+        programs,
+        cls=DjangoJSONEncoder,
+        separators=(',', ':'),
+        ensure_ascii=False,
+    )
     # encoded is "[...]" ; strip brackets to splice into the outer data array.
     body = encoded[1:-1].encode('utf-8')
     if first:
@@ -464,9 +482,9 @@ def _iter_grid_json_chunks(
             dummy_count,
         )
     finally:
-        # Trim after the payload has been produced. Connection cleanup is left
-        # to the normal request teardown so test clients can keep using the DB
-        # after consuming streaming_content.
+        # Avoid close_connections here: Django TestCase reuses the test
+        # transaction's connection for the request, and closing it mid-test
+        # breaks later queries. Request teardown still returns it to the pool.
         spawn_memory_trim()
 
 
@@ -487,11 +505,12 @@ class EPGGridAPIView(APIView):
             "caller can see. With no query parameters the window is the "
             "previous hour through the next 24 hours (recently ended, "
             "currently airing, and upcoming). "
-            "Use ``days``/``prev_days`` for XMLTV-style relative offsets, "
+            "Use ``days``/``prev_days`` for relative day offsets from now, "
             "or ``start``/``end`` (ISO 8601) for an explicit range. "
-            "Optional ``channel_profile_id`` limits output to that profile "
-            "(default: all channels the user may access). EPG assignments "
-            "honor channel overrides."
+            "Optional ``channel_profile_id`` limits output to that profile. "
+            "Omitted or ``all``: for users with assigned profiles, the union of "
+            "those profiles; otherwise every non-hidden channel the caller may "
+            "access by user level. EPG assignments honor channel overrides."
         ),
         parameters=[
             OpenApiParameter(
@@ -537,8 +556,9 @@ class EPGGridAPIView(APIView):
                 OpenApiTypes.INT,
                 description=(
                     "Limit programmes to channels enabled in this profile. "
-                    "Omitted or ``all``: every non-hidden channel the caller "
-                    "may access (same default as the TV Guide)."
+                    "Omitted or ``all``: union of the caller's assigned profiles "
+                    "when they have any; otherwise every non-hidden channel "
+                    "allowed by user level."
                 ),
             ),
         ],

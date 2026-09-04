@@ -1005,6 +1005,10 @@ class ChannelViewSet(viewsets.ModelViewSet):
         q_filters = Q()
 
         channel_profile_id = self.request.query_params.get("channel_profile_id")
+        if channel_profile_id is not None and (
+            channel_profile_id == "" or str(channel_profile_id).lower() == "all"
+        ):
+            channel_profile_id = None
         show_disabled_param = self.request.query_params.get("show_disabled", None)
         only_streamless = self.request.query_params.get("only_streamless", None)
         only_stale = self.request.query_params.get("only_stale", None)
@@ -1048,23 +1052,36 @@ class ChannelViewSet(viewsets.ModelViewSet):
             elif visibility_filter != "all":
                 q_filters &= Q(hidden_from_output=False)
 
+        profile_union_applied = False
         if self.request.user.user_level < 10:
             filters["user_level__lte"] = self.request.user.user_level
             # Hide adult content if user preference is set
             custom_props = self.request.user.custom_properties or {}
             if custom_props.get('hide_adult_content', False):
                 filters["is_adult"] = False
+            # Without an explicit profile, list/summary/get_ids are limited to
+            # enabled memberships in the user's assigned profiles. Retrieve /
+            # update / destroy remain reachable by channel id.
+            if (
+                self.action in ("list", "get_ids", "summary")
+                and not channel_profile_id
+                and self.request.user.channel_profiles.exists()
+            ):
+                q_filters &= Q(
+                    channelprofilemembership__channel_profile__in=(
+                        self.request.user.channel_profiles.all()
+                    ),
+                    channelprofilemembership__enabled=True,
+                )
+                profile_union_applied = True
 
         if filters:
             qs = qs.filter(**filters)
         if q_filters:
             qs = qs.filter(q_filters)
 
-        # DISTINCT is only needed when a filter joins to a one-to-many table
-        # and can produce duplicate channel rows. channel_profile_id joins
-        # channelprofilemembership; only_stale joins streams. All other
-        # filters use FK or one-to-one joins that cannot produce duplicates.
-        if channel_profile_id or only_stale:
+        # DISTINCT when a join can duplicate channel rows.
+        if channel_profile_id or only_stale or profile_union_applied:
             return qs.distinct()
         return qs
 

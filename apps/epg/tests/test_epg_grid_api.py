@@ -545,10 +545,79 @@ class EPGGridDummyProgramTests(TestCase):
         self.assertIn("In Profile Show", titles)
         self.assertNotIn("Out Profile Show", titles)
 
-        # Default ALL still includes both.
         all_titles = [p["title"] for p in self._get_grid()]
         self.assertIn("In Profile Show", all_titles)
         self.assertIn("Out Profile Show", all_titles)
+
+    def test_assigned_profiles_limit_all_for_non_admin(self):
+        source = EPGSource.objects.create(
+            name="Assigned XMLTV", source_type="xmltv", url="http://example.com/a.xml"
+        )
+        in_epg = EPGData.objects.create(
+            tvg_id="assigned.in", name="In", epg_source=source
+        )
+        out_epg = EPGData.objects.create(
+            tvg_id="assigned.out", name="Out", epg_source=source
+        )
+        in_ch = Channel.objects.create(
+            channel_number=28.0,
+            name="Assigned In",
+            channel_group=self.group,
+            epg_data=in_epg,
+            user_level=0,
+        )
+        out_ch = Channel.objects.create(
+            channel_number=29.0,
+            name="Assigned Out",
+            channel_group=self.group,
+            epg_data=out_epg,
+            user_level=0,
+        )
+        profile = ChannelProfile.objects.create(name="Limited")
+        ChannelProfileMembership.objects.filter(
+            channel_profile=profile, channel=out_ch
+        ).update(enabled=False)
+        self.assertTrue(
+            ChannelProfileMembership.objects.filter(
+                channel_profile=profile, channel=in_ch, enabled=True
+            ).exists()
+        )
+        ProgramData.objects.create(
+            epg=in_epg,
+            start_time=FIXED_NOW,
+            end_time=FIXED_NOW + timedelta(hours=1),
+            title="Assigned In Show",
+            tvg_id="assigned.in",
+        )
+        ProgramData.objects.create(
+            epg=out_epg,
+            start_time=FIXED_NOW,
+            end_time=FIXED_NOW + timedelta(hours=1),
+            title="Assigned Out Show",
+            tvg_id="assigned.out",
+        )
+
+        limited = User.objects.create_user(username="profiled", password="x")
+        limited.user_level = 1
+        limited.save()
+        limited.channel_profiles.add(profile)
+
+        client = APIClient()
+        client.force_authenticate(user=limited)
+        with mock.patch.object(timezone, "now", return_value=FIXED_NOW):
+            response = client.get(GRID_URL)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        titles = [p["title"] for p in _grid_programs(response)]
+        self.assertIn("Assigned In Show", titles)
+        self.assertNotIn("Assigned Out Show", titles)
+
+        other = ChannelProfile.objects.create(name="Other")
+        with mock.patch.object(timezone, "now", return_value=FIXED_NOW):
+            response = client.get(GRID_URL, {"channel_profile_id": str(other.id)})
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        titles = [p["title"] for p in _grid_programs(response)]
+        self.assertNotIn("Assigned In Show", titles)
+        self.assertNotIn("Assigned Out Show", titles)
 
     def test_invalid_channel_profile_id_returns_400(self):
         with mock.patch.object(timezone, "now", return_value=FIXED_NOW):
@@ -590,7 +659,7 @@ class EPGGridDummyProgramTests(TestCase):
 
         def count_queries(channel_count):
             with CaptureQueriesContext(connection) as ctx:
-                _, dummy_custom, _ =                 _partition_visible_channels(
+                _, dummy_custom, _ = _partition_visible_channels(
                     _visible_channels_queryset(self.user)
                 )
                 prefetch_streams_for_stream_named_sources(dummy_custom)
@@ -628,7 +697,7 @@ class EPGGridDummyProgramTests(TestCase):
         ChannelStream.objects.create(channel=channel, stream=stream, order=0)
 
         with CaptureQueriesContext(connection) as ctx:
-            _, dummy_custom, _ =             _partition_visible_channels(
+            _, dummy_custom, _ = _partition_visible_channels(
                 _visible_channels_queryset(self.user)
             )
             prefetch_streams_for_stream_named_sources(dummy_custom)

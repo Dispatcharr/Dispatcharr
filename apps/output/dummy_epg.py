@@ -1056,6 +1056,7 @@ def _ordered_channel_streams(channel):
 
 
 def _source_uses_stream_name(channel):
+    """True when the channel's effective dummy source uses stream titles for parsing."""
     epg = getattr(channel, 'effective_epg_data_obj', None)
     if epg is None:
         epg = getattr(channel, 'epg_data', None)
@@ -1065,11 +1066,11 @@ def _source_uses_stream_name(channel):
 
 
 def prefetch_streams_for_stream_named_sources(channels):
-    """Batch-load ordered streams only for sources that read stream titles.
+    """Prefetch ordered streams onto channels whose dummy source uses stream titles.
 
-    Callers (XMLTV export, grid, XC) should use this instead of prefetching
-    streams for every channel. Checking ``name_source`` in Python is cheap;
-    loading stream rows for thousands of real-EPG channels is not.
+    ``channels``: iterable of channel instances (already loaded). Only those
+    whose effective EPG source has ``name_source='stream'`` get streams
+    loaded, via a single ``prefetch_related_objects`` call.
     """
     from django.db.models import Prefetch, prefetch_related_objects
 
@@ -1140,7 +1141,14 @@ def resolve_channel_parse_name(channel, epg_source, *, fallback_name=None):
 
 
 def dummy_program_to_api_dict(channel, program, *, dummy_tvg_id, program_id_prefix='dummy'):
-    """Convert a generated dummy program dict to EPG grid API format."""
+    """Convert a generated dummy program dict to EPG grid API format.
+
+    ``channel``: channel the programme belongs to (``id`` used in the synthetic id).
+    ``program``: dict from ``generate_dummy_programs`` (``start_time``, ``end_time``,
+    ``title``, ``description``, optional ``sub_title`` / ``custom_properties``).
+    ``dummy_tvg_id``: value written to ``tvg_id`` (typically the channel UUID).
+    ``program_id_prefix``: prefix for the synthetic ``id`` field.
+    """
     prog_custom = program.get('custom_properties') or {}
     start = program['start_time']
     start_key = start.strftime('%Y%m%dT%H%M%S')
