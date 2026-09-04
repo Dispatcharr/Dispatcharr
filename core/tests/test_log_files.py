@@ -45,7 +45,6 @@ class LogFilesEndpointTests(TestCase):
         response = self.client.get("/api/core/logs/")
         self.assertEqual(response.status_code, 200)
         payload = response.json()
-        self.assertEqual(payload["path"], self.log_dir)
         names = {f["name"] for f in payload["files"]}
         self.assertEqual(names, {"dispatcharr.log", "dispatcharr.log.1"})
         for entry in payload["files"]:

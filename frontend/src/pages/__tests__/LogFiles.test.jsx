@@ -49,7 +49,6 @@ vi.mock('@mantine/core', () => {
 });
 
 const files = {
-  path: '/data/logs',
   files: [
     { name: 'dispatcharr.log', size: 2048, modified: '2026-07-14T11:00:00Z' },
     {
@@ -149,7 +148,7 @@ describe('LogFilesPage', () => {
   });
 
   it('shows an empty state when there are no files', async () => {
-    API.getLogFiles.mockResolvedValue({ path: '/data/logs', files: [] });
+    API.getLogFiles.mockResolvedValue({ files: [] });
     renderPage();
     await waitFor(() => {
       expect(screen.getByText('No log files yet')).toBeInTheDocument();

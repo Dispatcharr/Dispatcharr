@@ -84,7 +84,6 @@ def list_log_files(request):
     files.sort(key=lambda f: (f["modified"], f["name"]), reverse=True)
     return Response(
         {
-            "path": base,
             "files": files,
             "collector_running": collector_running(base),
         }
