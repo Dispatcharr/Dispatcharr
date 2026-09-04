@@ -28,7 +28,7 @@ const LogFilesPage = () => {
       const response = await API.getLogFiles();
       if (response) {
         setFiles(response.files || []);
-        // Absent on an older backend: assume running rather than cry wolf.
+        // A missing flag counts as running.
         setCollectorRunning(response.collector_running !== false);
         setLoadError(false);
       }

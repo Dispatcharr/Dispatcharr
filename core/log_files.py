@@ -1,6 +1,4 @@
-"""Browse/view/download the persisted log files in LOG_FILE_DIR (System > Logs).
-Admin-only: log lines can reference provider URLs and account names.
-"""
+"""Browse, view and download the persisted log files (System > Logs)."""
 
 import os
 import re
@@ -43,7 +41,7 @@ def _at_line_start(f, offset):
 
 def _resolve(name):
     """Resolve *name* to a real log file inside the log directory, else None."""
-    # Checked here, not only in the listing: DISPATCHARR_LOG_DIR may hold more than logs.
+    # DISPATCHARR_LOG_DIR may hold more than logs.
     log_dir = settings.LOG_FILE_DIR
     if not log_dir or not _NAME_RE.match(name) or not name.startswith(BASE_NAME):
         return None
@@ -126,19 +124,16 @@ def get_log_file(request, name):
 
     cursor = request.GET.get("cursor", "")
     with _open_log(path) as f:
-        # Identity and size come from the open handle, so a rotation cannot land
-        # between them and leave us seeking past the end of a fresh, empty file.
+        # Size and identity from one handle, so a rotation cannot land between them.
         stat = os.fstat(f.fileno())
         start, reset = 0, True
         if cursor:
             prev_inode, _, prev_end = cursor.partition("-")
-            # A new inode is a rotation: the old offset means nothing in the new
-            # file, and resuming at it would skip content or freeze the view.
+            # A new inode is a rotation; the old offset means nothing there.
             valid = len(prev_end) < 20 and prev_end.isdecimal()
             if prev_inode == str(stat.st_ino) and valid:
                 offset = int(prev_end)
-                # Rotation frees inodes for reuse, so identity alone can be
-                # fooled; an offset mid-line did not come from this file.
+                # Inodes are reused; an offset mid-line did not come from this file.
                 if _at_line_start(f, offset):
                     start, reset = offset, False
         # A tab that slept asks for more than we serve; fall back to the tail.
@@ -146,8 +141,7 @@ def get_log_file(request, name):
         if truncated:
             start, reset = stat.st_size - MAX_VIEW_BYTES, True
         f.seek(start)
-        # Bounded by the size this handle reported, so concurrent appends
-        # cannot push the body past the cap the response advertises.
+        # Bounded by the size this handle reported, not by concurrent appends.
         data = f.read(stat.st_size - start)
 
     if reset and start:
@@ -173,7 +167,7 @@ def get_log_file(request, name):
 @api_view(["GET"])
 @permission_classes([IsAdmin])
 def download_log_file(request, name):
-    """Stream a log file as an attachment over the authenticated session."""
+    """Stream a log file as an attachment."""
     path = _resolve(name)
     if path is None:
         raise NotFound("Log file not found")
