@@ -303,6 +303,72 @@ const buildBlocks = (entries) => {
   return blocks;
 };
 
+const LogBody = React.memo(
+  ({ name, blocks, styles, loading, empty, loadError, onRetry }) => {
+    if (loading && empty) return <Loader />;
+    if (empty && loadError) {
+      return (
+        <Group gap="sm">
+          <Text size="sm" c="red">
+            Failed to load {name}
+          </Text>
+          <Button size="xs" variant="subtle" onClick={() => onRetry()}>
+            Retry
+          </Button>
+        </Group>
+      );
+    }
+    return (
+      <div
+        style={{
+          margin: 0,
+          fontFamily:
+            'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+          fontSize: 12,
+          lineHeight: 1.45,
+          // anywhere breaks unbroken tokens like URLs and SQL dumps.
+          whiteSpace: 'pre-wrap',
+          overflowWrap: 'anywhere',
+        }}
+      >
+        {empty
+          ? emptyState('(empty)')
+          : blocks.length
+            ? blocks.map((block, i) => {
+                if (!block.record) {
+                  return (
+                    // Dimming marks these lines as unowned.
+                    <div key={i} style={styles.plain}>
+                      {block.lines.join('\n')}
+                    </div>
+                  );
+                }
+                const rowStyle = styles.forLevel(block.record.level);
+                return (
+                  <div key={i} style={rowStyle.row}>
+                    <span style={styles.stamp}>{block.record.stamp}</span>{' '}
+                    <span style={rowStyle.level} title={block.record.level}>
+                      {levelLabel(block.record.level)}
+                    </span>{' '}
+                    <span style={styles.module} title={block.record.source}>
+                      {block.record.module}
+                    </span>
+                    {block.record.sep}
+                    <span style={rowStyle.message}>{block.record.message}</span>
+                    {block.continuations.length > 0 && (
+                      <div style={rowStyle.continuations}>
+                        {renderContinuations(block.continuations)}
+                      </div>
+                    )}
+                  </div>
+                );
+              })
+            : emptyState('(no records match the filters)')}
+      </div>
+    );
+  }
+);
+
 const LogFileViewPage = () => {
   const { name } = useParams();
   // The byte total rides with the entries so trimming never rescans them.
@@ -682,73 +748,15 @@ const LogFileViewPage = () => {
           // Without minHeight:0 a flex item will not shrink below its content.
           style={{ flex: '1 1 auto', overflow: 'auto', minHeight: '0px' }}
         >
-          {loading && !entries.length ? (
-            <Loader />
-          ) : !entries.length && loadError ? (
-            <Group gap="sm">
-              <Text size="sm" c="red">
-                Failed to load {name}
-              </Text>
-              <Button size="xs" variant="subtle" onClick={() => load()}>
-                Retry
-              </Button>
-            </Group>
-          ) : (
-            <div
-              style={{
-                margin: 0,
-                fontFamily:
-                  'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
-                fontSize: 12,
-                lineHeight: 1.45,
-                // anywhere breaks unbroken tokens like URLs and SQL dumps.
-                whiteSpace: 'pre-wrap',
-                overflowWrap: 'anywhere',
-              }}
-            >
-              {!entries.length
-                ? emptyState('(empty)')
-                : blocks.length
-                  ? blocks.map((block, i) => {
-                      if (!block.record) {
-                        return (
-                          // Dimming marks these lines as unowned.
-                          <div key={i} style={styles.plain}>
-                            {block.lines.join('\n')}
-                          </div>
-                        );
-                      }
-                      const rowStyle = styles.forLevel(block.record.level);
-                      return (
-                        <div key={i} style={rowStyle.row}>
-                          <span style={styles.stamp}>{block.record.stamp}</span>{' '}
-                          <span
-                            style={rowStyle.level}
-                            title={block.record.level}
-                          >
-                            {levelLabel(block.record.level)}
-                          </span>{' '}
-                          <span
-                            style={styles.module}
-                            title={block.record.source}
-                          >
-                            {block.record.module}
-                          </span>
-                          {block.record.sep}
-                          <span style={rowStyle.message}>
-                            {block.record.message}
-                          </span>
-                          {block.continuations.length > 0 && (
-                            <div style={rowStyle.continuations}>
-                              {renderContinuations(block.continuations)}
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })
-                  : emptyState('(no records match the filters)')}
-            </div>
-          )}
+          <LogBody
+            name={name}
+            blocks={blocks}
+            styles={styles}
+            loading={loading}
+            empty={!entries.length}
+            loadError={loadError}
+            onRetry={load}
+          />
         </Box>
       </Paper>
     </Box>
