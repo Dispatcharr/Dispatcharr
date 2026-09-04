@@ -32,7 +32,12 @@ from apps.channels.dvr_access import (
 )
 
 from core.models import CoreSettings
-from core.utils import RedisClient, safe_upload_path, resolve_safe_local_data_path
+from core.utils import (
+    RedisClient,
+    build_absolute_uri_with_port,
+    resolve_safe_local_data_path,
+    safe_upload_path,
+)
 from core.image_proxy import (
     image_fetch_failures as _logo_fetch_failures,
     serve_local_or_remote_image,
@@ -3481,8 +3486,8 @@ class RecordingViewSet(viewsets.ModelViewSet):
         if not file_path or not os.path.exists(file_path) or os.path.getsize(file_path) == 0:
             # Redirect to HLS if recording is still in progress
             if hls_dir and os.path.isdir(hls_dir):
-                hls_url = request.build_absolute_uri(
-                    f"/api/channels/recordings/{pk}/hls/index.m3u8"
+                hls_url = build_absolute_uri_with_port(
+                    request, f"/api/channels/recordings/{pk}/hls/index.m3u8"
                 ) + _recording_auth_query_suffix(request)
                 return HttpResponseRedirect(hls_url)
             if not file_path or not os.path.exists(file_path):
@@ -3575,8 +3580,8 @@ class RecordingViewSet(viewsets.ModelViewSet):
             # have the HLS URL bookmarked get a useful response.
             file_path = _resolve_recording_storage_path(cp.get("file_path"))
             if seg_path.endswith(".m3u8") and file_path and os.path.exists(file_path) and os.path.getsize(file_path) > 0:
-                file_url = request.build_absolute_uri(
-                    f"/api/channels/recordings/{pk}/file/"
+                file_url = build_absolute_uri_with_port(
+                    request, f"/api/channels/recordings/{pk}/file/"
                 ) + _recording_auth_query_suffix(request)
                 return HttpResponseRedirect(file_url)
             raise Http404("HLS content not available for this recording")
@@ -3593,8 +3598,8 @@ class RecordingViewSet(viewsets.ModelViewSet):
         if seg_path.endswith(".m3u8"):
             # Rewrite relative segment lines to absolute URLs through this API.
             # Propagate ?token= only for native <video> clients (see helper).
-            base_url = request.build_absolute_uri(
-                f"/api/channels/recordings/{pk}/hls/"
+            base_url = build_absolute_uri_with_port(
+                request, f"/api/channels/recordings/{pk}/hls/"
             )
             auth_suffix = _recording_auth_query_suffix(request)
             lines = []

@@ -103,6 +103,35 @@ class RecordingPlaybackAuthTests(TestCase):
         self.assertIn("token=", response["Location"])
         self.assertIn("/hls/index.m3u8", response["Location"])
 
+    def test_file_redirect_uses_forwarded_host_from_trusted_proxy(self, _mock_network):
+        pending = self.hls_dir / "pending.mkv"
+        now = timezone.now()
+        in_progress = Recording.objects.create(
+            channel=self.channel,
+            start_time=now,
+            end_time=now,
+            custom_properties={
+                "status": "recording",
+                "_hls_dir": str(self.hls_dir),
+                "file_path": str(pending),
+            },
+        )
+        token = self._jwt_for(self.user)
+        # APIClient peers as 127.0.0.1, which is trusted by default.
+        response = self.client.get(
+            f"/api/channels/recordings/{in_progress.id}/file/",
+            {"token": token},
+            HTTP_X_FORWARDED_HOST="tv.example.com",
+            HTTP_X_FORWARDED_PROTO="https",
+        )
+        self.assertEqual(response.status_code, 302)
+        self.assertTrue(
+            response["Location"].startswith(
+                "https://tv.example.com/api/channels/recordings/"
+            ),
+            response["Location"],
+        )
+
     def test_hls_playlist_rewrites_segments_with_token_when_present(self, _mock_network):
         now = timezone.now()
         hls_rec = Recording.objects.create(
