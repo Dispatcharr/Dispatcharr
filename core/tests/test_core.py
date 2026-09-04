@@ -835,3 +835,52 @@ class GetClientIpTests(SimpleTestCase):
             os.environ.pop("DISPATCHARR_TRUSTED_PROXIES", None)
             request = self._request("::ffff:192.168.1.50")
             self.assertEqual(get_client_ip(request), "192.168.1.50")
+
+
+class GetHostAndPortTrustedProxyTests(SimpleTestCase):
+    """Forwarded host/scheme are honored only from trusted peers."""
+
+    def setUp(self):
+        from django.test import RequestFactory
+
+        self.factory = RequestFactory()
+
+    def _request(self, remote_addr, path="/", **extra):
+        request = self.factory.get(path)
+        request.META["REMOTE_ADDR"] = remote_addr
+        request.META.update(extra)
+        return request
+
+    def test_untrusted_peer_ignores_forwarded_host_and_scheme(self):
+        from core.utils import build_absolute_uri_with_port, get_host_and_port
+
+        with patch.dict("os.environ", {"DISPATCHARR_TRUSTED_PROXIES": "none"}):
+            request = self._request(
+                "203.0.113.99",
+                HTTP_HOST="dispatch.local",
+                HTTP_X_FORWARDED_HOST="evil.example",
+                HTTP_X_FORWARDED_PROTO="https",
+                SERVER_PORT="9191",
+            )
+            host, port = get_host_and_port(request)
+            self.assertEqual(host, "dispatch.local")
+            self.assertEqual(port, "9191")
+            uri = build_absolute_uri_with_port(request, "/output/m3u")
+            self.assertTrue(uri.startswith("http://dispatch.local:9191/"))
+
+    def test_trusted_peer_uses_forwarded_host_and_scheme(self):
+        from core.utils import build_absolute_uri_with_port, get_host_and_port
+
+        with patch.dict("os.environ"):
+            os.environ.pop("DISPATCHARR_TRUSTED_PROXIES", None)
+            request = self._request(
+                "172.18.0.1",
+                HTTP_HOST="dispatch.local",
+                HTTP_X_FORWARDED_HOST="tv.example.com",
+                HTTP_X_FORWARDED_PROTO="https",
+            )
+            host, port = get_host_and_port(request)
+            self.assertEqual(host, "tv.example.com")
+            self.assertIsNone(port)
+            uri = build_absolute_uri_with_port(request, "/output/m3u")
+            self.assertEqual(uri, "https://tv.example.com/output/m3u")
