@@ -23,7 +23,12 @@ vi.mock('@mantine/notifications', () => ({
 
 vi.mock('@mantine/core', () => ({
   Anchor: ({ children, to }) => <a href={to || '#'}>{children}</a>,
-  Box: ({ children, style }) => <div style={style}>{children}</div>,
+  // ref/onScroll pass through: the viewer pins itself to the live edge.
+  Box: ({ children, style, onScroll, ref }) => (
+    <div style={style} ref={ref} onScroll={onScroll}>
+      {children}
+    </div>
+  ),
   Button: ({ children, onClick }) => (
     <button onClick={onClick}>{children}</button>
   ),
@@ -1051,5 +1056,102 @@ describe('LogFileViewPage', () => {
     expect(text.indexOf('first failure')).toBeLessThan(
       text.indexOf('continuation of the first record')
     );
+  });
+  // jsdom performs no layout, so the scroll box reports zero for every metric.
+  // Stub the geometry and let scrollTop behave like a real settable property.
+  const stubViewport = (el, { scrollHeight, clientHeight }) => {
+    let top = 0;
+    Object.defineProperty(el, 'scrollHeight', {
+      configurable: true,
+      get: () => scrollHeight,
+    });
+    Object.defineProperty(el, 'clientHeight', {
+      configurable: true,
+      get: () => clientHeight,
+    });
+    Object.defineProperty(el, 'scrollTop', {
+      configurable: true,
+      get: () => top,
+      set: (v) => {
+        top = v;
+      },
+    });
+    return el;
+  };
+
+  const findViewport = () => {
+    let el = screen.getByText(/Scanning disk/).parentElement;
+    while (el && getComputedStyle(el).overflow !== 'auto') {
+      el = el.parentElement;
+    }
+    return el;
+  };
+
+  it('opens at the live edge instead of the oldest retained line', async () => {
+    renderPage();
+    await screen.findByText(/Scanning disk/);
+    const viewport = stubViewport(findViewport(), {
+      scrollHeight: 5000,
+      clientHeight: 500,
+    });
+
+    API.getLogFile.mockResolvedValue({
+      content:
+        'Info|DiskScanService|Scanning disk\nInfo|core.tasks|later line\n',
+      truncated: false,
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByText('Refresh'));
+    });
+
+    expect(viewport.scrollTop).toBe(5000);
+  });
+
+  it('keeps following the tail across a refresh', async () => {
+    renderPage();
+    await screen.findByText(/Scanning disk/);
+    const viewport = stubViewport(findViewport(), {
+      scrollHeight: 5000,
+      clientHeight: 500,
+    });
+    // The reader is sitting at the bottom, watching.
+    viewport.scrollTop = 4500;
+    fireEvent.scroll(viewport);
+
+    API.getLogFile.mockResolvedValue({
+      content:
+        'Info|DiskScanService|Scanning disk\nInfo|core.tasks|fresh line\n',
+      truncated: false,
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByText('Refresh'));
+    });
+
+    await screen.findByText(/fresh line/);
+    expect(viewport.scrollTop).toBe(5000);
+  });
+
+  it('leaves a reader who scrolled back where they were', async () => {
+    renderPage();
+    await screen.findByText(/Scanning disk/);
+    const viewport = stubViewport(findViewport(), {
+      scrollHeight: 5000,
+      clientHeight: 500,
+    });
+    // Scrolled up to read history: a refresh must not yank them to the bottom.
+    viewport.scrollTop = 1200;
+    fireEvent.scroll(viewport);
+
+    API.getLogFile.mockResolvedValue({
+      content:
+        'Info|DiskScanService|Scanning disk\nInfo|core.tasks|fresh line\n',
+      truncated: false,
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByText('Refresh'));
+    });
+
+    await screen.findByText(/fresh line/);
+    expect(viewport.scrollTop).toBe(1200);
   });
 });
