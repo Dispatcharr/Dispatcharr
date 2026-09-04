@@ -22,6 +22,7 @@ import {
 import { notifications } from '@mantine/notifications';
 import API from '../api';
 import DownloadLogButton from '../components/DownloadLogButton';
+import { REFRESH_INTERVAL_OPTIONS } from '../constants';
 import useBrowserStorage from '../hooks/useBrowserStorage';
 import { useDebounce } from '../utils';
 
@@ -145,14 +146,6 @@ const FOLLOW_SLACK_PX = 50;
 
 const LEVEL_COL_MAX = 12;
 const MODULE_COL_MAX = 12;
-
-const REFRESH_OPTIONS = [
-  { value: '0', label: 'Manual' },
-  { value: '5', label: '5s' },
-  { value: '10', label: '10s' },
-  { value: '30', label: '30s' },
-  { value: '60', label: '1m' },
-];
 
 const CATEGORY_OPTIONS = [
   { value: 'all', label: 'All categories' },
@@ -428,7 +421,7 @@ const LogFileViewPage = () => {
     0
   );
   // A stored value outside the options would render an empty select.
-  const refreshSeconds = REFRESH_OPTIONS.some(
+  const refreshSeconds = REFRESH_INTERVAL_OPTIONS.some(
     (option) => option.value === String(refreshSetting)
   )
     ? refreshSetting
@@ -714,7 +707,7 @@ const LogFileViewPage = () => {
                   setRefreshSetting(parseInt(value));
                 }}
                 allowDeselect={false}
-                data={REFRESH_OPTIONS}
+                data={REFRESH_INTERVAL_OPTIONS}
                 style={{ width: 120 }}
               />
               <Button

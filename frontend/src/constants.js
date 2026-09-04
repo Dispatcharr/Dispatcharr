@@ -365,6 +365,14 @@ export const REGION_CHOICES = [
   { value: 'zw', label: 'ZW' },
 ];
 
+export const REFRESH_INTERVAL_OPTIONS = [
+  { value: '0', label: 'Manual' },
+  { value: '5', label: '5s' },
+  { value: '10', label: '10s' },
+  { value: '30', label: '30s' },
+  { value: '60', label: '1m' },
+];
+
 export const VOD_TYPES = {
   MOVIE: 'movie',
   EPISODE: 'episode',
