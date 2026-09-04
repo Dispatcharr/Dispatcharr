@@ -32,6 +32,14 @@ def _log_dir():
     return getattr(settings, "LOG_FILE_DIR", None) or "/data/logs"
 
 
+def _open_log(path):
+    """Open *path*, mapping a file pruned since resolution to a 404."""
+    try:
+        return open(path, "rb")
+    except FileNotFoundError:
+        raise NotFound("Log file not found")
+
+
 def _at_line_start(f, offset):
     """Whether *offset* sits just past a newline, i.e. begins a record."""
     if offset == 0:
@@ -124,7 +132,7 @@ def get_log_file(request, name):
         raise NotFound("Log file not found")
 
     cursor = request.GET.get("cursor", "")
-    with open(path, "rb") as f:
+    with _open_log(path) as f:
         # Identity and size come from the open handle, so a rotation cannot land
         # between them and leave us seeking past the end of a fresh, empty file.
         stat = os.fstat(f.fileno())
@@ -177,7 +185,7 @@ def download_log_file(request, name):
         raise NotFound("Log file not found")
 
     response = FileResponse(
-        open(path, "rb"), content_type="text/plain; charset=utf-8"
+        _open_log(path), content_type="text/plain; charset=utf-8"
     )
     response["Content-Disposition"] = f'attachment; filename="{name}"'
     return response
