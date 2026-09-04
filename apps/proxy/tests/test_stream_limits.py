@@ -283,3 +283,70 @@ class TimeshiftAdminStopTests(TestCase):
         programme_stop = RedisKeys.client_stop(self.programme_vid, self.client_id)
         self.assertEqual(self.redis.store.get(programme_stop), _STOP_REASON_ADMIN)
         self.assertIn(self.programme_vid, result["stop_channel_ids"])
+
+
+class VodSiblingLimitExemptionTests(TestCase):
+    """A user's own VOD connection to the media they are requesting must not
+    count against their stream limit nor be terminated to serve its own
+    continuation (range/probe/seek requests from the same viewing session)."""
+
+    class _User:
+        id = 5
+        username = "viewer"
+        stream_limit = 1
+
+    def _limits_settings(self):
+        return {
+            "terminate_oldest": True,
+            "prioritize_single_client_channels": True,
+            "ignore_same_channel_connections": False,
+        }
+
+    def _run(self, connections, media_id, terminate_result=True):
+        with patch(
+            "apps.proxy.utils.get_user_active_connections",
+            return_value=connections,
+        ), patch(
+            "apps.proxy.utils.CoreSettings.get_user_limits_settings",
+            return_value=self._limits_settings(),
+        ), patch(
+            "apps.proxy.utils.attempt_stream_termination",
+            return_value=terminate_result,
+        ) as terminate:
+            allowed = check_user_stream_limits(
+                self._User(), "newsession", media_id=media_id
+            )
+        return allowed, terminate
+
+    def test_same_content_vod_sibling_allowed_without_termination(self):
+        connections = [{
+            "media_id": "content-uuid-1",
+            "client_id": "vod_existing",
+            "connected_at": 1000.0,
+            "type": "vod",
+        }]
+        allowed, terminate = self._run(connections, media_id="content-uuid-1")
+        self.assertTrue(allowed)
+        terminate.assert_not_called()
+
+    def test_different_content_still_enforces_limit(self):
+        connections = [{
+            "media_id": "content-uuid-1",
+            "client_id": "vod_existing",
+            "connected_at": 1000.0,
+            "type": "vod",
+        }]
+        allowed, terminate = self._run(connections, media_id="content-uuid-2")
+        self.assertTrue(allowed)
+        terminate.assert_called_once()
+
+    def test_live_connection_does_not_trigger_vod_exemption(self):
+        connections = [{
+            "media_id": "7",
+            "client_id": "live_existing",
+            "connected_at": 1000.0,
+            "type": "live",
+        }]
+        allowed, terminate = self._run(connections, media_id="7")
+        self.assertTrue(allowed)
+        terminate.assert_called_once()

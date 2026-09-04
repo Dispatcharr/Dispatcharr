@@ -223,6 +223,14 @@ def _seed_session(redis, session_id, active_streams=1, profile_id=7):
     return conn
 
 
+def _age_session(redis, conn, seconds=30):
+    """Push last_activity beyond the idle-cleanup activity grace period."""
+    redis.hset(
+        conn.connection_key,
+        mapping={"last_activity": str(time.time() - seconds)},
+    )
+
+
 class TestAtomicActiveStreams(SimpleTestCase):
     def test_incr_decr_round_trip(self):
         RedisBackedVODConnection, _ = _import_vod()
@@ -335,13 +343,24 @@ class TestAtomicActiveStreams(SimpleTestCase):
     def test_cleanup_deletes_when_idle(self):
         redis = LockAwareFakeRedis()
         conn = _seed_session(redis, "vod_clean_idle", active_streams=0)
+        _age_session(redis, conn)
         conn.cleanup()
         self.assertIsNone(conn._get_connection_state())
+
+    def test_cleanup_defers_while_recently_active(self):
+        """A session with recent activity must survive idle cleanup - a
+        reusing request may be mid-flight between profile-slot reserve and
+        stream INCR on this same session (the key TTL reaps it later)."""
+        redis = LockAwareFakeRedis()
+        conn = _seed_session(redis, "vod_clean_grace", active_streams=0)
+        conn.cleanup()
+        self.assertIsNotNone(conn._get_connection_state())
 
     def test_cleanup_does_not_delete_metadata_lock(self):
         """Idle cleanup must not steal the metadata lock from a holder."""
         redis = LockAwareFakeRedis()
         holder = _seed_session(redis, "vod_lock_keep", active_streams=0)
+        _age_session(redis, holder)
         self.assertTrue(holder._acquire_lock())
         try:
             holder.cleanup()
@@ -358,6 +377,7 @@ class TestAtomicActiveStreams(SimpleTestCase):
         redis = LockAwareFakeRedis()
         holder = _seed_session(redis, "vod_zombie_raw", active_streams=0)
         stale = holder._get_connection_state()
+        _age_session(redis, holder)
         self.assertTrue(holder._acquire_lock())
         try:
             holder.cleanup()
@@ -382,6 +402,7 @@ class TestAtomicActiveStreams(SimpleTestCase):
         stale = holder._get_connection_state()
         stale.worker_id = "worker-late"
         stale.last_activity = time.time()
+        _age_session(redis, holder)
 
         self.assertTrue(holder._acquire_lock())
         try:
@@ -531,6 +552,7 @@ class TestVodActiveStreamsRealRedis(SimpleTestCase):
         holder = self._seed(active_streams=0)
         stale = holder._get_connection_state()
         stale.worker_id = "late-writer"
+        _age_session(self.redis, holder)
 
         self.assertTrue(holder._acquire_lock())
         try:

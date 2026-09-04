@@ -773,6 +773,23 @@ class RedisBackedVODConnection:
                 logger.info(f"[{self.session_id}] Active streams present ({state.active_streams}) but owned by worker {state.worker_id} - local cleanup only")
             return
 
+        # Grace period: clients that chain rapid range requests (VLC-based
+        # players probing MKV containers) can be mid-flight between profile
+        # slot reserve and stream INCR on this same session; deleting the
+        # state here orphans that request and leaks its reserved profile
+        # slot. Skip the delete while the session saw activity recently -
+        # the key TTL still reaps abandoned sessions.
+        try:
+            _idle_for = time.time() - float(state.last_activity or 0)
+        except (TypeError, ValueError):
+            _idle_for = float('inf')
+        if _idle_for < 20:
+            logger.debug(
+                f"[{self.session_id}] Cleanup deferred - session active "
+                f"{_idle_for:.1f}s ago"
+            )
+            return
+
         # No active streams: atomically delete only if still idle (Lua).
         # Avoids racing a reconnect INCR between HGET and DEL without holding
         # the metadata lock across the whole check.

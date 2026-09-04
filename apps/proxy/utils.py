@@ -354,6 +354,21 @@ def check_user_stream_limits(user, client_id, media_id=None):
                         )
                         return True
 
+        # VOD sibling range/probe requests for the same content share one
+        # viewing session (idle-session reuse) - never count the user's own
+        # connection to the media they are requesting against their limit,
+        # and never terminate it to make room for its own continuation
+        # (mirrors the live same-channel and timeshift sibling exemptions).
+        if media_id and any(
+            conn.get('type') not in ('live', 'timeshift')
+            and str(conn.get('media_id') or '') == str(media_id)
+            for conn in active_connections
+        ):
+            logger.debug(
+                f"[stream limits][{client_id}] Same-content VOD sibling for {media_id} allowed"
+            )
+            return True
+
         if user_stream_count >= user.stream_limit:
             if user_limit_settings.get("terminate_on_limit_exceeded", True) == False:
                 return False
