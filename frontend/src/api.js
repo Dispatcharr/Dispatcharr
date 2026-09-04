@@ -3829,8 +3829,6 @@ export default class API {
       link.click();
       document.body.removeChild(link);
       URL.revokeObjectURL(url);
-
-      return { name };
     } catch (e) {
       errorNotification('Failed to download log file', e);
     }
