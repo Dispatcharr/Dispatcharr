@@ -243,6 +243,14 @@ class LogFilesEndpointTests(TestCase):
         response = self.client.get("/api/core/logs/nope.log/")
         self.assertEqual(response.status_code, 404)
 
+    def test_file_pruned_after_resolution_is_404(self):
+        with mock.patch(
+            "core.log_files.open", side_effect=FileNotFoundError, create=True
+        ):
+            for name in ("dispatcharr.log/", "dispatcharr.log/download/"):
+                url = "/api/core/logs/" + name
+                self.assertEqual(self.client.get(url).status_code, 404, url)
+
     def test_non_admin_is_forbidden(self):
         self.client.force_authenticate(self.viewer)
         self.assertEqual(self.client.get("/api/core/logs/").status_code, 403)
