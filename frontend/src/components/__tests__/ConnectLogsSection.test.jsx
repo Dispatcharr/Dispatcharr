@@ -39,7 +39,6 @@ vi.mock('lucide-react', () => ({
   Webhook: () => <svg data-testid="icon-webhook" />,
   FileCode: () => <svg data-testid="icon-file-code" />,
   Logs: () => <svg data-testid="icon-logs" />,
-  ScrollText: () => <svg />,
   ChevronDown: () => <svg data-testid="icon-chevron-down" />,
 }));
 

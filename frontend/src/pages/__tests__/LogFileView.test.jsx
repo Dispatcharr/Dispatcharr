@@ -272,7 +272,7 @@ describe('LogFileViewPage', () => {
   });
 
   it('renders a near-ceiling log (~50k lines / ~5MB, many colour switches) without hanging', async () => {
-    // Interleaves every category to hit colorizeLines's worst case: frequent colour switches.
+    // Interleaves every level so the colour changes on most rows.
     const LEVELS = [
       {
         tag: 'INFO',
@@ -310,7 +310,7 @@ describe('LogFileViewPage', () => {
       lines.push(
         `2026-07-15 ${hh}:${mm}:${ss},000 ${level.tag} ${level.logger} ${level.msg} record-${i}`
       );
-      // Continuations exercise colorizeLines's inherit-colour path.
+      // Continuations exercise the inherited-colour path.
       if (i % 6 === 0) {
         lines.push(
           `    caused by: nested detail for record ${i} with additional padding text to widen the payload`
