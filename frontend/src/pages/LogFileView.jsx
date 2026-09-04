@@ -195,30 +195,35 @@ const classifyLines = (lines, inTraceback = false) => {
   return { entries, inTraceback };
 };
 
-const groupEntries = (entries) => {
-  const groups = [];
-  for (const entry of entries) {
-    if (entry.kind !== 'continuation' || !groups.length) {
-      groups.push([entry]);
-    } else {
-      groups[groups.length - 1].push(entry);
-    }
-  }
-  return groups;
-};
+// Matching on a case-insensitive regex, not a lowercased copy per line: the
+// copies would double the retained text in memory for no extra speed.
+const escapeRegExp = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-const filterEntries = (entries, minRank, category, query) => {
+// A record and the continuations trailing it are kept or dropped together.
+// Walked in place rather than grouped into arrays first: the groups were one
+// short-lived array per record, which is the bulk of a filter pass's garbage.
+const filterEntries = (entries, minRank, category, matcher) => {
   const out = [];
-  for (const group of groupEntries(entries)) {
-    const record = group[0].record;
+  let start = 0;
+  while (start < entries.length) {
+    let end = start + 1;
+    while (end < entries.length && entries[end].kind === 'continuation')
+      end += 1;
+    const record = entries[start].record;
+    let keep = true;
     if (record) {
       const rank = LEVEL_RANK[record.level];
-      if (rank !== undefined && rank < minRank) continue;
-      if (category !== null && record.tier !== category) continue;
+      if (rank !== undefined && rank < minRank) keep = false;
+      else if (category !== null && record.tier !== category) keep = false;
     }
-    if (query && !group.some((e) => e.line.toLowerCase().includes(query)))
-      continue;
-    out.push(...group);
+    if (keep && matcher) {
+      keep = false;
+      for (let i = start; i < end && !keep; i += 1) {
+        keep = matcher.test(entries[i].line);
+      }
+    }
+    if (keep) for (let i = start; i < end; i += 1) out.push(entries[i]);
+    start = end;
   }
   return out;
 };
@@ -342,12 +347,13 @@ const LogFileViewPage = () => {
   // The box keeps up with typing; the filter waits for a pause.
   const [query, setQuery] = useState('');
   useEffect(() => {
-    const id = setTimeout(
-      () => setQuery(search.trim().toLowerCase()),
-      SEARCH_DEBOUNCE_MS
-    );
+    const id = setTimeout(() => setQuery(search.trim()), SEARCH_DEBOUNCE_MS);
     return () => clearTimeout(id);
   }, [search]);
+  const matcher = useMemo(
+    () => (query ? new RegExp(escapeRegExp(query), 'i') : null),
+    [query]
+  );
   const [loadError, setLoadError] = useState(false);
   // The whole body arrives before the browser saves anything; say so.
   const [downloading, setDownloading] = useState(false);
@@ -385,15 +391,15 @@ const LogFileViewPage = () => {
 
   const { blocks, hiddenLines } = useMemo(() => {
     let kept = entries;
-    if (minLevel || category !== null || query)
-      kept = filterEntries(entries, minLevel, category, query);
+    if (minLevel || category !== null || matcher)
+      kept = filterEntries(entries, minLevel, category, matcher);
     const hidden = Math.max(0, kept.length - MAX_RENDER_LINES);
     if (hidden) kept = kept.slice(hidden);
     // Reversed as blocks, not entries, so continuations stay with their record.
     const built = buildBlocks(kept);
     if (newestFirst) built.reverse();
     return { blocks: built, hiddenLines: hidden };
-  }, [entries, newestFirst, minLevel, category, query]);
+  }, [entries, newestFirst, minLevel, category, matcher]);
 
   // Newest sits at whichever end the order puts it.
   const onViewportScroll = useCallback(() => {
@@ -414,6 +420,52 @@ const LogFileViewPage = () => {
 
   // Wrapped lines and continuations hang under the message column.
   const messageIndent = cols.stamp + cols.level + cols.module + 3;
+
+  // Every row style derives from the columns, the indent and the floor, so a
+  // handful of objects covers thousands of rows instead of six per row. Keyed
+  // off the primitives, not the cols object, so the identities survive a poll.
+  const styles = useMemo(() => {
+    const cache = new Map();
+    return {
+      stamp: { ...columnStyle(cols.stamp), color: COLORS.stamp },
+      module: {
+        ...columnStyle(cols.module),
+        color: COLORS.module,
+        overflow: 'hidden',
+        textOverflow: 'ellipsis',
+      },
+      plain: {
+        borderLeft: '2px solid transparent',
+        paddingLeft: 8,
+        color: COLORS.stamp,
+      },
+      // Built on first sight of a level, so an unexpected one still renders.
+      forLevel: (level) => {
+        let style = cache.get(level);
+        if (!style) {
+          const severity = severityColor(level);
+          style = {
+            row: {
+              borderLeft: `2px solid ${barColor(level, minLevel)}`,
+              paddingLeft: `calc(8px + ${messageIndent}ch)`,
+              textIndent: `-${messageIndent}ch`,
+            },
+            level: {
+              ...columnStyle(cols.level),
+              color: levelColor(level),
+              fontWeight: 500,
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+            },
+            message: severity ? { color: severity } : undefined,
+            continuations: { textIndent: '0px', color: severity || undefined },
+          };
+          cache.set(level, style);
+        }
+        return style;
+      },
+    };
+  }, [cols.stamp, cols.level, cols.module, messageIndent, minLevel]);
 
   const notice =
     hiddenLines > 0
@@ -662,72 +714,34 @@ const LogFileViewPage = () => {
                   ? blocks.map((block, i) => {
                       if (!block.record) {
                         return (
-                          <div
-                            key={i}
-                            // Dimming marks these lines as unowned.
-                            style={{
-                              borderLeft: '2px solid transparent',
-                              paddingLeft: 8,
-                              color: COLORS.stamp,
-                            }}
-                          >
+                          // Dimming marks these lines as unowned.
+                          <div key={i} style={styles.plain}>
                             {block.lines.join('\n')}
                           </div>
                         );
                       }
-                      const mc = severityColor(block.record.level);
-                      const bc = barColor(block.record.level, minLevel);
+                      const rowStyle = styles.forLevel(block.record.level);
                       return (
-                        <div
-                          key={i}
-                          style={{
-                            borderLeft: `2px solid ${bc}`,
-                            paddingLeft: `calc(8px + ${messageIndent}ch)`,
-                            textIndent: `-${messageIndent}ch`,
-                          }}
-                        >
+                        <div key={i} style={rowStyle.row}>
+                          <span style={styles.stamp}>{block.record.stamp}</span>{' '}
                           <span
-                            style={{
-                              ...columnStyle(cols.stamp),
-                              color: COLORS.stamp,
-                            }}
-                          >
-                            {block.record.stamp}
-                          </span>{' '}
-                          <span
-                            style={{
-                              ...columnStyle(cols.level),
-                              color: levelColor(block.record.level),
-                              fontWeight: 500,
-                              overflow: 'hidden',
-                              textOverflow: 'ellipsis',
-                            }}
+                            style={rowStyle.level}
                             title={block.record.level}
                           >
                             {levelLabel(block.record.level)}
                           </span>{' '}
                           <span
-                            style={{
-                              ...columnStyle(cols.module),
-                              color: COLORS.module,
-                              overflow: 'hidden',
-                              textOverflow: 'ellipsis',
-                            }}
+                            style={styles.module}
                             title={block.record.source}
                           >
                             {block.record.module}
                           </span>
                           {block.record.sep}
-                          <span style={mc ? { color: mc } : undefined}>
+                          <span style={rowStyle.message}>
                             {block.record.message}
                           </span>
                           {block.continuations.length > 0 && (
-                            <div
-                              style={{
-                                textIndent: '0px',
-                                color: mc || undefined,
-                              }}
-                            >
+                            <div style={rowStyle.continuations}>
                               {renderContinuations(block.continuations)}
                             </div>
                           )}
