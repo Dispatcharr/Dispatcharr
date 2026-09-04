@@ -155,4 +155,13 @@ describe('LogFilesPage', () => {
       expect(screen.getByText('No log files yet')).toBeInTheDocument();
     });
   });
+
+  it('says the listing failed rather than that there are no files', async () => {
+    API.getLogFiles.mockRejectedValue(new Error('HTTP error! Status: 500'));
+    renderPage();
+    expect(
+      await screen.findByText('Failed to load log files')
+    ).toBeInTheDocument();
+    expect(screen.queryByText('No log files yet')).not.toBeInTheDocument();
+  });
 });
