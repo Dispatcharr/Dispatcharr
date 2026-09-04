@@ -911,6 +911,16 @@ describe('LogFileViewPage', () => {
     expect(screen.getByText(/frame=1/).textContent).toContain('frame=30');
   });
 
+  it('does not read a torn offset as the level', async () => {
+    API.getLogFile.mockResolvedValue({
+      content: '2026-08-21 10:00:00,000 +1200 INFO',
+      truncated: false,
+    });
+    renderPage();
+    expect(await screen.findByText(/\+1200 INFO/)).toBeInTheDocument();
+    expect(screen.queryByTitle('+1200')).toBeNull();
+  });
+
   it('does not invent a separator the file lacks', async () => {
     API.getLogFile.mockResolvedValue({
       content: '2026-08-21 10:00:00,000 INFO core.tasks',

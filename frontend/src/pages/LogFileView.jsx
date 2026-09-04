@@ -34,7 +34,7 @@ const COLORS = {
 
 // Captures the separator so it is not re-invented; [\s\S] because '.' drops \r.
 const RECORD_TOKENS =
-  /^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3}(?: [+-]\d{4})?) (\S+) (\S+)( ?)([\s\S]*)$/;
+  /^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3}(?: [+-]\d{4})?) ([A-Z]+) (\S+)( ?)([\s\S]*)$/;
 
 const LEVEL_RANK = {
   TRACE: 10,
