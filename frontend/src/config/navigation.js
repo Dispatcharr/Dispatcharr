@@ -87,7 +87,7 @@ export const NAV_ITEMS = {
       { label: 'Users', icon: User, path: '/users' },
       { label: 'Logo Manager', icon: FileImage, path: '/logos' },
       { label: 'Connect', icon: Webhook, path: '/connect' },
-      { label: 'Logs', icon: ScrollText, path: '/logs' },
+      { label: 'Logs', icon: ScrollText, path: '/logs', requires: 'logCollectorRunning' },
       { ...SETTINGS_NAV_BASE },
     ],
   },
@@ -152,9 +152,9 @@ export const getOrderedNavItems = (
   userOrder,
   isAdmin,
   channelIds = [],
-  { canViewDvr = false, canViewVod = false } = {}
+  access = {}
 ) => {
-  const defaultOrder = getDefaultOrder(isAdmin, { canViewDvr, canViewVod });
+  const defaultOrder = getDefaultOrder(isAdmin, access);
 
   let order;
   if (userOrder && Array.isArray(userOrder) && userOrder.length > 0) {
@@ -181,7 +181,10 @@ export const getOrderedNavItems = (
         id: item.id,
         label: item.label,
         icon: item.icon,
-        paths: item.paths,
+        // A missing flag keeps the entry.
+        paths: item.paths.filter(
+          (entry) => !entry.requires || access[entry.requires] !== false
+        ),
         canHide: item.canHide,
       };
     }
