@@ -56,6 +56,15 @@ class LogFilesEndpointTests(TestCase):
         response = self.client.get("/api/core/logs/")
         self.assertFalse(response.json()["collector_running"])
 
+    def test_console_only_install_has_no_files(self):
+        with override_settings(LOG_FILE_DIR=None):
+            listing = self.client.get("/api/core/logs/").json()
+            self.assertEqual(listing["files"], [])
+            self.assertFalse(listing["collector_running"])
+            self.assertEqual(
+                self.client.get("/api/core/logs/dispatcharr.log/").status_code, 404
+            )
+
     def test_view_returns_the_tail(self):
         response = self.client.get("/api/core/logs/dispatcharr.log/")
         self.assertEqual(response.status_code, 200)

@@ -25,10 +25,6 @@ _NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 MAX_VIEW_BYTES = 5 * 1024 * 1024
 
 
-def _log_dir():
-    return getattr(settings, "LOG_FILE_DIR", None) or "/data/logs"
-
-
 def _open_log(path):
     """Open *path*, mapping a file pruned since resolution to a 404."""
     try:
@@ -48,9 +44,10 @@ def _at_line_start(f, offset):
 def _resolve(name):
     """Resolve *name* to a real log file inside the log directory, else None."""
     # Checked here, not only in the listing: DISPATCHARR_LOG_DIR may hold more than logs.
-    if not _NAME_RE.match(name) or not name.startswith(BASE_NAME):
+    log_dir = settings.LOG_FILE_DIR
+    if not log_dir or not _NAME_RE.match(name) or not name.startswith(BASE_NAME):
         return None
-    base = os.path.realpath(_log_dir())
+    base = os.path.realpath(log_dir)
     path = os.path.realpath(os.path.join(base, name))
     if os.path.dirname(path) != base or not os.path.isfile(path):
         return None
@@ -60,10 +57,10 @@ def _resolve(name):
 @api_view(["GET"])
 @permission_classes([IsAdmin])
 def list_log_files(request):
-    base = _log_dir()
+    base = settings.LOG_FILE_DIR
     files = []
     try:
-        names = os.listdir(base)
+        names = os.listdir(base) if base else []
     except OSError:
         names = []
     for name in names:
