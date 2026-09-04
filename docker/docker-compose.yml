@@ -201,8 +201,6 @@ services:
     image: postgres:17
     container_name: dispatcharr_db
     restart: unless-stopped
-    ports:
-      - '5436:5432'
     environment:
       - POSTGRES_DB=dispatcharr
       - POSTGRES_USER=dispatch
