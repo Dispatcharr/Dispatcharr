@@ -28,6 +28,7 @@ from core.utils import (
 from core.models import CoreSettings
 from core.xtream_codes import Client as XCClient
 from core.utils import send_websocket_update
+from apps.m3u.credentials import get_transformed_credentials
 from .utils import (
     convert_js_numbered_backreferences,
     normalize_stream_url,
@@ -3100,100 +3101,6 @@ def sync_auto_channels(account_id, scan_start_time=None):
         }
 
 
-def get_transformed_credentials(account, profile=None):
-    """
-    Get transformed credentials for XtreamCodes API calls.
-
-    Args:
-        account: M3UAccount instance
-        profile: M3UAccountProfile instance (optional, if not provided will use primary profile)
-
-    Returns:
-        tuple: (transformed_url, transformed_username, transformed_password)
-    """
-    import re
-    import urllib.parse
-
-    # If no profile is provided, find the primary active profile
-    if profile is None:
-        try:
-            from apps.m3u.models import M3UAccountProfile
-            profile = M3UAccountProfile.objects.filter(
-                m3u_account=account,
-                is_active=True
-            ).first()
-            if profile:
-                logger.debug(f"Using primary profile '{profile.name}' for URL transformation")
-            else:
-                logger.debug(f"No active profiles found for account {account.name}, using base credentials")
-        except Exception as e:
-            logger.warning(f"Could not get primary profile for account {account.name}: {e}")
-            profile = None
-
-    from core.xtream_codes import normalize_server_url
-
-    base_url = normalize_server_url(account.server_url)
-    base_username = account.username
-    base_password = account.password    # Build a complete URL with credentials (similar to how IPTV URLs are structured)
-    # Format: http://server.com:port/live/username/password/1234.ts
-    if base_url and base_username and base_password:
-        clean_server_url = base_url.rstrip('/')
-
-        # Build the complete URL with embedded credentials
-        complete_url = f"{clean_server_url}/live/{base_username}/{base_password}/1234.ts"
-        logger.debug(f"Built complete URL: {complete_url}")
-
-        # Apply profile-specific transformations if profile is provided
-        if profile and profile.search_pattern and profile.replace_pattern:
-            try:
-                # Handle backreferences: convert JS-style $<name> -> \g<name>, $1 -> \1
-                # regex module accepts JS-style (?<name>...) named groups natively
-                safe_replace_pattern = regex.sub(r'\$<([^>]+)>', r'\\g<\1>', profile.replace_pattern)
-                safe_replace_pattern = regex.sub(r'\$(\d+)', r'\\\1', safe_replace_pattern)
-
-                # Apply transformation to the complete URL
-                transformed_complete_url = regex.sub(profile.search_pattern, safe_replace_pattern, complete_url)
-                logger.info(f"Transformed complete URL: {complete_url} -> {transformed_complete_url}")
-
-                # Extract components from the transformed URL
-                # Pattern: http://server.com:port/live/username/password/1234.ts
-                parsed_url = urllib.parse.urlparse(transformed_complete_url)
-                path_parts = [part for part in parsed_url.path.split('/') if part]
-
-                if len(path_parts) >= 4 and path_parts[-1] == '1234.ts':
-                    # Extract username and password from the known structure:
-                    # .../{live}/{username}/{password}/1234.ts
-                    # Using negative indices so sub-paths in the server URL don't shift extraction
-                    transformed_username = path_parts[-3]
-                    transformed_password = path_parts[-2]
-
-                    # Rebuild server URL: preserve any sub-path that precedes
-                    # /live/username/password/1234.ts (path_parts[:-4]).
-                    base_path_parts = path_parts[:-4]
-                    base_path = ('/' + '/'.join(base_path_parts)) if base_path_parts else ''
-                    transformed_url = f"{parsed_url.scheme}://{parsed_url.netloc}{base_path}"
-
-                    logger.debug(f"Extracted transformed credentials:")
-                    logger.debug(f"  Server URL: {transformed_url}")
-                    logger.debug(f"  Username: {transformed_username}")
-                    logger.debug(f"  Password: {transformed_password}")
-
-                    return transformed_url, transformed_username, transformed_password
-                else:
-                    logger.warning(f"Could not extract credentials from transformed URL: {transformed_complete_url}")
-                    return base_url, base_username, base_password
-
-            except Exception as e:
-                logger.error(f"Error transforming URL for profile {profile.name if profile else 'unknown'}: {e}")
-                return base_url, base_username, base_password
-        else:
-            # No profile or no transformation patterns
-            return base_url, base_username, base_password
-    else:
-        logger.warning(f"Missing credentials for account {account.name}")
-        return base_url, base_username, base_password
-
-
 @shared_task
 def refresh_account_profiles(account_id):
     """Refresh account information for all active profiles of an XC account.
@@ -3248,6 +3155,9 @@ def refresh_account_profiles(account_id):
 
                 # Get transformed credentials for this specific profile
                 profile_url, profile_username, profile_password = get_transformed_credentials(account, profile)
+                if not (profile_url and profile_username and profile_password):
+                    profiles_failed += 1
+                    continue
 
                 # Create a separate XC client for this profile's credentials
                 with XCClient(
@@ -3323,6 +3233,12 @@ def refresh_account_info(profile_id):
 
         # Get transformed credentials using the helper function
         transformed_url, transformed_username, transformed_password = get_transformed_credentials(account, profile)
+        if not (transformed_url and transformed_username and transformed_password):
+            error_msg = (
+                f"Credential transform failed for profile {profile.name} ({profile_id})"
+            )
+            release_task_lock("refresh_account_info", profile_id)
+            return error_msg
 
         # Initialize XtreamCodes client with extracted/transformed credentials
         client = XCClient(

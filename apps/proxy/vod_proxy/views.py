@@ -181,13 +181,6 @@ def _select_vod_stream(
 
     for cand, selected_profile in candidate_profiles:
         cand_account = cand.m3u_account
-        cand_url = _get_stream_url_from_relation(cand)
-        if not cand_url:
-            logger.warning(
-                "[VOD-FAILOVER] No URL for relation on account %s, skipping",
-                cand_account.name,
-            )
-            continue
 
         restrict_to_profile_ids = (
             {p.id for p in allowed_m3u_profiles.get(cand.m3u_account_id, [])}
@@ -208,15 +201,17 @@ def _select_vod_stream(
             continue
 
         m3u_profile, current_connections = profile_result
-        final_stream_url = _transform_url(cand_url, m3u_profile)
+        final_stream_url = _build_vod_stream_url(cand, m3u_profile, content_type)
         if not final_stream_url or not final_stream_url.startswith(
             ("http://", "https://")
         ):
-            logger.warning(
-                "[VOD-FAILOVER] Invalid stream URL from account %s: %s",
-                cand_account.name,
-                final_stream_url,
-            )
+            if final_stream_url:
+                logger.warning(
+                    "[VOD-FAILOVER] Invalid stream URL from account %s profile %s: %s",
+                    cand_account.name,
+                    getattr(m3u_profile, "id", None),
+                    final_stream_url,
+                )
             continue
 
         logger.info(
@@ -465,6 +460,55 @@ def _order_candidates(candidates, preferred_relation=None):
         ]
     return list(candidates)
 
+def _build_vod_stream_url(relation, m3u_profile, content_type):
+    """
+    Build a VOD provider URL using the same credential resolution as Live/catchup.
+
+    XC relations resolve credentials via get_transformed_credentials(), then build
+    /movie/ or /series/ URLs. Failed transforms return None. Non-XC relations keep
+    the legacy get_stream_url path when present.
+    """
+    from apps.m3u.credentials import (
+        build_xc_playback_url,
+        get_transformed_credentials,
+    )
+
+    account = relation.m3u_account
+    if getattr(account, "account_type", None) == "XC":
+        server_url, username, password = get_transformed_credentials(
+            account, m3u_profile
+        )
+        if not (server_url and username and password):
+            return None
+
+        stream_id = getattr(relation, "stream_id", None)
+        if not stream_id:
+            logger.error("[VOD-URL] Relation has no stream_id")
+            return None
+
+        if content_type == "movie":
+            content_path = "movie"
+        elif content_type in ("series", "episode"):
+            content_path = "series"
+        else:
+            logger.error("[VOD-URL] Unsupported VOD content_type: %s", content_type)
+            return None
+
+        extension = getattr(relation, "container_extension", None) or "mp4"
+        url = build_xc_playback_url(
+            server_url,
+            username,
+            password,
+            content_path=content_path,
+            stream_id=str(stream_id),
+            extension=extension,
+        )
+        logger.info("[VOD-URL] Built XC URL from transformed credentials: %s", url)
+        return url
+
+    return _get_stream_url_from_relation(relation)
+
+
 def _get_stream_url_from_relation(relation):
     """Get stream URL from the M3U relation"""
     try:
@@ -636,31 +680,6 @@ def _get_m3u_profile(m3u_account, profile_id, session_id=None, restrict_to_profi
     except Exception as e:
         logger.error(f"Error getting M3U profile: {e}")
         return None
-
-def _transform_url(original_url, m3u_profile):
-    """Transform URL based on M3U profile settings"""
-    try:
-        import regex
-
-        if not original_url:
-            return None
-
-        search_pattern = m3u_profile.search_pattern
-        replace_pattern = m3u_profile.replace_pattern
-        # Convert JS-style backreferences in replace: $<name> -> \g<name>, $1 -> \1
-        safe_replace_pattern = regex.sub(r'\$<([^>]+)>', r'\\g<\1>', replace_pattern)
-        safe_replace_pattern = regex.sub(r'\$(\d+)', r'\\\1', safe_replace_pattern)
-
-        if search_pattern and replace_pattern:
-            # regex module accepts JS-style (?<name>...) named groups natively
-            transformed_url = regex.sub(search_pattern, safe_replace_pattern, original_url)
-            return transformed_url
-
-        return original_url
-
-    except Exception as e:
-        logger.error(f"Error transforming URL: {e}")
-        return original_url
 
 def _user_from_vod_request(request, user=None):
     """Prefer an explicit user, then an authenticated request.user, else None."""

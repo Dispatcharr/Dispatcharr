@@ -499,9 +499,6 @@ class Channel(models.Model):
         except Exception:
             ch_ids = set()
 
-        logger.debug("Candidate channels for preemption:")
-        logger.debug(ch_ids)
-
         # 2) Fallback: scan metadata keys and filter by m3u_profile == profile_id
         if not ch_ids:
             cursor = 0
@@ -530,13 +527,14 @@ class Channel(models.Model):
                 if cursor == 0:
                     break
 
-        logger.debug("Candidate channels for preemption:")
-        logger.debug(ch_ids)
-
         if not ch_ids:
             return None
 
-        # 3) Score candidates
+        logger.debug(
+            "Preemption candidates for profile %s: %s",
+            profile_id,
+            sorted(ch_ids),
+        )
         for ch_id in ch_ids:
             if ch_id in exclude_channel_ids:
                 continue

@@ -4,7 +4,7 @@ from django.test import TestCase
 
 from apps.channels.models import Stream
 from apps.m3u.models import M3UAccount, M3UAccountProfile
-from apps.m3u.tasks import get_transformed_credentials
+from apps.m3u.credentials import get_transformed_credentials
 from apps.proxy.live_proxy.url_utils import _resolve_live_stream_url
 from apps.vod.models import Episode, M3UEpisodeRelation, M3UMovieRelation, Movie, Series
 from core.xtream_codes import normalize_server_url

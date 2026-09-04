@@ -85,9 +85,9 @@ def _fingerprint_from_profile_stream_url(profile) -> Optional[str]:
             profile.search_pattern or "",
             profile.replace_pattern or "",
         )
-        url_user, url_pass = extract_credentials_from_stream_url(
-            transformed or sample_url
-        )
+        if not transformed:
+            return None
+        url_user, url_pass = extract_credentials_from_stream_url(transformed)
         return compute_credential_fingerprint(url_user or "", url_pass or "")
     except Exception as exc:
         logger.debug(
@@ -104,18 +104,24 @@ def get_profile_credential_fingerprint(profile) -> Optional[str]:
 
     if m3u_account.account_type == "XC":
         try:
-            from apps.m3u.tasks import get_transformed_credentials
+            from apps.m3u.credentials import get_transformed_credentials
 
             _url, username, password = get_transformed_credentials(m3u_account, profile)
-            fingerprint = compute_credential_fingerprint(username or "", password or "")
-            if fingerprint:
-                return fingerprint
+            if username and password:
+                fingerprint = compute_credential_fingerprint(username, password)
+                if fingerprint:
+                    return fingerprint
+            # Patterns configured but transform failed.
+            if profile.search_pattern and profile.replace_pattern:
+                return None
         except Exception as exc:
             logger.debug(
                 "Could not resolve transformed credentials for profile %s: %s",
                 profile.pk,
                 exc,
             )
+            if profile.search_pattern and profile.replace_pattern:
+                return None
 
     fingerprint = _fingerprint_from_profile_stream_url(profile)
     if fingerprint:
@@ -171,7 +177,8 @@ def group_has_capacity_for_profile(profile, redis_client) -> bool:
         return True
     cred_key = _credential_counter_key(profile, group)
     if not cred_key:
-        return True
+        # Profile is in an enforced group but its login can't be fingerprinted
+        return False
     return int(redis_client.get(cred_key) or 0) < profile.max_streams
 
 
@@ -267,7 +274,7 @@ def _reserve_server_group_slot_for_profile(
 
     cred_key = _credential_counter_key(profile, group)
     if not cred_key:
-        return True, None
+        return False, None
 
     cred_count = redis_client.incr(cred_key)
     if cred_count <= profile.max_streams:

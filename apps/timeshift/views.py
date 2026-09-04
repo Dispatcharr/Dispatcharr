@@ -38,7 +38,7 @@ from apps.m3u.connection_pool import (
     reserve_profile_slot,
 )
 from apps.m3u.models import M3UAccount, M3UAccountProfile
-from apps.m3u.tasks import get_transformed_credentials
+from apps.m3u.credentials import get_transformed_credentials
 from apps.proxy.live_proxy.config_helper import ConfigHelper
 from apps.proxy.live_proxy.constants import ChannelMetadataField, ChannelState
 from apps.timeshift.redis_keys import (
@@ -1751,7 +1751,7 @@ def _select_catchup_redirect_url(
                 target.m3u_account.id, exc,
             )
             continue
-        if not server_url:
+        if not (server_url and xc_username and xc_password):
             continue
 
         creds = TimeshiftCredentials(server_url, xc_username, xc_password)
@@ -2685,6 +2685,11 @@ def _attempt_timeshift_stream(
     server_url, xc_username, xc_password = get_transformed_credentials(
         m3u_account, profile
     )
+    if not (server_url and xc_username and xc_password):
+        return HttpResponse(
+            "Credential transform failed for selected M3U profile",
+            status=503,
+        )
     creds = TimeshiftCredentials(server_url, xc_username, xc_password)
     candidate_urls = build_timeshift_candidate_urls(
         creds, stream_id_value, provider_timestamp, duration_minutes
