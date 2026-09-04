@@ -23,6 +23,8 @@ const LogFilesPage = () => {
   const [files, setFiles] = useState([]);
   const [collectorRunning, setCollectorRunning] = useState(true);
   const [loading, setLoading] = useState(false);
+  // The whole body arrives before the browser saves anything; say so.
+  const [downloading, setDownloading] = useState(null);
   const { fullDateTimeFormat } = useDateTimeFormat();
 
   const load = useCallback(async () => {
@@ -101,7 +103,15 @@ const LogFilesPage = () => {
                 <Button
                   variant="subtle"
                   size="xs"
-                  onClick={() => API.downloadLogFile(file.name)}
+                  loading={downloading === file.name}
+                  onClick={async () => {
+                    setDownloading(file.name);
+                    try {
+                      await API.downloadLogFile(file.name);
+                    } finally {
+                      setDownloading(null);
+                    }
+                  }}
                 >
                   Download
                 </Button>

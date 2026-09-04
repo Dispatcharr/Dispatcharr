@@ -321,6 +321,8 @@ const LogFileViewPage = () => {
     return () => clearTimeout(id);
   }, [search]);
   const [loadError, setLoadError] = useState(false);
+  // The whole body arrives before the browser saves anything; say so.
+  const [downloading, setDownloading] = useState(false);
 
   const loadingRef = useRef(false);
   const failuresRef = useRef(0);
@@ -538,7 +540,15 @@ const LogFileViewPage = () => {
               <Button
                 size="xs"
                 variant="subtle"
-                onClick={() => API.downloadLogFile(name)}
+                loading={downloading}
+                onClick={async () => {
+                  setDownloading(true);
+                  try {
+                    await API.downloadLogFile(name);
+                  } finally {
+                    setDownloading(false);
+                  }
+                }}
                 style={{ marginTop: 'auto' }}
               >
                 Download
