@@ -845,6 +845,18 @@ describe('LogFileViewPage', () => {
     expect(blank.textContent).toBe('\n');
   });
 
+  it('does not render the newline that ends the body as a blank line', async () => {
+    API.getLogFile.mockResolvedValue({
+      content: '2026-08-21 10:00:00,000 INFO core.tasks hello there\n',
+      truncated: false,
+    });
+    const { container } = renderPage();
+    await screen.findByText(/hello there/);
+    expect(
+      container.querySelector('div[style*="line-height: 0.35"]')
+    ).toBeNull();
+  });
+
   it('never hides the collector pass-through records behind a filter', async () => {
     // A known source shape with an unparseable date reaches the viewer unstamped.
     API.getLogFile.mockResolvedValue({
