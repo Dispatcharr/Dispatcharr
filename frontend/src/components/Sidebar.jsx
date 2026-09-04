@@ -209,7 +209,7 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
 
   const navOrder = getNavOrder();
   const hiddenNav = getHiddenNav();
-  // Absent on an older backend: assume running rather than hide a working page.
+  // A missing flag counts as running.
   const logCollectorRunning = environment.log_collector_running !== false;
   const navItems = useMemo(() => {
     const ordered = getOrderedNavItems(navOrder, isAdmin, channelIds, {

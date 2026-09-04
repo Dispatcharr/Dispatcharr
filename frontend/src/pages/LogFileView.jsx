@@ -34,7 +34,7 @@ const COLORS = {
   level: '#e4e4e7',
 };
 
-// Captures the separator so it is not re-invented; [\s\S] because '.' drops \r.
+// [\s\S] because '.' drops \r.
 const RECORD_TOKENS =
   /^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3}(?: [+-]\d{4})?) ([A-Z]+) (\S+)( ?)([\s\S]*)$/;
 
@@ -134,9 +134,7 @@ const SEARCH_DEBOUNCE_MS = 200;
 // Bounds the DOM for low-end TV browsers.
 const MAX_RENDER_LINES = 5000;
 
-// Two bounds on the appended buffer, because they cap different resources:
-// bytes hold the retained text to what one tail used to be, lines hold the
-// per-entry object overhead a flood of very short lines would other run up.
+// Bytes bound the retained text; lines bound the per-entry overhead.
 const MAX_BUFFER_BYTES = 5 * 1024 * 1024;
 const MAX_BUFFER_LINES = 50000;
 const EMPTY_BUFFER = { entries: [], bytes: 0, truncated: false };
@@ -164,11 +162,10 @@ const LEVEL_OPTIONS = [
 // Mirrors the collector's continuation rules.
 const TRACEBACK_HEAD = 'Traceback';
 
-// Returns the trailing traceback state so the next chunk can resume in it: a
-// traceback split across two polls would otherwise lose its unindented tail.
 // Ids survive the head slice and the reversal, so React inserts only new rows.
 let nextEntryId = 0;
 
+// Returns the traceback state so the next chunk can resume inside a split one.
 const classifyLines = (lines, inTraceback = false) => {
   const entries = [];
   for (const line of lines) {
@@ -190,13 +187,9 @@ const classifyLines = (lines, inTraceback = false) => {
   return { entries, inTraceback };
 };
 
-// Matching on a case-insensitive regex, not a lowercased copy per line: the
-// copies would double the retained text in memory for no extra speed.
 const escapeRegExp = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 // A record and the continuations trailing it are kept or dropped together.
-// Walked in place rather than grouped into arrays first: the groups were one
-// short-lived array per record, which is the bulk of a filter pass's garbage.
 const filterEntries = (entries, minRank, category, matcher) => {
   const out = [];
   let start = 0;
@@ -449,7 +442,6 @@ const LogFileViewPage = () => {
     CATEGORY_OPTIONS.some((option) => option.value === categorySetting)
       ? categorySetting
       : null;
-  // Ephemeral by design: searches are moments, not settings.
   const [search, setSearch] = useState('');
   // The box keeps up with typing; the filter waits for a pause.
   const query = useDebounce(search.trim(), SEARCH_DEBOUNCE_MS);
@@ -462,8 +454,7 @@ const LogFileViewPage = () => {
   const loadingRef = useRef(false);
   const failuresRef = useRef(0);
   const cursorRef = useRef(null);
-  // Two loads can overlap (a click during a poll) carrying the same cursor,
-  // and the same delta would append twice. Only the newest may land.
+  // Overlapping loads carry the same cursor; only the newest may land.
   const requestRef = useRef(0);
   // classifyLines resumes from here so a split traceback keeps its tail.
   const tracebackRef = useRef(false);
@@ -509,8 +500,7 @@ const LogFileViewPage = () => {
       : el.scrollHeight - el.scrollTop - el.clientHeight <= FOLLOW_SLACK_PX;
   }, [newestFirst]);
 
-  // A refresh replaces the content wholesale, so a fixed scrollTop drifts back
-  // through history. Re-pin to the live edge for a reader who was watching it.
+  // Re-pin to the live edge for a reader who was watching it.
   useLayoutEffect(() => {
     const el = viewportRef.current;
     if (!el || !followingRef.current) return;
@@ -534,8 +524,7 @@ const LogFileViewPage = () => {
         ? 'Large file — showing the last 5 MB'
         : null;
 
-  // Only new bytes arrive once a cursor is held, so classify only those and
-  // append. A reset (rotation or first load) replaces the buffer instead.
+  // A reset replaces the buffer; a delta is classified alone and appended.
   const applyResponse = useCallback((response) => {
     cursorRef.current = response.cursor || null;
     const lines = response.content ? response.content.split('\n') : [];
@@ -572,8 +561,7 @@ const LogFileViewPage = () => {
           silent,
           cursor: cursorRef.current,
         });
-        // Superseded: a newer load owns the cursor, and applying this one
-        // would append a delta the newer response already carried.
+        // Superseded by a newer load that already carried this delta.
         if (version !== requestRef.current) return true;
         // Silent polls resolve to undefined on failure.
         if (!response) return false;
@@ -593,8 +581,7 @@ const LogFileViewPage = () => {
   );
 
   useEffect(() => {
-    // A different file shares no offsets with the last one, and any response
-    // still in flight for the previous one must not land in this buffer.
+    // Offsets belong to one file, and a stale in-flight response must not land here.
     requestRef.current += 1;
     cursorRef.current = null;
     tracebackRef.current = false;

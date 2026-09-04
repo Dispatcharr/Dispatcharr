@@ -3809,7 +3809,6 @@ export default class API {
     }
   }
 
-  // Fetched over the authenticated session, so no secret ever rides in a URL.
   static async downloadLogFile(name) {
     try {
       const response = await fetch(
