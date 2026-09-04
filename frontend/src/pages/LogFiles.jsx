@@ -12,12 +12,7 @@ import {
 } from '@mantine/core';
 import API from '../api';
 import { useDateTimeFormat, format } from '../utils/dateTimeUtils.js';
-
-const humanSize = (bytes) => {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-};
+import { formatBytes } from '../utils/networkUtils.js';
 
 const LogFilesPage = () => {
   const [files, setFiles] = useState([]);
@@ -96,7 +91,7 @@ const LogFilesPage = () => {
               </Table.Td>
               <Table.Td ta="right">
                 <Text size="sm" title={`${file.size.toLocaleString()} bytes`}>
-                  {humanSize(file.size)}
+                  {formatBytes(file.size)}
                 </Text>
               </Table.Td>
               <Table.Td align="right">
