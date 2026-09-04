@@ -154,10 +154,9 @@ def get_log_file(request, name):
         if newline >= 0:
             start += newline + 1
             data = data[newline + 1 :]
-    elif not reset:
-        # Mid-write, the tail is a fragment; it arrives whole on the next poll.
-        end = data.rfind(b"\n")
-        data = data[: end + 1] if end >= 0 else b""
+    # Mid-write, the tail is a fragment; it arrives whole on the next poll.
+    end = data.rfind(b"\n")
+    data = data[: end + 1] if end >= 0 else b""
 
     return Response(
         {
