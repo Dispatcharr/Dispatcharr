@@ -8,6 +8,8 @@ from datetime import datetime, timezone
 
 from django.conf import settings
 from django.http import FileResponse, HttpResponse
+from drf_spectacular.types import OpenApiTypes
+from drf_spectacular.utils import extend_schema, OpenApiParameter
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.exceptions import NotFound
 from rest_framework.response import Response
@@ -86,6 +88,22 @@ def list_log_files(request):
     )
 
 
+@extend_schema(
+    parameters=[
+        OpenApiParameter(
+            name="cursor",
+            type=OpenApiTypes.STR,
+            location=OpenApiParameter.QUERY,
+            required=False,
+            description=(
+                "Opaque position from a previous response's X-Log-Cursor. "
+                "Serves only the bytes written past it, unless the file "
+                "rotated or the gap exceeds the view cap, in which case the "
+                "response resets to a fresh tail and X-Log-Reset is 1."
+            ),
+        ),
+    ],
+)
 @api_view(["GET"])
 @permission_classes([IsAdmin])
 def get_log_file(request, name):
