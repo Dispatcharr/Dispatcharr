@@ -263,6 +263,50 @@ const columnStyle = (width) => ({
   verticalAlign: 'bottom',
 });
 
+// One table per column layout and floor, so a few objects cover every row.
+const buildStyles = (stampW, levelW, moduleW, indent, minLevel) => {
+  const cache = new Map();
+  return {
+    stamp: { ...columnStyle(stampW), color: COLORS.stamp },
+    module: {
+      ...columnStyle(moduleW),
+      color: COLORS.module,
+      overflow: 'hidden',
+      textOverflow: 'ellipsis',
+    },
+    plain: {
+      borderLeft: '2px solid transparent',
+      paddingLeft: 8,
+      color: COLORS.stamp,
+    },
+    // Built on first sight of a level, so an unexpected one still renders.
+    forLevel: (level) => {
+      let style = cache.get(level);
+      if (!style) {
+        const severity = severityColor(level);
+        style = {
+          row: {
+            borderLeft: `2px solid ${barColor(level, minLevel)}`,
+            paddingLeft: `calc(8px + ${indent}ch)`,
+            textIndent: `-${indent}ch`,
+          },
+          level: {
+            ...columnStyle(levelW),
+            color: levelColor(level),
+            fontWeight: 500,
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+          },
+          message: severity ? { color: severity } : undefined,
+          continuations: { textIndent: '0px', color: severity || undefined },
+        };
+        cache.set(level, style);
+      }
+      return style;
+    },
+  };
+};
+
 const byteLength = (entries) => {
   let bytes = 0;
   for (const entry of entries) bytes += entry.line.length + 1;
@@ -486,51 +530,12 @@ const LogFileViewPage = () => {
   // Wrapped lines and continuations hang under the message column.
   const messageIndent = cols.stamp + cols.level + cols.module + 3;
 
-  // Every row style derives from the columns, the indent and the floor, so a
-  // handful of objects covers thousands of rows instead of six per row. Keyed
-  // off the primitives, not the cols object, so the identities survive a poll.
-  const styles = useMemo(() => {
-    const cache = new Map();
-    return {
-      stamp: { ...columnStyle(cols.stamp), color: COLORS.stamp },
-      module: {
-        ...columnStyle(cols.module),
-        color: COLORS.module,
-        overflow: 'hidden',
-        textOverflow: 'ellipsis',
-      },
-      plain: {
-        borderLeft: '2px solid transparent',
-        paddingLeft: 8,
-        color: COLORS.stamp,
-      },
-      // Built on first sight of a level, so an unexpected one still renders.
-      forLevel: (level) => {
-        let style = cache.get(level);
-        if (!style) {
-          const severity = severityColor(level);
-          style = {
-            row: {
-              borderLeft: `2px solid ${barColor(level, minLevel)}`,
-              paddingLeft: `calc(8px + ${messageIndent}ch)`,
-              textIndent: `-${messageIndent}ch`,
-            },
-            level: {
-              ...columnStyle(cols.level),
-              color: levelColor(level),
-              fontWeight: 500,
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
-            },
-            message: severity ? { color: severity } : undefined,
-            continuations: { textIndent: '0px', color: severity || undefined },
-          };
-          cache.set(level, style);
-        }
-        return style;
-      },
-    };
-  }, [cols.stamp, cols.level, cols.module, messageIndent, minLevel]);
+  // Keyed off the primitives so the style identities survive a poll.
+  const styles = useMemo(
+    () =>
+      buildStyles(cols.stamp, cols.level, cols.module, messageIndent, minLevel),
+    [cols.stamp, cols.level, cols.module, messageIndent, minLevel]
+  );
 
   const notice =
     hiddenLines > 0
