@@ -7,9 +7,10 @@ import re
 from datetime import datetime, timezone
 
 from django.conf import settings
-from django.http import FileResponse, HttpResponse
+from django.http import FileResponse
 from drf_spectacular.types import OpenApiTypes
-from drf_spectacular.utils import extend_schema, OpenApiParameter
+from drf_spectacular.utils import extend_schema, inline_serializer, OpenApiParameter
+from rest_framework import serializers
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.exceptions import NotFound
 from rest_framework.response import Response
@@ -96,13 +97,24 @@ def list_log_files(request):
             location=OpenApiParameter.QUERY,
             required=False,
             description=(
-                "Opaque position from a previous response's X-Log-Cursor. "
-                "Serves only the bytes written past it, unless the file "
-                "rotated or the gap exceeds the view cap, in which case the "
-                "response resets to a fresh tail and X-Log-Reset is 1."
+                "Opaque position from a previous response's cursor. Serves "
+                "only the bytes written past it, unless the file rotated or "
+                "the gap exceeds the view cap, in which case the response "
+                "resets to a fresh tail."
             ),
         ),
     ],
+    responses={
+        200: inline_serializer(
+            name="LogTail",
+            fields={
+                "content": serializers.CharField(),
+                "cursor": serializers.CharField(),
+                "reset": serializers.BooleanField(),
+                "truncated": serializers.BooleanField(),
+            },
+        )
+    },
 )
 @api_view(["GET"])
 @permission_classes([IsAdmin])
@@ -147,11 +159,14 @@ def get_log_file(request, name):
         end = data.rfind(b"\n")
         data = data[: end + 1] if end >= 0 else b""
 
-    response = HttpResponse(data, content_type="text/plain; charset=utf-8")
-    response["X-Log-Cursor"] = f"{stat.st_ino}-{start + len(data)}"
-    response["X-Log-Reset"] = "1" if reset else "0"
-    response["X-Log-Truncated"] = "1" if truncated else "0"
-    return response
+    return Response(
+        {
+            "content": data.decode("utf-8", "replace"),
+            "cursor": f"{stat.st_ino}-{start + len(data)}",
+            "reset": reset,
+            "truncated": truncated,
+        }
+    )
 
 
 @api_view(["GET"])
