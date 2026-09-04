@@ -93,6 +93,7 @@ describe('LogFileViewPage', () => {
     });
     expect(API.getLogFile).toHaveBeenCalledWith('dispatcharr.log', {
       silent: false,
+      cursor: null,
     });
     expect(screen.getByText('dispatcharr.log')).toBeInTheDocument();
   });
@@ -801,9 +802,7 @@ describe('LogFileViewPage', () => {
       target: { value: '40' },
     });
     expect(screen.queryByText(/routine tick/)).not.toBeInTheDocument();
-    expect(
-      screen.queryByText(/Setting up PostgreSQL/)
-    ).not.toBeInTheDocument();
+    expect(screen.queryByText(/Setting up PostgreSQL/)).not.toBeInTheDocument();
     expect(screen.getByText(/Traceback/)).toBeInTheDocument();
   });
 
@@ -1057,6 +1056,132 @@ describe('LogFileViewPage', () => {
       text.indexOf('continuation of the first record')
     );
   });
+  it('appends an incremental delta instead of replacing the buffer', async () => {
+    API.getLogFile.mockResolvedValue({
+      content: 'Info|core.tasks|first line\n',
+      truncated: false,
+      cursor: '99-30',
+      reset: true,
+    });
+    renderPage();
+    await screen.findByText(/first line/);
+
+    // Only the new bytes come back, and the cursor rides along on the next ask.
+    API.getLogFile.mockResolvedValue({
+      content: 'Info|core.tasks|second line\n',
+      truncated: false,
+      cursor: '99-61',
+      reset: false,
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByText('Refresh'));
+    });
+
+    await screen.findByText(/second line/);
+    // The first line is still there: the delta was appended, not swapped in.
+    expect(screen.getByText(/first line/)).toBeInTheDocument();
+    expect(API.getLogFile).toHaveBeenLastCalledWith('dispatcharr.log', {
+      silent: false,
+      cursor: '99-30',
+    });
+  });
+
+  it('replaces the buffer when the server reports a reset', async () => {
+    API.getLogFile.mockResolvedValue({
+      content: 'Info|core.tasks|from the old file\n',
+      truncated: false,
+      cursor: '99-40',
+      reset: true,
+    });
+    renderPage();
+    await screen.findByText(/from the old file/);
+
+    // A rotation: the server resets rather than resuming a meaningless offset.
+    API.getLogFile.mockResolvedValue({
+      content: 'Info|core.tasks|from the new file\n',
+      truncated: false,
+      cursor: '100-40',
+      reset: true,
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByText('Refresh'));
+    });
+
+    await screen.findByText(/from the new file/);
+    expect(screen.queryByText(/from the old file/)).not.toBeInTheDocument();
+  });
+
+  it('keeps a traceback whole when it straddles two deltas', async () => {
+    API.getLogFile.mockResolvedValue({
+      content:
+        '2026-08-21 10:00:00,000 ERROR apps.epg Traceback (most recent call last):\n' +
+        '  File "/app/x.py", line 1, in run\n',
+      truncated: false,
+      cursor: '99-80',
+      reset: true,
+    });
+    renderPage();
+    await screen.findByText(/Traceback \(most recent call last\)/);
+
+    // The unindented exception line lands in the next poll. Classified on its
+    // own it reads as a standalone line and detaches from its traceback.
+    API.getLogFile.mockResolvedValue({
+      content: 'ValueError: bad m3u\n',
+      truncated: false,
+      cursor: '99-100',
+      reset: false,
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByText('Refresh'));
+    });
+    await screen.findByText(/ValueError: bad m3u/);
+
+    // Structure, not mere presence: the tail must render inside the record's
+    // own block, which only happens if the delta resumed inside the traceback.
+    const block = screen
+      .getByText(/Traceback \(most recent call last\)/)
+      .closest('div');
+    expect(block.textContent).toContain('ValueError: bad m3u');
+  });
+
+  it('does not append the same delta twice when two loads overlap', async () => {
+    API.getLogFile.mockResolvedValue({
+      content: '2026-08-21 10:00:00,000 INFO core.tasks base line\n',
+      truncated: false,
+      cursor: '7-50',
+      reset: true,
+    });
+    renderPage();
+    await screen.findByText(/base line/);
+
+    // Both polls are issued against cursor 7-50 and return the same delta.
+    let release;
+    const gate = new Promise((resolve) => {
+      release = resolve;
+    });
+    const delta = {
+      content: '2026-08-21 10:00:01,000 INFO core.tasks second line\n',
+      truncated: false,
+      cursor: '7-100',
+      reset: false,
+    };
+    API.getLogFile.mockImplementation(async () => {
+      await gate;
+      return delta;
+    });
+
+    const refresh = screen.getByText('Refresh');
+    await act(async () => {
+      fireEvent.click(refresh);
+      fireEvent.click(refresh);
+      release();
+      await Promise.resolve();
+    });
+    await screen.findByText(/second line/);
+
+    expect(screen.getAllByText(/second line/)).toHaveLength(1);
+  });
+
   // jsdom performs no layout, so the scroll box reports zero for every metric.
   // Stub the geometry and let scrollTop behave like a real settable property.
   const stubViewport = (el, { scrollHeight, clientHeight }) => {

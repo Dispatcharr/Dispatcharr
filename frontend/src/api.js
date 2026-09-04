@@ -3792,10 +3792,12 @@ export default class API {
   }
 
   // { silent: true } drops the toast for background auto-refresh polls.
-  static async getLogFile(name, { silent = false } = {}) {
+  // A cursor asks for only the bytes written since that point.
+  static async getLogFile(name, { silent = false, cursor = null } = {}) {
     try {
+      const query = cursor ? `?cursor=${encodeURIComponent(cursor)}` : '';
       const response = await fetch(
-        `${host}/api/core/logs/${encodeURIComponent(name)}/`,
+        `${host}/api/core/logs/${encodeURIComponent(name)}/${query}`,
         {
           headers: { Authorization: `Bearer ${await API.getAuthToken()}` },
         }
@@ -3816,6 +3818,9 @@ export default class API {
       return {
         content: await response.text(),
         truncated: response.headers.get('X-Log-Truncated') === '1',
+        cursor: response.headers.get('X-Log-Cursor'),
+        // A backend without the cursor headers replaces the buffer every poll.
+        reset: response.headers.get('X-Log-Reset') !== '0',
       };
     } catch (e) {
       if (!silent) {

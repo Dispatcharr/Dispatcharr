@@ -133,6 +133,12 @@ const SEARCH_DEBOUNCE_MS = 200;
 // Bounds the DOM for low-end TV browsers.
 const MAX_RENDER_LINES = 5000;
 
+// Two bounds on the appended buffer, because they cap different resources:
+// bytes hold the retained text to what one tail used to be, lines hold the
+// per-entry object overhead a flood of very short lines would other run up.
+const MAX_BUFFER_BYTES = 5 * 1024 * 1024;
+const MAX_BUFFER_LINES = 50000;
+
 // How close to the live edge still counts as watching it.
 const FOLLOW_SLACK_PX = 50;
 
@@ -164,9 +170,10 @@ const LEVEL_OPTIONS = [
 // Mirrors the collector's continuation rules.
 const TRACEBACK_HEAD = 'Traceback';
 
-const classifyLines = (lines) => {
+// Returns the trailing traceback state so the next chunk can resume in it: a
+// traceback split across two polls would otherwise lose its unindented tail.
+const classifyLines = (lines, inTraceback = false) => {
   const entries = [];
-  let inTraceback = false;
   for (const line of lines) {
     const record = parseRecord(line);
     if (record) {
@@ -185,7 +192,7 @@ const classifyLines = (lines) => {
       entries.push({ line, record: null, kind: 'standalone' });
     }
   }
-  return entries;
+  return { entries, inTraceback };
 };
 
 const groupEntries = (entries) => {
@@ -250,6 +257,25 @@ const columnStyle = (width) => ({
   verticalAlign: 'bottom',
 });
 
+const byteLength = (entries) => {
+  let bytes = 0;
+  for (const entry of entries) bytes += entry.line.length + 1;
+  return bytes;
+};
+
+// Drops from the head until both bounds hold, paying only for what it drops.
+const trimBuffer = (entries, bytes) => {
+  let drop = 0;
+  while (
+    drop < entries.length &&
+    (bytes > MAX_BUFFER_BYTES || entries.length - drop > MAX_BUFFER_LINES)
+  ) {
+    bytes -= entries[drop].line.length + 1;
+    drop += 1;
+  }
+  return drop ? { entries: entries.slice(drop), bytes } : { entries, bytes };
+};
+
 const emptyState = (message) => (
   <Text size="sm" c="dimmed" ta="center" py="md">
     {message}
@@ -274,7 +300,9 @@ const buildBlocks = (entries) => {
 
 const LogFileViewPage = () => {
   const { name } = useParams();
-  const [content, setContent] = useState('');
+  // The byte total rides with the entries so trimming never rescans them.
+  const [buffer, setBuffer] = useState({ entries: [], bytes: 0 });
+  const entries = buffer.entries;
   const [truncated, setTruncated] = useState(false);
   const [loading, setLoading] = useState(true);
   const [refreshSetting, setRefreshSetting] = useBrowserStorage(
@@ -326,14 +354,15 @@ const LogFileViewPage = () => {
 
   const loadingRef = useRef(false);
   const failuresRef = useRef(0);
+  const cursorRef = useRef(null);
+  // Two loads can overlap (a click during a poll) carrying the same cursor,
+  // and the same delta would append twice. Only the newest may land.
+  const requestRef = useRef(0);
+  // classifyLines resumes from here so a split traceback keeps its tail.
+  const tracebackRef = useRef(false);
   const viewportRef = useRef(null);
   // Open at the live edge, and keep following until the reader scrolls away.
   const followingRef = useRef(true);
-
-  const entries = useMemo(
-    () => classifyLines(content ? content.split('\n') : []),
-    [content]
-  );
 
   // Widths come from every record; the filtered set would shift on each keystroke.
   const cols = useMemo(() => {
@@ -393,15 +422,49 @@ const LogFileViewPage = () => {
         ? 'Large file — showing the last 5 MB'
         : null;
 
+  // Only new bytes arrive once a cursor is held, so classify only those and
+  // append. A reset (rotation, first load, or a backend without the headers)
+  // replaces the buffer instead.
+  const applyResponse = useCallback((response) => {
+    cursorRef.current = response.cursor || null;
+    // Absent on an older backend: replace rather than append to a stale buffer.
+    if (response.reset !== false) {
+      const lines = response.content ? response.content.split('\n') : [];
+      const { entries: next, inTraceback } = classifyLines(lines);
+      tracebackRef.current = inTraceback;
+      setTruncated(response.truncated);
+      setBuffer({ entries: next, bytes: byteLength(next) });
+      return;
+    }
+    if (!response.content) return;
+    // The delta ends on a newline, so the split leaves a trailing empty line.
+    const lines = response.content.split('\n');
+    if (lines[lines.length - 1] === '') lines.pop();
+    const { entries: added, inTraceback } = classifyLines(
+      lines,
+      tracebackRef.current
+    );
+    tracebackRef.current = inTraceback;
+    setBuffer((prev) =>
+      trimBuffer(prev.entries.concat(added), prev.bytes + byteLength(added))
+    );
+  }, []);
+
   const load = useCallback(
     async (showLoading = true, { silent = false } = {}) => {
       loadingRef.current = true;
+      const version = (requestRef.current += 1);
       if (showLoading) setLoading(true);
       try {
-        const response = await API.getLogFile(name, { silent });
+        const response = await API.getLogFile(name, {
+          silent,
+          cursor: cursorRef.current,
+        });
+        // Superseded: a newer load owns the cursor, and applying this one
+        // would append a delta the newer response already carried.
+        if (version !== requestRef.current) return true;
         if (response) {
-          setContent(response.content);
-          setTruncated(response.truncated);
+          applyResponse(response);
           if (!silent) setLoadError(false);
           return true;
         }
@@ -417,10 +480,15 @@ const LogFileViewPage = () => {
         if (showLoading) setLoading(false);
       }
     },
-    [name]
+    [name, applyResponse]
   );
 
   useEffect(() => {
+    // A different file shares no offsets with the last one, and any response
+    // still in flight for the previous one must not land in this buffer.
+    requestRef.current += 1;
+    cursorRef.current = null;
+    tracebackRef.current = false;
     load();
   }, [load]);
 
@@ -564,9 +632,9 @@ const LogFileViewPage = () => {
           // Without minHeight:0 a flex item will not shrink below its content.
           style={{ flex: '1 1 auto', overflow: 'auto', minHeight: '0px' }}
         >
-          {loading && !content ? (
+          {loading && !entries.length ? (
             <Loader />
-          ) : !content && loadError ? (
+          ) : !entries.length && loadError ? (
             <Group gap="sm">
               <Text size="sm" c="red">
                 Failed to load {name}
@@ -588,7 +656,7 @@ const LogFileViewPage = () => {
                 overflowWrap: 'anywhere',
               }}
             >
-              {!content
+              {!entries.length
                 ? emptyState('(empty)')
                 : blocks.length
                   ? blocks.map((block, i) => {
