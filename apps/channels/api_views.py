@@ -32,7 +32,12 @@ from apps.channels.dvr_access import (
 )
 
 from core.models import CoreSettings
-from core.utils import RedisClient, safe_upload_path, resolve_safe_local_data_path
+from core.utils import (
+    RedisClient,
+    build_absolute_uri_with_port,
+    resolve_safe_local_data_path,
+    safe_upload_path,
+)
 from core.image_proxy import (
     image_fetch_failures as _logo_fetch_failures,
     serve_local_or_remote_image,
@@ -3366,6 +3371,16 @@ def _recording_auth_query_suffix(request):
     return "?" + urlencode({"token": token})
 
 
+RECORDINGS_STORAGE_ROOT = "/data/recordings"
+
+
+def _resolve_recording_storage_path(path):
+    """Return a realpath under /data/recordings, or None if unsafe/missing path."""
+    return resolve_safe_local_data_path(
+        path, allowed_roots=(RECORDINGS_STORAGE_ROOT,)
+    )
+
+
 class RecordingViewSet(viewsets.ModelViewSet):
     queryset = Recording.objects.all()
     serializer_class = RecordingSerializer
@@ -3464,15 +3479,15 @@ class RecordingViewSet(viewsets.ModelViewSet):
         if not self._user_can_play_recording(request, recording):
             return JsonResponse({"error": "Forbidden"}, status=403)
         cp = recording.custom_properties or {}
-        file_path = cp.get("file_path")
+        file_path = _resolve_recording_storage_path(cp.get("file_path"))
         file_name = cp.get("file_name") or "recording"
+        hls_dir = _resolve_recording_storage_path(cp.get("_hls_dir"))
 
         if not file_path or not os.path.exists(file_path) or os.path.getsize(file_path) == 0:
             # Redirect to HLS if recording is still in progress
-            hls_dir = cp.get("_hls_dir")
             if hls_dir and os.path.isdir(hls_dir):
-                hls_url = request.build_absolute_uri(
-                    f"/api/channels/recordings/{pk}/hls/index.m3u8"
+                hls_url = build_absolute_uri_with_port(
+                    request, f"/api/channels/recordings/{pk}/hls/index.m3u8"
                 ) + _recording_auth_query_suffix(request)
                 return HttpResponseRedirect(hls_url)
             if not file_path or not os.path.exists(file_path):
@@ -3557,17 +3572,16 @@ class RecordingViewSet(viewsets.ModelViewSet):
         if not self._user_can_play_recording(request, recording):
             return JsonResponse({"error": "Forbidden"}, status=403)
         cp = recording.custom_properties or {}
-        hls_dir = cp.get("_hls_dir")
+        hls_dir = _resolve_recording_storage_path(cp.get("_hls_dir"))
 
         if not hls_dir or not os.path.isdir(hls_dir):
             # HLS dir is gone, recording is likely complete.  Redirect to the
             # permanent MKV endpoint for .m3u8 requests so clients that still
             # have the HLS URL bookmarked get a useful response.
-            cp = recording.custom_properties or {}
-            file_path = cp.get("file_path")
+            file_path = _resolve_recording_storage_path(cp.get("file_path"))
             if seg_path.endswith(".m3u8") and file_path and os.path.exists(file_path) and os.path.getsize(file_path) > 0:
-                file_url = request.build_absolute_uri(
-                    f"/api/channels/recordings/{pk}/file/"
+                file_url = build_absolute_uri_with_port(
+                    request, f"/api/channels/recordings/{pk}/file/"
                 ) + _recording_auth_query_suffix(request)
                 return HttpResponseRedirect(file_url)
             raise Http404("HLS content not available for this recording")
@@ -3584,8 +3598,8 @@ class RecordingViewSet(viewsets.ModelViewSet):
         if seg_path.endswith(".m3u8"):
             # Rewrite relative segment lines to absolute URLs through this API.
             # Propagate ?token= only for native <video> clients (see helper).
-            base_url = request.build_absolute_uri(
-                f"/api/channels/recordings/{pk}/hls/"
+            base_url = build_absolute_uri_with_port(
+                request, f"/api/channels/recordings/{pk}/hls/"
             )
             auth_suffix = _recording_auth_query_suffix(request)
             lines = []
@@ -3913,11 +3927,12 @@ class RecordingViewSet(viewsets.ModelViewSet):
         except Exception as e:
             logger.debug(f"Unable to stop DVR clients for cancelled recording: {e}")
 
-        # Capture paths before deletion
+        # Capture paths before deletion. Resolve under /data/recordings so a
+        # poisoned custom_properties value cannot escape that tree.
         cp = instance.custom_properties or {}
         rec_status = cp.get("status", "")
-        file_path = cp.get("file_path")
-        hls_dir = cp.get("_hls_dir")
+        file_path = _resolve_recording_storage_path(cp.get("file_path"))
+        hls_dir = _resolve_recording_storage_path(cp.get("_hls_dir"))
         channel_uuid = str(instance.channel.uuid)
 
         # 1. Delete the DB record (also fires post_delete → revoke_task_on_delete)
@@ -3936,15 +3951,14 @@ class RecordingViewSet(viewsets.ModelViewSet):
         except Exception:
             pass
 
-        # 3. Defer slow teardown to a background thread
-        library_dir = '/data'
-        allowed_roots = ['/data/', library_dir.rstrip('/') + '/']
+        # 3. Defer slow teardown to a background thread.
+        recordings_root = os.path.normpath(RECORDINGS_STORAGE_ROOT)
 
         def _safe_remove(path: str):
             if not path or not isinstance(path, str):
                 return
             try:
-                if any(path.startswith(root) for root in allowed_roots) and os.path.exists(path):
+                if os.path.exists(path):
                     os.remove(path)
                     logger.info(f"Deleted recording artifact: {path}")
             except Exception as ex:
@@ -3955,14 +3969,13 @@ class RecordingViewSet(viewsets.ModelViewSet):
                 return
             try:
                 import shutil as _shutil
-                if any(path.startswith(root) for root in allowed_roots) and os.path.isdir(path):
+                if os.path.isdir(path):
                     _shutil.rmtree(path)
                     logger.info(f"Deleted recording HLS directory: {path}")
             except Exception as ex:
                 logger.warning(f"Failed to delete HLS directory {path}: {ex}")
 
         # Clean up empty parent directories up to the recordings root to prevent orphaned folders from accumulating over time.
-        recordings_root = os.path.normpath('/data/recordings')
 
         def _prune_empty_parents(path: str):
             if not path or not isinstance(path, str):

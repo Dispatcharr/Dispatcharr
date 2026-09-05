@@ -1,8 +1,8 @@
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from django.test import SimpleTestCase
 
-from core.http_security import validate_outbound_http_url
+from core.http_security import get_with_validated_redirects, validate_outbound_http_url
 
 
 def _fake_addrinfo(*addrs):
@@ -61,3 +61,43 @@ class ValidateOutboundHttpUrlTests(SimpleTestCase):
             "http://127.0.0.1/logo.png",
             allow_loopback=True,
         )
+
+
+class GetWithValidatedRedirectsTests(SimpleTestCase):
+    @patch("core.http_security.socket.getaddrinfo")
+    @patch("core.http_security.requests.get")
+    def test_follows_public_redirect_and_validates_each_hop(self, mock_get, mock_gai):
+        mock_gai.side_effect = [
+            _fake_addrinfo("93.184.216.34"),
+            _fake_addrinfo("93.184.216.35"),
+        ]
+        redirect = MagicMock()
+        redirect.status_code = 302
+        redirect.headers = {"Location": "https://cdn.example.com/final.zip"}
+        final = MagicMock()
+        final.status_code = 200
+        final.headers = {}
+        mock_get.side_effect = [redirect, final]
+
+        response = get_with_validated_redirects("https://cdn.example.com/start.zip")
+        self.assertIs(response, final)
+        redirect.close.assert_called_once()
+        self.assertEqual(mock_get.call_count, 2)
+        self.assertFalse(mock_get.call_args_list[0].kwargs["allow_redirects"])
+
+    @patch("core.http_security.socket.getaddrinfo")
+    @patch("core.http_security.requests.get")
+    def test_blocks_redirect_to_private_target(self, mock_get, mock_gai):
+        mock_gai.side_effect = [
+            _fake_addrinfo("93.184.216.34"),
+            _fake_addrinfo("10.0.0.5"),
+        ]
+        redirect = MagicMock()
+        redirect.status_code = 302
+        redirect.headers = {"Location": "http://10.0.0.5/secret"}
+        mock_get.return_value = redirect
+
+        with self.assertRaises(ValueError):
+            get_with_validated_redirects("https://cdn.example.com/start.zip")
+        redirect.close.assert_called_once()
+        mock_get.assert_called_once()
