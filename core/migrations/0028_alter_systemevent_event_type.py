@@ -1,0 +1,16 @@
+from django.db import migrations, models
+
+
+class Migration(migrations.Migration):
+
+    dependencies = [
+        ('core', '0027_vlc_play_and_exit'),
+    ]
+
+    operations = [
+        migrations.AlterField(
+            model_name='systemevent',
+            name='event_type',
+            field=models.CharField(choices=[('channel_start', 'Channel Started'), ('channel_stop', 'Channel Stopped'), ('channel_buffering', 'Channel Buffering'), ('channel_failover', 'Channel Failover'), ('channel_reconnect', 'Channel Reconnected'), ('channel_error', 'Channel Error'), ('client_connect', 'Client Connected'), ('client_disconnect', 'Client Disconnected'), ('recording_start', 'Recording Started'), ('recording_end', 'Recording Ended'), ('stream_switch', 'Stream Switched'), ('m3u_refresh', 'M3U Refreshed'), ('m3u_download', 'M3U Downloaded'), ('epg_refresh', 'EPG Refreshed'), ('epg_download', 'EPG Downloaded'), ('login_success', 'Login Successful'), ('login_failed', 'Login Failed'), ('logout', 'User Logged Out'), ('m3u_blocked', 'M3U Download Blocked'), ('m3u_error', 'M3U Error'), ('epg_blocked', 'EPG Download Blocked'), ('vod_start', 'VOD Started'), ('vod_stop', 'VOD Stopped')], db_index=True, max_length=50),
+        ),
+    ]

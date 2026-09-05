@@ -74,6 +74,7 @@ const getEventIcon = (eventType) => {
     case 'logout':
       return <LogOut size={16} />;
     case 'm3u_blocked':
+    case 'm3u_error':
       return <XCircle size={16} />;
     case 'epg_blocked':
       return <XCircle size={16} />;
@@ -113,6 +114,7 @@ const getEventColor = (eventType) => {
       return 'teal';
     case 'login_failed':
     case 'm3u_blocked':
+    case 'm3u_error':
     case 'epg_blocked':
       return 'red';
     default:
