@@ -17,6 +17,7 @@ from django.utils import timezone as django_timezone
 from apps.channels.models import Channel, ChannelProfile
 from apps.channels.utils import format_channel_number
 from apps.epg.models import ProgramData
+from apps.epg.services import get_epg_revision
 from apps.epg.utils import sd_poster_proxy_path
 from apps.output.dummy_epg import (
     build_channel_logo_url,
@@ -71,7 +72,7 @@ def generate_epg(request, profile_name=None, user=None, *, xc_catchup_prev_days=
         f":d={num_days}:p={prev_days}:logos={use_cached_logos}:tvgid={tvg_id_source}"
         f":origin={request_origin}"
     )
-    content_cache_key = f"epg_content:{cache_params}"
+    content_cache_key = f"epg_content:{get_epg_revision()}:{cache_params}"
 
     def epg_generator():
         """Generator function that yields EPG data with keep-alives during processing."""

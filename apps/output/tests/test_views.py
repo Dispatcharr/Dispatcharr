@@ -307,13 +307,13 @@ class OutputEPGXMLEscapingTest(OutputEndpointTestMixin, TestCase):
 
     def test_override_epg_change_invalidates_xmltv_chunk_cache(self):
         """
-        XC reads live ProgramData; XMLTV is chunk-cached. Changing the
-        effective EPG via ChannelOverride must drop that cache so the next
-        /output/epg emits the new station's programmes, not the previous ones.
+        Changing the effective EPG retires the cache generation so new
+        requests use the new station without deleting active readers' data.
         """
         from django.utils import timezone
         from apps.channels.models import ChannelOverride
         from apps.epg.models import ProgramData
+        from apps.epg.services import get_epg_revision
         from django_redis import get_redis_connection
 
         # This mixin normally bypasses Redis chunk caching; use the real path here.
@@ -358,17 +358,14 @@ class OutputEPGXMLEscapingTest(OutputEndpointTestMixin, TestCase):
             self.assertNotIn('<title>NEW PROGRAMME</title>', before)
 
             redis = get_redis_connection("default")
-            cached_before = list(redis.scan_iter(match="epg_content:*", count=200))
+            previous_revision = get_epg_revision()
+            cached_before = list(redis.scan_iter(match=f"epg_content:{previous_revision}:*", count=200))
             self.assertGreater(len(cached_before), 0, "XMLTV chunk cache should be warm")
 
             ChannelOverride.objects.create(channel=channel, epg_data=epg_new)
 
-            cached_after = list(redis.scan_iter(match="epg_content:*", count=200))
-            self.assertEqual(
-                len(cached_after),
-                0,
-                "Override EPG change must invalidate XMLTV chunk cache",
-            )
+            self.assertNotEqual(get_epg_revision(), previous_revision)
+            self.assertTrue(all(redis.exists(key) for key in cached_before), "Active readers retain their old cache data")
 
             after = _response_text(self.client.get(url))
             self.assertIn('<title>NEW PROGRAMME</title>', after)
@@ -1423,6 +1420,9 @@ class GenerateEpgPrevDaysTests(SimpleTestCase):
 
     def setUp(self):
         self.factory = RequestFactory()
+        revision = patch("apps.output.epg.get_epg_revision", return_value="test-revision")
+        revision.start()
+        self.addCleanup(revision.stop)
 
     @patch("apps.output.epg.stream_cached_response")
     @patch("apps.output.epg.Channel.objects")
