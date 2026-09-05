@@ -155,7 +155,7 @@ const SystemSettingsForm = React.memo(({ active }) => {
       />
       <TextInput
         label="Public Port"
-        description="Override the port baked into generated absolute URLs (logos, M3U/EPG, VOD posters, catch-up). Only needed when there is NO reverse proxy in front of Dispatcharr and the external/host port differs from the internal port (e.g. Docker mapped as '8080:9191'). Leave empty to auto-detect as before - has no effect when a reverse proxy supplies X-Forwarded-* headers."
+        description="Override the port baked into generated absolute URLs (logos, M3U/EPG, VOD posters, catch-up). Only needed when there is NO reverse proxy in front of Dispatcharr and the external/host port differs from the internal port (e.g. Docker mapped as '8080:9191'). Leave empty to auto-detect as before - has no effect when a reverse proxy supplies X-Forwarded-* headers. Can also be pre-filled at deploy time via the DISPATCHARR_PUBLIC_PORT environment variable; a value set here always takes priority over it afterwards."
         placeholder="Auto-detect"
         {...form.getInputProps('public_port')}
         id="public_port"

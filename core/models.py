@@ -785,6 +785,11 @@ class CoreSettings(models.Model):
         proxy is present to supply X-Forwarded-* headers - e.g. a single
         Docker host-port remap (`8080:9191`). None (default) preserves the
         existing auto-detection behavior. See core.utils.get_host_and_port.
+
+        Can be pre-filled at deploy time via the DISPATCHARR_PUBLIC_PORT
+        environment variable (see CoreConfig._seed_public_port_from_env) -
+        that only ever seeds an unset value; once configured here (by the
+        env var or by hand), this is the source of truth.
         """
         value = cls.get_system_settings().get("public_port")
         return str(value) if value else None
