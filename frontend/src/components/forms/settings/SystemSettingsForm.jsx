@@ -87,7 +87,7 @@ const SystemSettingsForm = React.memo(({ active }) => {
         <>
           <Switch
             label="Persist Logs to File"
-            description="Write application logs to disk. Console logging is unaffected."
+            description="Write application logs to disk for the Logs page. Console logging is unaffected."
             {...form.getInputProps('log_persist', { type: 'checkbox' })}
             id="log_persist"
           />

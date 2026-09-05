@@ -75,6 +75,11 @@ const request = async (url, options = {}) => {
     throw error;
   }
 
+  // { raw: true } hands back the Response for a caller that wants a blob.
+  if (options.raw) {
+    return response;
+  }
+
   // 204 / empty bodies are success with no payload. Return null, not '',
   // so callers that destructure the result don't silently get undefined fields.
   const text = await response.text();
@@ -3784,6 +3789,48 @@ export default class API {
       return response;
     } catch (e) {
       errorNotification('Failed to retrieve series info', e);
+    }
+  }
+
+  static async getLogFiles() {
+    try {
+      return await request(`${host}/api/core/logs/`);
+    } catch (e) {
+      errorNotification('Failed to retrieve log files', e);
+    }
+  }
+
+  // { silent: true } drops the toast for background auto-refresh polls.
+  // A cursor asks for only the bytes written since that point.
+  static async getLogFile(name, { silent = false, cursor = null } = {}) {
+    try {
+      const query = cursor ? `?cursor=${encodeURIComponent(cursor)}` : '';
+      return await request(
+        `${host}/api/core/logs/${encodeURIComponent(name)}/${query}`
+      );
+    } catch (e) {
+      if (!silent) {
+        errorNotification('Failed to retrieve log file', e);
+      }
+    }
+  }
+
+  static async downloadLogFile(name) {
+    try {
+      const response = await request(
+        `${host}/api/core/logs/${encodeURIComponent(name)}/download/`,
+        { raw: true }
+      );
+      const url = URL.createObjectURL(await response.blob());
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = name;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      errorNotification('Failed to download log file', e);
     }
   }
 
