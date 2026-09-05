@@ -14,6 +14,7 @@ import {
   Select,
   Stack,
   Switch,
+  TextInput,
 } from '@mantine/core';
 import ConnectionSecurityPanel from './ConnectionSecurityPanel.jsx';
 import { useForm } from '@mantine/form';
@@ -151,6 +152,13 @@ const SystemSettingsForm = React.memo(({ active }) => {
         description="When disabled, timeshift and catchup endpoints are blocked for all users, and channels are not advertised as supporting catchup to clients. Catchup capability is still shown in the web UI."
         {...form.getInputProps('catchup_enabled', { type: 'checkbox' })}
         id="catchup_enabled"
+      />
+      <TextInput
+        label="Public Port"
+        description="Override the port baked into generated absolute URLs (logos, M3U/EPG, VOD posters, catch-up). Only needed when there is NO reverse proxy in front of Dispatcharr and the external/host port differs from the internal port (e.g. Docker mapped as '8080:9191'). Leave empty to auto-detect as before - has no effect when a reverse proxy supplies X-Forwarded-* headers."
+        placeholder="Auto-detect"
+        {...form.getInputProps('public_port')}
+        id="public_port"
       />
       {isModular && (
         <>

@@ -169,6 +169,56 @@ describe('SettingsUtils', () => {
       });
     });
 
+    it('should persist public_port in system_settings', async () => {
+      const settings = {
+        system_settings: {
+          id: 3,
+          key: 'system_settings',
+          value: {},
+        },
+      };
+      const changedSettings = {
+        public_port: '8080',
+      };
+
+      API.updateSetting.mockResolvedValue({});
+
+      await SettingsUtils.saveChangedSettings(settings, changedSettings);
+
+      expect(API.updateSetting).toHaveBeenCalledWith({
+        id: 3,
+        key: 'system_settings',
+        value: {
+          public_port: '8080',
+        },
+      });
+    });
+
+    it('should persist an empty public_port (auto-detect) unchanged', async () => {
+      const settings = {
+        system_settings: {
+          id: 3,
+          key: 'system_settings',
+          value: { public_port: '8080' },
+        },
+      };
+      const changedSettings = {
+        public_port: '',
+      };
+
+      API.updateSetting.mockResolvedValue({});
+
+      await SettingsUtils.saveChangedSettings(settings, changedSettings);
+
+      expect(API.updateSetting).toHaveBeenCalledWith({
+        id: 3,
+        key: 'system_settings',
+        value: {
+          public_port: '',
+        },
+      });
+    });
+
     it('should coerce string false for boolean settings without enabling', async () => {
       const settings = {
         system_settings: {

@@ -72,6 +72,7 @@ export const saveChangedSettings = async (settings, changedSettings) => {
     'auto_import_mapped_files',
     'enable_ip_lookup',
     'catchup_enabled',
+    'public_port',
   ];
 
   for (const formKey in changedSettings) {
@@ -397,6 +398,9 @@ export const parseSettings = (settings) => {
       typeof systemSettings.catchup_enabled === 'boolean'
         ? systemSettings.catchup_enabled
         : true;
+    parsed.public_port = systemSettings.public_port
+      ? String(systemSettings.public_port)
+      : '';
   }
 
   // Proxy and network access are already grouped objects

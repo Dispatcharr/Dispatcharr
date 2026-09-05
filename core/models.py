@@ -775,7 +775,25 @@ class CoreSettings(models.Model):
             "log_max_mb": 10,
             "log_keep": 5,
             "log_persist": True,
+            "public_port": None,
         })
+
+    @classmethod
+    def get_public_port(cls):
+        """Explicit override for the port baked into generated absolute URLs
+        (logos, M3U/EPG endpoints, VOD posters, catch-up, ...) when no reverse
+        proxy is present to supply X-Forwarded-* headers - e.g. a single
+        Docker host-port remap (`8080:9191`). None (default) preserves the
+        existing auto-detection behavior. See core.utils.get_host_and_port.
+        """
+        value = cls.get_system_settings().get("public_port")
+        return str(value) if value else None
+
+    @classmethod
+    def set_public_port(cls, port):
+        value = str(port).strip() if port else None
+        cls._update_group(SYSTEM_SETTINGS_KEY, "System Settings", {"public_port": value})
+        return value
 
     @classmethod
     def get_catchup_enabled(cls):

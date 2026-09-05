@@ -1038,6 +1038,9 @@ def get_host_and_port(request):
     - Falls back to Host header.
     - Returns None for port if using standard ports (80/443) to omit from URLs.
     - In dev, uses 5656 as a guess if port cannot be determined.
+    - An explicit Settings > System > Public Port override, when set, takes
+      priority over the SERVER_PORT guess (see step 5 in
+      _resolve_host_port_scheme below).
     """
     from dispatcharr.utils import request_from_trusted_proxy
 
@@ -1091,16 +1094,29 @@ def _resolve_host_port_scheme(request, trust_forwarded):
         if request.META.get("HTTP_X_FORWARDED_PROTO") or request.META.get("HTTP_X_FORWARDED_FOR"):
             return host, None, scheme
 
-    # 5. Try SERVER_PORT from META (only if NOT behind reverse proxy)
+    # 5. Explicit public port override (Settings > System > Public Port).
+    # Covers deployments with NO reverse proxy at all - e.g. a single Docker
+    # host-port remap (`8080:9191`) - where none of the proxy signals above
+    # exist, so step 6 would otherwise bake in SERVER_PORT (the internal
+    # container-bound port, invisible-to-the-app Docker NAT notwithstanding)
+    # instead of the port the operator actually exposed.
+    from core.models import CoreSettings
+
+    configured_port = CoreSettings.get_public_port()
+    if configured_port:
+        return host, (None if configured_port == standard_port else configured_port), scheme
+
+    # 6. Try SERVER_PORT from META (only if NOT behind reverse proxy and no
+    # explicit override is configured)
     port = request.META.get("SERVER_PORT")
     if port:
         return host, (None if port == standard_port else port), scheme
 
-    # 6. Dev fallback
+    # 7. Dev fallback
     if os.environ.get("DISPATCHARR_ENV") == "dev" or host in ("localhost", "127.0.0.1"):
         return host, "5656", scheme
 
-    # 7. Final fallback: assume standard port for scheme
+    # 8. Final fallback: assume standard port for scheme
     return host, None, scheme
 
 
