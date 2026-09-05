@@ -230,6 +230,7 @@ class ProxySettingsViewSet(viewsets.ViewSet):
                 "channel_init_grace_period": 60,
                 "channel_client_wait_period": 5,
                 "new_client_behind_seconds": 5,
+                "validate_redirect_urls": True,
             }
             settings_obj, created = CoreSettings.objects.get_or_create(
                 key=PROXY_SETTINGS_KEY,

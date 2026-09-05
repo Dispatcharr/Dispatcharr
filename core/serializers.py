@@ -118,6 +118,7 @@ class ProxySettingsSerializer(serializers.Serializer):
     channel_init_grace_period = serializers.IntegerField(min_value=0, max_value=300)
     channel_client_wait_period = serializers.IntegerField(min_value=0, max_value=300, required=False, default=5)
     new_client_behind_seconds = serializers.IntegerField(min_value=0, max_value=120, required=False, default=5)
+    validate_redirect_urls = serializers.BooleanField(required=False, default=True)
 
     def validate_buffering_timeout(self, value):
         if value < 0 or value > 300:
