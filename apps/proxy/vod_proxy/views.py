@@ -464,73 +464,23 @@ def _build_vod_stream_url(relation, m3u_profile, content_type):
     """
     Build a VOD provider URL using the same credential resolution as Live/catchup.
 
-    XC relations resolve credentials via get_transformed_credentials(), then build
-    /movie/ or /series/ URLs. Failed transforms return None. Non-XC relations keep
-    the legacy get_stream_url path when present.
+    XC relations use relation.get_stream_url(profile), which applies
+    get_transformed_credentials(). Failed transforms and non-XC accounts
+    return None.
     """
-    from apps.m3u.credentials import (
-        build_xc_playback_url,
-        get_transformed_credentials,
-    )
-
     account = relation.m3u_account
-    if getattr(account, "account_type", None) == "XC":
-        server_url, username, password = get_transformed_credentials(
-            account, m3u_profile
-        )
-        if not (server_url and username and password):
-            return None
+    if getattr(account, "account_type", None) != "XC":
+        return None
 
-        stream_id = getattr(relation, "stream_id", None)
-        if not stream_id:
-            logger.error("[VOD-URL] Relation has no stream_id")
-            return None
+    if content_type not in ("movie", "series", "episode"):
+        logger.error("[VOD-URL] Unsupported VOD content_type: %s", content_type)
+        return None
 
-        if content_type == "movie":
-            content_path = "movie"
-        elif content_type in ("series", "episode"):
-            content_path = "series"
-        else:
-            logger.error("[VOD-URL] Unsupported VOD content_type: %s", content_type)
-            return None
-
-        extension = getattr(relation, "container_extension", None) or "mp4"
-        url = build_xc_playback_url(
-            server_url,
-            username,
-            password,
-            content_path=content_path,
-            stream_id=str(stream_id),
-            extension=extension,
-        )
+    url = relation.get_stream_url(m3u_profile)
+    if url:
         logger.info("[VOD-URL] Built XC URL from transformed credentials: %s", url)
-        return url
+    return url
 
-    return _get_stream_url_from_relation(relation)
-
-
-def _get_stream_url_from_relation(relation):
-    """Get stream URL from the M3U relation"""
-    try:
-        # Log the relation type and available attributes
-        logger.info(f"[VOD-URL] Relation type: {type(relation).__name__}")
-        logger.info(f"[VOD-URL] Account type: {relation.m3u_account.account_type}")
-        logger.info(f"[VOD-URL] Stream ID: {getattr(relation, 'stream_id', 'N/A')}")
-
-        # First try the get_stream_url method (this should build URLs dynamically)
-        if hasattr(relation, 'get_stream_url'):
-            url = relation.get_stream_url()
-            if url:
-                logger.info(f"[VOD-URL] Built URL from get_stream_url(): {url}")
-                return url
-            else:
-                logger.warning(f"[VOD-URL] get_stream_url() returned None")
-
-        logger.error(f"[VOD-URL] Relation has no get_stream_url method or it failed")
-        return None
-    except Exception as e:
-        logger.error(f"[VOD-URL] Error getting stream URL from relation: {e}", exc_info=True)
-        return None
 
 def _get_m3u_profile(m3u_account, profile_id, session_id=None, restrict_to_profile_ids=None):
     """Get appropriate M3U profile for streaming using Redis-based viewer counts
