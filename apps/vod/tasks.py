@@ -682,11 +682,36 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
 
         # Handle relation
         if stream_id in existing_relations:
-            # Update existing relation
+            # Update existing relation. CRITICAL: never re-point an existing
+            # relation to a freshly built `movie` object. Doing so on every
+            # refresh creates duplicate Movie rows (new auto-increment IDs)
+            # whenever the provider does not supply a stable TMDB/IMDB id,
+            # which breaks any consumer keyed on Movie.id (STRM URLs, tmdb
+            # group keys, etc). See issue #961. We keep the relation's current
+            # movie and only back-fill external ids when they were previously
+            # missing.
             relation = existing_relations[stream_id]
-            relation.movie = movie
+            linked_movie = relation.movie
+
+            # Back-fill tmdb_id/imdb_id on the *linked* (stable) movie if the
+            # incoming data now carries them and the linked movie lacks them.
+            # This is root-cause #1 of #961: ids present in basic_data but
+            # never persisted to Movie on initial import.
+            backfill = {}
+            for id_field in ('tmdb_id', 'imdb_id'):
+                incoming = movie_props.get(id_field)
+                if incoming and not getattr(linked_movie, id_field):
+                    backfill[id_field] = incoming
+            if backfill:
+                for k, v in backfill.items():
+                    setattr(linked_movie, k, v)
+                movies_to_update.append(linked_movie)
+
             relation.category = category
             relation.container_extension = movie_data.get('container_extension', 'mp4')
+            # Mark the freshly built `movie` as superseded so the caller does
+            # not create a duplicate row for it below.
+            movie._superseded = True
             # Merge so list sync updates basic_data without dropping detail
             # payloads or detailed_fetched / related flags.
             existing_rel_cp = relation.custom_properties or {}
@@ -733,6 +758,10 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
                 # Check each movie against the bulk query results
                 movies_actually_created = []
                 for movie in movies_to_create:
+                    # Skip movies that were superseded by an existing relation's
+                    # stable movie during relation handling (issue #961).
+                    if getattr(movie, '_superseded', False):
+                        continue
                     existing = None
                     if movie.tmdb_id and movie.tmdb_id in existing_by_tmdb:
                         existing = existing_by_tmdb[movie.tmdb_id]
@@ -1052,10 +1081,32 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
 
         # Handle relation
         if series_id in existing_relations:
-            # Update existing relation
+            # Update existing relation. CRITICAL: never re-point an existing
+            # relation to a freshly built `series` object. Doing so on every
+            # refresh creates duplicate Series rows (new auto-increment IDs)
+            # whenever the provider does not supply a stable TMDB/IMDB id,
+            # which breaks consumers keyed on Series.id. See issue #961. We
+            # keep the relation's current series and only back-fill external
+            # ids when they were previously missing.
             relation = existing_relations[series_id]
-            relation.series = series
+            linked_series = relation.series
+
+            # Back-fill tmdb_id/imdb_id on the *linked* (stable) series if the
+            # incoming data now carries them and the linked series lacks them.
+            backfill = {}
+            for id_field in ('tmdb_id', 'imdb_id'):
+                incoming = series_props.get(id_field)
+                if incoming and not getattr(linked_series, id_field):
+                    backfill[id_field] = incoming
+            if backfill:
+                for k, v in backfill.items():
+                    setattr(linked_series, k, v)
+                series_to_update.append(linked_series)
+
             relation.category = category
+            # Mark the freshly built `series` as superseded so the caller does
+            # not create a duplicate row for it below.
+            series._superseded = True
             # Merge so list sync updates basic_data without dropping detail
             # payloads or detailed_fetched / episodes_fetched flags.
             existing_rel_cp = relation.custom_properties or {}
@@ -1102,6 +1153,10 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
                 # Check each series against the bulk query results
                 series_actually_created = []
                 for series in series_to_create:
+                    # Skip series that were superseded by an existing relation's
+                    # stable series during relation handling (issue #961).
+                    if getattr(series, '_superseded', False):
+                        continue
                     existing = None
                     if series.tmdb_id and series.tmdb_id in existing_by_tmdb:
                         existing = existing_by_tmdb[series.tmdb_id]
