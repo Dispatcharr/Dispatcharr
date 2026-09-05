@@ -1,20 +1,61 @@
-"""Single-flight Redis chunk cache for large streaming HTTP responses."""
+"""Bounded streaming with immutable Redis builds and commit-linked EPG revisions."""
 
+import json
 import logging
 import time
+import uuid
 
 from django.http import StreamingHttpResponse
+from redis.exceptions import RedisError
 
 logger = logging.getLogger(__name__)
 
 STATUS_BUILDING = "building"
 STATUS_READY = "ready"
-STATUS_ERROR = "error"
-
 DEFAULT_CACHE_TTL = 300
 DEFAULT_LOCK_TTL = 120
 DEFAULT_POLL_INTERVAL = 0.05
-DEFAULT_MAX_FOLLOWER_WAIT = 600
+DEFAULT_MAX_FOLLOWER_WAIT = 5
+
+# Build UUIDs are never reused. A lost producer can finish its own source but
+# cannot append a suffix to expired data or publish/release a replacement build.
+_CLAIM = """
+if redis.call('exists', KEYS[1]) == 1 then return 0 end
+if not redis.call('set', KEYS[2], ARGV[1], 'NX', 'EX', ARGV[2]) then return 0 end
+redis.call('set', KEYS[3], 'building', 'EX', ARGV[2])
+return 1
+"""
+_APPEND = """
+if redis.call('get', KEYS[1]) ~= ARGV[1] or redis.call('get', KEYS[2]) ~= 'building' then return 0 end
+if redis.call('llen', KEYS[3]) ~= tonumber(ARGV[2]) then return 0 end
+redis.call('rpush', KEYS[3], ARGV[3])
+redis.call('expire', KEYS[1], ARGV[4])
+redis.call('expire', KEYS[2], ARGV[4])
+redis.call('expire', KEYS[3], ARGV[4])
+return 1
+"""
+_PUBLISH = """
+if redis.call('get', KEYS[1]) ~= ARGV[1] or redis.call('get', KEYS[2]) ~= 'building' then return 0 end
+if redis.call('llen', KEYS[3]) ~= tonumber(ARGV[2]) then return 0 end
+redis.call('set', KEYS[2], 'ready', 'EX', ARGV[5])
+redis.call('expire', KEYS[3], ARGV[5])
+redis.call('set', KEYS[4], ARGV[3], 'EX', ARGV[4])
+redis.call('del', KEYS[1])
+return 1
+"""
+_RELEASE = """
+if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) end
+return 0
+"""
+_READ = """
+if redis.call('get', KEYS[1]) ~= 'ready' then return {0} end
+if redis.call('llen', KEYS[2]) ~= tonumber(ARGV[2]) then return {0} end
+local chunk = redis.call('lindex', KEYS[2], ARGV[1])
+if not chunk then return {0} end
+redis.call('expire', KEYS[1], ARGV[3])
+redis.call('expire', KEYS[2], ARGV[3])
+return {1, chunk}
+"""
 
 
 def _chunks_key(base_key):
@@ -33,32 +74,19 @@ def _lock_key(base_key):
     return f"{base_key}:lock"
 
 
-def _decode_chunk(chunk):
-    if chunk is None:
-        return None
-    if isinstance(chunk, bytes):
-        return chunk.decode("utf-8")
-    return chunk
-
-
 def _encode_chunk(chunk):
-    if isinstance(chunk, bytes):
-        return chunk
-    return chunk.encode("utf-8")
+    return chunk if isinstance(chunk, bytes) else chunk.encode("utf-8")
 
 
 def _poll_wait(interval):
-    try:
-        from core.utils import _is_gevent_monkey_patched
+    from core.utils import _is_gevent_monkey_patched
 
-        if _is_gevent_monkey_patched():
-            import gevent
+    if _is_gevent_monkey_patched():
+        import gevent
 
-            gevent.sleep(interval)
-            return
-    except ImportError:
-        pass
-    time.sleep(interval)
+        gevent.sleep(interval)
+    else:
+        time.sleep(interval)
 
 
 def _get_redis():
@@ -67,126 +95,144 @@ def _get_redis():
     return get_redis_connection("default")
 
 
-def _get_status(redis, base_key):
-    raw = redis.get(_status_key(base_key))
+class _Build:
+    """Owned iterator whose close releases its lease even before first iteration."""
+
+    def __init__(self, redis, base_key, source, *, cache_ttl, lock_ttl):
+        self.redis = redis
+        self.base = base_key
+        self.owner = uuid.uuid4().hex
+        self.key = f"{base_key}:build:{self.owner}"
+        self.cache_ttl = cache_ttl
+        self.lock_ttl = lock_ttl
+        self.source = source
+        self.iterator = self._stream()
+
+    def claim(self):
+        return bool(self.redis.eval(_CLAIM, 3, _ready_key(self.base), _lock_key(self.base),
+                                    _status_key(self.key), self.owner, self.lock_ttl))
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        return next(self.iterator)
+
+    def close(self):
+        try:
+            self.iterator.close()
+        finally:
+            self._release()
+
+    def _release(self):
+        try:
+            self.redis.eval(_RELEASE, 1, _lock_key(self.base), self.owner)
+        except RedisError:
+            logger.warning("Could not release XMLTV cache build lease", exc_info=True)
+
+    def _append(self, offset, chunk):
+        return self.redis.eval(_APPEND, 3, _lock_key(self.base), _status_key(self.key), _chunks_key(self.key),
+                               self.owner, offset, chunk, self.lock_ttl)
+
+    def _publish(self, count, byte_length):
+        manifest = json.dumps({"id": self.owner, "count": count, "bytes": byte_length})
+        return self.redis.eval(_PUBLISH, 4, _lock_key(self.base), _status_key(self.key), _chunks_key(self.key),
+                               _ready_key(self.base), self.owner, count, manifest, self.cache_ttl,
+                               max(self.cache_ttl, DEFAULT_LOCK_TTL))
+
+    def _stream(self):
+        iterator = None
+        count, byte_length, caching = 0, 0, True
+        try:
+            iterator = iter(self.source())
+            for chunk in iterator:
+                chunk = _encode_chunk(chunk)
+                if caching:
+                    caching = self._cache_chunk(count, chunk)
+                count += 1
+                byte_length += len(chunk)
+                yield chunk
+            if caching:
+                self._finish(count, byte_length)
+        finally:
+            try:
+                close = getattr(iterator, "close", None)
+                if close:
+                    close()
+            finally:
+                self._release()
+
+    def _cache_chunk(self, offset, chunk):
+        try:
+            if self._append(offset, chunk):
+                return True
+            logger.warning("XMLTV cache build lost ownership or chunks; continuing source uncached")
+        except RedisError:
+            logger.warning("XMLTV cache write failed; continuing source uncached", exc_info=True)
+        self._release()
+        return False
+
+    def _finish(self, count, byte_length):
+        try:
+            if not self._publish(count, byte_length):
+                logger.warning("XMLTV cache build no longer eligible for publication")
+        except RedisError:
+            logger.warning("XMLTV cache publication failed", exc_info=True)
+
+
+def _read_chunk(redis, build_key, manifest, offset, retention):
+    result = redis.eval(_READ, 2, _status_key(build_key), _chunks_key(build_key), offset, manifest["count"], retention)
+    if not result[0]:
+        raise RuntimeError("XMLTV cache snapshot expired or lost chunks during transfer")
+    return _encode_chunk(result[1])
+
+
+def _stream_ready(redis, build_key, manifest, first, retention):
+    # The exact byte count is sent in Content-Length. Backend loss after headers
+    # must abort an incomplete transfer, never masquerade as normal end-of-file.
+    if first is not None:
+        yield first
+    for offset in range(1, manifest["count"]):
+        yield _read_chunk(redis, build_key, manifest, offset, retention)
+
+
+def _manifest(raw):
+    value = json.loads(raw)
+    valid = (isinstance(value, dict) and isinstance(value.get("id"), str)
+             and len(value["id"]) == 32 and all(c in "0123456789abcdef" for c in value["id"])
+             and type(value.get("count")) is int and value["count"] >= 0
+             and type(value.get("bytes")) is int and value["bytes"] >= 0)
+    if not valid:
+        raise ValueError("Invalid XMLTV cache manifest")
+    return value
+
+
+def _select_ready(redis, base_key, retention):
+    raw = redis.get(_ready_key(base_key))
     if raw is None:
         return None
-    return _decode_chunk(raw)
-
-
-def _clear_build_keys(redis, base_key):
-    redis.delete(
-        _chunks_key(base_key),
-        _status_key(base_key),
-        _ready_key(base_key),
-        _lock_key(base_key),
-    )
-
-
-def _try_acquire_lock(redis, base_key, lock_ttl):
-    return bool(redis.set(_lock_key(base_key), "1", nx=True, ex=lock_ttl))
-
-
-def _refresh_build_ttl(redis, base_key, lock_ttl):
-    redis.expire(_lock_key(base_key), lock_ttl)
-    redis.expire(_status_key(base_key), lock_ttl)
-    redis.expire(_chunks_key(base_key), lock_ttl)
-
-
-def _stream_ready(redis, base_key):
-    offset = 0
-    chunks_key = _chunks_key(base_key)
-    while True:
-        chunk = redis.lindex(chunks_key, offset)
-        if chunk is None:
-            break
-        yield _decode_chunk(chunk)
-        offset += 1
-
-
-def _stream_build(redis, base_key, source, cache_ttl, lock_ttl):
-    """Leader: stream to client and append each chunk to Redis."""
-    chunks_key = _chunks_key(base_key)
-    status_key = _status_key(base_key)
     try:
-        from django.core.cache import cache as django_cache
-
-        django_cache.delete(base_key)  # clear any non-chunked entry under this key
-        redis.delete(chunks_key, _ready_key(base_key))
-        redis.set(status_key, STATUS_BUILDING, ex=lock_ttl)
-        refresh_interval = max(1, lock_ttl // 4)
-        last_refresh = 0.0
-        from core.utils import _cooperative_yield
-
-        for chunk in source():
-            redis.rpush(chunks_key, _encode_chunk(chunk))
-            now = time.monotonic()
-            if now - last_refresh >= refresh_interval:
-                _refresh_build_ttl(redis, base_key, lock_ttl)
-                last_refresh = now
-            _cooperative_yield()
-            yield chunk
-        redis.set(status_key, STATUS_READY)
-        redis.set(_ready_key(base_key), "1")
-        redis.expire(chunks_key, cache_ttl)
-        redis.expire(status_key, cache_ttl)
-        redis.expire(_ready_key(base_key), cache_ttl)
-        logger.debug("Cached response in %s chunks", redis.llen(chunks_key))
-    except Exception:
-        logger.exception("Chunk cache build failed for %s", base_key)
-        redis.delete(chunks_key)
-        redis.set(status_key, STATUS_ERROR, ex=60)
-        raise
-    finally:
-        redis.delete(_lock_key(base_key))
+        manifest = _manifest(raw)
+        build_key = f"{base_key}:build:{manifest['id']}"
+        first = _read_chunk(redis, build_key, manifest, 0, retention) if manifest["count"] else None
+    except (ValueError, TypeError, RuntimeError):
+        redis.eval(_RELEASE, 1, _ready_key(base_key), raw)
+        return None
+    return _stream_ready(redis, build_key, manifest, first, retention), manifest["bytes"]
 
 
-def _stream_follow(redis, base_key, source, cache_ttl, lock_ttl, poll_interval, max_follower_wait):
-    """Follower: read chunks as the leader writes them."""
-    offset = 0
+def _select_stream(redis, base_key, source, *, cache_ttl, lock_ttl, poll_interval, max_follower_wait):
     deadline = time.monotonic() + max_follower_wait
-    idle_polls = 0
-    chunks_key = _chunks_key(base_key)
-    lock_key = _lock_key(base_key)
-
+    build = _Build(redis, base_key, source, cache_ttl=cache_ttl, lock_ttl=lock_ttl)
     while True:
-        chunk = redis.lindex(chunks_key, offset)
-        if chunk is not None:
-            idle_polls = 0
-            yield _decode_chunk(chunk)
-            offset += 1
-            continue
-
-        status = _get_status(redis, base_key)
-        if status == STATUS_READY:
-            break
-
-        if status == STATUS_ERROR:
-            _clear_build_keys(redis, base_key)
-            if offset == 0 and _try_acquire_lock(redis, base_key, lock_ttl):
-                yield from _stream_build(redis, base_key, source, cache_ttl, lock_ttl)
-                return
-            raise RuntimeError("Chunk cache build failed")
-
+        ready = _select_ready(redis, base_key, max(cache_ttl, DEFAULT_LOCK_TTL))
+        if ready is not None:
+            return ready
+        if build.claim():
+            return build, None
         if time.monotonic() >= deadline:
-            if offset == 0 and _try_acquire_lock(redis, base_key, lock_ttl):
-                logger.warning("Chunk cache follower timed out; rebuilding %s", base_key)
-                yield from _stream_build(redis, base_key, source, cache_ttl, lock_ttl)
-                return
-            logger.warning("Chunk cache follower timed out after partial read for %s", base_key)
-            break
-
-        lock_active = bool(redis.exists(lock_key))
-        if status != STATUS_BUILDING and not lock_active:
-            idle_polls += 1
-            if offset == 0 and idle_polls >= max(1, int(1.0 / poll_interval)):
-                if _try_acquire_lock(redis, base_key, lock_ttl):
-                    logger.warning("Chunk cache leader lost; rebuilding %s", base_key)
-                    yield from _stream_build(redis, base_key, source, cache_ttl, lock_ttl)
-                    return
-        else:
-            idle_polls = 0
-
+            logger.debug("XMLTV cache producer still busy; streaming independent source")
+            return source(), None
         _poll_wait(poll_interval)
 
 
@@ -202,40 +248,24 @@ def stream_cached_response(
     max_follower_wait=DEFAULT_MAX_FOLLOWER_WAIT,
     redis=None,
 ):
+    """Stream a source or replay one complete, immutable cache build.
+
+    The leader streams immediately. Followers wait before headers for a ready
+    build (up to max_follower_wait), then use an independent source if needed.
+    Ready readers retain data per chunk and send an exact Content-Length, so
+    even a reader stalled beyond retention fails detectably instead of ending
+    with a successful truncated body. Memory remains bounded to one chunk.
     """
-    Stream a large response with single-flight Redis chunk caching.
-
-    ``source`` must be a callable returning a chunk iterator. Only the leader
-    invokes it; concurrent followers replay chunks already written to Redis, so
-    the expensive ``source`` runs at most once per ``cache_key``.
-    """
-    if redis is None:
-        redis = _get_redis()
-
-    if redis.get(_ready_key(cache_key)):
-        logger.debug("Serving response from chunk cache")
-        stream = _stream_ready(redis, cache_key)
-    else:
-        status = _get_status(redis, cache_key)
-        if status == STATUS_ERROR:
-            _clear_build_keys(redis, cache_key)
-
-        if _try_acquire_lock(redis, cache_key, lock_ttl):
-            logger.debug("Building response (cache leader)")
-            stream = _stream_build(redis, cache_key, source, cache_ttl, lock_ttl)
-        else:
-            logger.debug("Following in-flight cache build")
-            stream = _stream_follow(
-                redis,
-                cache_key,
-                source,
-                cache_ttl,
-                lock_ttl,
-                poll_interval,
-                max_follower_wait,
-            )
-
+    try:
+        redis = redis if redis is not None else _get_redis()
+        stream, length = _select_stream(redis, cache_key, source, cache_ttl=cache_ttl, lock_ttl=lock_ttl,
+                                        poll_interval=poll_interval, max_follower_wait=max_follower_wait)
+    except RedisError:
+        logger.warning("XMLTV cache unavailable; streaming source uncached", exc_info=True)
+        stream, length = source(), None
     response = StreamingHttpResponse(stream, content_type=content_type)
+    if length is not None:
+        response["Content-Length"] = str(length)
     if filename:
         response["Content-Disposition"] = f'attachment; filename="{filename}"'
     response["Cache-Control"] = "no-cache"
@@ -243,26 +273,20 @@ def stream_cached_response(
 
 
 def invalidate_epg_chunk_cache():
-    """
-    Drop all XMLTV /output/epg chunk-cache entries.
+    """Retire EPG selections without deleting data used by active exports.
 
-    EPG assignment changes (channel or override), programme imports, and
-    finished EPG refreshes (XMLTV and Schedules Direct) do not change the
-    cache key, so without this the next /output/epg can keep serving stale
-    programmes for up to DEFAULT_CACHE_TTL while the in-app guide (uncached)
-    is already correct. M3U refreshes that rewrite channels also call this so
-    channel names, numbers, and logos in the XMLTV channel list stay current.
+    The database revision follows the caller's transaction and does not depend
+    on Redis. New requests use the new namespace; old builds expire naturally.
+    Return False and log if the revision could not be advanced.
     """
+    from apps.epg.services import advance_epg_revision
+
     try:
-        redis = _get_redis()
-        deleted = 0
-        for key in redis.scan_iter(match="epg_content:*", count=200):
-            redis.delete(key)
-            deleted += 1
-        if deleted:
-            logger.debug("Invalidated %s epg_content cache key(s)", deleted)
+        advance_epg_revision()
+        return True
     except Exception:
-        logger.warning("Failed to invalidate EPG chunk cache", exc_info=True)
+        logger.warning("Failed to advance EPG export revision", exc_info=True)
+        return False
 
 
 def invalidate_m3u_content_cache():

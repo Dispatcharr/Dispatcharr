@@ -1,9 +1,11 @@
+import json
 import logging
 import os
 from rest_framework import viewsets, status, serializers
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
+from rest_framework.exceptions import NotFound
 from rest_framework.views import APIView
 from apps.epg.sd_api import (
     SchedulesDirectPosterMixin,
@@ -12,11 +14,13 @@ from apps.epg.sd_api import (
 from rest_framework.decorators import action
 from drf_spectacular.utils import extend_schema, OpenApiParameter, inline_serializer
 from drf_spectacular.types import OpenApiTypes
+from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
 from .models import EPGSource, ProgramData, EPGData
+from .services import advance_epg_revision
 from .serializers import (
     ProgramDataSerializer,
     ProgramDetailSerializer,
@@ -137,6 +141,43 @@ class ProgramViewSet(SchedulesDirectPosterMixin, viewsets.ModelViewSet):
 
     queryset = ProgramData.objects.select_related("epg").all()
     serializer_class = ProgramDataSerializer
+
+    @transaction.atomic
+    def perform_create(self, serializer):
+        serializer.save()
+        advance_epg_revision()
+
+    @transaction.atomic
+    def perform_update(self, serializer):
+        # DRF looked up the instance before entering this transaction. Re-read
+        # under a row lock so save cannot resurrect a concurrently deleted row.
+        try:
+            instance = ProgramData.objects.select_for_update().get(pk=serializer.instance.pk)
+        except ProgramData.DoesNotExist as exc:
+            raise NotFound("Programme no longer exists.") from exc
+        serializer.instance = instance
+        changed = False
+        for name, value in serializer.validated_data.items():
+            current = getattr(instance, name)
+            if name == "custom_properties":
+                # Whole-field replacement keeps REST semantics; JSON booleans
+                # must not compare equal to numeric values (True == 1 in Python).
+                different = json.dumps(current, sort_keys=True) != json.dumps(value, sort_keys=True)
+            else:
+                different = current != value
+            changed = changed or different
+        if changed:
+            serializer.save()
+            advance_epg_revision()
+
+    @transaction.atomic
+    def perform_destroy(self, instance):
+        try:
+            instance = ProgramData.objects.select_for_update().get(pk=instance.pk)
+        except ProgramData.DoesNotExist as exc:
+            raise NotFound("Programme no longer exists.") from exc
+        instance.delete()
+        advance_epg_revision()
 
     # Short process-local cooldown for transient poster errors (auth/network).
     # Image download limits are persisted on the EPG source (shared across workers).

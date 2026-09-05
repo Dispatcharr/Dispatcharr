@@ -1,6 +1,11 @@
+import json
 import threading
 import time
-from unittest import TestCase
+import uuid
+
+import redis as redis_library
+from django.conf import settings
+from django.test import TransactionTestCase
 
 from apps.output.streaming_chunk_cache import (
     STATUS_BUILDING,
@@ -13,84 +18,22 @@ from apps.output.streaming_chunk_cache import (
 )
 
 
-class FakeRedis:
-    """Minimal Redis stand-in for chunk-cache unit tests."""
-
-    def __init__(self):
-        self._strings = {}
-        self._lists = {}
-        self._expires_at = {}
-
-    def _purge_expired(self):
-        now = time.monotonic()
-        expired = [key for key, deadline in self._expires_at.items() if deadline <= now]
-        for key in expired:
-            self._strings.pop(key, None)
-            self._lists.pop(key, None)
-            self._expires_at.pop(key, None)
-
-    def get(self, key):
-        self._purge_expired()
-        return self._strings.get(key)
-
-    def set(self, key, value, nx=False, ex=None):
-        self._purge_expired()
-        if nx and key in self._strings:
-            return None
-        self._strings[key] = value
-        if ex is not None:
-            self._expires_at[key] = time.monotonic() + ex
-        return True
-
-    def delete(self, *keys):
-        for key in keys:
-            self._strings.pop(key, None)
-            self._lists.pop(key, None)
-            self._expires_at.pop(key, None)
-
-    def exists(self, key):
-        self._purge_expired()
-        return key in self._strings or key in self._lists
-
-    def expire(self, key, ttl):
-        if key in self._strings or key in self._lists:
-            self._expires_at[key] = time.monotonic() + ttl
-        return True
-
-    def rpush(self, key, value):
-        self._lists.setdefault(key, []).append(value)
-
-    def lindex(self, key, offset):
-        items = self._lists.get(key, [])
-        if offset < len(items):
-            return items[offset]
-        return None
-
-    def llen(self, key):
-        return len(self._lists.get(key, []))
-
-    def scan_iter(self, match=None, count=None):  # noqa: ARG002
-        self._purge_expired()
-        import fnmatch
-
-        keys = list(self._strings) + list(self._lists)
-        if match:
-            # Redis glob: * matches anything
-            pattern = match
-            for key in keys:
-                if fnmatch.fnmatch(key, pattern):
-                    yield key
-        else:
-            yield from keys
-
-
 def _consume(response):
     return b"".join(response.streaming_content).decode("utf-8")
 
 
-class StreamingChunkCacheTests(TestCase):
+class StreamingChunkCacheTests(TransactionTestCase):
+    def setUp(self):
+        self.redis = redis_library.Redis(host=settings.REDIS_HOST, port=settings.REDIS_PORT, db=15)
+        self.key = f"epg_content:unit-{uuid.uuid4().hex}"
+
+    def tearDown(self):
+        keys = list(self.redis.scan_iter(match=self.key + "*"))
+        if keys:
+            self.redis.delete(*keys)
+
     def test_leader_caches_chunks_and_sets_ready(self):
-        redis = FakeRedis()
+        redis = self.redis
         calls = []
 
         def source():
@@ -98,17 +41,19 @@ class StreamingChunkCacheTests(TestCase):
             yield "<tv>"
             yield "</tv>"
 
-        body = _consume(stream_cached_response("cache:test", source, redis=redis))
+        body = _consume(stream_cached_response(self.key, source, redis=redis))
 
         self.assertEqual(body, "<tv></tv>")
         self.assertEqual(calls, [1])
-        self.assertEqual(redis.get(_ready_key("cache:test")), "1")
-        self.assertEqual(redis.get(_status_key("cache:test")), STATUS_READY)
-        self.assertEqual(redis.llen(_chunks_key("cache:test")), 2)
-        self.assertFalse(redis.exists(_lock_key("cache:test")))
+        manifest = json.loads(redis.get(_ready_key(self.key)))
+        build_key = f"{self.key}:build:{manifest['id']}"
+        self.assertEqual(redis.get(_status_key(build_key)), STATUS_READY.encode())
+        self.assertEqual(manifest["count"], 2)
+        self.assertEqual(redis.llen(_chunks_key(build_key)), 2)
+        self.assertFalse(redis.exists(_lock_key(self.key)))
 
     def test_cache_hit_skips_source(self):
-        redis = FakeRedis()
+        redis = self.redis
         calls = []
 
         def source():
@@ -116,16 +61,16 @@ class StreamingChunkCacheTests(TestCase):
             yield "<tv>"
             yield "</tv>"
 
-        _consume(stream_cached_response("cache:test", source, redis=redis))
+        _consume(stream_cached_response(self.key, source, redis=redis))
         calls.clear()
-        body = _consume(stream_cached_response("cache:test", source, redis=redis))
+        body = _consume(stream_cached_response(self.key, source, redis=redis))
 
         self.assertEqual(body, "<tv></tv>")
         self.assertEqual(calls, [])
 
     def test_follower_reads_leader_chunks_without_rebuilding(self):
-        redis = FakeRedis()
-        base = "cache:follow"
+        redis = self.redis
+        base = self.key
         leader_started = threading.Event()
         rebuild_calls = []
 
@@ -167,7 +112,7 @@ class StreamingChunkCacheTests(TestCase):
         self.assertEqual(rebuild_calls, [1])
 
     def test_only_one_leader_when_two_clients_start_together(self):
-        redis = FakeRedis()
+        redis = self.redis
         build_calls = []
         barrier = threading.Barrier(2)
         results = {}
@@ -180,7 +125,7 @@ class StreamingChunkCacheTests(TestCase):
             barrier.wait()
             results[threading.current_thread().name] = _consume(
                 stream_cached_response(
-                    "cache:race",
+                    self.key,
                     source,
                     redis=redis,
                     poll_interval=0.01,
@@ -200,25 +145,17 @@ class StreamingChunkCacheTests(TestCase):
         self.assertEqual(results["t2"], "x")
         self.assertEqual(len(build_calls), 1)
 
-    def test_invalidate_epg_chunk_cache_deletes_epg_content_keys(self):
-        from unittest.mock import patch
-
+    def test_invalidation_advances_revision_without_deleting_old_chunks(self):
+        from apps.epg.services import get_epg_revision
         from apps.output.streaming_chunk_cache import invalidate_epg_chunk_cache
 
-        redis = FakeRedis()
-        redis.set("epg_content:all:anonymous:d=0:ready", "1")
-        redis.rpush("epg_content:all:anonymous:d=0:chunks", b"<tv/>")
-        redis.set("unrelated:key", "keep")
-
-        with patch(
-            "apps.output.streaming_chunk_cache._get_redis",
-            return_value=redis,
-        ):
-            invalidate_epg_chunk_cache()
-
-        self.assertFalse(redis.exists("epg_content:all:anonymous:d=0:ready"))
-        self.assertFalse(redis.exists("epg_content:all:anonymous:d=0:chunks"))
-        self.assertTrue(redis.exists("unrelated:key"))
+        revision = get_epg_revision()
+        self.redis.set(self.key + ":ready", "retained")
+        self.redis.rpush(self.key + ":chunks", b"<tv/>")
+        self.assertTrue(invalidate_epg_chunk_cache())
+        self.assertNotEqual(get_epg_revision(), revision)
+        self.assertTrue(self.redis.exists(self.key + ":ready"))
+        self.assertTrue(self.redis.exists(self.key + ":chunks"))
 
     def test_invalidate_m3u_content_cache_uses_django_delete_pattern(self):
         from unittest.mock import MagicMock, patch

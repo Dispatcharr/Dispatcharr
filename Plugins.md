@@ -528,3 +528,93 @@ class Plugin:
 - Model: `apps/plugins/models.py`
 - Frontend page: `frontend/src/pages/Plugins.jsx`
 - Sidebar entry: `frontend/src/components/Sidebar.jsx`
+
+## Updating EPG programme metadata
+
+Plugins running inside Dispatcharr can use `apps.epg.services.update_programmes`
+for bounded, transactional metadata updates. This is a Python service, not an
+HTTP endpoint. It does not grant additional permissions: plugins already execute
+with application privileges and must select the intended programmes themselves.
+
+```python
+from apps.epg.models import ProgramData
+from apps.epg.services import MISSING, ProgrammeUpdate, update_programmes
+
+programme = ProgramData.objects.get(pk=programme_id)
+if isinstance(programme.custom_properties, dict):
+    result = update_programmes([
+        ProgrammeUpdate(
+            programme_id=programme.pk,
+            expected={
+                "epg_id": programme.epg_id,
+                "start_time": programme.start_time,
+                "end_time": programme.end_time,
+                "title": programme.title,
+                "custom_properties": {
+                    "language": programme.custom_properties.get("language", MISSING),
+                },
+            },
+            values={"custom_properties": {"language": "en"}},
+        ),
+    ])
+    # result.changed, .unchanged, .conflicts, and .missing contain programme IDs.
+```
+
+The service accepts at most 500 updates with distinct positive integer IDs. It
+validates the entire batch before writing, then locks existing rows in ID order
+and compares each update's `expected` values with the current database row. A
+mismatch skips that programme and returns its ID in `conflicts`. A deleted or
+replaced row is returned in `missing`; the service never recreates it. Re-read
+conflicting or replaced programmes and reconsider the update rather than retrying
+with stale expectations. A source refresh can still replace metadata after a
+successful update; the API does not make plugin changes permanent overrides.
+
+Writable fields are `title`, `sub_title`, `description`, and `custom_properties`.
+Every writable scalar or property key included in `values` must also appear in
+`expected`. Additional expected conditions can include `epg_id`, `start_time`,
+`end_time`, `tvg_id`, and `program_id`. Timestamps must be timezone-aware Python
+`datetime` objects. Schedule times, source identity, and channel mappings cannot
+be changed through this service. Invalid requests raise Django `ValidationError`
+without applying any part of the batch.
+
+`custom_properties` is an explicit **top-level merge**. Unmentioned keys are
+preserved; a nested object supplied for a key replaces that key's whole value.
+Use `MISSING` in `expected` to require an absent key, and in `values` to delete a
+key. `None` means JSON null, which is distinct from absence. Property values must
+be JSON values with string object keys and finite numbers. Stored properties
+that are not an object cause a conflict when the update references properties;
+they are not silently converted or discarded.
+
+`preview=True` performs validation and conflict detection without changing data
+or the EPG revision. In previews, `changed` lists IDs that **would** change. No-op
+updates also leave the revision unchanged. Results classify IDs within this
+batch; they are not a durable audit log.
+
+A changed batch advances a durable database EPG revision once, in the same
+transaction as its metadata writes. If the caller wraps the operation in an
+outer `transaction.atomic()`, both the data and revision become visible on that
+outer commit, and both roll back together. Redis availability is not required
+for the update to commit. Plugins must not additionally delete XMLTV cache keys
+or call the output invalidation helper after this service.
+
+XMLTV requests select their cache generation using the committed revision.
+Previously started requests may finish with older data, while subsequent
+requests select the new generation. This protects cache and stream integrity;
+it does not provide a global database snapshot across multiple programme
+queries. Large jobs should use bounded batches and expect exports to observe
+intermediate committed batches. Built-in import and refresh paths continue to
+use their own ingestion logic with the host's revision invalidation mechanism.
+
+The cache never deletes an active build or reader's data when the revision
+changes. A cache-miss producer streams immediately; concurrent requests wait
+up to five seconds for a completed build before generating their own response.
+Only completed cache builds are replayed, with an exact byte `Content-Length`.
+Memory remains bounded to a chunk rather than a complete guide.
+
+Cached readers renew data retention on each chunk, independently of whether
+the generation remains available to new requests. A reader paused longer than
+that retention, or affected by Redis data loss, fails as an incomplete transfer
+instead of receiving a normally completed truncated document. Redis failure
+before headers falls back to uncached generation. If a producer loses its cache
+lease or Redis fails while it is writing chunks, it continues streaming its
+original source without publishing an incomplete cache. Failures are logged.
