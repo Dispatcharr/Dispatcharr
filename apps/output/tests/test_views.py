@@ -1,4 +1,4 @@
-from django.test import TestCase, Client, SimpleTestCase, RequestFactory
+from django.test import TestCase, Client, RequestFactory
 from django.http import Http404
 from django.urls import reverse
 from unittest import skipUnless
@@ -1418,11 +1418,24 @@ class XcGetEpgDummyTests(TestCase):
         self.assertIn("Unnumbered", content)
 
 
-class GenerateEpgPrevDaysTests(SimpleTestCase):
-    """Profile EPG keeps legacy prev_days=0 unless URL or user setting says otherwise."""
+class GenerateEpgPrevDaysTests(TestCase):
+    """Profile EPG keeps legacy prev_days=0 unless URL or user setting says otherwise.
+
+    TestCase (not SimpleTestCase) because generate_epg() -> build_absolute_uri_with_port()
+    now reads CoreSettings.get_public_port() on the no-forwarded-header path - a real
+    DB query where there used to be none.
+    """
 
     def setUp(self):
+        from django.core.cache import cache as django_cache
+
         self.factory = RequestFactory()
+        django_cache.clear()
+
+    def tearDown(self):
+        from django.core.cache import cache as django_cache
+
+        django_cache.clear()
 
     @patch("apps.output.epg.stream_cached_response")
     @patch("apps.output.epg.Channel.objects")
@@ -1465,11 +1478,24 @@ class GenerateEpgPrevDaysTests(SimpleTestCase):
         self.assertEqual(lan_key, same_lan_key)
 
 
-class GenerateM3UCacheKeyTests(SimpleTestCase):
-    """M3U shared cache must not reuse absolute URLs built for a different Host."""
+class GenerateM3UCacheKeyTests(TestCase):
+    """M3U shared cache must not reuse absolute URLs built for a different Host.
+
+    TestCase (not SimpleTestCase) because generate_m3u() -> build_absolute_uri_with_port()
+    now reads CoreSettings.get_public_port() on the no-forwarded-header path - a real
+    DB query where there used to be none.
+    """
 
     def setUp(self):
+        from django.core.cache import cache as django_cache
+
         self.factory = RequestFactory()
+        django_cache.clear()
+
+    def tearDown(self):
+        from django.core.cache import cache as django_cache
+
+        django_cache.clear()
 
     @patch("django.core.cache.cache")
     def test_m3u_cache_key_includes_request_origin(self, mock_cache):
