@@ -86,6 +86,20 @@ vi.mock('@mantine/core', () => ({
   Switch: ({ id }) => (
     <input data-testid={id} id={id} type="checkbox" onChange={() => {}} />
   ),
+  TextInput: ({ label, description, placeholder, value, onChange, id }) => (
+    <div>
+      <label htmlFor={id}>{label}</label>
+      {description && <p>{description}</p>}
+      <input
+        data-testid={id || 'text-input'}
+        id={id}
+        type="text"
+        placeholder={placeholder}
+        value={value ?? ''}
+        onChange={onChange}
+      />
+    </div>
+  ),
   Text: ({ children }) => <span>{children}</span>,
   Divider: () => <hr />,
 }));

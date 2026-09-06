@@ -837,13 +837,23 @@ class GetClientIpTests(SimpleTestCase):
             self.assertEqual(get_client_ip(request), "192.168.1.50")
 
 
-class GetHostAndPortTrustedProxyTests(SimpleTestCase):
-    """Forwarded host/scheme are honored only from trusted peers."""
+class GetHostAndPortTrustedProxyTests(TestCase):
+    """Forwarded host/scheme are honored only from trusted peers.
+
+    TestCase (not SimpleTestCase) because get_host_and_port() now reads
+    CoreSettings.get_public_port() on the untrusted-peer/no-forwarded-header
+    path - a real DB query where there used to be none.
+    """
 
     def setUp(self):
         from django.test import RequestFactory
 
         self.factory = RequestFactory()
+        cache.clear()
+        CoreSettings.objects.filter(key=SYSTEM_SETTINGS_KEY).delete()
+
+    def tearDown(self):
+        cache.clear()
 
     def _request(self, remote_addr, path="/", **extra):
         request = self.factory.get(path)
