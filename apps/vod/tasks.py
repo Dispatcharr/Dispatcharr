@@ -16,6 +16,16 @@ import re
 
 logger = logging.getLogger(__name__)
 
+# See batch_process_episodes' stale-relation-delete guard: below this many
+# existing relations for a series, even a genuine full removal is a small
+# absolute count, so the fraction-based guard is skipped rather than blocking
+# legitimate small-series cleanup indefinitely.
+EPISODE_STALE_DELETE_MIN_EXISTING = 5
+# A response that would delete more than this fraction of a series' existing
+# episode relations in one pass is treated as a likely short/incomplete
+# provider fetch rather than a real removal -- see the guard's own comment.
+EPISODE_STALE_DELETE_MAX_FRACTION = 0.5
+
 
 def _empty_categories_should_abort(categories_data, account, category_type):
     """True when an empty provider response would wipe existing group selections."""
@@ -1667,9 +1677,38 @@ def batch_process_episodes(account, series, episodes_data, scan_start_time=None,
                 m3u_account=account,
                 episode__series=series
             )
-        removed_count = stale_qs.exclude(stream_id__in=episode_ids).delete()[0]
-        if removed_count:
-            logger.info(f"Removed {removed_count} episode relations no longer present in provider for series {series.name}")
+
+        # Guard against a short/incomplete provider response wiping out most of a
+        # series' episodes in one pass. A real, intentional shrink (a season pulled
+        # from the catalog) is still a handful of relations at most -- a response
+        # that would remove the *majority* of what's already on file looks like a
+        # truncated/partial fetch (a slow upstream, a transient network hiccup, a
+        # provider mid-update), not a genuine catalog change, and there is no
+        # upstream signal (status code, header) to tell the two apart. Skipping the
+        # delete here doesn't lose real removals -- a subsequent complete refresh
+        # still cleans them up normally, and every episode actually returned in
+        # this response is still created/updated above regardless of this guard.
+        # Below EPISODE_STALE_DELETE_MIN_EXISTING, a series is small enough that
+        # even a real full removal is still a small absolute count, so the guard
+        # is skipped to avoid blocking legitimate small-series cleanup forever.
+        existing_count = stale_qs.count()
+        stale_to_delete = stale_qs.exclude(stream_id__in=episode_ids)
+        to_delete_count = stale_to_delete.count()
+        if (
+            to_delete_count > 0
+            and existing_count >= EPISODE_STALE_DELETE_MIN_EXISTING
+            and to_delete_count / existing_count > EPISODE_STALE_DELETE_MAX_FRACTION
+        ):
+            logger.warning(
+                f"Refusing to remove {to_delete_count}/{existing_count} episode relations for "
+                f"series '{series.name}' from a single response -- looks like a short/incomplete "
+                f"provider fetch rather than a real removal. Skipping cleanup this pass; a later "
+                f"complete refresh will reconcile it normally."
+            )
+        else:
+            removed_count = stale_to_delete.delete()[0]
+            if removed_count:
+                logger.info(f"Removed {removed_count} episode relations no longer present in provider for series {series.name}")
 
     logger.info(f"Batch processed episodes: {len(episodes_to_create)} new, {len(episodes_to_update)} updated, "
                 f"{len(relations_to_create)} new relations, {len(relations_to_update)} updated relations")
