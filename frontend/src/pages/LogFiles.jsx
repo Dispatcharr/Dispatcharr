@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
   Alert,
@@ -6,12 +6,13 @@ import {
   Box,
   Button,
   Group,
-  Table,
+  Loader,
   Text,
   Title,
 } from '@mantine/core';
 import API from '../api';
 import DownloadLogButton from '../components/DownloadLogButton';
+import { CustomTable, useTable } from '../components/tables/CustomTable';
 import { useDateTimeFormat, format } from '../utils/dateTimeUtils.js';
 import { formatBytes } from '../utils/networkUtils.js';
 
@@ -44,6 +45,80 @@ const LogFilesPage = () => {
     load();
   }, [load]);
 
+  const columns = useMemo(
+    () => [
+      {
+        header: 'Filename',
+        accessorKey: 'name',
+        grow: true,
+        minSize: 200,
+        cell: ({ cell }) => (
+          <Anchor
+            component={Link}
+            to={`/logs/${encodeURIComponent(cell.getValue())}`}
+            size="sm"
+          >
+            {cell.getValue()}
+          </Anchor>
+        ),
+      },
+      {
+        header: 'Last Write Time',
+        accessorKey: 'modified',
+        minSize: 190,
+        cell: ({ cell }) => (
+          <Text size="sm" style={{ whiteSpace: 'nowrap' }}>
+            {format(cell.getValue(), fullDateTimeFormat)}
+          </Text>
+        ),
+      },
+      {
+        header: 'Size',
+        accessorKey: 'size',
+        size: 110,
+        cell: ({ cell }) => (
+          <Text size="sm" title={`${cell.getValue().toLocaleString()} bytes`}>
+            {formatBytes(cell.getValue())}
+          </Text>
+        ),
+      },
+      {
+        id: 'actions',
+        header: '',
+        size: 120,
+      },
+    ],
+    [fullDateTimeFormat]
+  );
+
+  const allRowIds = useMemo(() => files.map((file) => file.name), [files]);
+
+  const renderHeaderCell = (header) => (
+    <Text size="sm" name={header.id}>
+      {header.column.columnDef.header}
+    </Text>
+  );
+
+  const renderBodyCell = ({ cell, row }) => {
+    switch (cell.column.id) {
+      case 'actions':
+        return <DownloadLogButton name={row.original.name} />;
+    }
+  };
+
+  const table = useTable({
+    columns,
+    data: files,
+    allRowIds,
+    bodyCellRenderFns: { actions: renderBodyCell },
+    headerCellRenderFns: {
+      name: renderHeaderCell,
+      modified: renderHeaderCell,
+      size: renderHeaderCell,
+      actions: renderHeaderCell,
+    },
+  });
+
   return (
     <Box p="md" maw={1100} mx="auto">
       <Group justify="space-between" mb="md">
@@ -65,58 +140,26 @@ const LogFilesPage = () => {
         </Alert>
       )}
 
-      <Table highlightOnHover>
-        <Table.Thead>
-          <Table.Tr>
-            <Table.Th>Filename</Table.Th>
-            <Table.Th>Last Write Time</Table.Th>
-            <Table.Th ta="right">Size</Table.Th>
-            <Table.Th />
-          </Table.Tr>
-        </Table.Thead>
-        <Table.Tbody>
-          {files.map((file) => (
-            <Table.Tr key={file.name}>
-              <Table.Td>
-                <Anchor
-                  component={Link}
-                  to={`/logs/${encodeURIComponent(file.name)}`}
-                  size="sm"
-                >
-                  {file.name}
-                </Anchor>
-              </Table.Td>
-              <Table.Td>
-                <Text size="sm">
-                  {format(file.modified, fullDateTimeFormat)}
-                </Text>
-              </Table.Td>
-              <Table.Td ta="right">
-                <Text size="sm" title={`${file.size.toLocaleString()} bytes`}>
-                  {formatBytes(file.size)}
-                </Text>
-              </Table.Td>
-              <Table.Td ta="right">
-                <DownloadLogButton name={file.name} />
-              </Table.Td>
-            </Table.Tr>
-          ))}
-          {files.length === 0 && !loading && (
-            <Table.Tr>
-              <Table.Td colSpan={4}>
-                <Text
-                  size="sm"
-                  c={loadError ? 'red' : 'dimmed'}
-                  ta="center"
-                  py="md"
-                >
-                  {loadError ? 'Failed to load log files' : 'No log files yet'}
-                </Text>
-              </Table.Td>
-            </Table.Tr>
-          )}
-        </Table.Tbody>
-      </Table>
+      <Box
+        style={{
+          overflowX: 'auto',
+          overflowY: 'auto',
+          border: 'solid 1px rgb(68,68,68)',
+          borderRadius: 'var(--mantine-radius-default)',
+        }}
+      >
+        {loading && files.length === 0 ? (
+          <Box p="xl" style={{ display: 'flex', justifyContent: 'center' }}>
+            <Loader />
+          </Box>
+        ) : files.length === 0 ? (
+          <Text size="sm" c={loadError ? 'red' : 'dimmed'} p="md" ta="center">
+            {loadError ? 'Failed to load log files' : 'No log files yet'}
+          </Text>
+        ) : (
+          <CustomTable table={table} />
+        )}
+      </Box>
     </Box>
   );
 };

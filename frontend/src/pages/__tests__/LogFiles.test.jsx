@@ -16,37 +16,55 @@ vi.mock('../../utils/dateTimeUtils.js', () => ({
   format: vi.fn(() => '14/07/2026 23:00:00'),
 }));
 
-vi.mock('@mantine/core', () => {
-  const TableStub = ({ children }) => <table>{children}</table>;
-  TableStub.Thead = ({ children }) => <thead>{children}</thead>;
-  TableStub.Tbody = ({ children }) => <tbody>{children}</tbody>;
-  TableStub.Tr = ({ children }) => <tr>{children}</tr>;
-  TableStub.Th = ({ children, ta }) => <th data-align={ta}>{children}</th>;
-  TableStub.Td = ({ children, ta }) => <td data-align={ta}>{children}</td>;
+// Stands in for the table chrome, running the real column definitions.
+vi.mock('../../components/tables/CustomTable', () => ({
+  useTable: (options) => options,
+  CustomTable: ({ table }) => (
+    <table data-testid="custom-table">
+      <tbody>
+        {table.data.map((row) => (
+          <tr key={row.name}>
+            {table.columns.map((column) => (
+              <td key={column.id || column.accessorKey}>
+                {column.cell
+                  ? column.cell({
+                      cell: { getValue: () => row[column.accessorKey] },
+                    })
+                  : table.bodyCellRenderFns[column.id]({
+                      cell: { column: { id: column.id } },
+                      row: { original: row },
+                    })}
+              </td>
+            ))}
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  ),
+}));
 
-  return {
-    Anchor: ({ children, onClick, to }) => (
-      <a href={to || '#'} onClick={onClick}>
-        {children}
-      </a>
-    ),
-    Alert: ({ title, children }) => (
-      <div role="alert">
-        {title}
-        {children}
-      </div>
-    ),
-    Box: ({ children }) => <div>{children}</div>,
-    Button: ({ children, onClick }) => (
-      <button onClick={onClick}>{children}</button>
-    ),
-    Group: ({ children }) => <div>{children}</div>,
-    Paper: ({ children }) => <div>{children}</div>,
-    Table: TableStub,
-    Text: ({ children, title }) => <span title={title}>{children}</span>,
-    Title: ({ children }) => <h3>{children}</h3>,
-  };
-});
+vi.mock('@mantine/core', () => ({
+  Anchor: ({ children, onClick, to }) => (
+    <a href={to || '#'} onClick={onClick}>
+      {children}
+    </a>
+  ),
+  Alert: ({ title, children }) => (
+    <div role="alert">
+      {title}
+      {children}
+    </div>
+  ),
+  Box: ({ children }) => <div>{children}</div>,
+  Button: ({ children, onClick }) => (
+    <button onClick={onClick}>{children}</button>
+  ),
+  Group: ({ children }) => <div>{children}</div>,
+  Loader: () => <div data-testid="loader" />,
+  Paper: ({ children }) => <div>{children}</div>,
+  Text: ({ children, title }) => <span title={title}>{children}</span>,
+  Title: ({ children }) => <h3>{children}</h3>,
+}));
 
 const files = {
   files: [
@@ -80,17 +98,17 @@ describe('LogFilesPage', () => {
     expect(screen.getByText('dispatcharr.log.1')).toBeInTheDocument();
     expect(screen.getByText('2.00 KB')).toBeInTheDocument();
     expect(screen.getByText('5.00 MB')).toBeInTheDocument();
+    expect(screen.getAllByText('14/07/2026 23:00:00')).toHaveLength(2);
   });
 
-  it('right-aligns sizes and keeps the exact count a hover away', async () => {
-    API.getLogFiles.mockResolvedValue(files);
+  it('renders the listing through the project table', async () => {
+    renderPage();
+    expect(await screen.findByTestId('custom-table')).toBeInTheDocument();
+  });
+
+  it('keeps the exact byte count a hover away', async () => {
     renderPage();
     await screen.findByText('2.00 KB');
-    expect(screen.getByText('Size')).toHaveAttribute('data-align', 'right');
-    expect(screen.getByText('2.00 KB').closest('td')).toHaveAttribute(
-      'data-align',
-      'right'
-    );
     expect(screen.getByText('5.00 MB')).toHaveAttribute(
       'title',
       '5,242,880 bytes'
@@ -153,6 +171,7 @@ describe('LogFilesPage', () => {
     await waitFor(() => {
       expect(screen.getByText('No log files yet')).toBeInTheDocument();
     });
+    expect(screen.queryByTestId('custom-table')).not.toBeInTheDocument();
   });
 
   it('says the listing failed rather than that there are no files', async () => {
