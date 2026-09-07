@@ -77,8 +77,6 @@ class MovieFilter(django_filters.FilterSet):
         if not value:
             return queryset
 
-        # A category name may itself contain '|', so only treat the trailing token as a
-        # category type when it is a real one; otherwise the whole value is the name (#1603).
         valid_types = {choice[0] for choice in VODCategory.CATEGORY_TYPE_CHOICES}
         category_name, category_type = parse_category_filter_value(value, valid_types)
         if category_type is not None:
@@ -301,8 +299,6 @@ class SeriesFilter(django_filters.FilterSet):
         if not value:
             return queryset
 
-        # A category name may itself contain '|', so only treat the trailing token as a
-        # category type when it is a real one; otherwise the whole value is the name (#1603).
         valid_types = {choice[0] for choice in VODCategory.CATEGORY_TYPE_CHOICES}
         category_name, category_type = parse_category_filter_value(value, valid_types)
         if category_type is not None:
@@ -804,8 +800,6 @@ class UnifiedContentViewSet(viewsets.ReadOnlyModelViewSet):
                     series_params.append(search_param)
 
             if category:
-                # A category name may itself contain '|', so only treat the trailing token as a
-                # category type when it is a real one; otherwise the whole value is the name (#1603).
                 valid_types = {choice[0] for choice in VODCategory.CATEGORY_TYPE_CHOICES}
                 cat_name, cat_type = parse_category_filter_value(category, valid_types)
                 if cat_type == 'movie':
