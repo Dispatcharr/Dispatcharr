@@ -144,6 +144,31 @@ describe('SettingsUtils', () => {
       });
     });
 
+    it('should route log_persist into system_settings', async () => {
+      const settings = {
+        system_settings: {
+          id: 3,
+          key: 'system_settings',
+          value: { log_persist: true },
+        },
+      };
+      const changedSettings = {
+        log_persist: false,
+      };
+
+      API.updateSetting.mockResolvedValue({});
+
+      await SettingsUtils.saveChangedSettings(settings, changedSettings);
+
+      expect(API.updateSetting).toHaveBeenCalledWith({
+        id: 3,
+        key: 'system_settings',
+        value: {
+          log_persist: false,
+        },
+      });
+    });
+
     it('should coerce string false for boolean settings without enabling', async () => {
       const settings = {
         system_settings: {
@@ -358,6 +383,24 @@ describe('SettingsUtils', () => {
       expect(result.post_offset_minutes).toBe(5);
     });
 
+    it('should parse log_persist with defaults', () => {
+      const stored = {
+        system_settings: {
+          id: 3,
+          key: 'system_settings',
+          value: { log_persist: false },
+        },
+      };
+      const result = SettingsUtils.parseSettings(stored);
+      expect(result.log_persist).toBe(false);
+
+      const empty = {
+        system_settings: { id: 3, key: 'system_settings', value: {} },
+      };
+      const defaults = SettingsUtils.parseSettings(empty);
+      expect(defaults.log_persist).toBe(true);
+    });
+
     it('should handle empty m3u_hash_key', () => {
       const mockSettings = {
         stream_settings: {
@@ -472,6 +515,7 @@ describe('SettingsUtils', () => {
         comskip_enabled: true,
       });
     });
+
 
     it('should not detect unchanged values', () => {
       const values = {

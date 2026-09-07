@@ -39,6 +39,11 @@ services:
       #- UWSGI_NICE_LEVEL=-5   # uWSGI/FFmpeg/Streaming (default: 0, recommended: -5 for high priority)
       #- CELERY_NICE_LEVEL=5   # Celery/EPG/Background tasks (default: 5, low priority)
 
+      # Worker count (Optional, tune memory vs throughput; range: 1-20)
+      #- UWSGI_WORKERS=4       # uWSGI gevent workers (default: 4)
+      #- CELERY_MAX_WORKERS=6  # Celery prefork autoscale max (default: 6)
+      #- CELERY_MIN_WORKERS=1  # Celery prefork autoscale min (default: 1; must be <= max)
+
       # Soft open-file limit for uwsgi/daphne/celery (Optional, default: 65536)
       #- DISPATCHARR_NOFILE=65536
     #

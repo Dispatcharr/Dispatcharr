@@ -60,3 +60,37 @@ class UserSerializerValidationTests(TestCase):
             "XC password may only contain letters, numbers, periods (.), underscores (_), at signs (@), and hyphens (-)",
             str(serializer.errors["custom_properties"]),
         )
+
+    def test_allowed_m3u_profile_ids_accepts_positive_integers(self):
+        serializer = UserSerializer(
+            data={
+                "username": "joe",
+                "password": "testpassword123",
+                "custom_properties": {"allowed_m3u_profile_ids": [3, 1]},
+            }
+        )
+
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+
+    def test_allowed_m3u_profile_ids_accepts_empty_list(self):
+        serializer = UserSerializer(
+            data={
+                "username": "joe",
+                "password": "testpassword123",
+                "custom_properties": {"allowed_m3u_profile_ids": []},
+            }
+        )
+
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+
+    def test_allowed_m3u_profile_ids_rejects_invalid_values(self):
+        serializer = UserSerializer(
+            data={
+                "username": "joe",
+                "password": "testpassword123",
+                "custom_properties": {"allowed_m3u_profile_ids": [1, "2"]},
+            }
+        )
+
+        self.assertFalse(serializer.is_valid())
+        self.assertIn("custom_properties", serializer.errors)

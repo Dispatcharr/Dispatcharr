@@ -4,7 +4,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
   makeHeaderCellRenderer,
   makeSortingChangeHandler,
-} from '../M3uTableUtils';
+} from '../tableSortingUtils';
 
 vi.mock('@mantine/core', () => ({
   Center: ({ children }) => <div data-testid="center">{children}</div>,
@@ -224,6 +224,14 @@ describe('makeSortingChangeHandler', () => {
       const handler = makeSortingChangeHandler([], setSorting, onDataSort);
       handler('title');
       expect(setSorting).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('optional onDataSort', () => {
+    it('does not throw when onDataSort is omitted', () => {
+      const handler = makeSortingChangeHandler([], setSorting);
+      expect(() => handler('name')).not.toThrow();
+      expect(setSorting).toHaveBeenCalledWith([{ id: 'name', desc: false }]);
     });
   });
 });

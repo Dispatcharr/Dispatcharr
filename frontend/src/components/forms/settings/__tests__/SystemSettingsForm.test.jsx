@@ -44,12 +44,21 @@ vi.mock('@mantine/core', () => ({
     </button>
   ),
   Flex: ({ children }) => <div>{children}</div>,
-  NumberInput: ({ label, value, onChange, min, max, step, description }) => (
+  NumberInput: ({
+    label,
+    value,
+    onChange,
+    min,
+    max,
+    step,
+    description,
+    id,
+  }) => (
     <div>
       <label>{label}</label>
       <p>{description}</p>
       <input
-        data-testid="number-input"
+        data-testid={id || 'number-input'}
         type="number"
         value={value}
         min={min}
@@ -112,6 +121,9 @@ const setupMocks = ({
 } = {}) => {
   const formValues = {
     max_system_events: settings?.max_system_events ?? 100,
+    log_max_mb: 10,
+    log_keep: 5,
+    log_persist: true,
     preferred_region: '',
     auto_import_mapped_files: true,
     enable_ip_lookup: true,
@@ -188,6 +200,22 @@ describe('SystemSettingsForm', () => {
       ).toBeInTheDocument();
     });
 
+    it('renders the Maximum Log File Size input', () => {
+      setupMocks();
+      render(<SystemSettingsForm active={true} />);
+      expect(
+        screen.getByText('Maximum Log File Size (MB)')
+      ).toBeInTheDocument();
+      expect(screen.getByTestId('log_max_mb')).toHaveValue(10);
+    });
+
+    it('renders the Log Files Retained input', () => {
+      setupMocks();
+      render(<SystemSettingsForm active={true} />);
+      expect(screen.getByText('Log Files Retained')).toBeInTheDocument();
+      expect(screen.getByTestId('log_keep')).toHaveValue(5);
+    });
+
     it('renders the Preferred Region select', () => {
       setupMocks();
       render(<SystemSettingsForm active={true} />);
@@ -214,6 +242,26 @@ describe('SystemSettingsForm', () => {
       render(<SystemSettingsForm active={true} />);
       expect(screen.getByTestId('catchup_enabled')).toBeInTheDocument();
     });
+
+    it('renders the Persist Logs to File switch', () => {
+      setupMocks();
+      render(<SystemSettingsForm active={true} />);
+      expect(screen.getByTestId('log_persist')).toBeInTheDocument();
+    });
+
+    it('hides the log file settings when no collector runs in this deployment', () => {
+      setupMocks({
+        environment: makeEnvironment({ log_collector_running: false }),
+      });
+      render(<SystemSettingsForm active={true} />);
+      expect(screen.queryByTestId('log_persist')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('log_max_mb')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('log_keep')).not.toBeInTheDocument();
+    });
+
+
+
+
 
     it('does not show success alert on initial render', () => {
       setupMocks();
@@ -292,6 +340,9 @@ describe('SystemSettingsForm', () => {
       render(<SystemSettingsForm active={true} />);
       expect(formMock.setValues).toHaveBeenCalledWith({
         max_system_events: 100,
+        log_max_mb: 10,
+        log_keep: 5,
+        log_persist: true,
         preferred_region: '',
         auto_import_mapped_files: true,
         enable_ip_lookup: true,
@@ -365,6 +416,20 @@ describe('SystemSettingsForm', () => {
           settings
         );
         expect(saveChangedSettings).toHaveBeenCalled();
+      });
+    });
+
+    it('includes log rotation settings on save', async () => {
+      setupMocks();
+      render(<SystemSettingsForm active={true} />);
+
+      fireEvent.click(screen.getByText('Save'));
+
+      await waitFor(() => {
+        expect(getChangedSettings).toHaveBeenCalledWith(
+          expect.objectContaining({ log_max_mb: 10, log_keep: 5 }),
+          expect.anything()
+        );
       });
     });
 

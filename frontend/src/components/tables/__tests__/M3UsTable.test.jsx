@@ -44,7 +44,7 @@ vi.mock('../../../utils/tables/M3UsTableUtils.js', () => ({
   updatePlaylist: vi.fn().mockResolvedValue(undefined),
 }));
 
-vi.mock('../M3uTableUtils.jsx', () => ({
+vi.mock('../tableSortingUtils.jsx', () => ({
   makeHeaderCellRenderer: vi.fn(() => (header) => (
     <span data-testid={`header-${header.id}`}>
       {header.column.columnDef.header}

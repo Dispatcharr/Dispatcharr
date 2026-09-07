@@ -1,4 +1,4 @@
-"""Catch-up honors Redirect as the default stream profile like VOD."""
+"""Catch-up honors Redirect via the channel's effective stream profile."""
 
 from contextlib import ExitStack
 from unittest.mock import MagicMock, patch
@@ -18,6 +18,15 @@ from apps.timeshift.tests.test_views import (
     _proxy_url,
     _seed_pool_session,
 )
+
+
+def _channel_with_redirect(is_redirect, **kwargs):
+    """Channel mock whose effective stream profile reports Redirect or not."""
+    channel = MagicMock(**kwargs)
+    profile = MagicMock()
+    profile.is_redirect.return_value = is_redirect
+    channel.get_stream_profile.return_value = profile
+    return channel, profile.is_redirect
 
 
 class ClientTimeshiftUrlLayoutTests(SimpleTestCase):
@@ -100,12 +109,6 @@ class CatchupRedirectViewTests(SimpleTestCase):
         stack.enter_context(
             patch.object(views, "parse_catchup_timestamp", return_value=True)
         )
-        is_redirect_mock = stack.enter_context(
-            patch(
-                "core.models.CoreSettings.is_default_stream_profile_redirect",
-                return_value=is_redirect,
-            )
-        )
         stack.enter_context(
             patch.object(
                 views,
@@ -120,7 +123,10 @@ class CatchupRedirectViewTests(SimpleTestCase):
             )
         )
         redis_cls.get_client.return_value = redis if redis is not None else _FakeRedis()
-        channel_cls.objects.get.return_value = MagicMock(id=8, name="Ch", logo_id=None)
+        channel, is_redirect_mock = _channel_with_redirect(
+            is_redirect, id=8, name="Ch", logo_id=None,
+        )
+        channel_cls.objects.get.return_value = channel
         return channel_cls, redis_cls, stream, is_redirect_mock
 
     def test_redirect_on_path_hands_off_provider_url(self):
@@ -167,6 +173,27 @@ class CatchupRedirectViewTests(SimpleTestCase):
 
         self.assertEqual(response.status_code, 301)
         self.assertIn("session_id=", response["Location"])
+
+    def test_channel_redirect_ignores_system_default(self):
+        """Channel effective Redirect wins even when the system default is not."""
+        request = self.factory.get(_proxy_url(session_id=None))
+        with ExitStack() as stack:
+            self._enter_common(stack, is_redirect=True)
+            stack.enter_context(
+                patch(
+                    "core.models.CoreSettings.is_default_stream_profile_redirect",
+                    return_value=False,
+                )
+            )
+            response = views.timeshift_proxy(
+                request, "u", "p", "40", "2026-06-08:17-00", "8.ts",
+            )
+
+        self.assertIsInstance(response, HttpResponseRedirect)
+        self.assertEqual(
+            response["Location"],
+            "http://provider.test/timeshift/pu/pp/40/2026-06-08:17-00/22372.ts",
+        )
 
     def test_pool_match_skips_provider_redirect(self):
         existing = "existingbusy1"

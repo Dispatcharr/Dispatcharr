@@ -10,18 +10,18 @@ import html
 import logging
 from datetime import timedelta
 
-from django.db.models import Prefetch
 from django.http import Http404
 from django.urls import reverse
 from django.utils import timezone as django_timezone
 
-from apps.channels.models import Channel, ChannelProfile, Stream
+from apps.channels.models import Channel, ChannelProfile
 from apps.channels.utils import format_channel_number
 from apps.epg.models import ProgramData
 from apps.epg.utils import sd_poster_proxy_path
 from apps.output.dummy_epg import (
     build_channel_logo_url,
     generate_dummy_programs,
+    prefetch_streams_for_stream_named_sources,
     resolve_pattern_match_name,
 )
 from apps.output.streaming_chunk_cache import stream_cached_response
@@ -129,10 +129,9 @@ def generate_epg(request, profile_name=None, user=None, *, xc_catchup_prev_days=
             with_effective_values(base_qs, select_related_fks=True)
             .exclude(hidden_from_output=True)
             .order_by("effective_channel_number")
-            .prefetch_related(
-                Prefetch('streams', queryset=Stream.objects.only('id', 'name').order_by('channelstream__order'))
-            )
+            .select_related('epg_data__epg_source', 'override__epg_data__epg_source')
         )
+        prefetch_streams_for_stream_named_sources(channels)
         channel_count = len(channels)
 
         # For dummy EPG, use either the specified value or default to 3 days

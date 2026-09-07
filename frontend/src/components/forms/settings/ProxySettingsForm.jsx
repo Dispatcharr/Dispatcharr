@@ -9,6 +9,7 @@ import {
   Flex,
   NumberInput,
   Stack,
+  Switch,
   TextInput,
 } from '@mantine/core';
 import { ChevronDown, ChevronRight } from 'lucide-react';
@@ -31,6 +32,8 @@ const isNumericField = (key) => {
 
 const isFloatField = (key) => key === 'buffering_speed';
 
+const isBooleanField = (_key, config) => config?.type === 'boolean';
+
 const getNumericFieldMax = (key) => {
   if (key === 'buffering_timeout') return 300;
   if (key === 'redis_chunk_ttl') return 3600;
@@ -41,6 +44,17 @@ const getNumericFieldMax = (key) => {
 };
 
 const renderProxySettingField = (key, config, proxySettingsForm) => {
+  if (isBooleanField(key, config)) {
+    return (
+      <Switch
+        key={key}
+        label={config.label}
+        description={config.description || null}
+        {...proxySettingsForm.getInputProps(key, { type: 'checkbox' })}
+      />
+    );
+  }
+
   if (isNumericField(key)) {
     return (
       <NumberInput

@@ -1,7 +1,5 @@
 import logging
 import os
-import re
-import time
 from rest_framework import viewsets, status, serializers
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.permissions import AllowAny
@@ -14,10 +12,10 @@ from apps.epg.sd_api import (
 from rest_framework.decorators import action
 from drf_spectacular.utils import extend_schema, OpenApiParameter, inline_serializer
 from drf_spectacular.types import OpenApiTypes
-from django.db.models import Prefetch, Q
+from django.db.models import Q
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
-from datetime import timedelta
+
 from .models import EPGSource, ProgramData, EPGData
 from .serializers import (
     ProgramDataSerializer,
@@ -380,170 +378,7 @@ class ProgramViewSet(SchedulesDirectPosterMixin, viewsets.ModelViewSet):
 
 
 # ─────────────────────────────
-# 3) EPG Grid View
-# ─────────────────────────────
-def custom_dummy_channels_queryset():
-    """Channels backed by a dummy EPG source, ready for on-demand generation.
-
-    Streams are prefetched in channelstream order because dummy sources configured
-    with name_source='stream' resolve their regex input by stream index; without the
-    explicit ordering the prefetch cache would fall back to Stream's own ordering
-    and pick the wrong title.
-    """
-    from apps.channels.models import Channel, Stream
-    from apps.channels.managers import with_effective_values
-
-    return with_effective_values(
-        Channel.objects.filter(epg_data__epg_source__source_type='dummy')
-        .select_related('epg_data__epg_source')
-        .prefetch_related(
-            Prefetch(
-                'streams',
-                queryset=Stream.objects.only('id', 'name').order_by(
-                    'channelstream__order'
-                ),
-            )
-        )
-        .distinct()
-    )
-
-
-class EPGGridAPIView(APIView):
-    """Returns all programs airing in the next 24 hours including currently running ones and recent ones"""
-
-    def get_permissions(self):
-        try:
-            return [
-                perm() for perm in permission_classes_by_method[self.request.method]
-            ]
-        except KeyError:
-            return [Authenticated()]
-
-    @extend_schema(
-        description="Retrieve programs from the previous hour, currently running and upcoming for the next 24 hours",
-        responses={200: ProgramDataSerializer(many=True)},
-    )
-    def get(self, request, format=None):
-        # Use current time instead of midnight
-        now = timezone.now()
-        one_hour_ago = now - timedelta(hours=1)
-        twenty_four_hours_later = now + timedelta(hours=24)
-        logger.debug(
-            f"EPGGridAPIView: Querying programs between {one_hour_ago} and {twenty_four_hours_later}."
-        )
-
-        programs = ProgramData.objects.filter(
-            end_time__gt=one_hour_ago,
-            start_time__lt=twenty_four_hours_later,
-        )
-
-        # Generate dummy programs for channels that have no EPG data OR dummy EPG sources
-        from apps.channels.models import Channel
-        from apps.channels.managers import with_effective_values
-
-        # Get channels with no EPG data at all (standard dummy)
-        channels_without_epg = with_effective_values(
-            Channel.objects.filter(epg_data__isnull=True)
-        )
-        channels_with_custom_dummy = custom_dummy_channels_queryset()
-
-        # Serialize the regular programs using .values() to bypass DRF overhead
-        programs_qs = programs.values(
-            'id', 'start_time', 'end_time', 'title', 'sub_title',
-            'description', 'tvg_id', 'custom_properties',
-        )
-        serialized_programs = []
-        for p in programs_qs:
-            cp = p['custom_properties'] or {}
-            premiere_text = cp.get('premiere_text', '')
-            serialized_programs.append({
-                'id': p['id'],
-                'start_time': p['start_time'],
-                'end_time': p['end_time'],
-                'title': p['title'],
-                'sub_title': p['sub_title'],
-                'description': p['description'],
-                'tvg_id': p['tvg_id'],
-                'season': cp.get('season'),
-                'episode': cp.get('episode'),
-                'is_new': bool(cp.get('new')),
-                'is_live': bool(cp.get('live')),
-                'is_premiere': bool(cp.get('premiere')),
-                'is_finale': bool(premiere_text and 'finale' in premiere_text.lower()),
-            })
-        logger.debug(
-            f"EPGGridAPIView: Found {len(serialized_programs)} program(s), including recently ended, currently running, and upcoming shows."
-        )
-
-        # Generate and append dummy programs for channels without real EPG data.
-        from apps.output.dummy_epg import (
-            dummy_program_to_api_dict,
-            generate_dummy_programs,
-            resolve_channel_parse_name,
-        )
-
-        dummy_programs = []
-
-        for queryset, id_prefix, custom_source in (
-            (channels_with_custom_dummy, 'dummy-custom', True),
-            (channels_without_epg, 'dummy-standard', False),
-        ):
-            for channel in queryset:
-                dummy_tvg_id = str(channel.uuid)
-                effective_name = channel.effective_name
-                if custom_source:
-                    epg_source = channel.epg_data.epg_source if channel.epg_data else None
-                    channel_name = resolve_channel_parse_name(
-                        channel, epg_source, fallback_name=effective_name
-                    )
-                else:
-                    epg_source = None
-                    channel_name = effective_name
-                try:
-                    generated = generate_dummy_programs(
-                        channel_id=dummy_tvg_id,
-                        channel_name=channel_name,
-                        num_days=1,
-                        program_length_hours=4,
-                        epg_source=epg_source,
-                        export_lookback=one_hour_ago,
-                        export_cutoff=twenty_four_hours_later,
-                    )
-                    for program in generated or []:
-                        dummy_programs.append(
-                            dummy_program_to_api_dict(
-                                channel,
-                                program,
-                                dummy_tvg_id=dummy_tvg_id,
-                                program_id_prefix=id_prefix,
-                            )
-                        )
-                except Exception as e:
-                    logger.error(
-                        "Error creating %s programs for channel %s (ID: %s): %s",
-                        id_prefix,
-                        channel.name,
-                        channel.id,
-                        e,
-                    )
-
-        # Combine regular and dummy programs in place to avoid copying the large list
-        serialized_programs.extend(dummy_programs)
-        logger.debug(
-            f"EPGGridAPIView: Returning {len(serialized_programs)} total programs (including {len(dummy_programs)} dummy programs)."
-        )
-
-        # The grid materializes tens of thousands of program dicts plus the
-        # rendered JSON; trim once the response is sent so worker RSS does not
-        # ratchet up per request.
-        from core.utils import spawn_memory_trim
-        response = Response({"data": serialized_programs}, status=status.HTTP_200_OK)
-        response._resource_closers.append(spawn_memory_trim)
-        return response
-
-
-# ─────────────────────────────
-# 4) EPG Import View
+# 3) EPG Import View
 # ─────────────────────────────
 class EPGImportAPIView(APIView):
     """Triggers an EPG data refresh"""
@@ -598,7 +433,7 @@ class EPGImportAPIView(APIView):
 
 
 # ─────────────────────────────
-# 5) EPG Data View
+# 4) EPG Data View
 # ─────────────────────────────
 class EPGDataViewSet(viewsets.ReadOnlyModelViewSet):
     """
@@ -616,7 +451,7 @@ class EPGDataViewSet(viewsets.ReadOnlyModelViewSet):
 
 
 # ─────────────────────────────
-# 6) Current Programs API
+# 5) Current Programs API
 # ─────────────────────────────
 class CurrentProgramsAPIView(APIView):
     """

@@ -117,6 +117,29 @@ describe('useChannelsTableStore', () => {
       expect(result.current.totalCount).toBe(0);
       expect(result.current.pageCount).toBe(0);
     });
+
+    it('should default to an empty channels array when results is missing', () => {
+      const { result } = renderHook(() => useChannelsTableStore());
+
+      act(() => {
+        result.current.queryChannels({ count: 0 }, new URLSearchParams({ page_size: '50' }));
+      });
+
+      expect(result.current.channels).toEqual([]);
+      expect(result.current.totalCount).toBe(0);
+      expect(result.current.pageCount).toBe(0);
+    });
+
+    it('should default to an empty channels array when payload is empty', () => {
+      const { result } = renderHook(() => useChannelsTableStore());
+
+      act(() => {
+        result.current.queryChannels({}, new URLSearchParams({ page_size: '50' }));
+      });
+
+      expect(result.current.channels).toEqual([]);
+      expect(result.current.totalCount).toBe(0);
+    });
   });
 
   describe('setAllQueryIds', () => {

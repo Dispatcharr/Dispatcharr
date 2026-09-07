@@ -1034,68 +1034,104 @@ def send_websocket_notification(notification):
 def get_host_and_port(request):
     """
     Returns (host, port) for building absolute URIs.
-    - Prefers X-Forwarded-Host/X-Forwarded-Port (nginx).
+    - Prefers X-Forwarded-Host/X-Forwarded-Port only from a trusted proxy.
     - Falls back to Host header.
     - Returns None for port if using standard ports (80/443) to omit from URLs.
     - In dev, uses 5656 as a guess if port cannot be determined.
     """
-    scheme = request.META.get("HTTP_X_FORWARDED_PROTO", request.scheme)
+    from dispatcharr.utils import request_from_trusted_proxy
+
+    host, port, _scheme = _resolve_host_port_scheme(
+        request, request_from_trusted_proxy(request)
+    )
+    return host, port
+
+
+def _resolve_host_port_scheme(request, trust_forwarded):
+    """Shared (host, port, scheme) resolution for get_host_and_port /
+    build_absolute_uri_with_port, taking a precomputed trust_forwarded so
+    callers needing both host/port and scheme don't redo the trusted-proxy
+    and scheme checks."""
+    scheme = _request_scheme(request, trust_forwarded=trust_forwarded)
     standard_port = "443" if scheme == "https" else "80"
 
-    # 1. Try X-Forwarded-Host (may include port) - set by our nginx
-    xfh = request.META.get("HTTP_X_FORWARDED_HOST")
-    if xfh:
-        if ":" in xfh:
-            host, port = xfh.split(":", 1)
-            if port == standard_port:
-                return host, None
-            return host, port
-        else:
-            host = xfh
+    # 1. Try X-Forwarded-Host (may include port) when the peer is trusted
+    if trust_forwarded:
+        xfh = request.META.get("HTTP_X_FORWARDED_HOST")
+        if xfh:
+            if ":" in xfh:
+                host, port = xfh.split(":", 1)
+                if port == standard_port:
+                    return host, None, scheme
+                return host, port, scheme
+            else:
+                host = xfh
 
-        port = request.META.get("HTTP_X_FORWARDED_PORT")
-        if port:
-            return host, None if port == standard_port else port
-        if request.META.get("HTTP_X_FORWARDED_PROTO"):
-            return host, None
+            port = request.META.get("HTTP_X_FORWARDED_PORT")
+            if port:
+                return host, (None if port == standard_port else port), scheme
+            if request.META.get("HTTP_X_FORWARDED_PROTO"):
+                return host, None, scheme
 
     # 2. Try Host header
     raw_host = request.get_host()
     if ":" in raw_host:
         host, port = raw_host.split(":", 1)
-        return host, None if port == standard_port else port
+        return host, (None if port == standard_port else port), scheme
     else:
         host = raw_host
 
     # 3. Check for X-Forwarded-Port (when Host header has no port but we're behind a reverse proxy)
-    port = request.META.get("HTTP_X_FORWARDED_PORT")
-    if port:
-        return host, None if port == standard_port else port
+    if trust_forwarded:
+        port = request.META.get("HTTP_X_FORWARDED_PORT")
+        if port:
+            return host, (None if port == standard_port else port), scheme
 
-    # 4. Behind a reverse proxy with no port info - assume standard port
-    if request.META.get("HTTP_X_FORWARDED_PROTO") or request.META.get("HTTP_X_FORWARDED_FOR"):
-        return host, None
+        # 4. Behind a reverse proxy with no port info - assume standard port
+        if request.META.get("HTTP_X_FORWARDED_PROTO") or request.META.get("HTTP_X_FORWARDED_FOR"):
+            return host, None, scheme
 
     # 5. Try SERVER_PORT from META (only if NOT behind reverse proxy)
     port = request.META.get("SERVER_PORT")
     if port:
-        return host, None if port == standard_port else port
+        return host, (None if port == standard_port else port), scheme
 
     # 6. Dev fallback
     if os.environ.get("DISPATCHARR_ENV") == "dev" or host in ("localhost", "127.0.0.1"):
-        return host, "5656"
+        return host, "5656", scheme
 
     # 7. Final fallback: assume standard port for scheme
-    return host, None
+    return host, None, scheme
+
+
+def _request_scheme(request, *, trust_forwarded: bool) -> str:
+    """Return the URL scheme, honoring forwarded proto only for trusted peers.
+
+    Django's ``request.scheme`` also consults ``SECURE_PROXY_SSL_HEADER``, so
+    for untrusted peers we fall back to the raw WSGI scheme and ignore
+    ``X-Forwarded-Proto``.
+    """
+    if trust_forwarded:
+        forwarded = (request.META.get("HTTP_X_FORWARDED_PROTO") or "").split(",")[0].strip()
+        if forwarded:
+            return forwarded
+        return request.scheme
+    get_scheme = getattr(request, "_get_scheme", None)
+    if callable(get_scheme):
+        return get_scheme()
+    return "http"
 
 
 def build_absolute_uri_with_port(request, path):
     """
     Build an absolute URI with optional port.
     Port is omitted from URL if None (standard port for scheme).
+    Forwarded scheme is used only when the peer is a trusted proxy.
     """
-    host, port = get_host_and_port(request)
-    scheme = request.META.get("HTTP_X_FORWARDED_PROTO", request.scheme)
+    from dispatcharr.utils import request_from_trusted_proxy
+
+    trust_forwarded = request_from_trusted_proxy(request)
+    host, port, scheme = _resolve_host_port_scheme(request, trust_forwarded)
     if port:
         return f"{scheme}://{host}:{port}{path}"
     return f"{scheme}://{host}{path}"

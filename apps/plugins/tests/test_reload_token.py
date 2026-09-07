@@ -5,8 +5,10 @@ token. Re-touching turns every consumer into a producer and causes a permanent
 force-reload ping-pong under multi-worker uWSGI.
 """
 
+import importlib
 import os
 import shutil
+import sys
 import tempfile
 import time
 from unittest.mock import patch
@@ -122,3 +124,22 @@ class PluginReloadTokenTests(SimpleTestCase):
             worker.discover_plugins(sync_db=False, use_cache=True)
 
         mock_impl.assert_not_called()
+
+    def test_unloading_namespace_subpackage_after_parent_is_safe(self):
+        """Namespace paths can fail after their parent is removed from sys.modules."""
+        worker = self._make_worker()
+        package_name = "_dispatcharr_plugin_test_namespace"
+        subpackage_name = f"{package_name}.pws"
+        os.makedirs(os.path.join(self._tmpdir, "pws"))
+        worker._ensure_namespace_package(package_name, self._tmpdir)
+        importlib.import_module(subpackage_name)
+
+        try:
+            worker._unload_path_modules(self._tmpdir)
+
+            self.assertNotIn(package_name, sys.modules)
+            self.assertNotIn(subpackage_name, sys.modules)
+        finally:
+            for name in list(sys.modules):
+                if name == package_name or name.startswith(f"{package_name}."):
+                    sys.modules.pop(name, None)
