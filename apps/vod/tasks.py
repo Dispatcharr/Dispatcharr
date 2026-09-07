@@ -1605,6 +1605,29 @@ def batch_process_episodes(account, series, episodes_data, scan_start_time=None,
         except Exception as e:
             logger.error(f"Error preparing episode {episode_data.get('title', 'Unknown')}: {str(e)}")
 
+    # Snapshot the stale-relation set and the guard decision *before* this call's own
+    # creates/updates run below. Deciding this after the writes would let this response's
+    # own new relations inflate "existing_count", which shifts the fraction denominator
+    # and makes the guard's behavior depend on how many new episodes happen to be in the
+    # same fetch, rather than on how the fetch compares to what was already on file.
+    if series_relation is not None:
+        stale_qs = M3UEpisodeRelation.objects.filter(
+            Q(series_relation=series_relation) |
+            Q(series_relation__isnull=True, m3u_account=account, episode__series=series)
+        )
+    else:
+        stale_qs = M3UEpisodeRelation.objects.filter(
+            m3u_account=account,
+            episode__series=series
+        )
+    existing_count = stale_qs.count()
+    to_delete_count = stale_qs.exclude(stream_id__in=episode_ids).count()
+    skip_stale_delete = (
+        to_delete_count > 0
+        and existing_count >= EPISODE_STALE_DELETE_MIN_EXISTING
+        and to_delete_count / existing_count > EPISODE_STALE_DELETE_MAX_FRACTION
+    )
+
     # Execute batch operations
     with transaction.atomic():
         # Create new episodes - use ignore_conflicts in case of race conditions
@@ -1667,17 +1690,7 @@ def batch_process_episodes(account, series, episodes_data, scan_start_time=None,
         # for the same account+series (pre-migration rows whose stream is now gone — the
         # update path only backfills the FK for streams still present in the response).
         # Falls back to account+series scope when series_relation is None (shouldn't occur).
-        if series_relation is not None:
-            stale_qs = M3UEpisodeRelation.objects.filter(
-                Q(series_relation=series_relation) |
-                Q(series_relation__isnull=True, m3u_account=account, episode__series=series)
-            )
-        else:
-            stale_qs = M3UEpisodeRelation.objects.filter(
-                m3u_account=account,
-                episode__series=series
-            )
-
+        #
         # Guard against a short/incomplete provider response wiping out most of a
         # series' episodes in one pass. A real, intentional shrink (a season pulled
         # from the catalog) is still a handful of relations at most -- a response
@@ -1691,14 +1704,12 @@ def batch_process_episodes(account, series, episodes_data, scan_start_time=None,
         # Below EPISODE_STALE_DELETE_MIN_EXISTING, a series is small enough that
         # even a real full removal is still a small absolute count, so the guard
         # is skipped to avoid blocking legitimate small-series cleanup forever.
-        existing_count = stale_qs.count()
-        stale_to_delete = stale_qs.exclude(stream_id__in=episode_ids)
-        to_delete_count = stale_to_delete.count()
-        if (
-            to_delete_count > 0
-            and existing_count >= EPISODE_STALE_DELETE_MIN_EXISTING
-            and to_delete_count / existing_count > EPISODE_STALE_DELETE_MAX_FRACTION
-        ):
+        #
+        # The decision (skip_stale_delete) was made above from the pre-write snapshot,
+        # so a new relation this same call just created for a genuinely new stream_id
+        # never counts toward "existing" and never shifts the fraction. The actual
+        # delete below re-queries fresh so it only ever removes what still qualifies.
+        if skip_stale_delete:
             logger.warning(
                 f"Refusing to remove {to_delete_count}/{existing_count} episode relations for "
                 f"series '{series.name}' from a single response -- looks like a short/incomplete "
@@ -1706,7 +1717,7 @@ def batch_process_episodes(account, series, episodes_data, scan_start_time=None,
                 f"complete refresh will reconcile it normally."
             )
         else:
-            removed_count = stale_to_delete.delete()[0]
+            removed_count = stale_qs.exclude(stream_id__in=episode_ids).delete()[0]
             if removed_count:
                 logger.info(f"Removed {removed_count} episode relations no longer present in provider for series {series.name}")
 
