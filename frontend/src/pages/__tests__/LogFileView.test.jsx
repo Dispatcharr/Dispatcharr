@@ -335,8 +335,11 @@ describe('LogFileViewPage', () => {
     );
     expect(screen.queryByTestId('loader')).not.toBeInTheDocument();
     expect(screen.queryByText('(empty)')).not.toBeInTheDocument();
+    // Both bounds bite here, so the truncation must not be shadowed by the window.
     expect(
-      screen.getByText(/Showing the last [\d,]+ lines/)
+      screen.getByText(
+        /Showing the last 5 MB of the file, then the last [\d,]+ lines/
+      )
     ).toBeInTheDocument();
     expect(screen.queryByText(/record-0\b/)).not.toBeInTheDocument();
   }, 60000);

@@ -517,12 +517,12 @@ const LogFileViewPage = () => {
     [cols.stamp, cols.level, cols.module, messageIndent, minLevel]
   );
 
-  const notice =
-    hiddenLines > 0
-      ? `Showing the last ${MAX_RENDER_LINES.toLocaleString()} lines`
-      : buffer.truncated
-        ? 'Large file — showing the last 5 MB'
-        : null;
+  // Both bounds can bite at once; naming only the inner one hides the truncation.
+  const limits = [];
+  if (buffer.truncated) limits.push('the last 5 MB of the file');
+  if (hiddenLines > 0)
+    limits.push(`the last ${MAX_RENDER_LINES.toLocaleString()} lines`);
+  const notice = limits.length ? `Showing ${limits.join(', then ')}` : null;
 
   // A reset replaces the buffer; a delta is classified alone and appended.
   const applyResponse = useCallback((response) => {
