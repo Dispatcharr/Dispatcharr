@@ -433,7 +433,11 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
     for movie_data in batch:
         try:
             stream_id = str(movie_data.get('stream_id'))
-            name = movie_data.get('name', 'Unknown')
+            # A null or blank name reaches Movie.name (NOT NULL) and, because the
+            # batch is created in one transaction.atomic() block, one such row rolls
+            # back the whole batch. Extend the existing 'Unknown' default (which only
+            # fired for a missing key) to cover null/blank names too. (#1586)
+            name = str(movie_data.get('name') or '').strip() or 'Unknown'
 
             # Get category with proper error handling
             category = None
@@ -806,7 +810,10 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
     for series_data in batch:
         try:
             series_id = str(series_data.get('series_id'))
-            name = series_data.get('name', 'Unknown')
+            # See process_movie_batch: coerce a null/blank name to the existing
+            # 'Unknown' default so one bad row cannot roll back the whole atomic
+            # batch via the NOT NULL constraint on Series.name. (#1586)
+            name = str(series_data.get('name') or '').strip() or 'Unknown'
 
             # Get category with proper error handling
             category = None

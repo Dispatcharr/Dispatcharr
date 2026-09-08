@@ -388,3 +388,84 @@ class VODMovieIsAdultSyncTests(TestCase):
         self._process(is_adult=0, tmdb_id="900012")
         movie.refresh_from_db()
         self.assertFalse(movie.is_adult)
+
+
+class VODBlankNameBatchTests(TestCase):
+    """A single null/blank-name provider row must not discard its whole batch (#1586).
+
+    Movie.name / Series.name are NOT NULL, and the batch is created inside one
+    transaction.atomic() block, so before the fix a single ``"name": null`` row
+    raised IntegrityError and rolled back every other row in the batch.
+    """
+
+    def setUp(self):
+        self.account = M3UAccount.objects.create(
+            name="Blank Name XC",
+            server_url="http://example.com",
+            username="user",
+            password="pass",
+            account_type=M3UAccount.Types.XC,
+            is_active=True,
+            custom_properties={"enable_vod": True},
+        )
+        self.movie_category = VODCategory.objects.create(
+            name="Blank Movies", category_type="movie",
+        )
+        self.series_category = VODCategory.objects.create(
+            name="Blank Series", category_type="series",
+        )
+        self.movie_relations = {
+            self.movie_category.id: M3UVODCategoryRelation.objects.create(
+                category=self.movie_category, m3u_account=self.account, enabled=True,
+            )
+        }
+        self.series_relations = {
+            self.series_category.id: M3UVODCategoryRelation.objects.create(
+                category=self.series_category, m3u_account=self.account, enabled=True,
+            )
+        }
+        self.movie_categories = {
+            "10": self.movie_category, "__uncategorized__": self.movie_category,
+        }
+        self.series_categories = {
+            "20": self.series_category, "__uncategorized__": self.series_category,
+        }
+
+    def test_blank_name_movie_does_not_discard_the_batch(self):
+        process_movie_batch(
+            self.account,
+            [
+                {"stream_id": 3001, "name": None, "category_id": "10"},        # explicit null
+                {"stream_id": 3002, "name": "   ", "category_id": "10"},       # whitespace only
+                {"stream_id": 3003, "category_id": "10"},                      # name key absent
+                {"stream_id": 3005, "name": 12345, "category_id": "10", "tmdb_id": "700999"},  # non-string
+                {"stream_id": 3004, "name": "Good Movie", "category_id": "10", "tmdb_id": "700123"},
+            ],
+            self.movie_categories,
+            self.movie_relations,
+            scan_start_time=timezone.now(),
+        )
+        # The valid movie survives (before the fix the whole batch rolled back).
+        self.assertTrue(Movie.objects.filter(tmdb_id="700123", name="Good Movie").exists())
+        # Null/blank/absent names are coerced to the 'Unknown' default, never NULL.
+        self.assertTrue(Movie.objects.filter(name="Unknown").exists())
+        # A non-string name is stringified, not crashed on .strip().
+        self.assertTrue(Movie.objects.filter(tmdb_id="700999", name="12345").exists())
+        self.assertFalse(Movie.objects.filter(name__in=["", None]).exists())
+
+    def test_blank_name_series_does_not_discard_the_batch(self):
+        process_series_batch(
+            self.account,
+            [
+                {"series_id": 4001, "name": None, "category_id": "20"},        # explicit null
+                {"series_id": 4002, "name": "   ", "category_id": "20"},       # whitespace only
+                {"series_id": 4003, "category_id": "20"},                      # name key absent
+                {"series_id": 4004, "name": "Good Series", "category_id": "20", "tmdb_id": "700456"},
+            ],
+            self.series_categories,
+            self.series_relations,
+            scan_start_time=timezone.now(),
+        )
+        self.assertTrue(Series.objects.filter(tmdb_id="700456", name="Good Series").exists())
+        self.assertTrue(Series.objects.filter(name="Unknown").exists())
+        self.assertFalse(Series.objects.filter(name__in=["", None]).exists())
