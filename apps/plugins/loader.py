@@ -219,6 +219,18 @@ class PluginManager:
         token: int,
     ) -> Dict[str, LoadedPlugin]:
         try:
+            if force_reload:
+                # The old instance owns the service it started. Tear it down
+                # before unloading its module or replacing it in the registry.
+                with self._lock:
+                    previous_registry = dict(self._registry)
+                with self._leadership_lock:
+                    leader_keys = [
+                        key for key, state in self._leadership_state.items() if state == "leader"
+                    ]
+                for key in leader_keys:
+                    self._release_plugin_leadership(key, previous_registry.get(key))
+
             configs: Optional[Dict[str, PluginConfig]] = None
             try:
                 configs = {c.key: c for c in PluginConfig.objects.all()}
@@ -714,6 +726,11 @@ class PluginManager:
             return None, None
 
         _use_plugin_sources(path)
+        # Plugins may initialize durable state while importing, before they
+        # receive an action or leadership context containing this path.
+        data_dir = stable_plugin_data_path(key, path, storage_key)
+        os.makedirs(data_dir, exist_ok=True)
+
         package_name = self._resolve_package_name(key)
         alias_name = self._resolve_alias_name(folder_name, path)
 
@@ -802,7 +819,7 @@ class PluginManager:
             actions=actions,
             path=path,
             folder_name=folder_name,
-            data_dir=stable_plugin_data_path(key, path, storage_key),
+            data_dir=data_dir,
         )
         return lp, package_name
 
@@ -1263,10 +1280,11 @@ class PluginManager:
                 except Exception:
                     logger.exception("Plugin '%s' on_leader_lost() failed", key)
 
-    def _release_plugin_leadership(self, key: str) -> None:
+    def _release_plugin_leadership(self, key: str, lp: Optional[LoadedPlugin] = None) -> None:
         """Synchronous teardown for disable/reload/removal; do not wait for
         TTL expiry. Safe to call for a plugin that was never a leader."""
-        lp = self.get_plugin(key)
+        if lp is None:
+            lp = self.get_plugin(key)
         try:
             self._transition_to_follower(key, lp)
         finally:

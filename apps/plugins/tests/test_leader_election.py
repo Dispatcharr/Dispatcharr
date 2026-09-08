@@ -338,6 +338,39 @@ class LeadershipTickTests(SimpleTestCase):
 
 
 class ReleasePluginLeadershipTests(SimpleTestCase):
+    def test_full_reload_stops_old_leader_before_replacing_it(self):
+        pm = PluginManager()
+        old_lp, old_instance = _plugin_with_leader_hooks("svc")
+        old_lp.path = "/plugins/svc"
+        new_lp, new_instance = _plugin_with_leader_hooks("svc")
+        pm._registry = {"svc": old_lp}
+        pm._leadership_state["svc"] = "leader"
+        pm.release_leadership = MagicMock()
+        pm.try_acquire_leadership = MagicMock(return_value=True)
+
+        with patch("apps.plugins.loader.PluginConfig.objects.all", return_value=[]), patch(
+            "apps.plugins.loader.os.listdir", return_value=["svc"]
+        ), patch("apps.plugins.loader.os.path.isdir", return_value=True), patch.object(
+            pm, "_load_and_merge_plugin_entry", return_value=(new_lp, None, None)
+        ):
+            pm._discover_plugins_impl(
+                sync_db=False,
+                force_reload=True,
+                previous_packages={},
+                previous_aliases={},
+                previous_paths={"svc": old_lp.path},
+                token=0,
+            )
+
+        old_instance.on_leader_lost.assert_called_once()
+        pm.release_leadership.assert_called_once_with("svc")
+        self.assertEqual(pm._leadership_state["svc"], "follower")
+
+        pm._leadership_tick()
+
+        new_instance.on_leader_acquired.assert_called_once()
+        self.assertEqual(pm._leadership_state["svc"], "leader")
+
     def test_release_plugin_leadership_calls_lost_hook_and_redis_release(self):
         pm = PluginManager()
         lp, instance = _plugin_with_leader_hooks("svc")

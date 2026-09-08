@@ -3,7 +3,7 @@ from unittest.mock import patch
 from django.test import SimpleTestCase
 
 from apps.plugins.context import running_as_plugin
-from apps.plugins.sandbox import _plugin_open, stable_plugin_data_path
+from apps.plugins.sandbox import _plugin_open, plugin_builtins, stable_plugin_data_path
 
 
 class PluginSandboxTests(SimpleTestCase):
@@ -85,3 +85,15 @@ class PluginSandboxTests(SimpleTestCase):
                     open_for_plugin("/tmp/output.txt", "w")
         require.assert_called_once_with("filesystem_write")
         open_mock.assert_called_once()
+
+    def test_selected_top_level_imports_remain_guarded(self):
+        values = plugin_builtins("example", "/data/plugins/example")
+        with patch("apps.plugins.sandbox.require_plugin_capability") as require, patch(
+            "subprocess.run"
+        ), patch("requests.get"):
+            with running_as_plugin("example"):
+                values["__import__"]("subprocess").run(["true"])
+                values["__import__"]("requests").get("https://example.com")
+
+        require.assert_any_call("subprocess")
+        require.assert_any_call("outbound_network")

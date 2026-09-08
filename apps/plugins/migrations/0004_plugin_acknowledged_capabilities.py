@@ -1,17 +1,29 @@
+import json
+import os
+
 from django.db import migrations, models
 
 
-def seed_acknowledged_capabilities(apps, schema_editor):
-    """Already-enabled plugins shouldn't hit a re-prompt storm on upgrade.
-    Treat every capability known as of this release as already acknowledged
-    for them. Only genuinely new capabilities added after this point should
-    trigger the confirm dialog again."""
-    from apps.plugins.capabilities import KNOWN_CAPABILITIES
+def effective_capabilities_for_plugin(plugin_key):
+    """Read the installed manifest without booting plugin discovery in a migration."""
+    from apps.plugins.capabilities import compute_effective_capabilities
 
+    plugins_dir = os.environ.get("DISPATCHARR_PLUGINS_DIR", "/data/plugins")
+    manifest_path = os.path.join(plugins_dir, plugin_key, "plugin.json")
+    try:
+        with open(manifest_path, "r", encoding="utf-8") as manifest_file:
+            manifest = json.load(manifest_file)
+    except (OSError, ValueError):
+        return []
+    return compute_effective_capabilities(manifest) if isinstance(manifest, dict) else []
+
+
+def seed_acknowledged_capabilities(apps, schema_editor):
+    """Preserve consent for capabilities an existing plugin actually used."""
     PluginConfig = apps.get_model("plugins", "PluginConfig")
-    PluginConfig.objects.filter(ever_enabled=True).update(
-        acknowledged_capabilities=list(KNOWN_CAPABILITIES.keys())
-    )
+    for plugin in PluginConfig.objects.filter(ever_enabled=True).iterator():
+        plugin.acknowledged_capabilities = effective_capabilities_for_plugin(plugin.key)
+        plugin.save(update_fields=["acknowledged_capabilities"])
 
 
 def revert_acknowledged_capabilities(apps, schema_editor):
