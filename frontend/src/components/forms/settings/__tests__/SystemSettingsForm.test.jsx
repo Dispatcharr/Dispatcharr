@@ -502,7 +502,7 @@ describe('SystemSettingsForm', () => {
   describe('restart confirmation for worker scale changes', () => {
     it('shows restart dialog instead of saving immediately when a celery scale field changed', () => {
       setupMocks();
-      vi.mocked(getChangedSettings).mockReturnValue({
+      vi.mocked(getChangedGroupSettings).mockReturnValue({
         celery_max_workers: 10,
       });
 
@@ -510,12 +510,12 @@ describe('SystemSettingsForm', () => {
       fireEvent.click(screen.getByText('Save'));
 
       expect(screen.getByTestId('restart-confirm-dialog')).toBeInTheDocument();
-      expect(saveChangedSettings).not.toHaveBeenCalled();
+      expect(saveGroupSettings).not.toHaveBeenCalled();
     });
 
     it('saves after confirming the restart dialog', async () => {
       setupMocks();
-      vi.mocked(getChangedSettings).mockReturnValue({
+      vi.mocked(getChangedGroupSettings).mockReturnValue({
         celery_max_workers: 12,
       });
 
@@ -524,7 +524,7 @@ describe('SystemSettingsForm', () => {
       fireEvent.click(screen.getByTestId('restart-confirm-button'));
 
       await waitFor(() => {
-        expect(saveChangedSettings).toHaveBeenCalled();
+        expect(saveGroupSettings).toHaveBeenCalled();
       });
       expect(
         screen.queryByTestId('restart-confirm-dialog')
@@ -533,7 +533,7 @@ describe('SystemSettingsForm', () => {
 
     it('does not save when the restart dialog is cancelled', () => {
       setupMocks();
-      vi.mocked(getChangedSettings).mockReturnValue({
+      vi.mocked(getChangedGroupSettings).mockReturnValue({
         celery_max_workers: 10,
       });
 
@@ -541,7 +541,7 @@ describe('SystemSettingsForm', () => {
       fireEvent.click(screen.getByText('Save'));
       fireEvent.click(screen.getByTestId('restart-cancel-button'));
 
-      expect(saveChangedSettings).not.toHaveBeenCalled();
+      expect(saveGroupSettings).not.toHaveBeenCalled();
       expect(
         screen.queryByTestId('restart-confirm-dialog')
       ).not.toBeInTheDocument();
@@ -549,7 +549,7 @@ describe('SystemSettingsForm', () => {
 
     it('does not show restart dialog when only unrelated fields changed', async () => {
       setupMocks();
-      vi.mocked(getChangedSettings).mockReturnValue({
+      vi.mocked(getChangedGroupSettings).mockReturnValue({
         max_system_events: 200,
       });
 
@@ -557,7 +557,7 @@ describe('SystemSettingsForm', () => {
       fireEvent.click(screen.getByText('Save'));
 
       await waitFor(() => {
-        expect(saveChangedSettings).toHaveBeenCalled();
+        expect(saveGroupSettings).toHaveBeenCalled();
       });
       expect(
         screen.queryByTestId('restart-confirm-dialog')

@@ -38,7 +38,6 @@ const SystemSettingsForm = React.memo(({ active }) => {
   const { isSavingRef, runSave } = useSettingsSaveGuard();
   const [pendingChanges, setPendingChanges] = useState(null);
   const [restartConfirmOpen, setRestartConfirmOpen] = useState(false);
-  const { isSavingRef, runSave } = useSettingsSaveGuard();
 
   const form = useForm({
     mode: 'controlled',
