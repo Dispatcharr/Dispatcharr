@@ -20,7 +20,7 @@ from dispatcharr.log_collector import BASE_NAME, collector_running
 _NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 # Inline viewing serves this many trailing bytes; download streams the whole file.
-MAX_VIEW_BYTES = 5 * 1024 * 1024
+MAX_VIEW_BYTES = 10 * 1024 * 1024
 
 
 def _open_log(path):

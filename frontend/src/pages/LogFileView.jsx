@@ -138,11 +138,11 @@ const RECORD_START =
 const SEARCH_DEBOUNCE_MS = 200;
 
 // Bytes bound the retained text; lines bound the per-entry overhead.
-const MAX_BUFFER_BYTES = 5 * 1024 * 1024;
-const MAX_BUFFER_LINES = 50000;
+const MAX_BUFFER_BYTES = 10 * 1024 * 1024;
+const MAX_BUFFER_LINES = 200000;
 
 // Mirrors MAX_VIEW_BYTES in core/log_files.py.
-const VIEW_CAP_LABEL = '5 MB';
+const VIEW_CAP_LABEL = '10 MB';
 const EMPTY_BUFFER = { entries: [], bytes: 0, truncated: false };
 
 // How close to the live edge still counts as watching it.
