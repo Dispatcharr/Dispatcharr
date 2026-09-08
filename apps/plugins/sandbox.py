@@ -1,4 +1,4 @@
-"""Plugin-local wrappers for selected high-risk Python APIs.
+"""Plugin-local, best-effort wrappers for selected high-risk Python APIs.
 
 Wrappers are installed in a plugin module's builtins rather than globally. They
 are defense in depth only: a plugin shares this interpreter and is not isolated.

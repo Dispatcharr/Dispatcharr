@@ -176,7 +176,7 @@ If `plugin.json` is missing or invalid, the plugin is treated as **legacy**:
 }
 ```
 
-- `manifest_version` (int, optional): controls capability parsing and sandbox enforcement. If omitted, your manifest is treated as legacy version `0`; it remains compatible and capability declarations are ignored. Version `1` is the open-ended transition period: capabilities are parsed, shown to users, and acknowledged, but sandbox measures are not enforced. Version `2` is current and enforces the capability requirements below.
+- `manifest_version` (int, optional): controls capability parsing and best-effort runtime guards. If omitted, your manifest is treated as legacy version `0`; it remains compatible and capability declarations are ignored. Version `1` is the open-ended transition period: capabilities are parsed, shown to users, and acknowledged, but runtime guards are not enabled. Version `2` enables the supported guards for `context` helpers and selected top-level Python APIs. Plugins share Dispatcharr's interpreter, so these guards are defense in depth, not a security boundary or complete process isolation.
 - `capabilities` (list of strings, optional): a self-declared list of what your plugin needs. Currently supported:
   - `background_tasks`: your plugin uses `context["dispatch_task"]` and/or a manifest action with `"async": true` (see "Long-Running Actions" below). Declaring it explicitly isn't required if you already set `async: true` on an action (that implies it), but is required if you *only* call `dispatch_task()` at runtime without any `async` action, since that usage can't be detected from the manifest alone.
   - `persistent_service`: your plugin runs a leader-elected long-lived service (see below).
