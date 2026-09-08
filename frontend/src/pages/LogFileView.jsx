@@ -1,7 +1,6 @@
 import React, {
   useCallback,
   useEffect,
-  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -20,6 +19,13 @@ import {
   Title,
 } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
+import {
+  AutoSizer,
+  CellMeasurer,
+  CellMeasurerCache,
+  List,
+} from 'react-virtualized';
+import 'react-virtualized/styles.css';
 import API from '../api';
 import DownloadLogButton from '../components/DownloadLogButton';
 import { REFRESH_INTERVAL_OPTIONS } from '../constants';
@@ -131,12 +137,12 @@ const RECORD_START =
 
 const SEARCH_DEBOUNCE_MS = 200;
 
-// Bounds the DOM for low-end TV browsers.
-const MAX_RENDER_LINES = 5000;
-
 // Bytes bound the retained text; lines bound the per-entry overhead.
 const MAX_BUFFER_BYTES = 5 * 1024 * 1024;
 const MAX_BUFFER_LINES = 50000;
+
+// Mirrors MAX_VIEW_BYTES in core/log_files.py.
+const VIEW_CAP_LABEL = '5 MB';
 const EMPTY_BUFFER = { entries: [], bytes: 0, truncated: false };
 
 // How close to the live edge still counts as watching it.
@@ -337,12 +343,139 @@ const buildBlocks = (entries) => {
   return blocks;
 };
 
+// One row per block: a record with its continuations, or a run of plain lines.
+const renderBlock = (block, styles) => {
+  if (!block.record) {
+    // Dimming marks these lines as unowned.
+    return <div style={styles.plain}>{block.lines.join('\n')}</div>;
+  }
+  const rowStyle = styles.forLevel(block.record.level);
+  return (
+    <div style={rowStyle.row}>
+      <span style={styles.stamp}>{block.record.stamp}</span>{' '}
+      <span style={rowStyle.level} title={block.record.level}>
+        {levelLabel(block.record.level)}
+      </span>{' '}
+      <span style={styles.module} title={block.record.source}>
+        {block.record.module}
+      </span>
+      {block.record.sep}
+      <span style={rowStyle.message}>{block.record.message}</span>
+      {block.continuations.length > 0 && (
+        <div style={rowStyle.continuations}>
+          {renderContinuations(block.continuations)}
+        </div>
+      )}
+    </div>
+  );
+};
+
+// Set on the list container so every measured row inherits the same metrics.
+const BODY_FONT = {
+  fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+  fontSize: 12,
+  lineHeight: 1.45,
+  // The scroller owns the gutter, so the scrollbar stays at the panel edge.
+  paddingInline: 'var(--mantine-spacing-sm)',
+  // anywhere breaks unbroken tokens like URLs and SQL dumps.
+  whiteSpace: 'pre-wrap',
+  overflowWrap: 'anywhere',
+};
+
 const LogBody = React.memo(
-  ({ name, blocks, styles, loading, empty, loadError, onRetry }) => {
-    if (loading && empty) return <Loader />;
+  ({
+    name,
+    blocks,
+    styles,
+    loading,
+    empty,
+    loadError,
+    onRetry,
+    newestFirst,
+  }) => {
+    const listRef = useRef(null);
+    const blocksRef = useRef(blocks);
+    blocksRef.current = blocks;
+    // Heights key off the block id, so a reversal or a head trim keeps them.
+    const cache = useMemo(
+      () =>
+        new CellMeasurerCache({
+          fixedWidth: true,
+          defaultHeight: 18,
+          keyMapper: (index) => blocksRef.current[index]?.id ?? index,
+        }),
+      []
+    );
+    // Open at the live edge, and keep following until the reader scrolls away.
+    const [following, setFollowing] = useState(true);
+    const followingRef = useRef(true);
+    // The grid opens at the top and reports it, which is not the reader moving.
+    const reachedRef = useRef(false);
+
+    // The columns move the wrap point, so every stored height is stale.
+    const remeasure = useCallback(() => {
+      cache.clearAll();
+      listRef.current?.recomputeRowHeights();
+    }, [cache]);
+    useEffect(remeasure, [remeasure, styles]);
+
+    // A flipped order pins the other end, which has to be reached in turn.
+    useEffect(() => {
+      reachedRef.current = false;
+    }, [newestFirst, name]);
+
+    // Newest sits at whichever end the order puts it.
+    const onScroll = useCallback(
+      ({ clientHeight, scrollHeight, scrollTop }) => {
+        // A list shorter than its viewport cannot say where the reader is.
+        if (scrollHeight <= clientHeight) return;
+        const next = newestFirst
+          ? scrollTop <= FOLLOW_SLACK_PX
+          : scrollHeight - scrollTop - clientHeight <= FOLLOW_SLACK_PX;
+        // Until the pin has landed once, a report is the list catching up.
+        if (!reachedRef.current) {
+          reachedRef.current = next;
+          return;
+        }
+        // A ref first: scrolling fires far more often than the answer changes.
+        if (next === followingRef.current) return;
+        followingRef.current = next;
+        setFollowing(next);
+      },
+      [newestFirst]
+    );
+
+    // Declared rather than scrolled to, so it survives the rows being measured.
+    const pinned =
+      following && blocks.length
+        ? newestFirst
+          ? 0
+          : blocks.length - 1
+        : undefined;
+
+    const rowRenderer = useCallback(
+      ({ index, key, parent, style }) => (
+        <CellMeasurer
+          cache={cache}
+          columnIndex={0}
+          key={key}
+          parent={parent}
+          rowIndex={index}
+        >
+          {({ registerChild }) => (
+            <div ref={registerChild} style={style}>
+              {renderBlock(blocks[index], styles)}
+            </div>
+          )}
+        </CellMeasurer>
+      ),
+      [blocks, cache, styles]
+    );
+
+    if (loading && empty) return <Loader ml="sm" />;
     if (empty && loadError) {
       return (
-        <Group gap="sm">
+        <Group gap="sm" px="sm">
           <Text size="sm" c="red">
             Failed to load {name}
           </Text>
@@ -352,53 +485,29 @@ const LogBody = React.memo(
         </Group>
       );
     }
+    if (empty) return emptyState('(empty)');
+    if (!blocks.length) return emptyState('(no records match the filters)');
+
     return (
-      <div
-        style={{
-          margin: 0,
-          fontFamily:
-            'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
-          fontSize: 12,
-          lineHeight: 1.45,
-          // anywhere breaks unbroken tokens like URLs and SQL dumps.
-          whiteSpace: 'pre-wrap',
-          overflowWrap: 'anywhere',
-        }}
-      >
-        {empty
-          ? emptyState('(empty)')
-          : blocks.length
-            ? blocks.map((block) => {
-                if (!block.record) {
-                  return (
-                    // Dimming marks these lines as unowned.
-                    <div key={block.id} style={styles.plain}>
-                      {block.lines.join('\n')}
-                    </div>
-                  );
-                }
-                const rowStyle = styles.forLevel(block.record.level);
-                return (
-                  <div key={block.id} style={rowStyle.row}>
-                    <span style={styles.stamp}>{block.record.stamp}</span>{' '}
-                    <span style={rowStyle.level} title={block.record.level}>
-                      {levelLabel(block.record.level)}
-                    </span>{' '}
-                    <span style={styles.module} title={block.record.source}>
-                      {block.record.module}
-                    </span>
-                    {block.record.sep}
-                    <span style={rowStyle.message}>{block.record.message}</span>
-                    {block.continuations.length > 0 && (
-                      <div style={rowStyle.continuations}>
-                        {renderContinuations(block.continuations)}
-                      </div>
-                    )}
-                  </div>
-                );
-              })
-            : emptyState('(no records match the filters)')}
-      </div>
+      // A narrower viewport rewraps every line, so the heights go with it.
+      <AutoSizer onResize={remeasure}>
+        {({ height, width }) => (
+          <List
+            deferredMeasurementCache={cache}
+            height={height}
+            onScroll={onScroll}
+            overscanRowCount={12}
+            ref={listRef}
+            rowCount={blocks.length}
+            rowHeight={cache.rowHeight}
+            rowRenderer={rowRenderer}
+            scrollToAlignment={newestFirst ? 'start' : 'end'}
+            scrollToIndex={pinned}
+            style={BODY_FONT}
+            width={width}
+          />
+        )}
+      </AutoSizer>
     );
   }
 );
@@ -458,9 +567,6 @@ const LogFileViewPage = () => {
   const requestRef = useRef(0);
   // classifyLines resumes from here so a split traceback keeps its tail.
   const tracebackRef = useRef(false);
-  const viewportRef = useRef(null);
-  // Open at the live edge, and keep following until the reader scrolls away.
-  const followingRef = useRef(true);
 
   // Widths come from every record; the filtered set would shift on each keystroke.
   const cols = useMemo(() => {
@@ -481,31 +587,13 @@ const LogFileViewPage = () => {
     };
   }, [entries]);
 
-  const { blocks, hiddenLines } = useMemo(() => {
-    let kept = filterEntries(entries, minLevel, category, matcher);
-    const hidden = Math.max(0, kept.length - MAX_RENDER_LINES);
-    if (hidden) kept = kept.slice(hidden);
+  const blocks = useMemo(() => {
+    const kept = filterEntries(entries, minLevel, category, matcher);
     // Reversed as blocks, not entries, so continuations stay with their record.
     const built = buildBlocks(kept);
     if (newestFirst) built.reverse();
-    return { blocks: built, hiddenLines: hidden };
+    return built;
   }, [entries, newestFirst, minLevel, category, matcher]);
-
-  // Newest sits at whichever end the order puts it.
-  const onViewportScroll = useCallback(() => {
-    const el = viewportRef.current;
-    if (!el) return;
-    followingRef.current = newestFirst
-      ? el.scrollTop <= FOLLOW_SLACK_PX
-      : el.scrollHeight - el.scrollTop - el.clientHeight <= FOLLOW_SLACK_PX;
-  }, [newestFirst]);
-
-  // Re-pin to the live edge for a reader who was watching it.
-  useLayoutEffect(() => {
-    const el = viewportRef.current;
-    if (!el || !followingRef.current) return;
-    el.scrollTop = newestFirst ? 0 : el.scrollHeight;
-  }, [blocks, newestFirst]);
 
   // Wrapped lines and continuations hang under the message column.
   const messageIndent = cols.stamp + cols.level + cols.module + 3;
@@ -517,12 +605,9 @@ const LogFileViewPage = () => {
     [cols.stamp, cols.level, cols.module, messageIndent, minLevel]
   );
 
-  // Both bounds can bite at once; naming only the inner one hides the truncation.
-  const limits = [];
-  if (buffer.truncated) limits.push('the last 5 MB of the file');
-  if (hiddenLines > 0)
-    limits.push(`the last ${MAX_RENDER_LINES.toLocaleString()} lines`);
-  const notice = limits.length ? `Showing ${limits.join(', then ')}` : null;
+  const notice = buffer.truncated
+    ? `Showing the last ${VIEW_CAP_LABEL} of the file`
+    : null;
 
   // A reset replaces the buffer; a delta is classified alone and appended.
   const applyResponse = useCallback((response) => {
@@ -712,11 +797,9 @@ const LogFileViewPage = () => {
         </Box>
 
         <Box
-          p="sm"
-          ref={viewportRef}
-          onScroll={onViewportScroll}
+          py="sm"
           // Without minHeight:0 a flex item will not shrink below its content.
-          style={{ flex: '1 1 auto', overflow: 'auto', minHeight: '0px' }}
+          style={{ flex: '1 1 auto', overflow: 'hidden', minHeight: '0px' }}
         >
           <LogBody
             name={name}
@@ -726,6 +809,7 @@ const LogFileViewPage = () => {
             empty={!entries.length}
             loadError={loadError}
             onRetry={load}
+            newestFirst={newestFirst}
           />
         </Box>
       </Paper>

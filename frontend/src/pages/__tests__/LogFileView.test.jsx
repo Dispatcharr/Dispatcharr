@@ -21,14 +21,58 @@ vi.mock('@mantine/notifications', () => ({
   notifications: { show: vi.fn() },
 }));
 
+// jsdom lays nothing out: fixed geometry, and the window a real list keeps.
+const list = vi.hoisted(() => ({
+  scrollToRow: vi.fn(),
+  recompute: vi.fn(),
+  cache: null,
+  props: null,
+  ROWS: 46,
+}));
+
+vi.mock('react-virtualized/styles.css', () => ({}));
+
+vi.mock('react-virtualized', async () => {
+  const React = await vi.importActual('react');
+  return {
+    AutoSizer: ({ children, onResize }) => {
+      list.onResize = onResize;
+      return children({ width: 1000, height: 600 });
+    },
+    CellMeasurer: ({ children }) => children({ registerChild: () => {} }),
+    CellMeasurerCache: class {
+      constructor(options) {
+        list.cache = options;
+        this.rowHeight = () => 18;
+      }
+      clearAll() {}
+    },
+    List: React.forwardRef((props, ref) => {
+      list.props = props;
+      React.useImperativeHandle(ref, () => ({
+        recomputeRowHeights: list.recompute,
+      }));
+      const anchor = props.scrollToIndex;
+      const end = anchor ? anchor + 1 : Math.min(list.ROWS, props.rowCount);
+      const start = Math.max(0, end - list.ROWS);
+      const rows = [];
+      for (let i = start; i < Math.min(end, props.rowCount); i += 1) {
+        rows.push(
+          props.rowRenderer({ index: i, key: i, parent: null, style: {} })
+        );
+      }
+      return (
+        <div data-testid="log-list" style={props.style}>
+          {rows}
+        </div>
+      );
+    }),
+  };
+});
+
 vi.mock('@mantine/core', () => ({
   Anchor: ({ children, to }) => <a href={to || '#'}>{children}</a>,
-  // ref/onScroll pass through: the viewer pins itself to the live edge.
-  Box: ({ children, style, onScroll, ref }) => (
-    <div style={style} ref={ref} onScroll={onScroll}>
-      {children}
-    </div>
-  ),
+  Box: ({ children, style }) => <div style={style}>{children}</div>,
   Button: ({ children, onClick }) => (
     <button onClick={onClick}>{children}</button>
   ),
@@ -335,11 +379,9 @@ describe('LogFileViewPage', () => {
     );
     expect(screen.queryByTestId('loader')).not.toBeInTheDocument();
     expect(screen.queryByText('(empty)')).not.toBeInTheDocument();
-    // Both bounds bite here, so the truncation must not be shadowed by the window.
+    // The fetch cap is the only bound left that can hide records.
     expect(
-      screen.getByText(
-        /Showing the last 5 MB of the file, then the last [\d,]+ lines/
-      )
+      screen.getByText(/Showing the last 5 MB of the file/)
     ).toBeInTheDocument();
     expect(screen.queryByText(/record-0\b/)).not.toBeInTheDocument();
   }, 60000);
@@ -607,8 +649,7 @@ describe('LogFileViewPage', () => {
     });
     renderPage();
     const message = await screen.findByText(/STATEMENT/);
-    const pane = message.closest('div').parentElement;
-    expect(pane).toHaveStyle({
+    expect(screen.getByTestId('log-list')).toHaveStyle({
       whiteSpace: 'pre-wrap',
       overflowWrap: 'anywhere',
     });
@@ -630,14 +671,14 @@ describe('LogFileViewPage', () => {
     // control group -> header row -> the panel header itself.
     const header = screen.getByLabelText('Level').closest('div')
       .parentElement.parentElement;
-    let scroller = screen.getByText(/Scanning disk/).parentElement;
-    while (scroller && getComputedStyle(scroller).overflow !== 'auto') {
-      scroller = scroller.parentElement;
-    }
-    expect(scroller).not.toBeNull();
-    expect(scroller.contains(header)).toBe(false);
-    expect(header.parentElement).toBe(scroller.parentElement);
-    expect(scroller).toHaveStyle({ flex: '1 1 auto', minHeight: '0px' });
+    const pane = screen.getByTestId('log-list').parentElement;
+    expect(pane.contains(header)).toBe(false);
+    expect(header.parentElement).toBe(pane.parentElement);
+    expect(pane).toHaveStyle({
+      flex: '1 1 auto',
+      minHeight: '0px',
+      overflow: 'hidden',
+    });
   });
 
   it('holds the message column still while the filters change', async () => {
@@ -1230,43 +1271,9 @@ describe('LogFileViewPage', () => {
     expect(screen.getAllByText(/second line/)).toHaveLength(1);
   });
 
-  // jsdom performs no layout, so the scroll box reports zero for every metric.
-  // Stub the geometry and let scrollTop behave like a real settable property.
-  const stubViewport = (el, { scrollHeight, clientHeight }) => {
-    let top = 0;
-    Object.defineProperty(el, 'scrollHeight', {
-      configurable: true,
-      get: () => scrollHeight,
-    });
-    Object.defineProperty(el, 'clientHeight', {
-      configurable: true,
-      get: () => clientHeight,
-    });
-    Object.defineProperty(el, 'scrollTop', {
-      configurable: true,
-      get: () => top,
-      set: (v) => {
-        top = v;
-      },
-    });
-    return el;
-  };
-
-  const findViewport = () => {
-    let el = screen.getByText(/Scanning disk/).parentElement;
-    while (el && getComputedStyle(el).overflow !== 'auto') {
-      el = el.parentElement;
-    }
-    return el;
-  };
-
   it('opens at the live edge instead of the oldest retained line', async () => {
     renderPage();
     await screen.findByText(/Scanning disk/);
-    const viewport = stubViewport(findViewport(), {
-      scrollHeight: 5000,
-      clientHeight: 500,
-    });
 
     API.getLogFile.mockResolvedValue({
       content:
@@ -1277,19 +1284,22 @@ describe('LogFileViewPage', () => {
       fireEvent.click(screen.getByText('Refresh'));
     });
 
-    expect(viewport.scrollTop).toBe(5000);
+    await screen.findByText(/later line/);
+    expect(list.props.scrollToIndex).toBe(list.props.rowCount - 1);
+    expect(list.props.scrollToAlignment).toBe('end');
   });
 
   it('keeps following the tail across a refresh', async () => {
     renderPage();
     await screen.findByText(/Scanning disk/);
-    const viewport = stubViewport(findViewport(), {
-      scrollHeight: 5000,
-      clientHeight: 500,
-    });
     // The reader is sitting at the bottom, watching.
-    viewport.scrollTop = 4500;
-    fireEvent.scroll(viewport);
+    act(() => {
+      list.props.onScroll({
+        clientHeight: 500,
+        scrollHeight: 5000,
+        scrollTop: 4500,
+      });
+    });
 
     API.getLogFile.mockResolvedValue({
       content:
@@ -1301,19 +1311,28 @@ describe('LogFileViewPage', () => {
     });
 
     await screen.findByText(/fresh line/);
-    expect(viewport.scrollTop).toBe(5000);
+    expect(list.props.scrollToIndex).toBe(list.props.rowCount - 1);
   });
 
   it('leaves a reader who scrolled back where they were', async () => {
     renderPage();
     await screen.findByText(/Scanning disk/);
-    const viewport = stubViewport(findViewport(), {
-      scrollHeight: 5000,
-      clientHeight: 500,
+    // Reaching the edge first, because that is where the viewer opens.
+    act(() => {
+      list.props.onScroll({
+        clientHeight: 500,
+        scrollHeight: 5000,
+        scrollTop: 4500,
+      });
     });
     // Scrolled up to read history: a refresh must not yank them to the bottom.
-    viewport.scrollTop = 1200;
-    fireEvent.scroll(viewport);
+    act(() => {
+      list.props.onScroll({
+        clientHeight: 500,
+        scrollHeight: 5000,
+        scrollTop: 1200,
+      });
+    });
 
     API.getLogFile.mockResolvedValue({
       content:
@@ -1324,7 +1343,58 @@ describe('LogFileViewPage', () => {
       fireEvent.click(screen.getByText('Refresh'));
     });
 
-    await screen.findByText(/fresh line/);
-    expect(viewport.scrollTop).toBe(1200);
+    await waitFor(() => expect(list.props.rowCount).toBe(2));
+    expect(list.props.scrollToIndex).toBeUndefined();
+  });
+
+  it('renders a window of rows, not the whole buffer', async () => {
+    const lines = [];
+    for (let i = 0; i < 400; i += 1) {
+      lines.push(`Info|core.tasks|windowed record-${i}`);
+    }
+    API.getLogFile.mockResolvedValue({
+      content: lines.join('\n') + '\n',
+      truncated: false,
+    });
+    renderPage();
+
+    await screen.findByText(/windowed record-399/);
+    expect(list.props.rowCount).toBe(400);
+    expect(screen.queryByText(/windowed record-0\b/)).not.toBeInTheDocument();
+    expect(screen.getAllByText(/windowed record-/).length).toBeLessThan(100);
+  });
+
+  it('ignores the opening scroll report so the tail still pins', async () => {
+    renderPage();
+    await screen.findByText(/Scanning disk/);
+    // The grid says "top of the list" before it has applied the pin.
+    act(() => {
+      list.props.onScroll({
+        clientHeight: 500,
+        scrollHeight: 5000,
+        scrollTop: 0,
+      });
+    });
+    expect(list.props.scrollToIndex).toBe(list.props.rowCount - 1);
+  });
+
+  it('drops measured heights when the viewport rewraps the lines', async () => {
+    renderPage();
+    await screen.findByText(/Scanning disk/);
+    list.recompute.mockClear();
+    act(() => {
+      list.onResize({ width: 400, height: 600 });
+    });
+    expect(list.recompute).toHaveBeenCalled();
+  });
+
+  it('measures by block id rather than by position', async () => {
+    renderPage();
+    await screen.findByText(/Scanning disk/);
+    expect(list.cache.fixedWidth).toBe(true);
+    // Ids climb from a module counter, so a first block never keys as its index.
+    expect(list.cache.keyMapper(0)).toBeGreaterThan(0);
+    // Past the end there is no block to key on and the index has to do.
+    expect(list.cache.keyMapper(9999)).toBe(9999);
   });
 });
