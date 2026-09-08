@@ -27,6 +27,7 @@ jobs:
           event-type: pull_request
           required-markers: "## How was it tested?, ## Checklist, - [x] I agree to the [Contributor License Agreement](../blob/dev/CONTRIBUTING.md#contributor-license-agreement)"
           enforcement: comment-only
+          compliance-marker: repo-bot:pr-compliance
           bypass-for-members: true
           close-comment: |
             ## PR requirements not met
