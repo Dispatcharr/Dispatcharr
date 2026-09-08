@@ -1570,15 +1570,47 @@ def _dvr_ffmpeg_retry_backoff_seconds(retry_index):
     return min(0.25 * retry_index, 3.0)
 
 
-def _dvr_build_ffmpeg_cmd(stream_url, recording_id, hls_m3u8, hls_seg_pattern, hls_start_number):
+def _dvr_ffmpeg_user_agent(channel, recording_id):
+    """UA for DVR ffmpeg: DVR identity for proxy, M3U/default UA for Redirect."""
+    from core.utils import dispatcharr_dvr_user_agent
+
+    try:
+        if channel.get_stream_profile().is_redirect():
+            for stream in channel.streams.select_related(
+                "m3u_account__user_agent"
+            ).order_by("channelstream__order"):
+                account = stream.m3u_account
+                if account is None or not account.is_active:
+                    continue
+                return account.get_user_agent_string()
+            return CoreSettings.get_default_user_agent()
+    except Exception as exc:
+        logger.warning(
+            f"DVR recording {recording_id}: failed to resolve Redirect "
+            f"provider User-Agent, falling back to DVR agent: {exc}"
+        )
+    return dispatcharr_dvr_user_agent(recording_id)
+
+
+def _dvr_build_ffmpeg_cmd(
+    stream_url,
+    recording_id,
+    hls_m3u8,
+    hls_seg_pattern,
+    hls_start_number,
+    user_agent=None,
+):
     """Build the FFmpeg command for DVR HLS segment recording."""
     from core.utils import dispatcharr_dvr_user_agent
+
+    if not user_agent:
+        user_agent = dispatcharr_dvr_user_agent(recording_id)
     return [
         "ffmpeg", "-y",
         "-reconnect", "1",
         "-reconnect_streamed", "1",
         "-reconnect_delay_max", "5",
-        "-user_agent", dispatcharr_dvr_user_agent(recording_id),
+        "-user_agent", user_agent,
         # Regenerate monotonic PTS to handle erratic/discontinuous timestamps
         # from IPTV sources.
         "-fflags", "+genpts",
@@ -2278,8 +2310,14 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
                     break
 
             hls_start_number = _dvr_hls_start_number(hls_dir, hls_m3u8)
+            ffmpeg_user_agent = _dvr_ffmpeg_user_agent(channel, recording_id)
             ffmpeg_cmd = _dvr_build_ffmpeg_cmd(
-                stream_url, recording_id, hls_m3u8, hls_seg_pattern, hls_start_number,
+                stream_url,
+                recording_id,
+                hls_m3u8,
+                hls_seg_pattern,
+                hls_start_number,
+                user_agent=ffmpeg_user_agent,
             )
 
             logger.info(
