@@ -388,3 +388,130 @@ class VODMovieIsAdultSyncTests(TestCase):
         self._process(is_adult=0, tmdb_id="900012")
         movie.refresh_from_db()
         self.assertFalse(movie.is_adult)
+
+
+class VODDuplicateAcrossCategoriesBatchTests(TestCase):
+    """The same movie/series offered under multiple enabled categories in one
+    batch must get a relation for every category, not just the first one
+    seen (#1511).
+
+    process_movie_batch/process_series_batch dedupe by movie_key/series_key
+    (TMDB/IMDB/name+year) to avoid recomputing the same canonical
+    Movie/Series twice, but before the fix that dedup also skipped building
+    the M3UMovieRelation/M3USeriesRelation for every subsequent occurrence,
+    silently dropping the item from any category/stream that wasn't first
+    in the batch.
+    """
+
+    def setUp(self):
+        self.account = M3UAccount.objects.create(
+            name="Multi-Category XC",
+            server_url="http://example.com",
+            username="user",
+            password="pass",
+            account_type=M3UAccount.Types.XC,
+            is_active=True,
+            custom_properties={"enable_vod": True},
+        )
+        self.movie_category_a = VODCategory.objects.create(
+            name="Movies A", category_type="movie",
+        )
+        self.movie_category_b = VODCategory.objects.create(
+            name="Movies B", category_type="movie",
+        )
+        self.series_category_a = VODCategory.objects.create(
+            name="Series A", category_type="series",
+        )
+        self.series_category_b = VODCategory.objects.create(
+            name="Series B", category_type="series",
+        )
+        self.movie_relations = {
+            self.movie_category_a.id: M3UVODCategoryRelation.objects.create(
+                category=self.movie_category_a, m3u_account=self.account, enabled=True,
+            ),
+            self.movie_category_b.id: M3UVODCategoryRelation.objects.create(
+                category=self.movie_category_b, m3u_account=self.account, enabled=True,
+            ),
+        }
+        self.series_relations = {
+            self.series_category_a.id: M3UVODCategoryRelation.objects.create(
+                category=self.series_category_a, m3u_account=self.account, enabled=True,
+            ),
+            self.series_category_b.id: M3UVODCategoryRelation.objects.create(
+                category=self.series_category_b, m3u_account=self.account, enabled=True,
+            ),
+        }
+        self.movie_categories = {
+            "10": self.movie_category_a,
+            "11": self.movie_category_b,
+            "__uncategorized__": self.movie_category_a,
+        }
+        self.series_categories = {
+            "20": self.series_category_a,
+            "21": self.series_category_b,
+            "__uncategorized__": self.series_category_a,
+        }
+
+    def test_movie_in_two_categories_creates_a_relation_for_each(self):
+        process_movie_batch(
+            self.account,
+            [
+                {"stream_id": 5001, "name": "Shared Movie", "category_id": "10", "tmdb_id": "800001"},
+                {"stream_id": 5002, "name": "Shared Movie", "category_id": "11", "tmdb_id": "800001"},
+            ],
+            self.movie_categories,
+            self.movie_relations,
+            scan_start_time=timezone.now(),
+        )
+
+        # One canonical Movie, matched by tmdb_id across both category rows.
+        self.assertEqual(Movie.objects.filter(tmdb_id="800001").count(), 1)
+        movie = Movie.objects.get(tmdb_id="800001")
+
+        # Before the fix, only the first-seen stream_id/category got a relation
+        # and the second was silently dropped.
+        relations = M3UMovieRelation.objects.filter(m3u_account=self.account, movie=movie)
+        self.assertEqual(relations.count(), 2)
+        by_stream_id = {rel.stream_id: rel for rel in relations}
+        self.assertEqual(by_stream_id["5001"].category_id, self.movie_category_a.id)
+        self.assertEqual(by_stream_id["5002"].category_id, self.movie_category_b.id)
+
+    def test_duplicate_stream_id_for_same_movie_does_not_create_two_relations(self):
+        """A literal repeat of the same stream_id (not a different category) is
+        still deduped to a single relation."""
+        process_movie_batch(
+            self.account,
+            [
+                {"stream_id": 5003, "name": "Repeated Movie", "category_id": "10", "tmdb_id": "800002"},
+                {"stream_id": 5003, "name": "Repeated Movie", "category_id": "10", "tmdb_id": "800002"},
+            ],
+            self.movie_categories,
+            self.movie_relations,
+            scan_start_time=timezone.now(),
+        )
+
+        self.assertEqual(
+            M3UMovieRelation.objects.filter(m3u_account=self.account, stream_id="5003").count(),
+            1,
+        )
+
+    def test_series_in_two_categories_creates_a_relation_for_each(self):
+        process_series_batch(
+            self.account,
+            [
+                {"series_id": 6001, "name": "Shared Series", "category_id": "20", "tmdb_id": "800101"},
+                {"series_id": 6002, "name": "Shared Series", "category_id": "21", "tmdb_id": "800101"},
+            ],
+            self.series_categories,
+            self.series_relations,
+            scan_start_time=timezone.now(),
+        )
+
+        self.assertEqual(Series.objects.filter(tmdb_id="800101").count(), 1)
+        series = Series.objects.get(tmdb_id="800101")
+
+        relations = M3USeriesRelation.objects.filter(m3u_account=self.account, series=series)
+        self.assertEqual(relations.count(), 2)
+        by_series_id = {rel.external_series_id: rel for rel in relations}
+        self.assertEqual(by_series_id["6001"].category_id, self.series_category_a.id)
+        self.assertEqual(by_series_id["6002"].category_id, self.series_category_b.id)
