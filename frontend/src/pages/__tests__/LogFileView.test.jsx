@@ -146,7 +146,10 @@ describe('LogFileViewPage', () => {
     API.getLogFile.mockResolvedValue({ content: 'tail', truncated: true });
     renderPage();
     await waitFor(() => {
-      expect(screen.getByText(/showing the last 10 MB/i)).toBeInTheDocument();
+      // The size itself is asserted where the payload is big enough to show one.
+      expect(
+        screen.getByText(/Showing the last [\d.]+ (Bytes|KB|MB) of the log/)
+      ).toBeInTheDocument();
     });
   });
 
@@ -381,7 +384,7 @@ describe('LogFileViewPage', () => {
     expect(screen.queryByText('(empty)')).not.toBeInTheDocument();
     // The fetch cap is the only bound left that can hide records.
     expect(
-      screen.getByText(/Showing the last 10 MB of the file/)
+      screen.getByText(/Showing the last [\d.]+ MB of the log/)
     ).toBeInTheDocument();
     expect(screen.queryByText(/record-0\b/)).not.toBeInTheDocument();
   }, 60000);

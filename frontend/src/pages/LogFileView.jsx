@@ -31,6 +31,7 @@ import DownloadLogButton from '../components/DownloadLogButton';
 import { REFRESH_INTERVAL_OPTIONS } from '../constants';
 import useBrowserStorage from '../hooks/useBrowserStorage';
 import { useDebounce } from '../utils';
+import { formatBytes } from '../utils/networkUtils.js';
 
 const COLORS = {
   error: '#ff6b6b',
@@ -137,12 +138,9 @@ const RECORD_START =
 
 const SEARCH_DEBOUNCE_MS = 200;
 
-// Bytes bound the retained text; lines bound the per-entry overhead.
+// Bytes hold one full response from the API; lines bound the entry overhead.
 const MAX_BUFFER_BYTES = 10 * 1024 * 1024;
 const MAX_BUFFER_LINES = 200000;
-
-// Mirrors MAX_VIEW_BYTES in core/log_files.py.
-const VIEW_CAP_LABEL = '10 MB';
 const EMPTY_BUFFER = { entries: [], bytes: 0, truncated: false };
 
 // How close to the live edge still counts as watching it.
@@ -605,8 +603,9 @@ const LogFileViewPage = () => {
     [cols.stamp, cols.level, cols.module, messageIndent, minLevel]
   );
 
+  // What is held, not what either cap says: both ends can do the trimming.
   const notice = buffer.truncated
-    ? `Showing the last ${VIEW_CAP_LABEL} of the file`
+    ? `Showing the last ${formatBytes(buffer.bytes)} of the log`
     : null;
 
   // A reset replaces the buffer; a delta is classified alone and appended.
