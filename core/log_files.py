@@ -143,13 +143,12 @@ def get_log_file(request, name):
         f.seek(start)
         # Bounded by the size this handle reported, not by concurrent appends.
         data = f.read(stat.st_size - start)
-
-    if reset and start:
-        # Start at a line boundary so the client never sees a torn line.
-        newline = data.find(b"\n")
-        if newline >= 0:
-            start += newline + 1
-            data = data[newline + 1 :]
+        # The cap lands mid-record unless it happens to fall on a boundary.
+        if truncated and not _at_line_start(f, start):
+            newline = data.find(b"\n")
+            if newline >= 0:
+                start += newline + 1
+                data = data[newline + 1 :]
     # Mid-write, the tail is a fragment; it arrives whole on the next poll.
     end = data.rfind(b"\n")
     data = data[: end + 1] if end >= 0 else b""

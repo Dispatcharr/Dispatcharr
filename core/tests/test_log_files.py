@@ -91,6 +91,26 @@ class LogFilesEndpointTests(TestCase):
         self.assertTrue(payload["content"].startswith("x"))
         self.assertEqual(len(payload["content"]) % 100, 0)
 
+    def test_truncation_on_a_record_boundary_keeps_that_record(self):
+        """The cap can land on a boundary; skipping anyway drops a whole line."""
+        big = os.path.join(self.log_dir, "dispatcharr.log.big")
+        with open(big, "wb") as f:
+            for i in range(10):
+                f.write(b"%d" % i + b"x" * 8 + b"\n")
+
+        # 50 is exactly where line 5 begins.
+        with mock.patch.object(log_files, "MAX_VIEW_BYTES", 50):
+            payload = self.client.get("/api/core/logs/dispatcharr.log.big/").json()
+        self.assertTrue(payload["truncated"])
+        self.assertEqual(len(payload["content"]), 50)
+        self.assertTrue(payload["content"].startswith("5xxxxxxxx\n"))
+
+        # 45 lands mid-line, and there the partial record has to go.
+        with mock.patch.object(log_files, "MAX_VIEW_BYTES", 45):
+            payload = self.client.get("/api/core/logs/dispatcharr.log.big/").json()
+        self.assertTrue(payload["content"].startswith("6xxxxxxxx\n"))
+        self.assertEqual(len(payload["content"]), 40)
+
     def test_view_sizes_the_open_handle_not_the_path(self):
         """A rotation between sizing and reading must not empty the view."""
         live = os.path.realpath(os.path.join(self.log_dir, "dispatcharr.log"))
