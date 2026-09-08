@@ -43,6 +43,7 @@ from .image_proxy import (
     vod_image_url_parts,
     vodlogo_cache_url,
 )
+from core.image_proxy import RawImageContentNegotiationMixin
 from drf_spectacular.utils import extend_schema, OpenApiParameter, OpenApiResponse
 from drf_spectacular.types import OpenApiTypes
 from .tasks import refresh_series_episodes, refresh_movie_advanced_data
@@ -1108,7 +1109,7 @@ class VODLogoPagination(PageNumberPagination):
     max_page_size = 1000
 
 
-class VODLogoViewSet(viewsets.ModelViewSet):
+class VODLogoViewSet(RawImageContentNegotiationMixin, viewsets.ModelViewSet):
     """ViewSet for VOD Logo management"""
     queryset = VODLogo.objects.all()
     serializer_class = VODLogoSerializer
@@ -1125,6 +1126,7 @@ class VODLogoViewSet(viewsets.ModelViewSet):
             if self.action == 'cache':
                 return [AllowAny()]
             return [Authenticated()]
+
 
     def get_queryset(self):
         """Optimize queryset with prefetch and add filtering"""

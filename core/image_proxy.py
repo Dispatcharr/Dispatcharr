@@ -11,12 +11,42 @@ from urllib.parse import urljoin
 import requests
 from django.http import Http404, HttpResponse, StreamingHttpResponse
 from django.utils.http import http_date
+from rest_framework.negotiation import BaseContentNegotiation
 
 from core.http_security import validate_outbound_http_url
 from core.models import CoreSettings
 from core.utils import resolve_safe_local_data_path
 
 logger = logging.getLogger(__name__)
+
+
+class IgnoreClientContentNegotiation(BaseContentNegotiation):
+    """Content negotiator that skips the Accept check.
+
+    The logo and VOD-logo ``cache`` actions stream their own HttpResponse and
+    never use a DRF renderer, but DRF runs content negotiation before the action
+    and returns 406 when the Accept header cannot be satisfied by the JSON
+    renderers. Native image loaders send ``Accept: image/*`` (browsers and curl
+    send ``*/*``, so the endpoint looks healthy by hand), and got 406. (#1541)
+    """
+
+    def select_parser(self, request, parsers):
+        return parsers[0] if parsers else None
+
+    def select_renderer(self, request, renderers, format_suffix=None):
+        return (renderers[0], renderers[0].media_type)
+
+
+class RawImageContentNegotiationMixin:
+    """Skip DRF Accept negotiation for a viewset's raw-image ``cache`` action.
+
+    Applied only to ``cache``; every other action keeps normal JSON negotiation.
+    """
+
+    def get_content_negotiator(self):
+        if getattr(self, "action", None) == "cache":
+            return IgnoreClientContentNegotiation()
+        return super().get_content_negotiator()
 
 # Negative cache for remote image URLs that failed to fetch.
 # Shared across channel logos and VOD image/logo proxies.
