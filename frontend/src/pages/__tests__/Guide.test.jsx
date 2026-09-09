@@ -8,11 +8,13 @@ import useLogosStore from '../../store/logos';
 import useEPGsStore from '../../store/epgs';
 import useSettingsStore from '../../store/settings';
 import useVideoStore from '../../store/useVideoStore';
+import useAuthStore from '../../store/auth';
 import useBrowserStorage from '../../hooks/useBrowserStorage';
 import * as guideUtils from '../../utils/guideUtils';
 import * as recordingCardUtils from '../../utils/cards/RecordingCardUtils.js';
 import * as dateTimeUtils from '../../utils/dateTimeUtils.js';
 import userEvent from '@testing-library/user-event';
+import { USER_LEVELS } from '../../constants';
 
 // Mock dependencies
 vi.mock('../../store/channels', () => ({
@@ -28,6 +30,9 @@ vi.mock('../../store/settings', () => ({
   default: vi.fn(),
 }));
 vi.mock('../../store/useVideoStore', () => ({
+  default: vi.fn(),
+}));
+vi.mock('../../store/auth', () => ({
   default: vi.fn(),
 }));
 vi.mock('../../hooks/useBrowserStorage', () => ({
@@ -379,6 +384,16 @@ describe('Guide', () => {
 
     useSettingsStore.mockReturnValue('production');
     useVideoStore.mockReturnValue(mockShowVideo);
+    useAuthStore.mockImplementation((selector) => {
+      const state = {
+        user: {
+          id: 1,
+          user_level: USER_LEVELS.ADMIN,
+          custom_properties: {},
+        },
+      };
+      return selector ? selector(state) : state;
+    });
     useBrowserStorage.mockReturnValue(['12h', vi.fn()]);
 
     dateTimeUtils.getNow.mockReturnValue(now);
@@ -807,6 +822,45 @@ describe('Guide', () => {
 
       vi.useFakeTimers();
       vi.setSystemTime(new Date('2024-01-15T12:00:00Z'));
+    });
+  });
+
+  describe('Time window loading', () => {
+    it('requests the initial now−1h → now+24h grid window', async () => {
+      vi.useRealTimers();
+      guideUtils.fetchPrograms.mockClear();
+
+      render(<Guide />);
+
+      await waitFor(() => {
+        expect(guideUtils.fetchPrograms).toHaveBeenCalled();
+      });
+
+      const params = guideUtils.fetchPrograms.mock.calls[0][0];
+      expect(params).toBeInstanceOf(URLSearchParams);
+      const start = Date.parse(params.get('start'));
+      const end = Date.parse(params.get('end'));
+      const nowMs = now.valueOf();
+      expect(start).toBe(nowMs - 60 * 60 * 1000);
+      expect(end).toBe(nowMs + 24 * 60 * 60 * 1000);
+    });
+
+    it('does not refetch channels on the initial program window load alone', async () => {
+      vi.useRealTimers();
+      API.getChannelsSummary.mockClear();
+      guideUtils.fetchPrograms.mockClear();
+
+      render(<Guide />);
+
+      await waitFor(() => {
+        expect(API.getChannelsSummary).toHaveBeenCalled();
+        expect(guideUtils.fetchPrograms).toHaveBeenCalled();
+      });
+
+      const channelCalls = API.getChannelsSummary.mock.calls.length;
+      // Allow React StrictMode double-invoke; time-extend must not add channel fetches.
+      expect(channelCalls).toBeLessThanOrEqual(2);
+      expect(API.getChannelsSummary).toHaveBeenCalledTimes(channelCalls);
     });
   });
 });

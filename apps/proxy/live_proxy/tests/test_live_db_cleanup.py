@@ -166,7 +166,9 @@ class UrlUtilsDbCleanupTests(SimpleTestCase):
     @patch("apps.proxy.live_proxy.url_utils.get_stream_object")
     def test_get_alternate_streams_closes_db(self, mock_get_object, mock_close):
         channel = MagicMock()
-        channel.streams.all.return_value.order_by.return_value.exists.return_value = False
+        streams_qs = MagicMock()
+        streams_qs.values_list.return_value = []
+        channel.streams.select_related.return_value.order_by.return_value = streams_qs
         mock_get_object.return_value = channel
 
         from apps.proxy.live_proxy.url_utils import get_alternate_streams

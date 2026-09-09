@@ -27,11 +27,13 @@ const useChannelsTableStore = create((set, get) => ({
   allQueryIds: [],
   isUnlocked: false,
 
-  queryChannels: ({ results, count, has_unassigned_epg_channels }, params) => {
+  queryChannels: ({ results, count, has_unassigned_epg_channels } = {}, params) => {
     set((state) => ({
-      channels: results,
-      totalCount: count,
-      pageCount: Math.ceil(count / params.get('page_size')),
+      // Never store a non-array; a missing results field would crash
+      // ChannelsTable (and any .map/.find consumers) on the next render.
+      channels: Array.isArray(results) ? results : [],
+      totalCount: count ?? 0,
+      pageCount: Math.ceil((count ?? 0) / (Number(params?.get('page_size')) || 1)),
       ...(has_unassigned_epg_channels !== undefined && {
         hasUnassignedEPGChannels: has_unassigned_epg_channels,
       }),

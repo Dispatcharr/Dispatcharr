@@ -925,6 +925,72 @@ class SDScheduleDeltaIntegrationTests(TestCase):
         self.assertEqual(source.status, EPGSource.STATUS_SUCCESS)
 
     @patch('apps.epg.tasks.SD_DAYS_TO_FETCH', 3)
+    @patch('apps.output.streaming_chunk_cache.invalidate_epg_chunk_cache')
+    @patch('apps.epg.sd_tasks.send_epg_update')
+    @patch('apps.epg.sd_tasks.requests.get')
+    @patch('apps.epg.sd_tasks.requests.post')
+    def test_no_schedule_changes_invalidates_xmltv_chunk_cache(
+        self, mock_post, mock_get, mock_send_epg_update, mock_invalidate_epg,
+    ):
+        """SD refresh must drop /output/epg cache even when schedules are unchanged.
+
+        Post-refresh pruning and poster updates can still change ProgramData /
+        exported icons; without invalidation clients keep a stale XMLTV file
+        for up to the chunk-cache TTL while the in-app guide is already current.
+        """
+        from apps.epg.tasks import fetch_schedules_direct
+
+        source = self._make_sd_source()
+        mapped_epg = EPGData.objects.create(
+            tvg_id=self.MAPPED_STATION,
+            name='Mapped',
+            epg_source=source,
+        )
+        Channel.objects.create(name='Mapped Ch', epg_data=mapped_epg)
+
+        date_list = self._build_date_list(3)
+        self._seed_full_window_program_data(mapped_epg, days=3)
+
+        today = date.today()
+        for i, ds in enumerate(date_list):
+            SDScheduleMD5.objects.create(
+                epg_source=source,
+                station_id=self.MAPPED_STATION,
+                date=today + timedelta(days=i),
+                md5=f'md5-{ds}',
+                last_modified=timezone.now(),
+            )
+
+        mock_get.side_effect = self._lineup_get_side_effect
+        md5_response_payload = {
+            self.MAPPED_STATION: {
+                ds: {'code': 0, 'md5': f'md5-{ds}', 'lastModified': '2026-06-11T00:00:00Z'}
+                for ds in date_list
+            },
+        }
+
+        def post_side_effect(url, **kwargs):
+            if url.endswith('/token'):
+                return MagicMock(
+                    status_code=200,
+                    json=MagicMock(return_value={'code': 0, 'token': 'tok'}),
+                )
+            if url.endswith('/schedules/md5'):
+                return MagicMock(
+                    status_code=200,
+                    json=MagicMock(return_value=md5_response_payload),
+                )
+            raise AssertionError(f'Unexpected POST URL: {url}')
+
+        mock_post.side_effect = post_side_effect
+
+        fetch_schedules_direct(source, force=True)
+
+        mock_invalidate_epg.assert_called()
+        source.refresh_from_db()
+        self.assertEqual(source.status, EPGSource.STATUS_SUCCESS)
+
+    @patch('apps.epg.tasks.SD_DAYS_TO_FETCH', 3)
     @patch('apps.epg.sd_tasks.send_epg_update')
     @patch('apps.epg.sd_tasks.requests.get')
     @patch('apps.epg.sd_tasks.requests.post')

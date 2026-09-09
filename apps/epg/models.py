@@ -185,6 +185,10 @@ class ProgramData(models.Model):
     class Meta:
         indexes = [
             models.Index(fields=['epg', 'id'], name='epg_prog_epg_id_idx'),
+            models.Index(
+                fields=['epg', 'start_time', 'end_time'],
+                name='epg_prog_epg_start_end_idx',
+            ),
         ]
 
     def __str__(self):

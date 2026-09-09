@@ -41,12 +41,14 @@ const invalidPageResponse = {
 
 const successResponse = (body) => ({
   ok: true,
-  json: () => Promise.resolve(body),
+  text: () =>
+    Promise.resolve(body === undefined ? '' : JSON.stringify(body)),
 });
 
 describe('channel request ordering', () => {
   const setPagination = vi.fn();
   const queryChannels = vi.fn();
+  const setAllQueryIds = vi.fn();
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -56,7 +58,7 @@ describe('channel request ordering', () => {
       pagination: { pageIndex: 1, pageSize: 25 },
       setPagination,
       queryChannels,
-      setAllQueryIds: vi.fn(),
+      setAllQueryIds,
     });
   });
 
@@ -96,5 +98,44 @@ describe('channel request ordering', () => {
 
     expect(setPagination).not.toHaveBeenCalled();
     expect(queryChannels).toHaveBeenCalledTimes(1);
+  });
+
+  it('adds page and page_size when requeryChannels runs with empty lastQueryParams', async () => {
+    global.fetch = vi
+      .fn()
+      .mockResolvedValueOnce(successResponse({ results: [{ id: 1 }], count: 1 }))
+      .mockResolvedValueOnce(successResponse([1]));
+
+    await API.requeryChannels();
+
+    const channelsUrl = global.fetch.mock.calls[0][0];
+    expect(channelsUrl).toContain('page=1');
+    expect(channelsUrl).toContain('page_size=25');
+    expect(queryChannels).toHaveBeenCalledWith(
+      { results: [{ id: 1 }], count: 1 },
+      expect.any(URLSearchParams)
+    );
+  });
+
+  it('does not write a bare array channels response into the table store', async () => {
+    global.fetch = vi
+      .fn()
+      .mockResolvedValueOnce(successResponse([{ id: 1 }]))
+      .mockResolvedValueOnce(successResponse([1]));
+
+    await API.requeryChannels();
+
+    expect(queryChannels).not.toHaveBeenCalled();
+  });
+
+  it('does not write an empty-body channels response into the table store', async () => {
+    global.fetch = vi
+      .fn()
+      .mockResolvedValueOnce(successResponse(undefined))
+      .mockResolvedValueOnce(successResponse([1]));
+
+    await API.requeryChannels();
+
+    expect(queryChannels).not.toHaveBeenCalled();
   });
 });

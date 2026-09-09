@@ -297,6 +297,8 @@ class UserViewSet(viewsets.ModelViewSet):
                 "catchup_enabled",
                 "vod_movies_enabled",
                 "vod_series_enabled",
+                "dvr_access",
+                "allowed_m3u_profile_ids",
             }
             cp = request.data.get("custom_properties")
             if isinstance(cp, dict):

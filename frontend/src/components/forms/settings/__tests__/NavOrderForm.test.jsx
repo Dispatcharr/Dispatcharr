@@ -207,6 +207,9 @@ describe('NavOrderForm', () => {
     beforeEach(() => {
       useAuthStore.mockImplementation((selector) => {
         const state = {
+          // dvr_access is absent, so DVR view defaults on for
+          // standard users; DVR should appear alongside the other
+          // non-admin items.
           user: { user_level: USER_LEVELS.USER, custom_properties: {} },
           getNavOrder: mockGetNavOrder,
           setNavOrder: mockSetNavOrder,
@@ -223,13 +226,14 @@ describe('NavOrderForm', () => {
 
       // Non-admin items should be visible
       expect(screen.getByText('Channels')).toBeInTheDocument();
+      expect(screen.getByText('VODs')).toBeInTheDocument();
       expect(screen.getByText('TV Guide')).toBeInTheDocument();
       expect(screen.getByText('Settings')).toBeInTheDocument();
+      // DVR view and VOD default on for standard users
+      expect(screen.getByText('DVR')).toBeInTheDocument();
 
       // Admin-only items should not be visible
-      expect(screen.queryByText('VODs')).not.toBeInTheDocument();
       expect(screen.queryByText('M3U & EPG Manager')).not.toBeInTheDocument();
-      expect(screen.queryByText('DVR')).not.toBeInTheDocument();
       expect(screen.queryByText('Stats')).not.toBeInTheDocument();
       expect(screen.queryByText('Plugins')).not.toBeInTheDocument();
       expect(screen.queryByText('Users')).not.toBeInTheDocument();
@@ -237,6 +241,95 @@ describe('NavOrderForm', () => {
     });
 
     it('calls updateUserPreferences with user default order when reset', async () => {
+      const user = userEvent.setup();
+      render(<NavOrderForm active={true} />);
+
+      const resetButton = screen.getByTestId('reset-button');
+      await user.click(resetButton);
+
+      await waitFor(() => {
+        expect(mockUpdateUserPreferences).toHaveBeenCalledWith({
+          navOrder: ['channels', 'vods', 'guide', 'dvr', 'settings'],
+          hiddenNav: [],
+        });
+      });
+    });
+  });
+
+  describe('Non-Admin User without DVR view', () => {
+    beforeEach(() => {
+      useAuthStore.mockImplementation((selector) => {
+        const state = {
+          user: {
+            user_level: USER_LEVELS.USER,
+            custom_properties: { dvr_access: 'none' },
+          },
+          getNavOrder: mockGetNavOrder,
+          setNavOrder: mockSetNavOrder,
+          getHiddenNav: mockGetHiddenNav,
+          toggleNavVisibility: mockToggleNavVisibility,
+          updateUserPreferences: mockUpdateUserPreferences,
+        };
+        return selector(state);
+      });
+    });
+
+    it('hides DVR when the user has been explicitly denied view access', () => {
+      render(<NavOrderForm active={true} />);
+
+      expect(screen.getByText('Channels')).toBeInTheDocument();
+      expect(screen.getByText('VODs')).toBeInTheDocument();
+      expect(screen.getByText('TV Guide')).toBeInTheDocument();
+      expect(screen.queryByText('DVR')).not.toBeInTheDocument();
+    });
+
+    it('resets to the default order without DVR', async () => {
+      const user = userEvent.setup();
+      render(<NavOrderForm active={true} />);
+
+      const resetButton = screen.getByTestId('reset-button');
+      await user.click(resetButton);
+
+      await waitFor(() => {
+        expect(mockUpdateUserPreferences).toHaveBeenCalledWith({
+          navOrder: ['channels', 'vods', 'guide', 'settings'],
+          hiddenNav: [],
+        });
+      });
+    });
+  });
+
+  describe('Non-Admin User without VOD access', () => {
+    beforeEach(() => {
+      useAuthStore.mockImplementation((selector) => {
+        const state = {
+          user: {
+            user_level: USER_LEVELS.USER,
+            custom_properties: {
+              vod_movies_enabled: false,
+              vod_series_enabled: false,
+              dvr_access: 'none',
+            },
+          },
+          getNavOrder: mockGetNavOrder,
+          setNavOrder: mockSetNavOrder,
+          getHiddenNav: mockGetHiddenNav,
+          toggleNavVisibility: mockToggleNavVisibility,
+          updateUserPreferences: mockUpdateUserPreferences,
+        };
+        return selector(state);
+      });
+    });
+
+    it('hides VODs when both VOD flags are disabled', () => {
+      render(<NavOrderForm active={true} />);
+
+      expect(screen.getByText('Channels')).toBeInTheDocument();
+      expect(screen.queryByText('VODs')).not.toBeInTheDocument();
+      expect(screen.queryByText('DVR')).not.toBeInTheDocument();
+    });
+
+    it('resets to the plain default order without VOD or DVR', async () => {
       const user = userEvent.setup();
       render(<NavOrderForm active={true} />);
 

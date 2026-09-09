@@ -1047,6 +1047,18 @@ def purge_recurring_rule_impl(rule_id: int) -> int:
     return removed
 
 
+def _system_timezone():
+    """Resolve the configured system time zone, falling back to the server's."""
+    from django.utils import timezone
+
+    tz_name = CoreSettings.get_system_time_zone()
+    try:
+        return ZoneInfo(tz_name)
+    except Exception:
+        logger.warning("Invalid or unsupported time zone '%s'; falling back to Server default", tz_name)
+        return timezone.get_current_timezone()
+
+
 def sync_recurring_rule_impl(rule_id: int, drop_existing: bool = True, horizon_days: int = 14) -> int:
     """Ensure recordings exist for a recurring rule within the scheduling horizon."""
     from django.utils import timezone
@@ -1065,12 +1077,7 @@ def sync_recurring_rule_impl(rule_id: int, drop_existing: bool = True, horizon_d
     if not days:
         return 0
 
-    tz_name = CoreSettings.get_system_time_zone()
-    try:
-        tz = ZoneInfo(tz_name)
-    except Exception:
-        logger.warning("Invalid or unsupported time zone '%s'; falling back to Server default", tz_name)
-        tz = timezone.get_current_timezone()
+    tz = _system_timezone()
     local_today = now.astimezone(tz).date()
     start_limit = rule.start_date or local_today
     end_limit = rule.end_date
@@ -1318,6 +1325,34 @@ def _parse_epg_tv_movie_info(program):
 
 
 
+def _programme_broadcast_start(program, start_time):
+    """Guide air time for broadcast-date placeholders, not the capture window.
+
+    ``Recording.start_time`` includes DVR pre-offset. The booking snapshot's
+    ``program.start_time`` is the unadjusted programme start, so prefer that
+    when present. Fall back to the recording start for manual or recurring
+    bookings without a programme snapshot.
+    """
+    from django.utils import timezone
+    from django.utils.dateparse import parse_datetime
+
+    candidate = start_time
+    if isinstance(program, dict):
+        raw = program.get('start_time')
+        if raw not in (None, ''):
+            parsed = parse_datetime(str(raw))
+            if parsed is None:
+                try:
+                    parsed = datetime.fromisoformat(str(raw).replace('Z', '+00:00'))
+                except ValueError:
+                    parsed = None
+            if parsed is not None:
+                candidate = parsed
+    if timezone.is_naive(candidate):
+        candidate = timezone.make_aware(candidate, timezone.utc)
+    return candidate
+
+
 def _build_output_paths(channel, program, start_time, end_time, recording_id):
     """
     Build (final_path, hls_dir, final_filename) using DVR templates.
@@ -1362,6 +1397,13 @@ def _build_output_paths(channel, program, start_time, end_time, recording_id):
     episode = int(episode) if episode is not None else 0
     year = year or str(start_time.year)
 
+    # Broadcast date in the system time zone, the zone sync_recurring_rule_impl
+    # already uses for local_today, so a filename cannot name a different day
+    # than the rule matched.
+    local_start = _programme_broadcast_start(program, start_time).astimezone(
+        _system_timezone()
+    )
+
     values = {
         'show': show,
         'title': title,
@@ -1372,6 +1414,10 @@ def _build_output_paths(channel, program, start_time, end_time, recording_id):
         'channel': _safe_name(channel.name),
         'start': start_time.strftime('%Y%m%d_%H%M%S'),
         'end': end_time.strftime('%Y%m%d_%H%M%S'),
+        'start_date': local_start.strftime('%Y-%m-%d'),
+        'start_year': local_start.year,
+        'start_month': local_start.month,
+        'start_day': local_start.day,
     }
 
     template = CoreSettings.get_dvr_movie_template() if is_movie else CoreSettings.get_dvr_tv_template()
@@ -1524,21 +1570,58 @@ def _dvr_ffmpeg_retry_backoff_seconds(retry_index):
     return min(0.25 * retry_index, 3.0)
 
 
-def _dvr_build_ffmpeg_cmd(stream_url, recording_id, hls_m3u8, hls_seg_pattern, hls_start_number):
+def _dvr_ffmpeg_user_agent(channel, recording_id):
+    """UA for DVR ffmpeg: DVR identity for proxy, M3U/default UA for Redirect."""
+    from core.utils import dispatcharr_dvr_user_agent
+
+    try:
+        if channel.get_stream_profile().is_redirect():
+            for stream in channel.streams.select_related(
+                "m3u_account__user_agent"
+            ).order_by("channelstream__order"):
+                account = stream.m3u_account
+                if account is None or not account.is_active:
+                    continue
+                return account.get_user_agent_string()
+            return CoreSettings.get_default_user_agent()
+    except Exception as exc:
+        logger.warning(
+            f"DVR recording {recording_id}: failed to resolve Redirect "
+            f"provider User-Agent, falling back to DVR agent: {exc}"
+        )
+    return dispatcharr_dvr_user_agent(recording_id)
+
+
+def _dvr_build_ffmpeg_cmd(
+    stream_url,
+    recording_id,
+    hls_m3u8,
+    hls_seg_pattern,
+    hls_start_number,
+    user_agent=None,
+):
     """Build the FFmpeg command for DVR HLS segment recording."""
     from core.utils import dispatcharr_dvr_user_agent
+
+    if not user_agent:
+        user_agent = dispatcharr_dvr_user_agent(recording_id)
     return [
         "ffmpeg", "-y",
         "-reconnect", "1",
         "-reconnect_streamed", "1",
         "-reconnect_delay_max", "5",
-        "-user_agent", dispatcharr_dvr_user_agent(recording_id),
+        "-user_agent", user_agent,
         # Regenerate monotonic PTS to handle erratic/discontinuous timestamps
         # from IPTV sources.
         "-fflags", "+genpts",
         # Tolerate minor TS corruption without aborting the whole process.
         "-err_detect", "ignore_err",
         "-i", stream_url,
+        # Keep every video and audio stream (multi-audio, etc.). Do not map
+        # subtitle/data PIDs: the HLS muxer cannot copy DVB-sub and will fail
+        # the recording.
+        "-map", "0:v?",
+        "-map", "0:a?",
         "-c", "copy",
         # Shift output timestamps so they start from 0, fixing negative PTS
         # values that can prevent segment boundary detection in the HLS muxer.
@@ -1553,20 +1636,19 @@ def _dvr_build_ffmpeg_cmd(stream_url, recording_id, hls_m3u8, hls_seg_pattern, h
     ]
 
 
-def _dvr_build_hls_concat_cmd(concat_list_path, output_path, extra_args=None):
-    """Build an error-tolerant FFmpeg concat command for HLS ``.ts`` segments.
+# Shared ceiling for HLS finalize
+_DVR_HLS_REMUX_TIMEOUT_SECONDS = 30 * 60
 
-    Tolerates truncated tail segments, timestamp discontinuities at FFmpeg
-    restart splices, and minor MPEG-TS corruption from IPTV sources.  The
-    concat demuxer already re-bases timestamps between files; ``genpts``,
-    ``igndts``, and ``avoid_negative_ts`` keep the copied stream muxable.
-    """
+
+def _dvr_build_hls_playlist_remux_cmd(m3u8_path, output_path, extra_args=None):
+    """Build an FFmpeg remux command that reads an HLS playlist as a single input."""
     cmd = [
         "ffmpeg", "-y",
-        "-fflags", "+genpts+igndts+discardcorrupt",
+        "-fflags", "+genpts+discardcorrupt",
         "-err_detect", "ignore_err",
-        "-f", "concat", "-safe", "0",
-        "-i", concat_list_path,
+        "-i", m3u8_path,
+        "-map", "0:v?",
+        "-map", "0:a?",
         "-c", "copy",
         "-avoid_negative_ts", "make_zero",
     ]
@@ -1574,6 +1656,186 @@ def _dvr_build_hls_concat_cmd(concat_list_path, output_path, extra_args=None):
         cmd.extend(extra_args)
     cmd.append(output_path)
     return cmd
+
+
+def _dvr_ensure_hls_endlist(m3u8_path):
+    """Append ``#EXT-X-ENDLIST`` if missing so ffmpeg treats the playlist as VOD.
+
+    Capture uses ``omit_endlist`` so clients can watch live. A clean SIGINT
+    usually writes the tag; a crash or kill often does not. Without it the
+    HLS demuxer waits for new segments and remux never finishes.
+    """
+    try:
+        with open(m3u8_path) as _f:
+            text = _f.read()
+        if "#EXT-X-ENDLIST" in text:
+            return True
+        if text and not text.endswith("\n"):
+            text += "\n"
+        text += "#EXT-X-ENDLIST\n"
+        _tmp = f"{m3u8_path}.endlist.tmp"
+        with open(_tmp, "w") as _f:
+            _f.write(text)
+        os.replace(_tmp, m3u8_path)
+        return True
+    except Exception as _ee:
+        logger.warning(f"DVR: failed to ensure EXT-X-ENDLIST on {m3u8_path}: {_ee}")
+        try:
+            os.remove(f"{m3u8_path}.endlist.tmp")
+        except OSError:
+            pass
+        return False
+
+
+def _dvr_remove_empty_or_partial_output(path):
+    """Remove a remux output file if present so a later attempt can rewrite it."""
+    try:
+        if path and os.path.exists(path):
+            os.remove(path)
+    except OSError:
+        pass
+
+
+def _dvr_output_nonempty(path):
+    return bool(path) and os.path.exists(path) and os.path.getsize(path) > 0
+
+
+def _dvr_run_ffmpeg_with_budget(cmd, log_label, step_label, deadline):
+    """Run ffmpeg under a shared remux deadline. Returns a CompletedProcess or None."""
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        logger.error(
+            f"{log_label}: {step_label} skipped, remux budget exhausted "
+            f"({_DVR_HLS_REMUX_TIMEOUT_SECONDS}s)"
+        )
+        return None
+    try:
+        return subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=remaining,
+        )
+    except subprocess.TimeoutExpired:
+        logger.error(
+            f"{log_label}: {step_label} timed out after "
+            f"{_DVR_HLS_REMUX_TIMEOUT_SECONDS}s remux budget"
+        )
+        return None
+
+
+def _dvr_remux_hls_to_mkv(m3u8_path, output_path, log_label, recording_id):
+    """Remux ``index.m3u8`` to MKV. Tries direct remux, then MP4 intermediate.
+
+    Returns ``(success, via_mp4_fallback)``.
+    """
+    if not m3u8_path or not os.path.exists(m3u8_path):
+        logger.warning(f"{log_label}: no HLS playlist to remux")
+        return False, False
+    if not _dvr_ensure_hls_endlist(m3u8_path):
+        logger.error(
+            f"{log_label}: playlist is missing EXT-X-ENDLIST and could not be updated"
+        )
+        return False, False
+
+    out_dir = os.path.dirname(output_path)
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
+
+    deadline = time.monotonic() + _DVR_HLS_REMUX_TIMEOUT_SECONDS
+
+    playlist_result = _dvr_run_ffmpeg_with_budget(
+        _dvr_build_hls_playlist_remux_cmd(m3u8_path, output_path),
+        log_label,
+        "HLS\u2192MKV playlist remux",
+        deadline,
+    )
+    if (
+        playlist_result is not None
+        and playlist_result.returncode == 0
+        and _dvr_output_nonempty(output_path)
+    ):
+        return True, False
+
+    _rc = getattr(playlist_result, "returncode", "timeout")
+    _stderr = (getattr(playlist_result, "stderr", None) or "")[:300]
+    logger.warning(
+        f"{log_label}: HLS\u2192MKV playlist remux failed "
+        f"(rc={_rc}); attempting MP4-intermediate "
+        f"fallback. stderr: {_stderr}"
+    )
+    _dvr_remove_empty_or_partial_output(output_path)
+
+    hls_dir = os.path.dirname(m3u8_path)
+    intermediate_mp4 = os.path.join(
+        hls_dir, f".dvr_{recording_id}_intermediate.mp4"
+    )
+    try:
+        if os.path.exists(intermediate_mp4):
+            os.remove(intermediate_mp4)
+    except OSError:
+        pass
+
+    try:
+        mp4_result = _dvr_run_ffmpeg_with_budget(
+            _dvr_build_hls_playlist_remux_cmd(
+                m3u8_path,
+                intermediate_mp4,
+                extra_args=["-bsf:a", "aac_adtstoasc"],
+            ),
+            log_label,
+            "HLS\u2192MP4 remux fallback",
+            deadline,
+        )
+        if not (
+            mp4_result is not None
+            and mp4_result.returncode == 0
+            and _dvr_output_nonempty(intermediate_mp4)
+        ):
+            _rc = getattr(mp4_result, "returncode", "timeout")
+            _stderr = (getattr(mp4_result, "stderr", None) or "")[:300]
+            logger.error(
+                f"{log_label}: HLS\u2192MP4 remux fallback failed "
+                f"(rc={_rc}). stderr: {_stderr}"
+            )
+            return False, False
+
+        mkv_result = _dvr_run_ffmpeg_with_budget(
+            [
+                "ffmpeg", "-y",
+                "-err_detect", "ignore_err",
+                "-i", intermediate_mp4,
+                "-map", "0:v?",
+                "-map", "0:a?",
+                "-c", "copy",
+                output_path,
+            ],
+            log_label,
+            "MP4\u2192MKV remux step",
+            deadline,
+        )
+        if (
+            mkv_result is not None
+            and mkv_result.returncode == 0
+            and _dvr_output_nonempty(output_path)
+        ):
+            return True, True
+
+        _rc = getattr(mkv_result, "returncode", "timeout")
+        _stderr = (getattr(mkv_result, "stderr", None) or "")[:300]
+        logger.error(
+            f"{log_label}: MP4\u2192MKV remux step failed "
+            f"(rc={_rc}). stderr: {_stderr}"
+        )
+        _dvr_remove_empty_or_partial_output(output_path)
+        return False, False
+    finally:
+        try:
+            if os.path.exists(intermediate_mp4):
+                os.remove(intermediate_mp4)
+        except OSError:
+            pass
 
 
 def _dvr_drain_ffmpeg_stderr(proc, rec_id, tail):
@@ -1651,6 +1913,18 @@ def get_dvr_stream_base_url():
 
     # AIO, dev, debug: celery and uwsgi share the container, reach uwsgi directly
     return 'http://127.0.0.1:5656'
+
+
+def _dvr_capture_url(base, channel_uuid, output_profile_id=None):
+    """Build the TS proxy URL used for DVR capture.
+
+    When ``output_profile_id`` is set, appends ``?output_profile=<id>`` so the
+    proxy applies that profile. When unset, returns the plain stream URL.
+    """
+    url = f"{base}/proxy/ts/stream/{channel_uuid}"
+    if output_profile_id:
+        url = f"{url}?output_profile={output_profile_id}"
+    return url
 
 
 @shared_task
@@ -1855,7 +2129,7 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
 
         # Ensure destination directory exists.  No placeholder MKV is created
         # here on purpose: with the HLS pipeline, the final MKV is materialized
-        # by the post-recording concat step, and `/file/` redirects to `/hls/`
+        # by the post-recording playlist remux, and `/file/` redirects to `/hls/`
         # while no MKV exists, so a 0-byte placeholder serves no functional
         # purpose.  Writing one previously caused an orphan-file bug on server
         # restart in cases where the resume path could not adopt the original
@@ -1960,7 +2234,9 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
     _ffmpeg_retry_window = _dvr_ffmpeg_retry_window_seconds()
 
     if not interrupted and hls_dir:
-        stream_url = f"{base}/proxy/ts/stream/{channel.uuid}"
+        stream_url = _dvr_capture_url(
+            base, channel.uuid, CoreSettings.get_dvr_output_profile_id()
+        )
         logger.info(f"DVR recording {recording_id}: stream URL: {stream_url}")
         logger.info(f"DVR recording {recording_id}: HLS output dir: {hls_dir}")
         logger.info(
@@ -2034,8 +2310,14 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
                     break
 
             hls_start_number = _dvr_hls_start_number(hls_dir, hls_m3u8)
+            ffmpeg_user_agent = _dvr_ffmpeg_user_agent(channel, recording_id)
             ffmpeg_cmd = _dvr_build_ffmpeg_cmd(
-                stream_url, recording_id, hls_m3u8, hls_seg_pattern, hls_start_number,
+                stream_url,
+                recording_id,
+                hls_m3u8,
+                hls_seg_pattern,
+                hls_start_number,
+                user_agent=ffmpeg_user_agent,
             )
 
             logger.info(
@@ -2321,7 +2603,7 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
     # interrupted.  `recover_recordings_on_startup` will re-dispatch this task
     # on the next boot, and the resume-path logic in the prep block will
     # adopt the existing `_hls_dir` and `file_path` so FFmpeg appends to the
-    # same playlist and the eventual concat produces a single MKV.
+    # same playlist and the eventual remux produces a single MKV.
     #
     # Note: `_DVR_SHUTTING_DOWN` is per-process. The DVR queue currently uses
     # a threads pool worker (one process, all threads see the flag). If the
@@ -2347,7 +2629,7 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
         logger.info(
             f"DVR recording {recording_id}: worker shutting down with "
             f"{int(end_timestamp - time.time())}s of recording window remaining; "
-            f"leaving HLS dir intact for resume on next boot, skipping concat."
+            f"leaving HLS dir intact for resume on next boot, skipping remux."
         )
         return
 
@@ -2440,144 +2722,27 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
                 pass
         return
 
-    # --- Post-processing: concat HLS segments → final MKV ---
+    # --- Post-processing: remux HLS playlist → final MKV ---
     remux_success = False
     hls_m3u8 = os.path.join(hls_dir, "index.m3u8") if hls_dir else None
+    _log_label = f"DVR recording {recording_id}"
 
-    def _get_hls_segments(m3u8_path, seg_dir):
-        """Return ordered segment paths from an HLS m3u8 playlist."""
-        segs = []
+    if hls_m3u8 and os.path.exists(hls_m3u8):
         try:
-            with open(m3u8_path) as _f:
-                for _line in _f:
-                    _line = _line.strip()
-                    if _line and not _line.startswith('#'):
-                        sp = os.path.join(seg_dir, _line) if not os.path.isabs(_line) else _line
-                        if os.path.exists(sp):
-                            segs.append(sp)
-        except Exception as _e:
-            logger.warning(f"DVR recording {recording_id}: failed to parse m3u8: {_e}")
-        return segs
-
-    segments = (
-        _get_hls_segments(hls_m3u8, hls_dir)
-        if (hls_m3u8 and os.path.exists(hls_m3u8))
-        else []
-    )
-    if not segments and hls_dir and os.path.isdir(hls_dir):
-        # Fallback: sort all segment files by name if m3u8 is missing or empty
-        try:
-            segments = sorted(
-                os.path.join(hls_dir, f)
-                for f in os.listdir(hls_dir)
-                if f.startswith("seg_") and f.endswith(".ts")
+            remux_success, _via_mp4 = _dvr_remux_hls_to_mkv(
+                hls_m3u8, final_path, _log_label, recording_id
             )
-        except Exception:
-            segments = []
-
-    if segments:
-        concat_list_path = os.path.join(hls_dir, "concat.txt")
-        try:
-            with open(concat_list_path, "w") as _cl:
-                for seg in segments:
-                    _escaped = seg.replace("'", "'\\''")
-                    _cl.write(f"file '{_escaped}'\n")
-
-            concat_result = subprocess.run(
-                _dvr_build_hls_concat_cmd(concat_list_path, final_path),
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-            )
-            _ok = (
-                concat_result.returncode == 0
-                and os.path.exists(final_path)
-                and os.path.getsize(final_path) > 0
-            )
-            _fallback_used = False
-            # MP4-intermediate fallback: some MPEG-TS streams (parameter set
-            # changes mid-stream, weird PMT updates, audio discontinuities)
-            # fail to mux directly into Matroska but go through an MP4
-            # container cleanly, which can then be remuxed losslessly to
-            # MKV.  Try this before declaring the recording lost.
-            if not _ok:
-                logger.warning(
-                    f"DVR recording {recording_id}: direct HLS\u2192MKV concat failed "
-                    f"(rc={concat_result.returncode}); attempting MP4-intermediate "
-                    f"fallback. stderr: {(concat_result.stderr or '')[:300]}"
-                )
-                try:
-                    if os.path.exists(final_path) and os.path.getsize(final_path) == 0:
-                        os.remove(final_path)
-                except OSError:
-                    pass
-                _intermediate_mp4 = os.path.join(
-                    hls_dir, f".dvr_{recording_id}_intermediate.mp4"
-                )
-                try:
-                    if os.path.exists(_intermediate_mp4):
-                        os.remove(_intermediate_mp4)
-                except OSError:
-                    pass
-                _mp4_concat = subprocess.run(
-                    _dvr_build_hls_concat_cmd(
-                        concat_list_path,
-                        _intermediate_mp4,
-                        extra_args=["-bsf:a", "aac_adtstoasc"],
-                    ),
-                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                )
-                if (
-                    _mp4_concat.returncode == 0
-                    and os.path.exists(_intermediate_mp4)
-                    and os.path.getsize(_intermediate_mp4) > 0
-                ):
-                    _mp4_to_mkv = subprocess.run(
-                        [
-                            "ffmpeg", "-y",
-                            "-err_detect", "ignore_err",
-                            "-i", _intermediate_mp4,
-                            "-c", "copy",
-                            final_path,
-                        ],
-                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                    )
-                    if (
-                        _mp4_to_mkv.returncode == 0
-                        and os.path.exists(final_path)
-                        and os.path.getsize(final_path) > 0
-                    ):
-                        _ok = True
-                        _fallback_used = True
-                    else:
-                        logger.error(
-                            f"DVR recording {recording_id}: MP4\u2192MKV remux step "
-                            f"failed (rc={_mp4_to_mkv.returncode}). stderr: "
-                            f"{(_mp4_to_mkv.stderr or '')[:300]}"
-                        )
-                else:
-                    logger.error(
-                        f"DVR recording {recording_id}: HLS\u2192MP4 concat fallback "
-                        f"failed (rc={_mp4_concat.returncode}). stderr: "
-                        f"{(_mp4_concat.stderr or '')[:300]}"
-                    )
-                try:
-                    if os.path.exists(_intermediate_mp4):
-                        os.remove(_intermediate_mp4)
-                except OSError:
-                    pass
-
-            if _ok:
-                remux_success = True
-                if _fallback_used:
+            if remux_success:
+                if _via_mp4:
                     logger.info(
-                        f"DVR recording {recording_id}: HLS\u2192MP4\u2192MKV fallback "
-                        f"concat succeeded \u2014 {len(segments)} segments \u2192 "
-                        f"{os.path.basename(final_path)} "
+                        f"{_log_label}: HLS\u2192MP4\u2192MKV fallback remux succeeded "
+                        f"\u2014 {os.path.basename(final_path)} "
                         f"({os.path.getsize(final_path):,} bytes)"
                     )
                 else:
                     logger.info(
-                        f"DVR recording {recording_id}: HLS\u2192MKV concat succeeded \u2014 "
-                        f"{len(segments)} segments \u2192 {os.path.basename(final_path)} "
+                        f"{_log_label}: HLS\u2192MKV playlist remux succeeded "
+                        f"\u2014 {os.path.basename(final_path)} "
                         f"({os.path.getsize(final_path):,} bytes)"
                     )
                 # Update DB so *new* client requests go to /file/ (the final MKV)
@@ -2645,20 +2810,12 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
                     logger.warning(f"DVR recording {recording_id}: post-rmtree DB update failed: {_post_e}")
             else:
                 logger.error(
-                    f"DVR recording {recording_id}: all HLS\u2192MKV concat attempts "
-                    f"failed (direct rc={concat_result.returncode}, MP4 fallback also "
-                    f"failed). Keeping HLS segments for recovery. stderr: "
-                    f"{(concat_result.stderr or '')[:500]}"
+                    f"{_log_label}: HLS\u2192MKV remux failed. Keeping HLS directory for recovery."
                 )
         except Exception as _ce:
-            logger.error(f"DVR recording {recording_id}: concat exception: {_ce}")
-        finally:
-            try:
-                os.remove(concat_list_path)
-            except OSError:
-                pass
+            logger.error(f"{_log_label}: remux exception: {_ce}")
     else:
-        logger.warning(f"DVR recording {recording_id}: no HLS segments found. Nothing to concat")
+        logger.warning(f"{_log_label}: no HLS playlist found. Nothing to remux")
 
     # Persist final metadata to Recording (status, ended_at, and stream stats if available)
     try:
@@ -2782,7 +2939,6 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
 
     # Optionally run comskip post-process
     try:
-        from core.models import CoreSettings
         if CoreSettings.get_dvr_comskip_enabled():
             comskip_process_recording.delay(recording_id)
     except Exception:
@@ -2878,8 +3034,8 @@ def recover_recordings_on_startup():
                 cp["status"] = "interrupted"
                 cp["interrupted_reason"] = "server_restarted"
 
-                # Preserve the pre-restart .ts segment path so run_recording
-                # can concatenate it with the resumed segment later.
+                # Preserve the pre-restart HLS working dir so run_recording
+                # can resume append_list into the same segment set.
                 hls_dir_path = cp.get("_hls_dir")
                 if hls_dir_path and os.path.isdir(hls_dir_path):
                     existing_segs = [f for f in os.listdir(hls_dir_path) if f.endswith(".ts")]
@@ -2916,8 +3072,8 @@ def recover_recordings_on_startup():
                 logger.warning(f"Failed to resume recording {rec.id}: {e}")
 
         # Finalize expired recordings that were active when the server crashed
-        # but whose end_time has now passed.  Remux the partial .ts and mark
-        # as interrupted so the user can watch whatever was captured.
+        # but whose end_time has now passed. Remux the HLS playlist to MKV and
+        # mark as interrupted so the user can watch whatever was captured.
         expired = _db_retry(
             lambda: list(Recording.objects.filter(
                 end_time__lte=now,
@@ -2932,73 +3088,42 @@ def recover_recordings_on_startup():
                 mkv_path = cp.get("file_path")
 
                 if hls_dir_path and os.path.isdir(hls_dir_path) and mkv_path:
-                    # Parse m3u8 for ordered segment list; fall back to sorted filenames
                     _m3u8 = os.path.join(hls_dir_path, "index.m3u8")
-                    _segs = []
+                    _log_label = f"recover_recordings_on_startup: recording {rec.id}"
                     if os.path.exists(_m3u8):
-                        try:
-                            with open(_m3u8) as _f:
-                                for _l in _f:
-                                    _l = _l.strip()
-                                    if _l and not _l.startswith('#'):
-                                        _sp = os.path.join(hls_dir_path, _l) if not os.path.isabs(_l) else _l
-                                        if os.path.exists(_sp):
-                                            _segs.append(_sp)
-                        except Exception:
-                            pass
-                    if not _segs:
-                        _segs = sorted(
-                            os.path.join(hls_dir_path, f)
-                            for f in os.listdir(hls_dir_path)
-                            if f.startswith("seg_") and f.endswith(".ts")
-                        )
-
-                    if _segs:
                         logger.info(
-                            f"recover_recordings_on_startup: recording {rec.id} expired "
-                            f"during downtime, concat {len(_segs)} HLS segment(s) \u2192 MKV"
+                            f"{_log_label} expired during downtime, remuxing HLS \u2192 MKV"
                         )
-                        os.makedirs(os.path.dirname(mkv_path), exist_ok=True)
-                        _concat_txt = os.path.join(hls_dir_path, "concat.txt")
                         try:
-                            with open(_concat_txt, "w") as _cl:
-                                for _s in _segs:
-                                    _escaped = _s.replace("'", "'\\''")
-                                    _cl.write(f"file '{_escaped}'\n")
-                            _res = subprocess.run(
-                                _dvr_build_hls_concat_cmd(_concat_txt, mkv_path),
-                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                            _ok, _via_mp4 = _dvr_remux_hls_to_mkv(
+                                _m3u8, mkv_path, _log_label, rec.id
                             )
-                            if _res.returncode == 0 and os.path.exists(mkv_path) and os.path.getsize(mkv_path) > 0:
-                                cp["status"] = "interrupted"
-                                cp["interrupted_reason"] = "server_restarted_after_end"
-                                cp["remux_success"] = True
+                            cp["status"] = "interrupted"
+                            cp["interrupted_reason"] = "server_restarted_after_end"
+                            cp["remux_success"] = _ok
+                            if _ok:
                                 try:
                                     shutil.rmtree(hls_dir_path)
                                 except OSError:
                                     pass
+                                cp.pop("_hls_dir", None)
+                                cp["file_url"] = (
+                                    f"/api/channels/recordings/{rec.id}/file/"
+                                )
+                                cp["output_file_url"] = cp["file_url"]
+                                _how = "MP4 fallback" if _via_mp4 else "playlist"
                                 logger.info(
-                                    f"recover_recordings_on_startup: recording {rec.id} HLS\u2192MKV concat succeeded"
+                                    f"{_log_label}: HLS\u2192MKV remux succeeded ({_how})"
                                 )
                             else:
-                                cp["status"] = "interrupted"
-                                cp["interrupted_reason"] = "server_restarted_after_end"
-                                cp["remux_success"] = False
                                 logger.warning(
-                                    f"recover_recordings_on_startup: recording {rec.id} concat failed, keeping HLS dir"
+                                    f"{_log_label}: remux failed, keeping HLS dir"
                                 )
                         except Exception as _ce:
                             cp["status"] = "interrupted"
                             cp["interrupted_reason"] = "server_restarted_after_end"
                             cp["remux_success"] = False
-                            logger.warning(
-                                f"recover_recordings_on_startup: recording {rec.id} concat error: {_ce}"
-                            )
-                        finally:
-                            try:
-                                os.remove(_concat_txt)
-                            except OSError:
-                                pass
+                            logger.warning(f"{_log_label}: remux error: {_ce}")
                     else:
                         cp["status"] = "interrupted"
                         cp["interrupted_reason"] = "server_restarted_after_end"

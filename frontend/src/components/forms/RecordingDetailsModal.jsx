@@ -53,6 +53,7 @@ const EpisodeRow = ({
   dateformat,
   timeformat,
   onOpenChild,
+  canManage = true,
 }) => {
   const cp = rec.custom_properties || {};
   const pr = cp.program || {};
@@ -118,9 +119,11 @@ const EpisodeRow = ({
           </Text>
         </Stack>
         <Group gap={6}>
-          <Button size="xs" color="red" variant="light" onClick={onRemove}>
-            Remove
-          </Button>
+          {canManage && (
+            <Button size="xs" color="red" variant="light" onClick={onRemove}>
+              Remove
+            </Button>
+          )}
         </Group>
       </Flex>
     </Card>
@@ -137,6 +140,7 @@ const RecordingDetailsModal = ({
   onWatchRecording,
   env_mode,
   onEdit,
+  canManage = true,
 }) => {
   const allRecordings = useChannelsStore((s) => s.recordings);
   // Local channel cache to avoid the global channels map
@@ -430,6 +434,7 @@ const RecordingDetailsModal = ({
             toUserTime={toUserTime}
             dateformat={dateformat}
             timeformat={timeformat}
+            canManage={canManage}
             onOpenChild={(rec) => {
               setChildRec(rec);
               setChildOpen(true);
@@ -450,6 +455,7 @@ const RecordingDetailsModal = ({
             env_mode={env_mode}
             onWatchLive={handleOnWatchLive}
             onWatchRecording={handleOnWatchRecording}
+            canManage={canManage}
           />
         )}
       </Stack>
@@ -469,16 +475,18 @@ const RecordingDetailsModal = ({
             alt={recordingName}
             fallbackSrc={getChannelLogoUrl(channel) || defaultLogo}
           />
-          <Button
-            size="compact-xs"
-            variant="subtle"
-            color="dimmed"
-            leftSection={<RefreshCcw size={12} />}
-            onClick={handleRefreshArtwork}
-            styles={{ root: { fontWeight: 400 } }}
-          >
-            Refresh artwork
-          </Button>
+          {canManage && (
+            <Button
+              size="compact-xs"
+              variant="subtle"
+              color="dimmed"
+              leftSection={<RefreshCcw size={12} />}
+              onClick={handleRefreshArtwork}
+              styles={{ root: { fontWeight: 400 } }}
+            >
+              Refresh artwork
+            </Button>
+          )}
         </Stack>
         <Stack gap={8} style={{ flex: 1 }}>
           <Group justify="space-between" align="center">
@@ -488,10 +496,11 @@ const RecordingDetailsModal = ({
             <Group gap={8}>
               {onWatchLive && <WatchLive />}
               {onWatchRecording && <WatchRecording />}
-              {onEdit && isAfter(start, userNow()) && <Edit />}
-              {(customProps.status === 'completed' ||
-                customProps.status === 'stopped' ||
-                customProps.status === 'interrupted') &&
+              {canManage && onEdit && isAfter(start, userNow()) && <Edit />}
+              {canManage &&
+                (customProps.status === 'completed' ||
+                  customProps.status === 'stopped' ||
+                  customProps.status === 'interrupted') &&
                 (!customProps?.comskip ||
                   customProps?.comskip?.status !== 'completed') && (
                   <Button
@@ -595,7 +604,7 @@ const RecordingDetailsModal = ({
                   ? recordingName
                   : `${recordingName}${program.sub_title ? ` - ${program.sub_title}` : ''}`}
             </span>
-            {!isSeriesGroup && (
+            {!isSeriesGroup && canManage && (
               <ActionIcon
                 size="sm"
                 variant="subtle"

@@ -11,21 +11,33 @@ from drf_spectacular.types import OpenApiTypes
 from rest_framework import serializers
 from django.shortcuts import get_object_or_404, get_list_or_404
 from django.db import connection, transaction
-from django.db.models import Count, F, Prefetch
-from django.db.models import Q
+from django.db.models import Count, F, Prefetch, Q
+from django.db.models.functions import Coalesce
 import os, json, requests, logging, mimetypes, threading, time
 from urllib.parse import urlencode
 from datetime import timedelta
 from apps.accounts.permissions import (
     Authenticated,
     IsAdmin,
+    IsAdminOrDVRManager,
+    IsDVRViewer,
     IsStandardUser,
     permission_classes_by_action,
     permission_classes_by_method,
 )
+from apps.channels.dvr_access import (
+    is_dvr_manage_enabled,
+    is_dvr_view_enabled,
+    recordings_queryset_for_user,
+)
 
 from core.models import CoreSettings
-from core.utils import RedisClient, safe_upload_path, resolve_safe_local_data_path
+from core.utils import (
+    RedisClient,
+    build_absolute_uri_with_port,
+    resolve_safe_local_data_path,
+    safe_upload_path,
+)
 from core.image_proxy import (
     image_fetch_failures as _logo_fetch_failures,
     serve_local_or_remote_image,
@@ -648,14 +660,40 @@ class ChannelGroupViewSet(viewsets.ModelViewSet):
         # `distinct=True` is required when multiple reverse-FK annotations
         # share the same queryset to avoid row-multiplication artifacts.
         # m3u_accounts is still prefetched for the nested serializer data.
+        user = getattr(self.request, 'user', None)
+        self._visible_group_counts = None
+
+        # Non-admins only see groups that contain at least one channel they
+        # can activate (user_level + optional adult hide).
+        if user is not None and getattr(user, 'user_level', 10) < 10:
+            visible = Channel.objects.filter(user_level__lte=user.user_level)
+            custom_props = getattr(user, 'custom_properties', None) or {}
+            if custom_props.get('hide_adult_content', False):
+                visible = visible.filter(is_adult=False)
+            rows = (
+                visible.annotate(
+                    gid=Coalesce(
+                        'override__channel_group_id',
+                        'channel_group_id',
+                    )
+                )
+                .filter(gid__isnull=False)
+                .values('gid')
+                .annotate(c=Count('id'))
+            )
+            self._visible_group_counts = {
+                row['gid']: row['c'] for row in rows
+            }
+            return ChannelGroup.objects.filter(
+                pk__in=self._visible_group_counts.keys()
+            ).only('id', 'name')
+
         return (
-            ChannelGroup.objects
-            .annotate(
+            ChannelGroup.objects.annotate(
                 channel_count=Count('channels', distinct=True),
                 m3u_account_count=Count('m3u_accounts', distinct=True),
             )
             .prefetch_related('m3u_accounts')
-            .all()
         )
 
     def list(self, request, *args, **kwargs):
@@ -665,6 +703,24 @@ class ChannelGroupViewSet(viewsets.ModelViewSet):
         # populated together, then extract IDs from the in-memory objects.
         # A second .values_list() call would fire a separate SQL query.
         groups = list(queryset)
+
+        # Non-admin path: counts already computed via GROUP BY; skip m3u nest
+        # and stream-count aggregation (provider group tooling is admin-only).
+        counts = getattr(self, '_visible_group_counts', None)
+        if counts is not None:
+            return Response(
+                [
+                    {
+                        'id': g.id,
+                        'name': g.name,
+                        'channel_count': counts.get(g.id, 0),
+                        'm3u_account_count': 0,
+                        'm3u_accounts': [],
+                    }
+                    for g in groups
+                ]
+            )
+
         group_ids = [g.id for g in groups]
 
         # Pre-aggregate stream counts for all (account, group) pairs in a
@@ -998,6 +1054,10 @@ class ChannelViewSet(viewsets.ModelViewSet):
         q_filters = Q()
 
         channel_profile_id = self.request.query_params.get("channel_profile_id")
+        if channel_profile_id is not None and (
+            channel_profile_id == "" or str(channel_profile_id).lower() == "all"
+        ):
+            channel_profile_id = None
         show_disabled_param = self.request.query_params.get("show_disabled", None)
         only_streamless = self.request.query_params.get("only_streamless", None)
         only_stale = self.request.query_params.get("only_stale", None)
@@ -1041,23 +1101,36 @@ class ChannelViewSet(viewsets.ModelViewSet):
             elif visibility_filter != "all":
                 q_filters &= Q(hidden_from_output=False)
 
+        profile_union_applied = False
         if self.request.user.user_level < 10:
             filters["user_level__lte"] = self.request.user.user_level
             # Hide adult content if user preference is set
             custom_props = self.request.user.custom_properties or {}
             if custom_props.get('hide_adult_content', False):
                 filters["is_adult"] = False
+            # Without an explicit profile, list/summary/get_ids are limited to
+            # enabled memberships in the user's assigned profiles. Retrieve /
+            # update / destroy remain reachable by channel id.
+            if (
+                self.action in ("list", "get_ids", "summary")
+                and not channel_profile_id
+                and self.request.user.channel_profiles.exists()
+            ):
+                q_filters &= Q(
+                    channelprofilemembership__channel_profile__in=(
+                        self.request.user.channel_profiles.all()
+                    ),
+                    channelprofilemembership__enabled=True,
+                )
+                profile_union_applied = True
 
         if filters:
             qs = qs.filter(**filters)
         if q_filters:
             qs = qs.filter(q_filters)
 
-        # DISTINCT is only needed when a filter joins to a one-to-many table
-        # and can produce duplicate channel rows. channel_profile_id joins
-        # channelprofilemembership; only_stale joins streams. All other
-        # filters use FK or one-to-one joins that cannot produce duplicates.
-        if channel_profile_id or only_stale:
+        # DISTINCT when a join can duplicate channel rows.
+        if channel_profile_id or only_stale or profile_union_applied:
             return qs.distinct()
         return qs
 
@@ -3192,7 +3265,7 @@ class RecurringRecordingRuleViewSet(viewsets.ModelViewSet):
     serializer_class = RecurringRecordingRuleSerializer
 
     def get_permissions(self):
-        return [IsAdmin()]
+        return [IsAdminOrDVRManager()]
 
     def perform_create(self, serializer):
         rule = serializer.save()
@@ -3298,27 +3371,47 @@ def _recording_auth_query_suffix(request):
     return "?" + urlencode({"token": token})
 
 
+RECORDINGS_STORAGE_ROOT = "/data/recordings"
+
+
+def _resolve_recording_storage_path(path):
+    """Return a realpath under /data/recordings, or None if unsafe/missing path."""
+    return resolve_safe_local_data_path(
+        path, allowed_roots=(RECORDINGS_STORAGE_ROOT,)
+    )
+
+
 class RecordingViewSet(viewsets.ModelViewSet):
     queryset = Recording.objects.all()
     serializer_class = RecordingSerializer
+
+    def get_queryset(self):
+        qs = super().get_queryset().select_related("channel")
+        return recordings_queryset_for_user(qs, getattr(self.request, "user", None))
 
     def get_permissions(self):
         # file/hls use AllowAny so DRF does not reject requests before auth
         # classes run; _user_can_play_recording enforces authenticated access.
         if self.action in ('file', 'hls'):
             return [AllowAny()]
+        if self.action in ('list', 'retrieve'):
+            return [IsDVRViewer()]
         if self.action in (
+            'create',
+            'update',
+            'partial_update',
+            'destroy',
             'stop',
             'extend',
             'comskip',
             'refresh_artwork',
             'update_metadata',
         ):
-            return [IsAdmin()]
+            return [IsAdminOrDVRManager()]
         try:
             return [perm() for perm in permission_classes_by_action[self.action]]
         except KeyError:
-            return [IsAdmin()]
+            return [IsAdminOrDVRManager()]
 
     def _user_can_play_recording(self, request, recording):
         """Authorization gate for recording playback (file/hls actions).
@@ -3327,10 +3420,11 @@ class RecordingViewSet(viewsets.ModelViewSet):
         unlike the XC-style endpoints these URLs carry no credentials of
         their own, so we require an authenticated session/JWT:
           * Unauthenticated requests → denied.
-          * Admins (user_level >= 10) → allowed.
-          * Authenticated non-admins → allowed only if the recording's
-            source channel is visible under their channel-profile
-            assignments and within their user_level.
+          * Admins and DVR managers → allowed.
+          * View-only users → allowed only if the recording's source
+            channel is visible under their channel-profile assignments
+            and within their user_level.
+          * Users without DVR view/manage → denied.
 
         The network_access_allowed(request, "STREAMS") check applied
         before this is a network-perimeter gate (e.g. block external IPs
@@ -3340,30 +3434,19 @@ class RecordingViewSet(viewsets.ModelViewSet):
         user = getattr(request, "user", None)
         if not user or not getattr(user, "is_authenticated", False):
             return False
-        if getattr(user, "user_level", 0) >= 10:
+        if not is_dvr_view_enabled(user=user):
+            return False
+        if is_dvr_manage_enabled(user=user):
             return True
 
         channel = getattr(recording, "channel", None)
         if channel is None:
-            # Recording with no source channel, only admins can play.
+            # Recording with no source channel, only admins/managers can play.
             return False
 
-        try:
-            user_profile_count = user.channel_profiles.count()
-        except Exception:
-            user_profile_count = 0
-
-        filters = {
-            "id": channel.id,
-            "user_level__lte": user.user_level,
-        }
-        if user_profile_count > 0:
-            filters["channelprofilemembership__enabled"] = True
-            filters["channelprofilemembership__channel_profile__in"] = (
-                user.channel_profiles.all()
-            )
-            return Channel.objects.filter(**filters).distinct().exists()
-        return Channel.objects.filter(**filters).exists()
+        return recordings_queryset_for_user(
+            Recording.objects.filter(pk=recording.pk), user
+        ).exists()
 
     @action(detail=True, methods=["post"], url_path="comskip")
     def comskip(self, request, pk=None):
@@ -3396,15 +3479,15 @@ class RecordingViewSet(viewsets.ModelViewSet):
         if not self._user_can_play_recording(request, recording):
             return JsonResponse({"error": "Forbidden"}, status=403)
         cp = recording.custom_properties or {}
-        file_path = cp.get("file_path")
+        file_path = _resolve_recording_storage_path(cp.get("file_path"))
         file_name = cp.get("file_name") or "recording"
+        hls_dir = _resolve_recording_storage_path(cp.get("_hls_dir"))
 
         if not file_path or not os.path.exists(file_path) or os.path.getsize(file_path) == 0:
             # Redirect to HLS if recording is still in progress
-            hls_dir = cp.get("_hls_dir")
             if hls_dir and os.path.isdir(hls_dir):
-                hls_url = request.build_absolute_uri(
-                    f"/api/channels/recordings/{pk}/hls/index.m3u8"
+                hls_url = build_absolute_uri_with_port(
+                    request, f"/api/channels/recordings/{pk}/hls/index.m3u8"
                 ) + _recording_auth_query_suffix(request)
                 return HttpResponseRedirect(hls_url)
             if not file_path or not os.path.exists(file_path):
@@ -3489,17 +3572,16 @@ class RecordingViewSet(viewsets.ModelViewSet):
         if not self._user_can_play_recording(request, recording):
             return JsonResponse({"error": "Forbidden"}, status=403)
         cp = recording.custom_properties or {}
-        hls_dir = cp.get("_hls_dir")
+        hls_dir = _resolve_recording_storage_path(cp.get("_hls_dir"))
 
         if not hls_dir or not os.path.isdir(hls_dir):
             # HLS dir is gone, recording is likely complete.  Redirect to the
             # permanent MKV endpoint for .m3u8 requests so clients that still
             # have the HLS URL bookmarked get a useful response.
-            cp = recording.custom_properties or {}
-            file_path = cp.get("file_path")
+            file_path = _resolve_recording_storage_path(cp.get("file_path"))
             if seg_path.endswith(".m3u8") and file_path and os.path.exists(file_path) and os.path.getsize(file_path) > 0:
-                file_url = request.build_absolute_uri(
-                    f"/api/channels/recordings/{pk}/file/"
+                file_url = build_absolute_uri_with_port(
+                    request, f"/api/channels/recordings/{pk}/file/"
                 ) + _recording_auth_query_suffix(request)
                 return HttpResponseRedirect(file_url)
             raise Http404("HLS content not available for this recording")
@@ -3516,8 +3598,8 @@ class RecordingViewSet(viewsets.ModelViewSet):
         if seg_path.endswith(".m3u8"):
             # Rewrite relative segment lines to absolute URLs through this API.
             # Propagate ?token= only for native <video> clients (see helper).
-            base_url = request.build_absolute_uri(
-                f"/api/channels/recordings/{pk}/hls/"
+            base_url = build_absolute_uri_with_port(
+                request, f"/api/channels/recordings/{pk}/hls/"
             )
             auth_suffix = _recording_auth_query_suffix(request)
             lines = []
@@ -3845,11 +3927,12 @@ class RecordingViewSet(viewsets.ModelViewSet):
         except Exception as e:
             logger.debug(f"Unable to stop DVR clients for cancelled recording: {e}")
 
-        # Capture paths before deletion
+        # Capture paths before deletion. Resolve under /data/recordings so a
+        # poisoned custom_properties value cannot escape that tree.
         cp = instance.custom_properties or {}
         rec_status = cp.get("status", "")
-        file_path = cp.get("file_path")
-        hls_dir = cp.get("_hls_dir")
+        file_path = _resolve_recording_storage_path(cp.get("file_path"))
+        hls_dir = _resolve_recording_storage_path(cp.get("_hls_dir"))
         channel_uuid = str(instance.channel.uuid)
 
         # 1. Delete the DB record (also fires post_delete → revoke_task_on_delete)
@@ -3868,15 +3951,14 @@ class RecordingViewSet(viewsets.ModelViewSet):
         except Exception:
             pass
 
-        # 3. Defer slow teardown to a background thread
-        library_dir = '/data'
-        allowed_roots = ['/data/', library_dir.rstrip('/') + '/']
+        # 3. Defer slow teardown to a background thread.
+        recordings_root = os.path.normpath(RECORDINGS_STORAGE_ROOT)
 
         def _safe_remove(path: str):
             if not path or not isinstance(path, str):
                 return
             try:
-                if any(path.startswith(root) for root in allowed_roots) and os.path.exists(path):
+                if os.path.exists(path):
                     os.remove(path)
                     logger.info(f"Deleted recording artifact: {path}")
             except Exception as ex:
@@ -3887,14 +3969,13 @@ class RecordingViewSet(viewsets.ModelViewSet):
                 return
             try:
                 import shutil as _shutil
-                if any(path.startswith(root) for root in allowed_roots) and os.path.isdir(path):
+                if os.path.isdir(path):
                     _shutil.rmtree(path)
                     logger.info(f"Deleted recording HLS directory: {path}")
             except Exception as ex:
                 logger.warning(f"Failed to delete HLS directory {path}: {ex}")
 
         # Clean up empty parent directories up to the recordings root to prevent orphaned folders from accumulating over time.
-        recordings_root = os.path.normpath('/data/recordings')
 
         def _prune_empty_parents(path: str):
             if not path or not isinstance(path, str):
@@ -3999,10 +4080,7 @@ class ComskipConfigAPIView(APIView):
 class BulkDeleteUpcomingRecordingsAPIView(APIView):
     """Delete all upcoming (future) recordings."""
     def get_permissions(self):
-        try:
-            return [perm() for perm in permission_classes_by_method[self.request.method]]
-        except KeyError:
-            return [Authenticated()]
+        return [IsAdminOrDVRManager()]
 
     def post(self, request):
         now = timezone.now()
@@ -4020,10 +4098,9 @@ class BulkDeleteUpcomingRecordingsAPIView(APIView):
 class SeriesRulesAPIView(APIView):
     """Manage DVR series recording rules (list/add)."""
     def get_permissions(self):
-        try:
-            return [perm() for perm in permission_classes_by_method[self.request.method]]
-        except KeyError:
-            return [Authenticated()]
+        if self.request.method == "GET":
+            return [IsDVRViewer()]
+        return [IsAdminOrDVRManager()]
 
     @extend_schema(
         summary="List all series rules",
@@ -4201,10 +4278,7 @@ class SeriesRulePreviewAPIView(APIView):
     within the standard 7-day evaluation horizon.
     """
     def get_permissions(self):
-        try:
-            return [perm() for perm in permission_classes_by_method[self.request.method]]
-        except KeyError:
-            return [Authenticated()]
+        return [IsAdminOrDVRManager()]
 
     @extend_schema(
         summary="Preview series rule matches",
@@ -4331,10 +4405,7 @@ class SeriesRulePreviewAPIView(APIView):
 
 class EvaluateSeriesRulesAPIView(APIView):
     def get_permissions(self):
-        try:
-            return [perm() for perm in permission_classes_by_method[self.request.method]]
-        except KeyError:
-            return [Authenticated()]
+        return [IsAdminOrDVRManager()]
 
     @extend_schema(
         summary="Evaluate series rules",
@@ -4362,10 +4433,7 @@ class BulkRemoveSeriesRecordingsAPIView(APIView):
       - scope: 'title' (default) or 'channel'
     """
     def get_permissions(self):
-        try:
-            return [perm() for perm in permission_classes_by_method[self.request.method]]
-        except KeyError:
-            return [Authenticated()]
+        return [IsAdminOrDVRManager()]
 
     @extend_schema(
         summary="Bulk remove scheduled recordings for a series",

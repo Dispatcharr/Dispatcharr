@@ -10,6 +10,7 @@ vi.mock('../../../constants', () => ({
 // ── Store mocks ────────────────────────────────────────────────────────────────
 vi.mock('../../../store/channels', () => ({ default: vi.fn() }));
 vi.mock('../../../store/outputProfiles', () => ({ default: vi.fn() }));
+vi.mock('../../../store/playlists', () => ({ default: vi.fn() }));
 vi.mock('../../../store/auth', () => ({ default: vi.fn() }));
 
 // ── Utility mocks ──────────────────────────────────────────────────────────────
@@ -82,9 +83,12 @@ vi.mock('@mantine/core', () => ({
         {children}
       </div>
     ) : null,
-  MultiSelect: ({ label, onChange }) => (
+  MultiSelect: ({ label, onChange, data = [] }) => (
     <div>
       <label>{label}</label>
+      {data.map((option) => (
+        <span key={option.value}>{option.label}</span>
+      ))}
       <input
         data-testid={`multiselect-${label}`}
         onChange={(e) =>
@@ -152,6 +156,7 @@ vi.mock('@mantine/core', () => ({
 // ── Imports after mocks ────────────────────────────────────────────────────────
 import useChannelsStore from '../../../store/channels';
 import useOutputProfilesStore from '../../../store/outputProfiles';
+import usePlaylistsStore from '../../../store/playlists';
 import useAuthStore from '../../../store/auth';
 import * as UserUtils from '../../../utils/forms/UserUtils.js';
 import { copyToClipboard } from '../../../utils';
@@ -177,6 +182,7 @@ const makeRegularUser = (overrides = {}) => ({
 const setupMocks = ({
   authUser = makeAdminUser(),
   profiles = {},
+  m3uProfiles = {},
   outputProfiles = [],
 } = {}) => {
   const mockSetUser = vi.fn();
@@ -184,6 +190,9 @@ const setupMocks = ({
   vi.mocked(useChannelsStore).mockImplementation((sel) => sel({ profiles }));
   vi.mocked(useOutputProfilesStore).mockImplementation((sel) =>
     sel({ profiles: outputProfiles })
+  );
+  vi.mocked(usePlaylistsStore).mockImplementation((sel) =>
+    sel({ profiles: m3uProfiles })
   );
   vi.mocked(useAuthStore).mockImplementation((sel) =>
     sel({ user: authUser, setUser: mockSetUser })
@@ -249,6 +258,159 @@ describe('User', () => {
       expect(screen.getByTestId('tab-account')).toBeInTheDocument();
       expect(screen.getByTestId('tab-epg')).toBeInTheDocument();
       expect(screen.getByTestId('tab-api')).toBeInTheDocument();
+    });
+
+    it('shows allowed provider profiles on the Permissions tab', () => {
+      setupMocks({
+        m3uProfiles: {
+          1: [
+            {
+              id: 2,
+              name: 'Provider 1 Profile B',
+              is_active: true,
+              account: { name: 'Provider 1' },
+            },
+          ],
+        },
+      });
+      render(
+        <User isOpen={true} onClose={vi.fn()} user={makeRegularUser()} />
+      );
+      expect(screen.getByText('Allowed Provider Profiles')).toBeInTheDocument();
+      expect(screen.getByText('Provider 1: Profile B')).toBeInTheDocument();
+    });
+
+    it('lists allowed provider profiles alphabetically by provider then profile name', () => {
+      setupMocks({
+        m3uProfiles: {
+          1: [
+            {
+              id: 90,
+              name: 'Zulu Primary',
+              is_active: true,
+              account: { name: 'Zulu TV' },
+            },
+            {
+              id: 10,
+              name: 'Alpha Backup',
+              is_active: true,
+              account: { name: 'Alpha IPTV' },
+            },
+          ],
+          2: [
+            {
+              id: 20,
+              name: 'Alpha Primary',
+              is_active: true,
+              account: { name: 'Alpha IPTV' },
+            },
+          ],
+        },
+      });
+      render(
+        <User isOpen={true} onClose={vi.fn()} user={makeRegularUser()} />
+      );
+      const multiSelect = screen.getByTestId(
+        'multiselect-Allowed Provider Profiles'
+      );
+      const labels = Array.from(
+        multiSelect.parentElement.querySelectorAll('span')
+      ).map((el) => el.textContent);
+      expect(labels).toEqual([
+        'Alpha IPTV: Alpha Backup',
+        'Alpha IPTV: Alpha Primary',
+        'Zulu TV: Zulu Primary',
+      ]);
+    });
+
+    it('shows "Allow all profiles" when the user is restricted (including none)', () => {
+      setupMocks();
+      vi.mocked(UserUtils.userToFormValues).mockReturnValue({
+        allowed_m3u_profile_ids: [],
+      });
+      render(
+        <User isOpen={true} onClose={vi.fn()} user={makeRegularUser()} />
+      );
+      expect(
+        screen.getByRole('button', { name: 'Allow all profiles' })
+      ).toBeInTheDocument();
+    });
+
+    it('hides "Allow all profiles" when the user is unrestricted', () => {
+      setupMocks();
+      vi.mocked(UserUtils.userToFormValues).mockReturnValue({
+        allowed_m3u_profile_ids: null,
+      });
+      render(
+        <User isOpen={true} onClose={vi.fn()} user={makeRegularUser()} />
+      );
+      expect(
+        screen.queryByRole('button', { name: 'Allow all profiles' })
+      ).not.toBeInTheDocument();
+    });
+
+    it('clicking "Allow all profiles" clears the field to null (unrestricted), not an empty allowlist', () => {
+      setupMocks();
+      vi.mocked(UserUtils.userToFormValues).mockReturnValue({
+        allowed_m3u_profile_ids: ['5'],
+      });
+      render(
+        <User isOpen={true} onClose={vi.fn()} user={makeRegularUser()} />
+      );
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Allow all profiles' })
+      );
+      expect(mockForm.setFieldValue).toHaveBeenCalledWith(
+        'allowed_m3u_profile_ids',
+        null
+      );
+      expect(
+        screen.queryByRole('button', { name: 'Allow all profiles' })
+      ).not.toBeInTheDocument();
+    });
+
+    it('clearing the allowed profiles MultiSelect sends an empty allowlist, not unrestricted', () => {
+      setupMocks();
+      vi.mocked(UserUtils.userToFormValues).mockReturnValue({
+        allowed_m3u_profile_ids: ['5'],
+      });
+      render(
+        <User isOpen={true} onClose={vi.fn()} user={makeRegularUser()} />
+      );
+      const input = screen.getByTestId(
+        'multiselect-Allowed Provider Profiles'
+      );
+      fireEvent.change(input, { target: { value: '9' } });
+      fireEvent.change(input, { target: { value: '' } });
+      expect(mockForm.setFieldValue).toHaveBeenLastCalledWith(
+        'allowed_m3u_profile_ids',
+        []
+      );
+      // Clearing must not escalate to unrestricted: the button stays visible.
+      expect(
+        screen.getByRole('button', { name: 'Allow all profiles' })
+      ).toBeInTheDocument();
+    });
+
+    it('hides allowed provider profiles when admin edits themselves', () => {
+      const admin = makeAdminUser();
+      setupMocks({
+        authUser: admin,
+        m3uProfiles: {
+          1: [
+            {
+              id: 2,
+              name: 'Provider 1 Profile B',
+              is_active: true,
+              account: { name: 'Provider 1' },
+            },
+          ],
+        },
+      });
+      render(<User isOpen={true} onClose={vi.fn()} user={admin} />);
+      expect(
+        screen.queryByText('Allowed Provider Profiles')
+      ).not.toBeInTheDocument();
     });
 
     it('shows Permissions tab when admin edits another user', () => {

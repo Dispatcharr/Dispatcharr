@@ -36,7 +36,7 @@ vi.mock('../../../utils/tables/EPGsTableUtils.js', () => ({
   updateEpg: vi.fn().mockResolvedValue(undefined),
 }));
 
-vi.mock('../M3uTableUtils.jsx', () => ({
+vi.mock('../tableSortingUtils.jsx', () => ({
   makeHeaderCellRenderer: vi.fn(() => (header) => (
     <span data-testid={`header-${header.id}`}>
       {header.column.columnDef.header}
@@ -250,7 +250,7 @@ import { showNotification } from '../../../utils/notificationUtils.js';
 import * as EPGsTableUtils from '../../../utils/tables/EPGsTableUtils.js';
 import { useTable, CustomTable } from '../CustomTable';
 import useBrowserStorage from '../../../hooks/useBrowserStorage';
-import { makeSortingChangeHandler } from '../M3uTableUtils.jsx';
+import { makeSortingChangeHandler } from '../tableSortingUtils.jsx';
 
 // ── Factories ──────────────────────────────────────────────────────────────────
 const makeEpg = (overrides = {}) => ({

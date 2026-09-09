@@ -769,6 +769,12 @@ def fetch_schedules_direct(
         except Exception as prune_err:
             logger.warning(f"Failed to prune stale SDProgramMD5 records: {prune_err}")
 
+        # Programme rows, posters, and/or pruning may have changed the guide.
+        # Drop XMLTV chunk cache so /output/epg does not keep serving the
+        # pre-refresh file for up to the cache TTL.
+        from apps.output.streaming_chunk_cache import invalidate_epg_chunk_cache
+        invalidate_epg_chunk_cache()
+
         return posters_updated
 
     # -------------------------------------------------------------------------

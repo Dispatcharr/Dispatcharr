@@ -14,7 +14,9 @@ export const makeHeaderCellRenderer = (sorting, onSortingChange) => (header) => 
   }
 
   return (
-    <Group>
+    // nowrap: default wrap drops the sort icon onto a second row when the
+    // column is only a pixel or two too narrow, doubling the header height.
+    <Group gap="xs" wrap="nowrap">
       <Text size="sm" name={header.id}>
         {header.column.columnDef.header}
       </Text>
@@ -40,14 +42,15 @@ export const makeSortingChangeHandler =
       if (sortDirection === false) {
         newSorting[0] = { id: column, desc: true };
       }
-      // third click → clear (empty array)
+      // third click clears sort
     } else {
       newSorting[0] = { id: column, desc: false };
     }
 
     setSorting(newSorting);
-    if (newSorting.length > 0) {
+    // Optional: tables that keep rows in state re-sort here. Tables that
+    // derive rows from `sorting` omit the callback.
+    if (onDataSort && newSorting.length > 0) {
       onDataSort(newSorting[0].id, newSorting[0].desc);
     }
   };
-

@@ -21,7 +21,8 @@ from apps.accounts.permissions import (
     Authenticated,
     permission_classes_by_method,
 )
-from core.http_security import validate_outbound_http_url
+from core.http_security import get_with_validated_redirects
+from core.utils import build_absolute_uri_with_port
 from dispatcharr.utils import network_access_allowed
 
 from .loader import PluginManager
@@ -81,22 +82,13 @@ def _sanitize_plugin_key(value: str) -> str:
     return base or "plugin"
 
 
-def _validate_fetch_url(url):
-    """Raise ValueError if the URL must not be fetched (SSRF prevention).
-
-    Plugin installs stay strict: loopback, private, link-local, and other
-    non-routable targets are rejected.
-    """
-    validate_outbound_http_url(url, allow_private=False, allow_loopback=False)
-
-
 def _absolutize_logo_url(request, url: str | None) -> str | None:
     if not url or not request:
         return url
     parsed = urlparse(url)
     if parsed.scheme:
         return url
-    return request.build_absolute_uri(url)
+    return build_absolute_uri_with_port(request, url)
 
 
 class PluginAuthMixin:
@@ -776,8 +768,13 @@ def _is_official_sounding(name):
 
 def _fetch_manifest(url, public_key_text=None):
     """Fetch a remote manifest JSON, validate structure, return (data, verified)."""
-    _validate_fetch_url(url)
-    with http_requests.get(url, timeout=MANIFEST_FETCH_TIMEOUT, stream=True) as resp:
+    with get_with_validated_redirects(
+        url,
+        timeout=MANIFEST_FETCH_TIMEOUT,
+        stream=True,
+        allow_private=False,
+        allow_loopback=False,
+    ) as resp:
         resp.raise_for_status()
         body = b"".join(resp.iter_content(8192))
     data = json.loads(body)
@@ -905,7 +902,7 @@ class PluginRepoPreviewAPIView(PluginAuthMixin, APIView):
             )
         except (json.JSONDecodeError, ValueError) as e:
             msg = str(e)
-            # Pass through messages from _validate_fetch_url and _fetch_manifest
+            # Pass through messages from get_with_validated_redirects / _fetch_manifest
             # as-is; only substitute the generic JSON message for actual parse errors.
             if "missing" in msg.lower() and "plugins" in msg.lower():
                 friendly = msg
@@ -1135,10 +1132,6 @@ class PluginDetailManifestAPIView(PluginAuthMixin, APIView):
             return Response(
                 {"error": "Repo not found"}, status=status.HTTP_404_NOT_FOUND
             )
-        try:
-            _validate_fetch_url(manifest_url)
-        except ValueError as e:
-            return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
         cache_key = f"plugin_detail:{repo_id}:{hashlib.md5(manifest_url.encode()).hexdigest()}"
         cached = cache.get(cache_key)
@@ -1146,9 +1139,14 @@ class PluginDetailManifestAPIView(PluginAuthMixin, APIView):
             return Response(cached)
 
         try:
-            resp = http_requests.get(manifest_url, timeout=MANIFEST_FETCH_TIMEOUT)
-            resp.raise_for_status()
-            data = resp.json()
+            with get_with_validated_redirects(
+                manifest_url,
+                timeout=MANIFEST_FETCH_TIMEOUT,
+                allow_private=False,
+                allow_loopback=False,
+            ) as resp:
+                resp.raise_for_status()
+                data = resp.json()
 
             signature = data.get("signature")
             manifest_obj = data.get("manifest", data)
@@ -1179,6 +1177,8 @@ class PluginDetailManifestAPIView(PluginAuthMixin, APIView):
             }
             cache.set(cache_key, result, PLUGIN_DETAIL_CACHE_TTL)
             return Response(result)
+        except ValueError as e:
+            return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
         except Exception as e:
             logger.exception("Failed to fetch plugin manifest from %s", manifest_url)
             return Response(
@@ -1258,14 +1258,18 @@ class PluginInstallFromRepoAPIView(PluginAuthMixin, APIView):
             except (ValueError, TypeError):
                 logger.warning("Failed to parse version constraints: min=%s, max=%s", min_version, max_version)
 
-        # Download the zip
+        # Download the zip (validate every redirect hop)
         try:
-            _validate_fetch_url(download_url)
+            resp = get_with_validated_redirects(
+                download_url,
+                timeout=60,
+                stream=True,
+                allow_private=False,
+                allow_loopback=False,
+            )
+            resp.raise_for_status()
         except ValueError as e:
             return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
-        try:
-            resp = http_requests.get(download_url, timeout=60, stream=True)
-            resp.raise_for_status()
         except Exception as e:
             logger.exception("Failed to download plugin from %s", download_url)
             return Response(
@@ -1278,45 +1282,48 @@ class PluginInstallFromRepoAPIView(PluginAuthMixin, APIView):
         hasher = hashlib.sha256() if expected_sha256 else None
 
         # Stream the response to a temporary file to avoid buffering in memory
-        with tempfile.NamedTemporaryFile(suffix=".zip") as tmp_file:
-            total = 0
-            for chunk in resp.iter_content(chunk_size=8192):
-                if not chunk:
-                    continue
-                total += len(chunk)
-                if total > MAX_PLUGIN_IMPORT_BYTES:
-                    return Response(
-                        {"error": "Download is too large"},
-                        status=status.HTTP_400_BAD_REQUEST,
-                    )
-                if hasher is not None:
-                    hasher.update(chunk)
-                tmp_file.write(chunk)
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".zip") as tmp_file:
+                total = 0
+                for chunk in resp.iter_content(chunk_size=8192):
+                    if not chunk:
+                        continue
+                    total += len(chunk)
+                    if total > MAX_PLUGIN_IMPORT_BYTES:
+                        return Response(
+                            {"error": "Download is too large"},
+                            status=status.HTTP_400_BAD_REQUEST,
+                        )
+                    if hasher is not None:
+                        hasher.update(chunk)
+                    tmp_file.write(chunk)
 
-            if expected_sha256:
-                actual_sha256 = hasher.hexdigest()
-                if actual_sha256 != expected_sha256:
-                    logger.warning(
-                        "SHA256 mismatch for plugin '%s' from %s: expected %s, got %s",
-                        slug, download_url, expected_sha256, actual_sha256,
-                    )
-                    return Response(
-                        {
-                            "error": "SHA256 integrity check failed - download discarded. The file may be corrupted or tampered with."
-                        },
-                        status=status.HTTP_400_BAD_REQUEST,
-                    )
+                if expected_sha256:
+                    actual_sha256 = hasher.hexdigest()
+                    if actual_sha256 != expected_sha256:
+                        logger.warning(
+                            "SHA256 mismatch for plugin '%s' from %s: expected %s, got %s",
+                            slug, download_url, expected_sha256, actual_sha256,
+                        )
+                        return Response(
+                            {
+                                "error": "SHA256 integrity check failed - download discarded. The file may be corrupted or tampered with."
+                            },
+                            status=status.HTTP_400_BAD_REQUEST,
+                        )
 
-            # Delegate to shared install logic (allow overwrite for managed updates)
-            tmp_file.flush()
-            tmp_file.seek(0)
-            pm = PluginManager.get()
-            result = _install_plugin_from_zip(
-                tmp_file,
-                pm.plugins_dir,
-                file_name=f"{slug}.zip",
-                allow_overwrite_key=plugin_key if existing_cfg else None,
-            )
+                # Delegate to shared install logic (allow overwrite for managed updates)
+                tmp_file.flush()
+                tmp_file.seek(0)
+                pm = PluginManager.get()
+                result = _install_plugin_from_zip(
+                    tmp_file,
+                    pm.plugins_dir,
+                    file_name=f"{slug}.zip",
+                    allow_overwrite_key=plugin_key if existing_cfg else None,
+                )
+        finally:
+            resp.close()
         if not result["success"]:
             return Response(
                 {"success": False, "error": result["error"]},

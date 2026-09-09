@@ -16,378 +16,286 @@ export const rehashStreams = async () => {
   return await API.rehashStreams();
 };
 
-export const saveChangedSettings = async (settings, changedSettings) => {
-  // Group changes by their setting group based on field name prefixes
-  const groupedChanges = {
-    stream_settings: {},
-    epg_settings: {},
-    dvr_settings: {},
-    backup_settings: {},
-    system_settings: {},
-  };
+/**
+ * Per-group field definitions. One source of truth for parse, diff, and save.
+ *
+ * ``type`` drives coerce/compare (and default parse). Optional ``parse`` /
+ * ``default`` override per-field form hydration.
+ */
+const GROUP_CONFIG = {
+  stream_settings: {
+    name: 'Stream Settings',
+    fields: {
+      default_user_agent: { type: 'id' },
+      default_stream_profile: { type: 'id' },
+      m3u_hash_key: { type: 'm3u_hash_key', default: [] },
+      default_output_format: { type: 'string', default: 'mpegts' },
+      hdhr_output_profile_id: { type: 'id' },
+    },
+  },
+  epg_settings: {
+    name: 'EPG Settings',
+    fields: {
+      epg_match_mode: { type: 'string', default: 'default' },
+      epg_match_ignore_prefixes: { type: 'array', default: [] },
+      epg_match_ignore_suffixes: { type: 'array', default: [] },
+      epg_match_ignore_custom: { type: 'array', default: [] },
+    },
+  },
+  dvr_settings: {
+    name: 'DVR Settings',
+    fields: {
+      tv_template: { type: 'raw', default: '' },
+      movie_template: { type: 'raw', default: '' },
+      tv_fallback_dir: { type: 'raw', default: '' },
+      tv_fallback_template: { type: 'raw', default: '' },
+      movie_fallback_template: { type: 'raw', default: '' },
+      comskip_enabled: { type: 'bool', default: false },
+      comskip_custom_path: { type: 'raw', default: '' },
+      comskip_mode: { type: 'string', default: 'cut' },
+      comskip_hw_accel: {
+        type: 'string',
+        default: 'none',
+        // Legacy "qsv" never worked with the bundled binary; map to hwassist.
+        parse: (value) => {
+          const hwAccel = value || 'none';
+          return hwAccel === 'qsv' ? 'hwassist' : hwAccel;
+        },
+      },
+      pre_offset_minutes: { type: 'int', default: 0 },
+      post_offset_minutes: { type: 'int', default: 0 },
+      series_rules: { type: 'array', default: [] },
+      output_profile_id: { type: 'id' },
+    },
+  },
+  system_settings: {
+    name: 'System Settings',
+    fields: {
+      time_zone: { type: 'string', default: '' },
+      max_system_events: { type: 'int', default: 100 },
+      log_max_mb: { type: 'int', default: 10 },
+      log_keep: { type: 'int', default: 5 },
+      log_persist: { type: 'bool', default: true },
+      preferred_region: { type: 'nullable', default: null },
+      auto_import_mapped_files: { type: 'bool', default: true },
+      enable_ip_lookup: { type: 'bool', default: true },
+      catchup_enabled: { type: 'bool', default: true },
+    },
+  },
+};
 
-  // Map of field prefixes to their groups
-  const streamFields = [
-    'default_user_agent',
-    'default_stream_profile',
-    'm3u_hash_key',
-    'default_output_format',
-    'hdhr_output_profile_id',
-  ];
-  const epgFields = [
-    'epg_match_mode',
-    'epg_match_ignore_prefixes',
-    'epg_match_ignore_suffixes',
-    'epg_match_ignore_custom',
-  ];
-  const dvrFields = [
-    'tv_template',
-    'movie_template',
-    'tv_fallback_dir',
-    'tv_fallback_template',
-    'movie_fallback_template',
-    'comskip_enabled',
-    'comskip_custom_path',
-    'comskip_mode',
-    'comskip_hw_accel',
-    'pre_offset_minutes',
-    'post_offset_minutes',
-    'series_rules',
-  ];
-  const backupFields = [
-    'schedule_enabled',
-    'schedule_frequency',
-    'schedule_time',
-    'schedule_day_of_week',
-    'retention_count',
-    'schedule_cron_expression',
-  ];
-  const systemFields = [
-    'time_zone',
-    'max_system_events',
-    'preferred_region',
-    'auto_import_mapped_files',
-    'enable_ip_lookup',
-    'catchup_enabled',
-  ];
+const toOptionalIdString = (value) =>
+  value != null ? String(value) : null;
 
-  for (const formKey in changedSettings) {
-    let value = changedSettings[formKey];
+const toIntOr = (value, fallback) =>
+  typeof value === 'number' ? value : parseInt(value, 10) || fallback;
 
-    // Handle special grouped settings (proxy_settings and network_access)
-    if (formKey === 'proxy_settings') {
-      const existing = settings['proxy_settings'];
-      if (existing?.id) {
-        await updateSetting({ ...existing, value });
-      } else {
-        await createSetting({
-          key: 'proxy_settings',
-          name: 'Proxy Settings',
-          value,
-        });
-      }
-      continue;
-    }
+const toBool = (value, fallback = false) =>
+  typeof value === 'boolean' ? value : value == null ? fallback : Boolean(value);
 
-    if (formKey === 'network_access') {
-      const existing = settings['network_access'];
-      if (existing?.id) {
-        await updateSetting({ ...existing, value });
-      } else {
-        await createSetting({
-          key: 'network_access',
-          name: 'Network Access',
-          value,
-        });
-      }
-      continue;
-    }
+const parseM3uHashKey = (hashKey) => {
+  if (typeof hashKey === 'string') {
+    return hashKey ? hashKey.split(',').filter((v) => v) : [];
+  }
+  if (Array.isArray(hashKey)) {
+    return hashKey;
+  }
+  return [];
+};
 
-    // Type conversions for proper storage
-    // EPG fields should remain as arrays, don't convert them
-    if (formKey === 'm3u_hash_key' && Array.isArray(value)) {
-      value = value.join(',');
-    }
-
-    if (
-      [
-        'default_user_agent',
-        'default_stream_profile',
-        'hdhr_output_profile_id',
-      ].includes(formKey) &&
-      value != null
-    ) {
-      value = value === '' ? null : parseInt(value, 10) || null;
-    }
-
-    const numericFields = [
-      'pre_offset_minutes',
-      'post_offset_minutes',
-      'retention_count',
-      'schedule_day_of_week',
-      'max_system_events',
-    ];
-    if (numericFields.includes(formKey) && value != null) {
-      value = typeof value === 'number' ? value : parseInt(value, 10);
-    }
-
-    const booleanFields = [
-      'comskip_enabled',
-      'schedule_enabled',
-      'auto_import_mapped_files',
-      'enable_ip_lookup',
-      'catchup_enabled',
-    ];
-    if (booleanFields.includes(formKey) && value != null) {
-      if (typeof value === 'boolean') {
-        // keep as-is
-      } else if (typeof value === 'string') {
-        const lowered = value.trim().toLowerCase();
-        value = ['true', '1', 'yes', 'on'].includes(lowered);
-      } else {
-        value = value === 1;
-      }
-    }
-
-    // Route to appropriate group
-    if (streamFields.includes(formKey)) {
-      groupedChanges.stream_settings[formKey] = value;
-    } else if (epgFields.includes(formKey)) {
-      groupedChanges.epg_settings[formKey] = value;
-    } else if (dvrFields.includes(formKey)) {
-      groupedChanges.dvr_settings[formKey] = value;
-    } else if (backupFields.includes(formKey)) {
-      groupedChanges.backup_settings[formKey] = value;
-    } else if (systemFields.includes(formKey)) {
-      groupedChanges.system_settings[formKey] = value;
-    }
+const parseFieldValue = (def, rawValue) => {
+  if (typeof def.parse === 'function') {
+    return def.parse(rawValue);
   }
 
-  // Update each group that has changes
-  for (const [groupKey, changes] of Object.entries(groupedChanges)) {
-    if (Object.keys(changes).length === 0) continue;
-
-    const existing = settings[groupKey];
-    const currentValue = existing?.value || {};
-    const newValue = { ...currentValue, ...changes };
-
-    if (existing?.id) {
-      const result = await updateSetting({ ...existing, value: newValue });
-      if (!result) {
-        throw new Error(`Failed to update ${groupKey}`);
+  switch (def.type) {
+    case 'id':
+      return toOptionalIdString(rawValue);
+    case 'int':
+      return toIntOr(rawValue, def.default ?? 0);
+    case 'bool':
+      return toBool(rawValue, def.default ?? false);
+    case 'array':
+      return Array.isArray(rawValue) ? rawValue : (def.default ?? []);
+    case 'm3u_hash_key':
+      return parseM3uHashKey(rawValue);
+    case 'nullable':
+      return rawValue ?? def.default ?? null;
+    case 'string':
+      if (rawValue == null || rawValue === '') {
+        return def.default ?? '';
       }
-    } else {
-      const name = groupKey
-        .split('_')
-        .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
-        .join(' ');
-      const result = await createSetting({
-        key: groupKey,
-        name: name,
-        value: newValue,
-      });
-      if (!result) {
-        throw new Error(`Failed to create ${groupKey}`);
+      return String(rawValue);
+    case 'raw':
+      // Apply default only when missing; keep an explicit empty string.
+      if (rawValue == null && 'default' in def) {
+        return def.default;
       }
-    }
+      return rawValue;
+    default:
+      return rawValue;
   }
 };
 
-export const getChangedSettings = (values, settings) => {
-  const changedSettings = {};
-
-  // Fields that must remain as arrays and not be stringified
-  const arrayFields = [
-    'epg_match_ignore_prefixes',
-    'epg_match_ignore_suffixes',
-    'epg_match_ignore_custom',
-    'series_rules',
-  ];
-
-  for (const settingKey in values) {
-    // Skip grouped settings that are handled by their own dedicated forms
-    if (settingKey === 'proxy_settings' || settingKey === 'network_access') {
-      continue;
-    }
-
-    // Only compare against existing value if the setting exists
-    const existing = settings[settingKey];
-
-    let actualValue = values[settingKey];
-    let compareValue;
-
-    // Handle EPG mode field - always include (defaults to 'default' if not set)
-    if (settingKey === 'epg_match_mode') {
-      changedSettings[settingKey] = actualValue || 'default';
-      continue;
-    }
-
-    // Handle array fields - keep as arrays, don't skip empty arrays
-    if (arrayFields.includes(settingKey)) {
-      if (!Array.isArray(actualValue)) {
-        actualValue = [];
-      }
-      changedSettings[settingKey] = actualValue;
-      continue;
-    }
-
-    // Convert array values (like m3u_hash_key) to comma-separated strings for comparison
-    if (Array.isArray(actualValue)) {
-      actualValue = actualValue.join(',');
-      compareValue = actualValue;
-    } else {
-      compareValue = String(actualValue);
-    }
-
-    // Skip empty values to avoid validation errors
-    if (!compareValue) {
-      continue;
-    }
-
-    if (!existing) {
-      // Create new setting on save - preserve original type
-      changedSettings[settingKey] = actualValue;
-    } else if (compareValue !== String(existing.value)) {
-      // If the user changed the setting's value from what's in the DB - preserve original type
-      changedSettings[settingKey] = actualValue;
-    }
+const parseGroupValue = (groupKey, raw) => {
+  const group = GROUP_CONFIG[groupKey];
+  if (!group) {
+    return {};
   }
-  return changedSettings;
-};
 
-export const parseSettings = (settings) => {
+  const hasRaw = raw && typeof raw === 'object';
   const parsed = {};
 
-  // Stream settings - direct mapping with underscore keys
-  const streamSettings = settings['stream_settings']?.value;
-  if (streamSettings && typeof streamSettings === 'object') {
-    // IDs must be strings for Select components
-    parsed.default_user_agent =
-      streamSettings.default_user_agent != null
-        ? String(streamSettings.default_user_agent)
-        : null;
-    parsed.default_stream_profile =
-      streamSettings.default_stream_profile != null
-        ? String(streamSettings.default_stream_profile)
-        : null;
-    parsed.default_output_format =
-      streamSettings.default_output_format != null
-        ? String(streamSettings.default_output_format)
-        : 'mpegts';
-    parsed.hdhr_output_profile_id =
-      streamSettings.hdhr_output_profile_id != null
-        ? String(streamSettings.hdhr_output_profile_id)
-        : null;
-
-    // m3u_hash_key should be array
-    const hashKey = streamSettings.m3u_hash_key;
-    if (typeof hashKey === 'string') {
-      parsed.m3u_hash_key = hashKey ? hashKey.split(',').filter((v) => v) : [];
-    } else if (Array.isArray(hashKey)) {
-      parsed.m3u_hash_key = hashKey;
-    } else {
-      parsed.m3u_hash_key = [];
-    }
-  }
-
-  // EPG settings - direct mapping with underscore keys
-  const epgSettings = settings['epg_settings']?.value;
-  // Always set EPG fields (even if settings don't exist yet)
-  parsed.epg_match_ignore_prefixes =
-    epgSettings && Array.isArray(epgSettings.epg_match_ignore_prefixes)
-      ? epgSettings.epg_match_ignore_prefixes
-      : [];
-  parsed.epg_match_ignore_suffixes =
-    epgSettings && Array.isArray(epgSettings.epg_match_ignore_suffixes)
-      ? epgSettings.epg_match_ignore_suffixes
-      : [];
-  parsed.epg_match_ignore_custom =
-    epgSettings && Array.isArray(epgSettings.epg_match_ignore_custom)
-      ? epgSettings.epg_match_ignore_custom
-      : [];
-
-  // DVR settings - direct mapping with underscore keys
-  const dvrSettings = settings['dvr_settings']?.value;
-  if (dvrSettings && typeof dvrSettings === 'object') {
-    parsed.tv_template = dvrSettings.tv_template;
-    parsed.movie_template = dvrSettings.movie_template;
-    parsed.tv_fallback_dir = dvrSettings.tv_fallback_dir;
-    parsed.tv_fallback_template = dvrSettings.tv_fallback_template;
-    parsed.movie_fallback_template = dvrSettings.movie_fallback_template;
-    parsed.comskip_enabled =
-      typeof dvrSettings.comskip_enabled === 'boolean'
-        ? dvrSettings.comskip_enabled
-        : Boolean(dvrSettings.comskip_enabled);
-    parsed.comskip_custom_path = dvrSettings.comskip_custom_path;
-    parsed.comskip_mode = dvrSettings.comskip_mode || 'cut';
-    // Legacy "qsv" never worked with the bundled binary; map to hwassist.
-    const hwAccel = dvrSettings.comskip_hw_accel || 'none';
-    parsed.comskip_hw_accel = hwAccel === 'qsv' ? 'hwassist' : hwAccel;
-    parsed.pre_offset_minutes =
-      typeof dvrSettings.pre_offset_minutes === 'number'
-        ? dvrSettings.pre_offset_minutes
-        : parseInt(dvrSettings.pre_offset_minutes, 10) || 0;
-    parsed.post_offset_minutes =
-      typeof dvrSettings.post_offset_minutes === 'number'
-        ? dvrSettings.post_offset_minutes
-        : parseInt(dvrSettings.post_offset_minutes, 10) || 0;
-    parsed.series_rules = Array.isArray(dvrSettings.series_rules)
-      ? dvrSettings.series_rules
-      : [];
-  }
-
-  // Backup settings - direct mapping with underscore keys
-  const backupSettings = settings['backup_settings']?.value;
-  if (backupSettings && typeof backupSettings === 'object') {
-    parsed.schedule_enabled =
-      typeof backupSettings.schedule_enabled === 'boolean'
-        ? backupSettings.schedule_enabled
-        : Boolean(backupSettings.schedule_enabled);
-    parsed.schedule_frequency = String(backupSettings.schedule_frequency || '');
-    parsed.schedule_time = String(backupSettings.schedule_time || '');
-    parsed.schedule_day_of_week =
-      typeof backupSettings.schedule_day_of_week === 'number'
-        ? backupSettings.schedule_day_of_week
-        : parseInt(backupSettings.schedule_day_of_week, 10) || 0;
-    parsed.retention_count =
-      typeof backupSettings.retention_count === 'number'
-        ? backupSettings.retention_count
-        : parseInt(backupSettings.retention_count, 10) || 0;
-    parsed.schedule_cron_expression = String(
-      backupSettings.schedule_cron_expression || ''
-    );
-  }
-
-  // System settings - direct mapping with underscore keys
-  const systemSettings = settings['system_settings']?.value;
-  if (systemSettings && typeof systemSettings === 'object') {
-    parsed.time_zone = String(systemSettings.time_zone || '');
-    parsed.max_system_events =
-      typeof systemSettings.max_system_events === 'number'
-        ? systemSettings.max_system_events
-        : parseInt(systemSettings.max_system_events, 10) || 100;
-    parsed.preferred_region = systemSettings.preferred_region ?? null;
-    parsed.auto_import_mapped_files =
-      typeof systemSettings.auto_import_mapped_files === 'boolean'
-        ? systemSettings.auto_import_mapped_files
-        : true;
-    parsed.enable_ip_lookup =
-      typeof systemSettings.enable_ip_lookup === 'boolean'
-        ? systemSettings.enable_ip_lookup
-        : true;
-    parsed.catchup_enabled =
-      typeof systemSettings.catchup_enabled === 'boolean'
-        ? systemSettings.catchup_enabled
-        : true;
-  }
-
-  // Proxy and network access are already grouped objects
-  if (settings['proxy_settings']?.value) {
-    parsed.proxy_settings = settings['proxy_settings'].value;
-  }
-  if (settings['network_access']?.value) {
-    parsed.network_access = settings['network_access'].value;
+  for (const [field, def] of Object.entries(group.fields)) {
+    parsed[field] = parseFieldValue(def, hasRaw ? raw[field] : undefined);
   }
 
   return parsed;
+};
+
+const normalizeForCompare = (groupKey, field, value) => {
+  const type = GROUP_CONFIG[groupKey]?.fields[field]?.type;
+
+  if (type === 'array') {
+    return JSON.stringify(Array.isArray(value) ? value : []);
+  }
+  if (type === 'm3u_hash_key') {
+    if (Array.isArray(value)) {
+      return value.join(',');
+    }
+    return String(value ?? '');
+  }
+  if (type === 'id') {
+    if (value == null || value === '') {
+      return '';
+    }
+    return String(value);
+  }
+  if (value == null) {
+    return '';
+  }
+  return String(value);
+};
+
+const coerceFieldValue = (groupKey, field, value) => {
+  const type = GROUP_CONFIG[groupKey]?.fields[field]?.type;
+
+  if (type === 'm3u_hash_key' && Array.isArray(value)) {
+    return value.join(',');
+  }
+
+  if (type === 'id') {
+    if (value == null || value === '') {
+      return null;
+    }
+    return parseInt(value, 10) || null;
+  }
+
+  if (type === 'int' && value != null) {
+    return typeof value === 'number' ? value : parseInt(value, 10);
+  }
+
+  if (type === 'bool' && value != null) {
+    if (typeof value === 'boolean') {
+      return value;
+    }
+    if (typeof value === 'string') {
+      const lowered = value.trim().toLowerCase();
+      return ['true', '1', 'yes', 'on'].includes(lowered);
+    }
+    return value === 1;
+  }
+
+  return value;
+};
+
+/**
+ * Parse one settings group into flat form values for that group only.
+ */
+export const parseGroupSettings = (settings, groupKey) => {
+  if (!GROUP_CONFIG[groupKey]) {
+    return {};
+  }
+  return parseGroupValue(groupKey, settings?.[groupKey]?.value);
+};
+
+/**
+ * Diff form values against one group's stored `.value`. Only changed fields
+ * are returned (including explicit null clears for optional IDs).
+ */
+export const getChangedGroupSettings = (values, settings, groupKey) => {
+  const group = GROUP_CONFIG[groupKey];
+  if (!group) {
+    return {};
+  }
+
+  const stored = settings?.[groupKey]?.value || {};
+  const changed = {};
+
+  for (const field of Object.keys(group.fields)) {
+    if (!(field in values)) {
+      continue;
+    }
+
+    let actualValue = values[field];
+    if (
+      group.fields[field].type === 'array' &&
+      !Array.isArray(actualValue)
+    ) {
+      actualValue = [];
+    }
+
+    if (
+      normalizeForCompare(groupKey, field, actualValue) ===
+      normalizeForCompare(groupKey, field, stored[field])
+    ) {
+      continue;
+    }
+
+    changed[field] = actualValue;
+  }
+
+  return changed;
+};
+
+/**
+ * Coerce and merge a patch into one settings group row (update or create).
+ */
+export const saveGroupSettings = async (settings, groupKey, patch) => {
+  const group = GROUP_CONFIG[groupKey];
+  if (!group) {
+    throw new Error(`Unknown settings group: ${groupKey}`);
+  }
+
+  const changes = {};
+  for (const [formKey, rawValue] of Object.entries(patch || {})) {
+    if (!(formKey in group.fields)) {
+      continue;
+    }
+    changes[formKey] = coerceFieldValue(groupKey, formKey, rawValue);
+  }
+
+  if (Object.keys(changes).length === 0) {
+    return;
+  }
+
+  const existing = settings?.[groupKey];
+  const currentValue = existing?.value || {};
+  const newValue = { ...currentValue, ...changes };
+
+  if (existing?.id) {
+    const result = await updateSetting({ ...existing, value: newValue });
+    if (!result) {
+      throw new Error(`Failed to update ${groupKey}`);
+    }
+  } else {
+    const result = await createSetting({
+      key: groupKey,
+      name: group.name || groupKey,
+      value: newValue,
+    });
+    if (!result) {
+      throw new Error(`Failed to create ${groupKey}`);
+    }
+  }
 };

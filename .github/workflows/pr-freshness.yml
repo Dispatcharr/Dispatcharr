@@ -21,6 +21,8 @@ jobs:
           check-conflicts: true
           check-changes-requested: true
           check-maintainer-responded-stale: true
+          check-compliance: true
+          compliance-marker: repo-bot:pr-compliance
           enforcement: close
           bypass-for-members: true
           stale-message: |

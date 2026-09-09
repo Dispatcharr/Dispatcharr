@@ -188,12 +188,28 @@ describe('UserUtils', () => {
       expect(result.xc_password).toBe('');
       expect(result.output_format).toBe('');
       expect(result.output_profile).toBe('');
+      expect(result.allowed_m3u_profile_ids).toBeNull();
       expect(result.hide_adult_content).toBe(false);
       expect(result.catchup_enabled).toBe(true);
       expect(result.vod_movies_enabled).toBe(true);
       expect(result.vod_series_enabled).toBe(true);
+      expect(result.dvr_access).toBe('view');
       expect(result.epg_days).toBe(0);
       expect(result.epg_prev_days).toBe(0);
+    });
+
+    it('maps allowed_m3u_profile_ids empty list as restricted none', () => {
+      const result = userToFormValues(
+        makeUser({ custom_properties: { allowed_m3u_profile_ids: [] } })
+      );
+      expect(result.allowed_m3u_profile_ids).toEqual([]);
+    });
+
+    it('maps allowed_m3u_profile_ids allowlist to string ids', () => {
+      const result = userToFormValues(
+        makeUser({ custom_properties: { allowed_m3u_profile_ids: [3, 7] } })
+      );
+      expect(result.allowed_m3u_profile_ids).toEqual(['3', '7']);
     });
 
     it('maps custom_properties when present', () => {
@@ -206,6 +222,7 @@ describe('UserUtils', () => {
           catchup_enabled: false,
           vod_movies_enabled: false,
           vod_series_enabled: false,
+          dvr_access: 'manage',
           epg_days: 7,
           epg_prev_days: 2,
           allowed_networks: {
@@ -222,6 +239,7 @@ describe('UserUtils', () => {
       expect(result.catchup_enabled).toBe(false);
       expect(result.vod_movies_enabled).toBe(false);
       expect(result.vod_series_enabled).toBe(false);
+      expect(result.dvr_access).toBe('manage');
       expect(result.epg_days).toBe(7);
       expect(result.epg_prev_days).toBe(2);
     });
@@ -258,6 +276,7 @@ describe('UserUtils', () => {
       catchup_enabled: false,
       vod_movies_enabled: false,
       vod_series_enabled: true,
+      dvr_access: 'view',
       epg_days: 7,
       epg_prev_days: 2,
       allowed_ips: ['192.168.1.0/24'],
@@ -281,6 +300,39 @@ describe('UserUtils', () => {
       const result = formValuesToPayload(makeValues(), null);
       expect(result.output_profile).toBeUndefined();
       expect(result.custom_properties.output_profile).toBe(3);
+    });
+
+    it('omits allowed_m3u_profile_ids on create when unrestricted (null)', () => {
+      const result = formValuesToPayload(
+        makeValues({ allowed_m3u_profile_ids: null }),
+        null
+      );
+      expect(result.allowed_m3u_profile_ids).toBeUndefined();
+      expect(result.custom_properties.allowed_m3u_profile_ids).toBeUndefined();
+    });
+
+    it('sends null allowed_m3u_profile_ids on update so merge deletes the key', () => {
+      const result = formValuesToPayload(
+        makeValues({ allowed_m3u_profile_ids: null }),
+        { custom_properties: { allowed_m3u_profile_ids: [1] } }
+      );
+      expect(result.custom_properties.allowed_m3u_profile_ids).toBeNull();
+    });
+
+    it('keeps empty allowed_m3u_profile_ids list as restricted none', () => {
+      const result = formValuesToPayload(
+        makeValues({ allowed_m3u_profile_ids: [] }),
+        { custom_properties: {} }
+      );
+      expect(result.custom_properties.allowed_m3u_profile_ids).toEqual([]);
+    });
+
+    it('parses allowed_m3u_profile_ids allowlist as ints', () => {
+      const result = formValuesToPayload(
+        makeValues({ allowed_m3u_profile_ids: ['3', '7'] }),
+        null
+      );
+      expect(result.custom_properties.allowed_m3u_profile_ids).toEqual([3, 7]);
     });
 
     it('sets output_profile to null when empty string', () => {
@@ -329,6 +381,52 @@ describe('UserUtils', () => {
       );
       expect(result.custom_properties.vod_movies_enabled).toBe(true);
       expect(result.custom_properties.vod_series_enabled).toBe(true);
+    });
+
+    it('maps dvr_access into custom_properties (default view)', () => {
+      const result = formValuesToPayload(makeValues(), null);
+      expect(result.dvr_access).toBeUndefined();
+      expect(result.custom_properties.dvr_access).toBe('view');
+    });
+
+    it('stores manage when selected', () => {
+      const result = formValuesToPayload(
+        makeValues({ dvr_access: 'manage' }),
+        null
+      );
+      expect(result.custom_properties.dvr_access).toBe('manage');
+    });
+
+    it('stores none when selected', () => {
+      const result = formValuesToPayload(
+        makeValues({ dvr_access: 'none' }),
+        null
+      );
+      expect(result.custom_properties.dvr_access).toBe('none');
+    });
+
+    it('forces dvr_access none when saving a streamer', () => {
+      // This file mocks USER_LEVELS.STREAMER as 2 (see vi.mock above).
+      const result = formValuesToPayload(
+        makeValues({
+          user_level: '2',
+          dvr_access: 'manage',
+        }),
+        null
+      );
+      expect(result.custom_properties.dvr_access).toBe('none');
+    });
+
+    it('strips leftover dual-flag dvr keys on save', () => {
+      const result = formValuesToPayload(makeValues({ dvr_access: 'view' }), {
+        custom_properties: {
+          dvr_view_enabled: true,
+          dvr_manage_enabled: true,
+        },
+      });
+      expect(result.custom_properties.dvr_access).toBe('view');
+      expect(result.custom_properties.dvr_view_enabled).toBeUndefined();
+      expect(result.custom_properties.dvr_manage_enabled).toBeUndefined();
     });
 
     it('moves epg_days and epg_prev_days into custom_properties', () => {
@@ -406,11 +504,13 @@ describe('UserUtils', () => {
         xc_password: '',
         output_format: '',
         output_profile: '',
+        allowed_m3u_profile_ids: null,
         channel_profiles: [],
         hide_adult_content: false,
         catchup_enabled: true,
         vod_movies_enabled: true,
         vod_series_enabled: true,
+        dvr_access: 'view',
         epg_days: 0,
         epg_prev_days: 0,
         allowed_ips: [],

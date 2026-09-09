@@ -19,10 +19,10 @@ vi.mock('../../../../constants.js', () => ({
 
 // ── Utility mocks ──────────────────────────────────────────────────────────────
 vi.mock('../../../../utils/pages/SettingsUtils.js', () => ({
-  getChangedSettings: vi.fn(),
-  parseSettings: vi.fn(),
+  getChangedGroupSettings: vi.fn(),
+  parseGroupSettings: vi.fn(),
   rehashStreams: vi.fn(),
-  saveChangedSettings: vi.fn(),
+  saveGroupSettings: vi.fn(),
 }));
 
 vi.mock('../../../../utils/forms/settings/StreamSettingsFormUtils.js', () => ({
@@ -158,10 +158,10 @@ import useStreamProfilesStore from '../../../../store/streamProfiles.jsx';
 import useOutputProfilesStore from '../../../../store/outputProfiles.jsx';
 import { useForm } from '@mantine/form';
 import {
-  getChangedSettings,
-  parseSettings,
+  getChangedGroupSettings,
+  parseGroupSettings,
   rehashStreams,
-  saveChangedSettings,
+  saveGroupSettings,
 } from '../../../../utils/pages/SettingsUtils.js';
 import {
   getStreamSettingsFormInitialValues,
@@ -228,12 +228,13 @@ const setupMocks = ({
   vi.mocked(useForm).mockReturnValue(formMock);
   vi.mocked(getStreamSettingsFormInitialValues).mockReturnValue(mockFormValues);
   vi.mocked(getStreamSettingsFormValidation).mockReturnValue({});
-  vi.mocked(parseSettings).mockReturnValue(mockFormValues);
-  vi.mocked(getChangedSettings).mockReturnValue({ default_user_agent: '1' });
-  vi.mocked(saveChangedSettings).mockResolvedValue(undefined);
+  vi.mocked(parseGroupSettings).mockReturnValue(mockFormValues);
+  vi.mocked(getChangedGroupSettings).mockReturnValue({ default_user_agent: '1' });
+  vi.mocked(saveGroupSettings).mockResolvedValue(undefined);
   vi.mocked(rehashStreams).mockResolvedValue(undefined);
 
   vi.mocked(useSettingsStore).mockImplementation((sel) => sel({ settings }));
+  vi.mocked(useSettingsStore).getState = vi.fn(() => ({ settings }));
   vi.mocked(useWarningsStore).mockImplementation((sel) =>
     sel({
       suppressWarning: vi.fn(),
@@ -333,12 +334,12 @@ describe('StreamSettingsForm', () => {
       expect(getStreamSettingsFormValidation).toHaveBeenCalled();
     });
 
-    it('calls parseSettings with settings from store on mount', async () => {
+    it('calls parseGroupSettings with settings from store on mount', async () => {
       const settings = makeSettings();
       setupMocks({ settings });
       render(<StreamSettingsForm active={true} />);
       await waitFor(() => {
-        expect(parseSettings).toHaveBeenCalledWith(settings);
+        expect(parseGroupSettings).toHaveBeenCalledWith(settings, 'stream_settings');
       });
     });
 
@@ -349,13 +350,13 @@ describe('StreamSettingsForm', () => {
       });
     });
 
-    it('does not call parseSettings when settings is null', async () => {
+    it('does not call parseGroupSettings when settings is null', async () => {
       vi.mocked(useSettingsStore).mockImplementation((sel) =>
         sel({ settings: null })
       );
       render(<StreamSettingsForm active={true} />);
       await waitFor(() => {
-        expect(parseSettings).not.toHaveBeenCalled();
+        expect(parseGroupSettings).not.toHaveBeenCalled();
       });
     });
   });
@@ -363,8 +364,8 @@ describe('StreamSettingsForm', () => {
   // ── active prop ────────────────────────────────────────────────────────────
   describe('active prop', () => {
     it('clears saved state when active becomes false', async () => {
-      vi.mocked(saveChangedSettings).mockResolvedValue(undefined);
-      vi.mocked(getChangedSettings).mockReturnValue({});
+      vi.mocked(saveGroupSettings).mockResolvedValue(undefined);
+      vi.mocked(getChangedGroupSettings).mockReturnValue({});
       const { rerender } = render(<StreamSettingsForm active={true} />);
 
       fireEvent.submit(screen.getByText('Save').closest('form'));
@@ -398,7 +399,7 @@ describe('StreamSettingsForm', () => {
   describe('form submission (no M3U hash key change)', () => {
     beforeEach(() => {
       // Same hash key before and after → no dialog
-      vi.mocked(getChangedSettings).mockReturnValue({
+      vi.mocked(getChangedGroupSettings).mockReturnValue({
         default_user_agent: '1',
       });
       setupMocks();
@@ -406,14 +407,15 @@ describe('StreamSettingsForm', () => {
       vi.mocked(useForm).mockReturnValue(formMock);
     });
 
-    it('calls saveChangedSettings with settings and changed values on submit', async () => {
+    it('calls saveGroupSettings with settings and changed values on submit', async () => {
       const settings = makeSettings();
       render(<StreamSettingsForm active={true} />);
 
       fireEvent.submit(screen.getByText('Save').closest('form'));
       await waitFor(() => {
-        expect(saveChangedSettings).toHaveBeenCalledWith(
+        expect(saveGroupSettings).toHaveBeenCalledWith(
           settings,
+          'stream_settings',
           expect.any(Object)
         );
       });
@@ -431,8 +433,8 @@ describe('StreamSettingsForm', () => {
       });
     });
 
-    it('does not show success alert when saveChangedSettings throws', async () => {
-      vi.mocked(saveChangedSettings).mockRejectedValue(
+    it('does not show success alert when saveGroupSettings throws', async () => {
+      vi.mocked(saveGroupSettings).mockRejectedValue(
         new Error('save failed')
       );
       const consoleSpy = vi
@@ -448,9 +450,9 @@ describe('StreamSettingsForm', () => {
       consoleSpy.mockRestore();
     });
 
-    it('logs error when saveChangedSettings throws', async () => {
+    it('logs error when saveGroupSettings throws', async () => {
       const error = new Error('save failed');
-      vi.mocked(saveChangedSettings).mockRejectedValue(error);
+      vi.mocked(saveGroupSettings).mockRejectedValue(error);
       const consoleSpy = vi
         .spyOn(console, 'error')
         .mockImplementation(() => {});
@@ -471,7 +473,7 @@ describe('StreamSettingsForm', () => {
 
       fireEvent.submit(screen.getByText('Save').closest('form'));
       await waitFor(() => {
-        expect(saveChangedSettings).toHaveBeenCalled();
+        expect(saveGroupSettings).toHaveBeenCalled();
       });
       expect(
         screen.queryByTestId('confirmation-dialog')
@@ -516,7 +518,7 @@ describe('StreamSettingsForm', () => {
       });
     });
 
-    it('does not call saveChangedSettings before dialog is confirmed', async () => {
+    it('does not call saveGroupSettings before dialog is confirmed', async () => {
       const fm = makeHashChangedFormMock();
       vi.mocked(useForm).mockReturnValue(fm);
       render(<StreamSettingsForm active={true} />);
@@ -525,10 +527,10 @@ describe('StreamSettingsForm', () => {
       await waitFor(() => {
         expect(screen.getByTestId('confirmation-dialog')).toBeInTheDocument();
       });
-      expect(saveChangedSettings).not.toHaveBeenCalled();
+      expect(saveGroupSettings).not.toHaveBeenCalled();
     });
 
-    it('calls saveChangedSettings after confirming save-and-rehash dialog', async () => {
+    it('calls saveGroupSettings after confirming save-and-rehash dialog', async () => {
       const fm = makeHashChangedFormMock();
       vi.mocked(useForm).mockReturnValue(fm);
       const settings = makeSettings();
@@ -541,7 +543,7 @@ describe('StreamSettingsForm', () => {
       fireEvent.click(screen.getByTestId('confirm-ok'));
 
       await waitFor(() => {
-        expect(saveChangedSettings).toHaveBeenCalled();
+        expect(saveGroupSettings).toHaveBeenCalled();
       });
     });
 
@@ -591,7 +593,7 @@ describe('StreamSettingsForm', () => {
           screen.queryByTestId('confirmation-dialog')
         ).not.toBeInTheDocument();
       });
-      expect(saveChangedSettings).not.toHaveBeenCalled();
+      expect(saveGroupSettings).not.toHaveBeenCalled();
     });
 
     it('skips dialog entirely when rehash-streams warning is suppressed', async () => {
@@ -603,7 +605,7 @@ describe('StreamSettingsForm', () => {
 
       fireEvent.submit(screen.getByText('Save').closest('form'));
       await waitFor(() => {
-        expect(saveChangedSettings).toHaveBeenCalled();
+        expect(saveGroupSettings).toHaveBeenCalled();
       });
       expect(
         screen.queryByTestId('confirmation-dialog')

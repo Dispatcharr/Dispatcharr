@@ -69,6 +69,13 @@ export const PROXY_SETTINGS_OPTIONS = {
     description:
       'Seconds of received buffer to start behind live when a new client connects (0 = start at live). Note: this is chunk receive time, not video duration.',
   },
+  validate_redirect_urls: {
+    label: 'Validate Redirect URLs',
+    type: 'boolean',
+    advanced: true,
+    description:
+      'Before Redirect handoff, probe the provider URL with a HEAD (then GET) request and try alternate streams if it fails. Disable for providers that close probe connections or add channel-change latency. Failover probing is skipped when disabled.',
+  },
 };
 
 export const USER_LIMITS_OPTIONS = {

@@ -289,16 +289,73 @@ describe('Sidebar', () => {
       renderSidebar();
 
       expect(screen.getByText('Channels')).toBeInTheDocument();
+      expect(screen.getByText('VODs')).toBeInTheDocument();
       expect(screen.getByText('TV Guide')).toBeInTheDocument();
       expect(screen.getByText('Settings')).toBeInTheDocument();
+      // DVR view and VOD default on for standard users with no custom_properties.
+      expect(screen.getByText('DVR')).toBeInTheDocument();
 
-      expect(screen.queryByText('VODs')).not.toBeInTheDocument();
       expect(screen.queryByText('M3U & EPG Manager')).not.toBeInTheDocument();
-      expect(screen.queryByText('DVR')).not.toBeInTheDocument();
       expect(screen.queryByText('Stats')).not.toBeInTheDocument();
       expect(screen.queryByText('Plugins')).not.toBeInTheDocument();
       expect(screen.queryByText('Users')).not.toBeInTheDocument();
       expect(screen.queryByText('Logo Manager')).not.toBeInTheDocument();
+    });
+  });
+
+  describe('Navigation Links - Regular User without DVR view', () => {
+    beforeEach(() => {
+      useAuthStore.mockImplementation((selector) => {
+        const state = {
+          isAuthenticated: true,
+          user: {
+            ...mockRegularUser,
+            custom_properties: { dvr_access: 'none' },
+          },
+          logout: vi.fn(),
+          getNavOrder: () => null,
+          getHiddenNav: () => [],
+        };
+        return selector(state);
+      });
+    });
+
+    it('hides DVR when the user has been explicitly denied view access', () => {
+      renderSidebar();
+
+      expect(screen.getByText('Channels')).toBeInTheDocument();
+      expect(screen.getByText('TV Guide')).toBeInTheDocument();
+      expect(screen.getByText('VODs')).toBeInTheDocument();
+      expect(screen.queryByText('DVR')).not.toBeInTheDocument();
+    });
+  });
+
+  describe('Navigation Links - Regular User without VOD access', () => {
+    beforeEach(() => {
+      useAuthStore.mockImplementation((selector) => {
+        const state = {
+          isAuthenticated: true,
+          user: {
+            ...mockRegularUser,
+            custom_properties: {
+              vod_movies_enabled: false,
+              vod_series_enabled: false,
+            },
+          },
+          logout: vi.fn(),
+          getNavOrder: () => null,
+          getHiddenNav: () => [],
+        };
+        return selector(state);
+      });
+    });
+
+    it('hides VODs when both VOD flags are disabled', () => {
+      renderSidebar();
+
+      expect(screen.getByText('Channels')).toBeInTheDocument();
+      expect(screen.getByText('TV Guide')).toBeInTheDocument();
+      expect(screen.queryByText('VODs')).not.toBeInTheDocument();
     });
   });
 

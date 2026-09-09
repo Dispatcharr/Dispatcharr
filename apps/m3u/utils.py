@@ -141,3 +141,76 @@ def calculate_tuner_count(minimum=1, unlimited_default=10):
     except Exception as e:
         logger.error(f"Error calculating tuner count: {e}")
         return minimum  # Fallback to minimum value
+
+
+ALLOWED_M3U_PROFILE_IDS_KEY = "allowed_m3u_profile_ids"
+
+
+def get_allowed_m3u_profiles(user):
+    """Return active allowed profiles by account, or None when unrestricted.
+
+    Tri-state on ``custom_properties.allowed_m3u_profile_ids`` (same shape as
+    channel-creation profile targeting):
+
+    - key absent: unrestricted (all profiles)
+    - key present with ``[]``: allow none
+    - key present with ``[ids]``: only those active profiles
+    """
+    from apps.m3u.models import M3UAccountProfile
+
+    custom_properties = getattr(user, "custom_properties", None)
+    if not isinstance(custom_properties, dict):
+        return None
+
+    if ALLOWED_M3U_PROFILE_IDS_KEY not in custom_properties:
+        return None
+
+    profile_ids = custom_properties.get(ALLOWED_M3U_PROFILE_IDS_KEY)
+    # Stale null (e.g. create payload before key scrub) means unrestricted.
+    if profile_ids is None:
+        return None
+    if not isinstance(profile_ids, list):
+        # Malformed value: fail closed (explicit allowlist, nothing usable).
+        return {}
+
+    if not profile_ids:
+        return {}
+
+    profiles = (
+        M3UAccountProfile.objects.select_related("m3u_account__user_agent")
+        .filter(
+            id__in=profile_ids,
+            is_active=True,
+            m3u_account__is_active=True,
+        )
+        .order_by("m3u_account_id", "-is_default", "id")
+    )
+    profiles_by_account = {}
+    for profile in profiles:
+        profiles_by_account.setdefault(profile.m3u_account_id, []).append(profile)
+    return profiles_by_account
+
+
+def scrub_allowed_m3u_profile_id(profile_id):
+    """Remove ``profile_id`` from every user's allowlist.
+
+    Keeps the key when the list becomes empty so the user stays restricted
+    (NONE) instead of becoming unrestricted (ALL).
+    """
+    from apps.accounts.models import User
+
+    users = User.objects.exclude(custom_properties=None).filter(
+        custom_properties__has_key=ALLOWED_M3U_PROFILE_IDS_KEY
+    )
+    for user in users.iterator():
+        custom = user.custom_properties
+        if not isinstance(custom, dict):
+            continue
+        ids = custom.get(ALLOWED_M3U_PROFILE_IDS_KEY)
+        if not isinstance(ids, list) or profile_id not in ids:
+            continue
+        custom[ALLOWED_M3U_PROFILE_IDS_KEY] = [
+            item for item in ids if item != profile_id
+        ]
+        user.custom_properties = custom
+        user.save(update_fields=["custom_properties"])

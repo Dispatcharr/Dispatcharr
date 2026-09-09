@@ -50,6 +50,7 @@ import {
   filterGuideChannels,
   formatSeasonEpisode,
   formatTime,
+  getGroupOptions,
   getProfileOptions,
   getRuleByProgram,
   HOUR_WIDTH,
@@ -65,6 +66,19 @@ import {
   sortChannels,
   evaluateSeriesRulesByTvgId,
 } from '../utils/guideUtils';
+import {
+  KEEP_MS,
+  appendWindowParams,
+  cullProgramsToKeepWindow,
+  getInitialWindow,
+  mergeProgramsById,
+  nextChunkBackward,
+  nextChunkForward,
+  shouldPrefetchBackward,
+  shouldPrefetchForward,
+  timelineOriginScrollDeltaPx,
+  viewportTimeRange,
+} from '../utils/guideWindow';
 import API from '../api';
 import { getShowVideoUrl } from '../utils/cards/RecordingCardUtils.js';
 import {
@@ -74,6 +88,7 @@ import {
   getNow,
   initializeTime,
   startOfDay,
+  startOfHour,
   useDateTimeFormat,
 } from '../utils/dateTimeUtils.js';
 import GuideRow from '../components/GuideRow.jsx';
@@ -89,6 +104,8 @@ const ProgramDetailModal = React.lazy(
 );
 import { showNotification } from '../utils/notificationUtils.js';
 import ErrorBoundary from '../components/ErrorBoundary.jsx';
+import useAuthStore from '../store/auth';
+import { canManageDvr } from '../utils/dvrAccess';
 
 export default function TVChannelGuide({ startDate, endDate }) {
   const [isChannelsLoading, setIsChannelsLoading] = useState(false);
@@ -99,6 +116,8 @@ export default function TVChannelGuide({ startDate, endDate }) {
   const channelGroups = useChannelsStore((s) => s.channelGroups);
   const profiles = useChannelsStore((s) => s.profiles);
   const [isProgramsLoading, setIsProgramsLoading] = useState(true);
+  const authUser = useAuthStore((s) => s.user);
+  const canManage = canManageDvr(authUser);
 
   const enableLogoRendering = useLogosStore((s) => s.enableLogoRendering);
   useEffect(() => {
@@ -110,6 +129,12 @@ export default function TVChannelGuide({ startDate, endDate }) {
 
   const [programs, setPrograms] = useState([]);
   const [guideChannels, setGuideChannels] = useState([]);
+  // Contiguous program window loaded from the grid API (ms since epoch).
+  const [loadedRange, setLoadedRange] = useState(null);
+  const loadedRangeRef = useRef(null);
+  const programProfileRef = useRef(null);
+  const extendInflightRef = useRef({ forward: false, backward: false });
+  const windowEpochRef = useRef(0);
   const [now, setNow] = useState(getNow());
   const [selectedProgram, setSelectedProgram] = useState(null);
   const [selectedChannel, setSelectedChannel] = useState(null);
@@ -182,6 +207,10 @@ export default function TVChannelGuide({ startDate, endDate }) {
     }
   }, [allowAllGroups, channelGroups, selectedGroupId]);
 
+  // Group changes are client-side when All is allowed; only refetch when the
+  // forced single-group API path needs a different group.
+  const groupRefetchKey = allowAllGroups ? 'all' : selectedGroupId;
+
   // Fetch channels on demand based on filters
   useEffect(() => {
     let cancelled = false;
@@ -189,21 +218,25 @@ export default function TVChannelGuide({ startDate, endDate }) {
       try {
         setIsChannelsLoading(true);
         const params = new URLSearchParams();
-        // Group filter by name, if not 'all'
-        if (selectedGroupId !== 'all') {
-          const group = channelGroups[Number(selectedGroupId)];
+        // When All groups is allowed, fetch the whole profile-scoped channel
+        // set and apply the group dropdown filter in the browser. Only ask the
+        // API for a specific group when All is disabled (channel count above
+        // MAX_ALL_CHANNELS).
+        if (!allowAllGroups) {
+          const group =
+            selectedGroupId !== 'all'
+              ? channelGroups[Number(selectedGroupId)]
+              : Object.values(channelGroups).find((g) => g?.hasChannels);
           if (group?.name) params.set('channel_group', group.name);
-        } else if (!allowAllGroups) {
-          // If 'all' is not allowed, fall back to first available group
-          const firstGroup = Object.values(channelGroups).find(
-            (g) => g?.hasChannels
-          );
-          if (firstGroup?.name) params.set('channel_group', firstGroup.name);
         }
 
-        // Profile filter
-        if (selectedProfileId && selectedProfileId !== 'all') {
-          params.set('channel_profile_id', String(selectedProfileId));
+        // Profile filter (shared with the programs request so scopes match).
+        const profileParam =
+          selectedProfileId && selectedProfileId !== 'all'
+            ? String(selectedProfileId)
+            : null;
+        if (profileParam) {
+          params.set('channel_profile_id', profileParam);
         }
 
         // Search filter
@@ -211,17 +244,32 @@ export default function TVChannelGuide({ startDate, endDate }) {
           params.set('search', searchQuery.trim());
         }
 
-        // Fetch channels and programs in parallel — programs don't depend
-        // on channels so there's no reason to wait for one before the other.
+        // Fetch channels and programs in parallel.
+        const programParams = new URLSearchParams();
+        if (profileParam) {
+          programParams.set('channel_profile_id', profileParam);
+        }
+        const initialWindow = getInitialWindow(convertToMs(getNow()));
+        appendWindowParams(
+          programParams,
+          initialWindow.startMs,
+          initialWindow.endMs
+        );
+        programProfileRef.current = profileParam;
+        extendInflightRef.current = { forward: false, backward: false };
+        const loadEpoch = ++windowEpochRef.current;
+
         const [channels, programData] = await Promise.all([
           API.getChannelsSummary(params),
-          fetchPrograms(),
+          fetchPrograms(programParams),
         ]);
 
-        if (cancelled) return;
+        if (cancelled || windowEpochRef.current !== loadEpoch) return;
 
         setGuideChannels(sortChannels(channels || []));
         setPrograms(programData);
+        loadedRangeRef.current = initialWindow;
+        setLoadedRange(initialWindow);
       } catch (e) {
         if (cancelled) return;
         console.error('Failed to load guide data:', e);
@@ -237,13 +285,8 @@ export default function TVChannelGuide({ startDate, endDate }) {
     return () => {
       cancelled = true;
     };
-  }, [
-    allowAllGroups,
-    channelGroups,
-    searchQuery,
-    selectedGroupId,
-    selectedProfileId,
-  ]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [allowAllGroups, channelGroups, searchQuery, selectedProfileId, groupRefetchKey]);
 
   // Apply filters when search, group, or profile changes
   const filteredChannels = useMemo(() => {
@@ -264,11 +307,37 @@ export default function TVChannelGuide({ startDate, endDate }) {
     profiles,
   ]);
 
-  // Use start/end from props or default to "today at midnight" +24h
-  const defaultStart = initializeTime(startDate || startOfDay(getNow()));
-  const defaultEnd = endDate
-    ? initializeTime(endDate)
-    : add(defaultStart, 24, 'hour');
+  // Groups present on the loaded (profile-scoped) channels only.
+  const groupOptions = useMemo(() => {
+    const opts = getGroupOptions(channelGroups, guideChannels);
+    if (!allowAllGroups) {
+      return opts.filter((o) => o.value !== 'all');
+    }
+    return opts;
+  }, [channelGroups, guideChannels, allowAllGroups]);
+
+  // Drop a selected group that is no longer in the visible set (profile change).
+  useEffect(() => {
+    if (selectedGroupId === 'all') return;
+    const stillVisible = groupOptions.some(
+      (o) => o.value === String(selectedGroupId)
+    );
+    if (!stillVisible) {
+      setSelectedGroupId('all');
+    }
+  }, [groupOptions, selectedGroupId]);
+
+  // Timeline follows the loaded grid window (now−1h → now+24h initially),
+  // expanding slightly when programs overhang chunk edges. Align the display
+  // origin to the hour so hour ticks match clock labels; API windows stay exact.
+  const defaultStart = loadedRange
+    ? initializeTime(loadedRange.startMs)
+    : initializeTime(startDate || startOfDay(getNow()));
+  const defaultEnd = loadedRange
+    ? initializeTime(loadedRange.endMs)
+    : endDate
+      ? initializeTime(endDate)
+      : add(defaultStart, 24, 'hour');
 
   // Expand timeline if needed based on actual earliest/ latest program
   const earliestProgramStart = useMemo(
@@ -281,7 +350,9 @@ export default function TVChannelGuide({ startDate, endDate }) {
     [programs, defaultEnd]
   );
 
-  const start = calculateStart(earliestProgramStart, defaultStart);
+  const start = startOfHour(
+    calculateStart(earliestProgramStart, defaultStart)
+  );
   const end = calculateEnd(latestProgramEnd, defaultEnd);
 
   // Pre-compute timeline origin in ms for horizontal culling in GuideRow
@@ -707,6 +778,157 @@ export default function TVChannelGuide({ startDate, endDate }) {
     filteredChannels.length,
   ]);
 
+  // Warm-ahead: when the viewport nears a loaded edge, fetch the adjacent
+  // 12h chunk (programs only). Soft-cull when span exceeds KEEP_MS.
+  const extendProgramWindow = useCallback(
+    async (direction) => {
+      const range = loadedRangeRef.current;
+      if (!range || !initialScrollComplete) return;
+      if (extendInflightRef.current[direction]) return;
+
+      const chunk =
+        direction === 'forward'
+          ? nextChunkForward(range.endMs)
+          : nextChunkBackward(range.startMs);
+
+      const epoch = windowEpochRef.current;
+      extendInflightRef.current[direction] = true;
+      try {
+        const params = new URLSearchParams();
+        const profileParam = programProfileRef.current;
+        if (profileParam) {
+          params.set('channel_profile_id', profileParam);
+        }
+        appendWindowParams(params, chunk.startMs, chunk.endMs);
+        const incoming = await fetchPrograms(params);
+
+        if (windowEpochRef.current !== epoch) return;
+
+        const currentRange = loadedRangeRef.current;
+        if (!currentRange) return;
+
+        const guideNode = guideRef.current;
+        const viewportWidth = guideNode?.clientWidth || guideWidth || 0;
+
+        // Functional merge so concurrent forward/backward completes do not
+        // clobber each other. Re-read loadedRange inside the updater for the
+        // same reason. Scroll deltas use hour-aligned display origins so they
+        // track the rendered timeline, not the exact API window.
+        let originDelta = 0;
+        let cullDelta = 0;
+        let finalRange = null;
+
+        setPrograms((prev) => {
+          const base = loadedRangeRef.current || currentRange;
+          const nextRange =
+            direction === 'forward'
+              ? {
+                  startMs: base.startMs,
+                  endMs: Math.max(base.endMs, chunk.endMs),
+                }
+              : {
+                  startMs: Math.min(base.startMs, chunk.startMs),
+                  endMs: base.endMs,
+                };
+
+          const displayBefore = convertToMs(startOfHour(base.startMs));
+          const displayAfter = convertToMs(startOfHour(nextRange.startMs));
+          originDelta =
+            direction === 'backward'
+              ? timelineOriginScrollDeltaPx(
+                  displayBefore,
+                  displayAfter,
+                  PX_PER_MS
+                )
+              : 0;
+
+          const scrollForViewport =
+            direction === 'backward'
+              ? guideScrollLeftRef.current + originDelta
+              : guideScrollLeftRef.current;
+          const view = viewportTimeRange(
+            displayAfter,
+            Math.max(0, scrollForViewport),
+            viewportWidth,
+            PX_PER_MS
+          );
+
+          const withIncoming = mergeProgramsById(prev, incoming || []);
+          const culled = cullProgramsToKeepWindow(
+            withIncoming,
+            view.centerMs,
+            KEEP_MS,
+            nextRange.startMs,
+            nextRange.endMs,
+            convertToMs
+          );
+          finalRange = {
+            startMs: culled.rangeStartMs,
+            endMs: culled.rangeEndMs,
+          };
+          cullDelta = timelineOriginScrollDeltaPx(
+            displayAfter,
+            convertToMs(startOfHour(finalRange.startMs)),
+            PX_PER_MS
+          );
+          loadedRangeRef.current = finalRange;
+          return culled.programs;
+        });
+
+        if (!finalRange) return;
+        setLoadedRange(finalRange);
+
+        const totalDelta = originDelta + cullDelta;
+        if (totalDelta !== 0) {
+          requestAnimationFrame(() => {
+            if (windowEpochRef.current !== epoch) return;
+            syncScrollLeft(
+              Math.max(0, guideScrollLeftRef.current + totalDelta)
+            );
+          });
+        }
+      } catch (e) {
+        console.error(`Failed to extend guide window (${direction}):`, e);
+      } finally {
+        extendInflightRef.current[direction] = false;
+      }
+    },
+    [guideWidth, initialScrollComplete, syncScrollLeft]
+  );
+
+  useEffect(() => {
+    if (!initialScrollComplete || !loadedRange) return;
+
+    const range = loadedRangeRef.current || loadedRange;
+    const guideNode = guideRef.current;
+    const viewportWidth = guideNode?.clientWidth || guideWidth || 0;
+    // Prefer the live ref: settledScrollLeft can lag behind syncScrollLeft
+    // on first paint and would falsely trigger a backward prefetch.
+    const scrollLeft = guideScrollLeftRef.current;
+    const view = viewportTimeRange(
+      timelineStartMs,
+      scrollLeft,
+      viewportWidth,
+      PX_PER_MS
+    );
+
+    if (shouldPrefetchForward(view.endMs, range.endMs)) {
+      extendProgramWindow('forward');
+    }
+    if (
+      shouldPrefetchBackward(view.startMs, range.startMs, scrollLeft)
+    ) {
+      extendProgramWindow('backward');
+    }
+  }, [
+    settledScrollLeft,
+    loadedRange,
+    timelineStartMs,
+    guideWidth,
+    initialScrollComplete,
+    extendProgramWindow,
+  ]);
+
   const findChannelByTvgId = useCallback(
     (tvgId) => matchChannelByTvgId(channelIdByTvgId, channelById, tvgId),
     [channelById, channelIdByTvgId]
@@ -815,11 +1037,48 @@ export default function TVChannelGuide({ startDate, endDate }) {
   }, []);
 
   const scrollToNow = useCallback(() => {
-    if (nowPosition < 0) {
+    const nowMs = convertToMs(now);
+    const range = loadedRangeRef.current;
+    const nowOutsideLoaded =
+      nowPosition < 0 ||
+      !range ||
+      nowMs < range.startMs ||
+      nowMs >= range.endMs;
+
+    if (!nowOutsideLoaded) {
+      syncScrollLeft(calculateScrollPosition(now, start), 'smooth');
       return;
     }
 
-    syncScrollLeft(calculateScrollPosition(now, start), 'smooth');
+    // Soft-cull (or a far scroll) dropped "now" out of the loaded window.
+    // Reload the default around-now range, then let the scroll effect jump.
+    (async () => {
+      const epoch = ++windowEpochRef.current;
+      extendInflightRef.current = { forward: false, backward: false };
+      const initialWindow = getInitialWindow(nowMs);
+      try {
+        const params = new URLSearchParams();
+        const profileParam = programProfileRef.current;
+        if (profileParam) {
+          params.set('channel_profile_id', profileParam);
+        }
+        appendWindowParams(
+          params,
+          initialWindow.startMs,
+          initialWindow.endMs
+        );
+        const programData = await fetchPrograms(params);
+        if (windowEpochRef.current !== epoch) return;
+
+        loadedRangeRef.current = initialWindow;
+        savedScrollLeftRef.current = null;
+        setLoadedRange(initialWindow);
+        setPrograms(programData || []);
+        setInitialScrollComplete(false);
+      } catch (e) {
+        console.error('Failed to reload guide window around now:', e);
+      }
+    })();
   }, [now, nowPosition, start, syncScrollLeft]);
 
   const handleTimelineScroll = useCallback(() => {
@@ -1179,21 +1438,6 @@ export default function TVChannelGuide({ startDate, endDate }) {
     }
   }, [searchQuery, selectedGroupId, selectedProfileId]);
 
-  // Group options: show all groups; gate 'All' if too many channels
-  const groupOptions = useMemo(() => {
-    const opts = [];
-    if (allowAllGroups) {
-      opts.push({ value: 'all', label: 'All Channel Groups' });
-    }
-    const groupsArr = Object.values(channelGroups)
-      .filter((g) => g?.hasChannels)
-      .sort((a, b) => (a?.name || '').localeCompare(b?.name || ''));
-    groupsArr.forEach((g) => {
-      opts.push({ value: String(g.id), label: g.name });
-    });
-    return opts;
-  }, [channelGroups, allowAllGroups]);
-
   // Create profile options for dropdown
   const profileOptions = useMemo(() => getProfileOptions(profiles), [profiles]);
 
@@ -1315,18 +1559,20 @@ export default function TVChannelGuide({ startDate, endDate }) {
             </Button>
           )}
 
-          <Button
-            variant="filled"
-            size="sm"
-            onClick={openRules}
-            style={{
-              backgroundColor: '#245043',
-            }}
-            bd={'1px solid #3BA882'}
-            color="#FFFFFF"
-          >
-            Series Rules
-          </Button>
+          {canManage && (
+            <Button
+              variant="filled"
+              size="sm"
+              onClick={openRules}
+              style={{
+                backgroundColor: '#245043',
+              }}
+              bd={'1px solid #3BA882'}
+              color="#FFFFFF"
+            >
+              Series Rules
+            </Button>
+          )}
 
           <Text size="sm" c="dimmed">
             {filteredChannels.length}{' '}
@@ -1529,7 +1775,11 @@ export default function TVChannelGuide({ startDate, endDate }) {
               recording={recordingForProgram}
               opened={!!selectedProgram}
               onClose={handleCloseModal}
-              onRecord={(program) => openRecordChoice(program, selectedChannel)}
+              onRecord={
+                canManage
+                  ? (program) => openRecordChoice(program, selectedChannel)
+                  : undefined
+              }
             />
           </Suspense>
         </ErrorBoundary>

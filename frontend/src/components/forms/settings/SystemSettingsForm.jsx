@@ -1,10 +1,11 @@
 import useSettingsStore from '../../../store/settings.jsx';
 import React, { useEffect, useState } from 'react';
 import {
-  getChangedSettings,
-  parseSettings,
-  saveChangedSettings,
+  getChangedGroupSettings,
+  parseGroupSettings,
+  saveGroupSettings,
 } from '../../../utils/pages/SettingsUtils.js';
+import useSettingsSaveGuard from '../../../hooks/useSettingsSaveGuard.jsx';
 import {
   Alert,
   Button,
@@ -20,15 +21,21 @@ import { useForm } from '@mantine/form';
 import { getSystemSettingsFormInitialValues } from '../../../utils/forms/settings/SystemSettingsFormUtils.js';
 import { REGION_CHOICES } from '../../../constants.js';
 
+const SYSTEM_GROUP = 'system_settings';
+
 const SystemSettingsForm = React.memo(({ active }) => {
   const settings = useSettingsStore((s) => s.settings);
   const isModular =
     useSettingsStore((s) => s.environment.env_mode) === 'modular';
+  // Absent on an older backend: assume running rather than hide working controls.
+  const logCollectorRunning =
+    useSettingsStore((s) => s.environment.log_collector_running) !== false;
   const ipLookupEnvDisabled = useSettingsStore(
     (s) => s.environment.ip_lookup_env_disabled
   );
 
   const [saved, setSaved] = useState(false);
+  const { isSavingRef, runSave } = useSettingsSaveGuard();
 
   const form = useForm({
     mode: 'controlled',
@@ -40,23 +47,29 @@ const SystemSettingsForm = React.memo(({ active }) => {
   }, [active]);
 
   useEffect(() => {
-    if (settings) {
-      const formValues = parseSettings(settings);
-
-      form.setValues(formValues);
+    if (settings && !isSavingRef.current) {
+      form.setValues(parseGroupSettings(settings, SYSTEM_GROUP));
     }
   }, [settings]);
 
   const onSubmit = async () => {
     setSaved(false);
 
-    const changedSettings = getChangedSettings(form.getValues(), settings);
+    const changedSettings = getChangedGroupSettings(
+      form.getValues(),
+      settings,
+      SYSTEM_GROUP
+    );
 
-    // Update each changed setting in the backend (create if missing)
     try {
-      await saveChangedSettings(settings, changedSettings);
-
-      setSaved(true);
+      await runSave(async () => {
+        await saveGroupSettings(settings, SYSTEM_GROUP, changedSettings);
+        const latestSettings = useSettingsStore.getState().settings;
+        if (latestSettings) {
+          form.setValues(parseGroupSettings(latestSettings, SYSTEM_GROUP));
+        }
+        setSaved(true);
+      });
     } catch (error) {
       // Error notifications are already shown by API functions
       // Just don't show the success message
@@ -80,6 +93,40 @@ const SystemSettingsForm = React.memo(({ active }) => {
         max={1000}
         step={10}
       />
+      {logCollectorRunning && (
+        <>
+          <Switch
+            label="Persist Logs to File"
+            description="Write application logs to disk. Console logging is unaffected."
+            {...form.getInputProps('log_persist', { type: 'checkbox' })}
+            id="log_persist"
+          />
+          <NumberInput
+            label="Maximum Log File Size (MB)"
+            description="Rotate the application log once it grows past this size. Older logs are kept up to the retention limit below."
+            id="log_max_mb"
+            value={form.values['log_max_mb'] || 10}
+            onChange={(value) => {
+              form.setFieldValue('log_max_mb', value);
+            }}
+            min={1}
+            max={1000}
+            step={5}
+          />
+          <NumberInput
+            label="Log Files Retained"
+            description="How many rotated log files to keep before the oldest is deleted."
+            id="log_keep"
+            value={form.values['log_keep'] || 5}
+            onChange={(value) => {
+              form.setFieldValue('log_keep', value);
+            }}
+            min={1}
+            max={50}
+            step={1}
+          />
+        </>
+      )}
       <Select
         searchable
         clearable

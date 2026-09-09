@@ -282,7 +282,7 @@ export default function ProgramDetailModal({
                   Watch Live
                 </Button>
               )}
-              {!program.isPast && (
+              {!program.isPast && onRecord && (
                 <Button
                   leftSection={<Calendar size={14} />}
                   variant="filled"
