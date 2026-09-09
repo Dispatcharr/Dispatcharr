@@ -63,10 +63,14 @@ const getEventIcon = (eventType) => {
       return <RefreshCw size={16} />;
     case 'm3u_download':
       return <Download size={16} />;
+    case 'm3u_error':
+      return <XCircle size={16} />;
     case 'epg_refresh':
       return <RefreshCw size={16} />;
     case 'epg_download':
       return <Download size={16} />;
+    case 'epg_error':
+      return <XCircle size={16} />;
     case 'login_success':
       return <LogIn size={16} />;
     case 'login_failed':
@@ -114,6 +118,8 @@ const getEventColor = (eventType) => {
     case 'login_failed':
     case 'm3u_blocked':
     case 'epg_blocked':
+    case 'm3u_error':
+    case 'epg_error':
       return 'red';
     default:
       return 'gray';

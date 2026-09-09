@@ -116,6 +116,7 @@ def _set_m3u_account_status(
     status,
     last_message=None,
     *,
+    account_name=None,
     notify_error=False,
     ws_action="parsing",
     ws_error=None,
@@ -128,12 +129,19 @@ def _set_m3u_account_status(
     try:
         M3UAccount.objects.filter(id=account_id).update(**update)
         if notify_error:
+            error_msg = ws_error or last_message
             send_m3u_update(
                 account_id,
                 ws_action,
                 100,
                 status="error",
-                error=ws_error or last_message,
+                error=error_msg,
+            )
+            name = account_name or str(account_id)
+            log_system_event(
+                event_type="m3u_error",
+                account_name=name,
+                message=error_msg,
             )
     except Exception as e:
         logger.error(
@@ -145,12 +153,12 @@ def _ensure_m3u_refresh_terminal_status(account_id):
     """Mark refresh as failed when the task exits while still in progress."""
     _release_task_db_connection()
     try:
-        current_status = (
+        account_data = (
             M3UAccount.objects.filter(id=account_id)
-            .values_list("status", flat=True)
+            .values("status", "name")
             .first()
         )
-        if current_status in _NON_TERMINAL_REFRESH_STATUSES:
+        if account_data and account_data.get("status") in _NON_TERMINAL_REFRESH_STATUSES:
             message = "Refresh did not complete successfully"
             M3UAccount.objects.filter(id=account_id).update(
                 status=M3UAccount.Status.ERROR,
@@ -158,6 +166,12 @@ def _ensure_m3u_refresh_terminal_status(account_id):
             )
             send_m3u_update(
                 account_id, "parsing", 100, status="error", error=message
+            )
+            account_name = account_data.get("name") or str(account_id)
+            log_system_event(
+                event_type="m3u_error",
+                account_name=account_name,
+                message=message,
             )
     except Exception as e:
         logger.debug(
@@ -247,13 +261,14 @@ def fetch_m3u_lines(account, use_cache=False):
                     logger.error(error_msg)
                     account.status = M3UAccount.Status.ERROR
                     account.last_message = error_msg
-                    account.save(update_fields=["status", "last_message"])
-                    send_m3u_update(
+                    _set_m3u_account_status(
                         account.id,
-                        "downloading",
-                        100,
-                        status="error",
-                        error=error_msg,
+                        M3UAccount.Status.ERROR,
+                        error_msg,
+                        account_name=account.name,
+                        notify_error=True,
+                        ws_action="downloading",
+                        ws_error=error_msg,
                     )
                     return None, False
 
@@ -322,13 +337,14 @@ def fetch_m3u_lines(account, use_cache=False):
                         logger.error(error_msg)
                         account.status = M3UAccount.Status.ERROR
                         account.last_message = error_msg
-                        account.save(update_fields=["status", "last_message"])
-                        send_m3u_update(
+                        _set_m3u_account_status(
                             account.id,
-                            "downloading",
-                            100,
-                            status="error",
-                            error=error_msg,
+                            M3UAccount.Status.ERROR,
+                            error_msg,
+                            account_name=account.name,
+                            notify_error=True,
+                            ws_action="downloading",
+                            ws_error=error_msg,
                         )
                         return None, False
 
@@ -394,13 +410,14 @@ def fetch_m3u_lines(account, use_cache=False):
                             logger.error(error_msg)
                             account.status = M3UAccount.Status.ERROR
                             account.last_message = error_msg
-                            account.save(update_fields=["status", "last_message"])
-                            send_m3u_update(
+                            _set_m3u_account_status(
                                 account.id,
-                                "downloading",
-                                100,
-                                status="error",
-                                error=error_msg,
+                                M3UAccount.Status.ERROR,
+                                error_msg,
+                                account_name=account.name,
+                                notify_error=True,
+                                ws_action="downloading",
+                                ws_error=error_msg,
                             )
                             return None, False
 
@@ -412,13 +429,14 @@ def fetch_m3u_lines(account, use_cache=False):
                         logger.error(error_msg)
                         account.status = M3UAccount.Status.ERROR
                         account.last_message = error_msg
-                        account.save(update_fields=["status", "last_message"])
-                        send_m3u_update(
+                        _set_m3u_account_status(
                             account.id,
-                            "downloading",
-                            100,
-                            status="error",
-                            error=error_msg,
+                            M3UAccount.Status.ERROR,
+                            error_msg,
+                            account_name=account.name,
+                            notify_error=True,
+                            ws_action="downloading",
+                            ws_error=error_msg,
                         )
                         return None, False
 
@@ -467,13 +485,14 @@ def fetch_m3u_lines(account, use_cache=False):
                 logger.error(error_msg)
                 account.status = M3UAccount.Status.ERROR
                 account.last_message = error_msg
-                account.save(update_fields=["status", "last_message"])
-                send_m3u_update(
+                _set_m3u_account_status(
                     account.id,
-                    "downloading",
-                    100,
-                    status="error",
-                    error=error_msg,
+                    M3UAccount.Status.ERROR,
+                    error_msg,
+                    account_name=account.name,
+                    notify_error=True,
+                    ws_action="downloading",
+                    ws_error=error_msg,
                 )
                 return None, False
             except requests.exceptions.RequestException as e:
@@ -488,13 +507,14 @@ def fetch_m3u_lines(account, use_cache=False):
                 logger.error(error_msg)
                 account.status = M3UAccount.Status.ERROR
                 account.last_message = error_msg
-                account.save(update_fields=["status", "last_message"])
-                send_m3u_update(
+                _set_m3u_account_status(
                     account.id,
-                    "downloading",
-                    100,
-                    status="error",
-                    error=error_msg,
+                    M3UAccount.Status.ERROR,
+                    error_msg,
+                    account_name=account.name,
+                    notify_error=True,
+                    ws_action="downloading",
+                    ws_error=error_msg,
                 )
                 return None, False
             except Exception as e:
@@ -503,13 +523,14 @@ def fetch_m3u_lines(account, use_cache=False):
                 logger.error(error_msg)
                 account.status = M3UAccount.Status.ERROR
                 account.last_message = error_msg
-                account.save(update_fields=["status", "last_message"])
-                send_m3u_update(
+                _set_m3u_account_status(
                     account.id,
-                    "downloading",
-                    100,
-                    status="error",
-                    error=error_msg,
+                    M3UAccount.Status.ERROR,
+                    error_msg,
+                    account_name=account.name,
+                    notify_error=True,
+                    ws_action="downloading",
+                    ws_error=error_msg,
                 )
                 return None, False
 
@@ -519,9 +540,14 @@ def fetch_m3u_lines(account, use_cache=False):
             logger.error(error_msg)
             account.status = M3UAccount.Status.ERROR
             account.last_message = error_msg
-            account.save(update_fields=["status", "last_message"])
-            send_m3u_update(
-                account.id, "downloading", 100, status="error", error=error_msg
+            _set_m3u_account_status(
+                account.id,
+                M3UAccount.Status.ERROR,
+                error_msg,
+                account_name=account.name,
+                notify_error=True,
+                ws_action="downloading",
+                ws_error=error_msg,
             )
             return None, False
 
@@ -550,9 +576,14 @@ def fetch_m3u_lines(account, use_cache=False):
                     logger.warning(error_msg)
                     account.status = M3UAccount.Status.ERROR
                     account.last_message = error_msg
-                    account.save(update_fields=["status", "last_message"])
-                    send_m3u_update(
-                        account.id, "downloading", 100, status="error", error=error_msg
+                    _set_m3u_account_status(
+                        account.id,
+                        M3UAccount.Status.ERROR,
+                        error_msg,
+                        account_name=account.name,
+                        notify_error=True,
+                        ws_action="downloading",
+                        ws_error=error_msg,
                     )
                     return None, False
 
@@ -564,9 +595,14 @@ def fetch_m3u_lines(account, use_cache=False):
             logger.error(error_msg)
             account.status = M3UAccount.Status.ERROR
             account.last_message = error_msg
-            account.save(update_fields=["status", "last_message"])
-            send_m3u_update(
-                account.id, "downloading", 100, status="error", error=error_msg
+            _set_m3u_account_status(
+                account.id,
+                M3UAccount.Status.ERROR,
+                error_msg,
+                account_name=account.name,
+                notify_error=True,
+                ws_action="downloading",
+                ws_error=error_msg,
             )
             return None, False
 
@@ -575,8 +611,15 @@ def fetch_m3u_lines(account, use_cache=False):
     logger.error(error_msg)
     account.status = M3UAccount.Status.ERROR
     account.last_message = error_msg
-    account.save(update_fields=["status", "last_message"])
-    send_m3u_update(account.id, "downloading", 100, status="error", error=error_msg)
+    _set_m3u_account_status(
+        account.id,
+        M3UAccount.Status.ERROR,
+        error_msg,
+        account_name=account.name,
+        notify_error=True,
+        ws_action="downloading",
+        ws_error=error_msg,
+    )
     return None, False
 
 
@@ -1574,9 +1617,14 @@ def refresh_m3u_groups(account_id, use_cache=False, full_refresh=False, scan_sta
             logger.error(error_msg)
             account.status = M3UAccount.Status.ERROR
             account.last_message = error_msg
-            account.save(update_fields=["status", "last_message"])
-            send_m3u_update(
-                account_id, "processing_groups", 100, status="error", error=error_msg
+            _set_m3u_account_status(
+                account_id,
+                M3UAccount.Status.ERROR,
+                error_msg,
+                account_name=account.name,
+                notify_error=True,
+                ws_action="processing_groups",
+                ws_error=error_msg,
             )
             lock_renewer.stop()
             release_task_lock("refresh_m3u_account_groups", account_id)
@@ -1587,9 +1635,14 @@ def refresh_m3u_groups(account_id, use_cache=False, full_refresh=False, scan_sta
             logger.error(error_msg)
             account.status = M3UAccount.Status.ERROR
             account.last_message = error_msg
-            account.save(update_fields=["status", "last_message"])
-            send_m3u_update(
-                account_id, "processing_groups", 100, status="error", error=error_msg
+            _set_m3u_account_status(
+                account_id,
+                M3UAccount.Status.ERROR,
+                error_msg,
+                account_name=account.name,
+                notify_error=True,
+                ws_action="processing_groups",
+                ws_error=error_msg,
             )
             lock_renewer.stop()
             release_task_lock("refresh_m3u_account_groups", account_id)
@@ -1653,13 +1706,14 @@ def refresh_m3u_groups(account_id, use_cache=False, full_refresh=False, scan_sta
                             logger.error(error_msg)
                             account.status = M3UAccount.Status.ERROR
                             account.last_message = error_msg
-                            account.save(update_fields=["status", "last_message"])
-                            send_m3u_update(
+                            _set_m3u_account_status(
                                 account_id,
-                                "processing_groups",
-                                100,
-                                status="error",
-                                error=error_msg,
+                                M3UAccount.Status.ERROR,
+                                error_msg,
+                                account_name=account.name,
+                                notify_error=True,
+                                ws_action="processing_groups",
+                                ws_error=error_msg,
                             )
                             lock_renewer.stop()
                             release_task_lock("refresh_m3u_account_groups", account_id)
@@ -1692,13 +1746,14 @@ def refresh_m3u_groups(account_id, use_cache=False, full_refresh=False, scan_sta
                         logger.error(error_msg)
                         account.status = M3UAccount.Status.ERROR
                         account.last_message = error_msg
-                        account.save(update_fields=["status", "last_message"])
-                        send_m3u_update(
+                        _set_m3u_account_status(
                             account_id,
-                            "processing_groups",
-                            100,
-                            status="error",
-                            error=error_msg,
+                            M3UAccount.Status.ERROR,
+                            error_msg,
+                            account_name=account.name,
+                            notify_error=True,
+                            ws_action="processing_groups",
+                            ws_error=error_msg,
                         )
                         lock_renewer.stop()
                         release_task_lock("refresh_m3u_account_groups", account_id)
@@ -1709,13 +1764,14 @@ def refresh_m3u_groups(account_id, use_cache=False, full_refresh=False, scan_sta
                 logger.error(error_msg)
                 account.status = M3UAccount.Status.ERROR
                 account.last_message = error_msg
-                account.save(update_fields=["status", "last_message"])
-                send_m3u_update(
+                _set_m3u_account_status(
                     account_id,
-                    "processing_groups",
-                    100,
-                    status="error",
-                    error=error_msg,
+                    M3UAccount.Status.ERROR,
+                    error_msg,
+                    account_name=account.name,
+                    notify_error=True,
+                    ws_action="processing_groups",
+                    ws_error=error_msg,
                 )
                 lock_renewer.stop()
                 release_task_lock("refresh_m3u_account_groups", account_id)
@@ -1725,9 +1781,14 @@ def refresh_m3u_groups(account_id, use_cache=False, full_refresh=False, scan_sta
             logger.error(error_msg)
             account.status = M3UAccount.Status.ERROR
             account.last_message = error_msg
-            account.save(update_fields=["status", "last_message"])
-            send_m3u_update(
-                account_id, "processing_groups", 100, status="error", error=error_msg
+            _set_m3u_account_status(
+                account_id,
+                M3UAccount.Status.ERROR,
+                error_msg,
+                account_name=account.name,
+                notify_error=True,
+                ws_action="processing_groups",
+                ws_error=error_msg,
             )
             lock_renewer.stop()
             release_task_lock("refresh_m3u_account_groups", account_id)
@@ -1738,7 +1799,7 @@ def refresh_m3u_groups(account_id, use_cache=False, full_refresh=False, scan_sta
             # If fetch failed, don't continue processing
             lock_renewer.stop()
             release_task_lock("refresh_m3u_account_groups", account_id)
-            return f"Failed to fetch M3U data for account_id={account_id}.", None
+            return account.last_message or f"Failed to fetch M3U data for account_id={account_id}.", None
 
         valid_stream_count = 0
 
@@ -3384,6 +3445,7 @@ def _refresh_single_m3u_account_impl(account_id):
             account_id,
             M3UAccount.Status.FETCHING,
             "Refresh in progress...",
+            account_name=account.name,
         )
         account = _get_active_m3u_account(account_id)
 
@@ -3466,16 +3528,29 @@ def _refresh_single_m3u_account_impl(account_id):
                 logger.error(
                     f"Failed to refresh M3U groups for account {account_id}: {result}"
                 )
-                error_msg = (
-                    "Failed to refresh M3U groups - download failed or other error"
+                real_error = (
+                    result[0]
+                    if (result and isinstance(result[0], str) and result[0])
+                    else None
                 )
-                _set_m3u_account_status(
-                    account_id,
-                    M3UAccount.Status.ERROR,
-                    error_msg,
-                    notify_error=True,
-                    ws_error=error_msg,
+                current_status = (
+                    M3UAccount.objects.filter(id=account_id)
+                    .values_list("status", flat=True)
+                    .first()
                 )
+                if current_status != M3UAccount.Status.ERROR:
+                    error_msg = (
+                        real_error
+                        or "Failed to refresh M3U groups - download failed or other error"
+                    )
+                    _set_m3u_account_status(
+                        account_id,
+                        M3UAccount.Status.ERROR,
+                        error_msg,
+                        account_name=account.name,
+                        notify_error=True,
+                        ws_error=error_msg,
+                    )
                 return "Failed to update m3u account - download failed or other error"
 
             extinf_data, groups = result
@@ -3495,6 +3570,7 @@ def _refresh_single_m3u_account_impl(account_id):
                     account_id,
                     M3UAccount.Status.ERROR,
                     error_msg,
+                    account_name=account.name,
                     notify_error=True,
                     ws_error=error_msg,
                 )
@@ -3505,6 +3581,7 @@ def _refresh_single_m3u_account_impl(account_id):
                 account_id,
                 M3UAccount.Status.ERROR,
                 error_msg,
+                account_name=account.name,
                 notify_error=True,
                 ws_error=error_msg,
             )
@@ -3525,6 +3602,7 @@ def _refresh_single_m3u_account_impl(account_id):
             account_id,
             M3UAccount.Status.ERROR,
             error_msg,
+            account_name=account.name,
             notify_error=True,
             ws_error=error_msg,
         )
@@ -3688,6 +3766,7 @@ def _refresh_single_m3u_account_impl(account_id):
                     account_id,
                     M3UAccount.Status.ERROR,
                     error_msg,
+                    account_name=account.name,
                     notify_error=True,
                     ws_error=error_msg,
                 )
