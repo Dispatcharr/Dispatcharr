@@ -3,7 +3,8 @@ import json
 import ipaddress
 
 from rest_framework import serializers
-from .models import CoreSettings, UserAgent, StreamProfile, OutputProfile, DVR_SETTINGS_KEY, NETWORK_ACCESS_KEY, SYSTEM_SETTINGS_KEY
+from dispatcharr.utils import validate_proxy_auth_header
+from .models import CoreSettings, UserAgent, StreamProfile, OutputProfile, DVR_SETTINGS_KEY, NETWORK_ACCESS_KEY, SYSTEM_SETTINGS_KEY, REVERSE_PROXY_AUTH_KEY
 
 
 def _clamp_int(value, default, lo, hi):
@@ -88,6 +89,26 @@ class CoreSettingsSerializer(serializers.ModelSerializer):
                     value["log_keep"] = _clamp_int(value["log_keep"], 5, 1, 50)
                 if "log_persist" in value:
                     value["log_persist"] = value["log_persist"] is not False
+
+        if instance.key == REVERSE_PROXY_AUTH_KEY:
+            value = validated_data.get("value") or {}
+            header = (value.get("header") or "").strip()
+            if value.get("enabled") and not header:
+                raise serializers.ValidationError(
+                    {"message": "A header name is required to enable reverse proxy auth."}
+                )
+            if header and not validate_proxy_auth_header(header):
+                raise serializers.ValidationError(
+                    {
+                        "message": (
+                            "Invalid header name. Use letters, digits and dashes "
+                            "only (for example X-Forwarded-User)."
+                        ),
+                        "value": header,
+                    }
+                )
+            value["header"] = header
+            value["enabled"] = bool(value.get("enabled"))
 
         # Sanitize series_rules when DVR settings are saved through the
         # generic settings API (e.g. Settings page round-trip) to prevent

@@ -2,6 +2,7 @@
 import ipaddress
 import logging
 import os
+import re
 
 from django.core.exceptions import ValidationError
 from django.http import JsonResponse
@@ -143,6 +144,44 @@ def get_client_ip(request):
             return str(hop_ip)
 
     return str(peer)
+
+
+_PROXY_AUTH_HEADER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]{0,63}$")
+
+
+def validate_proxy_auth_header(header):
+    """Whether a header name is safe to read a proxy-asserted identity from."""
+    return bool(_PROXY_AUTH_HEADER_RE.match((header or "").strip()))
+
+
+def proxy_auth_identity(request):
+    """Username or email asserted for this request by a trusted reverse proxy.
+
+    Returns None unless reverse proxy auth is enabled with a valid header name
+    and the connecting peer is a trusted proxy: the header is client-suppliable,
+    so honoring it from an untrusted peer would let anyone sign in as any user.
+    """
+    config = CoreSettings.get_reverse_proxy_auth_settings()
+    if not config.get("enabled"):
+        return None
+
+    header = (config.get("header") or "").strip()
+    if not validate_proxy_auth_header(header):
+        return None
+
+    peer = _normalize_ip(request.META.get("REMOTE_ADDR") or "")
+    if not _ip_in_trusted(peer):
+        logger.warning(
+            "Ignoring %s from untrusted peer %s; add it to %s to enable "
+            "reverse proxy auth from that host",
+            header,
+            peer,
+            TRUSTED_PROXIES_ENV,
+        )
+        return None
+
+    meta_key = "HTTP_" + header.upper().replace("-", "_")
+    return (request.META.get(meta_key) or "").strip() or None
 
 
 def setup_ip_allowed(request):

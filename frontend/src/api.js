@@ -190,6 +190,18 @@ export default class API {
     }
   }
 
+  static async proxyLogin() {
+    try {
+      const response = await request(`${host}/api/accounts/auth/proxy-login/`, {
+        auth: false,
+        method: 'POST',
+      });
+      return response?.access ? response : null;
+    } catch {
+      return null;
+    }
+  }
+
   static async refreshToken(refresh) {
     try {
       return await request(`${host}/api/accounts/token/refresh/`, {

@@ -261,6 +261,7 @@ NETWORK_ACCESS_KEY = "network_access"
 SYSTEM_SETTINGS_KEY = "system_settings"
 EPG_SETTINGS_KEY = "epg_settings"
 USER_LIMITS_SETTINGS_KEY = "user_limit_settings"
+REVERSE_PROXY_AUTH_KEY = "reverse_proxy_auth"
 
 # Redis cache for CoreSettings JSON groups. Primary invalidation is post_save /
 # post_delete; TTL is a safety net if a writer bypasses signals.
@@ -771,6 +772,15 @@ class CoreSettings(models.Model):
     def get_network_access_settings(cls):
         """CIDR allowlists per endpoint type (UI, STREAMS, XC_API, M3U_EPG, ...)."""
         return cls._get_group(NETWORK_ACCESS_KEY, {})
+
+    # Reverse Proxy Auth
+    @classmethod
+    def get_reverse_proxy_auth_settings(cls):
+        """Header-based sign-in handed off by a trusted reverse proxy."""
+        return cls._get_group(REVERSE_PROXY_AUTH_KEY, {
+            "enabled": False,
+            "header": "",
+        })
 
     # System Settings
     @classmethod

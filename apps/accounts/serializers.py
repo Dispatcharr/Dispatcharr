@@ -175,3 +175,10 @@ class UserSerializer(serializers.ModelSerializer):
             instance.channel_profiles.set(channel_profiles)
 
         return instance
+
+
+class ProxyLoginResponseSerializer(serializers.Serializer):
+    """JWT pair returned by the reverse proxy sign-in endpoint."""
+
+    access = serializers.CharField()
+    refresh = serializers.CharField()
