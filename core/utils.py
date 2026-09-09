@@ -12,6 +12,7 @@ from random import uniform
 
 from django.conf import settings
 from redis.exceptions import ConnectionError, TimeoutError
+from redis.connection import BlockingConnectionPool
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 from django.core.validators import URLValidator
@@ -170,6 +171,8 @@ class RedisClient:
                 health_check_interval = getattr(settings, 'REDIS_HEALTH_CHECK_INTERVAL', 15)
                 socket_keepalive = getattr(settings, 'REDIS_SOCKET_KEEPALIVE', True)
                 retry_on_timeout = getattr(settings, 'REDIS_RETRY_ON_TIMEOUT', True)
+                max_connections = int(getattr(settings, 'REDIS_MAX_CONNECTIONS', 50))
+                pool_timeout = float(getattr(settings, 'REDIS_POOL_TIMEOUT', 20))
 
                 # TLS params from settings (empty dict when TLS is disabled)
                 ssl_params = getattr(settings, 'REDIS_SSL_PARAMS', {})
@@ -178,15 +181,16 @@ class RedisClient:
                             "socket_connect_timeout" : socket_connect_timeout,
                             "socket_keepalive" : socket_keepalive}
 
+                redis_kwargs = {"max_connections" : max_connections,
+                                "timeout" : pool_timeout }
+
                 # List of defaults which may not be overridden via REDIS_URL
                 immutable_kwargs = (*sockargs.keys(), "health_check_interval", "retry_on_timeout", "decode_responses")
 
                 # If REDIS_URL is set, use from_url and ignore REDIS_[HOST|PORT|DB|USER|PASSWORD|SSL_*] envvars
-                if "REDIS_URL" in os.environ.keys():
+                if "REDIS_URL" in os.environ:
 
                     redis_constructor = redis.Redis.from_url
-                    redis_kwargs = {}
-
                     connstring = urlsplit(redis_url, allow_fragments = False)
 
                     # Pop the connection string arguments which would otherwise override our defaults (see https://redis.readthedocs.io/en/stable/connections.html - "In the case of conflicting arguments, querystring arguments always win.")
@@ -215,19 +219,19 @@ class RedisClient:
                 else:
 
                     redis_constructor = redis.Redis
-                    redis_kwargs = {"host" : redis_host, "port" : redis_port, "db" : redis_db,
-                                    "username" : redis_user,
-                                    "password" : redis_password} | ssl_params | sockargs
+                    redis_kwargs |= {"host" : redis_host, "port" : redis_port, "db" : redis_db,
+                                     "username" : redis_user,
+                                     "password" : redis_password} | ssl_params | sockargs
 
                     url = ()
 
                 # Create Redis client with our defaults, ensuring REDIS_URL does not override said defaults
                 client = redis_constructor(
                     *url,
-                    **redis_kwargs,
-                    health_check_interval=health_check_interval,
-                    retry_on_timeout=retry_on_timeout,
-                    decode_responses=decode_responses,
+                    connection_pool = BlockingConnectionPool(**redis_kwargs,
+                    decode_responses = decode_responses,
+                    health_check_interval = health_check_interval,
+                    retry_on_timeout = retry_on_timeout)
                 )
 
                 # Validate connection with ping
@@ -240,6 +244,13 @@ class RedisClient:
                     try:
                         client.config_set('save', '')  # Disable RDB snapshots
                         client.config_set('appendonly', 'no')  # Disable AOF logging
+
+                        # Close idle clients after REDIS_IDLE_TIMEOUT seconds with
+                        # no commands (0 = disabled). Blocked Celery BRPOP waiters
+                        # are exempt. Best-effort: managed Redis may reject CONFIG SET.
+                        idle_timeout = int(getattr(settings, 'REDIS_IDLE_TIMEOUT', 300))
+                        if idle_timeout > 0:
+                            client.config_set('timeout', str(idle_timeout))
 
                         # Disable protected mode when in debug mode
                         if os.environ.get('DISPATCHARR_DEBUG', '').lower() == 'true':

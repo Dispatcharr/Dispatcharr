@@ -35,7 +35,9 @@ class RedisConnectionStringsTests(SimpleTestCase):
         with patch.dict(os.environ, {"REDIS_URL":"redis://user@localhost:6379/3"}, clear=False):
 
             client = RedisClient().get_test_client(max_retries = 1)
-            self.assertEqual(EXPECTED_KWARGS_REDIS, client.get_connection_kwargs())
+            total_kwargs = client.get_connection_kwargs() | client.connection_pool.connection_kwargs["connection_pool"].connection_kwargs
+            del total_kwargs["connection_pool"]
+            self.assertEqual(EXPECTED_KWARGS_REDIS, total_kwargs)
 
 
     @patch("core.utils.redis.commands.core.CoreCommands.ping")
@@ -50,7 +52,9 @@ class RedisConnectionStringsTests(SimpleTestCase):
         with patch.dict(os.environ, {"REDIS_URL":"unix:///var/run/test.sock?db=7"}, clear=False):
 
             client = RedisClient().get_test_client(max_retries = 1)
-            self.assertEqual(EXPECTED_KWARGS_UNIX, client.get_connection_kwargs())
+            total_kwargs = client.get_connection_kwargs() | client.connection_pool.connection_kwargs["connection_pool"].connection_kwargs
+            del total_kwargs["connection_pool"]
+            self.assertEqual(EXPECTED_KWARGS_UNIX, total_kwargs)
 
     @patch("core.utils.redis.commands.core.CoreCommands.ping")
     def test_rediss_url(self, mock_ping):
@@ -64,7 +68,8 @@ class RedisConnectionStringsTests(SimpleTestCase):
         with patch.dict(os.environ, {"REDIS_URL":"rediss://localhost:6379/0?ssl_cert_reqs=none&ssl_ca_certs=/test/testchain.crt&ssl_certfile=/test/test.crt&ssl_keyfile=/test/test.key"}, clear=False):
 
             client = RedisClient().get_test_client(max_retries = 1)
-            self.assertTrue(EXPECTED_KWARGS_REDISS.items() <= client.get_connection_kwargs().items())
+            total_kwargs = client.get_connection_kwargs() | client.connection_pool.connection_kwargs["connection_pool"].connection_kwargs
+            self.assertTrue(EXPECTED_KWARGS_REDISS.items() <= total_kwargs.items())
 
     @patch("core.utils.redis.commands.core.CoreCommands.ping")
     def test_redis_hostport(self, mock_ping):
@@ -81,4 +86,5 @@ class RedisConnectionStringsTests(SimpleTestCase):
                                      "REDIS_DB" : '1'}, clear=False):
 
             client = RedisClient().get_test_client(max_retries = 1)
-            self.assertTrue(EXPECTED_KWARGS_HOSTPORT.items() <= client.get_connection_kwargs().items())
+            total_kwargs = client.get_connection_kwargs() | client.connection_pool.connection_kwargs
+            self.assertTrue(EXPECTED_KWARGS_HOSTPORT.items() <= total_kwargs.items())
