@@ -98,7 +98,8 @@ class FetchXmltvErrorEventsTests(SimpleTestCase):
     def test_missing_url_calls_set_epg_source_status_with_error(self, mock_set_status):
         from apps.epg.tasks import fetch_xmltv
 
-        source = MagicMock(id=1, name="No URL Source", url=None)
+        source = MagicMock(id=1, url=None)
+        source.name = "No URL Source"
         source.get_cache_file.return_value = "/tmp/nonexistent_epg_file.xml"
         source.extracted_file_path = None
         source.file_path = None
@@ -123,7 +124,8 @@ class SchedulesDirectErrorEventsTests(SimpleTestCase):
     def test_missing_credentials_calls_set_epg_source_status_with_error(self, mock_set_status):
         from apps.epg.sd_tasks import fetch_schedules_direct
 
-        source = MagicMock(id=99, name="SD Source", username="", password="")
+        source = MagicMock(id=99, username="", password="")
+        source.name = "SD Source"
 
         fetch_schedules_direct(source)
 
