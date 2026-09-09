@@ -54,6 +54,7 @@ const CustomTable = ({ table }) => {
         width: '100%',
         maxWidth: '100%',
         minWidth: `${minTableWidth}px`,
+        height: table.fillHeight ? '100%' : undefined,
         display: 'flex',
         flexDirection: 'column',
         ...columnSizeVars,
@@ -84,6 +85,7 @@ const CustomTable = ({ table }) => {
         enableDragDrop={table.enableDragDrop}
         selectedTableIdsSet={table.selectedTableIdsSet}
         handleRowClickRef={table.handleRowClickRef}
+        tableSize={table.tableSize}
       />
     </Box>
   );

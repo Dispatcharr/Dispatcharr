@@ -285,9 +285,11 @@ describe('CustomTableBody', () => {
     });
 
     it('calls useSortable with row id', () => {
+      setupMocks({ isUnlocked: true });
       const row = makeRow('abc', [makeCell(1, 'name')], 1);
       const props = defaultProps({
         getRowModel: vi.fn(() => ({ rows: [row] })),
+        enableDragDrop: true,
       });
       render(<CustomTableBody {...props} />);
       expect(useSortable).toHaveBeenCalledWith(
@@ -295,16 +297,14 @@ describe('CustomTableBody', () => {
       );
     });
 
-    it('disables useSortable when enableDragDrop is false', () => {
+    it('does not call useSortable when drag and drop is disabled', () => {
       const row = makeRow(1, [makeCell(1, 'name')], 1);
       const props = defaultProps({
         getRowModel: vi.fn(() => ({ rows: [row] })),
         enableDragDrop: false,
       });
       render(<CustomTableBody {...props} />);
-      expect(useSortable).toHaveBeenCalledWith(
-        expect.objectContaining({ disabled: true })
-      );
+      expect(useSortable).not.toHaveBeenCalled();
     });
   });
 

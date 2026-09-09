@@ -17,7 +17,6 @@ const useTable = ({
   expandedRowRenderer = () => <></>,
   onRowSelectionChange = null,
   onRowExpansionChange = null,
-  getExpandedRowHeight = null,
   state = {},
   columnSizing,
   setColumnSizing,
@@ -25,6 +24,7 @@ const useTable = ({
   pairedColumnSizing,
   tableId,
   onResetColumnSizing,
+  fillHeight = false,
   ...options
 }) => {
   const [selectedTableIds, setSelectedTableIds] = useState([]);
@@ -388,6 +388,7 @@ const useTable = ({
       setTableSize,
       tableId,
       onResetColumnSizing,
+      fillHeight,
     }),
     [
       selectedTableIdsSet,
@@ -400,6 +401,7 @@ const useTable = ({
       setTableSize,
       tableId,
       onResetColumnSizing,
+      fillHeight,
     ]
   );
 
@@ -408,7 +410,6 @@ const useTable = ({
     headerCellRenderFns,
     bodyCellRenderFns,
     renderBodyCell,
-    getExpandedRowHeight,
   };
 };
 

@@ -201,8 +201,8 @@ vi.mock('@mantine/core', () => ({
   NativeSelect: ({ onChange, value, data }) => (
     <select data-testid="native-select" onChange={onChange} value={value}>
       {(data || []).map((d) => (
-        <option key={d} value={d}>
-          {d}
+        <option key={d.value ?? d} value={d.value ?? d}>
+          {d.label ?? d}
         </option>
       ))}
     </select>
@@ -851,6 +851,17 @@ describe('StreamsTable', () => {
         expect(screen.getByTestId('native-select')).toBeInTheDocument();
       });
     });
+
+    it('offers 500 and 1000 after the 250 page size option', async () => {
+      setupMocks({ totalCount: 5, streams: [makeStream()] });
+      render(<StreamsTable />);
+      await waitFor(() => {
+        const select = screen.getByTestId('native-select');
+        expect(select.options).toHaveLength(6);
+        expect(select.options[4]).toHaveValue('500');
+        expect(select.options[5]).toHaveValue('1000');
+      });
+    });
   });
 
   // ── Column visibility (Table Settings menu) ────────────────────────────────
@@ -995,8 +1006,11 @@ describe('StreamsTable', () => {
       };
       const cell = { column: { id: 'actions' } };
 
-      // The actions renderer returns a StreamRowActions element; find Preview Stream button
-      const { getByText } = render(actionsCell({ cell, row }));
+      // Open the lazily mounted overflow menu before selecting Preview Stream.
+      const { container, getByText } = render(actionsCell({ cell, row }));
+      fireEvent.click(
+        container.querySelector('[data-testid="icon-ellipsis"]').closest('button')
+      );
       fireEvent.click(getByText('Preview Stream'));
       expect(mockShowVideo).toHaveBeenCalled();
     });

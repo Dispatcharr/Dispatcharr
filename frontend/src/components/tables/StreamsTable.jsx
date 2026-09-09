@@ -107,6 +107,7 @@ const StreamRowActions = ({
   handleCreateChannelFromStream,
   table,
 }) => {
+  const [menuOpened, setMenuOpened] = useState(false);
   const tableSize = table?.tableSize ?? 'default';
   const expandedChannelId = useChannelsTableStore((s) => s.expandedChannelId);
   const selectedChannelIds = useChannelsTableStore((s) => s.selectedChannelIds);
@@ -149,64 +150,73 @@ const StreamRowActions = ({
 
   return (
     <>
-      <Tooltip label="Add to Channel" openDelay={500}>
+      <ActionIcon
+        aria-label="Add to Channel"
+        size={iconSize}
+        color={theme.tailwind.blue[6]}
+        variant="transparent"
+        onClick={addStreamToChannel}
+        style={{ background: 'none' }}
+        disabled={
+          !targetChannelId ||
+          (channelSelectionStreams &&
+            channelSelectionStreams
+              .map((s) => s.id)
+              .includes(row.original.id))
+        }
+      >
+        <ListPlus size="18" fontSize="small" />
+      </ActionIcon>
+
+      <ActionIcon
+        aria-label="Create New Channel"
+        size={iconSize}
+        color={theme.tailwind.green[5]}
+        variant="transparent"
+        onClick={() => handleCreateChannelFromStream(row.original)}
+      >
+        <SquarePlus size="18" fontSize="small" />
+      </ActionIcon>
+
+      {menuOpened ? (
+        <Menu opened onChange={setMenuOpened}>
+          <MenuTarget>
+            <ActionIcon variant="transparent" size={iconSize}>
+              <EllipsisVertical size="18" />
+            </ActionIcon>
+          </MenuTarget>
+
+          <MenuDropdown>
+            <MenuItem leftSection={<Copy size="14" />}>
+              <UnstyledButton
+                variant="unstyled"
+                size="xs"
+                onClick={() => copyToClipboard(row.original.url)}
+              >
+                <Text size="xs">Copy URL</Text>
+              </UnstyledButton>
+            </MenuItem>
+            <MenuItem onClick={onEdit} disabled={!row.original.is_custom}>
+              <Text size="xs">Edit</Text>
+            </MenuItem>
+            <MenuItem onClick={onDelete} disabled={!row.original.is_custom}>
+              <Text size="xs">Delete Stream</Text>
+            </MenuItem>
+            <MenuItem onClick={onPreview}>
+              <Text size="xs">Preview Stream</Text>
+            </MenuItem>
+          </MenuDropdown>
+        </Menu>
+      ) : (
         <ActionIcon
-          size={iconSize}
-          color={theme.tailwind.blue[6]}
+          aria-label="More stream actions"
           variant="transparent"
-          onClick={addStreamToChannel}
-          style={{ background: 'none' }}
-          disabled={
-            !targetChannelId ||
-            (channelSelectionStreams &&
-              channelSelectionStreams
-                .map((s) => s.id)
-                .includes(row.original.id))
-          }
-        >
-          <ListPlus size="18" fontSize="small" />
-        </ActionIcon>
-      </Tooltip>
-
-      <Tooltip label="Create New Channel" openDelay={500}>
-        <ActionIcon
           size={iconSize}
-          color={theme.tailwind.green[5]}
-          variant="transparent"
-          onClick={() => handleCreateChannelFromStream(row.original)}
+          onClick={() => setMenuOpened(true)}
         >
-          <SquarePlus size="18" fontSize="small" />
+          <EllipsisVertical size="18" />
         </ActionIcon>
-      </Tooltip>
-
-      <Menu>
-        <MenuTarget>
-          <ActionIcon variant="transparent" size={iconSize}>
-            <EllipsisVertical size="18" />
-          </ActionIcon>
-        </MenuTarget>
-
-        <MenuDropdown>
-          <MenuItem leftSection={<Copy size="14" />}>
-            <UnstyledButton
-              variant="unstyled"
-              size="xs"
-              onClick={() => copyToClipboard(row.original.url)}
-            >
-              <Text size="xs">Copy URL</Text>
-            </UnstyledButton>
-          </MenuItem>
-          <MenuItem onClick={onEdit} disabled={!row.original.is_custom}>
-            <Text size="xs">Edit</Text>
-          </MenuItem>
-          <MenuItem onClick={onDelete} disabled={!row.original.is_custom}>
-            <Text size="xs">Delete Stream</Text>
-          </MenuItem>
-          <MenuItem onClick={onPreview}>
-            <Text size="xs">Preview Stream</Text>
-          </MenuItem>
-        </MenuDropdown>
-      </Menu>
+      )}
     </>
   );
 };
@@ -1044,6 +1054,7 @@ const StreamsTable = ({ onReady }) => {
     const newPageSize = parseInt(e.target.value);
     setPagination({
       ...pagination,
+      pageIndex: 0,
       pageSize: newPageSize,
     });
   };
@@ -1254,6 +1265,7 @@ const StreamsTable = ({ onReady }) => {
         case 'actions':
           return (
             <StreamRowActions
+              key={row.original.id}
               theme={theme}
               row={row}
               editStream={editStream}
@@ -1279,6 +1291,7 @@ const StreamsTable = ({ onReady }) => {
     pairedColumnSizing,
     tableId: 'streams-table',
     onResetColumnSizing: resetColumnSizing,
+    fillHeight: true,
     onColumnVisibilityChange: setColumnVisibility,
     onRowSelectionChange: onRowSelectionChange,
     manualPagination: true,
@@ -1782,7 +1795,7 @@ const StreamsTable = ({ onReady }) => {
               ref={tableScrollRef}
               style={{
                 flex: 1,
-                overflowY: 'auto',
+                overflowY: 'hidden',
                 overflowX: 'auto',
                 border: 'solid 1px rgb(68,68,68)',
                 borderRadius: 'var(--mantine-radius-default)',
@@ -1812,7 +1825,7 @@ const StreamsTable = ({ onReady }) => {
                 <NativeSelect
                   size="xxs"
                   value={pagination.pageSize}
-                  data={['25', '50', '100', '250']}
+                  data={['25', '50', '100', '250', '500', '1000']}
                   onChange={onPageSizeChange}
                   style={{ paddingRight: 20 }}
                 />
