@@ -852,14 +852,13 @@ describe('StreamsTable', () => {
       });
     });
 
-    it('offers 500 and 1000 after the 250 page size option', async () => {
+    it('offers 500 as the largest page size option', async () => {
       setupMocks({ totalCount: 5, streams: [makeStream()] });
       render(<StreamsTable />);
       await waitFor(() => {
         const select = screen.getByTestId('native-select');
-        expect(select.options).toHaveLength(6);
+        expect(select.options).toHaveLength(5);
         expect(select.options[4]).toHaveValue('500');
-        expect(select.options[5]).toHaveValue('1000');
       });
     });
   });

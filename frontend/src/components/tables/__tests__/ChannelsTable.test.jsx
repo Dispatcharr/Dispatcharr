@@ -1112,13 +1112,12 @@ describe('ChannelsTable', () => {
       expect(screen.getByText('1 to 25 of 50')).toBeInTheDocument();
     });
 
-    it('offers 500 and 1000 after the 250 page size option', () => {
+    it('offers 500 as the largest page size option', () => {
       setupMocks({ totalCount: 50 });
       render(<ChannelsTable />);
       const select = screen.getByTestId('native-select');
-      expect(select.options).toHaveLength(6);
+      expect(select.options).toHaveLength(5);
       expect(select.options[4]).toHaveValue('500');
-      expect(select.options[5]).toHaveValue('1000');
     });
 
     it('clicking next page triggers fetchData with updated page', async () => {

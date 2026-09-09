@@ -1825,7 +1825,7 @@ const StreamsTable = ({ onReady }) => {
                 <NativeSelect
                   size="xxs"
                   value={pagination.pageSize}
-                  data={['25', '50', '100', '250', '500', '1000']}
+                  data={['25', '50', '100', '250', '500']}
                   onChange={onPageSizeChange}
                   style={{ paddingRight: 20 }}
                 />
