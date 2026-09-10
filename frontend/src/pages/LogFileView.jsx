@@ -400,7 +400,7 @@ const LogBody = React.memo(
         new CellMeasurerCache({
           fixedWidth: true,
           defaultHeight: 18,
-          keyMapper: (index) => blocksRef.current[index]?.id ?? index,
+          keyMapper: (index) => blocksRef.current[index]?.id ?? `row-${index}`,
         }),
       []
     );
@@ -461,7 +461,8 @@ const LogBody = React.memo(
           rowIndex={index}
         >
           {({ registerChild }) => (
-            <div ref={registerChild} style={style}>
+            // The grid's height would measure back as itself; content sets it.
+            <div ref={registerChild} style={{ ...style, height: 'auto' }}>
               {renderBlock(blocks[index], styles)}
             </div>
           )}
@@ -492,6 +493,7 @@ const LogBody = React.memo(
         {({ height, width }) => (
           <List
             deferredMeasurementCache={cache}
+            estimatedRowSize={cache.defaultHeight}
             height={height}
             onScroll={onScroll}
             overscanRowCount={12}

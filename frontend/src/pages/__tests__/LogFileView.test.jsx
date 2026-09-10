@@ -58,7 +58,12 @@ vi.mock('react-virtualized', async () => {
       const rows = [];
       for (let i = start; i < Math.min(end, props.rowCount); i += 1) {
         rows.push(
-          props.rowRenderer({ index: i, key: i, parent: null, style: {} })
+          props.rowRenderer({
+            index: i,
+            key: i,
+            parent: null,
+            style: { position: 'absolute', height: 18 },
+          })
         );
       }
       return (
@@ -1391,13 +1396,17 @@ describe('LogFileViewPage', () => {
     expect(list.recompute).toHaveBeenCalled();
   });
 
-  it('measures by block id rather than by position', async () => {
+  it('measures by block id, and lets content set the height', async () => {
     renderPage();
     await screen.findByText(/Scanning disk/);
     expect(list.cache.fixedWidth).toBe(true);
     // Ids climb from a module counter, so a first block never keys as its index.
     expect(list.cache.keyMapper(0)).toBeGreaterThan(0);
-    // Past the end there is no block to key on and the index has to do.
-    expect(list.cache.keyMapper(9999)).toBe(9999);
+    // Ids are integers, so a past-the-end fallback must not read as one.
+    expect(list.cache.keyMapper(9999)).toBe('row-9999');
+    // Measuring an element the grid already sized returns that size back.
+    expect(screen.getByTestId('log-list').firstElementChild.style.height).toBe(
+      'auto'
+    );
   });
 });
