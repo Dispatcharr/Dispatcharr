@@ -2,6 +2,7 @@ import requests
 import logging
 import traceback
 import json
+from core.redaction import redact_provider_text, redact_provider_url
 
 logger = logging.getLogger(__name__)
 
@@ -94,7 +95,7 @@ class Client:
             try:
                 data = response.json()
             except requests.exceptions.JSONDecodeError as json_err:
-                error_msg = f"XC API returned invalid JSON from {url}. Response: {response.text[:1000]}"
+                error_msg = f"XC API returned invalid JSON from {redact_provider_url(url)}. Response: {redact_provider_text(response.text[:1000])}"
                 logger.error(error_msg)
                 logger.error(f"JSON decode error: {str(json_err)}")
 
@@ -118,7 +119,7 @@ class Client:
             raise
         except ValueError as e:
             # This could be from JSON parsing or our explicit raises
-            logger.error(f"XC API Invalid response: {str(e)}")
+            logger.error(f"XC API Invalid response: {redact_provider_text(str(e))}")
             raise
         except Exception as e:
             logger.error(f"XC API Unexpected error: {str(e)}")
@@ -205,7 +206,7 @@ class Client:
             categories = self._make_request(endpoint, params)
 
             if not isinstance(categories, list):
-                error_msg = f"Invalid categories response: {categories}"
+                error_msg = f"Invalid categories response: {redact_provider_text(str(categories))}"
                 logger.error(error_msg)
                 raise ValueError(error_msg)
 
@@ -234,7 +235,7 @@ class Client:
             streams = self._make_request(endpoint, params)
 
             if not isinstance(streams, list):
-                error_msg = f"Invalid streams response for category {category_id}: {streams}"
+                error_msg = f"Invalid streams response for category {category_id}: {redact_provider_text(str(streams))}"
                 logger.error(error_msg)
                 raise ValueError(error_msg)
 
@@ -262,7 +263,7 @@ class Client:
             streams = self._make_request(endpoint, params)
 
             if not isinstance(streams, list):
-                error_msg = f"Invalid streams response for all live streams: {streams}"
+                error_msg = f"Invalid streams response for all live streams: {redact_provider_text(str(streams))}"
                 logger.error(error_msg)
                 raise ValueError(error_msg)
 
@@ -301,7 +302,7 @@ class Client:
             categories = self._make_request(endpoint, params)
 
             if not isinstance(categories, list):
-                error_msg = f"Invalid VOD categories response: {categories}"
+                error_msg = f"Invalid VOD categories response: {redact_provider_text(str(categories))}"
                 logger.error(error_msg)
                 raise ValueError(error_msg)
 
@@ -331,7 +332,7 @@ class Client:
             streams = self._make_request(endpoint, params)
 
             if not isinstance(streams, list):
-                error_msg = f"Invalid VOD streams response for category {category_id}: {streams}"
+                error_msg = f"Invalid VOD streams response for category {category_id}: {redact_provider_text(str(streams))}"
                 logger.error(error_msg)
                 raise ValueError(error_msg)
 
@@ -359,7 +360,7 @@ class Client:
             vod_info = self._make_request(endpoint, params)
 
             if not isinstance(vod_info, dict):
-                error_msg = f"Invalid VOD info response for vod_id {vod_id}: {vod_info}"
+                error_msg = f"Invalid VOD info response for vod_id {vod_id}: {redact_provider_text(str(vod_info))}"
                 logger.error(error_msg)
                 raise ValueError(error_msg)
 
@@ -386,7 +387,7 @@ class Client:
             categories = self._make_request(endpoint, params)
 
             if not isinstance(categories, list):
-                error_msg = f"Invalid series categories response: {categories}"
+                error_msg = f"Invalid series categories response: {redact_provider_text(str(categories))}"
                 logger.error(error_msg)
                 raise ValueError(error_msg)
 
@@ -416,7 +417,7 @@ class Client:
             series = self._make_request(endpoint, params)
 
             if not isinstance(series, list):
-                error_msg = f"Invalid series response for category {category_id}: {series}"
+                error_msg = f"Invalid series response for category {category_id}: {redact_provider_text(str(series))}"
                 logger.error(error_msg)
                 raise ValueError(error_msg)
 
@@ -444,7 +445,7 @@ class Client:
             series_info = self._make_request(endpoint, params)
 
             if not isinstance(series_info, dict):
-                error_msg = f"Invalid series info response for series_id {series_id}: {series_info}"
+                error_msg = f"Invalid series info response for series_id {series_id}: {redact_provider_text(str(series_info))}"
                 logger.error(error_msg)
                 raise ValueError(error_msg)
 
