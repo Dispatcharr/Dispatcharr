@@ -1,6 +1,7 @@
 import React, {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -19,12 +20,8 @@ import {
   Title,
 } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
-import {
-  AutoSizer,
-  CellMeasurer,
-  CellMeasurerCache,
-  List,
-} from 'react-virtualized';
+import { ChevronDown, ChevronUp } from 'lucide-react';
+import { AutoSizer, List } from 'react-virtualized';
 import 'react-virtualized/styles.css';
 import API from '../api';
 import DownloadLogButton from '../components/DownloadLogButton';
@@ -220,31 +217,6 @@ const filterEntries = (entries, minRank, category, matcher) => {
   return out;
 };
 
-const renderContinuations = (lines) => {
-  const out = [];
-  let run = [];
-  let blank = null;
-  const flush = () => {
-    if (!run.length) return;
-    // React renders no text node for '', so a lone blank line needs its own '\n'.
-    const text = run.join('\n') + (blank ? '\n' : '');
-    out.push(
-      <div key={out.length} style={blank ? { lineHeight: 0.35 } : undefined}>
-        {text}
-      </div>
-    );
-    run = [];
-  };
-  for (const line of lines) {
-    const isBlank = line.trim() === '';
-    if (blank !== null && isBlank !== blank) flush();
-    blank = isBlank;
-    run.push(line);
-  }
-  flush();
-  return out;
-};
-
 // whiteSpace and textIndent inherit from the hanging block; reset them here.
 const columnStyle = (width) => ({
   display: 'inline-block',
@@ -258,6 +230,7 @@ const columnStyle = (width) => ({
 const buildStyles = (stampW, levelW, moduleW, indent, minLevel) => {
   const cache = new Map();
   return {
+    indent,
     stamp: { ...columnStyle(stampW), color: COLORS.stamp },
     module: {
       ...columnStyle(moduleW),
@@ -276,10 +249,15 @@ const buildStyles = (stampW, levelW, moduleW, indent, minLevel) => {
       if (!style) {
         const severity = severityColor(level);
         style = {
-          row: {
+          line: {
+            borderLeft: `2px solid ${barColor(level, minLevel)}`,
+            paddingLeft: 8,
+          },
+          // Continuations start under the message column.
+          continuation: {
             borderLeft: `2px solid ${barColor(level, minLevel)}`,
             paddingLeft: `calc(8px + ${indent}ch)`,
-            textIndent: `-${indent}ch`,
+            color: severity || undefined,
           },
           level: {
             ...columnStyle(levelW),
@@ -289,7 +267,6 @@ const buildStyles = (stampW, levelW, moduleW, indent, minLevel) => {
             textOverflow: 'ellipsis',
           },
           message: severity ? { color: severity } : undefined,
-          continuations: { textIndent: '0px', color: severity || undefined },
         };
         cache.set(level, style);
       }
@@ -341,44 +318,151 @@ const buildBlocks = (entries) => {
   return blocks;
 };
 
-// One row per block: a record with its continuations, or a run of plain lines.
-const renderBlock = (block, styles) => {
-  if (!block.record) {
-    // Dimming marks these lines as unowned.
-    return <div style={styles.plain}>{block.lines.join('\n')}</div>;
+// One row per line; a continuation keeps its record's level for colour.
+const flattenBlocks = (blocks) => {
+  const rows = [];
+  for (const block of blocks) {
+    if (!block.record) {
+      block.lines.forEach((text, i) =>
+        rows.push({ id: `${block.id}.${i}`, text })
+      );
+      continue;
+    }
+    rows.push({ id: `${block.id}`, record: block.record });
+    block.continuations.forEach((text, i) =>
+      rows.push({ id: `${block.id}.${i}`, text, level: block.record.level })
+    );
   }
-  const rowStyle = styles.forLevel(block.record.level);
-  return (
-    <div style={rowStyle.row}>
-      <span style={styles.stamp}>{block.record.stamp}</span>{' '}
-      <span style={rowStyle.level} title={block.record.level}>
-        {levelLabel(block.record.level)}
-      </span>{' '}
-      <span style={styles.module} title={block.record.source}>
-        {block.record.module}
-      </span>
-      {block.record.sep}
-      <span style={rowStyle.message}>{block.record.message}</span>
-      {block.continuations.length > 0 && (
-        <div style={rowStyle.continuations}>
-          {renderContinuations(block.continuations)}
-        </div>
-      )}
-    </div>
-  );
+  return rows;
 };
 
-// Set on the list container so every measured row inherits the same metrics.
+// One visual line per row.
+const ROW_HEIGHT = 18;
+
+// Set on the list container; every row inherits the metrics.
 const BODY_FONT = {
   fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
   fontSize: 12,
-  lineHeight: 1.45,
+  lineHeight: `${ROW_HEIGHT}px`,
   // The scroller owns the gutter, so the scrollbar stays at the panel edge.
   paddingInline: 'var(--mantine-spacing-sm)',
-  // anywhere breaks unbroken tokens like URLs and SQL dumps.
+};
+
+const CLIPPED = {
+  flex: '1 1 auto',
+  minWidth: 0,
+  overflow: 'hidden',
+  whiteSpace: 'pre',
+};
+
+// anywhere breaks unbroken tokens like URLs and SQL dumps.
+const WRAPPED = {
+  flex: '1 1 auto',
+  minWidth: 0,
   whiteSpace: 'pre-wrap',
   overflowWrap: 'anywhere',
 };
+
+const ExpandToggle = ({ expanded, hidden, onClick }) => (
+  <Button
+    size="compact-xs"
+    variant="default"
+    h={16}
+    px={6}
+    mt={1}
+    ml={6}
+    fz={10}
+    ff="text"
+    style={{
+      flex: 'none',
+      '--button-color': COLORS.stamp,
+      '--button-hover-color': COLORS.level,
+    }}
+    leftSection={expanded ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
+    aria-expanded={expanded}
+    onClick={onClick}
+  >
+    <span style={{ textBox: 'trim-both cap alphabetic' }}>
+      +{hidden.toLocaleString()} chars
+    </span>
+  </Button>
+);
+
+const LogRow = React.memo(
+  ({ row, styles, width, expanded, opened, onToggle, onMeasure }) => {
+    const frameRef = useRef(null);
+    const textRef = useRef(null);
+    const [hidden, setHidden] = useState(0);
+    const cut = hidden > 0;
+    // Collapsed, a row reads widths only.
+    useLayoutEffect(() => {
+      if (expanded) {
+        onMeasure(row.id, frameRef.current.offsetHeight);
+        return;
+      }
+      const el = textRef.current;
+      const over = el.scrollWidth - el.clientWidth;
+      setHidden(
+        over > 1
+          ? Math.ceil((over * el.textContent.length) / el.scrollWidth)
+          : 0
+      );
+    }, [row, width, expanded, cut, onMeasure]);
+
+    const level = row.record ? row.record.level : row.level;
+    const tone = level ? styles.forLevel(level) : null;
+    const frame = !tone
+      ? styles.plain
+      : row.record
+        ? tone.line
+        : tone.continuation;
+    const text = !expanded
+      ? CLIPPED
+      : row.record
+        ? {
+            ...WRAPPED,
+            paddingLeft: `${styles.indent}ch`,
+            textIndent: `-${styles.indent}ch`,
+          }
+        : WRAPPED;
+    return (
+      <div
+        ref={frameRef}
+        style={{
+          ...frame,
+          display: 'flex',
+          alignItems: 'flex-start',
+          height: expanded ? 'auto' : ROW_HEIGHT,
+        }}
+      >
+        <span ref={textRef} style={text}>
+          {row.record ? (
+            <>
+              <span style={styles.stamp}>{row.record.stamp}</span>{' '}
+              <span style={tone.level} title={row.record.level}>
+                {levelLabel(row.record.level)}
+              </span>{' '}
+              <span style={styles.module} title={row.record.source}>
+                {row.record.module}
+              </span>
+              {row.record.sep}
+              <span style={tone.message}>{row.record.message}</span>
+            </>
+          ) : (
+            row.text
+          )}
+        </span>
+        {(cut || expanded) && (
+          <ExpandToggle
+            expanded={expanded}
+            hidden={expanded ? opened : hidden}
+            onClick={() => onToggle(row.id, hidden)}
+          />
+        )}
+      </div>
+    );
+  }
+);
 
 const LogBody = React.memo(
   ({
@@ -392,35 +476,65 @@ const LogBody = React.memo(
     newestFirst,
   }) => {
     const listRef = useRef(null);
-    const blocksRef = useRef(blocks);
-    blocksRef.current = blocks;
-    // Heights key off the block id, so a reversal or a head trim keeps them.
-    const cache = useMemo(
-      () =>
-        new CellMeasurerCache({
-          fixedWidth: true,
-          defaultHeight: 18,
-          keyMapper: (index) => blocksRef.current[index]?.id ?? `row-${index}`,
-        }),
-      []
-    );
-    // Open at the live edge, and keep following until the reader scrolls away.
+    const rows = useMemo(() => flattenBlocks(blocks), [blocks]);
+    // Expanded row id -> its hidden count; only these rows are ever taller.
+    const [expanded, setExpanded] = useState(() => new Map());
+    const heightsRef = useRef(new Map());
+    // Follow the live edge until the reader scrolls away or toggles a row.
     const [following, setFollowing] = useState(true);
     const followingRef = useRef(true);
     // The grid opens at the top and reports it, which is not the reader moving.
     const reachedRef = useRef(false);
 
-    // The columns move the wrap point, so every stored height is stale.
-    const remeasure = useCallback(() => {
-      cache.clearAll();
-      listRef.current?.recomputeRowHeights();
-    }, [cache]);
-    useEffect(remeasure, [remeasure, styles]);
-
     // A flipped order pins the other end, which has to be reached in turn.
     useEffect(() => {
       reachedRef.current = false;
     }, [newestFirst, name]);
+
+    useEffect(() => {
+      setExpanded(new Map());
+      heightsRef.current.clear();
+    }, [name]);
+
+    // Summed from rowHeight, not the DOM.
+    const resize = useCallback(() => {
+      listRef.current?.recomputeRowHeights();
+      listRef.current?.measureAllRows();
+    }, []);
+    const resizedRef = useRef(false);
+    useEffect(() => {
+      // Nothing expanded now or before: every row is ROW_HEIGHT already.
+      if (!expanded.size && !resizedRef.current) return;
+      resizedRef.current = expanded.size > 0;
+      resize();
+    }, [expanded, rows, resize]);
+
+    const toggle = useCallback((id, hidden) => {
+      followingRef.current = false;
+      setFollowing(false);
+      setExpanded((prev) => {
+        const next = new Map(prev);
+        if (!next.delete(id)) next.set(id, hidden);
+        return next;
+      });
+    }, []);
+
+    const measure = useCallback(
+      (id, height) => {
+        if (heightsRef.current.get(id) === height) return;
+        heightsRef.current.set(id, height);
+        resize();
+      },
+      [resize]
+    );
+
+    const rowHeight = useCallback(
+      ({ index }) => {
+        const id = rows[index]?.id;
+        return (expanded.has(id) && heightsRef.current.get(id)) || ROW_HEIGHT;
+      },
+      [rows, expanded]
+    );
 
     // Newest sits at whichever end the order puts it.
     const onScroll = useCallback(
@@ -443,33 +557,12 @@ const LogBody = React.memo(
       [newestFirst]
     );
 
-    // Declared rather than scrolled to, so it survives the rows being measured.
     const pinned =
-      following && blocks.length
+      following && rows.length
         ? newestFirst
           ? 0
-          : blocks.length - 1
+          : rows.length - 1
         : undefined;
-
-    const rowRenderer = useCallback(
-      ({ index, key, parent, style }) => (
-        <CellMeasurer
-          cache={cache}
-          columnIndex={0}
-          key={key}
-          parent={parent}
-          rowIndex={index}
-        >
-          {({ registerChild }) => (
-            // The grid's height would measure back as itself; content sets it.
-            <div ref={registerChild} style={{ ...style, height: 'auto' }}>
-              {renderBlock(blocks[index], styles)}
-            </div>
-          )}
-        </CellMeasurer>
-      ),
-      [blocks, cache, styles]
-    );
 
     if (loading && empty) return <Loader ml="sm" />;
     if (empty && loadError) {
@@ -485,22 +578,34 @@ const LogBody = React.memo(
       );
     }
     if (empty) return emptyState('(empty)');
-    if (!blocks.length) return emptyState('(no records match the filters)');
+    if (!rows.length) return emptyState('(no records match the filters)');
 
     return (
-      // A narrower viewport rewraps every line, so the heights go with it.
-      <AutoSizer onResize={remeasure}>
+      <AutoSizer>
         {({ height, width }) => (
           <List
-            deferredMeasurementCache={cache}
-            estimatedRowSize={cache.defaultHeight}
+            // Every collapsed row is exactly this height.
+            estimatedRowSize={ROW_HEIGHT}
             height={height}
             onScroll={onScroll}
             overscanRowCount={12}
             ref={listRef}
-            rowCount={blocks.length}
-            rowHeight={cache.rowHeight}
-            rowRenderer={rowRenderer}
+            rowCount={rows.length}
+            rowHeight={rowHeight}
+            rowRenderer={({ index, key, style }) => (
+              <div key={key} style={style}>
+                <LogRow
+                  key={rows[index].id}
+                  row={rows[index]}
+                  styles={styles}
+                  width={width}
+                  expanded={expanded.has(rows[index].id)}
+                  opened={expanded.get(rows[index].id)}
+                  onToggle={toggle}
+                  onMeasure={measure}
+                />
+              </div>
+            )}
             scrollToAlignment={newestFirst ? 'start' : 'end'}
             scrollToIndex={pinned}
             style={BODY_FONT}
@@ -711,6 +816,7 @@ const LogFileViewPage = () => {
           display: 'flex',
           flexDirection: 'column',
           height: 'calc(100vh - var(--mantine-spacing-md) * 2)',
+          overflow: 'hidden',
         }}
       >
         <Box
@@ -798,7 +904,6 @@ const LogFileViewPage = () => {
         </Box>
 
         <Box
-          py="sm"
           // Without minHeight:0 a flex item will not shrink below its content.
           style={{ flex: '1 1 auto', overflow: 'hidden', minHeight: '0px' }}
         >

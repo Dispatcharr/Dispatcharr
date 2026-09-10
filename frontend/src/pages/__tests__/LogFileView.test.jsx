@@ -25,32 +25,45 @@ vi.mock('@mantine/notifications', () => ({
 const list = vi.hoisted(() => ({
   scrollToRow: vi.fn(),
   recompute: vi.fn(),
-  cache: null,
+  measureAll: vi.fn(),
   props: null,
   ROWS: 46,
 }));
 
 vi.mock('react-virtualized/styles.css', () => ({}));
 
+// jsdom lays nothing out: text gets a width so a long line overflows its span.
+const mockOverflow = ({ offsetHeight = 0 } = {}) => {
+  const saved = {};
+  const define = (key, get) => {
+    saved[key] = Object.getOwnPropertyDescriptor(HTMLElement.prototype, key);
+    Object.defineProperty(HTMLElement.prototype, key, {
+      configurable: true,
+      get,
+    });
+  };
+  define('scrollWidth', function () {
+    return this.textContent.length * 7;
+  });
+  define('clientWidth', () => 700);
+  define('offsetHeight', () => offsetHeight);
+  return () => {
+    for (const [key, desc] of Object.entries(saved)) {
+      if (desc) Object.defineProperty(HTMLElement.prototype, key, desc);
+      else delete HTMLElement.prototype[key];
+    }
+  };
+};
+
 vi.mock('react-virtualized', async () => {
   const React = await vi.importActual('react');
   return {
-    AutoSizer: ({ children, onResize }) => {
-      list.onResize = onResize;
-      return children({ width: 1000, height: 600 });
-    },
-    CellMeasurer: ({ children }) => children({ registerChild: () => {} }),
-    CellMeasurerCache: class {
-      constructor(options) {
-        list.cache = options;
-        this.rowHeight = () => 18;
-      }
-      clearAll() {}
-    },
+    AutoSizer: ({ children }) => children({ width: 1000, height: 600 }),
     List: React.forwardRef((props, ref) => {
       list.props = props;
       React.useImperativeHandle(ref, () => ({
         recomputeRowHeights: list.recompute,
+        measureAllRows: list.measureAll,
       }));
       const anchor = props.scrollToIndex;
       const end = anchor ? anchor + 1 : Math.min(list.ROWS, props.rowCount);
@@ -231,10 +244,12 @@ describe('LogFileViewPage', () => {
     expect(screen.getByText('ERROR').closest('div')).toHaveStyle({
       borderLeft: '2px solid #ff6b6b',
     });
-    // The traceback, its column-0 tail included, is one joined text node.
-    expect(screen.getByText(/Traceback/).textContent).toContain(
-      'ValueError: bad feed'
-    );
+    // Every traceback line, its column-0 tail included, rides the record's bar.
+    for (const line of [/Traceback/, /line 214, in refresh/, /bad feed/]) {
+      expect(screen.getByText(line).closest('div')).toHaveStyle({
+        borderLeft: '2px solid #ff6b6b',
+      });
+    }
     expect(screen.getByText(/back to normal/).closest('div')).not.toHaveStyle({
       borderLeft: '2px solid #ff6b6b',
     });
@@ -646,31 +661,41 @@ describe('LogFileViewPage', () => {
     });
   });
 
-  it('wraps a long line under the message column instead of scrolling', async () => {
-    API.getLogFile.mockResolvedValue({
-      content: [
-        '2026-08-21 10:00:00,000 ERROR postgres [312] STATEMENT:  ' +
-          'x'.repeat(4000),
-        '  continuation tail',
-      ].join('\n'),
-      truncated: false,
-    });
-    renderPage();
-    const message = await screen.findByText(/STATEMENT/);
-    expect(screen.getByTestId('log-list')).toHaveStyle({
-      whiteSpace: 'pre-wrap',
-      overflowWrap: 'anywhere',
-    });
-    // 39ch = stamp 23 + level 5 + module 8 + 3 gaps.
-    const block = message.closest('div');
-    expect(block).toHaveStyle({
-      paddingLeft: 'calc(8px + 39ch)',
-      textIndent: '-39ch',
-    });
-    // Continuations already sit at that column, so they cancel the hang.
-    expect(screen.getByText(/continuation tail/).parentElement).toHaveStyle({
-      textIndent: '0px',
-    });
+  it('clips a long line to one row, and wraps it under the message column on demand', async () => {
+    const restore = mockOverflow();
+    try {
+      API.getLogFile.mockResolvedValue({
+        content: [
+          '2026-08-21 10:00:00,000 ERROR postgres [312] STATEMENT:  ' +
+            'x'.repeat(4000),
+          '  continuation tail',
+        ].join('\n'),
+        truncated: false,
+      });
+      renderPage();
+      const message = await screen.findByText(/STATEMENT/);
+      const text = message.parentElement;
+      expect(message.closest('div')).toHaveStyle({ height: '18px' });
+      expect(text).toHaveStyle({ whiteSpace: 'pre', overflow: 'hidden' });
+      fireEvent.click(
+        await screen.findByRole('button', {
+          name: /^\+[\d,]+ chars$/,
+        })
+      );
+      // 39ch = stamp 23 + level 5 + module 8 + 3 gaps.
+      expect(text).toHaveStyle({
+        whiteSpace: 'pre-wrap',
+        overflowWrap: 'anywhere',
+        paddingLeft: '39ch',
+        textIndent: '-39ch',
+      });
+      // Continuations already sit at that column.
+      expect(screen.getByText(/continuation tail/).closest('div')).toHaveStyle({
+        paddingLeft: 'calc(8px + 39ch)',
+      });
+    } finally {
+      restore();
+    }
   });
 
   it('scrolls the records inside the panel, not the page', async () => {
@@ -699,9 +724,9 @@ describe('LogFileViewPage', () => {
     });
     renderPage();
     await screen.findByText(/scan done/);
-    // 23 stamp + 5 level + 12 module (capped) + 3 separators.
-    const indent = { paddingLeft: 'calc(8px + 43ch)', textIndent: '-43ch' };
-    expect(screen.getByText(/tick/).closest('div')).toHaveStyle(indent);
+    // The long module sets the capped column every row keeps.
+    const column = { width: '12ch' };
+    expect(screen.getByTitle('core.tasks')).toHaveStyle(column);
     // Filtering the long module out of view must not re-measure the columns.
     fireEvent.change(screen.getByLabelText('Search'), {
       target: { value: 'tick' },
@@ -709,7 +734,7 @@ describe('LogFileViewPage', () => {
     await waitFor(() =>
       expect(screen.queryByText(/scan done/)).not.toBeInTheDocument()
     );
-    expect(screen.getByText(/tick/).closest('div')).toHaveStyle(indent);
+    expect(screen.getByTitle('core.tasks')).toHaveStyle(column);
   });
 
   it('dims the lines no record owns', async () => {
@@ -787,13 +812,10 @@ describe('LogFileViewPage', () => {
     expect(screen.getByTitle('plugins.event_channel_managarr')).toHaveStyle({
       width: '12ch',
     });
-    expect(screen.getByText(/long module line/).closest('div')).toHaveStyle({
-      paddingLeft: 'calc(8px + 43ch)',
-      textIndent: '-43ch',
-    });
+    // Continuations start at the message column the capped module sets.
     expect(
-      screen.getByText(/trailing continuation detail/).parentElement
-    ).toHaveStyle({ textIndent: '0px' });
+      screen.getByText(/trailing continuation detail/).closest('div')
+    ).toHaveStyle({ paddingLeft: 'calc(8px + 43ch)' });
   });
 
   it('compresses level display names without touching their rank', async () => {
@@ -848,11 +870,12 @@ describe('LogFileViewPage', () => {
     });
     renderPage();
     await screen.findByText(/back to normal/);
-    const tail = screen.getByText(/ValueError: bad feed/);
-    expect(tail.textContent).toContain(
-      'During handling of the above exception'
+    // Claimed, the column-0 tail sits at the traceback's column, not at 8px.
+    const row = (text) => screen.getByText(text).closest('div');
+    expect(row(/During handling/).style.paddingLeft).not.toBe('8px');
+    expect(row(/During handling/).style.paddingLeft).toBe(
+      row(/ValueError: bad feed/).style.paddingLeft
     );
-    expect(tail.parentElement).toHaveStyle({ textIndent: '0px' });
     fireEvent.change(screen.getByLabelText('Category'), {
       target: { value: 'app' },
     });
@@ -902,8 +925,7 @@ describe('LogFileViewPage', () => {
     expect(screen.getByText(/orphaned frame/)).toBeInTheDocument();
   });
 
-  it('keeps the byte of a single blank continuation line', async () => {
-    // Joined to '' a lone blank renders no text node and drops from the copy buffer.
+  it('gives a blank continuation line a row of its own', async () => {
     API.getLogFile.mockResolvedValue({
       content: [
         '2026-08-21 10:00:00,000 ERROR core.tasks refresh failed',
@@ -915,10 +937,10 @@ describe('LogFileViewPage', () => {
     });
     renderPage();
     await screen.findByText(/Traceback/);
-    const segments = screen.getByText(/ValueError/).parentElement;
-    const blank = segments.children[1];
-    expect(blank).toHaveStyle({ lineHeight: '0.35' });
-    expect(blank.textContent).toBe('\n');
+    const rows = screen.getByTestId('log-list').children;
+    expect(rows).toHaveLength(4);
+    expect(rows[2].textContent).toBe('');
+    expect(rows[2].firstChild).toHaveStyle({ height: '18px' });
   });
 
   it('does not render the newline that ends the body as a blank line', async () => {
@@ -926,11 +948,9 @@ describe('LogFileViewPage', () => {
       content: '2026-08-21 10:00:00,000 INFO core.tasks hello there\n',
       truncated: false,
     });
-    const { container } = renderPage();
+    renderPage();
     await screen.findByText(/hello there/);
-    expect(
-      container.querySelector('div[style*="line-height: 0.35"]')
-    ).toBeNull();
+    expect(screen.getByTestId('log-list').children).toHaveLength(1);
   });
 
   it('never hides the collector pass-through records behind a filter', async () => {
@@ -1104,32 +1124,14 @@ describe('LogFileViewPage', () => {
       expect(screen.queryByText(/alpha event/)).not.toBeInTheDocument()
     );
     expect(screen.getByText(/refresh failed/)).toBeInTheDocument();
-    expect(screen.getByText(/Traceback/).textContent).toContain('beta marker');
+    // Matching one continuation keeps the whole block.
+    expect(screen.getByText(/Traceback/)).toBeInTheDocument();
+    expect(screen.getByText(/beta marker/)).toBeInTheDocument();
     expect(screen.queryByText(/gamma event/)).not.toBeInTheDocument();
     fireEvent.change(screen.getByLabelText('Search'), {
       target: { value: '' },
     });
     expect(await screen.findByText(/alpha event/)).toBeInTheDocument();
-  });
-
-  it('renders blank continuation runs at reduced height', async () => {
-    API.getLogFile.mockResolvedValue({
-      content: [
-        '2026-08-21 10:00:00,000 ERROR apps.epg boom',
-        'Traceback (most recent call last):',
-        'ValueError: first',
-        '',
-        'During handling of the above exception, another exception occurred:',
-      ].join('\n'),
-      truncated: false,
-    });
-    renderPage();
-    await screen.findByText(/ValueError: first/);
-    const padded = screen.getByText(/ValueError: first/).parentElement;
-    // Three segments: text, the compressed blank run, text.
-    expect(padded.children).toHaveLength(3);
-    expect(padded.children[1]).toHaveStyle({ lineHeight: '0.35' });
-    expect(screen.getByText(/During handling/)).toBeInTheDocument();
   });
 
   it('keeps a multi-line record intact when reversed', async () => {
@@ -1234,11 +1236,12 @@ describe('LogFileViewPage', () => {
     });
     await screen.findByText(/ValueError: bad m3u/);
 
-    // Structure, not presence: the tail must land inside the record's block.
-    const block = screen
-      .getByText(/Traceback \(most recent call last\)/)
-      .closest('div');
-    expect(block.textContent).toContain('ValueError: bad m3u');
+    // Structure, not presence: a stray tail would sit at 8px as a plain line.
+    const row = (text) => screen.getByText(text).closest('div');
+    expect(row(/bad m3u/)).toHaveStyle({ borderLeft: '2px solid #ff6b6b' });
+    expect(row(/bad m3u/).style.paddingLeft).toBe(
+      row(/Traceback \(most recent call last\)/).style.paddingLeft
+    );
   });
 
   it('does not append the same delta twice when two loads overlap', async () => {
@@ -1386,27 +1389,80 @@ describe('LogFileViewPage', () => {
     expect(list.props.scrollToIndex).toBe(list.props.rowCount - 1);
   });
 
-  it('drops measured heights when the viewport rewraps the lines', async () => {
+  it('sizes every collapsed row exactly, so the extent is known before paint', async () => {
     renderPage();
     await screen.findByText(/Scanning disk/);
-    list.recompute.mockClear();
-    act(() => {
-      list.onResize({ width: 400, height: 600 });
-    });
-    expect(list.recompute).toHaveBeenCalled();
+    expect(list.props.estimatedRowSize).toBe(18);
+    for (let index = 0; index < list.props.rowCount; index += 1) {
+      expect(list.props.rowHeight({ index })).toBe(18);
+    }
   });
 
-  it('measures by block id, and lets content set the height', async () => {
-    renderPage();
-    await screen.findByText(/Scanning disk/);
-    expect(list.cache.fixedWidth).toBe(true);
-    // Ids climb from a module counter, so a first block never keys as its index.
-    expect(list.cache.keyMapper(0)).toBeGreaterThan(0);
-    // Ids are integers, so a past-the-end fallback must not read as one.
-    expect(list.cache.keyMapper(9999)).toBe('row-9999');
-    // Measuring an element the grid already sized returns that size back.
-    expect(screen.getByTestId('log-list').firstElementChild.style.height).toBe(
-      'auto'
-    );
+  it('sizes an expanded row by its content, and restores it on collapse', async () => {
+    const restore = mockOverflow({ offsetHeight: 90 });
+    try {
+      API.getLogFile.mockResolvedValue({
+        content:
+          '2026-08-21 10:00:00,000 ERROR postgres long ' + 'x'.repeat(4000),
+        truncated: false,
+      });
+      renderPage();
+      const toggle = await screen.findByRole('button', {
+        name: /^\+[\d,]+ chars$/,
+      });
+      list.recompute.mockClear();
+      expect(list.props.scrollToIndex).toBe(0);
+      fireEvent.click(toggle);
+      expect(list.props.scrollToIndex).toBeUndefined();
+      expect(list.props.rowHeight({ index: 0 })).toBe(90);
+      expect(list.recompute).toHaveBeenCalled();
+      // Summed over every row, so an expanded row below the view still counts.
+      expect(list.measureAll).toHaveBeenCalled();
+      fireEvent.click(toggle);
+      expect(list.props.rowHeight({ index: 0 })).toBe(18);
+    } finally {
+      restore();
+    }
+  });
+
+  it('keeps the count on an expanded row that leaves the window and returns', async () => {
+    const restore = mockOverflow({ offsetHeight: 90 });
+    try {
+      const lines = [];
+      for (let i = 0; i < list.ROWS + 5; i += 1) {
+        lines.push(`2026-08-21 10:00:00,000 INFO core.tasks line ${i}`);
+      }
+      lines.push('2026-08-21 10:00:01,000 ERROR postgres ' + 'x'.repeat(4000));
+      API.getLogFile.mockResolvedValue({
+        content: lines.join('\n'),
+        truncated: false,
+      });
+      renderPage();
+      const name = /^\+[\d,]+ chars$/;
+      const label = (await screen.findByRole('button', { name })).textContent;
+      // Stops following, so the window leaves the row and it unmounts.
+      fireEvent.click(screen.getByRole('button', { name }));
+      expect(screen.queryByRole('button', { name })).not.toBeInTheDocument();
+      // Back at the live edge; the first report only lands the pin.
+      const edge = { clientHeight: 500, scrollHeight: 5000, scrollTop: 4500 };
+      act(() => list.props.onScroll(edge));
+      act(() => list.props.onScroll(edge));
+      expect(screen.getByRole('button', { name })).toHaveTextContent(label);
+    } finally {
+      restore();
+    }
+  });
+
+  it('offers no toggle for a line that fits', async () => {
+    const restore = mockOverflow();
+    try {
+      renderPage();
+      await screen.findByText(/Scanning disk/);
+      expect(
+        screen.queryByRole('button', { name: /^\+[\d,]+ chars$/ })
+      ).not.toBeInTheDocument();
+    } finally {
+      restore();
+    }
   });
 });
