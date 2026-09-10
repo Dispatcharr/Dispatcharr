@@ -584,6 +584,7 @@ const LogBody = React.memo(
       <AutoSizer>
         {({ height, width }) => (
           <List
+            className="log-body"
             // Every collapsed row is exactly this height.
             estimatedRowSize={ROW_HEIGHT}
             height={height}
