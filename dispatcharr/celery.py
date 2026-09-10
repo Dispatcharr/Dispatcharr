@@ -33,7 +33,9 @@ def get_effective_log_level():
 
 # Get effective log level before Django loads
 effective_log_level = get_effective_log_level()
-startup_log(f"Celery using effective log level: {effective_log_level}")
+# Echoed by every celery process; the level is on every log line already.
+if effective_log_level in ("DEBUG", "TRACE"):
+    startup_log(f"Celery using effective log level: {effective_log_level}")
 # Covers logger output until the settings import re-tightens the level.
 configure_early_logging(effective_log_level)
 
@@ -69,7 +71,8 @@ def init_worker_process(**_kwargs):
 
 # Use environment variable for log level with fallback to INFO
 CELERY_LOG_LEVEL = os.environ.get('DISPATCHARR_LOG_LEVEL', 'INFO').upper()
-startup_log(f"Celery using log level from environment: {CELERY_LOG_LEVEL}")
+if effective_log_level in ("DEBUG", "TRACE"):
+    startup_log(f"Celery using log level from environment: {CELERY_LOG_LEVEL}")
 
 # Configure Celery logging
 app.conf.update(

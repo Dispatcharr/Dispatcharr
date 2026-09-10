@@ -9,7 +9,7 @@ check_dev() {
         if [ -r "$dev" ] && [ -w "$dev" ]; then
             echo "✅ Device $dev is accessible."
         else
-            echo "⚠️ Device $dev exists but is not accessible. Check permissions or container runtime options."
+            log_line WARNING "⚠️ Device $dev exists but is not accessible. Check permissions or container runtime options."
         fi
     else
         echo "ℹ️ Device $dev does not exist."
@@ -86,7 +86,7 @@ if [ "$ANY_GPU_DEVICES_FOUND" = true ]; then
 
     # Show GPU device availability messages
     if [ "$NVIDIA_FOUND" = false ] && [ "$NVIDIA_GPU_IN_LSPCI" = true ]; then
-        echo "⚠️ No NVIDIA device nodes available despite hardware detection."
+        log_line WARNING "⚠️ No NVIDIA device nodes available despite hardware detection."
         echo "   You may be able to use VAAPI for hardware acceleration, but NVENC/CUDA won't be available."
         echo "   For optimal performance, configure proper NVIDIA container runtime."
     elif [ "$NVIDIA_FOUND" = false ]; then
@@ -95,23 +95,23 @@ if [ "$ANY_GPU_DEVICES_FOUND" = true ]; then
 
     # Check for Intel/AMD GPUs that might not be fully accessible
     if [ "$DRI_DEVICES_FOUND" = false ] && [ "$INTEL_GPU_IN_LSPCI" = true ]; then
-        echo "⚠️ Intel GPU detected in hardware but no DRI devices found."
+        log_line WARNING "⚠️ Intel GPU detected in hardware but no DRI devices found."
         echo "   Hardware acceleration will not be available."
         echo "   Make sure /dev/dri/ devices are properly mapped to the container."
     elif [ "$DRI_DEVICES_FOUND" = false ] && [ "$AMD_GPU_IN_LSPCI" = true ]; then
-        echo "⚠️ AMD GPU detected in hardware but no DRI devices found."
+        log_line WARNING "⚠️ AMD GPU detected in hardware but no DRI devices found."
         echo "   Hardware acceleration will not be available."
         echo "   Make sure /dev/dri/ devices are properly mapped to the container."
     fi
 else
     # No GPU devices found, skip the detailed checks
-    echo "❌ No GPU acceleration devices detected in this container."
+    log_line WARNING "❌ No GPU acceleration devices detected in this container."
     echo "ℹ️ Checking for potential configuration issues..."
 
     # Check if the host might have GPUs that aren't passed to the container
     if command -v lspci >/dev/null 2>&1; then
         if lspci | grep -i "VGA\|3D\|Display" | grep -i "NVIDIA\|Intel\|AMD" >/dev/null; then
-            echo "⚠️ Host system appears to have GPU hardware, but no devices are accessible to the container."
+            log_line WARNING "⚠️ Host system appears to have GPU hardware, but no devices are accessible to the container."
             echo "   - For NVIDIA GPUs: Ensure NVIDIA Container Runtime is configured properly"
             echo "   - For Intel/AMD GPUs: Verify that /dev/dri/ devices are passed to the container"
             echo "   - Check your Docker run command or docker-compose.yml for proper device mapping"
@@ -144,7 +144,7 @@ check_user_device_access() {
             echo "✅ User $user has full access to $device"
             return 0
         else
-            echo "⚠️ User $user cannot access $device (permission denied)"
+            log_line WARNING "⚠️ User $user cannot access $device (permission denied)"
             return 1
         fi
     else
@@ -190,7 +190,7 @@ if [ $DRI_DEVICE_COUNT -gt 0 ]; then
         echo "✅ User $POSTGRES_USER has access to all DRI devices ($DRI_ACCESS_COUNT/$DRI_DEVICE_COUNT)"
         echo "   VAAPI hardware acceleration should work properly."
     else
-        echo "⚠️ User $POSTGRES_USER has limited access to DRI devices ($DRI_ACCESS_COUNT/$DRI_DEVICE_COUNT)"
+        log_line WARNING "⚠️ User $POSTGRES_USER has limited access to DRI devices ($DRI_ACCESS_COUNT/$DRI_DEVICE_COUNT)"
         echo "   VAAPI hardware acceleration may not work properly."
         echo "   Consider adding $POSTGRES_USER to the 'video' and/or 'render' groups."
     fi
@@ -201,7 +201,7 @@ if [ $NVIDIA_DEVICE_COUNT -gt 0 ]; then
         echo "✅ User $POSTGRES_USER has access to all NVIDIA devices ($NVIDIA_ACCESS_COUNT/$NVIDIA_DEVICE_COUNT)"
         echo "   NVIDIA hardware acceleration should work properly."
     else
-        echo "⚠️ User $POSTGRES_USER has limited access to NVIDIA devices ($NVIDIA_ACCESS_COUNT/$NVIDIA_DEVICE_COUNT)"
+        log_line WARNING "⚠️ User $POSTGRES_USER has limited access to NVIDIA devices ($NVIDIA_ACCESS_COUNT/$NVIDIA_DEVICE_COUNT)"
         echo "   NVIDIA hardware acceleration may not work properly."
         if [ "$NVIDIA_CONTAINER_TOOLKIT_FOUND" = false ]; then
             echo "   Consider adding $POSTGRES_USER to the 'video' group or use NVIDIA Container Toolkit."
@@ -256,7 +256,7 @@ if command -v nvidia-container-cli >/dev/null 2>&1; then
     if nvidia-container-cli info >/dev/null 2>&1; then
         echo "✅ NVIDIA container runtime is functional."
     else
-        echo "⚠️ nvidia-container-cli found, but 'info' command failed. Runtime may be misconfigured."
+        log_line WARNING "⚠️ nvidia-container-cli found, but 'info' command failed. Runtime may be misconfigured."
     fi
 fi
 
@@ -279,7 +279,7 @@ elif [ "$NVIDIA_FOUND" = true ] && [ "$NVIDIA_RUNTIME_ACTIVE" = false ] && [ "$N
     echo "ℹ️ NVIDIA devices accessible via direct passthrough instead of Container Runtime."
     echo "   This works but consider using the 'deploy: resources: reservations: devices:' method in docker-compose."
 elif [ "$NVIDIA_FOUND" = false ] && [ "$NVIDIA_RUNTIME_ACTIVE" = true ]; then
-    echo "⚠️ NVIDIA Container Runtime appears to be configured, but no NVIDIA devices found."
+    log_line WARNING "⚠️ NVIDIA Container Runtime appears to be configured, but no NVIDIA devices found."
     echo "   Check that your host has NVIDIA drivers installed and GPUs are properly passed to the container."
 elif [ "$DRI_DEVICES_FOUND" = true ] && [ "$NVIDIA_GPU_IN_LSPCI" = true ]; then
     echo "ℹ️ Limited GPU access: Only DRI devices available for NVIDIA hardware."
@@ -288,7 +288,7 @@ elif [ "$DRI_DEVICES_FOUND" = true ] && [ "$NVIDIA_GPU_IN_LSPCI" = true ]; then
 elif [ "$DRI_DEVICES_FOUND" = true ]; then
     echo "ℹ️ Using Intel/AMD GPU hardware for acceleration via VAAPI."
 else
-    echo "⚠️ No GPU acceleration devices detected. CPU-only transcoding will be used."
+    log_line WARNING "⚠️ No GPU acceleration devices detected. CPU-only transcoding will be used."
 fi
 
 # Run nvidia-smi if available
@@ -298,7 +298,7 @@ if command -v nvidia-smi >/dev/null 2>&1; then
         echo "✅ nvidia-smi successful - GPU is accessible to container!"
         echo "   This confirms hardware acceleration should be available to FFmpeg."
     else
-        echo "⚠️ nvidia-smi command failed. GPU may not be properly mapped into container."
+        log_line WARNING "⚠️ nvidia-smi command failed. GPU may not be properly mapped into container."
     fi
 else
     echo "ℹ️ nvidia-smi not installed or not in PATH."
@@ -546,23 +546,23 @@ if command -v ffmpeg >/dev/null 2>&1; then
 
     # Show missing expected methods
     if [ -n "$MISSING_METHODS" ]; then
-        echo "⚠️ Expected acceleration methods not found:$MISSING_METHODS"
+        log_line WARNING "⚠️ Expected acceleration methods not found:$MISSING_METHODS"
         echo "   This might indicate missing libraries or improper driver configuration."
     fi
 
     # Display specific cases of interest (simplify using previously captured information)
     if [ "$NVIDIA_FOUND" = true ] && ! echo "$COMPATIBLE_METHODS" | grep -q "cuda\|nvenc\|cuvid"; then
-        echo "⚠️ NVIDIA GPU detected but no NVIDIA acceleration methods available."
+        log_line WARNING "⚠️ NVIDIA GPU detected but no NVIDIA acceleration methods available."
         echo "   Ensure ffmpeg is built with NVIDIA support and required libraries are installed."
     fi
 
     if (([ "$INTEL_GPU_IN_LSPCI" = true ] || [ "$AMD_GPU_IN_LSPCI" = true ]) &&
         [ "$DRI_DEVICES_FOUND" = true ] && ! echo "$COMPATIBLE_METHODS" | grep -q "vaapi"); then
-        echo "⚠️ Intel/AMD GPU detected but VAAPI acceleration not available."
+        log_line WARNING "⚠️ Intel/AMD GPU detected but VAAPI acceleration not available."
         echo "   Ensure ffmpeg is built with VAAPI support and proper drivers are installed."
     fi
 else
-    echo "⚠️ FFmpeg not found in PATH."
+    log_line WARNING "⚠️ FFmpeg not found in PATH."
 fi
 
 # Provide a final summary of the hardware acceleration setup
@@ -583,7 +583,7 @@ if [ "$NVIDIA_FOUND" = true ] && (nvidia-smi >/dev/null 2>&1 || [ -n "$NVIDIA_VI
     elif [ -n "$NVIDIA_VISIBLE_DEVICES" ] && [ -n "$NVIDIA_DRIVER_CAPABILITIES" ]; then
         echo "✅ NVIDIA Docker configuration: USING MODERN DEPLOYMENT"
     else
-        echo "⚠️ NVIDIA setup method: DIRECT DEVICE MAPPING (functional but not optimal)"
+        log_line WARNING "⚠️ NVIDIA setup method: DIRECT DEVICE MAPPING (functional but not optimal)"
     fi
 
     # Add device accessibility status
@@ -591,7 +591,7 @@ if [ "$NVIDIA_FOUND" = true ] && (nvidia-smi >/dev/null 2>&1 || [ -n "$NVIDIA_VI
         if [ $NVIDIA_ACCESS_COUNT -eq $NVIDIA_DEVICE_COUNT ]; then
             echo "✅ Device access: ALL NVIDIA DEVICES ACCESSIBLE ($NVIDIA_ACCESS_COUNT/$NVIDIA_DEVICE_COUNT)"
         else
-            echo "⚠️ Device access: LIMITED NVIDIA DEVICE ACCESS ($NVIDIA_ACCESS_COUNT/$NVIDIA_DEVICE_COUNT)"
+            log_line WARNING "⚠️ Device access: LIMITED NVIDIA DEVICE ACCESS ($NVIDIA_ACCESS_COUNT/$NVIDIA_DEVICE_COUNT)"
             echo "   Some hardware acceleration features may not work properly."
         fi
     fi
@@ -605,7 +605,7 @@ if [ "$NVIDIA_FOUND" = true ] && (nvidia-smi >/dev/null 2>&1 || [ -n "$NVIDIA_VI
         echo "   Available NVIDIA methods: $NVIDIA_METHODS"
         echo "   Recommended for: Video transcoding with NVIDIA GPUs"
     else
-        echo "⚠️ FFmpeg NVIDIA acceleration: NOT DETECTED"
+        log_line WARNING "⚠️ FFmpeg NVIDIA acceleration: NOT DETECTED"
         if [ -n "$MISSING_METHODS" ]; then
             echo "   Missing methods that should be available: $MISSING_METHODS"
         fi
@@ -617,7 +617,7 @@ elif [ "$NVIDIA_GPU_IN_LSPCI" = true ] && [ "$DRI_DEVICES_FOUND" = true ]; then
     else
         echo "🔰 NVIDIA GPU: DETECTED BUT SUBOPTIMALLY CONFIGURED"
     fi
-    echo "⚠️ Your NVIDIA GPU is only accessible through DRI devices"
+    log_line WARNING "⚠️ Your NVIDIA GPU is only accessible through DRI devices"
     echo "   - VAAPI acceleration may work for some tasks"
     echo "   - NVENC/CUDA acceleration is NOT available"
 
@@ -627,7 +627,7 @@ elif [ "$NVIDIA_GPU_IN_LSPCI" = true ] && [ "$DRI_DEVICES_FOUND" = true ]; then
             echo "✅ Device access: ALL DRI DEVICES ACCESSIBLE ($DRI_ACCESS_COUNT/$DRI_DEVICE_COUNT)"
             echo "   VAAPI acceleration should work properly."
         else
-            echo "⚠️ Device access: LIMITED DRI DEVICE ACCESS ($DRI_ACCESS_COUNT/$DRI_DEVICE_COUNT)"
+            log_line WARNING "⚠️ Device access: LIMITED DRI DEVICE ACCESS ($DRI_ACCESS_COUNT/$DRI_DEVICE_COUNT)"
             echo "   VAAPI acceleration may not work properly."
         fi
     fi
@@ -645,7 +645,7 @@ elif [ "$NVIDIA_GPU_IN_LSPCI" = true ] && [ "$DRI_DEVICES_FOUND" = true ]; then
         echo "✅ FFmpeg VAAPI acceleration: AVAILABLE (limited without NVENC)"
         echo "   VAAPI can be used for transcoding, but NVENC/CUDA would be more efficient"
     else
-        echo "⚠️ FFmpeg VAAPI acceleration: NOT DETECTED"
+        log_line WARNING "⚠️ FFmpeg VAAPI acceleration: NOT DETECTED"
     fi
 elif [ "$DRI_DEVICES_FOUND" = true ]; then
     # Intel/AMD detection with model if available
@@ -665,7 +665,7 @@ elif [ "$DRI_DEVICES_FOUND" = true ]; then
             echo "✅ Device access: ALL DRI DEVICES ACCESSIBLE ($DRI_ACCESS_COUNT/$DRI_DEVICE_COUNT)"
             echo "   VAAPI hardware acceleration should work properly."
         else
-            echo "⚠️ Device access: LIMITED DRI DEVICE ACCESS ($DRI_ACCESS_COUNT/$DRI_DEVICE_COUNT)"
+            log_line WARNING "⚠️ Device access: LIMITED DRI DEVICE ACCESS ($DRI_ACCESS_COUNT/$DRI_DEVICE_COUNT)"
             echo "   VAAPI hardware acceleration may not work properly."
         fi
     fi
@@ -701,14 +701,14 @@ elif [ "$DRI_DEVICES_FOUND" = true ]; then
             echo "ℹ️ Recommended VAAPI driver for AMD GPUs: radeonsi"
         fi
     else
-        echo "⚠️ FFmpeg VAAPI acceleration: NOT DETECTED"
+        log_line WARNING "⚠️ FFmpeg VAAPI acceleration: NOT DETECTED"
         if [ -n "$MISSING_METHODS" ]; then
             echo "   Missing methods that should be available: $MISSING_METHODS"
         fi
     fi
 else
-    echo "❌ NO GPU ACCELERATION DETECTED"
-    echo "⚠️ Hardware acceleration is unavailable or misconfigured"
+    log_line WARNING "❌ NO GPU ACCELERATION DETECTED"
+    log_line WARNING "⚠️ Hardware acceleration is unavailable or misconfigured"
 fi
 
 echo "📋 =================================================="
