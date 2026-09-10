@@ -57,6 +57,7 @@ const MemoizedTableRow = React.memo(
               <Box
                 className="td"
                 key={`td-${cell.id}`}
+                data-column-id={cell.column.id}
                 style={{
                   boxSizing: 'border-box',
                   ...(cell.column.columnDef.grow

@@ -69,10 +69,10 @@ const CustomTable = ({ table }) => {
           table.onSelectAllChange ? table.onSelectAllChange : null
         }
         selectedTableIds={table.selectedTableIds}
-        tableCellProps={table.tableCellProps}
         headerPinned={table.headerPinned}
         enableDragDrop={table.enableDragDrop}
         onResetColumnSizing={table.onResetColumnSizing}
+        onColumnResizePreview={table.onColumnResizePreview}
       />
       <CustomTableBody
         getRowModel={table.getRowModel}
