@@ -15,6 +15,8 @@ from redis.exceptions import AuthorizationError as RedisAuthorizationError
 from redis.exceptions import ConnectionError as RedisConnectionError
 from redis.exceptions import TimeoutError as RedisTimeoutError
 
+from dispatcharr.log_collector import DEFAULT_LOG_KEEP, DEFAULT_LOG_MB
+
 logger = logging.getLogger(__name__)
 
 
@@ -783,8 +785,8 @@ class CoreSettings(models.Model):
             "auto_import_mapped_files": True,
             "enable_ip_lookup": True,
             "catchup_enabled": True,
-            "log_max_mb": 10,
-            "log_keep": 5,
+            "log_max_mb": DEFAULT_LOG_MB,
+            "log_keep": DEFAULT_LOG_KEEP,
             "log_persist": True,
         })
 

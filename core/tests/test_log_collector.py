@@ -24,13 +24,13 @@ class ConfTests(SimpleTestCase):
         self.addCleanup(shutil.rmtree, self.log_dir, ignore_errors=True)
 
     def test_conf_round_trip(self):
-        log_collector.write_conf(self.log_dir, False, 42, 7, "Pacific/Auckland")
+        log_collector.write_conf(self.log_dir, False, 17, 7, "Pacific/Auckland")
         conf = log_collector.read_conf(self.log_dir)
         self.assertEqual(
             conf,
             {
                 "persist": False,
-                "max_mb": 42,
+                "max_mb": 17,
                 "keep": 7,
                 "time_zone": "Pacific/Auckland",
             },
@@ -48,7 +48,7 @@ class ConfTests(SimpleTestCase):
         with open(path, "w") as f:
             f.write("persist=1\nmax_mb=99999\nkeep=abc\n")
         conf = log_collector.read_conf(self.log_dir)
-        self.assertEqual(conf["max_mb"], 1000)
+        self.assertEqual(conf["max_mb"], log_collector.MAX_LOG_MB)
         self.assertEqual(conf["keep"], 5)
         self.assertTrue(conf["persist"])
 
@@ -532,14 +532,14 @@ class ApplySettingsTests(SimpleTestCase):
     def test_settings_round_trip_to_conf(self):
         log_collector.apply_settings(
             self.log_dir,
-            {"log_persist": False, "log_max_mb": 25, "log_keep": 3},
+            {"log_persist": False, "log_max_mb": 15, "log_keep": 3},
         )
         conf = log_collector.read_conf(self.log_dir)
         self.assertEqual(
             conf,
             {
                 "persist": False,
-                "max_mb": 25,
+                "max_mb": 15,
                 "keep": 3,
                 "time_zone": "UTC",
             },

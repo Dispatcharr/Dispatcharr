@@ -73,7 +73,7 @@ const GROUP_CONFIG = {
     fields: {
       time_zone: { type: 'string', default: '' },
       max_system_events: { type: 'int', default: 100 },
-      log_max_mb: { type: 'int', default: 10 },
+      log_max_mb: { type: 'int', default: 5 },
       log_keep: { type: 'int', default: 5 },
       log_persist: { type: 'bool', default: true },
       preferred_region: { type: 'nullable', default: null },
