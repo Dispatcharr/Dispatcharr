@@ -10,6 +10,7 @@ from django.test import TestCase, override_settings
 from rest_framework.test import APIClient
 
 from core import log_files
+from dispatcharr import log_collector
 
 
 class LogFilesEndpointTests(TestCase):
@@ -110,6 +111,11 @@ class LogFilesEndpointTests(TestCase):
             payload = self.client.get("/api/core/logs/dispatcharr.log.big/").json()
         self.assertTrue(payload["content"].startswith("6xxxxxxxx\n"))
         self.assertEqual(len(payload["content"]), 40)
+
+    def test_ceiling_covers_the_largest_permitted_log(self):
+        """A rotation fires after the batch that crossed the cap, so files run over."""
+        largest = log_collector.MAX_LOG_MB * 1024 * 1024 + 2 * log_collector._BATCH_BYTES
+        self.assertGreaterEqual(log_files.MAX_VIEW_BYTES, largest)
 
     def test_view_sizes_the_open_handle_not_the_path(self):
         """A rotation between sizing and reading must not empty the view."""

@@ -368,7 +368,7 @@ describe('LogFileViewPage', () => {
       '2026-07-15 23:59:59,000 INFO core.tasks END-OF-SYNTHETIC-LOG-MARKER'
     );
     const content = lines.join('\n');
-    // The payload must genuinely approach the 5 MB truncation ceiling.
+    // The payload must genuinely approach the truncation ceiling.
     expect(content.length).toBeGreaterThan(4 * 1024 * 1024);
 
     API.getLogFile.mockResolvedValue({ content, truncated: true });

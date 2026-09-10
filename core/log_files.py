@@ -19,8 +19,8 @@ from dispatcharr.log_collector import BASE_NAME, collector_running
 # Plain filenames only: no separators, no dotfiles.
 _NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
-# Inline viewing serves this many trailing bytes; download streams the whole file.
-MAX_VIEW_BYTES = 10 * 1024 * 1024
+# Above any log the collector can write: only a file it did not write is cut.
+MAX_VIEW_BYTES = 24 * 1024 * 1024
 
 
 def _open_log(path):

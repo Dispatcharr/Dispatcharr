@@ -139,8 +139,8 @@ const RECORD_START =
 const SEARCH_DEBOUNCE_MS = 200;
 
 // Bytes hold one full response from the API; lines bound the entry overhead.
-const MAX_BUFFER_BYTES = 10 * 1024 * 1024;
-const MAX_BUFFER_LINES = 200000;
+const MAX_BUFFER_BYTES = 24 * 1024 * 1024;
+const MAX_BUFFER_LINES = 300000;
 const EMPTY_BUFFER = { entries: [], bytes: 0, truncated: false };
 
 // How close to the live edge still counts as watching it.
