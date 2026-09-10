@@ -164,7 +164,7 @@ class ConfTests(SimpleTestCase):
         self.assertEqual(self.collector._buf_bytes, 0)
 
     def test_rotation_at_cap_shifts_and_prunes(self):
-        self.collector.conf.update({"max_mb": 1, "keep": 2})
+        self.collector.conf.update({"max_mb": 1, "keep": 3})
         with open(self.collector.live_path, "w") as f:
             f.write("x" * (1024 * 1024 + 1))
         for n in (1, 2):
@@ -290,7 +290,7 @@ class ConfTests(SimpleTestCase):
         for n in (1, 2, 9):
             with open(f"{self.collector.live_path}.{n}", "w") as f:
                 f.write("old")
-        log_collector.write_conf(self.log_dir, True, 10, 2)
+        log_collector.write_conf(self.log_dir, True, 10, 3)
         self.collector._apply_conf()
         names = sorted(self.collector._archive_indices())
         self.assertEqual(names, [1, 2])

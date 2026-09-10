@@ -258,9 +258,9 @@ def read_conf(log_dir):
     except OSError:
         return conf
     conf["persist"] = str(conf["persist"]).strip() not in ("0", "false", "")
-    for key, cap in (("max_mb", MAX_LOG_MB), ("keep", MAX_LOG_KEEP)):
+    for key, lo, cap in (("max_mb", 1, MAX_LOG_MB), ("keep", 2, MAX_LOG_KEEP)):
         try:
-            conf[key] = min(max(int(conf[key]), 1), cap)
+            conf[key] = min(max(int(conf[key]), lo), cap)
         except (TypeError, ValueError):
             conf[key] = _DEFAULT_CONF[key]
     return conf
@@ -677,7 +677,7 @@ class Collector:
         self._close_fd()
         try:
             for n in sorted(self._archive_indices(), reverse=True):
-                if n >= self.conf["keep"]:
+                if n + 1 >= self.conf["keep"]:
                     os.remove(f"{self.live_path}.{n}")
                 else:
                     os.replace(f"{self.live_path}.{n}", f"{self.live_path}.{n + 1}")
@@ -692,7 +692,7 @@ class Collector:
         # must converge without waiting for a size-cap rotation.
         try:
             for n in self._archive_indices():
-                if n > self.conf["keep"]:
+                if n >= self.conf["keep"]:
                     os.remove(f"{self.live_path}.{n}")
         except OSError:
             pass

@@ -210,10 +210,10 @@ describe('SystemSettingsForm', () => {
       expect(screen.getByTestId('log_max_mb')).toHaveValue(5);
     });
 
-    it('renders the Log Files Retained input', () => {
+    it('renders the Log Files Kept input', () => {
       setupMocks();
       render(<SystemSettingsForm active={true} />);
-      expect(screen.getByText('Log Files Retained')).toBeInTheDocument();
+      expect(screen.getByText('Log Files Kept')).toBeInTheDocument();
       expect(screen.getByTestId('log_keep')).toHaveValue(5);
     });
 

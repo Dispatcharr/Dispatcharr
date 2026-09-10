@@ -95,7 +95,7 @@ class CoreSettingsSerializer(serializers.ModelSerializer):
                     )
                 if "log_keep" in value:
                     value["log_keep"] = _clamp_int(
-                        value["log_keep"], DEFAULT_LOG_KEEP, 1, MAX_LOG_KEEP
+                        value["log_keep"], DEFAULT_LOG_KEEP, 2, MAX_LOG_KEEP
                     )
                 if "log_persist" in value:
                     value["log_persist"] = value["log_persist"] is not False
