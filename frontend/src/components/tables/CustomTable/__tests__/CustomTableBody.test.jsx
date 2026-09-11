@@ -271,6 +271,9 @@ describe('CustomTableBody', () => {
       setupMocks({ isUnlocked: false });
       render(<CustomTableBody {...defaultProps({ enableDragDrop: true })} />);
       expect(screen.queryByTestId('grip-vertical')).not.toBeInTheDocument();
+      expect(useSortable).toHaveBeenCalledWith(
+        expect.objectContaining({ disabled: true })
+      );
     });
 
     it('renders grip handle when enableDragDrop is true and table is unlocked', () => {
@@ -301,7 +304,7 @@ describe('CustomTableBody', () => {
       });
       render(<CustomTableBody {...props} />);
       expect(useSortable).toHaveBeenCalledWith(
-        expect.objectContaining({ id: 'row-abc' })
+        expect.objectContaining({ id: 'row-abc', disabled: false })
       );
     });
 

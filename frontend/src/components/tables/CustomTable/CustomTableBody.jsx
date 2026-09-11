@@ -26,7 +26,6 @@ const MemoizedTableRow = React.memo(
   }) => {
     const renderBodyCell = renderBodyCellRef.current;
     const isUnlocked = useChannelsTableStore((s) => s.isUnlocked);
-    const shouldEnableDrag = enableDragDrop && isUnlocked;
     const getRowStyles = getRowStylesRef.current;
     const tableCellProps = tableCellPropsRef.current;
     const customRowStyles = getRowStyles ? getRowStyles(row) : {};
@@ -90,12 +89,16 @@ const MemoizedTableRow = React.memo(
       </>
     );
 
-    if (!shouldEnableDrag) {
+    if (!enableDragDrop) {
       return <Box>{content}</Box>;
     }
 
     return (
-      <DraggableRowWrapper row={row} key={`row-${row.id}`}>
+      <DraggableRowWrapper
+        row={row}
+        isUnlocked={isUnlocked}
+        key={`row-${row.id}`}
+      >
         {content}
       </DraggableRowWrapper>
     );
@@ -172,6 +175,7 @@ const CustomTableBody = ({
 
 const DraggableRowWrapper = ({
   row,
+  isUnlocked,
   children,
 }) => {
   const {
@@ -183,6 +187,7 @@ const DraggableRowWrapper = ({
     isDragging,
   } = useSortable({
     id: row.id,
+    disabled: !isUnlocked,
   });
 
   const dragStyle = {
@@ -194,28 +199,30 @@ const DraggableRowWrapper = ({
 
   return (
     <Box ref={setNodeRef} style={dragStyle}>
-      <Box
-        {...attributes}
-        {...listeners}
-        style={{
-          position: 'absolute',
-          left: 0,
-          top: 0,
-          bottom: 0,
-          width: 24,
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          cursor: isDragging ? 'grabbing' : 'grab',
-          backgroundColor: 'rgba(255, 255, 255, 0.05)',
-          borderRight: '1px solid rgba(255, 255, 255, 0.1)',
-          borderBottom: '1px solid rgba(255, 255, 255, 0.05)',
-          zIndex: 1,
-        }}
-      >
-        <GripVertical size={16} opacity={0.5} />
-      </Box>
-      <div style={{ paddingLeft: 28, width: '100%' }}>
+      {isUnlocked && (
+        <Box
+          {...attributes}
+          {...listeners}
+          style={{
+            position: 'absolute',
+            left: 0,
+            top: 0,
+            bottom: 0,
+            width: 24,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            cursor: isDragging ? 'grabbing' : 'grab',
+            backgroundColor: 'rgba(255, 255, 255, 0.05)',
+            borderRight: '1px solid rgba(255, 255, 255, 0.1)',
+            borderBottom: '1px solid rgba(255, 255, 255, 0.05)',
+            zIndex: 1,
+          }}
+        >
+          <GripVertical size={16} opacity={0.5} />
+        </Box>
+      )}
+      <div style={{ paddingLeft: isUnlocked ? 28 : 0, width: '100%' }}>
         {children}
       </div>
     </Box>
