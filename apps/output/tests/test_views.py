@@ -149,6 +149,49 @@ class OutputM3UTest(OutputEndpointTestMixin, TestCase):
         self.assertIn("POST requests with body are not allowed", _response_text(response))
 
 
+class GenerateM3URadioAttributeTests(OutputEndpointTestMixin, TestCase):
+    """Issue #1683: EXTINF should carry radio="true" for radio channels.
+
+    Kodi's PVR IPTV Simple Client (and other radio="true"-aware clients) use
+    this attribute to route the entry into a Radio section instead of TV.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.client = Client()
+        self.group = ChannelGroup.objects.create(name=f"Radio Group {uuid4().hex[:8]}")
+        self.profile = self._create_isolated_profile("radio-m3u")
+
+    def _m3u_url(self):
+        return reverse("output:m3u_endpoint", kwargs={"profile_name": self.profile.name})
+
+    def test_radio_channel_gets_radio_attribute(self):
+        self._add_channel_to_profile(
+            self.profile,
+            self.group,
+            channel_number=1.0,
+            name="Radio Channel",
+            is_radio=True,
+        )
+        response = self.client.get(self._m3u_url())
+        self.assertEqual(response.status_code, 200)
+        content = _response_text(response)
+        self.assertIn('radio="true"', content)
+
+    def test_tv_channel_omits_radio_attribute(self):
+        self._add_channel_to_profile(
+            self.profile,
+            self.group,
+            channel_number=2.0,
+            name="TV Channel",
+            is_radio=False,
+        )
+        response = self.client.get(self._m3u_url())
+        self.assertEqual(response.status_code, 200)
+        content = _response_text(response)
+        self.assertNotIn("radio=", content)
+
+
 class OutputEPGXMLEscapingTest(OutputEndpointTestMixin, TestCase):
     """Test XML escaping of channel_id attributes in EPG generation"""
 
@@ -1141,6 +1184,58 @@ class XcLiveStreamsCatchupAdvertisingTests(TestCase):
         self.assertEqual(len(streams), 1)
         self.assertEqual(streams[0]["tv_archive"], 0)
         self.assertEqual(streams[0]["tv_archive_duration"], 0)
+
+
+class XcLiveStreamsStreamTypeTests(TestCase):
+    """xc_get_live_streams reports stream_type from the rolled-up radio flag.
+
+    Issue #1683: this was hardcoded to "live" for every entry regardless of
+    what the provider actually said, discarding a real stream_type: "radio_streams"
+    signal some XC providers send.
+    """
+
+    def setUp(self):
+        from django.core.cache import cache
+
+        cache.clear()
+        self.factory = RequestFactory()
+        self.user = User.objects.create_user(
+            username=f"xc-radio-{uuid4().hex[:8]}",
+            password="pass",
+            user_level=10,
+            custom_properties={"xc_password": "xcpass"},
+        )
+        self.request = self.factory.get("/player_api.php")
+        self.group = ChannelGroup.objects.create(name=f"Group {uuid4().hex[:8]}")
+
+    def tearDown(self):
+        from django.core.cache import cache
+
+        cache.clear()
+
+    def test_radio_channel_reports_radio_streams(self):
+        Channel.objects.create(
+            name="Radio Ch",
+            channel_number=1,
+            channel_group=self.group,
+            user_level=0,
+            is_radio=True,
+        )
+        streams = xc_get_live_streams(self.request, self.user)
+        self.assertEqual(len(streams), 1)
+        self.assertEqual(streams[0]["stream_type"], "radio_streams")
+
+    def test_tv_channel_reports_live(self):
+        Channel.objects.create(
+            name="TV Ch",
+            channel_number=2,
+            channel_group=self.group,
+            user_level=0,
+            is_radio=False,
+        )
+        streams = xc_get_live_streams(self.request, self.user)
+        self.assertEqual(len(streams), 1)
+        self.assertEqual(streams[0]["stream_type"], "live")
 
 
 class XcGetEpgCatchupGateTests(TestCase):

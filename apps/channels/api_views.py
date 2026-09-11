@@ -218,6 +218,10 @@ class StreamViewSet(viewsets.ModelViewSet):
         if is_catchup and str(is_catchup).lower() in ("1", "true", "yes", "on"):
             qs = qs.filter(is_catchup=True)
 
+        is_radio = self.request.query_params.get("is_radio")
+        if is_radio and str(is_radio).lower() in ("1", "true", "yes", "on"):
+            qs = qs.filter(is_radio=True)
+
         return qs
 
     def list(self, request, *args, **kwargs):
@@ -1064,6 +1068,7 @@ class ChannelViewSet(viewsets.ModelViewSet):
         only_stale = self.request.query_params.get("only_stale", None)
         only_has_overrides = self.request.query_params.get("only_has_overrides", None)
         only_catchup = self.request.query_params.get("only_catchup", None)
+        only_radio = self.request.query_params.get("only_radio", None)
         visibility_filter = self.request.query_params.get("visibility_filter", "active")
 
         if channel_profile_id:
@@ -1091,6 +1096,8 @@ class ChannelViewSet(viewsets.ModelViewSet):
             q_filters &= Q(override__isnull=False)
         if only_catchup:
             q_filters &= Q(is_catchup=True)
+        if only_radio:
+            q_filters &= Q(is_radio=True)
 
         # Visibility filter applies to list-style reads only; retrieve /
         # update / delete must still reach a hidden channel by id so the

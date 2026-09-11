@@ -1060,7 +1060,7 @@ _STREAM_TOUCH_FIELDS = ("last_seen", "is_stale")
 _STREAM_CHANGED_FIELDS = (
     "name", "url", "logo_url", "tvg_id", "custom_properties", "is_adult",
     "last_seen", "updated_at", "is_stale", "stream_id", "stream_chno",
-    "channel_group_id", "is_catchup", "catchup_days",
+    "channel_group_id", "is_catchup", "catchup_days", "is_radio",
 )
 
 
@@ -1185,6 +1185,9 @@ def process_xc_category_direct(account_id, batch, groups, hash_keys):
                             _catchup_days = int(stream.get("tv_archive_duration", 0) or 0)
                         except (TypeError, ValueError):
                             _catchup_days = 0
+                        # Only known real-world value confirmed against a live XC
+                        # provider so far; not guessing at other variants.
+                        _is_radio = str(stream.get("stream_type", "")).lower() == "radio_streams"
 
                         stream_props = {
                             "name": name,
@@ -1201,6 +1204,7 @@ def process_xc_category_direct(account_id, batch, groups, hash_keys):
                             "stream_chno": stream_chno,
                             "is_catchup": _is_catchup,
                             "catchup_days": _catchup_days,
+                            "is_radio": _is_radio,
                         }
 
                         if stream_hash not in stream_hashes:
@@ -1215,7 +1219,7 @@ def process_xc_category_direct(account_id, batch, groups, hash_keys):
         existing_streams = {
             s.stream_hash: s
             for s in Stream.objects.filter(stream_hash__in=stream_hashes.keys()).select_related('m3u_account').only(
-                'id', 'stream_hash', 'name', 'url', 'logo_url', 'tvg_id', 'custom_properties', 'last_seen', 'updated_at', 'm3u_account', 'stream_id', 'stream_chno', 'channel_group_id', 'is_catchup', 'catchup_days'
+                'id', 'stream_hash', 'name', 'url', 'logo_url', 'tvg_id', 'custom_properties', 'last_seen', 'updated_at', 'm3u_account', 'stream_id', 'stream_chno', 'channel_group_id', 'is_catchup', 'catchup_days', 'is_radio'
             )
         }
 
@@ -1234,7 +1238,8 @@ def process_xc_category_direct(account_id, batch, groups, hash_keys):
                     obj.stream_chno != stream_props["stream_chno"] or
                     obj.channel_group_id != stream_props["channel_group_id"] or
                     obj.is_catchup != stream_props["is_catchup"] or
-                    obj.catchup_days != stream_props["catchup_days"]
+                    obj.catchup_days != stream_props["catchup_days"] or
+                    obj.is_radio != stream_props["is_radio"]
                 )
 
                 if changed:
@@ -1403,6 +1408,9 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys, compiled_filt
                 _catchup_days_m3u = int(_attrs.get("tv_archive_duration", 0) or 0)
             except (TypeError, ValueError):
                 _catchup_days_m3u = 0
+            # Standard M3U convention some providers use, e.g. Kodi's PVR IPTV
+            # Simple Client reads this same attribute for its Radio section.
+            _is_radio_m3u = str(_attrs.get("radio", "")).lower() in ("1", "true")
 
             stream_props = {
                 "name": name,
@@ -1419,6 +1427,7 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys, compiled_filt
                 "stream_chno": channel_num,
                 "is_catchup": _is_catchup_m3u,
                 "catchup_days": _catchup_days_m3u,
+                "is_radio": _is_radio_m3u,
             }
 
             if stream_hash not in stream_hashes:
@@ -1430,7 +1439,7 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys, compiled_filt
     existing_streams = {
         s.stream_hash: s
         for s in Stream.objects.filter(stream_hash__in=stream_hashes.keys()).select_related('m3u_account').only(
-            'id', 'stream_hash', 'name', 'url', 'logo_url', 'tvg_id', 'custom_properties', 'last_seen', 'updated_at', 'm3u_account', 'stream_id', 'stream_chno', 'channel_group_id', 'is_catchup', 'catchup_days'
+            'id', 'stream_hash', 'name', 'url', 'logo_url', 'tvg_id', 'custom_properties', 'last_seen', 'updated_at', 'm3u_account', 'stream_id', 'stream_chno', 'channel_group_id', 'is_catchup', 'catchup_days', 'is_radio'
         )
     }
 
@@ -1449,7 +1458,8 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys, compiled_filt
                 obj.stream_chno != stream_props["stream_chno"] or
                 obj.channel_group_id != stream_props["channel_group_id"] or
                 obj.is_catchup != stream_props["is_catchup"] or
-                obj.catchup_days != stream_props["catchup_days"]
+                obj.catchup_days != stream_props["catchup_days"] or
+                obj.is_radio != stream_props["is_radio"]
             )
 
             obj.last_seen = timezone.now()
@@ -1467,6 +1477,7 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys, compiled_filt
                 obj.channel_group_id = stream_props["channel_group_id"]
                 obj.is_catchup = stream_props["is_catchup"]
                 obj.catchup_days = stream_props["catchup_days"]
+                obj.is_radio = stream_props["is_radio"]
                 obj.updated_at = timezone.now()
                 streams_to_update.append(obj)
             else:
@@ -2032,6 +2043,58 @@ def rollup_channel_catchup_fields(account_id):
                   JOIN m3u_m3uaccount a ON a.id = s.m3u_account_id
                   WHERE cs.channel_id = c.id
                     AND s.is_catchup = TRUE
+                    AND a.is_active = TRUE
+              )
+        """, [account_id])
+
+
+def rollup_channel_radio_flag(account_id):
+    """Roll up the radio flag from streams to channels (active accounts only).
+
+    Same shape as rollup_channel_catchup_fields above, kept as a separate
+    function/query rather than merged into it so this addition cannot affect
+    the existing, already-tested catch-up rollup behavior.
+    """
+    from django.db import connection
+
+    account_channels = """
+        SELECT DISTINCT cs.channel_id
+        FROM dispatcharr_channels_channelstream cs
+        JOIN dispatcharr_channels_stream s ON s.id = cs.stream_id
+        WHERE s.m3u_account_id = %s
+    """
+
+    with connection.cursor() as cur:
+        cur.execute(f"""
+            WITH agg AS (
+                SELECT
+                    cs.channel_id,
+                    bool_or(s.is_radio AND a.is_active) AS any_radio
+                FROM dispatcharr_channels_channelstream cs
+                JOIN dispatcharr_channels_stream s ON s.id = cs.stream_id
+                JOIN m3u_m3uaccount a ON a.id = s.m3u_account_id
+                WHERE cs.channel_id IN ({account_channels})
+                GROUP BY cs.channel_id
+            )
+            UPDATE dispatcharr_channels_channel c
+            SET is_radio = COALESCE(agg.any_radio, FALSE)
+            FROM agg
+            WHERE c.id = agg.channel_id
+        """, [account_id])
+
+        # Self-heal stale is_radio flags on account-linked channels only.
+        cur.execute(f"""
+            UPDATE dispatcharr_channels_channel c
+            SET is_radio = FALSE
+            WHERE c.is_radio = TRUE
+              AND c.id IN ({account_channels})
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM dispatcharr_channels_channelstream cs
+                  JOIN dispatcharr_channels_stream s ON s.id = cs.stream_id
+                  JOIN m3u_m3uaccount a ON a.id = s.m3u_account_id
+                  WHERE cs.channel_id = c.id
+                    AND s.is_radio = TRUE
                     AND a.is_active = TRUE
               )
         """, [account_id])
@@ -3901,6 +3964,12 @@ def _refresh_single_m3u_account_impl(account_id):
             logger.debug(f"Catch-up field rollup complete for account {account_id}")
         except Exception as e:
             logger.error(f"Error rolling up catch-up fields for account {account_id}: {str(e)}")
+
+        try:
+            rollup_channel_radio_flag(account_id)
+            logger.debug(f"Radio flag rollup complete for account {account_id}")
+        except Exception as e:
+            logger.error(f"Error rolling up radio flag for account {account_id}: {str(e)}")
 
         # Calculate elapsed time
         elapsed_time = time.time() - start_time
