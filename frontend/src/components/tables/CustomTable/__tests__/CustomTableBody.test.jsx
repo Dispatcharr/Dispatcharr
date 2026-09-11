@@ -116,6 +116,14 @@ describe('CustomTableBody', () => {
       expect(document.querySelector('.tbody')).toBeInTheDocument();
     });
 
+    it('leaves vertical scrolling to the containing table viewport', () => {
+      render(<CustomTableBody {...defaultProps()} />);
+      const body = document.querySelector('.tbody');
+
+      expect(body.style.flex).toBe('0 0 auto');
+      expect(body.style.overflowY).toBe('');
+    });
+
     it('renders a row for each entry in getRowModel', () => {
       render(<CustomTableBody {...defaultProps()} />);
       expect(document.querySelectorAll('.tr')).toHaveLength(2);

@@ -138,7 +138,7 @@ const CustomTableBody = ({
   const intrinsicRowHeight = intrinsicRowHeights[tableSize] ?? intrinsicRowHeights.default;
 
   return (
-    <Box className="tbody" style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
+    <Box className="tbody" style={{ flex: '0 0 auto', minHeight: 0 }}>
       {rows.map((row, index) => (
         <Box
           key={`row-${row.id}`}

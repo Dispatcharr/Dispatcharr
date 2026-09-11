@@ -293,7 +293,7 @@ import useBrowserStorage from '../../../hooks/useBrowserStorage';
 import { useNavigate } from 'react-router-dom';
 import { useTable } from '../CustomTable';
 import * as StreamsTableUtils from '../../../utils/tables/StreamsTableUtils.js';
-import StreamsTable from '../StreamsTable';
+import StreamsTable, { StreamRowActions } from '../StreamsTable';
 
 // ── Factories ──────────────────────────────────────────────────────────────────
 const makeStream = (overrides = {}) => ({
@@ -656,6 +656,44 @@ describe('StreamsTable', () => {
         .getByLabelText('Add selected stream(s) to the target channel')
         .closest('button');
       expect(btn).not.toBeDisabled();
+    });
+  });
+
+  describe('stream row actions', () => {
+    it('renders tooltips for Add to Channel and Create New Channel', () => {
+      setupMocks({ expandedChannelId: 42 });
+      render(
+        <StreamRowActions
+          theme={{ tailwind: { blue: { 6: '#3b82f6' }, green: { 5: '#22c55e' } } }}
+          row={{ original: makeStream() }}
+          editStream={vi.fn()}
+          handleDeleteStream={vi.fn()}
+          handleWatchStream={vi.fn()}
+          handleCreateChannelFromStream={vi.fn()}
+        />
+      );
+
+      expect(screen.getAllByLabelText('Add to Channel')).toHaveLength(2);
+      expect(screen.getAllByLabelText('Create New Channel')).toHaveLength(2);
+    });
+
+    it('keeps the Add to Channel tooltip available when the action is disabled', () => {
+      setupMocks();
+      render(
+        <StreamRowActions
+          theme={{ tailwind: { blue: { 6: '#3b82f6' }, green: { 5: '#22c55e' } } }}
+          row={{ original: makeStream() }}
+          editStream={vi.fn()}
+          handleDeleteStream={vi.fn()}
+          handleWatchStream={vi.fn()}
+          handleCreateChannelFromStream={vi.fn()}
+        />
+      );
+
+      const action = screen
+        .getAllByLabelText('Add to Channel')
+        .find((element) => element.tagName === 'BUTTON');
+      expect(action).toBeDisabled();
     });
   });
 

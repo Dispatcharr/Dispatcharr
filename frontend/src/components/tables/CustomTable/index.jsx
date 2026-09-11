@@ -215,6 +215,7 @@ const useTable = ({
     const tableElement = event.currentTarget.closest('[data-table-id]');
     const bodyElement = tableElement?.querySelector('.tbody');
     if (!tableElement || !bodyElement) return;
+    const scrollElement = tableElement;
 
     const getClientX = (pointerEvent) =>
       pointerEvent.touches?.[0]?.clientX ?? pointerEvent.clientX;
@@ -222,7 +223,7 @@ const useTable = ({
       Math.max(minimum, Math.min(value, maximum));
     const startX = getClientX(event);
     const columnId = header.column.id;
-    const bodyBounds = bodyElement.getBoundingClientRect();
+    const bodyBounds = scrollElement.getBoundingClientRect();
     const visibleRows = Array.from(
       bodyElement.querySelectorAll('.native-table-row')
     )
@@ -299,7 +300,7 @@ const useTable = ({
       width: cell.style.width,
       maxWidth: cell.style.maxWidth,
     }));
-    const initialScrollTop = bodyElement.scrollTop;
+    const initialScrollTop = scrollElement.scrollTop;
     let pendingX = startX;
 
     const updatePreview = () => {
@@ -341,7 +342,7 @@ const useTable = ({
     };
     const preventScroll = (scrollEvent) => scrollEvent.preventDefault();
     const restoreScrollPosition = () => {
-      bodyElement.scrollTop = initialScrollTop;
+      scrollElement.scrollTop = initialScrollTop;
     };
     let isActive = true;
     const cleanup = () => {
@@ -356,7 +357,7 @@ const useTable = ({
       window.removeEventListener('touchmove', onMove);
       window.removeEventListener('wheel', preventScroll);
       window.removeEventListener('blur', cleanup);
-      bodyElement.removeEventListener('scroll', restoreScrollPosition);
+      scrollElement.removeEventListener('scroll', restoreScrollPosition);
       window.removeEventListener('mouseup', onEnd);
       window.removeEventListener('touchend', onEnd);
       window.removeEventListener('touchcancel', onEnd);
@@ -367,7 +368,7 @@ const useTable = ({
     window.addEventListener('mousemove', onMove);
     window.addEventListener('touchmove', onMove, { passive: false });
     window.addEventListener('wheel', preventScroll, { passive: false });
-    bodyElement.addEventListener('scroll', restoreScrollPosition);
+    scrollElement.addEventListener('scroll', restoreScrollPosition);
     window.addEventListener('mouseup', onEnd, { once: true });
     window.addEventListener('touchend', onEnd, { once: true });
     window.addEventListener('touchcancel', onEnd, { once: true });

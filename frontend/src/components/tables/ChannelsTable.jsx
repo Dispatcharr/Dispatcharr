@@ -357,8 +357,6 @@ const ChannelsTable = ({ onReady }) => {
   const totalCount = useChannelsTableStore((s) => s.totalCount);
   const allRowIds = useChannelsTableStore((s) => s.allQueryIds);
   const setAllRowIds = useChannelsTableStore((s) => s.setAllQueryIds);
-  const isUnlocked = useChannelsTableStore((s) => s.isUnlocked);
-
   // store/channels
   const hasChannels = useChannelsStore((s) => s.channelIds.length > 0);
   const profiles = useChannelsStore((s) => s.profiles);
@@ -1753,22 +1751,18 @@ const ChannelsTable = ({ onReady }) => {
                   borderRadius: 'var(--mantine-radius-default)',
                 }}
               >
-                {isUnlocked ? (
-                  <DndContext
-                    sensors={sensors}
-                    collisionDetection={closestCenter}
-                    onDragEnd={handleDragEnd}
+                <DndContext
+                  sensors={sensors}
+                  collisionDetection={closestCenter}
+                  onDragEnd={handleDragEnd}
+                >
+                  <SortableContext
+                    items={rows.map((row) => row.id)}
+                    strategy={verticalListSortingStrategy}
                   >
-                    <SortableContext
-                      items={rows.map((row) => row.id)}
-                      strategy={verticalListSortingStrategy}
-                    >
-                      <CustomTable table={table} />
-                    </SortableContext>
-                  </DndContext>
-                ) : (
                   <CustomTable table={table} />
-                )}
+                  </SortableContext>
+                </DndContext>
               </Box>
 
               <Box

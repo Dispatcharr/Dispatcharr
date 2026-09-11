@@ -98,7 +98,7 @@ const defaultStreamColumnSizing = Object.fromEntries(
   streamResizableColumns.map(({ id, size }) => [id, size])
 );
 
-const StreamRowActions = ({
+export const StreamRowActions = ({
   theme,
   row,
   editStream,
@@ -150,33 +150,41 @@ const StreamRowActions = ({
 
   return (
     <>
-      <ActionIcon
-        aria-label="Add to Channel"
-        size={iconSize}
-        color={theme.tailwind.blue[6]}
-        variant="transparent"
-        onClick={addStreamToChannel}
-        style={{ background: 'none' }}
-        disabled={
-          !targetChannelId ||
-          (channelSelectionStreams &&
-            channelSelectionStreams
-              .map((s) => s.id)
-              .includes(row.original.id))
-        }
-      >
-        <ListPlus size="18" fontSize="small" />
-      </ActionIcon>
+      <Tooltip label="Add to Channel" openDelay={500}>
+        <span>
+          <ActionIcon
+            aria-label="Add to Channel"
+            size={iconSize}
+            color={theme.tailwind.blue[6]}
+            variant="transparent"
+            onClick={addStreamToChannel}
+            style={{ background: 'none' }}
+            disabled={
+              !targetChannelId ||
+              (channelSelectionStreams &&
+                channelSelectionStreams
+                  .map((s) => s.id)
+                  .includes(row.original.id))
+            }
+          >
+            <ListPlus size="18" fontSize="small" />
+          </ActionIcon>
+        </span>
+      </Tooltip>
 
-      <ActionIcon
-        aria-label="Create New Channel"
-        size={iconSize}
-        color={theme.tailwind.green[5]}
-        variant="transparent"
-        onClick={() => handleCreateChannelFromStream(row.original)}
-      >
-        <SquarePlus size="18" fontSize="small" />
-      </ActionIcon>
+      <Tooltip label="Create New Channel" openDelay={500}>
+        <span>
+          <ActionIcon
+            aria-label="Create New Channel"
+            size={iconSize}
+            color={theme.tailwind.green[5]}
+            variant="transparent"
+            onClick={() => handleCreateChannelFromStream(row.original)}
+          >
+            <SquarePlus size="18" fontSize="small" />
+          </ActionIcon>
+        </span>
+      </Tooltip>
 
       {menuOpened ? (
         <Menu opened onChange={setMenuOpened}>

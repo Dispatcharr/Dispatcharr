@@ -55,8 +55,10 @@ const CustomTable = ({ table }) => {
         maxWidth: '100%',
         minWidth: `${minTableWidth}px`,
         height: table.fillHeight ? '100%' : undefined,
+        minHeight: 0,
         display: 'flex',
         flexDirection: 'column',
+        overflowY: table.fillHeight ? 'auto' : undefined,
         ...columnSizeVars,
       }}
     >
