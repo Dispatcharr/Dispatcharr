@@ -30,6 +30,7 @@ import {
   XCircle,
 } from 'lucide-react';
 import API from '../api';
+import { REFRESH_INTERVAL_OPTIONS } from '../constants';
 import useBrowserStorage from '../hooks/useBrowserStorage';
 import { format } from '../utils/dateTimeUtils.js';
 
@@ -261,13 +262,7 @@ const SystemEvents = () => {
                 label="Auto Refresh"
                 value={eventsRefreshInterval.toString()}
                 onChange={(value) => setEventsRefreshInterval(parseInt(value))}
-                data={[
-                  { value: '0', label: 'Manual' },
-                  { value: '5', label: '5s' },
-                  { value: '10', label: '10s' },
-                  { value: '30', label: '30s' },
-                  { value: '60', label: '1m' },
-                ]}
+                data={REFRESH_INTERVAL_OPTIONS}
                 style={{ width: 120 }}
               />
               <Button

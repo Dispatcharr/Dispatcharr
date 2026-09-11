@@ -209,13 +209,23 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
 
   const navOrder = getNavOrder();
   const hiddenNav = getHiddenNav();
+  const logCollectorRunning = environment.log_collector_running;
   const navItems = useMemo(() => {
     const ordered = getOrderedNavItems(navOrder, isAdmin, channelIds, {
       canViewDvr: userCanViewDvr,
       canViewVod: userCanViewVod,
+      logCollectorRunning,
     });
     return ordered.filter((item) => !hiddenNav.includes(item.id));
-  }, [navOrder, hiddenNav, isAdmin, userCanViewDvr, userCanViewVod, channelIds]);
+  }, [
+    navOrder,
+    hiddenNav,
+    isAdmin,
+    userCanViewDvr,
+    userCanViewVod,
+    channelIds,
+    logCollectorRunning,
+  ]);
 
   const isSettingsPage = location.pathname.startsWith('/settings');
   const activeSettingsId = location.hash.replace('#', '');
