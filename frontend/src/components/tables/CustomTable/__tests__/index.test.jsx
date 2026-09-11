@@ -265,9 +265,12 @@ describe('useTable', () => {
   });
 
   describe('column resize preview', () => {
-    const mountPreviewTable = () => {
+    const mountPreviewTable = ({ withTableId = true } = {}) => {
       const tableElement = document.createElement('div');
-      tableElement.setAttribute('data-table-id', 'preview-table');
+      tableElement.className = 'divTable';
+      if (withTableId) {
+        tableElement.setAttribute('data-table-id', 'preview-table');
+      }
       tableElement.style.setProperty('--header-name-size', '120px');
       tableElement.style.setProperty('--header-name-ratio', '200');
       tableElement.style.setProperty('--header-epg-ratio', '200');
@@ -277,8 +280,19 @@ describe('useTable', () => {
 
     const makePreviewEvent = (tableElement, clientX) => ({
       currentTarget: {
-        closest: (selector) =>
-          selector === '[data-table-id]' ? tableElement : null,
+        closest: (selector) => {
+          if (selector === '[data-table-id]') {
+            return tableElement.hasAttribute('data-table-id')
+              ? tableElement
+              : null;
+          }
+          if (selector === '.divTable') {
+            return tableElement.classList.contains('divTable')
+              ? tableElement
+              : null;
+          }
+          return null;
+        },
       },
       clientX,
       touches: undefined,
@@ -377,6 +391,44 @@ describe('useTable', () => {
       expect(tableElement.style.getPropertyValue('--header-name-size')).toBe(
         '120px'
       );
+    });
+
+    it('falls back to .divTable when data-table-id is not set', () => {
+      setupMocks();
+      const tableElement = mountPreviewTable({ withTableId: false });
+      const { result } = renderHook(() =>
+        useTable({
+          allRowIds: [],
+          columns: [],
+          data: [],
+          columnSizing: { name: 120 },
+          setColumnSizing: vi.fn(),
+        })
+      );
+
+      act(() => {
+        result.current.onColumnResizePreview(
+          {
+            column: {
+              id: 'name',
+              columnDef: { minSize: 40, maxSize: 400 },
+            },
+            getSize: () => 120,
+          },
+          makePreviewEvent(tableElement, 100)
+        );
+      });
+
+      act(() => {
+        fireEvent.mouseMove(window, { clientX: 140 });
+      });
+
+      expect(tableElement.style.getPropertyValue('--header-name-size')).toBe(
+        '160px'
+      );
+      act(() => {
+        fireEvent.mouseUp(window);
+      });
     });
 
     it('previews paired flex columns through ratio CSS variables', () => {

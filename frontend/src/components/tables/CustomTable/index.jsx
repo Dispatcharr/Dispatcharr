@@ -213,7 +213,9 @@ const useTable = ({
     (header, event) => {
       clearPairedResizeMetrics();
       resizePreviewCleanupRef.current?.();
-      const tableElement = event.currentTarget.closest('[data-table-id]');
+      const tableElement =
+        event.currentTarget.closest('[data-table-id]') ||
+        event.currentTarget.closest('.divTable');
       if (!tableElement) return;
       const scrollElement = tableElement;
 
