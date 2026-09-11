@@ -23,11 +23,12 @@ logger = logging.getLogger(__name__)
 class IgnoreClientContentNegotiation(BaseContentNegotiation):
     """Content negotiator that skips the Accept check.
 
-    The logo and VOD-logo ``cache`` actions stream their own HttpResponse and
-    never use a DRF renderer, but DRF runs content negotiation before the action
-    and returns 406 when the Accept header cannot be satisfied by the JSON
-    renderers. Native image loaders send ``Accept: image/*`` (browsers and curl
-    send ``*/*``, so the endpoint looks healthy by hand), and got 406. (#1541)
+    Raw image proxy actions stream their own HttpResponse and never use a DRF
+    renderer, but DRF still runs content negotiation before the action. With only
+    JSON renderers registered, an image-specific Accept header (for example
+    ``image/*`` from native image loaders) fails negotiation and returns 406
+    before the action runs. Browsers and curl typically send ``*/*`` and succeed,
+    so the endpoint can look healthy when tested by hand.
     """
 
     def select_parser(self, request, parsers):
@@ -38,15 +39,20 @@ class IgnoreClientContentNegotiation(BaseContentNegotiation):
 
 
 class RawImageContentNegotiationMixin:
-    """Skip DRF Accept negotiation for a viewset's raw-image ``cache`` action.
+    """Skip DRF Accept negotiation for viewset actions that return raw images.
 
-    Applied only to ``cache``; every other action keeps normal JSON negotiation.
+    Default actions cover channel/VOD logo ``cache``, VOD artwork ``image``, and
+    EPG ``poster``. Override ``raw_image_actions`` if a viewset needs a different
+    set. Every other action keeps normal JSON negotiation.
     """
 
+    raw_image_actions = frozenset({"cache", "image", "poster"})
+
     def get_content_negotiator(self):
-        if getattr(self, "action", None) == "cache":
+        if getattr(self, "action", None) in self.raw_image_actions:
             return IgnoreClientContentNegotiation()
         return super().get_content_negotiator()
+
 
 # Negative cache for remote image URLs that failed to fetch.
 # Shared across channel logos and VOD image/logo proxies.

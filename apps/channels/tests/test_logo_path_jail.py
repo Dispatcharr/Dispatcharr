@@ -98,7 +98,7 @@ class LogoCachePathJailTests(TestCase):
             file_path.unlink(missing_ok=True)
 
     def test_cache_serves_image_for_image_accept_header(self):
-        """Native image loaders send Accept: image/*; that must not 406 (#1541).
+        """Native image loaders send Accept: image/*; that must not 406.
 
         Browsers and curl send Accept: */* and get 200, so the endpoint looks
         healthy by hand while image-only clients (e.g. Apple TV) get 406.
@@ -120,7 +120,7 @@ class LogoCachePathJailTests(TestCase):
             file_path.unlink(missing_ok=True)
 
     def test_non_cache_action_still_negotiates_accept(self):
-        """The negotiation skip is scoped to cache: other actions still 406 on image/*."""
+        """Negotiation skip is scoped to cache: other actions still 406 on image/*."""
         logo = Logo.objects.create(name="Retrieve", url="/data/logos/none.png")
         self.client.force_login(self.user)
         response = self.client.get(

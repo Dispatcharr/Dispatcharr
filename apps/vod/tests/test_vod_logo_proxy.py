@@ -69,7 +69,7 @@ class VODLogoProxyTestCase(TestCase):
         return_value="Dispatcharr-Test/1.0",
     )
     def test_cache_serves_image_for_image_accept_header(self, _mock_ua, mock_get, _mock_validate):
-        """An Accept: image/* request must not 406 before the action runs (#1541)."""
+        """An Accept: image/* request must not 406 before the action runs."""
         mock_response = MagicMock()
         mock_response.status_code = 200
         mock_response.iter_content.return_value = [PNG_BYTES]
@@ -82,3 +82,4 @@ class VODLogoProxyTestCase(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.content, PNG_BYTES)
+        self.assertTrue(response.get("Content-Type", "").startswith("image/"))

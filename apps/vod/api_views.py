@@ -97,7 +97,7 @@ class MovieFilter(django_filters.FilterSet):
         return queryset.filter(m3u_relations__category__name=category_name)
 
 
-class MovieViewSet(viewsets.ReadOnlyModelViewSet):
+class MovieViewSet(RawImageContentNegotiationMixin, viewsets.ReadOnlyModelViewSet):
     """ViewSet for Movie content"""
     queryset = Movie.objects.all()
     serializer_class = MovieSerializer
@@ -368,7 +368,7 @@ class SeriesFilter(django_filters.FilterSet):
         return queryset.filter(m3u_relations__category__name=category_name)
 
 
-class EpisodeViewSet(viewsets.ReadOnlyModelViewSet):
+class EpisodeViewSet(RawImageContentNegotiationMixin, viewsets.ReadOnlyModelViewSet):
     """ViewSet for Episode content"""
     queryset = Episode.objects.all()
     serializer_class = EpisodeSerializer
@@ -404,7 +404,7 @@ class EpisodeViewSet(viewsets.ReadOnlyModelViewSet):
         return vod_image_action(self, request, 'episode')
 
 
-class SeriesViewSet(viewsets.ReadOnlyModelViewSet):
+class SeriesViewSet(RawImageContentNegotiationMixin, viewsets.ReadOnlyModelViewSet):
     """ViewSet for Series management"""
     queryset = Series.objects.all()
     serializer_class = SeriesSerializer
@@ -1126,7 +1126,6 @@ class VODLogoViewSet(RawImageContentNegotiationMixin, viewsets.ModelViewSet):
             if self.action == 'cache':
                 return [AllowAny()]
             return [Authenticated()]
-
 
     def get_queryset(self):
         """Optimize queryset with prefetch and add filtering"""

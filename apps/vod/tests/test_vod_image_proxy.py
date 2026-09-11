@@ -290,6 +290,76 @@ class VODImageProxyEndpointTestCase(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.content, body)
 
+    @patch("core.image_proxy.validate_outbound_http_url")
+    @patch("core.image_proxy.requests.get")
+    @patch(
+        "core.image_proxy.CoreSettings.get_default_user_agent",
+        return_value="Dispatcharr-Test/1.0",
+    )
+    def test_movie_image_serves_for_image_accept_header(self, _mock_ua, mock_get, _mock_validate):
+        """Native image loaders send Accept: image/*; that must not 406."""
+        body = b"\x89PNG\r\n\x1a\n" + b"backdrop-bytes"
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.iter_content.return_value = [body]
+        mock_response.headers = {"Content-Type": "image/jpeg"}
+        mock_get.return_value = mock_response
+
+        response = self.client.get(
+            f"/api/vod/movies/{self.movie.id}/image/?kind=backdrop&index=0",
+            HTTP_ACCEPT="image/*",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.content, body)
+        self.assertTrue(response.get("Content-Type", "").startswith("image/"))
+
+    @patch("core.image_proxy.validate_outbound_http_url")
+    @patch("core.image_proxy.requests.get")
+    @patch(
+        "core.image_proxy.CoreSettings.get_default_user_agent",
+        return_value="Dispatcharr-Test/1.0",
+    )
+    def test_series_image_serves_for_image_accept_header(self, _mock_ua, mock_get, _mock_validate):
+        body = b"\x89PNG\r\n\x1a\n" + b"series-bd"
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.iter_content.return_value = [body]
+        mock_response.headers = {"Content-Type": "image/jpeg"}
+        mock_get.return_value = mock_response
+
+        response = self.client.get(
+            f"/api/vod/series/{self.series.id}/image/?kind=backdrop&index=0",
+            HTTP_ACCEPT="image/*",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.content, body)
+        self.assertTrue(response.get("Content-Type", "").startswith("image/"))
+
+    @patch("core.image_proxy.validate_outbound_http_url")
+    @patch("core.image_proxy.requests.get")
+    @patch(
+        "core.image_proxy.CoreSettings.get_default_user_agent",
+        return_value="Dispatcharr-Test/1.0",
+    )
+    def test_episode_image_serves_for_image_accept_header(self, _mock_ua, mock_get, _mock_validate):
+        body = b"\x89PNG\r\n\x1a\n" + b"still-bytes"
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.iter_content.return_value = [body]
+        mock_response.headers = {"Content-Type": "image/jpeg"}
+        mock_get.return_value = mock_response
+
+        response = self.client.get(
+            f"/api/vod/episodes/{self.episode.id}/image/?kind=movie_image",
+            HTTP_ACCEPT="image/*",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.content, body)
+        self.assertTrue(response.get("Content-Type", "").startswith("image/"))
+
     def test_rejects_unknown_kind(self):
         response = self.client.get(
             f"/api/vod/movies/{self.movie.id}/image/?kind=not-a-kind"
