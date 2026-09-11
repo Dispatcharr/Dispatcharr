@@ -96,3 +96,34 @@ class LogoCachePathJailTests(TestCase):
             b"".join(response.streaming_content)
         finally:
             file_path.unlink(missing_ok=True)
+
+    def test_cache_serves_image_for_image_accept_header(self):
+        """Native image loaders send Accept: image/*; that must not 406.
+
+        Browsers and curl send Accept: */* and get 200, so the endpoint looks
+        healthy by hand while image-only clients (e.g. Apple TV) get 406.
+        """
+        logos_root = Path("/data/logos")
+        logos_root.mkdir(parents=True, exist_ok=True)
+        name = f"_jail_accept_{uuid.uuid4().hex}.png"
+        file_path = logos_root / name
+        file_path.write_bytes(b"\x89PNG\r\n\x1a\n")
+        logo = Logo.objects.create(name="AcceptImg", url=str(file_path))
+        try:
+            response = self.client.get(
+                f"/api/channels/logos/{logo.id}/cache/", HTTP_ACCEPT="image/*"
+            )
+            self.assertEqual(response.status_code, 200)
+            self.assertTrue(response.get("Content-Type", "").startswith("image/"))
+            b"".join(response.streaming_content)
+        finally:
+            file_path.unlink(missing_ok=True)
+
+    def test_non_cache_action_still_negotiates_accept(self):
+        """Negotiation skip is scoped to cache: other actions still 406 on image/*."""
+        logo = Logo.objects.create(name="Retrieve", url="/data/logos/none.png")
+        self.client.force_login(self.user)
+        response = self.client.get(
+            f"/api/channels/logos/{logo.id}/", HTTP_ACCEPT="image/*"
+        )
+        self.assertEqual(response.status_code, 406)
