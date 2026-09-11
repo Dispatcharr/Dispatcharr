@@ -78,12 +78,12 @@ class LogFilesEndpointTests(TestCase):
         self.assertFalse(payload["truncated"])
 
     def test_view_truncates_large_files_at_line_boundary(self):
-        big = os.path.join(self.log_dir, "dispatcharr.log.big")
+        big = os.path.join(self.log_dir, "dispatcharr.log.9")
         line = b"x" * 99 + b"\n"
         with open(big, "wb") as f:
             for _ in range((log_files.MAX_VIEW_BYTES // 100) + 100):
                 f.write(line)
-        response = self.client.get("/api/core/logs/dispatcharr.log.big/")
+        response = self.client.get("/api/core/logs/dispatcharr.log.9/")
         self.assertEqual(response.status_code, 200)
         payload = response.json()
         self.assertTrue(payload["truncated"])
@@ -94,21 +94,21 @@ class LogFilesEndpointTests(TestCase):
 
     def test_truncation_on_a_record_boundary_keeps_that_record(self):
         """The cap can land on a boundary; skipping anyway drops a whole line."""
-        big = os.path.join(self.log_dir, "dispatcharr.log.big")
+        big = os.path.join(self.log_dir, "dispatcharr.log.9")
         with open(big, "wb") as f:
             for i in range(10):
                 f.write(b"%d" % i + b"x" * 8 + b"\n")
 
         # 50 is exactly where line 5 begins.
         with mock.patch.object(log_files, "MAX_VIEW_BYTES", 50):
-            payload = self.client.get("/api/core/logs/dispatcharr.log.big/").json()
+            payload = self.client.get("/api/core/logs/dispatcharr.log.9/").json()
         self.assertTrue(payload["truncated"])
         self.assertEqual(len(payload["content"]), 50)
         self.assertTrue(payload["content"].startswith("5xxxxxxxx\n"))
 
         # 45 lands mid-line, and there the partial record has to go.
         with mock.patch.object(log_files, "MAX_VIEW_BYTES", 45):
-            payload = self.client.get("/api/core/logs/dispatcharr.log.big/").json()
+            payload = self.client.get("/api/core/logs/dispatcharr.log.9/").json()
         self.assertTrue(payload["content"].startswith("6xxxxxxxx\n"))
         self.assertEqual(len(payload["content"]), 40)
 
@@ -249,14 +249,24 @@ class LogFilesEndpointTests(TestCase):
 
     def test_endpoints_serve_only_the_log_family(self):
         # DISPATCHARR_LOG_DIR may point at a data root; view and download are not a file server.
-        with open(os.path.join(self.log_dir, "secrets.env"), "w") as f:
-            f.write("nothing to see")
-        self.assertEqual(
-            self.client.get("/api/core/logs/secrets.env/").status_code, 404
-        )
-        self.assertEqual(
-            self.client.get("/api/core/logs/secrets.env/download/").status_code, 404
-        )
+        for name in ("secrets.env", "dispatcharr.logevil", "dispatcharr.log.bak"):
+            with open(os.path.join(self.log_dir, name), "w") as f:
+                f.write("nothing to see")
+            self.assertEqual(
+                self.client.get(f"/api/core/logs/{name}/").status_code, 404, name
+            )
+            self.assertEqual(
+                self.client.get(f"/api/core/logs/{name}/download/").status_code,
+                404,
+                name,
+            )
+        # A role-suffixed live file and its rotation are in the family.
+        for name in ("dispatcharr.log-celery", "dispatcharr.log-celery.1"):
+            with open(os.path.join(self.log_dir, name), "w") as f:
+                f.write("role log\n")
+            self.assertEqual(
+                self.client.get(f"/api/core/logs/{name}/").status_code, 200, name
+            )
 
     def test_resolver_rejects_traversal_and_dotfiles(self):
         # A traversal URL never reaches this view; it decodes to a slashed path the SPA serves.
@@ -266,6 +276,8 @@ class LogFilesEndpointTests(TestCase):
         self.assertIsNone(log_files._resolve(".hidden"))
         self.assertIsNone(log_files._resolve("sub/dir.log"))
         self.assertIsNone(log_files._resolve("dispatcharr.log\n"))
+        self.assertIsNone(log_files._resolve("dispatcharr.logevil"))
+        self.assertIsNone(log_files._resolve("dispatcharr.log.bak"))
         self.assertEqual(
             log_files._resolve("dispatcharr.log"),
             os.path.realpath(os.path.join(self.log_dir, "dispatcharr.log")),
@@ -275,18 +287,19 @@ class LogFilesEndpointTests(TestCase):
         fd, outside = tempfile.mkstemp(prefix="dispatcharr-escape-")
         os.close(fd)
         self.addCleanup(os.remove, outside)
-        os.symlink(outside, os.path.join(self.log_dir, "escape.log"))
-        self.assertIsNone(log_files._resolve("escape.log"))
+        # Family-named so the realpath gate is load-bearing, not the name filter.
+        os.symlink(outside, os.path.join(self.log_dir, "dispatcharr.log.8"))
+        self.assertIsNone(log_files._resolve("dispatcharr.log.8"))
 
     def test_list_excludes_symlink_escape(self):
         fd, outside = tempfile.mkstemp(prefix="dispatcharr-escape-")
         os.close(fd)
         self.addCleanup(os.remove, outside)
-        os.symlink(outside, os.path.join(self.log_dir, "escape.log"))
+        os.symlink(outside, os.path.join(self.log_dir, "dispatcharr.log.8"))
         response = self.client.get("/api/core/logs/")
         self.assertEqual(response.status_code, 200)
         names = {f["name"] for f in response.json()["files"]}
-        self.assertNotIn("escape.log", names)
+        self.assertNotIn("dispatcharr.log.8", names)
         self.assertEqual(names, {"dispatcharr.log", "dispatcharr.log.1"})
 
     def test_missing_file_is_404(self):

@@ -1,7 +1,6 @@
 """Browse, view and download the persisted log files (System > Logs)."""
 
 import os
-import re
 from datetime import datetime, timezone
 
 from django.conf import settings
@@ -14,10 +13,7 @@ from rest_framework.exceptions import NotFound
 from rest_framework.response import Response
 
 from apps.accounts.permissions import IsAdmin
-from dispatcharr.log_collector import BASE_NAME, collector_running
-
-# Plain filenames only: no separators, no dotfiles.
-_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+from dispatcharr.log_collector import collector_running, is_log_family_name
 
 # Above any log the collector can write: only a file it did not write is cut.
 MAX_VIEW_BYTES = 24 * 1024 * 1024
@@ -43,7 +39,7 @@ def _resolve(name):
     """Resolve *name* to a real log file inside the log directory, else None."""
     # DISPATCHARR_LOG_DIR may hold more than logs.
     log_dir = settings.LOG_FILE_DIR
-    if not log_dir or not _NAME_RE.fullmatch(name) or not name.startswith(BASE_NAME):
+    if not log_dir or not is_log_family_name(name):
         return None
     base = os.path.realpath(log_dir)
     path = os.path.realpath(os.path.join(base, name))

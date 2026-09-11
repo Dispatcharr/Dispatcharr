@@ -1,7 +1,7 @@
 export const getSystemSettingsFormInitialValues = () => {
   return {
     max_system_events: 100,
-    log_max_mb: 10,
+    log_max_mb: 5,
     log_keep: 5,
     log_persist: true,
     preferred_region: '',

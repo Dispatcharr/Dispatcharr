@@ -37,6 +37,18 @@ LIVE_NAME = f"{BASE_NAME}{_SUFFIX}"
 CONF_NAME = "collector.conf"
 PID_NAME = f"collector{_SUFFIX}.pid"
 
+# Live file, optional role suffix, optional rotation index. Used by the log
+# browser so a rename here cannot silently empty the page, and a near-prefix
+# name in the same directory cannot be served.
+_LOG_FAMILY_RE = re.compile(
+    rf"^{re.escape(BASE_NAME)}(-[A-Za-z0-9]{{1,16}})?(\.\d+)?$"
+)
+
+
+def is_log_family_name(name):
+    """Whether *name* is a collector live or rotated log file."""
+    return bool(_LOG_FAMILY_RE.fullmatch(name))
+
 _FLUSH_INTERVAL_SECONDS = 0.25
 _BATCH_BYTES = 128 * 1024
 _BUFFER_BYTES = 2 * 1024 * 1024
