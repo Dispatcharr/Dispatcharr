@@ -3,6 +3,7 @@ from django.utils import timezone
 from django_celery_beat.models import PeriodicTask
 from django.conf import settings
 import os
+import uuid
 
 class EPGSource(models.Model):
     SOURCE_TYPE_CHOICES = [
@@ -256,3 +257,15 @@ class SDProgramMD5(models.Model):
 
     def __str__(self):
         return f"SDProgramMD5: {self.program_id} ({self.epg_source.name})"
+
+
+class EPGRevision(models.Model):
+    """Durable cache namespace shared by EPG writers and XMLTV readers."""
+
+    id = models.PositiveSmallIntegerField(primary_key=True, default=1, editable=False)
+    revision = models.UUIDField(default=uuid.uuid4, editable=False)
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(condition=models.Q(id=1), name="epg_revision_singleton"),
+        ]
