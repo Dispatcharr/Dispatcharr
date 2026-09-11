@@ -264,6 +264,179 @@ describe('useTable', () => {
     });
   });
 
+  describe('column resize preview', () => {
+    const mountPreviewTable = () => {
+      const tableElement = document.createElement('div');
+      tableElement.setAttribute('data-table-id', 'preview-table');
+      tableElement.style.setProperty('--header-name-size', '120px');
+      tableElement.style.setProperty('--header-name-ratio', '200');
+      tableElement.style.setProperty('--header-epg-ratio', '200');
+      document.body.appendChild(tableElement);
+      return tableElement;
+    };
+
+    const makePreviewEvent = (tableElement, clientX) => ({
+      currentTarget: {
+        closest: (selector) =>
+          selector === '[data-table-id]' ? tableElement : null,
+      },
+      clientX,
+      touches: undefined,
+      preventDefault: vi.fn(),
+    });
+
+    afterEach(() => {
+      document.body.replaceChildren();
+    });
+
+    it('updates table CSS variables instead of measuring body rows', () => {
+      setupMocks();
+      const tableElement = mountPreviewTable();
+      const queryAllSpy = vi.spyOn(tableElement, 'querySelectorAll');
+      const { result } = renderHook(() =>
+        useTable({
+          allRowIds: [],
+          columns: [],
+          data: [],
+          columnSizing: { name: 120 },
+          setColumnSizing: vi.fn(),
+          tableId: 'preview-table',
+        })
+      );
+
+      act(() => {
+        result.current.onColumnResizePreview(
+          {
+            column: {
+              id: 'name',
+              columnDef: { minSize: 40, maxSize: 400 },
+            },
+            getSize: () => 120,
+          },
+          makePreviewEvent(tableElement, 100)
+        );
+      });
+
+      act(() => {
+        fireEvent.mouseMove(window, { clientX: 140 });
+      });
+
+      expect(tableElement.style.getPropertyValue('--header-name-size')).toBe(
+        '160px'
+      );
+      expect(queryAllSpy).not.toHaveBeenCalled();
+      queryAllSpy.mockRestore();
+
+      act(() => {
+        fireEvent.mouseUp(window);
+      });
+      // Commit leaves the preview vars in place so the column does not snap back
+      // while TanStack applies onEnd sizing.
+      expect(tableElement.style.getPropertyValue('--header-name-size')).toBe(
+        '160px'
+      );
+    });
+
+    it('restores CSS variables when the resize is cancelled', () => {
+      setupMocks();
+      const tableElement = mountPreviewTable();
+      const { result } = renderHook(() =>
+        useTable({
+          allRowIds: [],
+          columns: [],
+          data: [],
+          columnSizing: { name: 120 },
+          setColumnSizing: vi.fn(),
+          tableId: 'preview-table',
+        })
+      );
+
+      act(() => {
+        result.current.onColumnResizePreview(
+          {
+            column: {
+              id: 'name',
+              columnDef: { minSize: 40, maxSize: 400 },
+            },
+            getSize: () => 120,
+          },
+          makePreviewEvent(tableElement, 100)
+        );
+      });
+
+      act(() => {
+        fireEvent.mouseMove(window, { clientX: 140 });
+      });
+      expect(tableElement.style.getPropertyValue('--header-name-size')).toBe(
+        '160px'
+      );
+
+      act(() => {
+        fireEvent.blur(window);
+      });
+      expect(tableElement.style.getPropertyValue('--header-name-size')).toBe(
+        '120px'
+      );
+    });
+
+    it('previews paired flex columns through ratio CSS variables', () => {
+      setupMocks();
+      const tableElement = mountPreviewTable();
+      const nameHeader = document.createElement('div');
+      nameHeader.setAttribute('data-column-id', 'name');
+      nameHeader.getBoundingClientRect = () => ({ width: 200 });
+      const epgHeader = document.createElement('div');
+      epgHeader.setAttribute('data-column-id', 'epg');
+      epgHeader.getBoundingClientRect = () => ({ width: 200 });
+      const thead = document.createElement('div');
+      thead.className = 'thead';
+      thead.append(nameHeader, epgHeader);
+      tableElement.appendChild(thead);
+
+      const { result } = renderHook(() =>
+        useTable({
+          allRowIds: [],
+          columns: [],
+          data: [],
+          columnSizing: { name: 200, epg: 200 },
+          setColumnSizing: vi.fn(),
+          pairedColumnSizing: [
+            { id: 'name', size: 200, minSize: 100 },
+            { id: 'epg', size: 200, minSize: 100 },
+          ],
+          tableId: 'preview-table',
+        })
+      );
+
+      act(() => {
+        result.current.onColumnResizePreview(
+          {
+            column: {
+              id: 'name',
+              columnDef: { flexRatio: true, minSize: 100 },
+            },
+            getSize: () => 200,
+          },
+          makePreviewEvent(tableElement, 100)
+        );
+      });
+
+      act(() => {
+        fireEvent.mouseMove(window, { clientX: 150 });
+      });
+
+      expect(tableElement.style.getPropertyValue('--header-name-ratio')).toBe(
+        '250'
+      );
+      expect(tableElement.style.getPropertyValue('--header-epg-ratio')).toBe(
+        '150'
+      );
+      act(() => {
+        fireEvent.mouseUp(window);
+      });
+    });
+  });
+
   // ── Keyboard event handling ────────────────────────────────────────────────
 
   describe('keyboard event handling', () => {
