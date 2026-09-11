@@ -52,6 +52,8 @@ const getEventIcon = (eventType) => {
     case 'recording_start':
       return <Video size={16} />;
     case 'recording_end':
+    case 'recording_finalized':
+    case 'recording_failed':
       return <Video size={16} />;
     case 'vod_start':
       return <CirclePlay size={16} />;
@@ -92,6 +94,10 @@ const getEventColor = (eventType) => {
       return 'green';
     case 'channel_reconnect':
       return 'yellow';
+    case 'recording_finalized':
+      return 'green';
+    case 'recording_failed':
+      return 'red';
     case 'channel_stop':
     case 'client_disconnect':
     case 'recording_end':

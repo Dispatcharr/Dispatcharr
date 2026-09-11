@@ -1640,6 +1640,47 @@ def _dvr_build_ffmpeg_cmd(
 _DVR_HLS_REMUX_TIMEOUT_SECONDS = 30 * 60
 
 
+def _dvr_finalized_events(cp, final_path, remux_success):
+    props = cp if isinstance(cp, dict) else {}
+
+    status = props.get("status")
+    if not isinstance(status, str) or not status:
+        status = "unknown"
+
+    bytes_written = props.get("bytes_written")
+    if isinstance(bytes_written, bool) or not isinstance(bytes_written, int):
+        bytes_written = None
+
+    reason = props.get("interrupted_reason")
+    if not isinstance(reason, str) or not reason:
+        reason = None
+
+    path = final_path if isinstance(final_path, str) and final_path else None
+    file_size = None
+    if path:
+        try:
+            file_size = os.path.getsize(path)
+        except OSError:
+            file_size = None
+
+    has_file = bool(remux_success) and bool(file_size)
+
+    payload = {
+        "status": status,
+        "file_path": path,
+        "file_url": props.get("file_url") if isinstance(props.get("file_url"), str) else None,
+        "file_size": file_size,
+        "remux_success": bool(remux_success),
+        "has_file": has_file,
+        "bytes_written": bytes_written,
+        "interrupted_reason": reason,
+    }
+    events = [("recording_finalized", payload)]
+    if not has_file:
+        events.append(("recording_failed", payload))
+    return events
+
+
 def _dvr_build_hls_playlist_remux_cmd(m3u8_path, output_path, extra_args=None):
     """Build an FFmpeg remux command that reads an HLS playlist as a single input."""
     cmd = [
@@ -2922,6 +2963,19 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
             base_interval=_dvr_db_retry_interval,
             label=f"DVR recording {recording_id}: metadata save",
         )
+
+        for _ev_name, _ev_payload in _dvr_finalized_events(cp, final_path, remux_success):
+            try:
+                from core.utils import log_system_event
+                log_system_event(
+                    _ev_name,
+                    channel_id=channel.uuid,
+                    channel_name=channel.name,
+                    recording_id=recording_id,
+                    **_ev_payload,
+                )
+            except Exception as _ev_e:
+                logger.error(f"Could not log {_ev_name} event: {_ev_e}")
 
         # Notify frontends so the UI refreshes immediately (e.g. "Stopped" → "Completed")
         try:
