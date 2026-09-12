@@ -9,6 +9,7 @@ from apps.epg.sd_api import (
     SchedulesDirectPosterMixin,
     SchedulesDirectSourceMixin,
 )
+from core.image_proxy import RawImageContentNegotiationMixin
 from rest_framework.decorators import action
 from drf_spectacular.utils import extend_schema, OpenApiParameter, inline_serializer
 from drf_spectacular.types import OpenApiTypes
@@ -132,7 +133,9 @@ class ProgramSearchPagination(PageNumberPagination):
     max_page_size = 500
 
 
-class ProgramViewSet(SchedulesDirectPosterMixin, viewsets.ModelViewSet):
+class ProgramViewSet(
+    RawImageContentNegotiationMixin, SchedulesDirectPosterMixin, viewsets.ModelViewSet
+):
     """Handles CRUD operations for EPG programs"""
 
     queryset = ProgramData.objects.select_related("epg").all()

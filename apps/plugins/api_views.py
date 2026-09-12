@@ -22,6 +22,7 @@ from apps.accounts.permissions import (
     permission_classes_by_method,
 )
 from core.http_security import get_with_validated_redirects
+from core.image_proxy import IgnoreClientContentNegotiation
 from core.utils import build_absolute_uri_with_port
 from dispatcharr.utils import network_access_allowed
 
@@ -507,6 +508,11 @@ class PluginEnabledAPIView(PluginAuthMixin, APIView):
 
 
 class PluginLogoAPIView(APIView):
+    # Single-purpose image endpoint (no action map), so skip Accept for the whole
+    # view. That covers both FileResponse success and JSON error bodies (403/400/404);
+    # without it, Accept: image/* would 406 before either path runs.
+    content_negotiation_class = IgnoreClientContentNegotiation
+
     def get_permissions(self):
         return []
 

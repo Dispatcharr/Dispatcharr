@@ -39,6 +39,7 @@ from core.utils import (
     safe_upload_path,
 )
 from core.image_proxy import (
+    RawImageContentNegotiationMixin,
     image_fetch_failures as _logo_fetch_failures,
     serve_local_or_remote_image,
 )
@@ -2772,7 +2773,7 @@ class LogoPagination(PageNumberPagination):
         return super().paginate_queryset(queryset, request, view)
 
 
-class LogoViewSet(viewsets.ModelViewSet):
+class LogoViewSet(RawImageContentNegotiationMixin, viewsets.ModelViewSet):
     queryset = Logo.objects.all()
     serializer_class = LogoSerializer
     pagination_class = LogoPagination

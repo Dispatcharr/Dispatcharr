@@ -390,6 +390,107 @@ class VODMovieIsAdultSyncTests(TestCase):
         self.assertFalse(movie.is_adult)
 
 
+class VODBlankNameBatchTests(TestCase):
+    """Blank provider names are skipped without discarding the rest of the batch."""
+
+    def setUp(self):
+        self.account = M3UAccount.objects.create(
+            name="Blank Name XC",
+            server_url="http://example.com",
+            username="user",
+            password="pass",
+            account_type=M3UAccount.Types.XC,
+            is_active=True,
+            custom_properties={"enable_vod": True},
+        )
+        self.movie_category = VODCategory.objects.create(
+            name="Blank Movies", category_type="movie",
+        )
+        self.series_category = VODCategory.objects.create(
+            name="Blank Series", category_type="series",
+        )
+        self.movie_relations = {
+            self.movie_category.id: M3UVODCategoryRelation.objects.create(
+                category=self.movie_category, m3u_account=self.account, enabled=True,
+            )
+        }
+        self.series_relations = {
+            self.series_category.id: M3UVODCategoryRelation.objects.create(
+                category=self.series_category, m3u_account=self.account, enabled=True,
+            )
+        }
+        self.movie_categories = {
+            "10": self.movie_category, "__uncategorized__": self.movie_category,
+        }
+        self.series_categories = {
+            "20": self.series_category, "__uncategorized__": self.series_category,
+        }
+
+    def test_blank_name_movie_is_skipped_without_discarding_the_batch(self):
+        process_movie_batch(
+            self.account,
+            [
+                {"stream_id": 3001, "name": None, "category_id": "10"},
+                {"stream_id": 3002, "name": "   ", "category_id": "10"},
+                {"stream_id": 3003, "category_id": "10"},
+                {"stream_id": 3005, "name": 12345, "category_id": "10", "tmdb_id": "700999"},
+                {"stream_id": 3004, "name": "Good Movie", "category_id": "10", "tmdb_id": "700123"},
+            ],
+            self.movie_categories,
+            self.movie_relations,
+            scan_start_time=timezone.now(),
+        )
+
+        self.assertTrue(
+            Movie.objects.filter(tmdb_id="700123", name="Good Movie").exists()
+        )
+        self.assertTrue(
+            Movie.objects.filter(tmdb_id="700999", name="12345").exists()
+        )
+        self.assertEqual(Movie.objects.count(), 2)
+        self.assertFalse(
+            M3UMovieRelation.objects.filter(
+                m3u_account=self.account,
+                stream_id__in=["3001", "3002", "3003"],
+            ).exists()
+        )
+        self.assertTrue(
+            M3UMovieRelation.objects.filter(
+                m3u_account=self.account, stream_id="3004"
+            ).exists()
+        )
+
+    def test_blank_name_series_is_skipped_without_discarding_the_batch(self):
+        process_series_batch(
+            self.account,
+            [
+                {"series_id": 4001, "name": None, "category_id": "20"},
+                {"series_id": 4002, "name": "   ", "category_id": "20"},
+                {"series_id": 4003, "category_id": "20"},
+                {"series_id": 4004, "name": "Good Series", "category_id": "20", "tmdb_id": "700456"},
+            ],
+            self.series_categories,
+            self.series_relations,
+            scan_start_time=timezone.now(),
+        )
+
+        self.assertTrue(
+            Series.objects.filter(tmdb_id="700456", name="Good Series").exists()
+        )
+        self.assertEqual(Series.objects.count(), 1)
+        self.assertFalse(
+            M3USeriesRelation.objects.filter(
+                m3u_account=self.account,
+                external_series_id__in=["4001", "4002", "4003"],
+            ).exists()
+        )
+        self.assertTrue(
+            M3USeriesRelation.objects.filter(
+                m3u_account=self.account, external_series_id="4004"
+            ).exists()
+        )
+
+
 class VODDuplicateAcrossCategoriesBatchTests(TestCase):
     """Same canonical movie/series under multiple stream/series IDs in one
     batch must get a relation per ID; identical IDs still coalesce to one.

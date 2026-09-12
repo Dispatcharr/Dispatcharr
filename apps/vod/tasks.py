@@ -433,7 +433,16 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
     for movie_data in batch:
         try:
             stream_id = str(movie_data.get('stream_id'))
-            name = movie_data.get('name', 'Unknown')
+            # Skip blank names: Movie.name is NOT NULL, and one null in this
+            # atomic batch would roll back every other row.
+            name = str(movie_data.get('name') or '').strip()
+            if not name:
+                logger.warning(
+                    "Skipping movie with blank name (stream_id=%s, account=%s)",
+                    stream_id,
+                    account.id,
+                )
+                continue
 
             # Get category with proper error handling
             category = None
@@ -781,7 +790,16 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
     for series_data in batch:
         try:
             series_id = str(series_data.get('series_id'))
-            name = series_data.get('name', 'Unknown')
+            # Skip blank names: Series.name is NOT NULL, and one null in this
+            # atomic batch would roll back every other row.
+            name = str(series_data.get('name') or '').strip()
+            if not name:
+                logger.warning(
+                    "Skipping series with blank name (series_id=%s, account=%s)",
+                    series_id,
+                    account.id,
+                )
+                continue
 
             # Get category with proper error handling
             category = None

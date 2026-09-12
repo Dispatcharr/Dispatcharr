@@ -97,31 +97,31 @@ const SystemSettingsForm = React.memo(({ active }) => {
         <>
           <Switch
             label="Persist Logs to File"
-            description="Write application logs to disk. Console logging is unaffected."
+            description="Write logs to disk for the Logs page. Console output is unaffected."
             {...form.getInputProps('log_persist', { type: 'checkbox' })}
             id="log_persist"
           />
           <NumberInput
             label="Maximum Log File Size (MB)"
-            description="Rotate the application log once it grows past this size. Older logs are kept up to the retention limit below."
+            description="Rotate the log once it grows past this size."
             id="log_max_mb"
-            value={form.values['log_max_mb'] || 10}
+            value={form.values['log_max_mb'] || 5}
             onChange={(value) => {
               form.setFieldValue('log_max_mb', value);
             }}
             min={1}
-            max={1000}
-            step={5}
+            max={20}
+            step={1}
           />
           <NumberInput
-            label="Log Files Retained"
-            description="How many rotated log files to keep before the oldest is deleted."
+            label="Log Files Kept"
+            description="How many log files to keep before the oldest is deleted."
             id="log_keep"
             value={form.values['log_keep'] || 5}
             onChange={(value) => {
               form.setFieldValue('log_keep', value);
             }}
-            min={1}
+            min={2}
             max={50}
             step={1}
           />
