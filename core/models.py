@@ -849,6 +849,8 @@ class SystemEvent(models.Model):
         ('client_disconnect', 'Client Disconnected'),
         ('recording_start', 'Recording Started'),
         ('recording_end', 'Recording Ended'),
+        ('recording_finalized', 'Recording Finalized'),
+        ('recording_failed', 'Recording Failed'),
         ('stream_switch', 'Stream Switched'),
         ('m3u_refresh', 'M3U Refreshed'),
         ('m3u_download', 'M3U Downloaded'),
