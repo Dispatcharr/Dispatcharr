@@ -24,8 +24,8 @@ class RedisConnectionPoolTests(SimpleTestCase):
         RedisClient._pubsub_client = None
 
     @override_settings(REDIS_MAX_CONNECTIONS=7, REDIS_POOL_TIMEOUT=2.0)
-    def test_make_client_uses_bounded_blocking_pool(self):
-        client = RedisClient._make_client(decode_responses=True)
+    def test_init_client_uses_bounded_blocking_pool(self):
+        client = RedisClient._init_client(decode_responses=True)
         pool = client.connection_pool
         self.assertIsInstance(pool, BlockingConnectionPool)
         self.assertEqual(pool.max_connections, 7)
@@ -33,7 +33,7 @@ class RedisConnectionPoolTests(SimpleTestCase):
     @override_settings(REDIS_MAX_CONNECTIONS=5, REDIS_POOL_TIMEOUT=5.0)
     def test_burst_does_not_exceed_max_connections(self):
         """Hold pool slots concurrently; warm sockets must stay at or under the cap."""
-        client = RedisClient._make_client(decode_responses=True)
+        client = RedisClient._init_client(decode_responses=True)
         pool = client.connection_pool
         self.assertEqual(pool.max_connections, 5)
 
