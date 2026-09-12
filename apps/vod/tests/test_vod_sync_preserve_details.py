@@ -393,6 +393,7 @@ class VODMovieIsAdultSyncTests(TestCase):
 class VODDuplicateAcrossCategoriesBatchTests(TestCase):
     """Same canonical movie/series under multiple stream/series IDs in one
     batch must get a relation per ID; identical IDs still coalesce to one.
+    Blank Movie/Series fields are filled from later occurrences.
     """
 
     def setUp(self):
@@ -520,4 +521,81 @@ class VODDuplicateAcrossCategoriesBatchTests(TestCase):
                 m3u_account=self.account, external_series_id="6003"
             ).count(),
             1,
+        )
+
+    def test_later_movie_occurrence_fills_blank_description(self):
+        process_movie_batch(
+            self.account,
+            [
+                {"stream_id": 5004, "name": "Sparse First", "category_id": "10", "tmdb_id": "800003"},
+                {
+                    "stream_id": 5005,
+                    "name": "Sparse First",
+                    "category_id": "11",
+                    "tmdb_id": "800003",
+                    "description": "Full plot from second category",
+                },
+            ],
+            self.movie_categories,
+            self.movie_relations,
+            scan_start_time=timezone.now(),
+        )
+
+        movie = Movie.objects.get(tmdb_id="800003")
+        self.assertEqual(movie.description, "Full plot from second category")
+        self.assertEqual(
+            M3UMovieRelation.objects.filter(m3u_account=self.account, movie=movie).count(),
+            2,
+        )
+
+    def test_later_movie_occurrence_does_not_overwrite_existing_description(self):
+        process_movie_batch(
+            self.account,
+            [
+                {
+                    "stream_id": 5006,
+                    "name": "Described First",
+                    "category_id": "10",
+                    "tmdb_id": "800004",
+                    "description": "Keep this",
+                },
+                {
+                    "stream_id": 5007,
+                    "name": "Described First",
+                    "category_id": "11",
+                    "tmdb_id": "800004",
+                    "description": "Ignore this",
+                },
+            ],
+            self.movie_categories,
+            self.movie_relations,
+            scan_start_time=timezone.now(),
+        )
+
+        movie = Movie.objects.get(tmdb_id="800004")
+        self.assertEqual(movie.description, "Keep this")
+
+    def test_later_series_occurrence_fills_blank_description(self):
+        process_series_batch(
+            self.account,
+            [
+                {"series_id": 6004, "name": "Sparse Series", "category_id": "20", "tmdb_id": "800103"},
+                {
+                    "series_id": 6005,
+                    "name": "Sparse Series",
+                    "category_id": "21",
+                    "tmdb_id": "800103",
+                    "plot": "Series plot from second category",
+                },
+            ],
+            self.series_categories,
+            self.series_relations,
+            scan_start_time=timezone.now(),
+        )
+
+        series = Series.objects.get(tmdb_id="800103")
+        self.assertEqual(series.description, "Series plot from second category")
+        self.assertEqual(
+            M3USeriesRelation.objects.filter(m3u_account=self.account, series=series).count(),
+            2,
         )
