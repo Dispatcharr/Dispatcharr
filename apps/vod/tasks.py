@@ -433,11 +433,16 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
     for movie_data in batch:
         try:
             stream_id = str(movie_data.get('stream_id'))
-            # A null or blank name reaches Movie.name (NOT NULL) and, because the
-            # batch is created in one transaction.atomic() block, one such row rolls
-            # back the whole batch. Extend the existing 'Unknown' default (which only
-            # fired for a missing key) to cover null/blank names too. (#1586)
-            name = str(movie_data.get('name') or '').strip() or 'Unknown'
+            # Skip blank names: Movie.name is NOT NULL, and one null in this
+            # atomic batch would roll back every other row.
+            name = str(movie_data.get('name') or '').strip()
+            if not name:
+                logger.warning(
+                    "Skipping movie with blank name (stream_id=%s, account=%s)",
+                    stream_id,
+                    account.id,
+                )
+                continue
 
             # Get category with proper error handling
             category = None
@@ -810,10 +815,16 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
     for series_data in batch:
         try:
             series_id = str(series_data.get('series_id'))
-            # See process_movie_batch: coerce a null/blank name to the existing
-            # 'Unknown' default so one bad row cannot roll back the whole atomic
-            # batch via the NOT NULL constraint on Series.name. (#1586)
-            name = str(series_data.get('name') or '').strip() or 'Unknown'
+            # Skip blank names: Series.name is NOT NULL, and one null in this
+            # atomic batch would roll back every other row.
+            name = str(series_data.get('name') or '').strip()
+            if not name:
+                logger.warning(
+                    "Skipping series with blank name (series_id=%s, account=%s)",
+                    series_id,
+                    account.id,
+                )
+                continue
 
             # Get category with proper error handling
             category = None
