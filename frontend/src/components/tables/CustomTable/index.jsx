@@ -209,178 +209,174 @@ const useTable = ({
     [clearPairedResizeMetrics]
   );
 
-  const onColumnResizePreview = useCallback(
-    (header, event) => {
-      clearPairedResizeMetrics();
-      resizePreviewCleanupRef.current?.();
-      const tableElement =
-        event.currentTarget.closest('[data-table-id]') ||
-        event.currentTarget.closest('.divTable');
-      if (!tableElement) return;
-      const scrollElement = tableElement;
+  const onColumnResizePreview = useCallback((header, event) => {
+    clearPairedResizeMetrics();
+    resizePreviewCleanupRef.current?.();
+    const tableElement =
+      event.currentTarget.closest('[data-table-id]') ||
+      event.currentTarget.closest('.divTable');
+    const bodyElement = tableElement?.querySelector('.tbody');
+    if (!tableElement || !bodyElement) return;
+    const scrollElement = tableElement;
 
-      const getClientX = (pointerEvent) =>
-        pointerEvent.touches?.[0]?.clientX ?? pointerEvent.clientX;
-      const clamp = (value, minimum, maximum) =>
-        Math.max(minimum, Math.min(value, maximum));
-      const sizeVarName = (id) => `--header-${id}-size`;
-      const ratioVarName = (id) => `--header-${id}-ratio`;
-      const startX = getClientX(event);
-      const columnId = header.column.id;
-      const usesRatio = Boolean(header.column.columnDef.flexRatio);
-
-      const pairedIndex = pairedColumnSizing?.findIndex(
-        ({ id }) => id === columnId
+    const getClientX = (pointerEvent) =>
+      pointerEvent.touches?.[0]?.clientX ?? pointerEvent.clientX;
+    const clamp = (value, minimum, maximum) =>
+      Math.max(minimum, Math.min(value, maximum));
+    const startX = getClientX(event);
+    const columnId = header.column.id;
+    const bodyBounds = scrollElement.getBoundingClientRect();
+    const visibleRows = Array.from(
+      bodyElement.querySelectorAll('.native-table-row')
+    )
+      .filter((row) => {
+        const bounds = row.getBoundingClientRect();
+        return bounds.bottom > bodyBounds.top && bounds.top < bodyBounds.bottom;
+      });
+    const getPreviewCells = (id) => {
+      const headerCell = tableElement.querySelector(
+        `.thead [data-column-id="${id}"]`
       );
-      const pairedColumn =
-        pairedIndex >= 0 ? pairedColumnSizing[pairedIndex] : null;
-      const pairedNeighbor = pairedColumnSizing?.[pairedIndex + 1];
-      let pairedMetrics;
-      if (pairedColumn && pairedNeighbor) {
-        const pairedSizing = pairedColumnSizing.map(
-          (column) => columnSizing[column.id] ?? column.size
-        );
-        const totalRatio = pairedSizing.reduce(
-          (total, size) => total + size,
-          0
-        );
-        const totalWidth = pairedColumnSizing.reduce(
-          (total, column) =>
-            total +
-            (tableElement
-              .querySelector(`.thead [data-column-id="${column.id}"]`)
-              ?.getBoundingClientRect().width || 0),
-          0
-        );
-        const ratioPerPixel = totalWidth ? totalRatio / totalWidth : 1;
-        const getMinimum = (column) =>
-          column.minRatio != null
-            ? column.minRatio * totalRatio
-            : column.minSize * ratioPerPixel;
-        const getMaximum = (column) =>
-          column.maxRatio != null
-            ? column.maxRatio * totalRatio
-            : (column.maxSize ?? Infinity) * ratioPerPixel;
-        const activeRatio = pairedSizing[pairedIndex];
-        const neighborRatio = pairedSizing[pairedIndex + 1];
+      return [
+        headerCell,
+        ...visibleRows.flatMap((row) =>
+          Array.from(row.querySelectorAll(`[data-column-id="${id}"]`))
+        ),
+      ].filter(Boolean);
+    };
+    const pairedIndex = pairedColumnSizing?.findIndex(({ id }) => id === columnId);
+    const pairedColumn =
+      pairedIndex >= 0 ? pairedColumnSizing[pairedIndex] : null;
+    const pairedNeighbor = pairedColumnSizing?.[pairedIndex + 1];
+    let pairedMetrics;
+    if (pairedColumn && pairedNeighbor) {
+      const pairedSizing = pairedColumnSizing.map(
+        (column) => columnSizing[column.id] ?? column.size
+      );
+      const totalRatio = pairedSizing.reduce((total, size) => total + size, 0);
+      const totalWidth = pairedColumnSizing.reduce(
+        (total, column) =>
+          total +
+          (tableElement.querySelector(
+            `.thead [data-column-id="${column.id}"]`
+          )?.getBoundingClientRect().width || 0),
+        0
+      );
+      const ratioPerPixel = totalWidth ? totalRatio / totalWidth : 1;
+      const getMinimum = (column) =>
+        column.minRatio != null
+          ? column.minRatio * totalRatio
+          : column.minSize * ratioPerPixel;
+      const getMaximum = (column) =>
+        column.maxRatio != null
+          ? column.maxRatio * totalRatio
+          : (column.maxSize ?? Infinity) * ratioPerPixel;
+      const activeRatio = pairedSizing[pairedIndex];
+      const neighborRatio = pairedSizing[pairedIndex + 1];
 
-        pairedMetrics = {
-          activeRatio,
-          neighborRatio,
-          ratioPerPixel,
-          maxGrowth: Math.min(
-            getMaximum(pairedColumn) - activeRatio,
-            neighborRatio - getMinimum(pairedNeighbor)
-          ),
-          maxShrink: Math.min(
-            activeRatio - getMinimum(pairedColumn),
-            getMaximum(pairedNeighbor) - neighborRatio
-          ),
-        };
+      pairedMetrics = {
+        activeRatio,
+        neighborRatio,
+        ratioPerPixel,
+        maxGrowth: Math.min(
+          getMaximum(pairedColumn) - activeRatio,
+          neighborRatio - getMinimum(pairedNeighbor)
+        ),
+        maxShrink: Math.min(
+          activeRatio - getMinimum(pairedColumn),
+          getMaximum(pairedNeighbor) - neighborRatio
+        ),
+      };
+    }
+
+    const pairedCells = pairedMetrics && {
+      active: getPreviewCells(pairedColumn.id),
+      neighbor: getPreviewCells(pairedNeighbor.id),
+    };
+    const cells = pairedCells
+      ? [...pairedCells.active, ...pairedCells.neighbor]
+      : getPreviewCells(columnId);
+    const originalStyles = cells.map((cell) => ({
+      cell,
+      flex: cell.style.flex,
+      width: cell.style.width,
+      maxWidth: cell.style.maxWidth,
+    }));
+    const initialScrollTop = scrollElement.scrollTop;
+    let pendingX = startX;
+
+    const updatePreview = () => {
+      const pixelDelta = pendingX - startX;
+      if (pairedMetrics) {
+        const delta = clamp(
+          pixelDelta * pairedMetrics.ratioPerPixel,
+          -pairedMetrics.maxShrink,
+          pairedMetrics.maxGrowth
+        );
+        for (const cell of pairedCells.active) {
+          cell.style.flex = `${pairedMetrics.activeRatio + delta} 1 0%`;
+        }
+        for (const cell of pairedCells.neighbor) {
+          cell.style.flex = `${pairedMetrics.neighborRatio - delta} 1 0%`;
+        }
+        return;
       }
 
-      const previewColumnIds = pairedMetrics
-        ? [pairedColumn.id, pairedNeighbor.id]
-        : [columnId];
-      const originalVars = previewColumnIds.map((id) => ({
-        id,
-        size: tableElement.style.getPropertyValue(sizeVarName(id)),
-        ratio: tableElement.style.getPropertyValue(ratioVarName(id)),
-      }));
-      const setPreviewSize = (id, size, asRatio) => {
-        if (asRatio) {
-          tableElement.style.setProperty(ratioVarName(id), String(size));
-          return;
+      const size = clamp(
+        header.getSize() + pixelDelta,
+        header.column.columnDef.minSize ?? 0,
+        header.column.columnDef.maxSize ?? Infinity
+      );
+      for (const cell of cells) {
+        if (header.column.columnDef.flexRatio) {
+          cell.style.flex = `${size} 1 0%`;
+        } else {
+          cell.style.flex = `0 0 ${size}px`;
+          cell.style.width = `${size}px`;
+          cell.style.maxWidth = `${size}px`;
         }
-        tableElement.style.setProperty(sizeVarName(id), `${size}px`);
-      };
+      }
+    };
+    const onMove = (moveEvent) => {
+      moveEvent.preventDefault();
+      pendingX = getClientX(moveEvent);
+      updatePreview();
+    };
+    const preventScroll = (scrollEvent) => scrollEvent.preventDefault();
+    const restoreScrollPosition = () => {
+      scrollElement.scrollTop = initialScrollTop;
+    };
+    let isActive = true;
+    const cleanup = () => {
+      if (!isActive) return;
+      isActive = false;
+      for (const { cell, flex, width, maxWidth } of originalStyles) {
+        cell.style.flex = flex;
+        cell.style.width = width;
+        cell.style.maxWidth = maxWidth;
+      }
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('touchmove', onMove);
+      window.removeEventListener('wheel', preventScroll);
+      window.removeEventListener('blur', cleanup);
+      scrollElement.removeEventListener('scroll', restoreScrollPosition);
+      window.removeEventListener('mouseup', onEnd);
+      window.removeEventListener('touchend', onEnd);
+      window.removeEventListener('touchcancel', onEnd);
+      resizePreviewCleanupRef.current = null;
+    };
+    const onEnd = () => cleanup();
 
-      const initialScrollTop = scrollElement.scrollTop;
-      let pendingX = startX;
-
-      const updatePreview = () => {
-        const pixelDelta = pendingX - startX;
-        if (pairedMetrics) {
-          const delta = clamp(
-            pixelDelta * pairedMetrics.ratioPerPixel,
-            -pairedMetrics.maxShrink,
-            pairedMetrics.maxGrowth
-          );
-          setPreviewSize(
-            pairedColumn.id,
-            pairedMetrics.activeRatio + delta,
-            true
-          );
-          setPreviewSize(
-            pairedNeighbor.id,
-            pairedMetrics.neighborRatio - delta,
-            true
-          );
-          return;
-        }
-
-        const size = clamp(
-          header.getSize() + pixelDelta,
-          header.column.columnDef.minSize ?? 0,
-          header.column.columnDef.maxSize ?? Infinity
-        );
-        setPreviewSize(columnId, size, usesRatio);
-      };
-      const onMove = (moveEvent) => {
-        moveEvent.preventDefault();
-        pendingX = getClientX(moveEvent);
-        updatePreview();
-      };
-      const preventScroll = (scrollEvent) => scrollEvent.preventDefault();
-      const restoreScrollPosition = () => {
-        scrollElement.scrollTop = initialScrollTop;
-      };
-      let isActive = true;
-      const restoreOriginalVars = () => {
-        for (const { id, size, ratio } of originalVars) {
-          if (size) {
-            tableElement.style.setProperty(sizeVarName(id), size);
-          } else {
-            tableElement.style.removeProperty(sizeVarName(id));
-          }
-          if (ratio) {
-            tableElement.style.setProperty(ratioVarName(id), ratio);
-          } else {
-            tableElement.style.removeProperty(ratioVarName(id));
-          }
-        }
-      };
-      const teardown = () => {
-        if (!isActive) return;
-        isActive = false;
-        window.removeEventListener('mousemove', onMove);
-        window.removeEventListener('touchmove', onMove);
-        window.removeEventListener('wheel', preventScroll);
-        window.removeEventListener('blur', onCancel);
-        scrollElement.removeEventListener('scroll', restoreScrollPosition);
-        window.removeEventListener('mouseup', onCommit);
-        window.removeEventListener('touchend', onCommit);
-        window.removeEventListener('touchcancel', onCancel);
-        resizePreviewCleanupRef.current = null;
-      };
-      const onCommit = () => teardown();
-      const onCancel = () => {
-        restoreOriginalVars();
-        teardown();
-      };
-
-      window.addEventListener('mousemove', onMove);
-      window.addEventListener('touchmove', onMove, { passive: false });
-      window.addEventListener('wheel', preventScroll, { passive: false });
-      scrollElement.addEventListener('scroll', restoreScrollPosition);
-      window.addEventListener('mouseup', onCommit, { once: true });
-      window.addEventListener('touchend', onCommit, { once: true });
-      window.addEventListener('touchcancel', onCancel, { once: true });
-      window.addEventListener('blur', onCancel, { once: true });
-      resizePreviewCleanupRef.current = onCancel;
-    },
-    [clearPairedResizeMetrics, columnSizing, pairedColumnSizing]
-  );
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('touchmove', onMove, { passive: false });
+    window.addEventListener('wheel', preventScroll, { passive: false });
+    scrollElement.addEventListener('scroll', restoreScrollPosition);
+    window.addEventListener('mouseup', onEnd, { once: true });
+    window.addEventListener('touchend', onEnd, { once: true });
+    window.addEventListener('touchcancel', onEnd, { once: true });
+    window.addEventListener('blur', cleanup, { once: true });
+    resizePreviewCleanupRef.current = cleanup;
+  }, [clearPairedResizeMetrics, columnSizing, pairedColumnSizing]);
 
   const table = useReactTable({
     defaultColumn: {
