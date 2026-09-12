@@ -492,63 +492,34 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
             else:
                 movie_key = f"name_{name}_{year or 'None'}"
 
-            # Skip duplicates in this batch
+            # Reuse props for this movie_key, but keep every distinct stream_id
+            # so each still gets its own relation (same stream_id coalesces).
             if movie_key in movie_keys:
+                movie_keys[movie_key]['occurrences'].setdefault(stream_id, {
+                    'category': category,
+                    'movie_data': movie_data,
+                })
+                incoming_props, incoming_logo = build_movie_list_props(
+                    movie_data, name, year, tmdb_id, imdb_id,
+                )
+                merge_blank_vod_list_props(movie_keys[movie_key]['props'], incoming_props)
+                if not movie_keys[movie_key].get('logo_url') and incoming_logo:
+                    movie_keys[movie_key]['logo_url'] = incoming_logo
                 continue
 
-            # Prepare movie properties
-            description = movie_data.get('description') or movie_data.get('plot') or ''
-            rating = normalize_rating(movie_data.get('rating') or movie_data.get('vote_average'))
-            genre = movie_data.get('genre') or movie_data.get('category_name') or ''
-            duration_secs = extract_duration_from_data(movie_data)
-            trailer_raw = movie_data.get('trailer') or movie_data.get('youtube_trailer') or ''
-            trailer = extract_string_from_array_or_string(trailer_raw) if trailer_raw else None
-            logo_url = movie_data.get('stream_icon') or ''
-
-            director = extract_string_from_array_or_string(
-                movie_data.get('director') or ''
+            movie_props, logo_url = build_movie_list_props(
+                movie_data, name, year, tmdb_id, imdb_id,
             )
-            actors_raw = movie_data.get('actors') or movie_data.get('cast') or ''
-            if isinstance(actors_raw, list):
-                actors = ', '.join(s.strip() for s in actors_raw if s and str(s).strip()) or None
-            else:
-                actors = actors_raw.strip() if actors_raw else None
-            release_date = movie_data.get('release_date') or movie_data.get('releasedate') or ''
-
-            custom_props = {}
-            if trailer:
-                custom_props['youtube_trailer'] = trailer
-            if director:
-                custom_props['director'] = director
-            if actors:
-                custom_props['actors'] = actors
-            if release_date:
-                custom_props['release_date'] = release_date
-
-            movie_props = {
-                'name': name,
-                'year': year,
-                'tmdb_id': tmdb_id,
-                'imdb_id': imdb_id,
-                'description': description,
-                'rating': rating,
-                'genre': genre,
-                'duration_secs': duration_secs,
-                'custom_properties': custom_props or None,
-            }
-            # Only set is_adult when the provider actually reports it. Movies are
-            # shared across providers (matched by TMDB/IMDB/name+year), and many
-            # providers omit this key entirely; defaulting it to False here would
-            # let a sparse provider row silently clear a flag another provider set.
-            if 'is_adult' in movie_data:
-                movie_props['is_adult'] = parse_is_adult(movie_data['is_adult'])
 
             movie_keys[movie_key] = {
                 'props': movie_props,
-                'stream_id': stream_id,
-                'category': category,
-                'movie_data': movie_data,
-                'logo_url': logo_url  # Keep logo URL for later processing
+                'logo_url': logo_url,  # Keep logo URL for later processing
+                'occurrences': {
+                    stream_id: {
+                        'category': category,
+                        'movie_data': movie_data,
+                    }
+                },
             }
 
         except Exception as e:
@@ -619,7 +590,11 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
             existing_movies[f"name_{key_tuple[0]}_{key_tuple[1] or 'None'}"] = movie
 
     # Get existing relations
-    stream_ids = [data['stream_id'] for data in movie_keys.values()]
+    stream_ids = [
+        stream_id
+        for data in movie_keys.values()
+        for stream_id in data['occurrences']
+    ]
     existing_relations = {
         rel.stream_id: rel for rel in M3UMovieRelation.objects.filter(
             m3u_account=account,
@@ -630,9 +605,6 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
     # Process each movie
     for movie_key, data in movie_keys.items():
         movie_props = data['props']
-        stream_id = data['stream_id']
-        category = data['category']
-        movie_data = data['movie_data']
         logo_url = data.get('logo_url')
 
         if movie_key in existing_movies:
@@ -689,37 +661,40 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
 
             movies_to_create.append(movie)
 
-        # Handle relation
-        if stream_id in existing_relations:
-            # Update existing relation
-            relation = existing_relations[stream_id]
-            relation.movie = movie
-            relation.category = category
-            relation.container_extension = movie_data.get('container_extension', 'mp4')
-            # Merge so list sync updates basic_data without dropping detail
-            # payloads or detailed_fetched / related flags.
-            existing_rel_cp = relation.custom_properties or {}
-            relation.custom_properties = {
-                **existing_rel_cp,
-                'basic_data': movie_data,
-            }
-            relation.last_seen = scan_start_time or timezone.now()  # Mark as seen during this scan
-            relations_to_update.append(relation)
-        else:
-            # Create new relation
-            relation = M3UMovieRelation(
-                m3u_account=account,
-                movie=movie,
-                category=category,
-                stream_id=stream_id,
-                container_extension=movie_data.get('container_extension', 'mp4'),
-                custom_properties={
+        for stream_id, occ in data['occurrences'].items():
+            category = occ['category']
+            movie_data = occ['movie_data']
+
+            if stream_id in existing_relations:
+                # Update existing relation
+                relation = existing_relations[stream_id]
+                relation.movie = movie
+                relation.category = category
+                relation.container_extension = movie_data.get('container_extension', 'mp4')
+                # Merge so list sync updates basic_data without dropping detail
+                # payloads or detailed_fetched / related flags.
+                existing_rel_cp = relation.custom_properties or {}
+                relation.custom_properties = {
+                    **existing_rel_cp,
                     'basic_data': movie_data,
-                    'detailed_fetched': False
-                },
-                last_seen=scan_start_time or timezone.now()  # Mark as seen during this scan
-            )
-            relations_to_create.append(relation)
+                }
+                relation.last_seen = scan_start_time or timezone.now()  # Mark as seen during this scan
+                relations_to_update.append(relation)
+            else:
+                # Create new relation
+                relation = M3UMovieRelation(
+                    m3u_account=account,
+                    movie=movie,
+                    category=category,
+                    stream_id=stream_id,
+                    container_extension=movie_data.get('container_extension', 'mp4'),
+                    custom_properties={
+                        'basic_data': movie_data,
+                        'detailed_fetched': False
+                    },
+                    last_seen=scan_start_time or timezone.now()  # Mark as seen during this scan
+                )
+                relations_to_create.append(relation)
 
     # Execute batch operations
     logger.info(f"Executing batch operations: {len(movies_to_create)} movies to create, {len(movies_to_update)} to update")
@@ -876,61 +851,34 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
             else:
                 series_key = f"name_{name}_{year or 'None'}"
 
-            # Skip duplicates in this batch
+            # Reuse props for this series_key, but keep every distinct series_id
+            # so each still gets its own relation (same series_id coalesces).
             if series_key in series_keys:
+                series_keys[series_key]['occurrences'].setdefault(series_id, {
+                    'category': category,
+                    'series_data': series_data,
+                })
+                incoming_props, incoming_logo = build_series_list_props(
+                    series_data, name, year, tmdb_id, imdb_id,
+                )
+                merge_blank_vod_list_props(series_keys[series_key]['props'], incoming_props)
+                if not series_keys[series_key].get('logo_url') and incoming_logo:
+                    series_keys[series_key]['logo_url'] = incoming_logo
                 continue
 
-            # Prepare series properties
-            description = series_data.get('plot', '')
-            rating = normalize_rating(series_data.get('rating'))
-            genre = series_data.get('genre', '')
-            logo_url = series_data.get('cover') or ''
-
-            # Extract additional metadata for custom_properties
-            additional_metadata = {}
-            for key in ['backdrop_path', 'poster_path', 'original_name', 'first_air_date', 'last_air_date',
-                       'episode_run_time', 'status', 'type', 'cast', 'director', 'country', 'language',
-                       'releaseDate', 'youtube_trailer', 'category_id', 'age', 'seasons']:
-                value = series_data.get(key)
-                if value:
-                    # For string-like fields that might be arrays, extract clean strings
-                    if key == 'cast':
-                        if isinstance(value, list):
-                            clean_value = ', '.join(s.strip() for s in value if s and str(s).strip()) or None
-                        else:
-                            clean_value = extract_string_from_array_or_string(value)
-                        if clean_value:
-                            additional_metadata[key] = clean_value
-                    elif key in ['poster_path', 'youtube_trailer', 'director']:
-                        clean_value = extract_string_from_array_or_string(value)
-                        if clean_value:
-                            additional_metadata[key] = clean_value
-                    elif key == 'backdrop_path':
-                        clean_value = extract_string_from_array_or_string(value)
-                        if clean_value:
-                            additional_metadata[key] = [clean_value]
-                    else:
-                        # For other fields, keep as-is if not null/empty
-                        if value is not None and value != '' and value != []:
-                            additional_metadata[key] = value
-
-            series_props = {
-                'name': name,
-                'year': year,
-                'tmdb_id': tmdb_id,
-                'imdb_id': imdb_id,
-                'description': description,
-                'rating': rating,
-                'genre': genre,
-                'custom_properties': additional_metadata if additional_metadata else None,
-            }
+            series_props, logo_url = build_series_list_props(
+                series_data, name, year, tmdb_id, imdb_id,
+            )
 
             series_keys[series_key] = {
                 'props': series_props,
-                'series_id': series_id,
-                'category': category,
-                'series_data': series_data,
-                'logo_url': logo_url  # Keep logo URL for later processing
+                'logo_url': logo_url,  # Keep logo URL for later processing
+                'occurrences': {
+                    series_id: {
+                        'category': category,
+                        'series_data': series_data,
+                    }
+                },
             }
 
         except Exception as e:
@@ -1001,7 +949,11 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
             existing_series[f"name_{key_tuple[0]}_{key_tuple[1] or 'None'}"] = series
 
     # Get existing relations
-    series_ids = [data['series_id'] for data in series_keys.values()]
+    series_ids = [
+        series_id
+        for data in series_keys.values()
+        for series_id in data['occurrences']
+    ]
     existing_relations = {
         rel.external_series_id: rel for rel in M3USeriesRelation.objects.filter(
             m3u_account=account,
@@ -1012,9 +964,6 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
     # Process each series
     for series_key, data in series_keys.items():
         series_props = data['props']
-        series_id = data['series_id']
-        category = data['category']
-        series_data = data['series_data']
         logo_url = data.get('logo_url')
 
         if series_key in existing_series:
@@ -1068,36 +1017,39 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
 
             series_to_create.append(series)
 
-        # Handle relation
-        if series_id in existing_relations:
-            # Update existing relation
-            relation = existing_relations[series_id]
-            relation.series = series
-            relation.category = category
-            # Merge so list sync updates basic_data without dropping detail
-            # payloads or detailed_fetched / episodes_fetched flags.
-            existing_rel_cp = relation.custom_properties or {}
-            relation.custom_properties = {
-                **existing_rel_cp,
-                'basic_data': series_data,
-            }
-            relation.last_seen = scan_start_time or timezone.now()  # Mark as seen during this scan
-            relations_to_update.append(relation)
-        else:
-            # Create new relation
-            relation = M3USeriesRelation(
-                m3u_account=account,
-                series=series,
-                category=category,
-                external_series_id=series_id,
-                custom_properties={
+        for series_id, occ in data['occurrences'].items():
+            category = occ['category']
+            series_data = occ['series_data']
+
+            if series_id in existing_relations:
+                # Update existing relation
+                relation = existing_relations[series_id]
+                relation.series = series
+                relation.category = category
+                # Merge so list sync updates basic_data without dropping detail
+                # payloads or detailed_fetched / episodes_fetched flags.
+                existing_rel_cp = relation.custom_properties or {}
+                relation.custom_properties = {
+                    **existing_rel_cp,
                     'basic_data': series_data,
-                    'detailed_fetched': False,
-                    'episodes_fetched': False
-                },
-                last_seen=scan_start_time or timezone.now()  # Mark as seen during this scan
-            )
-            relations_to_create.append(relation)
+                }
+                relation.last_seen = scan_start_time or timezone.now()  # Mark as seen during this scan
+                relations_to_update.append(relation)
+            else:
+                # Create new relation
+                relation = M3USeriesRelation(
+                    m3u_account=account,
+                    series=series,
+                    category=category,
+                    external_series_id=series_id,
+                    custom_properties={
+                        'basic_data': series_data,
+                        'detailed_fetched': False,
+                        'episodes_fetched': False
+                    },
+                    last_seen=scan_start_time or timezone.now()  # Mark as seen during this scan
+                )
+                relations_to_create.append(relation)
 
     # Execute batch operations
     logger.info(f"Executing batch operations: {len(series_to_create)} series to create, {len(series_to_update)} to update")
@@ -2210,6 +2162,119 @@ def should_apply_provider_list_field(existing_value, new_value):
     if is_blank_vod_value(new_value):
         return False
     return existing_value != new_value
+
+
+def merge_blank_vod_list_props(existing_props, incoming_props):
+    """Fill blank keys on existing_props from incoming_props (in place)."""
+    for field, value in incoming_props.items():
+        if field == 'custom_properties':
+            existing_cp = existing_props.get('custom_properties') or {}
+            incoming_cp = value or {}
+            merged = dict(existing_cp)
+            for k, v in incoming_cp.items():
+                if not is_blank_vod_value(v) and is_blank_vod_value(merged.get(k)):
+                    merged[k] = v
+            existing_props['custom_properties'] = merged or None
+        elif field not in existing_props or (
+            is_blank_vod_value(existing_props.get(field)) and not is_blank_vod_value(value)
+        ):
+            existing_props[field] = value
+
+
+def build_movie_list_props(movie_data, name, year, tmdb_id, imdb_id):
+    """Build Movie list-sync props and logo URL from a provider row."""
+    description = movie_data.get('description') or movie_data.get('plot') or ''
+    rating = normalize_rating(movie_data.get('rating') or movie_data.get('vote_average'))
+    genre = movie_data.get('genre') or movie_data.get('category_name') or ''
+    duration_secs = extract_duration_from_data(movie_data)
+    trailer_raw = movie_data.get('trailer') or movie_data.get('youtube_trailer') or ''
+    trailer = extract_string_from_array_or_string(trailer_raw) if trailer_raw else None
+    logo_url = movie_data.get('stream_icon') or ''
+
+    director = extract_string_from_array_or_string(
+        movie_data.get('director') or ''
+    )
+    actors_raw = movie_data.get('actors') or movie_data.get('cast') or ''
+    if isinstance(actors_raw, list):
+        actors = ', '.join(s.strip() for s in actors_raw if s and str(s).strip()) or None
+    else:
+        actors = actors_raw.strip() if actors_raw else None
+    release_date = movie_data.get('release_date') or movie_data.get('releasedate') or ''
+
+    custom_props = {}
+    if trailer:
+        custom_props['youtube_trailer'] = trailer
+    if director:
+        custom_props['director'] = director
+    if actors:
+        custom_props['actors'] = actors
+    if release_date:
+        custom_props['release_date'] = release_date
+
+    movie_props = {
+        'name': name,
+        'year': year,
+        'tmdb_id': tmdb_id,
+        'imdb_id': imdb_id,
+        'description': description,
+        'rating': rating,
+        'genre': genre,
+        'duration_secs': duration_secs,
+        'custom_properties': custom_props or None,
+    }
+    # Only set is_adult when the provider actually reports it. Movies are
+    # shared across providers (matched by TMDB/IMDB/name+year), and many
+    # providers omit this key entirely; defaulting it to False here would
+    # let a sparse provider row silently clear a flag another provider set.
+    if 'is_adult' in movie_data:
+        movie_props['is_adult'] = parse_is_adult(movie_data['is_adult'])
+
+    return movie_props, logo_url
+
+
+def build_series_list_props(series_data, name, year, tmdb_id, imdb_id):
+    """Build Series list-sync props and logo URL from a provider row."""
+    description = series_data.get('plot', '')
+    rating = normalize_rating(series_data.get('rating'))
+    genre = series_data.get('genre', '')
+    logo_url = series_data.get('cover') or ''
+
+    additional_metadata = {}
+    for key in ['backdrop_path', 'poster_path', 'original_name', 'first_air_date', 'last_air_date',
+               'episode_run_time', 'status', 'type', 'cast', 'director', 'country', 'language',
+               'releaseDate', 'youtube_trailer', 'category_id', 'age', 'seasons']:
+        value = series_data.get(key)
+        if value:
+            if key == 'cast':
+                if isinstance(value, list):
+                    clean_value = ', '.join(s.strip() for s in value if s and str(s).strip()) or None
+                else:
+                    clean_value = extract_string_from_array_or_string(value)
+                if clean_value:
+                    additional_metadata[key] = clean_value
+            elif key in ['poster_path', 'youtube_trailer', 'director']:
+                clean_value = extract_string_from_array_or_string(value)
+                if clean_value:
+                    additional_metadata[key] = clean_value
+            elif key == 'backdrop_path':
+                clean_value = extract_string_from_array_or_string(value)
+                if clean_value:
+                    additional_metadata[key] = [clean_value]
+            else:
+                if value is not None and value != '' and value != []:
+                    additional_metadata[key] = value
+
+    series_props = {
+        'name': name,
+        'year': year,
+        'tmdb_id': tmdb_id,
+        'imdb_id': imdb_id,
+        'description': description,
+        'rating': rating,
+        'genre': genre,
+        'custom_properties': additional_metadata if additional_metadata else None,
+    }
+    return series_props, logo_url
 
 
 @shared_task
