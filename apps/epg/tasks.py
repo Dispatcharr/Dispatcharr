@@ -105,7 +105,15 @@ def _defer_refresh_epg_data(source, force, file_defer_retry, reason):
         logger.error(f"Cannot refresh {source.name}: {msg}")
         source.status = EPGSource.STATUS_ERROR
         source.last_message = msg
-        source.save(update_fields=['status', 'last_message'])
+        _set_epg_source_status(
+            source.id,
+            EPGSource.STATUS_ERROR,
+            msg,
+            source_name=source.name,
+            notify_error=True,
+            ws_action="refresh",
+            ws_error=msg,
+        )
         return True
     logger.info(
         f"Deferring refresh for {source.name} for {_EPG_REFRESH_DEFER_SECONDS}s: {reason}"
@@ -170,6 +178,7 @@ def _set_epg_source_status(
     status,
     last_message=None,
     *,
+    source_name=None,
     notify_error=False,
     ws_action="refresh",
     ws_error=None,
@@ -182,12 +191,19 @@ def _set_epg_source_status(
     try:
         EPGSource.objects.filter(id=source_id).update(**update)
         if notify_error:
+            error_msg = ws_error or last_message
             send_epg_update(
                 source_id,
                 ws_action,
                 100,
                 status="error",
-                error=ws_error or last_message,
+                error=error_msg,
+            )
+            name = source_name or str(source_id)
+            log_system_event(
+                event_type="epg_error",
+                source_name=name,
+                message=error_msg,
             )
     except Exception as e:
         logger.error(
@@ -199,12 +215,12 @@ def _ensure_epg_refresh_terminal_status(source_id):
     """Mark refresh as failed when the task exits while still in progress."""
     _release_task_db_connection()
     try:
-        current_status = (
+        source_data = (
             EPGSource.objects.filter(id=source_id)
-            .values_list("status", flat=True)
+            .values("status", "name")
             .first()
         )
-        if current_status in _NON_TERMINAL_REFRESH_STATUSES:
+        if source_data and source_data.get("status") in _NON_TERMINAL_REFRESH_STATUSES:
             message = "Refresh did not complete successfully"
             EPGSource.objects.filter(id=source_id).update(
                 status=EPGSource.STATUS_ERROR,
@@ -212,6 +228,12 @@ def _ensure_epg_refresh_terminal_status(source_id):
             )
             send_epg_update(
                 source_id, "refresh", 100, status="error", error=message
+            )
+            source_name = source_data.get("name") or str(source_id)
+            log_system_event(
+                event_type="epg_error",
+                source_name=source_name,
+                message=message,
             )
     except Exception as e:
         logger.debug(
@@ -570,10 +592,18 @@ def fetch_xmltv(source):
     # Handle cases where no URL is provided and no valid file path exists
     if not source.url:
         # Update source status for missing URL
+        msg = "No URL provided and no valid local file exists"
         source.status = 'error'
-        source.last_message = "No URL provided and no valid local file exists"
-        source.save(update_fields=['status', 'last_message'])
-        send_epg_update(source.id, "downloading", 100, status="error", error="No URL provided and no valid local file exists")
+        source.last_message = msg
+        _set_epg_source_status(
+            source.id,
+            EPGSource.STATUS_ERROR,
+            msg,
+            source_name=source.name,
+            notify_error=True,
+            ws_action="downloading",
+            ws_error=msg,
+        )
         return False
 
     logger.info(f"Fetching XMLTV data from source: {source.name}")
@@ -607,10 +637,9 @@ def fetch_xmltv(source):
             # Handle 404 specifically
             if response.status_code == 404:
                 logger.error(f"EPG URL not found (404): {source.url}")
-                # Update status to error in the database
+                msg = f"EPG source '{source.name}' returned 404 error - will retry on next scheduled run"
                 source.status = 'error'
-                source.last_message = f"EPG source '{source.name}' returned 404 error - will retry on next scheduled run"
-                source.save(update_fields=['status', 'last_message'])
+                source.last_message = msg
 
                 # Notify users through the WebSocket about the EPG fetch failure
                 channel_layer = get_channel_layer()
@@ -624,23 +653,27 @@ def fetch_xmltv(source):
                             "source_id": source.id,
                             "source_name": source.name,
                             "error_code": 404,
-                            "message": f"EPG source '{source.name}' returned 404 error - will retry on next scheduled run"
+                            "message": msg,
                         }
                     }
                 )
-                # Ensure we update the download progress to 100 with error status
-                send_epg_update(source.id, "downloading", 100, status="error", error="URL not found (404)")
+                _set_epg_source_status(
+                    source.id,
+                    EPGSource.STATUS_ERROR,
+                    msg,
+                    source_name=source.name,
+                    notify_error=True,
+                    ws_action="downloading",
+                    ws_error="URL not found (404)",
+                )
                 return False
 
             # For all other error status codes
             if response.status_code >= 400:
                 error_message = f"HTTP error {response.status_code}"
                 user_message = f"EPG source '{source.name}' encountered HTTP error {response.status_code}"
-
-                # Update status to error in the database
                 source.status = 'error'
                 source.last_message = user_message
-                source.save(update_fields=['status', 'last_message'])
 
                 # Notify users through the WebSocket
                 channel_layer = get_channel_layer()
@@ -658,8 +691,15 @@ def fetch_xmltv(source):
                         }
                     }
                 )
-                # Update download progress
-                send_epg_update(source.id, "downloading", 100, status="error", error=user_message)
+                _set_epg_source_status(
+                    source.id,
+                    EPGSource.STATUS_ERROR,
+                    user_message,
+                    source_name=source.name,
+                    notify_error=True,
+                    ws_action="downloading",
+                    ws_error=user_message,
+                )
                 return False
 
             response.raise_for_status()
@@ -832,10 +872,8 @@ def fetch_xmltv(source):
         elif status_code >= 500:
             user_message = f"EPG source '{source.name}' server error (HTTP {status_code}) - will retry later"
 
-        # Update source status to error with the error message
         source.status = 'error'
         source.last_message = user_message
-        source.save(update_fields=['status', 'last_message'])
 
         # Notify users through the WebSocket about the EPG fetch failure
         channel_layer = get_channel_layer()
@@ -855,8 +893,15 @@ def fetch_xmltv(source):
             }
         )
 
-        # Ensure we update the download progress to 100 with error status
-        send_epg_update(source.id, "downloading", 100, status="error", error=user_message)
+        _set_epg_source_status(
+            source.id,
+            EPGSource.STATUS_ERROR,
+            user_message,
+            source_name=source.name,
+            notify_error=True,
+            ws_action="downloading",
+            ws_error=user_message,
+        )
         return False
     except requests.exceptions.ConnectionError as e:
         # Handle connection errors separately
@@ -864,10 +909,8 @@ def fetch_xmltv(source):
         user_message = f"Connection error: Unable to connect to EPG source '{source.name}'"
         logger.error(f"Connection error fetching XMLTV from {source.name}: {e}", exc_info=True)
 
-        # Update source status
         source.status = 'error'
         source.last_message = user_message
-        source.save(update_fields=['status', 'last_message'])
 
         # Send notifications
         channel_layer = get_channel_layer()
@@ -885,7 +928,15 @@ def fetch_xmltv(source):
                 }
             }
         )
-        send_epg_update(source.id, "downloading", 100, status="error", error=user_message)
+        _set_epg_source_status(
+            source.id,
+            EPGSource.STATUS_ERROR,
+            user_message,
+            source_name=source.name,
+            notify_error=True,
+            ws_action="downloading",
+            ws_error=user_message,
+        )
         return False
     except requests.exceptions.Timeout as e:
         # Handle timeout errors specifically
@@ -893,25 +944,36 @@ def fetch_xmltv(source):
         user_message = f"Timeout error: EPG source '{source.name}' took too long to respond"
         logger.error(f"Timeout error fetching XMLTV from {source.name}: {e}", exc_info=True)
 
-        # Update source status
         source.status = 'error'
         source.last_message = user_message
-        source.save(update_fields=['status', 'last_message'])
 
-        # Send notifications
-        send_epg_update(source.id, "downloading", 100, status="error", error=user_message)
+        _set_epg_source_status(
+            source.id,
+            EPGSource.STATUS_ERROR,
+            user_message,
+            source_name=source.name,
+            notify_error=True,
+            ws_action="downloading",
+            ws_error=user_message,
+        )
         return False
     except Exception as e:
         error_message = str(e)
         logger.error(f"Error fetching XMLTV from {source.name}: {e}", exc_info=True)
 
-        # Update source status for general exceptions too
+        msg = f"Error: {error_message}"
         source.status = 'error'
-        source.last_message = f"Error: {error_message}"
-        source.save(update_fields=['status', 'last_message'])
+        source.last_message = msg
 
-        # Ensure we update the download progress to 100 with error status
-        send_epg_update(source.id, "downloading", 100, status="error", error=f"Error: {error_message}")
+        _set_epg_source_status(
+            source.id,
+            EPGSource.STATUS_ERROR,
+            msg,
+            source_name=source.name,
+            notify_error=True,
+            ws_action="downloading",
+            ws_error=msg,
+        )
         return False
 
 
@@ -1141,38 +1203,40 @@ def parse_channels_only(source):
                 # Only proceed if fetch was successful AND file exists
                 if not fetch_success:
                     logger.error(f"Failed to fetch EPG data from URL: {source.url}")
-                    # Update status to error
-                    source.status = 'error'
-                    source.last_message = f"Failed to fetch EPG data from URL"
-                    source.save(update_fields=['status', 'last_message'])
-                    # Send error notification
-                    send_epg_update(source.id, "parsing_channels", 100, status="error", error="Failed to fetch EPG data")
                     return False
 
                 # Verify the file was downloaded successfully
                 if not os.path.exists(source.file_path):
                     logger.error(f"Failed to fetch EPG data, file still missing at: {source.file_path}")
-                    # Update status to error
+                    msg = "Failed to fetch EPG data, file missing after download"
                     source.status = 'error'
-                    source.last_message = f"Failed to fetch EPG data, file missing after download"
-                    source.save(update_fields=['status', 'last_message'])
-                    send_epg_update(source.id, "parsing_channels", 100, status="error", error="File not found after download")
+                    source.last_message = msg
+                    _set_epg_source_status(
+                        source.id,
+                        EPGSource.STATUS_ERROR,
+                        msg,
+                        source_name=source.name,
+                        notify_error=True,
+                        ws_action="parsing_channels",
+                        ws_error="File not found after download",
+                    )
                     return False
 
                 # Update file_path with the new location
                 file_path = source.file_path
             else:
                 logger.error(f"No URL provided for EPG source {source.name}, cannot fetch new data")
-                # Update status to error
+                msg = "No URL provided, cannot fetch EPG data"
                 source.status = 'error'
-                source.last_message = f"No URL provided, cannot fetch EPG data"
-                source.save(update_fields=['status', 'last_message'])
-                send_epg_update(
+                source.last_message = msg
+                _set_epg_source_status(
                     source.id,
-                    "parsing_channels",
-                    100,
-                    status="error",
-                    error="No URL provided",
+                    EPGSource.STATUS_ERROR,
+                    msg,
+                    source_name=source.name,
+                    notify_error=True,
+                    ws_action="parsing_channels",
+                    ws_error="No URL provided",
                 )
                 return False
 
@@ -1425,11 +1489,18 @@ def parse_channels_only(source):
 
         except (etree.XMLSyntaxError, Exception) as xml_error:
             logger.error(f"[parse_channels_only] XML parsing failed: {xml_error}")
-            # Update status to error
+            error_msg = f"Error parsing XML file: {str(xml_error)}"
             source.status = 'error'
-            source.last_message = f"Error parsing XML file: {str(xml_error)}"
-            source.save(update_fields=['status', 'last_message'])
-            send_epg_update(source.id, "parsing_channels", 100, status="error", error=str(xml_error))
+            source.last_message = error_msg
+            _set_epg_source_status(
+                source.id,
+                EPGSource.STATUS_ERROR,
+                error_msg,
+                source_name=source.name,
+                notify_error=True,
+                ws_action="parsing_channels",
+                ws_error=str(xml_error),
+            )
             return False
         if process:
             logger.info(f"[parse_channels_only] Processed {processed_channels} channels current memory: {process.memory_info().rss / 1024 / 1024:.2f} MB")
@@ -1494,19 +1565,33 @@ def parse_channels_only(source):
 
     except FileNotFoundError:
         logger.error(f"EPG file not found at: {file_path}")
-        # Update status to error
+        msg = f"EPG file not found: {file_path}"
         source.status = 'error'
-        source.last_message = f"EPG file not found: {file_path}"
-        source.save(update_fields=['status', 'last_message'])
-        send_epg_update(source.id, "parsing_channels", 100, status="error", error="File not found")
+        source.last_message = msg
+        _set_epg_source_status(
+            source.id,
+            EPGSource.STATUS_ERROR,
+            msg,
+            source_name=source.name,
+            notify_error=True,
+            ws_action="parsing_channels",
+            ws_error="File not found",
+        )
         return False
     except Exception as e:
         logger.error(f"Error reading EPG file {file_path}: {e}", exc_info=True)
-        # Update status to error
+        msg = f"Error parsing EPG file: {str(e)}"
         source.status = 'error'
-        source.last_message = f"Error parsing EPG file: {str(e)}"
-        source.save(update_fields=['status', 'last_message'])
-        send_epg_update(source.id, "parsing_channels", 100, status="error", error=str(e))
+        source.last_message = msg
+        _set_epg_source_status(
+            source.id,
+            EPGSource.STATUS_ERROR,
+            msg,
+            source_name=source.name,
+            notify_error=True,
+            ws_action="parsing_channels",
+            ws_error=str(e),
+        )
         return False
     finally:
         # Cleanup memory and close file
@@ -1669,22 +1754,25 @@ def parse_programs_for_tvg_id(epg_id, force=False, _defer_retry=0):
                     # If fetch was not successful or the file still doesn't exist, abort
                     if not fetch_success:
                         logger.error(f"Failed to fetch EPG data, cannot parse programs for tvg_id: {epg.tvg_id}")
-                        # Update status to error if not already set
-                        epg_source.status = 'error'
-                        epg_source.last_message = f"Failed to download EPG data, cannot parse programs"
-                        epg_source.save(update_fields=['status', 'last_message'])
-                        send_epg_update(epg_source.id, "parsing_programs", 100, status="error", error="Failed to download EPG file")
                         return
-    
+
                     # Also check if the file exists after download
                     if not os.path.exists(epg_source.file_path):
                         logger.error(f"Failed to fetch EPG data, file still missing at: {epg_source.file_path}")
+                        msg = "Failed to download EPG data, file missing after download"
                         epg_source.status = 'error'
-                        epg_source.last_message = f"Failed to download EPG data, file missing after download"
-                        epg_source.save(update_fields=['status', 'last_message'])
-                        send_epg_update(epg_source.id, "parsing_programs", 100, status="error", error="File not found after download")
+                        epg_source.last_message = msg
+                        _set_epg_source_status(
+                            epg_source.id,
+                            EPGSource.STATUS_ERROR,
+                            msg,
+                            source_name=epg_source.name,
+                            notify_error=True,
+                            ws_action="parsing_programs",
+                            ws_error="File not found after download",
+                        )
                         return
-    
+
                     # Update file_path with the new location
                     if epg_source.extracted_file_path:
                         file_path = epg_source.extracted_file_path
@@ -1692,11 +1780,18 @@ def parse_programs_for_tvg_id(epg_id, force=False, _defer_retry=0):
                         file_path = epg_source.file_path
                 else:
                     logger.error(f"No URL provided for EPG source {epg_source.name}, cannot fetch new data")
-                    # Update status to error
+                    msg = "No URL provided, cannot fetch EPG data"
                     epg_source.status = 'error'
-                    epg_source.last_message = f"No URL provided, cannot fetch EPG data"
-                    epg_source.save(update_fields=['status', 'last_message'])
-                    send_epg_update(epg_source.id, "parsing_programs", 100, status="error", error="No URL provided")
+                    epg_source.last_message = msg
+                    _set_epg_source_status(
+                        epg_source.id,
+                        EPGSource.STATUS_ERROR,
+                        msg,
+                        source_name=epg_source.name,
+                        notify_error=True,
+                        ws_action="parsing_programs",
+                        ws_error="No URL provided",
+                    )
                     return
     
             # Use streaming parsing to reduce memory usage
@@ -2169,20 +2264,24 @@ def parse_programs_for_source(epg_source, tvg_id=None):
 
                 if not fetch_success:
                     logger.error(f"Failed to fetch EPG data for source: {epg_source.name}")
-                    epg_source.status = 'error'
-                    epg_source.last_message = f"Failed to download EPG data"
-                    epg_source.save(update_fields=['status', 'last_message'])
-                    send_epg_update(epg_source.id, "parsing_programs", 100, status="error", error="Failed to download EPG file")
                     return False
 
                 # Update file_path with the new location
                 file_path = epg_source.extracted_file_path if epg_source.extracted_file_path else epg_source.file_path
             else:
                 logger.error(f"No URL provided for EPG source {epg_source.name}, cannot fetch new data")
+                msg = "No URL provided, cannot fetch EPG data"
                 epg_source.status = 'error'
-                epg_source.last_message = f"No URL provided, cannot fetch EPG data"
-                epg_source.save(update_fields=['status', 'last_message'])
-                send_epg_update(epg_source.id, "parsing_programs", 100, status="error", error="No URL provided")
+                epg_source.last_message = msg
+                _set_epg_source_status(
+                    epg_source.id,
+                    EPGSource.STATUS_ERROR,
+                    msg,
+                    source_name=epg_source.name,
+                    notify_error=True,
+                    ws_action="parsing_programs",
+                    ws_error="No URL provided",
+                )
                 return False
 
         # Stream parsed rows into a session temp table, then swap in a short transaction.
@@ -2338,28 +2437,48 @@ def parse_programs_for_source(epg_source, tvg_id=None):
                 invalidate_epg_chunk_cache()
             except Exception as db_error:
                 logger.error(f"Database error during atomic update: {db_error}", exc_info=True)
+                msg = f"Database error: {str(db_error)}"
                 epg_source.status = EPGSource.STATUS_ERROR
-                epg_source.last_message = f"Database error: {str(db_error)}"
-                epg_source.save(update_fields=['status', 'last_message'])
-                send_epg_update(
-                    epg_source.id, "parsing_programs", 100, status="error", message=str(db_error)
+                epg_source.last_message = msg
+                _set_epg_source_status(
+                    epg_source.id,
+                    EPGSource.STATUS_ERROR,
+                    msg,
+                    source_name=epg_source.name,
+                    notify_error=True,
+                    ws_action="parsing_programs",
+                    ws_error=str(db_error),
                 )
                 return False
 
         except etree.XMLSyntaxError as xml_error:
             logger.error(f"XML syntax error parsing program data: {xml_error}")
+            msg = f"XML parsing error: {str(xml_error)}"
             epg_source.status = EPGSource.STATUS_ERROR
-            epg_source.last_message = f"XML parsing error: {str(xml_error)}"
-            epg_source.save(update_fields=['status', 'last_message'])
-            send_epg_update(epg_source.id, "parsing_programs", 100, status="error", message=str(xml_error))
+            epg_source.last_message = msg
+            _set_epg_source_status(
+                epg_source.id,
+                EPGSource.STATUS_ERROR,
+                msg,
+                source_name=epg_source.name,
+                notify_error=True,
+                ws_action="parsing_programs",
+                ws_error=str(xml_error),
+            )
             return False
         except Exception as parse_error:
             logger.error(f"Error parsing programs from XML: {parse_error}", exc_info=True)
+            msg = f"Error parsing programs: {str(parse_error)}"
             epg_source.status = EPGSource.STATUS_ERROR
-            epg_source.last_message = f"Error parsing programs: {str(parse_error)}"
-            epg_source.save(update_fields=['status', 'last_message'])
-            send_epg_update(
-                epg_source.id, "parsing_programs", 100, status="error", message=str(parse_error)
+            epg_source.last_message = msg
+            _set_epg_source_status(
+                epg_source.id,
+                EPGSource.STATUS_ERROR,
+                msg,
+                source_name=epg_source.name,
+                notify_error=True,
+                ws_action="parsing_programs",
+                ws_error=str(parse_error),
             )
             return False
         finally:
@@ -2408,13 +2527,18 @@ def parse_programs_for_source(epg_source, tvg_id=None):
 
     except Exception as e:
         logger.error(f"Error in parse_programs_for_source: {e}", exc_info=True)
-        # Update status to error
+        msg = f"Error parsing programs: {str(e)}"
         epg_source.status = EPGSource.STATUS_ERROR
-        epg_source.last_message = f"Error parsing programs: {str(e)}"
-        epg_source.save(update_fields=['status', 'last_message'])
-        send_epg_update(epg_source.id, "parsing_programs", 100,
-                      status="error",
-                      message=epg_source.last_message)
+        epg_source.last_message = msg
+        _set_epg_source_status(
+            epg_source.id,
+            EPGSource.STATUS_ERROR,
+            msg,
+            source_name=epg_source.name,
+            notify_error=True,
+            ws_action="parsing_programs",
+            ws_error=msg,
+        )
         return False
     finally:
         # Final memory cleanup and tracking

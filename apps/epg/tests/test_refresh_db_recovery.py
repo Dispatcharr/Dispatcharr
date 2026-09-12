@@ -78,29 +78,57 @@ class RefreshTaskDbStartupTests(SimpleTestCase):
 
 
 class EnsureEpgTerminalStatusTests(SimpleTestCase):
+    @patch("apps.epg.tasks.log_system_event")
     @patch("apps.epg.tasks.send_epg_update")
     @patch("apps.epg.tasks._release_task_db_connection")
-    def test_marks_stuck_fetching_as_error(self, _mock_release, mock_ws):
+    def test_marks_stuck_fetching_as_error(self, _mock_release, mock_ws, mock_log_event):
         with patch("apps.epg.tasks.EPGSource") as mock_model:
             mock_model.STATUS_ERROR = "error"
             qs = MagicMock()
             mock_model.objects.filter.return_value = qs
-            qs.values_list.return_value.first.return_value = "fetching"
+            qs.values.return_value.first.return_value = {"status": "fetching", "name": "Test Source"}
 
             _ensure_epg_refresh_terminal_status(7)
 
             qs.update.assert_called_once()
             mock_ws.assert_called_once()
+            mock_log_event.assert_called_once_with(
+                event_type="epg_error",
+                source_name="Test Source",
+                message="Refresh did not complete successfully",
+            )
 
+    @patch("apps.epg.tasks.log_system_event")
     @patch("apps.epg.tasks.send_epg_update")
     @patch("apps.epg.tasks._release_task_db_connection")
-    def test_leaves_success_unchanged(self, _mock_release, mock_ws):
+    def test_marks_stuck_fetching_as_error_fallback_source_name(self, _mock_release, mock_ws, mock_log_event):
+        with patch("apps.epg.tasks.EPGSource") as mock_model:
+            mock_model.STATUS_ERROR = "error"
+            qs = MagicMock()
+            mock_model.objects.filter.return_value = qs
+            qs.values.return_value.first.return_value = {"status": "fetching", "name": ""}
+
+            _ensure_epg_refresh_terminal_status(7)
+
+            qs.update.assert_called_once()
+            mock_ws.assert_called_once()
+            mock_log_event.assert_called_once_with(
+                event_type="epg_error",
+                source_name="7",
+                message="Refresh did not complete successfully",
+            )
+
+    @patch("apps.epg.tasks.log_system_event")
+    @patch("apps.epg.tasks.send_epg_update")
+    @patch("apps.epg.tasks._release_task_db_connection")
+    def test_leaves_success_unchanged(self, _mock_release, mock_ws, mock_log_event):
         with patch("apps.epg.tasks.EPGSource") as mock_model:
             qs = MagicMock()
             mock_model.objects.filter.return_value = qs
-            qs.values_list.return_value.first.return_value = "success"
+            qs.values.return_value.first.return_value = {"status": "success", "name": "Test Source"}
 
             _ensure_epg_refresh_terminal_status(7)
 
             qs.update.assert_not_called()
             mock_ws.assert_not_called()
+            mock_log_event.assert_not_called()

@@ -49,6 +49,11 @@ SD_MAPPED_GUIDE_BATCH_DEFER_SECONDS = 90
 SD_MAPPED_GUIDE_FETCH_DEFER_MAX_RETRIES = 2
 
 
+def _set_epg_source_status(*args, **kwargs):
+    from apps.epg.tasks import _set_epg_source_status as _impl
+    return _impl(*args, **kwargs)
+
+
 class SDResponsePayloadError(requests.exceptions.RequestException):
     """SD returned HTTP 200 with an embedded JSON error code instead of data."""
 
@@ -573,8 +578,15 @@ def fetch_schedules_direct(
         logger.error(msg)
         source.status = EPGSource.STATUS_ERROR
         source.last_message = msg
-        source.save(update_fields=['status', 'last_message'])
-        send_epg_update(source.id, "refresh", 100, status="error", error=msg)
+        _set_epg_source_status(
+            source.id,
+            EPGSource.STATUS_ERROR,
+            msg,
+            source_name=source.name,
+            notify_error=True,
+            ws_action="refresh",
+            ws_error=msg,
+        )
         return
 
     # -------------------------------------------------------------------------
@@ -794,9 +806,14 @@ def fetch_schedules_direct(
         logger.error(auth.message)
         source.status = EPGSource.STATUS_ERROR
         source.last_message = auth.message
-        source.save(update_fields=['status', 'last_message'])
-        send_epg_update(
-            source.id, "refresh", 100, status="error", error=auth.message
+        _set_epg_source_status(
+            source.id,
+            EPGSource.STATUS_ERROR,
+            auth.message,
+            source_name=source.name,
+            notify_error=True,
+            ws_action="refresh",
+            ws_error=auth.message,
         )
         return
 
@@ -813,9 +830,14 @@ def fetch_schedules_direct(
         logger.error(auth.message)
         source.status = EPGSource.STATUS_ERROR
         source.last_message = auth.message
-        source.save(update_fields=['status', 'last_message'])
-        send_epg_update(
-            source.id, "refresh", 100, status="error", error=auth.message
+        _set_epg_source_status(
+            source.id,
+            EPGSource.STATUS_ERROR,
+            auth.message,
+            source_name=source.name,
+            notify_error=True,
+            ws_action="refresh",
+            ws_error=auth.message,
         )
         return
 
@@ -947,8 +969,15 @@ def fetch_schedules_direct(
             logger.error(msg, exc_info=True)
             source.status = EPGSource.STATUS_ERROR
             source.last_message = msg
-            source.save(update_fields=['status', 'last_message'])
-            send_epg_update(source.id, "refresh", 100, status="error", error=msg)
+            _set_epg_source_status(
+                source.id,
+                EPGSource.STATUS_ERROR,
+                msg,
+                source_name=source.name,
+                notify_error=True,
+                ws_action="refresh",
+                ws_error=msg,
+            )
             return
 
         # Build station metadata map: stationID -> {name, callsign, logo_url}
@@ -993,8 +1022,15 @@ def fetch_schedules_direct(
             logger.warning(msg)
             source.status = EPGSource.STATUS_ERROR
             source.last_message = msg
-            source.save(update_fields=['status', 'last_message'])
-            send_epg_update(source.id, "refresh", 100, status="error", error=msg)
+            _set_epg_source_status(
+                source.id,
+                EPGSource.STATUS_ERROR,
+                msg,
+                source_name=source.name,
+                notify_error=True,
+                ws_action="refresh",
+                ws_error=msg,
+            )
             return
 
         logger.info(f"Built station map with {len(station_map)} stations.")
@@ -1208,8 +1244,15 @@ def fetch_schedules_direct(
         logger.warning(msg)
         source.status = EPGSource.STATUS_ERROR
         source.last_message = msg
-        source.save(update_fields=['status', 'last_message'])
-        send_epg_update(source.id, "parsing_programs", 100, status="error", error=msg)
+        _set_epg_source_status(
+            source.id,
+            EPGSource.STATUS_ERROR,
+            msg,
+            source_name=source.name,
+            notify_error=True,
+            ws_action="parsing_programs",
+            ws_error=msg,
+        )
         return
 
     window_start = datetime(today.year, today.month, today.day, tzinfo=dt_timezone.utc)
@@ -1375,8 +1418,15 @@ def fetch_schedules_direct(
         logger.warning(msg)
         source.status = EPGSource.STATUS_ERROR
         source.last_message = msg
-        source.save(update_fields=['status', 'last_message'])
-        send_epg_update(source.id, "parsing_programs", 100, status="error", error=msg)
+        _set_epg_source_status(
+            source.id,
+            EPGSource.STATUS_ERROR,
+            msg,
+            source_name=source.name,
+            notify_error=True,
+            ws_action="parsing_programs",
+            ws_error=msg,
+        )
         return
 
     # -------------------------------------------------------------------------
@@ -1819,8 +1869,15 @@ def fetch_schedules_direct(
         logger.error(msg, exc_info=True)
         source.status = EPGSource.STATUS_ERROR
         source.last_message = msg
-        source.save(update_fields=['status', 'last_message'])
-        send_epg_update(source.id, "parsing_programs", 100, status="error", error=msg)
+        _set_epg_source_status(
+            source.id,
+            EPGSource.STATUS_ERROR,
+            msg,
+            source_name=source.name,
+            notify_error=True,
+            ws_action="parsing_programs",
+            ws_error=msg,
+        )
         return
     finally:
         all_programs_to_create = None
