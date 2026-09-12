@@ -391,16 +391,8 @@ class VODMovieIsAdultSyncTests(TestCase):
 
 
 class VODDuplicateAcrossCategoriesBatchTests(TestCase):
-    """The same movie/series offered under multiple enabled categories in one
-    batch must get a relation for every category, not just the first one
-    seen (#1511).
-
-    process_movie_batch/process_series_batch dedupe by movie_key/series_key
-    (TMDB/IMDB/name+year) to avoid recomputing the same canonical
-    Movie/Series twice, but before the fix that dedup also skipped building
-    the M3UMovieRelation/M3USeriesRelation for every subsequent occurrence,
-    silently dropping the item from any category/stream that wasn't first
-    in the batch.
+    """Same canonical movie/series under multiple stream/series IDs in one
+    batch must get a relation per ID; identical IDs still coalesce to one.
     """
 
     def setUp(self):
@@ -464,12 +456,9 @@ class VODDuplicateAcrossCategoriesBatchTests(TestCase):
             scan_start_time=timezone.now(),
         )
 
-        # One canonical Movie, matched by tmdb_id across both category rows.
         self.assertEqual(Movie.objects.filter(tmdb_id="800001").count(), 1)
         movie = Movie.objects.get(tmdb_id="800001")
 
-        # Before the fix, only the first-seen stream_id/category got a relation
-        # and the second was silently dropped.
         relations = M3UMovieRelation.objects.filter(m3u_account=self.account, movie=movie)
         self.assertEqual(relations.count(), 2)
         by_stream_id = {rel.stream_id: rel for rel in relations}
@@ -477,8 +466,6 @@ class VODDuplicateAcrossCategoriesBatchTests(TestCase):
         self.assertEqual(by_stream_id["5002"].category_id, self.movie_category_b.id)
 
     def test_duplicate_stream_id_for_same_movie_does_not_create_two_relations(self):
-        """A literal repeat of the same stream_id (not a different category) is
-        still deduped to a single relation."""
         process_movie_batch(
             self.account,
             [
@@ -515,3 +502,22 @@ class VODDuplicateAcrossCategoriesBatchTests(TestCase):
         by_series_id = {rel.external_series_id: rel for rel in relations}
         self.assertEqual(by_series_id["6001"].category_id, self.series_category_a.id)
         self.assertEqual(by_series_id["6002"].category_id, self.series_category_b.id)
+
+    def test_duplicate_series_id_for_same_series_does_not_create_two_relations(self):
+        process_series_batch(
+            self.account,
+            [
+                {"series_id": 6003, "name": "Repeated Series", "category_id": "20", "tmdb_id": "800102"},
+                {"series_id": 6003, "name": "Repeated Series", "category_id": "20", "tmdb_id": "800102"},
+            ],
+            self.series_categories,
+            self.series_relations,
+            scan_start_time=timezone.now(),
+        )
+
+        self.assertEqual(
+            M3USeriesRelation.objects.filter(
+                m3u_account=self.account, external_series_id="6003"
+            ).count(),
+            1,
+        )

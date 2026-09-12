@@ -483,12 +483,8 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
             else:
                 movie_key = f"name_{name}_{year or 'None'}"
 
-            # The same canonical movie (by movie_key) can be offered by the provider
-            # under more than one stream_id/category -- e.g. present in several
-            # enabled VOD categories. Only compute movie properties once per
-            # movie_key, but record every occurrence so each still gets its own
-            # M3UMovieRelation below; skipping them here used to silently drop
-            # that category/stream's relation entirely (#1511).
+            # Reuse props for this movie_key, but keep every distinct stream_id
+            # so each still gets its own relation (same stream_id coalesces).
             if movie_key in movie_keys:
                 movie_keys[movie_key]['occurrences'].setdefault(stream_id, {
                     'category': category,
@@ -693,10 +689,6 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
 
             movies_to_create.append(movie)
 
-        # Handle relations: one per provider occurrence (stream_id/category) of
-        # this canonical movie, so a movie offered under several categories in
-        # the same batch gets a relation for each of them instead of just the
-        # first one seen (#1511).
         for stream_id, occ in data['occurrences'].items():
             category = occ['category']
             movie_data = occ['movie_data']
@@ -878,12 +870,8 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
             else:
                 series_key = f"name_{name}_{year or 'None'}"
 
-            # The same canonical series (by series_key) can be offered by the
-            # provider under more than one series_id/category -- e.g. present in
-            # several enabled VOD categories. Only compute series properties once
-            # per series_key, but record every occurrence so each still gets its
-            # own M3USeriesRelation below; skipping them here used to silently
-            # drop that category/series_id's relation entirely (#1511).
+            # Reuse props for this series_key, but keep every distinct series_id
+            # so each still gets its own relation (same series_id coalesces).
             if series_key in series_keys:
                 series_keys[series_key]['occurrences'].setdefault(series_id, {
                     'category': category,
@@ -1083,10 +1071,6 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
 
             series_to_create.append(series)
 
-        # Handle relations: one per provider occurrence (series_id/category) of
-        # this canonical series, so a series offered under several categories in
-        # the same batch gets a relation for each of them instead of just the
-        # first one seen (#1511).
         for series_id, occ in data['occurrences'].items():
             category = occ['category']
             series_data = occ['series_data']
