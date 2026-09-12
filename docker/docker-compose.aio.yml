@@ -15,16 +15,10 @@ services:
       - REDIS_HOST=localhost
       - CELERY_BROKER_URL=redis://localhost:6379/0
       - DISPATCHARR_LOG_LEVEL=info
-      # Port the app listens on internally (Optional, default: 9191). Only needed
-      # if you're mapping a DIFFERENT host port above (e.g. "80:80" or "8080:8080")
-      # AND have NO reverse proxy in front of Dispatcharr. Without a reverse proxy,
-      # generated URLs (logos, M3U/EPG, VOD posters, catch-up) fall back to the
-      # port the app sees itself on, which is 9191 unless you set this to match
-      # your host-side port. If you do have a reverse proxy in front (Traefik,
-      # nginx, Caddy, etc.), it already forwards the real host/port and this is
-      # not needed. Must be set to the SAME value on both sides of the ports:
-      # mapping above (e.g. DISPATCHARR_PORT=8080 with "8080:8080").
+      # Port nginx listens on (default 9191). Must match the container port in
+      # ports: above (e.g. DISPATCHARR_PORT=8080 with "8080:8080").
       #- DISPATCHARR_PORT=9191
+
       # Redis idle-client timeout in seconds, and per-process redis-py /
       # django-redis pool cap (Optional, defaults: 300 / 50)
       #- REDIS_IDLE_TIMEOUT=300
