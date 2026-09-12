@@ -225,6 +225,8 @@ const useTable = ({
       Math.max(minimum, Math.min(value, maximum));
     const startX = getClientX(event);
     const columnId = header.column.id;
+    // Safari does not reliably repaint flex sizing from CSS variable changes
+    // during a drag, so preview the affected cells with direct styles instead.
     const bodyBounds = scrollElement.getBoundingClientRect();
     const visibleRows = Array.from(
       bodyElement.querySelectorAll('.native-table-row')
@@ -233,6 +235,7 @@ const useTable = ({
         const bounds = row.getBoundingClientRect();
         return bounds.bottom > bodyBounds.top && bounds.top < bodyBounds.bottom;
       });
+    // Previewing visible rows avoids style work for the rest of a large page.
     const getPreviewCells = (id) => {
       const headerCell = tableElement.querySelector(
         `.thead [data-column-id="${id}"]`
