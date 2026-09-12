@@ -1,7 +1,7 @@
 import { Box, Center, Checkbox, Flex } from '@mantine/core';
 import { flexRender } from '@tanstack/react-table';
 import { RotateCcw } from 'lucide-react';
-import { useMemo } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import MultiSelectHeaderWrapper from './MultiSelectHeaderWrapper';
 import useChannelsTableStore from '../../../store/channelsTable';
 
@@ -11,25 +11,48 @@ const CustomTableHeader = ({
   selectedTableIds,
   headerCellRenderFns,
   onSelectAllChange,
-  tableCellProps,
   headerPinned = true,
   enableDragDrop = false,
   onResetColumnSizing,
+  onColumnResizePreview,
 }) => {
   const isUnlocked = useChannelsTableStore((s) => s.isUnlocked);
   const shouldEnableDrag = enableDragDrop && isUnlocked;
-  const handleResizeStart = (event, resizeHandler) => {
+  const restoreSelectionRef = useRef(null);
+
+  useEffect(
+    () => () => {
+      restoreSelectionRef.current?.();
+    },
+    []
+  );
+
+  const handleResizeStart = (event, header, resizeHandler) => {
     event.preventDefault();
+    restoreSelectionRef.current?.();
     document.body.style.userSelect = 'none';
     document.body.style.webkitUserSelect = 'none';
 
+    let isResizing = true;
     const restoreSelection = () => {
+      if (!isResizing) return;
+      isResizing = false;
       document.body.style.removeProperty('user-select');
       document.body.style.removeProperty('-webkit-user-select');
+      window.removeEventListener('mouseup', restoreSelection);
+      window.removeEventListener('touchend', restoreSelection);
+      window.removeEventListener('touchcancel', restoreSelection);
+      window.removeEventListener('blur', restoreSelection);
+      if (restoreSelectionRef.current === restoreSelection) {
+        restoreSelectionRef.current = null;
+      }
     };
     window.addEventListener('mouseup', restoreSelection, { once: true });
     window.addEventListener('touchend', restoreSelection, { once: true });
     window.addEventListener('touchcancel', restoreSelection, { once: true });
+    window.addEventListener('blur', restoreSelection, { once: true });
+    restoreSelectionRef.current = restoreSelection;
+    onColumnResizePreview?.(header, event);
     resizeHandler(event);
   };
   const renderHeaderCell = (header) => {
@@ -141,10 +164,10 @@ const CustomTableHeader = ({
                 {header.column.getCanResize() && (
                   <div
                     onMouseDown={(event) =>
-                      handleResizeStart(event, header.getResizeHandler())
+                      handleResizeStart(event, header, header.getResizeHandler())
                     }
                     onTouchStart={(event) =>
-                      handleResizeStart(event, header.getResizeHandler())
+                      handleResizeStart(event, header, header.getResizeHandler())
                     }
                     className={`resizer ${
                       header.column.getIsResizing() ? 'isResizing' : ''

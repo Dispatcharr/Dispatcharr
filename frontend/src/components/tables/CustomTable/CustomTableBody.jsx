@@ -5,10 +5,12 @@ import { CSS } from '@dnd-kit/utilities';
 import { GripVertical } from 'lucide-react';
 import useChannelsTableStore from '../../../store/channelsTable';
 
-// Memoized row — only re-renders when this specific row's data, expansion
-// state, or drag-drop config actually changes.  Callback functions are read
-// from refs so the memoized row always uses the latest version when it *does*
-// re-render, without needing them as comparator inputs.
+const intrinsicRowHeights = {
+  compact: '28px',
+  default: '40px',
+  large: '48px',
+};
+
 const MemoizedTableRow = React.memo(
   ({
     row,
@@ -18,21 +20,20 @@ const MemoizedTableRow = React.memo(
     renderBodyCellRef,
     expandedRowRendererRef,
     handleRowClickRef,
-    getRowStyles,
-    tableCellProps,
+    getRowStylesRef,
+    tableCellPropsRef,
     enableDragDrop,
   }) => {
     const renderBodyCell = renderBodyCellRef.current;
+    const isUnlocked = useChannelsTableStore((s) => s.isUnlocked);
+    const getRowStyles = getRowStylesRef.current;
+    const tableCellProps = tableCellPropsRef.current;
     const customRowStyles = getRowStyles ? getRowStyles(row) : {};
     const customClassName = customRowStyles.className || '';
     delete customRowStyles.className;
 
-    return (
-      <DraggableRowWrapper
-        row={row}
-        key={`row-${row.id}`}
-        enableDragDrop={enableDragDrop}
-      >
+    const content = (
+      <>
         <Box
           key={`tr-${row.id}`}
           className={`tr ${index % 2 == 0 ? 'tr-even' : 'tr-odd'} ${customClassName}`}
@@ -55,6 +56,7 @@ const MemoizedTableRow = React.memo(
               <Box
                 className="td"
                 key={`td-${cell.id}`}
+                data-column-id={cell.column.id}
                 style={{
                   boxSizing: 'border-box',
                   ...(cell.column.columnDef.grow
@@ -84,6 +86,20 @@ const MemoizedTableRow = React.memo(
           })}
         </Box>
         {isExpanded && expandedRowRendererRef.current({ row })}
+      </>
+    );
+
+    if (!enableDragDrop) {
+      return <Box>{content}</Box>;
+    }
+
+    return (
+      <DraggableRowWrapper
+        row={row}
+        isUnlocked={isUnlocked}
+        key={`row-${row.id}`}
+      >
+        {content}
       </DraggableRowWrapper>
     );
   },
@@ -108,37 +124,50 @@ const CustomTableBody = ({
   enableDragDrop = false,
   selectedTableIdsSet,
   handleRowClickRef,
+  tableSize = 'default',
 }) => {
-  // Store callbacks in refs so memoized rows always access the latest versions
-  // without the function references themselves triggering re-renders.
   const renderBodyCellRef = useRef(renderBodyCell);
   renderBodyCellRef.current = renderBodyCell;
 
   const expandedRowRendererRef = useRef(expandedRowRenderer);
   expandedRowRendererRef.current = expandedRowRenderer;
 
+  const getRowStylesRef = useRef(getRowStyles);
+  getRowStylesRef.current = getRowStyles;
+  const tableCellPropsRef = useRef(tableCellProps);
+  tableCellPropsRef.current = tableCellProps;
+
   const rows = getRowModel().rows;
+  const intrinsicRowHeight = intrinsicRowHeights[tableSize] ?? intrinsicRowHeights.default;
 
   return (
-    <Box className="tbody" style={{ flex: 1 }}>
+    <Box className="tbody" style={{ flex: '0 0 auto', minHeight: 0 }}>
       {rows.map((row, index) => (
-        <MemoizedTableRow
+        <Box
           key={`row-${row.id}`}
-          row={row}
-          index={index}
-          isExpanded={expandedRowIds.includes(row.original.id)}
-          isSelected={
-            selectedTableIdsSet
-              ? selectedTableIdsSet.has(row.original.id)
-              : false
-          }
-          renderBodyCellRef={renderBodyCellRef}
-          expandedRowRendererRef={expandedRowRendererRef}
-          handleRowClickRef={handleRowClickRef}
-          getRowStyles={getRowStyles}
-          tableCellProps={tableCellProps}
-          enableDragDrop={enableDragDrop}
-        />
+          className="native-table-row"
+          style={{
+            contentVisibility: 'auto',
+            containIntrinsicSize: `auto ${intrinsicRowHeight}`,
+          }}
+        >
+          <MemoizedTableRow
+            row={row}
+            index={index}
+            isExpanded={expandedRowIds.includes(row.original.id)}
+            isSelected={
+              selectedTableIdsSet
+                ? selectedTableIdsSet.has(row.original.id)
+                : false
+            }
+            renderBodyCellRef={renderBodyCellRef}
+            expandedRowRendererRef={expandedRowRendererRef}
+            handleRowClickRef={handleRowClickRef}
+            getRowStylesRef={getRowStylesRef}
+            tableCellPropsRef={tableCellPropsRef}
+            enableDragDrop={enableDragDrop}
+          />
+        </Box>
       ))}
     </Box>
   );
@@ -146,13 +175,9 @@ const CustomTableBody = ({
 
 const DraggableRowWrapper = ({
   row,
+  isUnlocked,
   children,
-  style = {},
-  enableDragDrop = false,
 }) => {
-  const isUnlocked = useChannelsTableStore((s) => s.isUnlocked);
-  const shouldEnableDrag = enableDragDrop && isUnlocked;
-
   const {
     attributes,
     listeners,
@@ -162,7 +187,7 @@ const DraggableRowWrapper = ({
     isDragging,
   } = useSortable({
     id: row.id,
-    disabled: !shouldEnableDrag,
+    disabled: !isUnlocked,
   });
 
   const dragStyle = {
@@ -170,12 +195,11 @@ const DraggableRowWrapper = ({
     transition,
     opacity: isDragging ? 0.5 : 1,
     position: 'relative',
-    ...style,
   };
 
   return (
     <Box ref={setNodeRef} style={dragStyle}>
-      {shouldEnableDrag && (
+      {isUnlocked && (
         <Box
           {...attributes}
           {...listeners}
@@ -198,7 +222,7 @@ const DraggableRowWrapper = ({
           <GripVertical size={16} opacity={0.5} />
         </Box>
       )}
-      <div style={{ paddingLeft: shouldEnableDrag ? 28 : 0, width: '100%' }}>
+      <div style={{ paddingLeft: isUnlocked ? 28 : 0, width: '100%' }}>
         {children}
       </div>
     </Box>

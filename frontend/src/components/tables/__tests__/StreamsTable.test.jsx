@@ -201,8 +201,8 @@ vi.mock('@mantine/core', () => ({
   NativeSelect: ({ onChange, value, data }) => (
     <select data-testid="native-select" onChange={onChange} value={value}>
       {(data || []).map((d) => (
-        <option key={d} value={d}>
-          {d}
+        <option key={d.value ?? d} value={d.value ?? d}>
+          {d.label ?? d}
         </option>
       ))}
     </select>
@@ -293,7 +293,7 @@ import useBrowserStorage from '../../../hooks/useBrowserStorage';
 import { useNavigate } from 'react-router-dom';
 import { useTable } from '../CustomTable';
 import * as StreamsTableUtils from '../../../utils/tables/StreamsTableUtils.js';
-import StreamsTable from '../StreamsTable';
+import StreamsTable, { StreamRowActions } from '../StreamsTable';
 
 // ── Factories ──────────────────────────────────────────────────────────────────
 const makeStream = (overrides = {}) => ({
@@ -659,6 +659,44 @@ describe('StreamsTable', () => {
     });
   });
 
+  describe('stream row actions', () => {
+    it('renders tooltips for Add to Channel and Create New Channel', () => {
+      setupMocks({ expandedChannelId: 42 });
+      render(
+        <StreamRowActions
+          theme={{ tailwind: { blue: { 6: '#3b82f6' }, green: { 5: '#22c55e' } } }}
+          row={{ original: makeStream() }}
+          editStream={vi.fn()}
+          handleDeleteStream={vi.fn()}
+          handleWatchStream={vi.fn()}
+          handleCreateChannelFromStream={vi.fn()}
+        />
+      );
+
+      expect(screen.getAllByLabelText('Add to Channel')).toHaveLength(2);
+      expect(screen.getAllByLabelText('Create New Channel')).toHaveLength(2);
+    });
+
+    it('keeps the Add to Channel tooltip available when the action is disabled', () => {
+      setupMocks();
+      render(
+        <StreamRowActions
+          theme={{ tailwind: { blue: { 6: '#3b82f6' }, green: { 5: '#22c55e' } } }}
+          row={{ original: makeStream() }}
+          editStream={vi.fn()}
+          handleDeleteStream={vi.fn()}
+          handleWatchStream={vi.fn()}
+          handleCreateChannelFromStream={vi.fn()}
+        />
+      );
+
+      const action = screen
+        .getAllByLabelText('Add to Channel')
+        .find((element) => element.tagName === 'BUTTON');
+      expect(action).toBeDisabled();
+    });
+  });
+
   // ── Single delete confirmation dialog ─────────────────────────────────────
 
   describe('single stream delete', () => {
@@ -851,6 +889,16 @@ describe('StreamsTable', () => {
         expect(screen.getByTestId('native-select')).toBeInTheDocument();
       });
     });
+
+    it('offers 500 as the largest page size option', async () => {
+      setupMocks({ totalCount: 5, streams: [makeStream()] });
+      render(<StreamsTable />);
+      await waitFor(() => {
+        const select = screen.getByTestId('native-select');
+        expect(select.options).toHaveLength(5);
+        expect(select.options[4]).toHaveValue('500');
+      });
+    });
   });
 
   // ── Column visibility (Table Settings menu) ────────────────────────────────
@@ -995,8 +1043,11 @@ describe('StreamsTable', () => {
       };
       const cell = { column: { id: 'actions' } };
 
-      // The actions renderer returns a StreamRowActions element; find Preview Stream button
-      const { getByText } = render(actionsCell({ cell, row }));
+      // Open the lazily mounted overflow menu before selecting Preview Stream.
+      const { container, getByText } = render(actionsCell({ cell, row }));
+      fireEvent.click(
+        container.querySelector('[data-testid="icon-ellipsis"]').closest('button')
+      );
       fireEvent.click(getByText('Preview Stream'));
       expect(mockShowVideo).toHaveBeenCalled();
     });

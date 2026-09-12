@@ -178,9 +178,9 @@ const ChannelRowActions = React.memo(
     createRecording,
     getChannelURL,
   }) => {
-    // Extract the channel ID once to ensure consistency
     const channelId = row.original.id;
     const channelUuid = row.original.uuid;
+    const [menuOpened, setMenuOpened] = useState(false);
 
     const authUser = useAuthStore((s) => s.user);
 
@@ -214,6 +214,7 @@ const ChannelRowActions = React.memo(
       <Box style={{ width: '100%', justifyContent: 'left' }}>
         <Center>
           <ActionIcon
+            aria-label="Edit channel"
             size={iconSize}
             variant="transparent"
             color={theme.tailwind.yellow[3]}
@@ -224,6 +225,7 @@ const ChannelRowActions = React.memo(
           </ActionIcon>
 
           <ActionIcon
+            aria-label="Delete channel"
             size={iconSize}
             variant="transparent"
             color={theme.tailwind.red[6]}
@@ -234,6 +236,7 @@ const ChannelRowActions = React.memo(
           </ActionIcon>
 
           <ActionIcon
+            aria-label="Preview channel"
             size={iconSize}
             variant="transparent"
             color={theme.tailwind.green[5]}
@@ -242,41 +245,52 @@ const ChannelRowActions = React.memo(
             <CirclePlay size="18" />
           </ActionIcon>
 
-          <Menu>
-            <MenuTarget>
-              <ActionIcon variant="transparent" size={iconSize}>
-                <EllipsisVertical size="18" />
-              </ActionIcon>
-            </MenuTarget>
+          {menuOpened ? (
+            <Menu opened onChange={setMenuOpened}>
+              <MenuTarget>
+                <ActionIcon variant="transparent" size={iconSize}>
+                  <EllipsisVertical size="18" />
+                </ActionIcon>
+              </MenuTarget>
 
-            <MenuDropdown>
-              <MenuItem leftSection={<Copy size="14" />}>
-                <UnstyledButton
-                  size="xs"
-                  onClick={() => copyToClipboard(getChannelURL(row.original))}
+              <MenuDropdown>
+                <MenuItem leftSection={<Copy size="14" />}>
+                  <UnstyledButton
+                    size="xs"
+                    onClick={() => copyToClipboard(getChannelURL(row.original))}
+                  >
+                    <Text size="xs">Copy URL</Text>
+                  </UnstyledButton>
+                </MenuItem>
+                <MenuItem
+                  onClick={onRecord}
+                  disabled={authUser.user_level != USER_LEVELS.ADMIN}
+                  leftSection={
+                    <div
+                      style={{
+                        borderRadius: '50%',
+                        width: '10px',
+                        height: '10px',
+                        display: 'flex',
+                        backgroundColor: 'red',
+                      }}
+                    ></div>
+                  }
                 >
-                  <Text size="xs">Copy URL</Text>
-                </UnstyledButton>
-              </MenuItem>
-              <MenuItem
-                onClick={onRecord}
-                disabled={authUser.user_level != USER_LEVELS.ADMIN}
-                leftSection={
-                  <div
-                    style={{
-                      borderRadius: '50%',
-                      width: '10px',
-                      height: '10px',
-                      display: 'flex',
-                      backgroundColor: 'red',
-                    }}
-                  ></div>
-                }
-              >
-                <Text size="xs">Record</Text>
-              </MenuItem>
-            </MenuDropdown>
-          </Menu>
+                  <Text size="xs">Record</Text>
+                </MenuItem>
+              </MenuDropdown>
+            </Menu>
+          ) : (
+            <ActionIcon
+              aria-label="More channel actions"
+              variant="transparent"
+              size={iconSize}
+              onClick={() => setMenuOpened(true)}
+            >
+              <EllipsisVertical size="18" />
+            </ActionIcon>
+          )}
         </Center>
       </Box>
     );
@@ -343,7 +357,6 @@ const ChannelsTable = ({ onReady }) => {
   const totalCount = useChannelsTableStore((s) => s.totalCount);
   const allRowIds = useChannelsTableStore((s) => s.allQueryIds);
   const setAllRowIds = useChannelsTableStore((s) => s.setAllQueryIds);
-
   // store/channels
   const hasChannels = useChannelsStore((s) => s.channelIds.length > 0);
   const profiles = useChannelsStore((s) => s.profiles);
@@ -799,6 +812,7 @@ const ChannelsTable = ({ onReady }) => {
   const onPageSizeChange = (e) => {
     setPagination({
       ...pagination,
+      pageIndex: 0,
       pageSize: e.target.value,
     });
   };
@@ -1116,6 +1130,7 @@ const ChannelsTable = ({ onReady }) => {
         header: '',
         cell: ({ row, table }) => (
           <ChannelRowActions
+            key={row.original.id}
             theme={theme}
             row={row}
             table={table}
@@ -1278,6 +1293,7 @@ const ChannelsTable = ({ onReady }) => {
     pairedColumnSizing: flexibleColumns,
     tableId: 'channels-table',
     onResetColumnSizing: resetColumnSizing,
+    fillHeight: true,
     manualPagination: true,
     manualSorting: true,
     manualFiltering: true,
@@ -1290,9 +1306,6 @@ const ChannelsTable = ({ onReady }) => {
       sorting,
     },
     columnResizeMode: 'onChange',
-    getExpandedRowHeight: (row) => {
-      return 20 + 28 * row.original.streams.length;
-    },
     expandedRowRenderer: ({ row }) => {
       return (
         <Box
@@ -1732,7 +1745,7 @@ const ChannelsTable = ({ onReady }) => {
                 ref={tableScrollRef}
                 style={{
                   flex: 1,
-                  overflowY: 'auto',
+                  overflowY: 'hidden',
                   overflowX: 'auto',
                   border: 'solid 1px rgb(68,68,68)',
                   borderRadius: 'var(--mantine-radius-default)',
@@ -1747,7 +1760,7 @@ const ChannelsTable = ({ onReady }) => {
                     items={rows.map((row) => row.id)}
                     strategy={verticalListSortingStrategy}
                   >
-                    <CustomTable table={table} />
+                  <CustomTable table={table} />
                   </SortableContext>
                 </DndContext>
               </Box>
@@ -1772,7 +1785,7 @@ const ChannelsTable = ({ onReady }) => {
                   <NativeSelect
                     size="xxs"
                     value={pagination.pageSize}
-                    data={['25', '50', '100', '250']}
+                    data={['25', '50', '100', '250', '500']}
                     onChange={onPageSizeChange}
                     style={{ paddingRight: 20 }}
                   />
