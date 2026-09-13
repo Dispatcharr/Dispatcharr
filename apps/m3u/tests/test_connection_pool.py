@@ -276,7 +276,36 @@ class PoolEnforcementTests(TestCase):
             self.assertEqual(self.redis._data[key_a], 1)
             self.assertEqual(self.redis._data[key_b], 1)
 
-    def test_no_fingerprint_skips_credential_counter(self):
+    def test_xc_credential_transform_failure_denies_group_reservation(self):
+        """
+        A grouped XC profile whose search/replace pattern doesn't match must be
+        denied a shared-pool slot, not silently treated as unlimited/unpooled.
+        """
+        broken = M3UAccountProfile.objects.create(
+            m3u_account=self.account,
+            name="broken-pattern",
+            max_streams=1,
+            is_active=True,
+            search_pattern="no/match/here",
+            replace_pattern="user1/user1pass",
+        )
+
+        self.assertIsNone(get_profile_credential_fingerprint(broken))
+        self.assertFalse(group_has_capacity_for_profile(broken, self.redis))
+
+        reserved, _, failure_reason = reserve_profile_slot(broken, self.redis)
+        self.assertFalse(reserved)
+        self.assertEqual(failure_reason, "credential_full")
+        self.assertEqual(
+            self.redis._data.get(profile_connections_key(broken.id), 0), 0
+        )
+
+    def test_no_fingerprint_fails_closed_on_credential_counter(self):
+        """
+        A profile in an enforced ServerGroup whose login can't be fingerprinted
+        must not bypass the shared-credential capacity check: the profile slot
+        reservation is rolled back and the reservation is denied.
+        """
         account = M3UAccount.objects.create(
             name="No creds",
             account_type="STD",
@@ -291,9 +320,14 @@ class PoolEnforcementTests(TestCase):
             "apps.m3u.connection_pool.get_profile_credential_fingerprint",
             return_value=None,
         ):
-            self.assertTrue(reserve_profile_slot(profile, self.redis)[0])
+            reserved, _, failure_reason = reserve_profile_slot(profile, self.redis)
+            self.assertFalse(reserved)
+            self.assertEqual(failure_reason, "credential_full")
             self.assertEqual(get_credential_connection_count(profile, self.redis), 0)
-            self.assertEqual(get_credential_connection_count(profile, self.redis), 0)
+            # Profile-level counter must be rolled back too, not left incremented.
+            self.assertEqual(
+                self.redis._data.get(profile_connections_key(profile.id), 0), 0
+            )
 
     def test_release_when_profile_row_deleted(self):
         profile_id = self.profile.id

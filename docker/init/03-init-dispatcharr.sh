@@ -29,6 +29,7 @@ DATA_DIRS=(
     "/data/plugins"
     "/data/models"
     "/data/scripts"
+    "/data/logs"
 )
 
 # APP_DIRS live on the image layer and are always locally writable.

@@ -219,3 +219,53 @@ class StreamingChunkCacheTests(TestCase):
         self.assertFalse(redis.exists("epg_content:all:anonymous:d=0:ready"))
         self.assertFalse(redis.exists("epg_content:all:anonymous:d=0:chunks"))
         self.assertTrue(redis.exists("unrelated:key"))
+
+    def test_invalidate_m3u_content_cache_uses_django_delete_pattern(self):
+        from unittest.mock import MagicMock, patch
+
+        from apps.output.streaming_chunk_cache import invalidate_m3u_content_cache
+
+        mock_cache = MagicMock()
+        mock_cache.delete_pattern.return_value = 3
+
+        with patch(
+            "django.core.cache.cache",
+            mock_cache,
+        ):
+            invalidate_m3u_content_cache()
+
+        mock_cache.delete_pattern.assert_called_once_with("m3u_content:*")
+
+    def test_invalidate_m3u_content_cache_clears_real_django_keys(self):
+        from django.core.cache import cache
+
+        from apps.output.streaming_chunk_cache import invalidate_m3u_content_cache
+
+        cache.set("m3u_content:all:anonymous:origin=http://x", "#EXTM3U\n", 60)
+        cache.set("unrelated:key", "keep", 60)
+
+        invalidate_m3u_content_cache()
+
+        self.assertIsNone(cache.get("m3u_content:all:anonymous:origin=http://x"))
+        self.assertEqual(cache.get("unrelated:key"), "keep")
+        cache.delete("unrelated:key")
+
+    def test_invalidate_output_caches_after_m3u_refresh_clears_both(self):
+        from unittest.mock import patch
+
+        from apps.output.streaming_chunk_cache import (
+            invalidate_output_caches_after_m3u_refresh,
+        )
+
+        with (
+            patch(
+                "apps.output.streaming_chunk_cache.invalidate_m3u_content_cache"
+            ) as mock_m3u,
+            patch(
+                "apps.output.streaming_chunk_cache.invalidate_epg_chunk_cache"
+            ) as mock_epg,
+        ):
+            invalidate_output_caches_after_m3u_refresh()
+
+        mock_m3u.assert_called_once_with()
+        mock_epg.assert_called_once_with()

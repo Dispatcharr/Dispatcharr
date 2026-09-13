@@ -108,6 +108,12 @@ def _ip_in_trusted(ip):
     return any(ip in network for network in _trusted_proxy_networks())
 
 
+def request_from_trusted_proxy(request):
+    """True when REMOTE_ADDR is allowed to set forwarded client/host headers."""
+    peer = _normalize_ip(request.META.get("REMOTE_ADDR") or "")
+    return _ip_in_trusted(peer)
+
+
 def get_client_ip(request):
     """Return the client IP for ACLs and logging.
 
@@ -121,7 +127,7 @@ def get_client_ip(request):
     peer = _normalize_ip(peer_str)
     if peer is None:
         return peer_str or None
-    if not _ip_in_trusted(peer):
+    if not request_from_trusted_proxy(request):
         return str(peer)
 
     real_ip = _normalize_ip(request.META.get("HTTP_X_REAL_IP"))

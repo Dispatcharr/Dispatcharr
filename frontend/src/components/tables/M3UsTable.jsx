@@ -60,7 +60,7 @@ import {
 import {
   makeHeaderCellRenderer,
   makeSortingChangeHandler,
-} from './M3uTableUtils.jsx';
+} from './tableSortingUtils.jsx';
 
 const ALL_ACCOUNT_TYPES = ['STD', 'XC'];
 

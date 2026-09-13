@@ -56,6 +56,7 @@ class BaseConfig:
                 "channel_init_grace_period": 60,
                 "channel_client_wait_period": 5,
                 "new_client_behind_seconds": 5,
+                "validate_redirect_urls": True,
             }
 
         finally:
@@ -155,6 +156,12 @@ class TSConfig(BaseConfig):
         settings = cls.get_proxy_settings()
         return settings.get("channel_client_wait_period", 5)
 
+    @classmethod
+    def get_validate_redirect_urls(cls):
+        """Whether Redirect mode probes the provider URL (HEAD/GET) before handing off."""
+        settings = cls.get_proxy_settings()
+        return bool(settings.get("validate_redirect_urls", True))
+
     # Dynamic property access for these settings
     @property
     def CHANNEL_SHUTDOWN_DELAY(self):
@@ -175,3 +182,7 @@ class TSConfig(BaseConfig):
     @property
     def CHANNEL_CLIENT_WAIT_PERIOD(self):
         return self.get_channel_client_wait_period()
+
+    @property
+    def VALIDATE_REDIRECT_URLS(self):
+        return self.get_validate_redirect_urls()

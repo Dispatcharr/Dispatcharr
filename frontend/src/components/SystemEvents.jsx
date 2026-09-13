@@ -30,6 +30,7 @@ import {
   XCircle,
 } from 'lucide-react';
 import API from '../api';
+import { REFRESH_INTERVAL_OPTIONS } from '../constants';
 import useBrowserStorage from '../hooks/useBrowserStorage';
 import { format } from '../utils/dateTimeUtils.js';
 
@@ -63,10 +64,14 @@ const getEventIcon = (eventType) => {
       return <RefreshCw size={16} />;
     case 'm3u_download':
       return <Download size={16} />;
+    case 'm3u_error':
+      return <XCircle size={16} />;
     case 'epg_refresh':
       return <RefreshCw size={16} />;
     case 'epg_download':
       return <Download size={16} />;
+    case 'epg_error':
+      return <XCircle size={16} />;
     case 'login_success':
       return <LogIn size={16} />;
     case 'login_failed':
@@ -114,6 +119,8 @@ const getEventColor = (eventType) => {
     case 'login_failed':
     case 'm3u_blocked':
     case 'epg_blocked':
+    case 'm3u_error':
+    case 'epg_error':
       return 'red';
     default:
       return 'gray';
@@ -261,13 +268,7 @@ const SystemEvents = () => {
                 label="Auto Refresh"
                 value={eventsRefreshInterval.toString()}
                 onChange={(value) => setEventsRefreshInterval(parseInt(value))}
-                data={[
-                  { value: '0', label: 'Manual' },
-                  { value: '5', label: '5s' },
-                  { value: '10', label: '10s' },
-                  { value: '30', label: '30s' },
-                  { value: '60', label: '1m' },
-                ]}
+                data={REFRESH_INTERVAL_OPTIONS}
                 style={{ width: 120 }}
               />
               <Button

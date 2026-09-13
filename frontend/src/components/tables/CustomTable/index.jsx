@@ -17,7 +17,6 @@ const useTable = ({
   expandedRowRenderer = () => <></>,
   onRowSelectionChange = null,
   onRowExpansionChange = null,
-  getExpandedRowHeight = null,
   state = {},
   columnSizing,
   setColumnSizing,
@@ -25,6 +24,7 @@ const useTable = ({
   pairedColumnSizing,
   tableId,
   onResetColumnSizing,
+  fillHeight = false,
   ...options
 }) => {
   const [selectedTableIds, setSelectedTableIds] = useState([]);
@@ -87,6 +87,7 @@ const useTable = ({
   }, [handleKeyDown, handleKeyUp]);
 
   const pairedResizeMetricsRef = useRef(null);
+  const resizePreviewCleanupRef = useRef(null);
 
   useEffect(() => {
     pairedResizeMetricsRef.current = null;
@@ -200,6 +201,186 @@ const useTable = ({
     [clearPairedResizeMetrics, pairedColumnSizing, setColumnSizing, tableId]
   );
 
+  useEffect(
+    () => () => {
+      resizePreviewCleanupRef.current?.();
+      clearPairedResizeMetrics();
+    },
+    [clearPairedResizeMetrics]
+  );
+
+  const onColumnResizePreview = useCallback((header, event) => {
+    clearPairedResizeMetrics();
+    resizePreviewCleanupRef.current?.();
+    const tableElement =
+      event.currentTarget.closest('[data-table-id]') ||
+      event.currentTarget.closest('.divTable');
+    const bodyElement = tableElement?.querySelector('.tbody');
+    if (!tableElement || !bodyElement) return;
+    const scrollElement = tableElement;
+
+    const getClientX = (pointerEvent) =>
+      pointerEvent.touches?.[0]?.clientX ?? pointerEvent.clientX;
+    const clamp = (value, minimum, maximum) =>
+      Math.max(minimum, Math.min(value, maximum));
+    const startX = getClientX(event);
+    const columnId = header.column.id;
+    // Safari does not reliably repaint flex sizing from CSS variable changes
+    // during a drag, so preview the affected cells with direct styles instead.
+    const bodyBounds = scrollElement.getBoundingClientRect();
+    const visibleRows = Array.from(
+      bodyElement.querySelectorAll('.native-table-row')
+    )
+      .filter((row) => {
+        const bounds = row.getBoundingClientRect();
+        return bounds.bottom > bodyBounds.top && bounds.top < bodyBounds.bottom;
+      });
+    // Previewing visible rows avoids style work for the rest of a large page.
+    const getPreviewCells = (id) => {
+      const headerCell = tableElement.querySelector(
+        `.thead [data-column-id="${id}"]`
+      );
+      return [
+        headerCell,
+        ...visibleRows.flatMap((row) =>
+          Array.from(row.querySelectorAll(`[data-column-id="${id}"]`))
+        ),
+      ].filter(Boolean);
+    };
+    const pairedIndex = pairedColumnSizing?.findIndex(({ id }) => id === columnId);
+    const pairedColumn =
+      pairedIndex >= 0 ? pairedColumnSizing[pairedIndex] : null;
+    const pairedNeighbor = pairedColumnSizing?.[pairedIndex + 1];
+    let pairedMetrics;
+    if (pairedColumn && pairedNeighbor) {
+      const pairedSizing = pairedColumnSizing.map(
+        (column) => columnSizing[column.id] ?? column.size
+      );
+      const totalRatio = pairedSizing.reduce((total, size) => total + size, 0);
+      const totalWidth = pairedColumnSizing.reduce(
+        (total, column) =>
+          total +
+          (tableElement.querySelector(
+            `.thead [data-column-id="${column.id}"]`
+          )?.getBoundingClientRect().width || 0),
+        0
+      );
+      const ratioPerPixel = totalWidth ? totalRatio / totalWidth : 1;
+      const getMinimum = (column) =>
+        column.minRatio != null
+          ? column.minRatio * totalRatio
+          : column.minSize * ratioPerPixel;
+      const getMaximum = (column) =>
+        column.maxRatio != null
+          ? column.maxRatio * totalRatio
+          : (column.maxSize ?? Infinity) * ratioPerPixel;
+      const activeRatio = pairedSizing[pairedIndex];
+      const neighborRatio = pairedSizing[pairedIndex + 1];
+
+      pairedMetrics = {
+        activeRatio,
+        neighborRatio,
+        ratioPerPixel,
+        maxGrowth: Math.min(
+          getMaximum(pairedColumn) - activeRatio,
+          neighborRatio - getMinimum(pairedNeighbor)
+        ),
+        maxShrink: Math.min(
+          activeRatio - getMinimum(pairedColumn),
+          getMaximum(pairedNeighbor) - neighborRatio
+        ),
+      };
+    }
+
+    const pairedCells = pairedMetrics && {
+      active: getPreviewCells(pairedColumn.id),
+      neighbor: getPreviewCells(pairedNeighbor.id),
+    };
+    const cells = pairedCells
+      ? [...pairedCells.active, ...pairedCells.neighbor]
+      : getPreviewCells(columnId);
+    const originalStyles = cells.map((cell) => ({
+      cell,
+      flex: cell.style.flex,
+      width: cell.style.width,
+      maxWidth: cell.style.maxWidth,
+    }));
+    const initialScrollTop = scrollElement.scrollTop;
+    let pendingX = startX;
+
+    const updatePreview = () => {
+      const pixelDelta = pendingX - startX;
+      if (pairedMetrics) {
+        const delta = clamp(
+          pixelDelta * pairedMetrics.ratioPerPixel,
+          -pairedMetrics.maxShrink,
+          pairedMetrics.maxGrowth
+        );
+        for (const cell of pairedCells.active) {
+          cell.style.flex = `${pairedMetrics.activeRatio + delta} 1 0%`;
+        }
+        for (const cell of pairedCells.neighbor) {
+          cell.style.flex = `${pairedMetrics.neighborRatio - delta} 1 0%`;
+        }
+        return;
+      }
+
+      const size = clamp(
+        header.getSize() + pixelDelta,
+        header.column.columnDef.minSize ?? 0,
+        header.column.columnDef.maxSize ?? Infinity
+      );
+      for (const cell of cells) {
+        if (header.column.columnDef.flexRatio) {
+          cell.style.flex = `${size} 1 0%`;
+        } else {
+          cell.style.flex = `0 0 ${size}px`;
+          cell.style.width = `${size}px`;
+          cell.style.maxWidth = `${size}px`;
+        }
+      }
+    };
+    const onMove = (moveEvent) => {
+      moveEvent.preventDefault();
+      pendingX = getClientX(moveEvent);
+      updatePreview();
+    };
+    const preventScroll = (scrollEvent) => scrollEvent.preventDefault();
+    const restoreScrollPosition = () => {
+      scrollElement.scrollTop = initialScrollTop;
+    };
+    let isActive = true;
+    const cleanup = () => {
+      if (!isActive) return;
+      isActive = false;
+      for (const { cell, flex, width, maxWidth } of originalStyles) {
+        cell.style.flex = flex;
+        cell.style.width = width;
+        cell.style.maxWidth = maxWidth;
+      }
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('touchmove', onMove);
+      window.removeEventListener('wheel', preventScroll);
+      window.removeEventListener('blur', cleanup);
+      scrollElement.removeEventListener('scroll', restoreScrollPosition);
+      window.removeEventListener('mouseup', onEnd);
+      window.removeEventListener('touchend', onEnd);
+      window.removeEventListener('touchcancel', onEnd);
+      resizePreviewCleanupRef.current = null;
+    };
+    const onEnd = () => cleanup();
+
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('touchmove', onMove, { passive: false });
+    window.addEventListener('wheel', preventScroll, { passive: false });
+    scrollElement.addEventListener('scroll', restoreScrollPosition);
+    window.addEventListener('mouseup', onEnd, { once: true });
+    window.addEventListener('touchend', onEnd, { once: true });
+    window.addEventListener('touchcancel', onEnd, { once: true });
+    window.addEventListener('blur', cleanup, { once: true });
+    resizePreviewCleanupRef.current = cleanup;
+  }, [clearPairedResizeMetrics, columnSizing, pairedColumnSizing]);
+
   const table = useReactTable({
     defaultColumn: {
       minSize: 0,
@@ -224,7 +405,7 @@ const useTable = ({
     ...(onColumnVisibilityChange && { onColumnVisibilityChange }),
     getCoreRowModel: options.getCoreRowModel ?? getCoreRowModel(),
     enableColumnResizing: true,
-    columnResizeMode: 'onChange',
+    columnResizeMode: 'onEnd',
   });
 
   const selectedTableIdsSet = useMemo(
@@ -388,6 +569,7 @@ const useTable = ({
       setTableSize,
       tableId,
       onResetColumnSizing,
+      fillHeight,
     }),
     [
       selectedTableIdsSet,
@@ -400,6 +582,7 @@ const useTable = ({
       setTableSize,
       tableId,
       onResetColumnSizing,
+      fillHeight,
     ]
   );
 
@@ -408,7 +591,7 @@ const useTable = ({
     headerCellRenderFns,
     bodyCellRenderFns,
     renderBodyCell,
-    getExpandedRowHeight,
+    onColumnResizePreview,
   };
 };
 

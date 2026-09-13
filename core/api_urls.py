@@ -14,6 +14,11 @@ from .api_views import (
     TimezoneListView,
     get_system_events
 )
+from .log_files import (
+    get_log_file,
+    list_log_files,
+    download_log_file,
+)
 
 router = DefaultRouter()
 router.register(r'useragents', UserAgentViewSet, basename='useragent')
@@ -27,5 +32,8 @@ urlpatterns = [
     path('rehash-streams/', rehash_streams_endpoint, name='rehash_streams'),
     path('timezones/', TimezoneListView.as_view(), name='timezones'),
     path('system-events/', get_system_events, name='system_events'),
+    path('logs/', list_log_files, name='log_files'),
+    path('logs/<str:name>/download/', download_log_file, name='log_file_download'),
+    path('logs/<str:name>/', get_log_file, name='log_file'),
     path('', include(router.urls)),
 ]

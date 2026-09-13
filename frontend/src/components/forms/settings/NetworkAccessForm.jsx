@@ -6,6 +6,7 @@ import {
   checkSetting,
   updateSetting,
 } from '../../../utils/pages/SettingsUtils.js';
+import useSettingsSaveGuard from '../../../hooks/useSettingsSaveGuard.jsx';
 import { Alert, Button, Flex, Stack, TagsInput, Text } from '@mantine/core';
 import ConfirmationDialog from '../../ConfirmationDialog.jsx';
 import {
@@ -36,6 +37,7 @@ const NetworkAccessForm = React.memo(({ active }) => {
     useState([]);
   const [clientIpAddress, setClientIpAddress] = useState(null);
   const pendingSaveValuesRef = useRef(null);
+  const { isSavingRef, runSave } = useSettingsSaveGuard();
 
   const networkAccessForm = useForm({
     mode: 'controlled',
@@ -51,16 +53,18 @@ const NetworkAccessForm = React.memo(({ active }) => {
   }, [active]);
 
   useEffect(() => {
-    const networkAccessSettings = settings['network_access']?.value || {};
-    const defaults = getNetworkAccessDefaults();
-    networkAccessForm.setValues(
-      Object.keys(NETWORK_ACCESS_OPTIONS).reduce((acc, key) => {
-        acc[key] = networkAccessSettings[key]
-          ? toTags(networkAccessSettings[key])
-          : defaults[key];
-        return acc;
-      }, {})
-    );
+    if (settings && !isSavingRef.current) {
+      const networkAccessSettings = settings['network_access']?.value || {};
+      const defaults = getNetworkAccessDefaults();
+      networkAccessForm.setValues(
+        Object.keys(NETWORK_ACCESS_OPTIONS).reduce((acc, key) => {
+          acc[key] = networkAccessSettings[key]
+            ? toTags(networkAccessSettings[key])
+            : defaults[key];
+          return acc;
+        }, {})
+      );
+    }
   }, [settings]);
 
   const resetNetworkAccessToDefaults = () => {
@@ -131,11 +135,13 @@ const NetworkAccessForm = React.memo(({ active }) => {
         ])
       );
     try {
-      await updateSetting({
-        ...settings['network_access'],
-        value: values,
+      await runSave(async () => {
+        await updateSetting({
+          ...settings['network_access'],
+          value: values,
+        });
+        setSaved(true);
       });
-      setSaved(true);
     } catch (e) {
       const errors = {};
       for (const key in e.body.value) {

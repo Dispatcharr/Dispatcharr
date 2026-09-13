@@ -1,4 +1,5 @@
 import logging
+import os
 import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -6,12 +7,13 @@ from zoneinfo import ZoneInfo
 _REFRESH_INTERVAL_SECONDS = 5.0
 _cache = {"zone": None, "checked": 0.0}
 
+# Captured at import, before Django re-stamps os.environ["TZ"] to TIME_ZONE.
+_ENV_ZONE_NAME = os.environ.get("DISPATCHARR_TIME_ZONE") or os.environ.get("TZ") or "UTC"
+
 
 def _env_zone():
-    from django.conf import settings
-
     try:
-        return ZoneInfo(getattr(settings, "DISPATCHARR_DISPLAY_TZ", "UTC"))
+        return ZoneInfo(_ENV_ZONE_NAME)
     except Exception:
         return ZoneInfo("UTC")
 

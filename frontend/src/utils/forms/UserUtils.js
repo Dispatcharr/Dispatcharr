@@ -50,6 +50,16 @@ export const userToFormValues = (user) => {
     output_profile: customProps.output_profile
       ? `${customProps.output_profile}`
       : '',
+    // null = unrestricted (key absent). Array (including []) = explicit allowlist.
+    allowed_m3u_profile_ids: Object.prototype.hasOwnProperty.call(
+      customProps,
+      'allowed_m3u_profile_ids'
+    )
+      ? (Array.isArray(customProps.allowed_m3u_profile_ids)
+          ? customProps.allowed_m3u_profile_ids
+          : []
+        ).map((id) => `${id}`)
+      : null,
     hide_adult_content: customProps.hide_adult_content || false,
     catchup_enabled: customProps.catchup_enabled !== false,
     vod_movies_enabled: customProps.vod_movies_enabled !== false,
@@ -86,6 +96,27 @@ export const formValuesToPayload = (values, existingUser) => {
     ? parseInt(payload.output_profile, 10)
     : null;
   delete payload.output_profile;
+
+  // Tri-state: null deletes the key (ALL). [] keeps the key (NONE).
+  // [ids] is an explicit allowlist. Omit the key on create so we never
+  // persist null; on update send null so the serializer merge removes it.
+  if (
+    !Object.prototype.hasOwnProperty.call(payload, 'allowed_m3u_profile_ids') ||
+    payload.allowed_m3u_profile_ids === null
+  ) {
+    if (existingUser) {
+      customProps.allowed_m3u_profile_ids = null;
+    } else {
+      delete customProps.allowed_m3u_profile_ids;
+    }
+  } else {
+    customProps.allowed_m3u_profile_ids = (
+      Array.isArray(payload.allowed_m3u_profile_ids)
+        ? payload.allowed_m3u_profile_ids
+        : []
+    ).map((id) => parseInt(id, 10));
+  }
+  delete payload.allowed_m3u_profile_ids;
 
   customProps.hide_adult_content = payload.hide_adult_content || false;
   delete payload.hide_adult_content;
@@ -154,6 +185,7 @@ export const getFormInitialValues = () => {
     xc_password: '',
     output_format: '',
     output_profile: '',
+    allowed_m3u_profile_ids: null,
     channel_profiles: [],
     hide_adult_content: false,
     catchup_enabled: true,

@@ -15,6 +15,8 @@ from redis.exceptions import AuthorizationError as RedisAuthorizationError
 from redis.exceptions import ConnectionError as RedisConnectionError
 from redis.exceptions import TimeoutError as RedisTimeoutError
 
+from dispatcharr.log_collector import DEFAULT_LOG_KEEP, DEFAULT_LOG_MB
+
 logger = logging.getLogger(__name__)
 
 
@@ -195,6 +197,61 @@ class OutputProfile(models.Model):
         """Return the full command as a list suitable for subprocess.Popen."""
         from shlex import split as shlex_split
         return [self.command] + shlex_split(self.parameters)
+
+
+USER_OUTPUT_PROFILE_PROP_KEY = "output_profile"
+
+
+def scrub_output_profile_id(profile_id):
+    """Remove a deleted OutputProfile id from user overrides and settings.
+
+    Clears ``User.custom_properties.output_profile`` when it matches the deleted
+    id (so the user falls back to no per-user transcode). Clears
+    ``hdhr_output_profile_id`` in stream settings when it matches (HDHR falls
+    back to pass-through). Clears ``output_profile_id`` in DVR settings when
+    it matches (recordings fall back to recording the source as-is). Only rows
+    that reference the id are touched.
+    """
+    from django.db.models import Q
+
+    from apps.accounts.models import User
+
+    try:
+        profile_id_int = int(profile_id)
+    except (TypeError, ValueError):
+        return
+
+    # Match int or string forms stored in JSON.
+    users = User.objects.exclude(custom_properties=None).filter(
+        Q(**{f"custom_properties__{USER_OUTPUT_PROFILE_PROP_KEY}": profile_id_int})
+        | Q(**{f"custom_properties__{USER_OUTPUT_PROFILE_PROP_KEY}": str(profile_id_int)})
+    )
+    for user in users.iterator():
+        custom = user.custom_properties
+        if not isinstance(custom, dict):
+            continue
+        if USER_OUTPUT_PROFILE_PROP_KEY not in custom:
+            continue
+        updated = dict(custom)
+        updated.pop(USER_OUTPUT_PROFILE_PROP_KEY, None)
+        user.custom_properties = updated
+        user.save(update_fields=["custom_properties"])
+
+    current_hdhr = CoreSettings.get_hdhr_output_profile_id()
+    if current_hdhr is not None and current_hdhr == profile_id_int:
+        CoreSettings._update_group(
+            STREAM_SETTINGS_KEY,
+            "Stream Settings",
+            {"hdhr_output_profile_id": None},
+        )
+
+    current_dvr = CoreSettings.get_dvr_output_profile_id()
+    if current_dvr is not None and current_dvr == profile_id_int:
+        CoreSettings._update_group(
+            DVR_SETTINGS_KEY,
+            "DVR Settings",
+            {"output_profile_id": None},
+        )
 
 
 # Setting group keys
@@ -626,6 +683,7 @@ class CoreSettings(models.Model):
             "pre_offset_minutes": 0,
             "post_offset_minutes": 0,
             "series_rules": [],
+            "output_profile_id": None,
         })
 
     @classmethod
@@ -708,6 +766,7 @@ class CoreSettings(models.Model):
             "channel_init_grace_period": 60,
             "channel_client_wait_period": 5,
             "new_client_behind_seconds": 5,
+            "validate_redirect_urls": True,
         })
 
     @classmethod
@@ -726,6 +785,9 @@ class CoreSettings(models.Model):
             "auto_import_mapped_files": True,
             "enable_ip_lookup": True,
             "catchup_enabled": True,
+            "log_max_mb": DEFAULT_LOG_MB,
+            "log_keep": DEFAULT_LOG_KEEP,
+            "log_persist": True,
         })
 
     @classmethod
@@ -747,6 +809,15 @@ class CoreSettings(models.Model):
     @classmethod
     def get_hdhr_output_profile_id(cls):
         raw = cls.get_stream_settings().get("hdhr_output_profile_id")
+        try:
+            return int(raw) if raw is not None else None
+        except (ValueError, TypeError):
+            return None
+
+    @classmethod
+    def get_dvr_output_profile_id(cls):
+        """Output profile applied to DVR captures, or None to record as-is."""
+        raw = cls.get_dvr_settings().get("output_profile_id")
         try:
             return int(raw) if raw is not None else None
         except (ValueError, TypeError):
@@ -781,8 +852,10 @@ class SystemEvent(models.Model):
         ('stream_switch', 'Stream Switched'),
         ('m3u_refresh', 'M3U Refreshed'),
         ('m3u_download', 'M3U Downloaded'),
+        ('m3u_error', 'M3U Error'),
         ('epg_refresh', 'EPG Refreshed'),
         ('epg_download', 'EPG Downloaded'),
+        ('epg_error', 'EPG Error'),
         ('login_success', 'Login Successful'),
         ('login_failed', 'Login Failed'),
         ('logout', 'User Logged Out'),

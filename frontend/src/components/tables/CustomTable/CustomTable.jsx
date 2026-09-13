@@ -54,8 +54,11 @@ const CustomTable = ({ table }) => {
         width: '100%',
         maxWidth: '100%',
         minWidth: `${minTableWidth}px`,
+        height: table.fillHeight ? '100%' : undefined,
+        minHeight: 0,
         display: 'flex',
         flexDirection: 'column',
+        overflowY: table.fillHeight ? 'auto' : undefined,
         ...columnSizeVars,
       }}
     >
@@ -68,10 +71,10 @@ const CustomTable = ({ table }) => {
           table.onSelectAllChange ? table.onSelectAllChange : null
         }
         selectedTableIds={table.selectedTableIds}
-        tableCellProps={table.tableCellProps}
         headerPinned={table.headerPinned}
         enableDragDrop={table.enableDragDrop}
         onResetColumnSizing={table.onResetColumnSizing}
+        onColumnResizePreview={table.onColumnResizePreview}
       />
       <CustomTableBody
         getRowModel={table.getRowModel}
@@ -84,6 +87,7 @@ const CustomTable = ({ table }) => {
         enableDragDrop={table.enableDragDrop}
         selectedTableIdsSet={table.selectedTableIdsSet}
         handleRowClickRef={table.handleRowClickRef}
+        tableSize={table.tableSize}
       />
     </Box>
   );

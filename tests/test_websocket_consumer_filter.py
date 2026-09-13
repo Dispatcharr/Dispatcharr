@@ -295,9 +295,10 @@ class ConsumerM3UProfileTestReceiveTests(SimpleTestCase):
         )
         consumer.send.assert_awaited_once()
         sent = json.loads(consumer.send.await_args.kwargs["text_data"])
-        # On timeout, preview and transform fall back to the original URL.
+        # Preview falls back to the original URL; transform_url returns None
+        # on timeout (same as a non-matching or errored pattern).
         self.assertEqual(sent["data"]["search_preview"], payload["url"])
-        self.assertEqual(sent["data"]["result"], payload["url"])
+        self.assertIsNone(sent["data"]["result"])
 
     def test_m3u_profile_test_passes_timeout_to_preview_sub(self):
         from dispatcharr.consumers import _M3U_PROFILE_TEST_REGEX_TIMEOUT

@@ -174,6 +174,11 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
     try:
         channel = get_stream_object(channel_id)
         channel_display_name = getattr(channel, "name", None)
+        allowed_m3u_profiles = None
+        if user and channel.get_stream_profile().is_redirect():
+            from apps.m3u.utils import get_allowed_m3u_profiles
+
+            allowed_m3u_profiles = get_allowed_m3u_profiles(user)
 
         # Generate a unique client ID
         client_id = f"client_{int(time.time() * 1000)}_{random.randint(1000, 9999)}"
@@ -303,6 +308,7 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
                     profile_value = None
                     slot_reserved = False
                     error_reason = None
+                    resolved_stream_id = None
                     attempt = 0
                     should_retry = True
 
@@ -316,7 +322,10 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
                             profile_value,
                             slot_reserved,
                             error_reason,
-                        ) = generate_stream_url(channel_id)
+                            resolved_stream_id,
+                        ) = generate_stream_url(
+                            channel_id, user, allowed_m3u_profiles
+                        )
 
                         if stream_url is not None:
                             logger.info(
@@ -365,7 +374,10 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
                             profile_value,
                             slot_reserved,
                             error_reason,
-                        ) = generate_stream_url(channel_id)
+                            resolved_stream_id,
+                        ) = generate_stream_url(
+                            channel_id, user, allowed_m3u_profiles
+                        )
                         if stream_url is not None:
                             logger.info(
                                 f"[{client_id}] Successfully obtained stream on final attempt for channel {channel_id}"
@@ -413,6 +425,38 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
                     # Generate transcode command if needed
                     stream_profile = channel.get_stream_profile()
                     if stream_profile.is_redirect():
+                        from apps.proxy.config import TSConfig
+
+                        def _redirect_response(url):
+                            """Hand the client the provider URL (HTTP or non-HTTP)."""
+                            if url.startswith(("rtsp://", "rtp://", "udp://")):
+                                logger.info(
+                                    f"[{client_id}] Using manual redirect for non-HTTP protocol"
+                                )
+                                response = HttpResponse(status=301)
+                                response["Location"] = url
+                                return response
+                            return HttpResponseRedirect(url)
+
+                        def _release_redirect_slot():
+                            nonlocal connection_allocated
+                            if connection_allocated and not channel.release_stream():
+                                logger.warning(
+                                    f"[{client_id}] Failed to release stream before redirect"
+                                )
+                            connection_allocated = False
+
+                        # Optional pre-check (Settings → Proxy → Validate Redirect URLs).
+                        # Some providers abort HEAD/GET probes and waste a connection
+                        # slot; disabling skips failover probing and redirects immediately.
+                        if not TSConfig.get_validate_redirect_urls():
+                            logger.info(
+                                f"[{client_id}] Redirect URL validation disabled; "
+                                f"handing off to {stream_url}"
+                            )
+                            _release_redirect_slot()
+                            return _redirect_response(stream_url)
+
                         # Validate the stream URL before redirecting
                         from .url_utils import (
                             validate_stream_url,
@@ -432,11 +476,17 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
                                 f"[{client_id}] Primary stream URL failed validation: {message}"
                             )
 
-                            # Track tried streams to avoid loops
-                            tried_streams = {stream_id}
+                            # Track tried streams to avoid loops. Use the stream
+                            # actually chosen for this request (not Redis
+                            # channel_stream), since Redirect allowlist selection
+                            # does not write a shared assignment.
+                            tried_streams = {resolved_stream_id}
 
-                            # Get alternate streams
-                            alternates = get_alternate_streams(channel_id, stream_id)
+                            alternates = get_alternate_streams(
+                                channel_id,
+                                resolved_stream_id,
+                                allowed_m3u_profiles,
+                            )
 
                             # Try each alternate until one works
                             for alt in alternates:
@@ -447,7 +497,7 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
 
                                 # Get stream info
                                 alt_info = get_stream_info_for_switch(
-                                    channel_id, alt["stream_id"]
+                                    channel_id, alt["stream_id"], alt["profile_id"]
                                 )
                                 if "error" in alt_info:
                                     logger.warning(
@@ -475,24 +525,13 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
                                         f"[{client_id}] Alternate stream #{alt['stream_id']} failed validation: {message}"
                                     )
                         # Release stream lock before redirecting only if we reserved a slot
-                        if connection_allocated and not channel.release_stream():
-                            logger.warning(f"[{client_id}] Failed to release stream before redirect")
-                        connection_allocated = False
+                        _release_redirect_slot()
                         # Final decision based on validation results
                         if is_valid:
                             logger.info(
                                 f"[{client_id}] Redirecting to validated URL: {final_url} ({message})"
                             )
-
-                            # For non-HTTP protocols (RTSP/RTP/UDP), we need to manually create the redirect
-                            # because Django's HttpResponseRedirect blocks them for security
-                            if final_url.startswith(('rtsp://', 'rtp://', 'udp://')):
-                                logger.info(f"[{client_id}] Using manual redirect for non-HTTP protocol")
-                                response = HttpResponse(status=301)
-                                response['Location'] = final_url
-                                return response
-
-                            return HttpResponseRedirect(final_url)
+                            return _redirect_response(final_url)
                         else:
                             logger.error(
                                 f"[{client_id}] All available redirect URLs failed validation"

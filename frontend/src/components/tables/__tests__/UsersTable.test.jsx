@@ -42,7 +42,15 @@ vi.mock('../../forms/User', () => ({
 }));
 
 vi.mock('../../ConfirmationDialog', () => ({
-  default: ({ opened, onClose, onConfirm, title, loading, confirmLabel, cancelLabel }) =>
+  default: ({
+    opened,
+    onClose,
+    onConfirm,
+    title,
+    loading,
+    confirmLabel,
+    cancelLabel,
+  }) =>
     opened ? (
       <div data-testid="confirm-dialog">
         <span data-testid="confirm-title">{title}</span>
@@ -63,10 +71,17 @@ vi.mock('../CustomTable', () => ({
 
 // ── Mantine core ───────────────────────────────────────────────────────────────
 vi.mock('@mantine/core', () => ({
-  ActionIcon: ({ children, onClick, disabled, color }) => (
+  ActionIcon: ({
+    children,
+    onClick,
+    disabled,
+    color,
+    'aria-label': ariaLabel,
+  }) => (
     <button
       data-testid="action-icon"
       data-color={color}
+      aria-label={ariaLabel}
       onClick={onClick}
       disabled={disabled}
     >
@@ -79,27 +94,41 @@ vi.mock('@mantine/core', () => ({
     </span>
   ),
   Box: ({ children, style }) => <div style={style}>{children}</div>,
+  Center: ({ children }) => <div>{children}</div>,
   Button: ({ children, onClick, leftSection, disabled, loading }) => (
-    <button data-testid="button" onClick={onClick} disabled={disabled || loading}>
+    <button
+      data-testid="button"
+      onClick={onClick}
+      disabled={disabled || loading}
+    >
       {leftSection}
       {children}
     </button>
   ),
   Flex: ({ children, style }) => <div style={style}>{children}</div>,
-  Group: ({ children, style }) => (
-    <div style={style}>{children}</div>
-  ),
-  LoadingOverlay: ({ visible }) => visible ? <div data-testid="loading-overlay" /> : null,
+  Group: ({ children, style }) => <div style={style}>{children}</div>,
+  LoadingOverlay: ({ visible }) =>
+    visible ? <div data-testid="loading-overlay" /> : null,
   Paper: ({ children, style }) => <div style={style}>{children}</div>,
   Stack: ({ children, style }) => <div style={style}>{children}</div>,
+  TextInput: ({ placeholder, value, onChange, leftSection, rightSection }) => (
+    <div>
+      {leftSection}
+      <input
+        data-testid="search-input"
+        placeholder={placeholder}
+        value={value}
+        onChange={onChange}
+      />
+      {rightSection}
+    </div>
+  ),
   Text: ({ children, style, name }) => (
     <span data-testid="text" data-name={name} style={style}>
       {children}
     </span>
   ),
-  Tooltip: ({ children, label }) => (
-    <div data-tooltip={label}>{children}</div>
-  ),
+  Tooltip: ({ children, label }) => <div data-tooltip={label}>{children}</div>,
   useMantineTheme: vi.fn(() => ({
     tailwind: {
       yellow: { 3: '#fde047' },
@@ -111,11 +140,22 @@ vi.mock('@mantine/core', () => ({
 
 // ── lucide-react ───────────────────────────────────────────────────────────────
 vi.mock('lucide-react', () => ({
+  ArrowDownWideNarrow: ({ onClick }) => (
+    <svg data-testid="icon-sort-desc" onClick={onClick} />
+  ),
+  ArrowUpDown: ({ onClick }) => (
+    <svg data-testid="icon-sort-none" onClick={onClick} />
+  ),
+  ArrowUpNarrowWide: ({ onClick }) => (
+    <svg data-testid="icon-sort-asc" onClick={onClick} />
+  ),
   Eye: () => <svg data-testid="icon-eye" />,
   EyeOff: () => <svg data-testid="icon-eye-off" />,
   SquareMinus: () => <svg data-testid="icon-square-minus" />,
   SquarePen: () => <svg data-testid="icon-square-pen" />,
   SquarePlus: () => <svg data-testid="icon-square-plus" />,
+  Search: () => <svg data-testid="icon-search" />,
+  X: () => <svg data-testid="icon-x" />,
 }));
 
 // ── Imports after mocks ────────────────────────────────────────────────────────
@@ -145,7 +185,12 @@ const makeUser = (overrides = {}) => ({
 });
 
 const makeAdminUser = (overrides = {}) =>
-  makeUser({ id: 99, username: 'admin', user_level: USER_LEVELS.ADMIN, ...overrides });
+  makeUser({
+    id: 99,
+    username: 'admin',
+    user_level: USER_LEVELS.ADMIN,
+    ...overrides,
+  });
 
 let capturedTableOptions = null;
 
@@ -156,17 +201,11 @@ const setupMocks = ({
   isWarningSuppressed = vi.fn(() => false),
   suppressWarning = vi.fn(),
 } = {}) => {
-  vi.mocked(useUsersStore).mockImplementation((sel) =>
-    sel({ users })
-  );
+  vi.mocked(useUsersStore).mockImplementation((sel) => sel({ users }));
 
-  vi.mocked(useChannelsStore).mockImplementation((sel) =>
-    sel({ profiles })
-  );
+  vi.mocked(useChannelsStore).mockImplementation((sel) => sel({ profiles }));
 
-  vi.mocked(useAuthStore).mockImplementation((sel) =>
-    sel({ user: authUser })
-  );
+  vi.mocked(useAuthStore).mockImplementation((sel) => sel({ user: authUser }));
 
   vi.mocked(useWarningsStore).mockImplementation((sel) =>
     sel({ isWarningSuppressed, suppressWarning })
@@ -326,7 +365,10 @@ describe('UsersTable', () => {
 
     it('edit button is disabled for non-admin auth user', () => {
       const user = makeUser({ id: 5 });
-      setupMocks({ users: [user], authUser: makeUser({ id: 99, user_level: USER_LEVELS.STANDARD }) });
+      setupMocks({
+        users: [user],
+        authUser: makeUser({ id: 99, user_level: USER_LEVELS.STANDARD }),
+      });
       render(<UsersTable />);
 
       const actionsCol = getActionsCell();
@@ -345,7 +387,9 @@ describe('UsersTable', () => {
       const { getByTestId } = render(
         actionsCol.cell({ row: { original: user } })
       );
-      expect(getByTestId('icon-square-pen').closest('button')).not.toBeDisabled();
+      expect(
+        getByTestId('icon-square-pen').closest('button')
+      ).not.toBeDisabled();
     });
   });
 
@@ -364,7 +408,9 @@ describe('UsersTable', () => {
       fireEvent.click(getByTestId('icon-square-minus').closest('button'));
 
       expect(screen.getByTestId('confirm-dialog')).toBeInTheDocument();
-      expect(screen.getByTestId('confirm-title')).toHaveTextContent('Confirm User Deletion');
+      expect(screen.getByTestId('confirm-title')).toHaveTextContent(
+        'Confirm User Deletion'
+      );
     });
 
     it('calls API.deleteUser when confirmed via dialog', async () => {
@@ -379,9 +425,7 @@ describe('UsersTable', () => {
       fireEvent.click(getByTestId('icon-square-minus').closest('button'));
       fireEvent.click(screen.getByTestId('confirm-ok'));
 
-      await waitFor(() =>
-        expect(API.deleteUser).toHaveBeenCalledWith(5)
-      );
+      await waitFor(() => expect(API.deleteUser).toHaveBeenCalledWith(5));
     });
 
     it('closes the dialog after confirming delete', async () => {
@@ -427,15 +471,16 @@ describe('UsersTable', () => {
       );
       fireEvent.click(getByTestId('icon-square-minus').closest('button'));
 
-      await waitFor(() =>
-        expect(API.deleteUser).toHaveBeenCalledWith(7)
-      );
+      await waitFor(() => expect(API.deleteUser).toHaveBeenCalledWith(7));
       expect(screen.queryByTestId('confirm-dialog')).not.toBeInTheDocument();
     });
 
     it('delete button is disabled for non-admin auth user', () => {
       const user = makeUser({ id: 5 });
-      setupMocks({ users: [user], authUser: makeUser({ id: 99, user_level: USER_LEVELS.STANDARD }) });
+      setupMocks({
+        users: [user],
+        authUser: makeUser({ id: 99, user_level: USER_LEVELS.STANDARD }),
+      });
       render(<UsersTable />);
 
       const actionsCol = getActionsCell();
@@ -466,7 +511,9 @@ describe('UsersTable', () => {
       const { getByTestId } = render(
         actionsCol.cell({ row: { original: user } })
       );
-      expect(getByTestId('icon-square-minus').closest('button')).not.toBeDisabled();
+      expect(
+        getByTestId('icon-square-minus').closest('button')
+      ).not.toBeDisabled();
     });
   });
 
@@ -490,7 +537,9 @@ describe('UsersTable', () => {
       setupMocks();
       render(<UsersTable />);
 
-      const { getByText, getByTestId } = renderXCCell({ xc_password: 'mypassword' });
+      const { getByText, getByTestId } = renderXCCell({
+        xc_password: 'mypassword',
+      });
       fireEvent.click(getByTestId('icon-eye').closest('button'));
       expect(getByText('mypassword')).toBeInTheDocument();
     });
@@ -499,7 +548,9 @@ describe('UsersTable', () => {
       setupMocks();
       render(<UsersTable />);
 
-      const { getByText, getByTestId } = renderXCCell({ xc_password: 'mypassword' });
+      const { getByText, getByTestId } = renderXCCell({
+        xc_password: 'mypassword',
+      });
       const toggleBtn = getByTestId('icon-eye').closest('button');
       fireEvent.click(toggleBtn);
       fireEvent.click(getByTestId('icon-eye-off').closest('button'));
@@ -538,16 +589,24 @@ describe('UsersTable', () => {
       setupMocks();
       render(<UsersTable />);
       const col = getCol('user_level');
-      const { getByText } = render(col.cell({ getValue: () => USER_LEVELS.ADMIN }));
-      expect(getByText(USER_LEVEL_LABELS[USER_LEVELS.ADMIN])).toBeInTheDocument();
+      const { getByText } = render(
+        col.cell({ getValue: () => USER_LEVELS.ADMIN })
+      );
+      expect(
+        getByText(USER_LEVEL_LABELS[USER_LEVELS.ADMIN])
+      ).toBeInTheDocument();
     });
 
     it('renders the label for STANDARD level', () => {
       setupMocks();
       render(<UsersTable />);
       const col = getCol('user_level');
-      const { getByText } = render(col.cell({ getValue: () => USER_LEVELS.STANDARD }));
-      expect(getByText(USER_LEVEL_LABELS[USER_LEVELS.STANDARD])).toBeInTheDocument();
+      const { getByText } = render(
+        col.cell({ getValue: () => USER_LEVELS.STANDARD })
+      );
+      expect(
+        getByText(USER_LEVEL_LABELS[USER_LEVELS.STANDARD])
+      ).toBeInTheDocument();
     });
   });
 
@@ -590,8 +649,13 @@ describe('UsersTable', () => {
       setupMocks();
       render(<UsersTable />);
       const col = getCol('date_joined');
-      const { getByText } = render(col.cell({ getValue: () => '2024-01-15T10:00:00Z' }));
-      expect(vi.mocked(format)).toHaveBeenCalledWith('2024-01-15T10:00:00Z', 'MM/DD/YYYY');
+      const { getByText } = render(
+        col.cell({ getValue: () => '2024-01-15T10:00:00Z' })
+      );
+      expect(vi.mocked(format)).toHaveBeenCalledWith(
+        '2024-01-15T10:00:00Z',
+        'MM/DD/YYYY'
+      );
       expect(getByText('formatted:2024-01-15T10:00:00Z')).toBeInTheDocument();
     });
 
@@ -609,8 +673,13 @@ describe('UsersTable', () => {
       setupMocks();
       render(<UsersTable />);
       const col = getCol('last_login');
-      const { getByText } = render(col.cell({ getValue: () => '2024-06-01T12:00:00Z' }));
-      expect(vi.mocked(format)).toHaveBeenCalledWith('2024-06-01T12:00:00Z', 'MM/DD/YYYY HH:mm');
+      const { getByText } = render(
+        col.cell({ getValue: () => '2024-06-01T12:00:00Z' })
+      );
+      expect(vi.mocked(format)).toHaveBeenCalledWith(
+        '2024-06-01T12:00:00Z',
+        'MM/DD/YYYY HH:mm'
+      );
       expect(getByText('formatted:2024-06-01T12:00:00Z')).toBeInTheDocument();
     });
 
@@ -634,7 +703,10 @@ describe('UsersTable', () => {
 
     it('renders a badge for each assigned profile', () => {
       setupMocks({
-        profiles: { 10: { id: 10, name: 'HD Profile' }, 20: { id: 20, name: 'SD Profile' } },
+        profiles: {
+          10: { id: 10, name: 'HD Profile' },
+          20: { id: 20, name: 'SD Profile' },
+        },
       });
       render(<UsersTable />);
       const col = getCol('channel_profiles');
@@ -667,10 +739,220 @@ describe('UsersTable', () => {
       expect(capturedTableOptions.enableRowSelection).toBe(false);
     });
 
-    it('passes manualSorting: false', () => {
+    it('passes manualSorting: true so the table keeps the order it is given', () => {
       setupMocks();
       render(<UsersTable />);
-      expect(capturedTableOptions.manualSorting).toBe(false);
+      expect(capturedTableOptions.manualSorting).toBe(true);
+    });
+
+    it('passes manualFiltering: true so the table keeps the rows it is given', () => {
+      setupMocks();
+      render(<UsersTable />);
+      expect(capturedTableOptions.manualFiltering).toBe(true);
+    });
+  });
+
+  // ── Search ─────────────────────────────────────────────────────────────────
+
+  describe('search', () => {
+    const searchUsers = [
+      makeUser({ id: 1, username: 'alice', email: 'alice@example.com' }),
+      makeUser({ id: 2, username: 'bob', email: 'bob@example.com' }),
+    ];
+
+    const typeSearch = (value) =>
+      fireEvent.change(screen.getByTestId('search-input'), {
+        target: { value },
+      });
+
+    it('renders a search box', () => {
+      setupMocks();
+      render(<UsersTable />);
+      expect(screen.getByTestId('search-input')).toBeInTheDocument();
+    });
+
+    it('passes only matching users to the table', async () => {
+      setupMocks({ users: searchUsers });
+      render(<UsersTable />);
+      expect(capturedTableOptions.data).toHaveLength(2);
+
+      typeSearch('alice');
+
+      await waitFor(() =>
+        expect(capturedTableOptions.data.map((u) => u.username)).toEqual([
+          'alice',
+        ])
+      );
+    });
+
+    it('keeps allRowIds in step with the filtered rows', async () => {
+      setupMocks({ users: searchUsers });
+      render(<UsersTable />);
+
+      typeSearch('bob');
+
+      await waitFor(() => expect(capturedTableOptions.allRowIds).toEqual([2]));
+    });
+
+    it('does not filter until the debounce elapses', () => {
+      setupMocks({ users: searchUsers });
+      render(<UsersTable />);
+
+      typeSearch('alice');
+
+      // Synchronously after typing, the unfiltered list is still in place.
+      expect(capturedTableOptions.data).toHaveLength(2);
+    });
+
+    it('shows an empty-state message instead of the table when nothing matches', async () => {
+      setupMocks({ users: searchUsers });
+      render(<UsersTable />);
+      expect(screen.getByTestId('custom-table')).toBeInTheDocument();
+
+      typeSearch('nobody');
+
+      await waitFor(() =>
+        expect(
+          screen.getByText('No users match this search.')
+        ).toBeInTheDocument()
+      );
+      expect(screen.queryByTestId('custom-table')).not.toBeInTheDocument();
+    });
+
+    it('does not show the empty-state message when there are no users at all', () => {
+      setupMocks({ users: [] });
+      render(<UsersTable />);
+      expect(
+        screen.queryByText('No users match this search.')
+      ).not.toBeInTheDocument();
+      expect(screen.getByTestId('custom-table')).toBeInTheDocument();
+    });
+
+    it('restores every user when the clear button is pressed', async () => {
+      setupMocks({ users: searchUsers });
+      render(<UsersTable />);
+
+      typeSearch('alice');
+      await waitFor(() => expect(capturedTableOptions.data).toHaveLength(1));
+
+      fireEvent.click(screen.getByLabelText('Clear search'));
+
+      await waitFor(() => expect(capturedTableOptions.data).toHaveLength(2));
+    });
+  });
+
+  // ── Sorting ────────────────────────────────────────────────────────────────
+
+  describe('sorting', () => {
+    const sortUsers = [
+      makeUser({ id: 1, username: 'charlie' }),
+      makeUser({ id: 2, username: 'alice' }),
+      makeUser({ id: 3, username: 'bob' }),
+    ];
+
+    // The header cell renderers are handed to useTable, so drive them the way
+    // CustomTableHeader would.
+    const renderHeader = (columnId) => {
+      const element = capturedTableOptions.headerCellRenderFns[columnId]({
+        id: columnId,
+        column: { columnDef: getCol(columnId) },
+      });
+      return render(element);
+    };
+
+    const usernamesInTable = () =>
+      capturedTableOptions.data.map((u) => u.username);
+
+    it('defaults to id order with no column sorted', () => {
+      setupMocks({ users: sortUsers });
+      render(<UsersTable />);
+      expect(usernamesInTable()).toEqual(['charlie', 'alice', 'bob']);
+    });
+
+    it('marks the sortable columns and leaves the rest alone', () => {
+      setupMocks();
+      render(<UsersTable />);
+
+      [
+        'user_level',
+        'username',
+        'name',
+        'email',
+        'date_joined',
+        'last_login',
+      ].forEach((id) => expect(getCol(id).sortable).toBe(true));
+      ['custom_properties', 'channel_profiles', 'actions'].forEach((id) =>
+        expect(getCol(id).sortable).toBeUndefined()
+      );
+    });
+
+    it('cycles ascending → descending → unsorted on repeated clicks', () => {
+      setupMocks({ users: sortUsers });
+      render(<UsersTable />);
+
+      const { unmount } = renderHeader('username');
+      fireEvent.click(screen.getByTestId('icon-sort-none'));
+      expect(usernamesInTable()).toEqual(['alice', 'bob', 'charlie']);
+      unmount();
+
+      // Re-render the header so it picks up the new sorting state, which is
+      // what decides the icon.
+      const second = renderHeader('username');
+      fireEvent.click(screen.getByTestId('icon-sort-asc'));
+      expect(usernamesInTable()).toEqual(['charlie', 'bob', 'alice']);
+      second.unmount();
+
+      renderHeader('username');
+      fireEvent.click(screen.getByTestId('icon-sort-desc'));
+      expect(usernamesInTable()).toEqual(['charlie', 'alice', 'bob']);
+    });
+
+    it('replaces the sorted column rather than stacking sorts', () => {
+      setupMocks({
+        users: [
+          makeUser({ id: 1, username: 'charlie', email: 'a@example.com' }),
+          makeUser({ id: 2, username: 'alice', email: 'c@example.com' }),
+          makeUser({ id: 3, username: 'bob', email: 'b@example.com' }),
+        ],
+      });
+      render(<UsersTable />);
+
+      const { unmount } = renderHeader('username');
+      fireEvent.click(screen.getByTestId('icon-sort-none'));
+      expect(usernamesInTable()).toEqual(['alice', 'bob', 'charlie']);
+      unmount();
+
+      renderHeader('email');
+      fireEvent.click(screen.getByTestId('icon-sort-none'));
+      expect(usernamesInTable()).toEqual(['charlie', 'bob', 'alice']);
+    });
+
+    it('does not render a sort control for non-sortable columns', () => {
+      setupMocks();
+      render(<UsersTable />);
+
+      renderHeader('actions');
+      expect(screen.queryByTestId('icon-sort-none')).not.toBeInTheDocument();
+    });
+
+    it('sorts within the search results, not the whole list', async () => {
+      setupMocks({
+        users: [
+          makeUser({ id: 1, username: 'zeta-team' }),
+          makeUser({ id: 2, username: 'alpha-team' }),
+          makeUser({ id: 3, username: 'other' }),
+        ],
+      });
+      render(<UsersTable />);
+
+      fireEvent.change(screen.getByTestId('search-input'), {
+        target: { value: 'team' },
+      });
+      await waitFor(() => expect(capturedTableOptions.data).toHaveLength(2));
+
+      renderHeader('username');
+      fireEvent.click(screen.getByTestId('icon-sort-none'));
+      expect(usernamesInTable()).toEqual(['alpha-team', 'zeta-team']);
     });
   });
 });

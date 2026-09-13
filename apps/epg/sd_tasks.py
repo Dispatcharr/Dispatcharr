@@ -49,6 +49,11 @@ SD_MAPPED_GUIDE_BATCH_DEFER_SECONDS = 90
 SD_MAPPED_GUIDE_FETCH_DEFER_MAX_RETRIES = 2
 
 
+def _set_epg_source_status(*args, **kwargs):
+    from apps.epg.tasks import _set_epg_source_status as _impl
+    return _impl(*args, **kwargs)
+
+
 class SDResponsePayloadError(requests.exceptions.RequestException):
     """SD returned HTTP 200 with an embedded JSON error code instead of data."""
 
@@ -571,10 +576,15 @@ def fetch_schedules_direct(
     if not username or not password:
         msg = "Schedules Direct source requires both a username and password."
         logger.error(msg)
-        source.status = EPGSource.STATUS_ERROR
-        source.last_message = msg
-        source.save(update_fields=['status', 'last_message'])
-        send_epg_update(source.id, "refresh", 100, status="error", error=msg)
+        _set_epg_source_status(
+            source.id,
+            EPGSource.STATUS_ERROR,
+            msg,
+            source_name=source.name,
+            notify_error=True,
+            ws_action="refresh",
+            ws_error=msg,
+        )
         return
 
     # -------------------------------------------------------------------------
@@ -769,6 +779,12 @@ def fetch_schedules_direct(
         except Exception as prune_err:
             logger.warning(f"Failed to prune stale SDProgramMD5 records: {prune_err}")
 
+        # Programme rows, posters, and/or pruning may have changed the guide.
+        # Drop XMLTV chunk cache so /output/epg does not keep serving the
+        # pre-refresh file for up to the cache TTL.
+        from apps.output.streaming_chunk_cache import invalidate_epg_chunk_cache
+        invalidate_epg_chunk_cache()
+
         return posters_updated
 
     # -------------------------------------------------------------------------
@@ -786,11 +802,14 @@ def fetch_schedules_direct(
     auth = sd_obtain_token(source, username, password, timeout=30)
     if auth.debug_rejected:
         logger.error(auth.message)
-        source.status = EPGSource.STATUS_ERROR
-        source.last_message = auth.message
-        source.save(update_fields=['status', 'last_message'])
-        send_epg_update(
-            source.id, "refresh", 100, status="error", error=auth.message
+        _set_epg_source_status(
+            source.id,
+            EPGSource.STATUS_ERROR,
+            auth.message,
+            source_name=source.name,
+            notify_error=True,
+            ws_action="refresh",
+            ws_error=auth.message,
         )
         return
 
@@ -805,11 +824,14 @@ def fetch_schedules_direct(
             )
             return
         logger.error(auth.message)
-        source.status = EPGSource.STATUS_ERROR
-        source.last_message = auth.message
-        source.save(update_fields=['status', 'last_message'])
-        send_epg_update(
-            source.id, "refresh", 100, status="error", error=auth.message
+        _set_epg_source_status(
+            source.id,
+            EPGSource.STATUS_ERROR,
+            auth.message,
+            source_name=source.name,
+            notify_error=True,
+            ws_action="refresh",
+            ws_error=auth.message,
         )
         return
 
@@ -939,10 +961,15 @@ def fetch_schedules_direct(
         except requests.exceptions.RequestException as e:
             msg = f"Failed to fetch Schedules Direct lineups: {e}"
             logger.error(msg, exc_info=True)
-            source.status = EPGSource.STATUS_ERROR
-            source.last_message = msg
-            source.save(update_fields=['status', 'last_message'])
-            send_epg_update(source.id, "refresh", 100, status="error", error=msg)
+            _set_epg_source_status(
+                source.id,
+                EPGSource.STATUS_ERROR,
+                msg,
+                source_name=source.name,
+                notify_error=True,
+                ws_action="refresh",
+                ws_error=msg,
+            )
             return
 
         # Build station metadata map: stationID -> {name, callsign, logo_url}
@@ -985,10 +1012,15 @@ def fetch_schedules_direct(
         if not station_map:
             msg = "No stations found across all Schedules Direct lineups."
             logger.warning(msg)
-            source.status = EPGSource.STATUS_ERROR
-            source.last_message = msg
-            source.save(update_fields=['status', 'last_message'])
-            send_epg_update(source.id, "refresh", 100, status="error", error=msg)
+            _set_epg_source_status(
+                source.id,
+                EPGSource.STATUS_ERROR,
+                msg,
+                source_name=source.name,
+                notify_error=True,
+                ws_action="refresh",
+                ws_error=msg,
+            )
             return
 
         logger.info(f"Built station map with {len(station_map)} stations.")
@@ -1200,10 +1232,15 @@ def fetch_schedules_direct(
         # The MD5 check failed for every batch, don't report a false "up to date".
         msg = "Failed to fetch schedule MD5s from Schedules Direct, guide was not refreshed this cycle."
         logger.warning(msg)
-        source.status = EPGSource.STATUS_ERROR
-        source.last_message = msg
-        source.save(update_fields=['status', 'last_message'])
-        send_epg_update(source.id, "parsing_programs", 100, status="error", error=msg)
+        _set_epg_source_status(
+            source.id,
+            EPGSource.STATUS_ERROR,
+            msg,
+            source_name=source.name,
+            notify_error=True,
+            ws_action="parsing_programs",
+            ws_error=msg,
+        )
         return
 
     window_start = datetime(today.year, today.month, today.day, tzinfo=dt_timezone.utc)
@@ -1367,10 +1404,15 @@ def fetch_schedules_direct(
     if not program_ids_needed:
         msg = "No schedule data returned from Schedules Direct."
         logger.warning(msg)
-        source.status = EPGSource.STATUS_ERROR
-        source.last_message = msg
-        source.save(update_fields=['status', 'last_message'])
-        send_epg_update(source.id, "parsing_programs", 100, status="error", error=msg)
+        _set_epg_source_status(
+            source.id,
+            EPGSource.STATUS_ERROR,
+            msg,
+            source_name=source.name,
+            notify_error=True,
+            ws_action="parsing_programs",
+            ws_error=msg,
+        )
         return
 
     # -------------------------------------------------------------------------
@@ -1811,10 +1853,15 @@ def fetch_schedules_direct(
     except Exception as db_error:
         msg = f"Database error persisting Schedules Direct programs: {db_error}"
         logger.error(msg, exc_info=True)
-        source.status = EPGSource.STATUS_ERROR
-        source.last_message = msg
-        source.save(update_fields=['status', 'last_message'])
-        send_epg_update(source.id, "parsing_programs", 100, status="error", error=msg)
+        _set_epg_source_status(
+            source.id,
+            EPGSource.STATUS_ERROR,
+            msg,
+            source_name=source.name,
+            notify_error=True,
+            ws_action="parsing_programs",
+            ws_error=msg,
+        )
         return
     finally:
         all_programs_to_create = None

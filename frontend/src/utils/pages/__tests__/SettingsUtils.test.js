@@ -55,8 +55,244 @@ describe('SettingsUtils', () => {
     });
   });
 
-  describe('saveChangedSettings', () => {
-    it('should group stream settings correctly and update', async () => {
+  describe('parseGroupSettings', () => {
+    it('parses only stream settings fields', () => {
+      const settings = {
+        stream_settings: {
+          value: {
+            default_user_agent: 5,
+            default_stream_profile: 3,
+            default_output_format: 'fmp4',
+            hdhr_output_profile_id: 9,
+            m3u_hash_key: 'name,url',
+          },
+        },
+        dvr_settings: {
+          value: { output_profile_id: 6, comskip_enabled: true },
+        },
+      };
+
+      const result = SettingsUtils.parseGroupSettings(
+        settings,
+        'stream_settings'
+      );
+
+      expect(result).toEqual({
+        default_user_agent: '5',
+        default_stream_profile: '3',
+        default_output_format: 'fmp4',
+        hdhr_output_profile_id: '9',
+        m3u_hash_key: ['name', 'url'],
+      });
+      expect(result).not.toHaveProperty('output_profile_id');
+      expect(result).not.toHaveProperty('comskip_enabled');
+    });
+
+    it('parses dvr output_profile_id as a string and maps qsv to hwassist', () => {
+      const settings = {
+        dvr_settings: {
+          value: {
+            output_profile_id: 6,
+            comskip_hw_accel: 'qsv',
+            comskip_enabled: true,
+            pre_offset_minutes: 2,
+            post_offset_minutes: '3',
+            series_rules: [{ id: 1 }],
+          },
+        },
+      };
+
+      const result = SettingsUtils.parseGroupSettings(settings, 'dvr_settings');
+
+      expect(result.output_profile_id).toBe('6');
+      expect(result.comskip_hw_accel).toBe('hwassist');
+      expect(result.comskip_enabled).toBe(true);
+      expect(result.pre_offset_minutes).toBe(2);
+      expect(result.post_offset_minutes).toBe(3);
+      expect(result.series_rules).toEqual([{ id: 1 }]);
+    });
+
+    it('returns epg defaults when the group is missing', () => {
+      const result = SettingsUtils.parseGroupSettings({}, 'epg_settings');
+      expect(result).toEqual({
+        epg_match_mode: 'default',
+        epg_match_ignore_prefixes: [],
+        epg_match_ignore_suffixes: [],
+        epg_match_ignore_custom: [],
+      });
+    });
+
+    it('parses system settings with defaults for missing keys', () => {
+      const settings = {
+        system_settings: {
+          value: {
+            max_system_events: 200,
+            preferred_region: 'US',
+          },
+        },
+      };
+
+      const result = SettingsUtils.parseGroupSettings(
+        settings,
+        'system_settings'
+      );
+
+      expect(result.max_system_events).toBe(200);
+      expect(result.preferred_region).toBe('US');
+      expect(result.log_persist).toBe(true);
+      expect(result.catchup_enabled).toBe(true);
+    });
+
+    it('applies raw field defaults when keys are missing from an existing group', () => {
+      const settings = {
+        dvr_settings: {
+          value: {
+            comskip_enabled: true,
+          },
+        },
+      };
+
+      const result = SettingsUtils.parseGroupSettings(settings, 'dvr_settings');
+
+      expect(result.tv_template).toBe('');
+      expect(result.movie_template).toBe('');
+      expect(result.comskip_custom_path).toBe('');
+      expect(result.comskip_enabled).toBe(true);
+    });
+
+    it('does not overwrite an explicit empty raw string with the field default', () => {
+      const settings = {
+        dvr_settings: {
+          value: {
+            tv_template: '',
+          },
+        },
+      };
+
+      const result = SettingsUtils.parseGroupSettings(settings, 'dvr_settings');
+      expect(result.tv_template).toBe('');
+    });
+  });
+
+  describe('getChangedGroupSettings', () => {
+    it('diffs against the nested group value, not top-level store keys', () => {
+      const settings = {
+        stream_settings: {
+          id: 1,
+          key: 'stream_settings',
+          value: {
+            default_user_agent: 5,
+            default_stream_profile: 3,
+            default_output_format: 'mpegts',
+            hdhr_output_profile_id: null,
+            m3u_hash_key: 'name',
+          },
+        },
+      };
+
+      const values = {
+        default_user_agent: '5',
+        default_stream_profile: '3',
+        default_output_format: 'mpegts',
+        hdhr_output_profile_id: null,
+        m3u_hash_key: ['name'],
+      };
+
+      expect(
+        SettingsUtils.getChangedGroupSettings(
+          values,
+          settings,
+          'stream_settings'
+        )
+      ).toEqual({});
+    });
+
+    it('includes only changed fields for the group', () => {
+      const settings = {
+        dvr_settings: {
+          value: {
+            comskip_enabled: false,
+            pre_offset_minutes: 0,
+            output_profile_id: null,
+          },
+        },
+      };
+
+      const changes = SettingsUtils.getChangedGroupSettings(
+        {
+          comskip_enabled: true,
+          pre_offset_minutes: 0,
+          output_profile_id: null,
+          tv_template: undefined,
+        },
+        settings,
+        'dvr_settings'
+      );
+
+      expect(changes).toEqual({ comskip_enabled: true });
+    });
+
+    it('includes a cleared output_profile_id as null', () => {
+      const settings = {
+        dvr_settings: {
+          value: { output_profile_id: 6 },
+        },
+      };
+
+      const changes = SettingsUtils.getChangedGroupSettings(
+        { output_profile_id: null },
+        settings,
+        'dvr_settings'
+      );
+
+      expect(changes).toEqual({ output_profile_id: null });
+    });
+
+    it('does not emit unchanged array fields', () => {
+      const settings = {
+        epg_settings: {
+          value: {
+            epg_match_mode: 'advanced',
+            epg_match_ignore_prefixes: ['HD:'],
+            epg_match_ignore_suffixes: [],
+            epg_match_ignore_custom: [],
+          },
+        },
+      };
+
+      const changes = SettingsUtils.getChangedGroupSettings(
+        {
+          epg_match_mode: 'advanced',
+          epg_match_ignore_prefixes: ['HD:'],
+          epg_match_ignore_suffixes: [],
+          epg_match_ignore_custom: [],
+        },
+        settings,
+        'epg_settings'
+      );
+
+      expect(changes).toEqual({});
+    });
+
+    it('detects m3u_hash_key changes between array form and CSV store', () => {
+      const settings = {
+        stream_settings: {
+          value: { m3u_hash_key: 'name' },
+        },
+      };
+
+      const changes = SettingsUtils.getChangedGroupSettings(
+        { m3u_hash_key: ['name', 'url'] },
+        settings,
+        'stream_settings'
+      );
+
+      expect(changes).toEqual({ m3u_hash_key: ['name', 'url'] });
+    });
+  });
+
+  describe('saveGroupSettings', () => {
+    it('updates only the requested group and preserves sibling keys', async () => {
       const settings = {
         stream_settings: {
           id: 1,
@@ -66,17 +302,20 @@ describe('SettingsUtils', () => {
             m3u_hash_key: 'channel_name',
           },
         },
-      };
-      const changedSettings = {
-        default_user_agent: 7,
-        preferred_region: 'UK',
+        system_settings: {
+          id: 2,
+          key: 'system_settings',
+          value: { preferred_region: 'US' },
+        },
       };
 
       API.updateSetting.mockResolvedValue({});
-      API.createSetting.mockResolvedValue({});
 
-      await SettingsUtils.saveChangedSettings(settings, changedSettings);
+      await SettingsUtils.saveGroupSettings(settings, 'stream_settings', {
+        default_user_agent: 7,
+      });
 
+      expect(API.updateSetting).toHaveBeenCalledTimes(1);
       expect(API.updateSetting).toHaveBeenCalledWith({
         id: 1,
         key: 'stream_settings',
@@ -85,594 +324,137 @@ describe('SettingsUtils', () => {
           m3u_hash_key: 'channel_name',
         },
       });
+      expect(API.createSetting).not.toHaveBeenCalled();
+    });
+
+    it('converts m3u_hash_key arrays to CSV and coerces id fields', async () => {
+      const settings = {
+        stream_settings: {
+          id: 1,
+          key: 'stream_settings',
+          value: {},
+        },
+      };
+
+      API.updateSetting.mockResolvedValue({});
+
+      await SettingsUtils.saveGroupSettings(settings, 'stream_settings', {
+        m3u_hash_key: ['name', 'url'],
+        default_user_agent: '5',
+        hdhr_output_profile_id: '9',
+      });
+
+      expect(API.updateSetting).toHaveBeenCalledWith({
+        id: 1,
+        key: 'stream_settings',
+        value: {
+          m3u_hash_key: 'name,url',
+          default_user_agent: 5,
+          hdhr_output_profile_id: 9,
+        },
+      });
+    });
+
+    it('stores a cleared output_profile_id as null on dvr_settings', async () => {
+      const settings = {
+        dvr_settings: {
+          id: 2,
+          key: 'dvr_settings',
+          value: { output_profile_id: 6, comskip_enabled: true },
+        },
+      };
+
+      API.updateSetting.mockResolvedValue({});
+
+      await SettingsUtils.saveGroupSettings(settings, 'dvr_settings', {
+        output_profile_id: null,
+      });
+
+      expect(API.updateSetting).toHaveBeenCalledWith({
+        id: 2,
+        key: 'dvr_settings',
+        value: { output_profile_id: null, comskip_enabled: true },
+      });
+    });
+
+    it('creates the group when it does not exist yet', async () => {
+      API.createSetting.mockResolvedValue({});
+
+      await SettingsUtils.saveGroupSettings({}, 'system_settings', {
+        preferred_region: 'UK',
+        catchup_enabled: 'true',
+      });
+
       expect(API.createSetting).toHaveBeenCalledWith({
         key: 'system_settings',
         name: 'System Settings',
         value: {
           preferred_region: 'UK',
+          catchup_enabled: true,
         },
       });
     });
 
-    it('should convert m3u_hash_key array to comma-separated string', async () => {
+    it('throws when updateSetting returns a falsy result', async () => {
+      const settings = {
+        dvr_settings: {
+          id: 2,
+          key: 'dvr_settings',
+          value: {},
+        },
+      };
+      API.updateSetting.mockResolvedValue(undefined);
+
+      await expect(
+        SettingsUtils.saveGroupSettings(settings, 'dvr_settings', {
+          comskip_enabled: true,
+        })
+      ).rejects.toThrow('Failed to update dvr_settings');
+    });
+
+    it('ignores fields that do not belong to the group', async () => {
       const settings = {
         stream_settings: {
           id: 1,
           key: 'stream_settings',
-          value: {},
+          value: { default_user_agent: 1 },
         },
       };
-      const changedSettings = {
-        m3u_hash_key: ['channel_name', 'channel_number'],
-      };
-
       API.updateSetting.mockResolvedValue({});
 
-      await SettingsUtils.saveChangedSettings(settings, changedSettings);
+      await SettingsUtils.saveGroupSettings(settings, 'stream_settings', {
+        default_user_agent: 2,
+        preferred_region: 'UK',
+      });
 
       expect(API.updateSetting).toHaveBeenCalledWith({
         id: 1,
         key: 'stream_settings',
-        value: {
-          m3u_hash_key: 'channel_name,channel_number',
-        },
+        value: { default_user_agent: 2 },
       });
     });
 
-    it('should persist catchup_enabled false in system_settings', async () => {
-      const settings = {
-        system_settings: {
-          id: 3,
-          key: 'system_settings',
-          value: { catchup_enabled: true },
-        },
-      };
-      const changedSettings = {
-        catchup_enabled: false,
-      };
-
-      API.updateSetting.mockResolvedValue({});
-
-      await SettingsUtils.saveChangedSettings(settings, changedSettings);
-
-      expect(API.updateSetting).toHaveBeenCalledWith({
-        id: 3,
-        key: 'system_settings',
-        value: {
-          catchup_enabled: false,
-        },
-      });
-    });
-
-    it('should coerce string false for boolean settings without enabling', async () => {
-      const settings = {
-        system_settings: {
-          id: 3,
-          key: 'system_settings',
-          value: {},
-        },
-      };
-      const changedSettings = {
-        catchup_enabled: 'false',
-      };
-
-      API.updateSetting.mockResolvedValue({});
-
-      await SettingsUtils.saveChangedSettings(settings, changedSettings);
-
-      expect(API.updateSetting).toHaveBeenCalledWith({
-        id: 3,
-        key: 'system_settings',
-        value: {
-          catchup_enabled: false,
-        },
-      });
-    });
-
-    it('should convert ID fields to integers', async () => {
-      const settings = {
-        stream_settings: {
-          id: 1,
-          key: 'stream_settings',
-          value: {},
-        },
-      };
-      const changedSettings = {
-        default_user_agent: '5',
-        default_stream_profile: '3',
-      };
-
-      API.updateSetting.mockResolvedValue({});
-
-      await SettingsUtils.saveChangedSettings(settings, changedSettings);
-
-      expect(API.updateSetting).toHaveBeenCalledWith({
-        id: 1,
-        key: 'stream_settings',
-        value: {
-          default_user_agent: 5,
-          default_stream_profile: 3,
-        },
-      });
-    });
-
-    it('should preserve boolean types', async () => {
-      const settings = {
-        dvr_settings: {
-          id: 2,
-          key: 'dvr_settings',
-          value: {},
-        },
-        system_settings: {
-          id: 3,
-          key: 'system_settings',
-          value: {},
-        },
-      };
-      const changedSettings = {
-        comskip_enabled: true,
-        auto_import_mapped_files: false,
-      };
-
-      API.updateSetting.mockResolvedValue({});
-
-      await SettingsUtils.saveChangedSettings(settings, changedSettings);
-
-      expect(API.updateSetting).toHaveBeenCalledTimes(2);
-      expect(API.updateSetting).toHaveBeenCalledWith(
-        expect.objectContaining({
-          key: 'dvr_settings',
-          value: { comskip_enabled: true },
-        })
+    it('no-ops when the patch is empty', async () => {
+      await SettingsUtils.saveGroupSettings(
+        { stream_settings: { id: 1, value: {} } },
+        'stream_settings',
+        {}
       );
-      expect(API.updateSetting).toHaveBeenCalledWith(
-        expect.objectContaining({
-          key: 'system_settings',
-          value: { auto_import_mapped_files: false },
-        })
-      );
+      expect(API.updateSetting).not.toHaveBeenCalled();
+      expect(API.createSetting).not.toHaveBeenCalled();
     });
 
-    it('should handle proxy_settings specially', async () => {
-      const settings = {
-        proxy_settings: {
-          id: 5,
-          key: 'proxy_settings',
-          value: {
-            buffering_speed: 1.0,
-          },
-        },
-      };
-      const changedSettings = {
-        proxy_settings: {
-          buffering_speed: 2.5,
-          buffering_timeout: 15,
-        },
-      };
-
-      API.updateSetting.mockResolvedValue({});
-
-      await SettingsUtils.saveChangedSettings(settings, changedSettings);
-
-      expect(API.updateSetting).toHaveBeenCalledWith({
-        id: 5,
-        key: 'proxy_settings',
-        value: {
-          buffering_speed: 2.5,
-          buffering_timeout: 15,
-        },
-      });
-    });
-
-    it('should create proxy_settings if it does not exist', async () => {
-      const settings = {};
-      const changedSettings = {
-        proxy_settings: {
-          buffering_speed: 2.5,
-        },
-      };
-
+    it('creates the group when settings is null', async () => {
       API.createSetting.mockResolvedValue({});
 
-      await SettingsUtils.saveChangedSettings(settings, changedSettings);
-
-      expect(API.createSetting).toHaveBeenCalledWith({
-        key: 'proxy_settings',
-        name: 'Proxy Settings',
-        value: {
-          buffering_speed: 2.5,
-        },
-      });
-    });
-
-    it('should handle network_access specially', async () => {
-      const settings = {
-        network_access: {
-          id: 6,
-          key: 'network_access',
-          value: [],
-        },
-      };
-      const changedSettings = {
-        network_access: ['192.168.1.0/24', '10.0.0.0/8'],
-      };
-
-      API.updateSetting.mockResolvedValue({});
-
-      await SettingsUtils.saveChangedSettings(settings, changedSettings);
-
-      expect(API.updateSetting).toHaveBeenCalledWith({
-        id: 6,
-        key: 'network_access',
-        value: ['192.168.1.0/24', '10.0.0.0/8'],
-      });
-    });
-  });
-
-  describe('parseSettings', () => {
-    it('should parse grouped settings correctly', () => {
-      const mockSettings = {
-        stream_settings: {
-          id: 1,
-          key: 'stream_settings',
-          value: {
-            default_user_agent: 5,
-            default_stream_profile: 3,
-            m3u_hash_key: 'channel_name,channel_number',
-          },
-        },
-        system_settings: {
-          id: 3,
-          key: 'system_settings',
-          value: {
-            preferred_region: 'US',
-            auto_import_mapped_files: true,
-          },
-        },
-        dvr_settings: {
-          id: 2,
-          key: 'dvr_settings',
-          value: {
-            tv_template: '/media/tv/{show}/{season}/',
-            comskip_enabled: false,
-            pre_offset_minutes: 2,
-            post_offset_minutes: 5,
-          },
-        },
-      };
-
-      const result = SettingsUtils.parseSettings(mockSettings);
-
-      // Check stream settings
-      expect(result.default_user_agent).toBe('5');
-      expect(result.default_stream_profile).toBe('3');
-      expect(result.m3u_hash_key).toEqual(['channel_name', 'channel_number']);
-      expect(result.preferred_region).toBe('US');
-      expect(result.auto_import_mapped_files).toBe(true);
-      expect(result.catchup_enabled).toBe(true);
-
-      // Check DVR settings
-      expect(result.tv_template).toBe('/media/tv/{show}/{season}/');
-      expect(result.comskip_enabled).toBe(false);
-      expect(result.pre_offset_minutes).toBe(2);
-      expect(result.post_offset_minutes).toBe(5);
-    });
-
-    it('should handle empty m3u_hash_key', () => {
-      const mockSettings = {
-        stream_settings: {
-          id: 1,
-          key: 'stream_settings',
-          value: {
-            m3u_hash_key: '',
-          },
-        },
-      };
-
-      const result = SettingsUtils.parseSettings(mockSettings);
-      expect(result.m3u_hash_key).toEqual([]);
-    });
-
-    it('should handle proxy_settings', () => {
-      const mockSettings = {
-        proxy_settings: {
-          id: 5,
-          key: 'proxy_settings',
-          value: {
-            buffering_speed: 2.5,
-            buffering_timeout: 15,
-          },
-        },
-      };
-
-      const result = SettingsUtils.parseSettings(mockSettings);
-      expect(result.proxy_settings).toEqual({
-        buffering_speed: 2.5,
-        buffering_timeout: 15,
-      });
-    });
-
-    it('should handle network_access', () => {
-      const mockSettings = {
-        network_access: {
-          id: 6,
-          key: 'network_access',
-          value: ['192.168.1.0/24', '10.0.0.0/8'],
-        },
-      };
-
-      const result = SettingsUtils.parseSettings(mockSettings);
-      expect(result.network_access).toEqual(['192.168.1.0/24', '10.0.0.0/8']);
-    });
-
-    it('should parse valid series_rules as array', () => {
-      const mockSettings = {
-        dvr_settings: {
-          id: 2,
-          key: 'dvr_settings',
-          value: {
-            series_rules: [{ tvg_id: 'abc', mode: 'all', title: 'Show' }],
-          },
-        },
-      };
-
-      const result = SettingsUtils.parseSettings(mockSettings);
-      expect(result.series_rules).toEqual([
-        { tvg_id: 'abc', mode: 'all', title: 'Show' },
-      ]);
-    });
-
-    it('should default series_rules to empty array when not an array', () => {
-      const mockSettings = {
-        dvr_settings: {
-          id: 2,
-          key: 'dvr_settings',
-          value: {
-            series_rules: 'corrupted',
-          },
-        },
-      };
-
-      const result = SettingsUtils.parseSettings(mockSettings);
-      expect(result.series_rules).toEqual([]);
-    });
-
-    it('should default series_rules to empty array when missing', () => {
-      const mockSettings = {
-        dvr_settings: {
-          id: 2,
-          key: 'dvr_settings',
-          value: {},
-        },
-      };
-
-      const result = SettingsUtils.parseSettings(mockSettings);
-      expect(result.series_rules).toEqual([]);
-    });
-  });
-
-  describe('getChangedSettings', () => {
-    it('should detect changes in primitive values', () => {
-      const values = {
-        time_zone: 'America/New_York',
-        max_system_events: 2000,
-        comskip_enabled: true,
-      };
-      const settings = {
-        time_zone: { value: 'UTC' },
-        max_system_events: { value: 1000 },
-        comskip_enabled: { value: false },
-      };
-
-      const changes = SettingsUtils.getChangedSettings(values, settings);
-
-      expect(changes).toEqual({
-        time_zone: 'America/New_York',
-        max_system_events: 2000,
+      await SettingsUtils.saveGroupSettings(null, 'dvr_settings', {
         comskip_enabled: true,
       });
-    });
-
-    it('should not detect unchanged values', () => {
-      const values = {
-        time_zone: 'UTC',
-        max_system_events: 1000,
-      };
-      const settings = {
-        time_zone: { value: 'UTC' },
-        max_system_events: { value: 1000 },
-      };
-
-      const changes = SettingsUtils.getChangedSettings(values, settings);
-      expect(changes).toEqual({});
-    });
-
-    it('should preserve type of numeric values', () => {
-      const values = {
-        max_system_events: 2000,
-      };
-      const settings = {
-        max_system_events: { value: 1000 },
-      };
-
-      const changes = SettingsUtils.getChangedSettings(values, settings);
-      expect(typeof changes.max_system_events).toBe('number');
-      expect(changes.max_system_events).toBe(2000);
-    });
-
-    it('should detect changes in array values', () => {
-      const values = {
-        m3u_hash_key: ['channel_name', 'channel_number'],
-      };
-      const settings = {
-        m3u_hash_key: { value: 'channel_name' },
-      };
-
-      const changes = SettingsUtils.getChangedSettings(values, settings);
-      // Arrays are converted to comma-separated strings internally
-      expect(changes).toEqual({
-        m3u_hash_key: 'channel_name,channel_number',
-      });
-    });
-
-    it('should skip proxy_settings and network_access', () => {
-      const values = {
-        time_zone: 'America/New_York',
-        proxy_settings: {
-          buffering_speed: 2.5,
-        },
-        network_access: ['192.168.1.0/24'],
-      };
-      const settings = {
-        time_zone: { value: 'UTC' },
-      };
-
-      const changes = SettingsUtils.getChangedSettings(values, settings);
-      expect(changes.proxy_settings).toBeUndefined();
-      expect(changes.network_access).toBeUndefined();
-      expect(changes.time_zone).toBe('America/New_York');
-    });
-
-    it('should always include epg_match_mode', () => {
-      const values = {
-        epg_match_mode: 'advanced',
-        epg_match_ignore_prefixes: ['HD:'],
-      };
-      const settings = {};
-
-      const changes = SettingsUtils.getChangedSettings(values, settings);
-      expect(changes.epg_match_mode).toBe('advanced');
-    });
-
-    it('should default epg_match_mode to "default" if not provided', () => {
-      const values = {
-        epg_match_ignore_prefixes: ['HD:'],
-      };
-      const settings = {};
-
-      const changes = SettingsUtils.getChangedSettings(values, settings);
-      // epg_match_mode should not be included if not in values
-      expect(changes.epg_match_mode).toBeUndefined();
-    });
-
-    it('should always include EPG array fields even if empty', () => {
-      const values = {
-        epg_match_ignore_prefixes: [],
-        epg_match_ignore_suffixes: [],
-        epg_match_ignore_custom: [],
-      };
-      const settings = {};
-
-      const changes = SettingsUtils.getChangedSettings(values, settings);
-      expect(changes.epg_match_ignore_prefixes).toEqual([]);
-      expect(changes.epg_match_ignore_suffixes).toEqual([]);
-      expect(changes.epg_match_ignore_custom).toEqual([]);
-    });
-
-    it('should keep series_rules as array and not stringify', () => {
-      const rules = [{ tvg_id: 'abc', mode: 'all', title: 'Show' }];
-      const values = { series_rules: rules };
-      const settings = {};
-
-      const changes = SettingsUtils.getChangedSettings(values, settings);
-      expect(changes.series_rules).toEqual(rules);
-    });
-
-    it('should default series_rules to empty array if not an array', () => {
-      const values = { series_rules: 'corrupted' };
-      const settings = {};
-
-      const changes = SettingsUtils.getChangedSettings(values, settings);
-      expect(changes.series_rules).toEqual([]);
-    });
-  });
-
-  describe('saveChangedSettings - EPG Mode', () => {
-    it('should save epg_match_mode to epg_settings group', async () => {
-      const settings = {
-        epg_settings: {
-          id: 3,
-          key: 'epg_settings',
-          value: {
-            epg_match_mode: 'default',
-            epg_match_ignore_prefixes: [],
-            epg_match_ignore_suffixes: [],
-            epg_match_ignore_custom: [],
-          },
-        },
-      };
-      const changedSettings = {
-        epg_match_mode: 'advanced',
-        epg_match_ignore_prefixes: ['HD:'],
-      };
-
-      API.updateSetting.mockResolvedValue({});
-
-      await SettingsUtils.saveChangedSettings(settings, changedSettings);
-
-      expect(API.updateSetting).toHaveBeenCalledWith({
-        id: 3,
-        key: 'epg_settings',
-        value: {
-          epg_match_mode: 'advanced',
-          epg_match_ignore_prefixes: ['HD:'],
-          epg_match_ignore_suffixes: [],
-          epg_match_ignore_custom: [],
-        },
-      });
-    });
-
-    it('should create epg_settings if it does not exist', async () => {
-      const settings = {};
-      const changedSettings = {
-        epg_match_mode: 'advanced',
-        epg_match_ignore_prefixes: ['Sling:'],
-      };
-
-      API.createSetting.mockResolvedValue({});
-
-      await SettingsUtils.saveChangedSettings(settings, changedSettings);
 
       expect(API.createSetting).toHaveBeenCalledWith({
-        key: 'epg_settings',
-        name: 'Epg Settings',
-        value: {
-          epg_match_mode: 'advanced',
-          epg_match_ignore_prefixes: ['Sling:'],
-        },
-      });
-    });
-
-    it('should preserve existing EPG settings when updating mode', async () => {
-      const settings = {
-        epg_settings: {
-          id: 3,
-          key: 'epg_settings',
-          value: {
-            epg_match_mode: 'advanced',
-            epg_match_ignore_prefixes: ['HD:'],
-            epg_match_ignore_suffixes: [' 4K'],
-            epg_match_ignore_custom: ['Plus'],
-          },
-        },
-      };
-      const changedSettings = {
-        epg_match_mode: 'default',
-      };
-
-      API.updateSetting.mockResolvedValue({});
-
-      await SettingsUtils.saveChangedSettings(settings, changedSettings);
-
-      expect(API.updateSetting).toHaveBeenCalledWith({
-        id: 3,
-        key: 'epg_settings',
-        value: {
-          epg_match_mode: 'default',
-          epg_match_ignore_prefixes: ['HD:'],
-          epg_match_ignore_suffixes: [' 4K'],
-          epg_match_ignore_custom: ['Plus'],
-        },
+        key: 'dvr_settings',
+        name: 'DVR Settings',
+        value: { comskip_enabled: true },
       });
     });
   });

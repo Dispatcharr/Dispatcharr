@@ -18,22 +18,26 @@ gevent compatibility without any additional driver patching.
 
 Celery and Daphne run in separate daemon processes and do not load this module.
 
-Note: this module runs before Django configures logging, so print() is used
-instead of logger so output reaches uWSGI's stdout.
+Note: this module runs before Django configures logging, so it stamps its own
+lines in the collector's grammar rather than logging them.
 """
 import sys
 
 from gevent import monkey
 
+from dispatcharr.startup_log import startup_log
+
 if not monkey.is_module_patched("socket"):
-    print(
-        "[gevent_patch] WARNING: gevent-early-monkey-patch did not run - "
-        "applying monkey.patch_all() now.",
-        file=sys.stderr,
-        flush=True,
+    startup_log(
+        "gevent-early-monkey-patch did not run - applying monkey.patch_all() now.",
+        level="WARNING",
+        source=__name__,
+        stream=sys.stderr,
     )
     monkey.patch_all()
 else:
-    print("[gevent_patch] gevent stdlib monkey-patching already active.", flush=True)
+    startup_log(
+        "gevent stdlib monkey-patching already active.", source=__name__
+    )
 
 

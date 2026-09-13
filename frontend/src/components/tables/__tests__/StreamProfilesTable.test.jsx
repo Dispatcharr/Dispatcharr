@@ -12,6 +12,7 @@ vi.mock('../../../api', () => ({
 // ── Store mocks ────────────────────────────────────────────────────────────────
 vi.mock('../../../store/streamProfiles', () => ({ default: vi.fn() }));
 vi.mock('../../../store/settings', () => ({ default: vi.fn() }));
+vi.mock('../../../store/warnings', () => ({ default: vi.fn() }));
 
 // ── Hook mocks ─────────────────────────────────────────────────────────────────
 vi.mock('../../../hooks/useBrowserStorage', () => ({
@@ -42,6 +43,29 @@ vi.mock('../../forms/StreamProfile', () => ({
     ) : null,
 }));
 
+vi.mock('../../ConfirmationDialog', () => ({
+  default: ({
+    opened,
+    onClose,
+    onConfirm,
+    title,
+    loading,
+    confirmLabel,
+    cancelLabel,
+  }) =>
+    opened ? (
+      <div data-testid="confirm-dialog">
+        <span data-testid="confirm-title">{title}</span>
+        <button data-testid="confirm-ok" onClick={onConfirm} disabled={loading}>
+          {confirmLabel}
+        </button>
+        <button data-testid="confirm-cancel" onClick={onClose}>
+          {cancelLabel}
+        </button>
+      </div>
+    ) : null,
+}));
+
 vi.mock('../CustomTable', () => ({
   CustomTable: () => <div data-testid="custom-table" />,
   useTable: vi.fn(),
@@ -61,7 +85,11 @@ vi.mock('@mantine/core', () => ({
   ),
   Box: ({ children, style }) => <div style={style}>{children}</div>,
   Button: ({ children, onClick, leftSection, disabled, loading }) => (
-    <button data-testid="button" onClick={onClick} disabled={disabled || loading}>
+    <button
+      data-testid="button"
+      onClick={onClick}
+      disabled={disabled || loading}
+    >
       {leftSection}
       {children}
     </button>
@@ -84,9 +112,7 @@ vi.mock('@mantine/core', () => ({
       {children}
     </span>
   ),
-  Tooltip: ({ children, label }) => (
-    <div data-tooltip={label}>{children}</div>
-  ),
+  Tooltip: ({ children, label }) => <div data-tooltip={label}>{children}</div>,
   useMantineTheme: vi.fn(() => ({
     palette: { background: { paper: '#1a1a1a' } },
   })),
@@ -104,6 +130,7 @@ vi.mock('lucide-react', () => ({
 // ── Imports after mocks ────────────────────────────────────────────────────────
 import useStreamProfilesStore from '../../../store/streamProfiles';
 import useSettingsStore from '../../../store/settings';
+import useWarningsStore from '../../../store/warnings';
 import { useTable } from '../CustomTable';
 import { showNotification } from '../../../utils/notificationUtils.js';
 import { updateStreamProfile } from '../../../utils/forms/StreamProfileUtils.js';
@@ -126,6 +153,7 @@ let capturedTableOptions = null;
 const setupMocks = ({
   profiles = [makeProfile()],
   defaultProfileId = 99,
+  isWarningSuppressed = vi.fn(() => false),
 } = {}) => {
   vi.mocked(useStreamProfilesStore).mockImplementation((sel) =>
     sel({ profiles })
@@ -133,6 +161,13 @@ const setupMocks = ({
 
   vi.mocked(useSettingsStore).mockImplementation((sel) =>
     sel({ settings: { default_stream_profile: defaultProfileId } })
+  );
+
+  vi.mocked(useWarningsStore).mockImplementation((sel) =>
+    sel({
+      isWarningSuppressed,
+      suppressWarning: vi.fn(),
+    })
   );
 
   vi.mocked(useTable).mockImplementation((opts) => {
@@ -193,7 +228,9 @@ describe('StreamProfiles', () => {
     it('does not render the form on initial load', () => {
       setupMocks();
       render(<StreamProfiles />);
-      expect(screen.queryByTestId('stream-profile-form')).not.toBeInTheDocument();
+      expect(
+        screen.queryByTestId('stream-profile-form')
+      ).not.toBeInTheDocument();
     });
 
     it('passes all profiles to useTable when hideInactive is false', () => {
@@ -224,7 +261,9 @@ describe('StreamProfiles', () => {
       render(<StreamProfiles />);
       fireEvent.click(screen.getByText('Add Stream Profile'));
       fireEvent.click(screen.getByTestId('form-close'));
-      expect(screen.queryByTestId('stream-profile-form')).not.toBeInTheDocument();
+      expect(
+        screen.queryByTestId('stream-profile-form')
+      ).not.toBeInTheDocument();
     });
   });
 
@@ -243,7 +282,9 @@ describe('StreamProfiles', () => {
       fireEvent.click(getByTestId('icon-square-pen').closest('button'));
 
       expect(screen.getByTestId('stream-profile-form')).toBeInTheDocument();
-      expect(screen.getByTestId('form-profile-name')).toHaveTextContent('My Profile');
+      expect(screen.getByTestId('form-profile-name')).toHaveTextContent(
+        'My Profile'
+      );
     });
 
     it('closes the form after editing when onClose is called', () => {
@@ -258,7 +299,9 @@ describe('StreamProfiles', () => {
       fireEvent.click(getByTestId('icon-square-pen').closest('button'));
       fireEvent.click(screen.getByTestId('form-close'));
 
-      expect(screen.queryByTestId('stream-profile-form')).not.toBeInTheDocument();
+      expect(
+        screen.queryByTestId('stream-profile-form')
+      ).not.toBeInTheDocument();
     });
 
     it('edit button is disabled when profile is locked', () => {
@@ -282,16 +325,101 @@ describe('StreamProfiles', () => {
       const { getByTestId } = render(
         capturedTableOptions.bodyCellRenderFns.actions({ cell, row })
       );
-      expect(getByTestId('icon-square-pen').closest('button')).not.toBeDisabled();
+      expect(
+        getByTestId('icon-square-pen').closest('button')
+      ).not.toBeDisabled();
     });
   });
 
   // ── Delete profile via RowActions ──────────────────────────────────────────
 
   describe('delete profile via RowActions', () => {
-    it('calls API.deleteStreamProfile with the profile id when delete icon is clicked', async () => {
+    it('opens ConfirmationDialog when delete is clicked and warning is not suppressed', () => {
+      const profile = makeProfile({ id: 7, name: 'To Delete' });
+      setupMocks({
+        profiles: [profile],
+        isWarningSuppressed: vi.fn(() => false),
+      });
+      render(<StreamProfiles />);
+
+      const { row, cell } = makeRowCtx(profile);
+      const { getByTestId } = render(
+        capturedTableOptions.bodyCellRenderFns.actions({ cell, row })
+      );
+      fireEvent.click(getByTestId('icon-square-minus').closest('button'));
+
+      expect(screen.getByTestId('confirm-dialog')).toBeInTheDocument();
+      expect(screen.getByTestId('confirm-title')).toHaveTextContent(
+        'Confirm Stream Profile Deletion'
+      );
+      expect(API.deleteStreamProfile).not.toHaveBeenCalled();
+    });
+
+    it('calls API.deleteStreamProfile when confirmed via dialog', async () => {
       const profile = makeProfile({ id: 7 });
-      setupMocks({ profiles: [profile] });
+      setupMocks({
+        profiles: [profile],
+        isWarningSuppressed: vi.fn(() => false),
+      });
+      render(<StreamProfiles />);
+
+      const { row, cell } = makeRowCtx(profile);
+      const { getByTestId } = render(
+        capturedTableOptions.bodyCellRenderFns.actions({ cell, row })
+      );
+      fireEvent.click(getByTestId('icon-square-minus').closest('button'));
+      fireEvent.click(screen.getByTestId('confirm-ok'));
+
+      await waitFor(() =>
+        expect(API.deleteStreamProfile).toHaveBeenCalledWith(7)
+      );
+    });
+
+    it('closes the dialog after confirming delete', async () => {
+      const profile = makeProfile({ id: 7 });
+      setupMocks({
+        profiles: [profile],
+        isWarningSuppressed: vi.fn(() => false),
+      });
+      render(<StreamProfiles />);
+
+      const { row, cell } = makeRowCtx(profile);
+      const { getByTestId } = render(
+        capturedTableOptions.bodyCellRenderFns.actions({ cell, row })
+      );
+      fireEvent.click(getByTestId('icon-square-minus').closest('button'));
+      fireEvent.click(screen.getByTestId('confirm-ok'));
+
+      await waitFor(() =>
+        expect(screen.queryByTestId('confirm-dialog')).not.toBeInTheDocument()
+      );
+    });
+
+    it('closes the dialog when Cancel is clicked', () => {
+      const profile = makeProfile({ id: 7 });
+      setupMocks({
+        profiles: [profile],
+        isWarningSuppressed: vi.fn(() => false),
+      });
+      render(<StreamProfiles />);
+
+      const { row, cell } = makeRowCtx(profile);
+      const { getByTestId } = render(
+        capturedTableOptions.bodyCellRenderFns.actions({ cell, row })
+      );
+      fireEvent.click(getByTestId('icon-square-minus').closest('button'));
+      fireEvent.click(screen.getByTestId('confirm-cancel'));
+
+      expect(screen.queryByTestId('confirm-dialog')).not.toBeInTheDocument();
+      expect(API.deleteStreamProfile).not.toHaveBeenCalled();
+    });
+
+    it('skips dialog and deletes immediately when warning is suppressed', async () => {
+      const profile = makeProfile({ id: 7 });
+      setupMocks({
+        profiles: [profile],
+        isWarningSuppressed: vi.fn(() => true),
+      });
       render(<StreamProfiles />);
 
       const { row, cell } = makeRowCtx(profile);
@@ -303,6 +431,7 @@ describe('StreamProfiles', () => {
       await waitFor(() =>
         expect(API.deleteStreamProfile).toHaveBeenCalledWith(7)
       );
+      expect(screen.queryByTestId('confirm-dialog')).not.toBeInTheDocument();
     });
 
     it('shows a notification and does NOT call API when deleting the default profile', async () => {
@@ -325,6 +454,7 @@ describe('StreamProfiles', () => {
         )
       );
       expect(API.deleteStreamProfile).not.toHaveBeenCalled();
+      expect(screen.queryByTestId('confirm-dialog')).not.toBeInTheDocument();
     });
 
     it('delete button is disabled when profile is locked', () => {
@@ -348,7 +478,9 @@ describe('StreamProfiles', () => {
       const { getByTestId } = render(
         capturedTableOptions.bodyCellRenderFns.actions({ cell, row })
       );
-      expect(getByTestId('icon-square-minus').closest('button')).not.toBeDisabled();
+      expect(
+        getByTestId('icon-square-minus').closest('button')
+      ).not.toBeDisabled();
     });
   });
 
