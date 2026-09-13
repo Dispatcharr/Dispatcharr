@@ -1745,6 +1745,14 @@ def _dvr_subtitle_sidecar_path(hls_dir, attempt):
     return os.path.join(hls_dir, f"subs_attempt_{attempt}.ts")
 
 
+def _dvr_sidecar_fold_in_eligible(subtitle_codec, ffmpeg_retry_count, resumed_with_segments):
+    """A sidecar only aligns with the final MKV for a clean single-attempt
+    recording. A later in-task ffmpeg retry restarts its own timestamps, and
+    so does a resume onto a pre-existing HLS dir after a server restart -
+    either way the sidecar covers only part of the timeline."""
+    return bool(subtitle_codec) and ffmpeg_retry_count == 0 and not resumed_with_segments
+
+
 def _dvr_fold_subtitle_sidecar_into_mkv(
     sidecar_path, subtitle_codec, output_path, log_label, deadline, run_cmd=None
 ):
@@ -1781,6 +1789,7 @@ def _dvr_fold_subtitle_sidecar_into_mkv(
                 "-map", "0",
                 "-map", "1:s",
                 "-c", "copy",
+                "-f", "matroska",
                 tmp_output,
             ],
             log_label, "fold subtitle sidecar into MKV", deadline,
@@ -2094,6 +2103,7 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
     channel = Channel.objects.get(id=channel_id)
 
     _dvr_subtitle_codec = None
+    _dvr_resumed_with_segments = False
     try:
         _primary_stream = channel.streams.all().order_by("channelstream__order").first()
         if _primary_stream:
@@ -2194,6 +2204,7 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
                 )
             except OSError:
                 _seg_count = 0
+            _dvr_resumed_with_segments = _seg_count > 0
             logger.info(
                 f"run_recording {recording_id}: resuming into existing HLS dir "
                 f"{hls_dir} ({_seg_count} segment(s)), final={final_path}"
@@ -2842,10 +2853,14 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
 
                 # Only a single-attempt recording gets its sidecar folded in -
                 # a later attempt restarts its own timestamps, so alignment
-                # across attempts isn't attempted.
+                # across attempts isn't attempted. A resume onto a pre-existing
+                # HLS dir (server restart, not an in-task ffmpeg retry) is the
+                # same case: its sidecar only covers the post-resume portion.
                 if hls_dir:
                     try:
-                        if _dvr_subtitle_codec and _ffmpeg_retry_count == 0:
+                        if _dvr_sidecar_fold_in_eligible(
+                            _dvr_subtitle_codec, _ffmpeg_retry_count, _dvr_resumed_with_segments,
+                        ):
                             _sidecar = _dvr_subtitle_sidecar_path(hls_dir, 0)
                             _subs_deadline = time.monotonic() + _DVR_HLS_REMUX_TIMEOUT_SECONDS
                             if _dvr_fold_subtitle_sidecar_into_mkv(

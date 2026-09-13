@@ -16,6 +16,7 @@ from django.test import SimpleTestCase
 from apps.channels.tasks import (
     _dvr_build_ffmpeg_cmd,
     _dvr_subtitle_sidecar_path,
+    _dvr_sidecar_fold_in_eligible,
     _dvr_fold_subtitle_sidecar_into_mkv,
 )
 
@@ -64,6 +65,23 @@ class SidecarPathTests(SimpleTestCase):
         first = _dvr_subtitle_sidecar_path("/data/.dvr_5_hls", 0)
         second = _dvr_subtitle_sidecar_path("/data/.dvr_5_hls", 1)
         self.assertNotEqual(first, second)
+
+
+class SidecarFoldInEligibleTests(SimpleTestCase):
+    def test_clean_single_attempt_is_eligible(self):
+        self.assertTrue(_dvr_sidecar_fold_in_eligible("dvb_teletext", 0, False))
+
+    def test_no_detected_codec_is_not_eligible(self):
+        self.assertFalse(_dvr_sidecar_fold_in_eligible(None, 0, False))
+
+    def test_a_retried_attempt_is_not_eligible(self):
+        self.assertFalse(_dvr_sidecar_fold_in_eligible("dvb_teletext", 1, False))
+
+    def test_resumed_onto_pre_existing_segments_is_not_eligible(self):
+        # A server restart mid-recording resumes into the same HLS dir with
+        # zero in-task ffmpeg retries, but the sidecar only covers the
+        # post-resume portion of a timeline that already has segments.
+        self.assertFalse(_dvr_sidecar_fold_in_eligible("dvb_teletext", 0, True))
 
 
 class FoldSidecarIntoMkvTests(SimpleTestCase):
@@ -129,6 +147,20 @@ class FoldSidecarIntoMkvTests(SimpleTestCase):
         self.assertFalse(os.path.exists(self.sidecar_path))
         with open(self.output_path, "rb") as f:
             self.assertEqual(f.read(), b"tool output")
+
+    def test_mux_command_forces_matroska_output_format(self):
+        # The temp output is named "<recording>.mkv.with_subs.tmp" - ffmpeg
+        # infers the muxer from the extension, and ".tmp" isn't one, so the
+        # format must be forced explicitly or ffmpeg can't select a muxer.
+        with open(self.sidecar_path, "wb") as f:
+            f.write(b"dvbsub bitstream")
+        _dvr_fold_subtitle_sidecar_into_mkv(
+            self.sidecar_path, "dvb_subtitle", self.output_path,
+            "test", self.deadline, run_cmd=self._write_output_and_succeed,
+        )
+        mux_cmd = self.calls[0][1]
+        self.assertIn("-f", mux_cmd)
+        self.assertEqual(mux_cmd[mux_cmd.index("-f") + 1], "matroska")
 
     def test_dvb_subtitle_mux_failure_leaves_original_mkv_untouched(self):
         with open(self.sidecar_path, "wb") as f:

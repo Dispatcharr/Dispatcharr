@@ -4,8 +4,11 @@ DVB subtitle and teletext streams are reported by FFmpeg on the same
 ``Stream #...`` lines as video and audio, but were not parsed, so a channel
 carrying them looked identical to one that did not.
 """
+from unittest.mock import patch
+
 from django.test import TestCase
 
+from apps.proxy.live_proxy.services.channel_service import ChannelService
 from apps.proxy.live_proxy.services.log_parsers import (
     FFmpegLogParser,
     LogParserFactory,
@@ -80,6 +83,24 @@ class SubtitleParsingLeavesOtherStreamsAloneTests(TestCase):
         parser = FFmpegLogParser()
         line = "Stream #0:1[0x101](eng): Audio: mp2, 48000 Hz, stereo, fltp, 256 kb/s"
         self.assertEqual(parser.can_parse(line), "audio")
+
+
+class SubtitleCodecReachesStreamStatsTests(TestCase):
+    """The DVR sidecar reads subtitle_codec back off Stream.stream_stats
+    (apps/channels/tasks.py), so parsing it here is useless unless it's
+    actually forwarded to the DB write - it wasn't."""
+
+    @patch("apps.proxy.live_proxy.services.channel_service.ChannelService._update_stream_info_in_redis")
+    @patch("apps.proxy.live_proxy.services.channel_service.ChannelService._update_stream_stats_in_db")
+    def test_subtitle_codec_and_language_are_forwarded_to_db_write(self, mock_db, mock_redis):
+        ChannelService.parse_and_store_stream_info(
+            channel_id=1, stream_info_line=TELETEXT_LINE,
+            stream_type="subtitle", stream_id=99,
+        )
+        mock_db.assert_called_once()
+        _, kwargs = mock_db.call_args
+        self.assertEqual(kwargs.get("subtitle_codec"), "dvb_teletext")
+        self.assertEqual(kwargs.get("subtitle_language"), "eng")
 
 
 class OtherParsersIgnoreSubtitlesTests(TestCase):
