@@ -3,6 +3,7 @@ import time
 import random
 import re
 import pathlib
+import requests
 from django.db import close_old_connections
 from django.http import (
     StreamingHttpResponse,
@@ -427,8 +428,40 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
                     if stream_profile.is_redirect():
                         from apps.proxy.config import TSConfig
 
+                        def _redirect_preview_generator(url, user_agent=None):
+                            """Fetch a redirect-mode stream server-side and yield chunks.
+
+                            Used only for admin in-browser preview (?preview=1) to avoid the
+                            browser-side mixed-content/CORS block that occurs when the frontend
+                            tries to follow a redirect to a provider URL on a different
+                            origin/protocol. Server-to-server requests are not subject to
+                            browser mixed-content/CORS rules at all.
+                            """
+                            headers = {'User-Agent': user_agent} if user_agent else {}
+                            with requests.get(url, headers=headers, stream=True, timeout=(5, 10)) as r:
+                                r.raise_for_status()
+                                for chunk in r.iter_content(chunk_size=188 * 64):
+                                    if chunk:
+                                        yield chunk
+
                         def _redirect_response(url):
                             """Hand the client the provider URL (HTTP or non-HTTP)."""
+                            is_preview_request = request.GET.get('preview') == '1'
+                            is_admin_user = bool(user) and (
+                                getattr(user, 'is_staff', False) or getattr(user, 'user_level', 0) >= 10
+                            )
+                            if (
+                                is_preview_request
+                                and is_admin_user
+                                and url.startswith(("http://", "https://"))
+                            ):
+                                logger.info(
+                                    f"[{client_id}] Admin preview: proxying {url} server-side"
+                                )
+                                return StreamingHttpResponse(
+                                    _redirect_preview_generator(url, user_agent=stream_user_agent),
+                                    content_type='video/mp2t',
+                                )
                             if url.startswith(("rtsp://", "rtp://", "udp://")):
                                 logger.info(
                                     f"[{client_id}] Using manual redirect for non-HTTP protocol"
