@@ -27,16 +27,21 @@ ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 WORKDIR /app
 
 # ccextractor: decodes DVB teletext (and DVB subtitle) to SRT for the DVR
-# subtitle sidecar (#259) - ffmpeg ships no teletext decoder. Plain
-# systemlibs release, not the AppImage (needs FUSE) or hardsubx variant
-# (OCR support we don't use) - GPL-2.0, ~3.3MB.
+# subtitle sidecar (#259) - ffmpeg ships no teletext decoder. The plain
+# systemlibs release wants libutf8proc.so.2, which Ubuntu 24.04 no longer
+# ships (noble carries libutf8proc3, an incompatible soname bump) - so
+# instead extract the AppImage's bundled runtime once at build time
+# (`--appimage-extract`, no FUSE needed either now or at container runtime)
+# and symlink it onto PATH. GPL-2.0, ~30MB extracted.
 ARG CCEXTRACTOR_VERSION=v0.96.6
-RUN curl -sL "https://github.com/CCExtractor/ccextractor/releases/download/${CCEXTRACTOR_VERSION}/ccextractor-linux-systemlibs-x86_64.tar.gz" \
-    -o /tmp/ccextractor.tar.gz \
-    && tar -xzf /tmp/ccextractor.tar.gz -C /usr/local/bin ./ccextractor \
-    && rm -f /tmp/ccextractor.tar.gz \
-    && chmod +x /usr/local/bin/ccextractor \
-    && /usr/local/bin/ccextractor --version
+RUN curl -sL "https://github.com/CCExtractor/ccextractor/releases/download/${CCEXTRACTOR_VERSION}/ccextractor-x86_64.AppImage" \
+    -o /tmp/ccextractor.AppImage \
+    && chmod +x /tmp/ccextractor.AppImage \
+    && cd /tmp && ./ccextractor.AppImage --appimage-extract \
+    && mv /tmp/squashfs-root /opt/ccextractor \
+    && ln -s /opt/ccextractor/AppRun /usr/local/bin/ccextractor \
+    && rm -f /tmp/ccextractor.AppImage \
+    && ccextractor --version
 
 # Copy application code
 COPY . /app
