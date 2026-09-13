@@ -26,13 +26,8 @@ ENV VIRTUAL_ENV=/dispatcharrpy
 ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 WORKDIR /app
 
-# ccextractor: decodes DVB teletext (and DVB subtitle) to SRT for the DVR
-# subtitle sidecar (#259) - ffmpeg ships no teletext decoder. The plain
-# systemlibs release wants libutf8proc.so.2, which Ubuntu 24.04 no longer
-# ships (noble carries libutf8proc3, an incompatible soname bump) - so
-# instead extract the AppImage's bundled runtime once at build time
-# (`--appimage-extract`, no FUSE needed either now or at container runtime)
-# and symlink it onto PATH. GPL-2.0, ~30MB extracted.
+# AppImage extracted once at build time, not the systemlibs release: that
+# one wants libutf8proc.so.2, which Ubuntu 24.04 no longer ships.
 ARG CCEXTRACTOR_VERSION=v0.96.6
 RUN curl -sL "https://github.com/CCExtractor/ccextractor/releases/download/${CCEXTRACTOR_VERSION}/ccextractor-x86_64.AppImage" \
     -o /tmp/ccextractor.AppImage \

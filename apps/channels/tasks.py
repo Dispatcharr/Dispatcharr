@@ -1748,15 +1748,7 @@ def _dvr_subtitle_sidecar_path(hls_dir, attempt):
 def _dvr_fold_subtitle_sidecar_into_mkv(
     sidecar_path, subtitle_codec, output_path, log_label, deadline, run_cmd=None
 ):
-    """Fold a per-attempt subtitle sidecar into the finished MKV, then remove it.
-
-    ``dvb_subtitle`` copies straight in - Matroska carries it natively.
-    ``dvb_teletext`` has no Matroska tag and ffmpeg ships no decoder for it,
-    so it goes through ccextractor to SRT first. Any other codec, or a
-    missing/empty sidecar, is a no-op. The sidecar (and any intermediate
-    SRT) is always removed, so the recording directory never ends up
-    holding anything but the one .mkv.
-    """
+    """Fold a per-attempt subtitle sidecar into the finished MKV, then remove it."""
     run_cmd = run_cmd or _dvr_run_ffmpeg_with_budget
     srt_path = f"{sidecar_path}.srt"
     try:
@@ -2101,8 +2093,6 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
 
     channel = Channel.objects.get(id=channel_id)
 
-    # #259: only attempt the subtitle sidecar when the channel's own stream
-    # metadata has already confirmed a subtitle PID - never guess.
     _dvr_subtitle_codec = None
     try:
         _primary_stream = channel.streams.all().order_by("channelstream__order").first()
@@ -2850,12 +2840,9 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
                         f"({os.path.getsize(final_path):,} bytes)"
                     )
 
-                # #259: fold the subtitle sidecar in, but only for a clean
-                # single-attempt recording - a failover's later attempts
-                # restart their own timestamps, so aligning a sidecar across
-                # attempts can't be done with confidence. Multi-attempt just
-                # cleans up every attempt's sidecar and finalizes without
-                # captions, same as today.
+                # Only a single-attempt recording gets its sidecar folded in -
+                # a later attempt restarts its own timestamps, so alignment
+                # across attempts isn't attempted.
                 if hls_dir:
                     try:
                         if _dvr_subtitle_codec and _ffmpeg_retry_count == 0:
