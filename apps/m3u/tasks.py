@@ -160,18 +160,13 @@ def _ensure_m3u_refresh_terminal_status(account_id):
         )
         if account_data and account_data.get("status") in _NON_TERMINAL_REFRESH_STATUSES:
             message = "Refresh did not complete successfully"
-            M3UAccount.objects.filter(id=account_id).update(
-                status=M3UAccount.Status.ERROR,
-                last_message=message,
-            )
-            send_m3u_update(
-                account_id, "parsing", 100, status="error", error=message
-            )
-            account_name = account_data.get("name") or str(account_id)
-            log_system_event(
-                event_type="m3u_error",
-                account_name=account_name,
-                message=message,
+            _set_m3u_account_status(
+                account_id,
+                M3UAccount.Status.ERROR,
+                message,
+                account_name=account_data.get("name") or None,
+                notify_error=True,
+                ws_error=message,
             )
     except Exception as e:
         logger.debug(
@@ -259,8 +254,6 @@ def fetch_m3u_lines(account, use_cache=False):
                         error_msg = f"HTTP error ({response.status_code}) while fetching M3U file from URL: {account.server_url}. Server message: {response_content}"
 
                     logger.error(error_msg)
-                    account.status = M3UAccount.Status.ERROR
-                    account.last_message = error_msg
                     _set_m3u_account_status(
                         account.id,
                         M3UAccount.Status.ERROR,
@@ -335,8 +328,6 @@ def fetch_m3u_lines(account, use_cache=False):
                     if not has_content or downloaded == 0:
                         error_msg = f"Server responded successfully (HTTP {response.status_code}) but provided empty M3U file from URL: {account.server_url}"
                         logger.error(error_msg)
-                        account.status = M3UAccount.Status.ERROR
-                        account.last_message = error_msg
                         _set_m3u_account_status(
                             account.id,
                             M3UAccount.Status.ERROR,
@@ -408,8 +399,6 @@ def fetch_m3u_lines(account, use_cache=False):
                             else:
                                 error_msg = f"Server provided invalid M3U content from URL: {account.server_url}. Content does not appear to be a valid M3U file."
                             logger.error(error_msg)
-                            account.status = M3UAccount.Status.ERROR
-                            account.last_message = error_msg
                             _set_m3u_account_status(
                                 account.id,
                                 M3UAccount.Status.ERROR,
@@ -427,8 +416,6 @@ def fetch_m3u_lines(account, use_cache=False):
                         logger.error(f"Non-text content received. First 200 bytes: {first_bytes!r}")
                         error_msg = f"Server provided non-text content from URL: {account.server_url}. Unable to process as M3U file."
                         logger.error(error_msg)
-                        account.status = M3UAccount.Status.ERROR
-                        account.last_message = error_msg
                         _set_m3u_account_status(
                             account.id,
                             M3UAccount.Status.ERROR,
@@ -483,8 +470,6 @@ def fetch_m3u_lines(account, use_cache=False):
                     error_msg = f"HTTP error ({status_code}) while fetching M3U file from URL: {account.server_url}. Server message: {response_content}"
 
                 logger.error(error_msg)
-                account.status = M3UAccount.Status.ERROR
-                account.last_message = error_msg
                 _set_m3u_account_status(
                     account.id,
                     M3UAccount.Status.ERROR,
@@ -505,8 +490,6 @@ def fetch_m3u_lines(account, use_cache=False):
                     error_msg = f"Network error while fetching M3U file from URL: {account.server_url} - {str(e)}"
 
                 logger.error(error_msg)
-                account.status = M3UAccount.Status.ERROR
-                account.last_message = error_msg
                 _set_m3u_account_status(
                     account.id,
                     M3UAccount.Status.ERROR,
@@ -521,8 +504,6 @@ def fetch_m3u_lines(account, use_cache=False):
                 # Handle any other unexpected errors
                 error_msg = f"Unexpected error while fetching M3U file from URL: {account.server_url} - {str(e)}"
                 logger.error(error_msg)
-                account.status = M3UAccount.Status.ERROR
-                account.last_message = error_msg
                 _set_m3u_account_status(
                     account.id,
                     M3UAccount.Status.ERROR,
@@ -538,8 +519,6 @@ def fetch_m3u_lines(account, use_cache=False):
         if not os.path.exists(file_path) or os.path.getsize(file_path) == 0:
             error_msg = f"M3U file is unexpectedly missing or empty after validation: {file_path}"
             logger.error(error_msg)
-            account.status = M3UAccount.Status.ERROR
-            account.last_message = error_msg
             _set_m3u_account_status(
                 account.id,
                 M3UAccount.Status.ERROR,
@@ -574,8 +553,6 @@ def fetch_m3u_lines(account, use_cache=False):
                         f"No .m3u file found in ZIP archive: {account.file_path}"
                     )
                     logger.warning(error_msg)
-                    account.status = M3UAccount.Status.ERROR
-                    account.last_message = error_msg
                     _set_m3u_account_status(
                         account.id,
                         M3UAccount.Status.ERROR,
@@ -593,8 +570,6 @@ def fetch_m3u_lines(account, use_cache=False):
         except (IOError, OSError, zipfile.BadZipFile, gzip.BadGzipFile, lzma.LZMAError) as e:
             error_msg = f"Error opening file {account.file_path}: {e}"
             logger.error(error_msg)
-            account.status = M3UAccount.Status.ERROR
-            account.last_message = error_msg
             _set_m3u_account_status(
                 account.id,
                 M3UAccount.Status.ERROR,
@@ -609,8 +584,6 @@ def fetch_m3u_lines(account, use_cache=False):
     # Neither server_url nor uploaded_file is available
     error_msg = "No M3U source available (missing URL and file)"
     logger.error(error_msg)
-    account.status = M3UAccount.Status.ERROR
-    account.last_message = error_msg
     _set_m3u_account_status(
         account.id,
         M3UAccount.Status.ERROR,
@@ -1615,8 +1588,6 @@ def refresh_m3u_groups(account_id, use_cache=False, full_refresh=False, scan_sta
         if not account.server_url:
             error_msg = "Missing server URL for Xtream Codes account"
             logger.error(error_msg)
-            account.status = M3UAccount.Status.ERROR
-            account.last_message = error_msg
             _set_m3u_account_status(
                 account_id,
                 M3UAccount.Status.ERROR,
@@ -1633,8 +1604,6 @@ def refresh_m3u_groups(account_id, use_cache=False, full_refresh=False, scan_sta
         if not account.username or not account.password:
             error_msg = "Missing username or password for Xtream Codes account"
             logger.error(error_msg)
-            account.status = M3UAccount.Status.ERROR
-            account.last_message = error_msg
             _set_m3u_account_status(
                 account_id,
                 M3UAccount.Status.ERROR,
@@ -1704,8 +1673,6 @@ def refresh_m3u_groups(account_id, use_cache=False, full_refresh=False, scan_sta
                                 f"Unexpected response from XC server: {xc_categories}"
                             )
                             logger.error(error_msg)
-                            account.status = M3UAccount.Status.ERROR
-                            account.last_message = error_msg
                             _set_m3u_account_status(
                                 account_id,
                                 M3UAccount.Status.ERROR,
@@ -1744,8 +1711,6 @@ def refresh_m3u_groups(account_id, use_cache=False, full_refresh=False, scan_sta
                             error_msg = f"Failed to get categories from XC server: {str(e)}"
 
                         logger.error(error_msg)
-                        account.status = M3UAccount.Status.ERROR
-                        account.last_message = error_msg
                         _set_m3u_account_status(
                             account_id,
                             M3UAccount.Status.ERROR,
@@ -1762,8 +1727,6 @@ def refresh_m3u_groups(account_id, use_cache=False, full_refresh=False, scan_sta
             except Exception as e:
                 error_msg = f"Failed to create XC Client: {str(e)}"
                 logger.error(error_msg)
-                account.status = M3UAccount.Status.ERROR
-                account.last_message = error_msg
                 _set_m3u_account_status(
                     account_id,
                     M3UAccount.Status.ERROR,
@@ -1779,8 +1742,6 @@ def refresh_m3u_groups(account_id, use_cache=False, full_refresh=False, scan_sta
         except Exception as e:
             error_msg = f"Unexpected error occurred in XC Client: {str(e)}"
             logger.error(error_msg)
-            account.status = M3UAccount.Status.ERROR
-            account.last_message = error_msg
             _set_m3u_account_status(
                 account_id,
                 M3UAccount.Status.ERROR,
@@ -3409,10 +3370,20 @@ def refresh_single_m3u_account(account_id):
             f"refresh_single_m3u_account failed for account {account_id}: {e}",
             exc_info=True,
         )
+        account_name = None
+        try:
+            account_name = (
+                M3UAccount.objects.filter(id=account_id)
+                .values_list("name", flat=True)
+                .first()
+            )
+        except Exception:
+            pass
         _set_m3u_account_status(
             account_id,
             M3UAccount.Status.ERROR,
             f"Error processing M3U: {str(e)[:500]}",
+            account_name=account_name,
             notify_error=True,
             ws_error=str(e)[:500],
         )
@@ -3574,6 +3545,7 @@ def _refresh_single_m3u_account_impl(account_id):
                     notify_error=True,
                     ws_error=error_msg,
                 )
+                return "Failed to update m3u account, no streams found"
         except Exception as e:
             logger.error(f"Exception in refresh_m3u_groups: {str(e)}", exc_info=True)
             error_msg = f"Error refreshing M3U groups: {str(e)[:500]}"
@@ -3594,18 +3566,26 @@ def _refresh_single_m3u_account_impl(account_id):
     except Exception:
         is_xc_account = False
 
-    # Modified validation logic for different account types
+    # Modified validation logic for different account types.
+    # Empty non-XC streams already returned above; this covers missing groups
+    # and other empty-data cases without emitting a second m3u_error.
     if (not groups) or (not is_xc_account and not extinf_data):
         logger.error(f"No data to process for account {account_id}")
         error_msg = "No data available for processing"
-        _set_m3u_account_status(
-            account_id,
-            M3UAccount.Status.ERROR,
-            error_msg,
-            account_name=account.name,
-            notify_error=True,
-            ws_error=error_msg,
+        current_status = (
+            M3UAccount.objects.filter(id=account_id)
+            .values_list("status", flat=True)
+            .first()
         )
+        if current_status != M3UAccount.Status.ERROR:
+            _set_m3u_account_status(
+                account_id,
+                M3UAccount.Status.ERROR,
+                error_msg,
+                account_name=account.name,
+                notify_error=True,
+                ws_error=error_msg,
+            )
         return "Failed to update m3u account, no data available"
 
     hash_keys = CoreSettings.get_m3u_hash_key().split(",")

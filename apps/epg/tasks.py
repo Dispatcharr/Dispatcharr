@@ -103,8 +103,6 @@ def _defer_refresh_epg_data(source, force, file_defer_retry, reason):
     if file_defer_retry >= _EPG_PARSE_DEFER_MAX:
         msg = f"EPG refresh blocked for too long ({reason}); retry later"
         logger.error(f"Cannot refresh {source.name}: {msg}")
-        source.status = EPGSource.STATUS_ERROR
-        source.last_message = msg
         _set_epg_source_status(
             source.id,
             EPGSource.STATUS_ERROR,
@@ -222,18 +220,13 @@ def _ensure_epg_refresh_terminal_status(source_id):
         )
         if source_data and source_data.get("status") in _NON_TERMINAL_REFRESH_STATUSES:
             message = "Refresh did not complete successfully"
-            EPGSource.objects.filter(id=source_id).update(
-                status=EPGSource.STATUS_ERROR,
-                last_message=message,
-            )
-            send_epg_update(
-                source_id, "refresh", 100, status="error", error=message
-            )
-            source_name = source_data.get("name") or str(source_id)
-            log_system_event(
-                event_type="epg_error",
-                source_name=source_name,
-                message=message,
+            _set_epg_source_status(
+                source_id,
+                EPGSource.STATUS_ERROR,
+                message,
+                source_name=source_data.get("name") or None,
+                notify_error=True,
+                ws_error=message,
             )
     except Exception as e:
         logger.debug(
@@ -456,10 +449,20 @@ def refresh_epg_data(source_id, force=False, _file_defer_retry=0):
             f"Error in refresh_epg_data for source {source_id}: {e}",
             exc_info=True,
         )
+        source_name = None
+        try:
+            source_name = (
+                EPGSource.objects.filter(id=source_id)
+                .values_list("name", flat=True)
+                .first()
+            )
+        except Exception:
+            pass
         _set_epg_source_status(
             source_id,
             EPGSource.STATUS_ERROR,
             f"Error refreshing EPG data: {str(e)[:500]}",
+            source_name=source_name,
             notify_error=True,
             ws_error=str(e)[:500],
         )
@@ -593,8 +596,6 @@ def fetch_xmltv(source):
     if not source.url:
         # Update source status for missing URL
         msg = "No URL provided and no valid local file exists"
-        source.status = 'error'
-        source.last_message = msg
         _set_epg_source_status(
             source.id,
             EPGSource.STATUS_ERROR,
@@ -1209,8 +1210,6 @@ def parse_channels_only(source):
                 if not os.path.exists(source.file_path):
                     logger.error(f"Failed to fetch EPG data, file still missing at: {source.file_path}")
                     msg = "Failed to fetch EPG data, file missing after download"
-                    source.status = 'error'
-                    source.last_message = msg
                     _set_epg_source_status(
                         source.id,
                         EPGSource.STATUS_ERROR,
@@ -1227,8 +1226,6 @@ def parse_channels_only(source):
             else:
                 logger.error(f"No URL provided for EPG source {source.name}, cannot fetch new data")
                 msg = "No URL provided, cannot fetch EPG data"
-                source.status = 'error'
-                source.last_message = msg
                 _set_epg_source_status(
                     source.id,
                     EPGSource.STATUS_ERROR,
@@ -1490,8 +1487,6 @@ def parse_channels_only(source):
         except (etree.XMLSyntaxError, Exception) as xml_error:
             logger.error(f"[parse_channels_only] XML parsing failed: {xml_error}")
             error_msg = f"Error parsing XML file: {str(xml_error)}"
-            source.status = 'error'
-            source.last_message = error_msg
             _set_epg_source_status(
                 source.id,
                 EPGSource.STATUS_ERROR,
@@ -1566,8 +1561,6 @@ def parse_channels_only(source):
     except FileNotFoundError:
         logger.error(f"EPG file not found at: {file_path}")
         msg = f"EPG file not found: {file_path}"
-        source.status = 'error'
-        source.last_message = msg
         _set_epg_source_status(
             source.id,
             EPGSource.STATUS_ERROR,
@@ -1581,8 +1574,6 @@ def parse_channels_only(source):
     except Exception as e:
         logger.error(f"Error reading EPG file {file_path}: {e}", exc_info=True)
         msg = f"Error parsing EPG file: {str(e)}"
-        source.status = 'error'
-        source.last_message = msg
         _set_epg_source_status(
             source.id,
             EPGSource.STATUS_ERROR,
@@ -1760,8 +1751,6 @@ def parse_programs_for_tvg_id(epg_id, force=False, _defer_retry=0):
                     if not os.path.exists(epg_source.file_path):
                         logger.error(f"Failed to fetch EPG data, file still missing at: {epg_source.file_path}")
                         msg = "Failed to download EPG data, file missing after download"
-                        epg_source.status = 'error'
-                        epg_source.last_message = msg
                         _set_epg_source_status(
                             epg_source.id,
                             EPGSource.STATUS_ERROR,
@@ -1781,8 +1770,6 @@ def parse_programs_for_tvg_id(epg_id, force=False, _defer_retry=0):
                 else:
                     logger.error(f"No URL provided for EPG source {epg_source.name}, cannot fetch new data")
                     msg = "No URL provided, cannot fetch EPG data"
-                    epg_source.status = 'error'
-                    epg_source.last_message = msg
                     _set_epg_source_status(
                         epg_source.id,
                         EPGSource.STATUS_ERROR,
@@ -2271,8 +2258,6 @@ def parse_programs_for_source(epg_source, tvg_id=None):
             else:
                 logger.error(f"No URL provided for EPG source {epg_source.name}, cannot fetch new data")
                 msg = "No URL provided, cannot fetch EPG data"
-                epg_source.status = 'error'
-                epg_source.last_message = msg
                 _set_epg_source_status(
                     epg_source.id,
                     EPGSource.STATUS_ERROR,
@@ -2438,8 +2423,6 @@ def parse_programs_for_source(epg_source, tvg_id=None):
             except Exception as db_error:
                 logger.error(f"Database error during atomic update: {db_error}", exc_info=True)
                 msg = f"Database error: {str(db_error)}"
-                epg_source.status = EPGSource.STATUS_ERROR
-                epg_source.last_message = msg
                 _set_epg_source_status(
                     epg_source.id,
                     EPGSource.STATUS_ERROR,
@@ -2454,8 +2437,6 @@ def parse_programs_for_source(epg_source, tvg_id=None):
         except etree.XMLSyntaxError as xml_error:
             logger.error(f"XML syntax error parsing program data: {xml_error}")
             msg = f"XML parsing error: {str(xml_error)}"
-            epg_source.status = EPGSource.STATUS_ERROR
-            epg_source.last_message = msg
             _set_epg_source_status(
                 epg_source.id,
                 EPGSource.STATUS_ERROR,
@@ -2469,8 +2450,6 @@ def parse_programs_for_source(epg_source, tvg_id=None):
         except Exception as parse_error:
             logger.error(f"Error parsing programs from XML: {parse_error}", exc_info=True)
             msg = f"Error parsing programs: {str(parse_error)}"
-            epg_source.status = EPGSource.STATUS_ERROR
-            epg_source.last_message = msg
             _set_epg_source_status(
                 epg_source.id,
                 EPGSource.STATUS_ERROR,
@@ -2528,8 +2507,6 @@ def parse_programs_for_source(epg_source, tvg_id=None):
     except Exception as e:
         logger.error(f"Error in parse_programs_for_source: {e}", exc_info=True)
         msg = f"Error parsing programs: {str(e)}"
-        epg_source.status = EPGSource.STATUS_ERROR
-        epg_source.last_message = msg
         _set_epg_source_status(
             epg_source.id,
             EPGSource.STATUS_ERROR,

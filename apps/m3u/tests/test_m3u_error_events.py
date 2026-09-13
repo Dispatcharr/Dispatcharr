@@ -210,3 +210,44 @@ class FullRefreshErrorMessagePropagationTests(SimpleTestCase):
                     M3UAccount.Status.ERROR,
                     "Should not overwrite status or emit duplicate error when already in ERROR",
                 )
+
+    @patch("apps.m3u.tasks._set_m3u_account_status")
+    @patch("apps.m3u.tasks.refresh_m3u_groups")
+    @patch("apps.m3u.tasks._get_active_m3u_account")
+    @patch("apps.m3u.tasks.os.path.exists", return_value=False)
+    @patch("apps.m3u.tasks._release_task_db_connection")
+    def test_empty_non_xc_streams_emits_error_once(
+        self, _mock_release, _mock_exists, mock_get_account, mock_refresh_groups, mock_set_status
+    ):
+        from apps.m3u.tasks import _refresh_single_m3u_account_impl
+
+        account = MagicMock(
+            id=5,
+            is_active=True,
+            filters=MagicMock(),
+            custom_properties={},
+            account_type=M3UAccount.Types.STADNARD,
+        )
+        account.name = "Empty Playlist"
+        mock_get_account.return_value = account
+        account.filters.order_by.return_value = []
+        # Successful groups refresh, but no streams
+        mock_refresh_groups.return_value = ([], {"News": 1})
+
+        with patch("apps.m3u.tasks.M3UAccount") as mock_model:
+            mock_model.Status = M3UAccount.Status
+            mock_model.Types = M3UAccount.Types
+            mock_model.objects.select_related.return_value.get.return_value = account
+
+            result = _refresh_single_m3u_account_impl(5)
+
+        self.assertEqual(result, "Failed to update m3u account, no streams found")
+        error_calls = [
+            call
+            for call in mock_set_status.call_args_list
+            if (call[0][1] if len(call[0]) > 1 else call[1].get("status"))
+            == M3UAccount.Status.ERROR
+        ]
+        self.assertEqual(len(error_calls), 1)
+        self.assertEqual(error_calls[0][0][2], "No streams found in M3U source")
+        self.assertTrue(error_calls[0][1].get("notify_error"))
