@@ -2101,6 +2101,18 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
 
     channel = Channel.objects.get(id=channel_id)
 
+    # #259: only attempt the subtitle sidecar when the channel's own stream
+    # metadata has already confirmed a subtitle PID - never guess.
+    _dvr_subtitle_codec = None
+    try:
+        _primary_stream = channel.streams.all().order_by("channelstream__order").first()
+        if _primary_stream:
+            _dvr_subtitle_codec = (_primary_stream.stream_stats or {}).get("subtitle_codec")
+    except Exception as _sub_detect_e:
+        logger.debug(
+            f"DVR recording {recording_id}: subtitle detection skipped: {_sub_detect_e}"
+        )
+
     start_time = datetime.fromisoformat(start_time_str)
     end_time = datetime.fromisoformat(end_time_str)
 
@@ -2398,6 +2410,10 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
 
             hls_start_number = _dvr_hls_start_number(hls_dir, hls_m3u8)
             ffmpeg_user_agent = _dvr_ffmpeg_user_agent(channel, recording_id)
+            _subtitle_sidecar_path = (
+                _dvr_subtitle_sidecar_path(hls_dir, _ffmpeg_retry_count)
+                if _dvr_subtitle_codec else None
+            )
             ffmpeg_cmd = _dvr_build_ffmpeg_cmd(
                 stream_url,
                 recording_id,
@@ -2405,6 +2421,7 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
                 hls_seg_pattern,
                 hls_start_number,
                 user_agent=ffmpeg_user_agent,
+                subtitle_sidecar_path=_subtitle_sidecar_path,
             )
 
             logger.info(
@@ -2832,6 +2849,31 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
                         f"\u2014 {os.path.basename(final_path)} "
                         f"({os.path.getsize(final_path):,} bytes)"
                     )
+
+                # #259: fold the subtitle sidecar in, but only for a clean
+                # single-attempt recording - a failover's later attempts
+                # restart their own timestamps, so aligning a sidecar across
+                # attempts can't be done with confidence. Multi-attempt just
+                # cleans up every attempt's sidecar and finalizes without
+                # captions, same as today.
+                if hls_dir:
+                    try:
+                        if _dvr_subtitle_codec and _ffmpeg_retry_count == 0:
+                            _sidecar = _dvr_subtitle_sidecar_path(hls_dir, 0)
+                            _subs_deadline = time.monotonic() + _DVR_HLS_REMUX_TIMEOUT_SECONDS
+                            if _dvr_fold_subtitle_sidecar_into_mkv(
+                                _sidecar, _dvr_subtitle_codec, final_path,
+                                _log_label, _subs_deadline,
+                            ):
+                                logger.info(f"{_log_label}: subtitle sidecar folded into MKV")
+                        else:
+                            for _n in range(_ffmpeg_retry_count + 1):
+                                _stale = _dvr_subtitle_sidecar_path(hls_dir, _n)
+                                if os.path.exists(_stale):
+                                    os.remove(_stale)
+                    except Exception as _subs_e:
+                        logger.warning(f"{_log_label}: subtitle sidecar step failed (non-fatal): {_subs_e}")
+
                 # Update DB so *new* client requests go to /file/ (the final MKV)
                 # rather than the soon-to-be-removed /hls/ endpoint.  Important:
                 # we do NOT clear _hls_dir here, active viewers still in the
