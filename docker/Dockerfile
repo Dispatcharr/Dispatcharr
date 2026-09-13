@@ -26,6 +26,18 @@ ENV VIRTUAL_ENV=/dispatcharrpy
 ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 WORKDIR /app
 
+# ccextractor: decodes DVB teletext (and DVB subtitle) to SRT for the DVR
+# subtitle sidecar (#259) - ffmpeg ships no teletext decoder. Plain
+# systemlibs release, not the AppImage (needs FUSE) or hardsubx variant
+# (OCR support we don't use) - GPL-2.0, ~3.3MB.
+ARG CCEXTRACTOR_VERSION=v0.96.6
+RUN curl -sL "https://github.com/CCExtractor/ccextractor/releases/download/${CCEXTRACTOR_VERSION}/ccextractor-linux-systemlibs-x86_64.tar.gz" \
+    -o /tmp/ccextractor.tar.gz \
+    && tar -xzf /tmp/ccextractor.tar.gz -C /usr/local/bin ./ccextractor \
+    && rm -f /tmp/ccextractor.tar.gz \
+    && chmod +x /usr/local/bin/ccextractor \
+    && /usr/local/bin/ccextractor --version
+
 # Copy application code
 COPY . /app
 # Copy nginx configuration
