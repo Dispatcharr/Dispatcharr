@@ -428,21 +428,38 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
                     if stream_profile.is_redirect():
                         from apps.proxy.config import TSConfig
 
-                        def _redirect_preview_generator(url, user_agent=None):
-                            """Fetch a redirect-mode stream server-side and yield chunks.
-
-                            Used only for admin in-browser preview (?preview=1) to avoid the
-                            browser-side mixed-content/CORS block that occurs when the frontend
-                            tries to follow a redirect to a provider URL on a different
-                            origin/protocol. Server-to-server requests are not subject to
-                            browser mixed-content/CORS rules at all.
+                        def _redirect_preview_stream_body(upstream):
+                            """Yield chunks from an already-opened, already-validated
+                            upstream response. Kept separate from the connection/status
+                            check so failures there surface synchronously (see caller),
+                            not silently mid-stream after we've already returned 200.
                             """
-                            headers = {'User-Agent': user_agent} if user_agent else {}
-                            with requests.get(url, headers=headers, stream=True, timeout=(5, 10)) as r:
-                                r.raise_for_status()
-                                for chunk in r.iter_content(chunk_size=188 * 64):
+                            try:
+                                for chunk in upstream.iter_content(chunk_size=188 * 64):
                                     if chunk:
                                         yield chunk
+                            finally:
+                                upstream.close()
+
+                        def _open_redirect_preview_stream(url, user_agent=None):
+                            """Open a redirect-mode stream server-side for admin in-browser
+                            preview (?preview=1), to avoid the browser-side mixed-content/CORS
+                            block that occurs when the frontend tries to follow a redirect to
+                            a provider URL on a different origin/protocol. Server-to-server
+                            requests are not subject to browser mixed-content/CORS rules at all.
+
+                            Connects and checks the status eagerly, so a dead/erroring
+                            provider surfaces as a clean error response immediately, rather
+                            than a stream that starts and silently cuts out.
+                            """
+                            headers = {'User-Agent': user_agent} if user_agent else {}
+                            upstream = requests.get(url, headers=headers, stream=True, timeout=(5, 10))
+                            try:
+                                upstream.raise_for_status()
+                            except Exception:
+                                upstream.close()
+                                raise
+                            return upstream
 
                         def _redirect_response(url):
                             """Hand the client the provider URL (HTTP or non-HTTP)."""
@@ -458,8 +475,11 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
                                 logger.info(
                                     f"[{client_id}] Admin preview: proxying {url} server-side"
                                 )
+                                upstream = _open_redirect_preview_stream(
+                                    url, user_agent=stream_user_agent
+                                )
                                 return StreamingHttpResponse(
-                                    _redirect_preview_generator(url, user_agent=stream_user_agent),
+                                    _redirect_preview_stream_body(upstream),
                                     content_type='video/mp2t',
                                 )
                             if url.startswith(("rtsp://", "rtp://", "udp://")):
