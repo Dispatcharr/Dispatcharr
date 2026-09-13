@@ -1766,13 +1766,22 @@ def _dvr_fold_subtitle_sidecar_into_mkv(
         if subtitle_codec == "dvb_subtitle":
             mux_input = sidecar_path
         elif subtitle_codec == "dvb_teletext":
-            cc_result = run_cmd(
-                ["ccextractor", "-teletext", "-out=srt", sidecar_path, "-o", srt_path],
-                log_label, "ccextractor teletext decode", deadline,
+            # txt_page=subtitle selects only the broadcaster's subtitle
+            # page(s) out of the full teletext service, no page number needed.
+            decode_result = run_cmd(
+                [
+                    "ffmpeg", "-y",
+                    "-txt_format", "text", "-txt_page", "subtitle",
+                    "-i", sidecar_path,
+                    "-map", "0:s",
+                    "-c:s", "srt",
+                    srt_path,
+                ],
+                log_label, "teletext decode (libzvbi)", deadline,
             )
             if not (
-                cc_result is not None
-                and cc_result.returncode == 0
+                decode_result is not None
+                and decode_result.returncode == 0
                 and _dvr_output_nonempty(srt_path)
             ):
                 return False

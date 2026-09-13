@@ -26,25 +26,6 @@ ENV VIRTUAL_ENV=/dispatcharrpy
 ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 WORKDIR /app
 
-# AppImage extracted once at build time, not the systemlibs release: that
-# one wants libutf8proc.so.2, which Ubuntu 24.04 no longer ships. Upstream
-# ships no arm64 build at all, so it's amd64-only; the DVB teletext DVR
-# decode step degrades to a no-op there (see _dvr_fold_subtitle_sidecar_into_mkv).
-ARG TARGETARCH
-ARG CCEXTRACTOR_VERSION=v0.96.6
-RUN if [ "$TARGETARCH" = "amd64" ]; then \
-    curl -sL "https://github.com/CCExtractor/ccextractor/releases/download/${CCEXTRACTOR_VERSION}/ccextractor-x86_64.AppImage" \
-    -o /tmp/ccextractor.AppImage \
-    && chmod +x /tmp/ccextractor.AppImage \
-    && cd /tmp && ./ccextractor.AppImage --appimage-extract \
-    && mv /tmp/squashfs-root /opt/ccextractor \
-    && ln -s /opt/ccextractor/AppRun /usr/local/bin/ccextractor \
-    && rm -f /tmp/ccextractor.AppImage \
-    && ccextractor --version; \
-    else \
-    echo "ccextractor: no upstream ${TARGETARCH} build for ${CCEXTRACTOR_VERSION}, skipping"; \
-    fi
-
 # Copy application code
 COPY . /app
 # Copy nginx configuration

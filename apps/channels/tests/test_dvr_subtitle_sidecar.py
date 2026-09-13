@@ -1,10 +1,15 @@
 """Dispatcharr#259: fold a per-attempt DVB subtitle sidecar into the final MKV.
 
-dvb_subtitle copies straight into the MKV. dvb_teletext has no Matroska tag
-and ffmpeg ships no decoder for it, so it goes through ccextractor to SRT
-first. Either way the sidecar (and any intermediate SRT) never survives past
-this call - the recording directory always ends up holding just the one
-.mkv, same as today.
+dvb_subtitle copies straight into the MKV. dvb_teletext has no Matroska tag,
+so it decodes to SRT first via ffmpeg's own libzvbi-teletext decoder. Either
+way the sidecar (and any intermediate SRT) never survives past this call -
+the recording directory always ends up holding just the one .mkv, same as
+today.
+
+Provisional: depends on a libzvbi-enabled ffmpeg build that does not exist
+in the image yet (Dispatcharr#259, comment 5653757658) - the decode command
+shape is correct per ffmpeg's own libzvbi-teletext docs, but unverified
+against a real build.
 """
 import os
 import tempfile
@@ -174,7 +179,7 @@ class FoldSidecarIntoMkvTests(SimpleTestCase):
             self.assertEqual(f.read(), b"original mkv bytes")
         self.assertFalse(os.path.exists(self.sidecar_path))
 
-    def test_dvb_teletext_decodes_via_ccextractor_then_muxes(self):
+    def test_dvb_teletext_decodes_via_libzvbi_ffmpeg_then_muxes(self):
         with open(self.sidecar_path, "wb") as f:
             f.write(b"teletext bitstream")
         result = _dvr_fold_subtitle_sidecar_into_mkv(
@@ -184,11 +189,25 @@ class FoldSidecarIntoMkvTests(SimpleTestCase):
         self.assertTrue(result)
         self.assertEqual(
             [c[0] for c in self.calls],
-            ["ccextractor teletext decode", "fold subtitle sidecar into MKV"],
+            ["teletext decode (libzvbi)", "fold subtitle sidecar into MKV"],
         )
         self.assertFalse(os.path.exists(self.sidecar_path))
         srt_path = f"{self.sidecar_path}.srt"
         self.assertFalse(os.path.exists(srt_path))
+
+    def test_teletext_decode_selects_subtitle_pages_as_plain_text(self):
+        # No hardcoded page number: txt_page=subtitle asks libzvbi for
+        # whichever page(s) the broadcast itself flags as carrying subtitles.
+        with open(self.sidecar_path, "wb") as f:
+            f.write(b"teletext bitstream")
+        _dvr_fold_subtitle_sidecar_into_mkv(
+            self.sidecar_path, "dvb_teletext", self.output_path,
+            "test", self.deadline, run_cmd=self._write_output_and_succeed,
+        )
+        decode_cmd = self.calls[0][1]
+        self.assertEqual(decode_cmd[0], "ffmpeg")
+        self.assertEqual(decode_cmd[decode_cmd.index("-txt_format") + 1], "text")
+        self.assertEqual(decode_cmd[decode_cmd.index("-txt_page") + 1], "subtitle")
 
     def test_dvb_teletext_decode_failure_skips_mux_entirely(self):
         with open(self.sidecar_path, "wb") as f:
@@ -198,7 +217,7 @@ class FoldSidecarIntoMkvTests(SimpleTestCase):
             "test", self.deadline, run_cmd=self._fail,
         )
         self.assertFalse(result)
-        self.assertEqual([c[0] for c in self.calls], ["ccextractor teletext decode"])
+        self.assertEqual([c[0] for c in self.calls], ["teletext decode (libzvbi)"])
         with open(self.output_path, "rb") as f:
             self.assertEqual(f.read(), b"original mkv bytes")
         self.assertFalse(os.path.exists(self.sidecar_path))
