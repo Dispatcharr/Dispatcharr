@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.31.0] - 2026-09-13
+
 ### Added
 
 - **M3U and EPG refresh failures emit `m3u_error` and `epg_error` system events.** Failed downloads, parses, and Schedules Direct refresh errors are written to the system event log (with red indicators in System Events) and can trigger Connect webhooks/scripts. (Closes #1507) - Thanks [@gianlucalauro](https://github.com/gianlucalauro)
