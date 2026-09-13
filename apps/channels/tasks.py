@@ -1592,6 +1592,11 @@ def _dvr_ffmpeg_user_agent(channel, recording_id):
     return dispatcharr_dvr_user_agent(recording_id)
 
 
+_DVR_HLS_FLAGS = (
+    "append_list+omit_endlist+independent_segments+program_date_time"
+)
+
+
 def _dvr_build_ffmpeg_cmd(
     stream_url,
     recording_id,
@@ -1629,7 +1634,7 @@ def _dvr_build_ffmpeg_cmd(
         "-f", "hls",
         "-hls_time", "4",
         "-hls_list_size", "0",
-        "-hls_flags", "append_list+omit_endlist+independent_segments",
+        "-hls_flags", _DVR_HLS_FLAGS,
         "-start_number", str(hls_start_number),
         "-hls_segment_filename", hls_seg_pattern,
         hls_m3u8,
