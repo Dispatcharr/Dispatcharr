@@ -14,7 +14,9 @@ Segmentation rules:
 - A segment may only begin on a video keyframe access unit. Keyframes are
   detected via the adaptation-field random_access_indicator when the
   provider sets it, with a fallback NAL-header scan (H.264 IDR/SPS,
-  H.265 IRAP/parameter sets) for providers that do not.
+  H.265 IRAP or VPS/SPS without a non-IRAP VCL in the same packet) for
+  providers that do not. H.265 PPS is never treated as a keyframe on its
+  own; many encoders emit it before every picture.
 - Segment duration is measured from video PES PTS deltas, cut at the
   first keyframe at or after the target duration.
 - Every emitted segment is prefixed with the most recently seen PAT and
@@ -33,8 +35,13 @@ VIDEO_STREAM_TYPES = {
 }
 
 PTS_CLOCK = 90000.0
-# 33-bit PTS wraps every ~26.5 hours; treat large negative deltas as a wrap.
+# 33-bit PTS wraps every ~26.5 hours.
 PTS_WRAP = 1 << 33
+PTS_WRAP_SECONDS = PTS_WRAP / PTS_CLOCK
+# Open-GOP leading pictures are typically tens of ms behind the CRA.
+# A multi-second backward jump that is not a 33-bit wrap is an encoder
+# timeline reset and must hard-cut, not be mistaken for B-frame reorder.
+PTS_RESET_BACKWARD_SECONDS = 2.0
 
 
 class Segment:
@@ -142,22 +149,12 @@ def extract_pts(packet):
     return pts / PTS_CLOCK
 
 
-def starts_keyframe(packet, video_stream_type):
-    """
-    Does this PUSI video packet open a keyframe access unit?
-
-    Prefers the adaptation-field random_access_indicator; falls back to
-    scanning visible NAL start codes. Encoders emit parameter sets
-    immediately before IDR/IRAP frames, so SPS/VPS in the first packet is
-    a reliable keyframe marker even when the keyframe NAL itself starts
-    in a later packet of the same PES.
-    """
-    if packet_random_access(packet):
-        return True
-
+def _iter_nal_header_bytes(packet):
+    """Yield the first header byte of each NAL start code visible in this
+    packet's PES payload. Shared by H.264 and H.265 keyframe scans."""
     base = packet_payload_offset(packet)
     if base is None or base + 9 >= TS_PACKET_SIZE:
-        return False
+        return
     header_len = packet[base + 8]
     i = base + 9 + header_len
     end = TS_PACKET_SIZE - 4
@@ -169,21 +166,57 @@ def starts_keyframe(packet, video_stream_type):
             elif packet[i + 2] == 0x00 and i + 3 < end and packet[i + 3] == 0x01:
                 nal_start = i + 4
             if 0 < nal_start < TS_PACKET_SIZE:
-                if video_stream_type == 0x24:
-                    # H.265: nal_unit_type in bits 1-6 of the first byte.
-                    nal_type = (packet[nal_start] >> 1) & 0x3F
-                    # IRAP (16-21) or VPS/SPS/PPS (32-34)
-                    if 16 <= nal_type <= 21 or 32 <= nal_type <= 34:
-                        return True
-                else:
-                    # H.264: nal_unit_type in bits 0-4.
-                    nal_type = packet[nal_start] & 0x1F
-                    # IDR (5) or SPS (7)
-                    if nal_type in (5, 7):
-                        return True
+                yield packet[nal_start]
                 i = nal_start
                 continue
         i += 1
+
+
+def starts_keyframe(packet, video_stream_type):
+    """
+    Does this PUSI video packet open a keyframe access unit?
+
+    Prefers the adaptation-field random_access_indicator; falls back to
+    scanning visible NAL start codes. Encoders emit parameter sets
+    immediately before IDR/IRAP frames, so SPS/VPS in the first packet is
+    a reliable keyframe marker even when the keyframe NAL itself starts
+    in a later packet of the same PES.
+
+    For H.265, PPS (nal_unit_type 34) alone is NOT a keyframe signal: many
+    encoders emit a PPS before every picture. Treating it as one cuts
+    mid-GOP. IRAP (16-21) is definitive; VPS/SPS (32-33) count only when
+    the same packet does not also carry a non-IRAP VCL NAL.
+    """
+    if packet_random_access(packet):
+        return True
+
+    if video_stream_type == 0x24:
+        seen_irap = False
+        seen_vps_sps = False
+        seen_non_irap_vcl = False
+        for hdr in _iter_nal_header_bytes(packet):
+            # H.265: nal_unit_type in bits 1-6 of the first byte.
+            nal_type = (hdr >> 1) & 0x3F
+            if 16 <= nal_type <= 21:
+                seen_irap = True
+            elif nal_type in (32, 33):
+                seen_vps_sps = True
+            elif nal_type <= 15:
+                # Non-IRAP VCL (TRAIL/RADL/RASL/...).
+                seen_non_irap_vcl = True
+            # PPS (34) and other non-VCL types are ignored as keyframe evidence.
+        if seen_irap:
+            return True
+        if seen_vps_sps and not seen_non_irap_vcl:
+            return True
+        return False
+
+    for hdr in _iter_nal_header_bytes(packet):
+        # H.264: nal_unit_type in bits 0-4.
+        nal_type = hdr & 0x1F
+        # IDR (5) or SPS (7)
+        if nal_type in (5, 7):
+            return True
     return False
 
 
@@ -315,17 +348,42 @@ class TSSegmenter:
         if pid == self._video_pid and packet_pusi(packet):
             pts = extract_pts(packet)
             keyframe = starts_keyframe(packet, self._video_stream_type)
+
+            # Encoder / provider PTS reset (large backward jump that is not a
+            # 33-bit wrap). Hard-cut like an input discontinuity so we do not
+            # wedge waiting for elapsed to become positive again, and so we
+            # do not lean on the old "any negative is a wrap" accident.
+            if (
+                pts is not None
+                and self._collecting
+                and self._segment_start_pts is not None
+                and self._is_timeline_reset(pts, self._segment_start_pts)
+            ):
+                finished = self.flag_discontinuity()
+                if keyframe:
+                    self._begin_segment(pts)
+                    self._current.extend(packet)
+                return finished
+
             if pts is not None:
-                self._seg_last_pts = pts
+                # Track presentation-max PTS so open-GOP leading pictures
+                # (PTS slightly before the CRA) do not pull _seg_last_pts
+                # backward and corrupt measured EXTINF.
+                if self._seg_first_pts is None:
+                    self._seg_last_pts = pts
+                elif self._elapsed(pts, self._seg_first_pts) >= self._elapsed(
+                    self._seg_last_pts, self._seg_first_pts
+                ):
+                    self._seg_last_pts = pts
 
             if not self._collecting:
                 if keyframe:
                     self._begin_segment(pts)
             elif keyframe and pts is not None:
                 if self._segment_start_pts is None:
-                    # Discontinuity reset the timeline: cut here, reporting the
-                    # measured span of the segment being closed (RFC 8216 4.3.2.1)
-                    # rather than substituting the nominal target.
+                    # Segment was opened on a keyframe PES that had no PTS
+                    # (parameter-set-only AU). Close it with a measured span
+                    # fallback and re-anchor on this PTS-bearing keyframe.
                     finished = self._finish_segment(self._measured_span())
                     self._begin_segment(pts)
                 else:
@@ -354,11 +412,25 @@ class TSSegmenter:
         return finished
 
     def _elapsed(self, pts, start):
-        """Wrap-safe presentation-time delta in seconds."""
+        """Signed presentation-time delta in seconds, wrap-safe.
+
+        Small negative deltas (open-GOP leading pictures) stay negative.
+        Only deltas past half the 33-bit wrap period are treated as wraps.
+        """
         d = pts - start
-        if d < 0:
-            d += PTS_WRAP / PTS_CLOCK
+        if d < -PTS_WRAP_SECONDS / 2:
+            d += PTS_WRAP_SECONDS
+        elif d > PTS_WRAP_SECONDS / 2:
+            d -= PTS_WRAP_SECONDS
         return d
+
+    def _is_timeline_reset(self, pts, start):
+        """True when pts jumped backward far enough to be an encoder reset,
+        not open-GOP reorder and not a 33-bit wrap."""
+        raw = pts - start
+        if raw < -PTS_WRAP_SECONDS / 2:
+            return False
+        return raw < -PTS_RESET_BACKWARD_SECONDS
 
     def _measured_span(self):
         """Best measured duration of the segment being closed, from the first and

@@ -21,6 +21,7 @@ from .segmenter import (
 VIDEO_PID = 256
 PMT_PID = 4096
 H264 = 0x1B
+HEVC = 0x24
 
 
 def make_packet(pid, payload, pusi=False, random_access=False):
@@ -55,10 +56,10 @@ def make_pat():
     return make_packet(0, payload, pusi=True)
 
 
-def make_pmt():
+def make_pmt(stream_type=H264):
     payload = bytearray([0x00])                      # pointer_field
     # table_id, section_length covers from after length to CRC
-    es_loop = bytes([H264, 0xE0 | (VIDEO_PID >> 8), VIDEO_PID & 0xFF, 0xF0, 0x00])
+    es_loop = bytes([stream_type, 0xE0 | (VIDEO_PID >> 8), VIDEO_PID & 0xFF, 0xF0, 0x00])
     section_length = 9 + len(es_loop) + 4            # post-length header + loop + CRC
     payload += bytes([0x02, 0xB0 | (section_length >> 8), section_length & 0xFF])
     payload += bytes([0x00, 0x01, 0xC1, 0x00, 0x00]) # tsid, ver, sec, last
@@ -93,6 +94,25 @@ def make_filler():
     return make_packet(VIDEO_PID, b"\x00" * 20)
 
 
+def make_hevc_pes(pts_seconds, nal_types):
+    """PUSI HEVC PES whose payload starts with the given nal_unit_type list."""
+    pts = int(pts_seconds * 90000)
+    p = bytearray()
+    p += bytes([0x00, 0x00, 0x01, 0xE0, 0x00, 0x00])
+    p += bytes([0x80, 0x80, 0x05])
+    p += bytes([
+        0x21 | (((pts >> 30) & 0x07) << 1),
+        (pts >> 22) & 0xFF,
+        0x01 | (((pts >> 15) & 0x7F) << 1),
+        (pts >> 7) & 0xFF,
+        0x01 | ((pts & 0x7F) << 1),
+    ])
+    for nal_type in nal_types:
+        # Start code + nal header byte (nal_unit_type in bits 1-6).
+        p += bytes([0x00, 0x00, 0x00, 0x01, (nal_type << 1) & 0xFF, 0x01])
+    return make_packet(VIDEO_PID, p, pusi=True, random_access=False)
+
+
 class ParserTests(unittest.TestCase):
     def test_pat_pmt_roundtrip(self):
         self.assertEqual(parse_pat(make_pat()), PMT_PID)
@@ -108,6 +128,16 @@ class ParserTests(unittest.TestCase):
         self.assertTrue(starts_keyframe(make_video_pes(0, keyframe=True), H264))
         self.assertFalse(starts_keyframe(make_video_pes(0, keyframe=False), H264))
         self.assertTrue(starts_keyframe(make_video_pes(0, keyframe=True, use_rai=True), H264))
+
+    def test_hevc_pps_alone_is_not_a_keyframe(self):
+        # Per-picture PPS is common on broadcast HEVC; it must not cut mid-GOP.
+        self.assertFalse(starts_keyframe(make_hevc_pes(0.0, [34]), HEVC))
+        self.assertFalse(starts_keyframe(make_hevc_pes(0.0, [34, 1]), HEVC))  # PPS + TRAIL
+        self.assertFalse(starts_keyframe(make_hevc_pes(0.0, [32, 1]), HEVC))  # VPS + TRAIL
+        self.assertTrue(starts_keyframe(make_hevc_pes(0.0, [21]), HEVC))       # CRA
+        self.assertTrue(starts_keyframe(make_hevc_pes(0.0, [34, 21]), HEVC))    # PPS + CRA
+        self.assertTrue(starts_keyframe(make_hevc_pes(0.0, [32]), HEVC))       # VPS alone
+        self.assertTrue(starts_keyframe(make_hevc_pes(0.0, [33]), HEVC))       # SPS alone
 
     def test_pid_extraction(self):
         self.assertEqual(packet_pid(make_pat()), 0)
@@ -239,6 +269,41 @@ class SegmenterTests(unittest.TestCase):
         for d in durations:
             self.assertGreater(d, 0)
             self.assertLessEqual(d, 8.0)
+
+    def test_open_gop_hevc_with_per_picture_pps(self):
+        # Broadcast-style HEVC: CRA every 2s, PPS before every picture, no RAI,
+        # and a couple of leading pictures whose PTS is slightly before the CRA.
+        seg = TSSegmenter(target_duration=2.0, startup_keyframe_cuts=0)
+        seg.feed(make_pat())
+        seg.feed(make_pmt(HEVC))
+        out = []
+        fps = 25.0
+        for gop in range(4):
+            cra_pts = gop * 2.0
+            out += seg.feed(make_hevc_pes(cra_pts, [34, 21]))  # PPS + CRA
+            for i in range(1, 50):
+                pts = cra_pts + i / fps
+                if i <= 2:
+                    pts = cra_pts - (3 - i) * 0.04  # open-GOP reorder
+                out += seg.feed(make_hevc_pes(pts, [34, 1]))  # PPS + TRAIL
+        durs = [round(s.duration, 3) for s in out]
+        # One segment per 2s GOP; no mid-GOP shredding from PPS or reorder.
+        self.assertEqual(durs, [2.0, 2.0, 2.0])
+
+    def test_encoder_pts_reset_hard_cuts_and_continues(self):
+        seg = self.make_started(target=2.0)
+        out = []
+        out += seg.feed(make_video_pes(100.0, keyframe=True))
+        out += seg.feed(make_video_pes(101.0, keyframe=False))
+        # Encoder restarts: PTS jumps from ~101 down to 0.
+        out += seg.feed(make_video_pes(0.0, keyframe=True))
+        out += seg.feed(make_video_pes(2.0, keyframe=True))
+        self.assertGreaterEqual(len(out), 2)
+        # Segment after the reset is tagged discontinuous.
+        flagged = [s for s in out if s.discontinuity]
+        self.assertEqual(len(flagged), 1)
+        # And the segmenter keeps producing (does not wedge).
+        self.assertAlmostEqual(flagged[0].duration, 2.0, places=3)
 
 
 class PlaylistTests(unittest.TestCase):
