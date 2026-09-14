@@ -20,6 +20,7 @@ from .segmenter import (
 
 VIDEO_PID = 256
 PMT_PID = 4096
+MPEG2 = 0x02
 H264 = 0x1B
 HEVC = 0x24
 
@@ -69,8 +70,8 @@ def make_pmt(stream_type=H264):
     return make_packet(PMT_PID, payload, pusi=True)
 
 
-def make_video_pes(pts_seconds, keyframe, use_rai=False):
-    """A PUSI video packet opening a PES with the given PTS."""
+def make_pes_header(pts_seconds):
+    """PES start code, stream_id, and a PTS-only optional header."""
     pts = int(pts_seconds * 90000)
     p = bytearray()
     p += bytes([0x00, 0x00, 0x01, 0xE0, 0x00, 0x00])  # PES start, stream_id, length
@@ -82,7 +83,12 @@ def make_video_pes(pts_seconds, keyframe, use_rai=False):
         (pts >> 7) & 0xFF,
         0x01 | ((pts & 0x7F) << 1),
     ])
-    # NAL start code + type
+    return p
+
+
+def make_video_pes(pts_seconds, keyframe, use_rai=False):
+    """A PUSI H.264 packet opening a PES with the given PTS."""
+    p = make_pes_header(pts_seconds)
     if keyframe and not use_rai:
         p += bytes([0x00, 0x00, 0x00, 0x01, 0x65])    # IDR slice
     else:
@@ -94,23 +100,43 @@ def make_filler():
     return make_packet(VIDEO_PID, b"\x00" * 20)
 
 
+def make_h264_pes(pts_seconds, nal_types):
+    """PUSI H.264 PES whose payload starts with the given nal_unit_type list."""
+    p = make_pes_header(pts_seconds)
+    for nal_type in nal_types:
+        # Start code + nal header byte (nal_unit_type in bits 0-4).
+        p += bytes([0x00, 0x00, 0x00, 0x01, 0x60 | (nal_type & 0x1F), 0x01])
+    return make_packet(VIDEO_PID, p, pusi=True)
+
+
 def make_hevc_pes(pts_seconds, nal_types):
     """PUSI HEVC PES whose payload starts with the given nal_unit_type list."""
-    pts = int(pts_seconds * 90000)
-    p = bytearray()
-    p += bytes([0x00, 0x00, 0x01, 0xE0, 0x00, 0x00])
-    p += bytes([0x80, 0x80, 0x05])
-    p += bytes([
-        0x21 | (((pts >> 30) & 0x07) << 1),
-        (pts >> 22) & 0xFF,
-        0x01 | (((pts >> 15) & 0x7F) << 1),
-        (pts >> 7) & 0xFF,
-        0x01 | ((pts & 0x7F) << 1),
-    ])
+    p = make_pes_header(pts_seconds)
     for nal_type in nal_types:
         # Start code + nal header byte (nal_unit_type in bits 1-6).
         p += bytes([0x00, 0x00, 0x00, 0x01, (nal_type << 1) & 0xFF, 0x01])
     return make_packet(VIDEO_PID, p, pusi=True, random_access=False)
+
+
+MPEG2_SEQUENCE_HEADER = bytes([0xB3, 0x00, 0x00])
+MPEG2_GOP_HEADER = bytes([0xB8, 0x00, 0x00])
+# Slice start codes are the slice's vertical position, so their values overlap
+# the H.264 nal_unit_type numbering (5 = IDR, 7 = SPS).
+MPEG2_SLICE_5 = bytes([0x05, 0x00, 0x00])
+
+
+def mpeg2_picture(coding_type):
+    """A picture header: 10-bit temporal_reference then 3-bit
+    picture_coding_type (1 = I, 2 = P, 3 = B)."""
+    return bytes([0x00, 0x00, (coding_type & 0x07) << 3])
+
+
+def make_mpeg2_pes(pts_seconds, units):
+    """PUSI MPEG-2 PES carrying the given start-code payloads in order."""
+    p = make_pes_header(pts_seconds)
+    for unit in units:
+        p += b"\x00\x00\x01" + unit
+    return make_packet(VIDEO_PID, p, pusi=True)
 
 
 class ParserTests(unittest.TestCase):
@@ -138,6 +164,29 @@ class ParserTests(unittest.TestCase):
         self.assertTrue(starts_keyframe(make_hevc_pes(0.0, [34, 21]), HEVC))    # PPS + CRA
         self.assertTrue(starts_keyframe(make_hevc_pes(0.0, [32]), HEVC))       # VPS alone
         self.assertTrue(starts_keyframe(make_hevc_pes(0.0, [33]), HEVC))       # SPS alone
+
+    def test_h264_repeated_parameter_sets_are_not_a_keyframe(self):
+        # AUD + SPS + PPS + IDR: the real thing.
+        self.assertTrue(starts_keyframe(make_h264_pes(0.0, [9, 7, 8, 5]), H264))
+        # Parameter sets alone: the IDR slice starts in a later packet.
+        self.assertTrue(starts_keyframe(make_h264_pes(0.0, [9, 7, 8]), H264))
+        # Parameter sets repeated ahead of a non-IDR slice must not cut mid-GOP.
+        self.assertFalse(starts_keyframe(make_h264_pes(0.0, [9, 7, 8, 1]), H264))
+        self.assertFalse(starts_keyframe(make_h264_pes(0.0, [8]), H264))  # PPS alone
+        self.assertFalse(starts_keyframe(make_h264_pes(0.0, [9, 1]), H264))
+
+    def test_mpeg2_keyframe_detection(self):
+        self.assertTrue(starts_keyframe(
+            make_mpeg2_pes(0.0, [MPEG2_SEQUENCE_HEADER, mpeg2_picture(1)]), MPEG2))
+        self.assertTrue(starts_keyframe(
+            make_mpeg2_pes(0.0, [MPEG2_GOP_HEADER, mpeg2_picture(1)]), MPEG2))
+        self.assertTrue(starts_keyframe(make_mpeg2_pes(0.0, [mpeg2_picture(1)]), MPEG2))
+        self.assertFalse(starts_keyframe(make_mpeg2_pes(0.0, [mpeg2_picture(2)]), MPEG2))
+        self.assertFalse(starts_keyframe(make_mpeg2_pes(0.0, [mpeg2_picture(3)]), MPEG2))
+        # Reading MPEG start codes as H.264 NAL headers turns a slice at
+        # vertical position 5 into an IDR and cuts in the middle of a picture.
+        self.assertFalse(starts_keyframe(
+            make_mpeg2_pes(0.0, [mpeg2_picture(2), MPEG2_SLICE_5]), MPEG2))
 
     def test_pid_extraction(self):
         self.assertEqual(packet_pid(make_pat()), 0)
@@ -333,6 +382,17 @@ class PlaylistTests(unittest.TestCase):
         self.assertIn("#EXT-X-MEDIA-SEQUENCE:0", text)
         self.assertIn("#EXT-X-TARGETDURATION:4", text)       # ceil(4)
         self.assertNotIn("#EXT-X-START", text)               # no segments to offset from
+
+    def test_discontinuity_sequence(self):
+        window = [{"seq": 12, "dur": 4.0, "disc": True}, {"seq": 13, "dur": 4.0, "disc": False}]
+        # Absent until nonzero: no tag means zero (RFC 8216 4.3.3.3).
+        self.assertNotIn("#EXT-X-DISCONTINUITY-SEQUENCE", render_media_playlist(window, 4))
+        text = render_media_playlist(window, 4, disc_sequence=2)
+        lines = text.splitlines()
+        self.assertIn("#EXT-X-DISCONTINUITY-SEQUENCE:2", lines)
+        # Must precede the first segment and its discontinuity tag.
+        self.assertLess(lines.index("#EXT-X-DISCONTINUITY-SEQUENCE:2"),
+                        lines.index("#EXT-X-DISCONTINUITY"))
 
     def test_targetduration_constant_across_window_shift(self):
         # RFC 8216 6.2.1: TARGETDURATION MUST NOT change across reloads. With a

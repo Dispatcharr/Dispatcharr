@@ -1269,6 +1269,12 @@ def next_stream(request, channel_id):
 # shutdown chain. No new teardown machinery.
 # ---------------------------------------------------------------------------
 
+# A playlist descriptor that has not been rewritten for this long has no
+# segmenter behind it any more (worker gone, thread dead). Scaled up for
+# configurations with long segments, where legitimate gaps are longer.
+HLS_STALE_PLAYLIST_SECONDS = 45
+
+
 def _hls_resolved_format(client_hash):
     """Compose the output manager key from the client's registered format."""
     profile_id = (client_hash or {}).get("output_profile_id") or ""
@@ -1308,6 +1314,17 @@ def _hls_touch_client(channel_id, client_id):
     pipe.expire(clients_key, ttl)
     pipe.execute()
     return client_hash
+
+
+def _hls_playlist_is_stale(state):
+    """True when the descriptor stopped advancing long enough that whatever was
+    producing segments for it is gone. Nothing will publish another segment
+    under these keys, so the session is over."""
+    updated = state.get("ts")
+    if not updated:
+        return False  # descriptor predates the timestamp; assume it is live
+    limit = max(HLS_STALE_PLAYLIST_SECONDS, 3 * (state.get("adv_target") or 0))
+    return (time.time() - updated) > limit
 
 
 def _hls_session_gone(channel_id, client_id):
@@ -1367,12 +1384,22 @@ def hls_playlist(request, channel_id, client_id):
         from .output.hls.segmenter import render_media_playlist
         try:
             state = json.loads(playlist_json)
+            if _hls_playlist_is_stale(state):
+                # Ending the session is what gets playback back: the player
+                # re-enters through the stream URL, which starts a segmenter
+                # again, instead of polling a frozen playlist whose segments
+                # are already expiring out of Redis.
+                logger.warning(
+                    f"[{client_id}] HLS output for {channel_id} stopped advancing; ending session"
+                )
+                return JsonResponse({"error": "Stream stopped"}, status=410)
             body = render_media_playlist(
                 state.get("window", []),
                 state.get("target", 4),
                 adv_target=state.get("adv_target"),
+                disc_sequence=state.get("disc_seq", 0),
             )
-        except (ValueError, KeyError) as e:
+        except (TypeError, ValueError, KeyError) as e:
             logger.error(f"[{client_id}] Malformed HLS playlist state for {channel_id}: {e}")
             return JsonResponse({"error": "Playlist unavailable"}, status=500)
 

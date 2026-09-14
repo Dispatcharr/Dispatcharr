@@ -13,10 +13,11 @@ Redis imports) so the parsing logic is unit-testable in isolation.
 Segmentation rules:
 - A segment may only begin on a video keyframe access unit. Keyframes are
   detected via the adaptation-field random_access_indicator when the
-  provider sets it, with a fallback NAL-header scan (H.264 IDR/SPS,
-  H.265 IRAP or VPS/SPS without a non-IRAP VCL in the same packet) for
-  providers that do not. H.265 PPS is never treated as a keyframe on its
-  own; many encoders emit it before every picture.
+  provider sets it, with a codec-aware start-code scan as a fallback
+  (H.264 IDR, H.265 IRAP, MPEG-1/2 sequence header, GOP header or
+  I-picture). A parameter set counts as a keyframe marker only when the
+  packet carries no non-keyframe slice of its own; many encoders repeat
+  parameter sets before every picture.
 - Segment duration is measured from video PES PTS deltas, cut at the
   first keyframe at or after the target duration.
 - Every emitted segment is prefixed with the most recently seen PAT and
@@ -149,75 +150,97 @@ def extract_pts(packet):
     return pts / PTS_CLOCK
 
 
-def _iter_nal_header_bytes(packet):
-    """Yield the first header byte of each NAL start code visible in this
-    packet's PES payload. Shared by H.264 and H.265 keyframe scans."""
+def _iter_start_code_offsets(packet):
+    """Yield the offset of the byte following each start code prefix visible in
+    this packet's PES payload. A four-byte prefix (00 00 00 01) contains the
+    three-byte one, so a single search finds both."""
     base = packet_payload_offset(packet)
     if base is None or base + 9 >= TS_PACKET_SIZE:
         return
-    header_len = packet[base + 8]
-    i = base + 9 + header_len
-    end = TS_PACKET_SIZE - 4
-    while i < end:
-        if packet[i] == 0x00 and packet[i + 1] == 0x00:
-            nal_start = -1
-            if packet[i + 2] == 0x01:
-                nal_start = i + 3
-            elif packet[i + 2] == 0x00 and i + 3 < end and packet[i + 3] == 0x01:
-                nal_start = i + 4
-            if 0 < nal_start < TS_PACKET_SIZE:
-                yield packet[nal_start]
-                i = nal_start
-                continue
-        i += 1
+    i = base + 9 + packet[base + 8]
+    while True:
+        found = packet.find(b"\x00\x00\x01", i)
+        if found < 0:
+            break
+        i = found + 3
+        if i >= TS_PACKET_SIZE:
+            break
+        yield i
+
+
+def _h264_starts_keyframe(packet):
+    """IDR (nal_unit_type 5) is definitive. SPS (7) counts only until a
+    non-IDR slice (1-4) shows up in the same packet."""
+    seen_parameter_set = False
+    for offset in _iter_start_code_offsets(packet):
+        nal_type = packet[offset] & 0x1F
+        if nal_type == 5:
+            return True
+        if 1 <= nal_type <= 4:
+            return False
+        if nal_type == 7:
+            seen_parameter_set = True
+    return seen_parameter_set
+
+
+def _hevc_starts_keyframe(packet):
+    """IRAP (16-21) is definitive. VPS/SPS (32-33) count only until a non-IRAP
+    VCL NAL (0-15) shows up. PPS (34) is never evidence on its own: many
+    encoders emit one before every picture, and treating that as a keyframe
+    shreds the GOP into unplayable fragments."""
+    seen_parameter_set = False
+    for offset in _iter_start_code_offsets(packet):
+        nal_type = (packet[offset] >> 1) & 0x3F
+        if 16 <= nal_type <= 21:
+            return True
+        if nal_type <= 15:
+            return False
+        if nal_type in (32, 33):
+            seen_parameter_set = True
+    return seen_parameter_set
+
+
+def _mpeg2_starts_keyframe(packet):
+    """MPEG-1/2 random access points: a sequence header, a GOP header, or an
+    I-picture. Start-code values are read as start-code values; scanning them
+    as H.264 NAL headers makes slice codes 0x05 and 0x07 look like IDR/SPS."""
+    for offset in _iter_start_code_offsets(packet):
+        code = packet[offset]
+        if code in (0xB3, 0xB8):  # sequence_header, group_of_pictures_header
+            return True
+        if code == 0x00:  # picture_start_code
+            if offset + 2 >= TS_PACKET_SIZE:
+                return False
+            # picture_coding_type follows a 10-bit temporal_reference; 1 = I.
+            return ((packet[offset + 2] >> 3) & 0x07) == 1
+        if 0x01 <= code <= 0xAF:  # slice: already inside a picture
+            return False
+    return False
+
+
+_KEYFRAME_SCANNERS = {
+    0x01: _mpeg2_starts_keyframe,
+    0x02: _mpeg2_starts_keyframe,
+    0x1B: _h264_starts_keyframe,
+    0x24: _hevc_starts_keyframe,
+}
 
 
 def starts_keyframe(packet, video_stream_type):
     """
     Does this PUSI video packet open a keyframe access unit?
 
-    Prefers the adaptation-field random_access_indicator; falls back to
-    scanning visible NAL start codes. Encoders emit parameter sets
-    immediately before IDR/IRAP frames, so SPS/VPS in the first packet is
-    a reliable keyframe marker even when the keyframe NAL itself starts
-    in a later packet of the same PES.
-
-    For H.265, PPS (nal_unit_type 34) alone is NOT a keyframe signal: many
-    encoders emit a PPS before every picture. Treating it as one cuts
-    mid-GOP. IRAP (16-21) is definitive; VPS/SPS (32-33) count only when
-    the same packet does not also carry a non-IRAP VCL NAL.
+    Prefers the adaptation-field random_access_indicator; falls back to a
+    codec-aware scan of the start codes visible in this packet. Encoders emit
+    parameter sets immediately before an IDR/IRAP frame, so a parameter set in
+    the first packet marks a keyframe even when the keyframe's own slice
+    starts in a later packet of the same PES. A parameter set that shares the
+    packet with a non-keyframe slice marks nothing: it is a repeat.
     """
     if packet_random_access(packet):
         return True
-
-    if video_stream_type == 0x24:
-        seen_irap = False
-        seen_vps_sps = False
-        seen_non_irap_vcl = False
-        for hdr in _iter_nal_header_bytes(packet):
-            # H.265: nal_unit_type in bits 1-6 of the first byte.
-            nal_type = (hdr >> 1) & 0x3F
-            if 16 <= nal_type <= 21:
-                seen_irap = True
-            elif nal_type in (32, 33):
-                seen_vps_sps = True
-            elif nal_type <= 15:
-                # Non-IRAP VCL (TRAIL/RADL/RASL/...).
-                seen_non_irap_vcl = True
-            # PPS (34) and other non-VCL types are ignored as keyframe evidence.
-        if seen_irap:
-            return True
-        if seen_vps_sps and not seen_non_irap_vcl:
-            return True
-        return False
-
-    for hdr in _iter_nal_header_bytes(packet):
-        # H.264: nal_unit_type in bits 0-4.
-        nal_type = hdr & 0x1F
-        # IDR (5) or SPS (7)
-        if nal_type in (5, 7):
-            return True
-    return False
+    scanner = _KEYFRAME_SCANNERS.get(video_stream_type)
+    return scanner(packet) if scanner else False
 
 
 class TSSegmenter:
@@ -471,7 +494,8 @@ class TSSegmenter:
         return segment
 
 
-def render_media_playlist(window, target_duration, segment_name="{seq}.ts", adv_target=None):
+def render_media_playlist(window, target_duration, segment_name="{seq}.ts", adv_target=None,
+                          disc_sequence=0):
     """
     Render an HLS media playlist (RFC 8216, version 3) from a window of
     segment descriptors: [{"seq": int, "dur": float, "disc": bool}, ...].
@@ -480,6 +504,11 @@ def render_media_playlist(window, target_duration, segment_name="{seq}.ts", adv_
     ``adv_target`` is the manager's frozen EXT-X-TARGETDURATION; when supplied it
     is emitted verbatim so the value never changes across reloads (RFC 8216
     6.2.1). Without it (legacy descriptor) the per-window ceil is used.
+
+    ``disc_sequence`` is how many EXT-X-DISCONTINUITY tags have already slid out
+    of the window. Emitting it keeps the discontinuity sequence numbers of the
+    segments still listed unchanged as the window rolls (RFC 8216 4.3.3.3); an
+    absent tag means zero, so it only needs to appear once it is nonzero.
     """
     # Frozen live-edge offset: ~2.5 config target-durations (~10s at the 4s
     # default) so the value is a session constant and never drifts across
@@ -506,6 +535,8 @@ def render_media_playlist(window, target_duration, segment_name="{seq}.ts", adv_
         f"#EXT-X-TARGETDURATION:{advertised_target}",
         f"#EXT-X-MEDIA-SEQUENCE:{window[0]['seq']}",
     ]
+    if disc_sequence:
+        lines.append(f"#EXT-X-DISCONTINUITY-SEQUENCE:{disc_sequence}")
     # Emit EXT-X-START only once the window is deep enough to honor the frozen
     # offset, so the tag's value is stable across reloads (RFC 8216 6.2.1). It
     # pins the join point deterministically across players; a client that sets

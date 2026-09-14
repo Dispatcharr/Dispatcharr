@@ -29,8 +29,13 @@ HLS_STATE_INITIALIZING = "initializing"
 HLS_STATE_ACTIVE = "active"
 HLS_STATE_STOPPED = "stopped"
 
-# Redis TTL for state/owner/playlist keys
+# Redis TTL for state/playlist keys
 HLS_KEY_TTL = 3600
+# The owner lock is refreshed every DEMAND_CHECK_INTERVAL, so it can expire
+# soon after its holder does. A long-lived lock left behind by a dead worker
+# makes ensure_output_format believe the output is still being produced
+# elsewhere, and nothing restarts the segmenter until the key finally expires.
+HLS_OWNER_TTL = 60
 
 # Defaults; both overridable via proxy settings
 DEFAULT_SEGMENT_DURATION = 4
@@ -66,6 +71,12 @@ class HLSOutputManager:
         # Set by the input side (StreamManager.update_url) when the upstream
         # switched; the next emitted segment is marked as a discontinuity.
         self._switch_pending = False
+        # True only while this instance holds the output owner lock. Redis
+        # cleanup is gated on it: if ownership moved to another worker, its
+        # playlist and segments live under the same keys and must not be
+        # deleted on our way out.
+        self._owns_output = False
+        self._stopped = False
 
         self.segment_duration = ConfigHelper.get('HLS_SEGMENT_DURATION', DEFAULT_SEGMENT_DURATION)
         self.window_size = ConfigHelper.get('HLS_WINDOW_SIZE', DEFAULT_WINDOW_SIZE)
@@ -98,6 +109,8 @@ class HLSOutputManager:
             pass
         self._redis = RedisClient.get_client()
         self._window = []
+        # EXT-X-DISCONTINUITY tags that have already slid out of the window.
+        self._disc_sequence = 0
         # Seed the rolling window + frozen target from an existing descriptor so
         # a mid-session worker restart/takeover does not clobber the playlist to
         # a fresh window (MEDIA-SEQUENCE must never regress; RFC 8216 6.2.2). The
@@ -112,6 +125,7 @@ class HLSOutputManager:
                         self._window = prior["window"]
                     if prior.get("adv_target"):
                         self.adv_target = prior["adv_target"]
+                    self._disc_sequence = int(prior.get("disc_seq") or 0)
             except Exception:
                 pass
 
@@ -142,9 +156,15 @@ class HLSOutputManager:
         return True
 
     def stop(self):
-        """Stop the segmenter thread and clean up all Redis keys."""
-        if not self.running:
+        """Stop the segmenter thread and clean up all Redis keys.
+
+        Also runs when the loop has already exited on its own (ownership loss,
+        an unhandled error) so those cases still release the Redis keys and the
+        stored segments instead of leaving them to time out.
+        """
+        if self._stopped:
             return
+        self._stopped = True
         self.running = False
         logger.info(f"[HLS:{self.channel_id}] Stopping")
 
@@ -154,7 +174,13 @@ class HLSOutputManager:
             except Exception:
                 pass
 
-        self._cleanup_redis()
+        if self._owns_output:
+            self._cleanup_redis()
+        else:
+            logger.info(
+                f"[HLS:{self.channel_id}] Not the output owner; leaving Redis keys "
+                f"for the worker that is"
+            )
         logger.info(f"[HLS:{self.channel_id}] Stopped")
 
     def notify_stream_switch(self):
@@ -173,6 +199,11 @@ class HLSOutputManager:
             target_duration=self.segment_duration,
             max_segment_duration=self.adv_target,
         )
+        if self._window:
+            # Seeded from a previous owner's descriptor: our first segment
+            # continues its media sequence but not its byte stream or its PTS
+            # timeline, so it has to be tagged (RFC 8216 4.3.2.3).
+            segmenter.flag_discontinuity()
 
         # Start behind live so the first segments cover the same window a
         # new TS client would receive, matching fMP4 writer positioning.
@@ -207,6 +238,12 @@ class HLSOutputManager:
                 now = time.time()
                 if now - last_demand_check >= DEMAND_CHECK_INTERVAL:
                     last_demand_check = now
+                    # On the timer rather than per segment so the lock is also
+                    # renewed while the input is stalled and no segments are
+                    # being produced.
+                    self._heartbeat_ownership()
+                    if not self.running:
+                        break
                     if self._has_hls_demand():
                         idle_demand_checks = 0
                     else:
@@ -276,8 +313,11 @@ class HLSOutputManager:
             "dur": round(segment.duration, 3),
             "disc": bool(segment.discontinuity),
         })
-        if len(self._window) > self.window_size:
-            self._window = self._window[-self.window_size:]
+        while len(self._window) > self.window_size:
+            # Count the discontinuities that roll off so the numbering of the
+            # segments still listed does not shift (RFC 8216 4.3.3.3).
+            if self._window.pop(0).get("disc"):
+                self._disc_sequence += 1
 
         if self._redis:
             try:
@@ -285,6 +325,10 @@ class HLSOutputManager:
                     "window": self._window,
                     "target": self.segment_duration,
                     "adv_target": self.adv_target,
+                    "disc_seq": self._disc_sequence,
+                    # Last time this output produced a segment; the playlist
+                    # view uses it to tell a live output from an abandoned one.
+                    "ts": time.time(),
                 }
                 self._redis.setex(
                     RedisKeys.output_playlist(self.channel_id, self.fmt),
@@ -293,13 +337,6 @@ class HLSOutputManager:
                 )
             except Exception as e:
                 logger.error(f"[HLS:{self.channel_id}] Error updating playlist state: {e}")
-
-        # Heartbeat the owner lock and state key (both set once with ex=3600 and
-        # otherwise never refreshed): a stream longer than an hour would silently
-        # lose mutual exclusion and let a second worker start a duplicate
-        # segmenter, breaking MEDIA-SEQUENCE monotonicity. If ownership has moved,
-        # stop cleanly rather than fight the new owner.
-        self._heartbeat_ownership()
 
         logger.debug(
             f"[HLS:{self.channel_id}] Segment {seq}: "
@@ -378,13 +415,14 @@ class HLSOutputManager:
 
     def _acquire_owner_lock(self) -> bool:
         if not self._redis:
+            self._owns_output = True
             return True
         owner_key = RedisKeys.output_owner(self.channel_id, self.fmt)
-        acquired = self._redis.set(owner_key, self.worker_id, nx=True, ex=HLS_KEY_TTL)
-        if acquired:
-            return True
-        existing = self._redis.get(owner_key)
-        return existing == self.worker_id
+        acquired = self._redis.set(owner_key, self.worker_id, nx=True, ex=HLS_OWNER_TTL)
+        if not acquired and self._redis.get(owner_key) != self.worker_id:
+            return False
+        self._owns_output = True
+        return True
 
     def _set_state(self, state: str):
         if self._redis:
@@ -392,16 +430,22 @@ class HLSOutputManager:
 
     def _heartbeat_ownership(self):
         """Re-extend the owner lock + state TTL while we still own them; stop the
-        loop if another worker has taken over. Called once per stored segment."""
+        loop if another worker has taken over.
+
+        Without this, a stream outliving the key TTL would silently lose mutual
+        exclusion and let a second worker start a duplicate segmenter, breaking
+        MEDIA-SEQUENCE monotonicity.
+        """
         if not self._redis:
             return
         try:
             owner_key = RedisKeys.output_owner(self.channel_id, self.fmt)
             if self._redis.get(owner_key) == self.worker_id:
-                self._redis.expire(owner_key, HLS_KEY_TTL)
+                self._redis.expire(owner_key, HLS_OWNER_TTL)
                 self._redis.expire(RedisKeys.output_state(self.channel_id, self.fmt), HLS_KEY_TTL)
             else:
                 logger.info(f"[HLS:{self.channel_id}] Output ownership moved to another worker; stopping")
+                self._owns_output = False
                 self.running = False
         except Exception as e:
             logger.error(f"[HLS:{self.channel_id}] Ownership heartbeat error: {e}")
