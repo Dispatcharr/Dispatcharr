@@ -7,7 +7,7 @@ if [ ! -e "/tmp/init" ]; then
     if ! command -v node 2>&1 >/dev/null
     then
         echo "=== setting up nodejs ==="
-        curl -sL https://deb.nodesource.com/setup_23.x -o /tmp/nodesource_setup.sh
+        curl -sL https://deb.nodesource.com/setup_24.x -o /tmp/nodesource_setup.sh
         bash /tmp/nodesource_setup.sh
         apt-get update
         apt-get install -y --no-install-recommends \

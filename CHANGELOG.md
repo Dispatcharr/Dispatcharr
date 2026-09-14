@@ -7,8 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.31.0] - 2026-09-13
+
 ### Added
 
+- **M3U and EPG refresh failures emit `m3u_error` and `epg_error` system events.** Failed downloads, parses, and Schedules Direct refresh errors are written to the system event log (with red indicators in System Events) and can trigger Connect webhooks/scripts. (Closes #1507) - Thanks [@gianlucalauro](https://github.com/gianlucalauro)
 - **DVR recordings can be captured through an Output Profile.** A new **DVR Output Profile** setting appends `?output_profile=<id>` to the capture URL so recordings can use the same transcoding as live playback. Unset (the default) keeps the previous raw-copy behaviour; a missing or inactive profile falls back the same way rather than failing the recording. (Closes #1618) - Thanks [@v8eta](https://github.com/v8eta)
 - **DVR path templates support broadcast-date placeholders.** `{start_date}` (`YYYY-MM-DD`), `{start_year}`, `{start_month}`, and `{start_day}` work in the TV, TV fallback, movie, and movie fallback templates. Values are the programme air date in the system time zone, as integers so `{start_month:02d}` pads like `{season:02d}`. (Closes #682) - Thanks [@v8eta](https://github.com/v8eta)
 - **VOD mid-stream reopen on upstream stalls.** When a provider read times out or drops mid-body, the VOD proxy closes the local HTTP handle and reopens at the absolute byte offset (Range resume) against the cached final URL after redirects. Up to three consecutive failures are retried; successful chunks reset the streak.
@@ -37,6 +40,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Deleting an output profile clears stale references.** User `custom_properties.output_profile` overrides, the HDHR default (`stream_settings.hdhr_output_profile_id`), and the DVR default (`dvr_settings.output_profile_id`) that pointed at the deleted profile are removed so JSON does not keep orphan IDs. Playback and recordings already ignored missing profiles; this only cleans storage.
 - **Locked output profiles cannot be deleted via the API.** Same `pre_delete` guard as locked stream profiles: deleting a `locked=True` row raises `ValidationError`, matching the UI which already disables delete for locked profiles.
 - **Output and stream profile deletes ask for confirmation.** Both tables use the shared `ConfirmationDialog` (with optional "Don't ask me again"), matching other destructive actions.
+- Dependency updates:
+  - `Django` 6.0.7 → 6.0.8 (security patch; see Security section). Not upgrading to 6.1.x yet: `django-celery-beat` 2.9.0 still requires `Django<6.1`.
+  - `djangorestframework` 3.17.1 → 3.18.1 (security patch; see Security section)
+  - `gevent` 26.7.0 → 26.8.0
+  - `rapidfuzz` 3.14.5 → 3.14.6
+  - `torch` 2.13.0+cpu → 2.14.0+cpu
+  - `sentence-transformers` 5.6.1 → 6.0.1
+  - `lxml` 6.1.1 → 6.1.3
 
 ### Fixed
 
@@ -61,6 +72,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- Updated `Django` 6.0.7 → 6.0.8, resolving the following CVEs:
+  - **CVE-2026-15307**: Server-side file-write and request forgery via spatial lookups (high).
+  - **CVE-2026-15337**: Potential denial-of-service in `check_for_language()` (low).
+  - **CVE-2026-15830**: Potential denial-of-service via nested geometry collections (moderate).
+  - **CVE-2026-15920**: Potential cross-site scripting via `URLField` values in the admin (moderate).
+- Updated `djangorestframework` 3.17.1 → 3.18.1 (includes 3.17.2 security fixes):
+  - **CVE-2026-73229**: `AdminRenderer` may disclose GET-protected data when rendering invalid write requests ([GHSA-g47c-3xmw-q6m2](https://github.com/advisories/GHSA-g47c-3xmw-q6m2)).
+  - **CVE-2026-73228**: Potential bypass of Django `DATA_UPLOAD_MAX_MEMORY_SIZE` when parsing oversized JSON and urlencoded bodies via DRF `request.data` ([GHSA-2m8g-3cmr-wg3w](https://github.com/advisories/GHSA-2m8g-3cmr-wg3w)).
+- Updated additional Python dependencies to clear remaining `uv audit` findings:
+  - `pillow` 12.2.0 → 12.3.0 (image/font DoS, OOB read/write, and related issues; see [12.3.0 release notes](https://github.com/python-pillow/Pillow/blob/main/docs/releasenotes/12.3.0.rst))
+  - `cryptography` 48.0.1 → 50.0.1, resolving wildcard DNS name escape in name constraints ([GHSA-m2h6-j472-rp4c](https://github.com/advisories/GHSA-m2h6-j472-rp4c)), exponential path-building via duplicate self-signed intermediates ([GHSA-jwv3-5hgf-82ww](https://github.com/advisories/GHSA-jwv3-5hgf-82ww)), and PKCS#7 EnvelopedData Bleichenbacher oracle ([GHSA-g6cj-pr64-35w5](https://github.com/pyca/cryptography/security/advisories/GHSA-g6cj-pr64-35w5))
+  - `sqlparse` 0.5.5 → 0.6.0, resolving DoS/ReDoS and generated-snippet SQL breakout issues ([GHSA-f2ff-p2ww-7p4p](https://github.com/advisories/GHSA-f2ff-p2ww-7p4p), [GHSA-pwgv-4x5q-6m9f](https://github.com/advisories/GHSA-pwgv-4x5q-6m9f), [GHSA-3496-9g83-7v6x](https://github.com/advisories/GHSA-3496-9g83-7v6x), [GHSA-prg7-hcfm-mfcr](https://github.com/advisories/GHSA-prg7-hcfm-mfcr), [GHSA-cfqr-cjx5-5jcm](https://github.com/advisories/GHSA-cfqr-cjx5-5jcm))
+  - `msgpack` 1.2.0 → 1.2.2, resolving out-of-bounds read/crash on Unpacker reuse after a caught error ([GHSA-6v7p-g79w-8964](https://github.com/msgpack/msgpack-python/security/advisories/GHSA-6v7p-g79w-8964))
+  - `ujson` 5.12.1 → 6.0.0, resolving malformed/truncated UTF-8 silently rewritten in `ujson.dumps()` ([GHSA-3j69-69wj-xqx2](https://github.com/advisories/GHSA-3j69-69wj-xqx2))
+  - `setuptools` 81.0.0 → 84.0.0, resolving MANIFEST.in exclusion bypass via Unicode normalization on macOS ([GHSA-h35f-9h28-mq5c](https://github.com/advisories/GHSA-h35f-9h28-mq5c))
+  - `yt-dlp` 2026.6.9 → 2026.8.19, resolving downstream command injection via improper sanitization of `--write-link` output ([GHSA-6v4j-43gg-vj32](https://github.com/advisories/GHSA-6v4j-43gg-vj32))
+- Updated frontend npm dependencies to resolve 4 audit vulnerabilities (3 moderate, 1 high):
+  - Updated `vitest` 4.1.8 → 4.1.11 (and `@vitest/mocker`), resolving **moderate** path traversal / arbitrary file read via redirect mock ([GHSA-82fw-gwwq-j7x9](https://github.com/advisories/GHSA-82fw-gwwq-j7x9))
+  - Updated `@xmldom/xmldom` 0.8.13 → 0.8.15, resolving **high** XML injection and DoS issues in name handling, serialization, and parsing ([GHSA-w2rr-34g9-rvrj](https://github.com/advisories/GHSA-w2rr-34g9-rvrj), [GHSA-4w3w-2rp5-g8jm](https://github.com/advisories/GHSA-4w3w-2rp5-g8jm), [GHSA-c7q8-3ch8-vqpv](https://github.com/advisories/GHSA-c7q8-3ch8-vqpv), [GHSA-27p8-2357-5qqv](https://github.com/advisories/GHSA-27p8-2357-5qqv), [GHSA-8344-3jmq-59r6](https://github.com/advisories/GHSA-8344-3jmq-59r6), [GHSA-x4fp-j954-r2f4](https://github.com/advisories/GHSA-x4fp-j954-r2f4), [GHSA-965w-775f-mr7g](https://github.com/advisories/GHSA-965w-775f-mr7g), [GHSA-93r5-fhx6-vmg9](https://github.com/advisories/GHSA-93r5-fhx6-vmg9)), plus **moderate** EntityReference serialization and end-tag parse issues ([GHSA-6gmq-8vp8-gcm6](https://github.com/advisories/GHSA-6gmq-8vp8-gcm6), [GHSA-6h8r-xr42-gp59](https://github.com/advisories/GHSA-6h8r-xr42-gp59))
+  - Updated `@humanfs/node` 0.16.7 → 0.16.8, resolving **moderate** recursive copy following symlinked files outside the source tree ([GHSA-p498-v437-472g](https://github.com/advisories/GHSA-p498-v437-472g))
 - **DVR recording storage paths are server-owned and confined to `/data/recordings`.** `RecordingSerializer` strips client-supplied `file_path`, `_hls_dir`, `file_name`, `file_url`, and `output_file_url` on create and preserves existing values on update. Playback and delete resolve paths through `resolve_safe_local_data_path` so a DVR manager cannot read or delete files outside the recordings root via poisoned `custom_properties`.
 - **Plugin manifest and zip downloads re-validate every redirect hop.** Shared `get_with_validated_redirects` disables automatic redirects and runs the existing SSRF checks (no private/loopback by default) on each `Location` before following it, closing the gap where only the initial URL was validated.
 - **Forwarded Host and scheme are trusted only from configured proxies.** `get_host_and_port` / `build_absolute_uri_with_port` use the same `request_from_trusted_proxy` gate as client IP detection, so `X-Forwarded-Host` / `X-Forwarded-Proto` from an untrusted peer cannot rewrite absolute URLs in M3U, EPG, HDHR, or similar responses.
