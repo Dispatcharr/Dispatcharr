@@ -28,6 +28,10 @@ from apps.channels.utils import coerce_channel_profile_ids
 from apps.channels.models import ChannelGroupM3UAccount
 from core.serializers import UserAgentSerializer
 from apps.vod.models import M3UVODCategoryRelation
+from apps.vod.language import (
+    invalidate_category_metadata_cache,
+    validate_category_custom_properties,
+)
 
 from .serializers import (
     M3UAccountSerializer,
@@ -486,6 +490,20 @@ class M3UAccountViewSet(viewsets.ModelViewSet):
         category_settings = request.data.get("category_settings", [])
 
         try:
+            validated_category_props = {}
+            for setting in category_settings:
+                try:
+                    validated_category_props[setting.get("id")] = (
+                        validate_category_custom_properties(
+                            setting.get("custom_properties")
+                        )
+                    )
+                except ValueError as e:
+                    return Response(
+                        {"error": f"Category {setting.get('id')}: {e}"},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+
             for setting in group_settings:
                 start = setting.get("auto_sync_channel_start")
                 end = setting.get("auto_sync_channel_end")
@@ -546,14 +564,29 @@ class M3UAccountViewSet(viewsets.ModelViewSet):
                         ],
                     )
 
+                category_ids = [
+                    setting["id"] for setting in category_settings if setting.get("id")
+                ]
+                existing_category_props = {
+                    rel.category_id: rel.custom_properties or {}
+                    for rel in M3UVODCategoryRelation.objects.filter(
+                        m3u_account=account, category_id__in=category_ids
+                    )
+                }
+
                 category_objects = [
                     M3UVODCategoryRelation(
                         category_id=setting["id"],
                         m3u_account=account,
                         enabled=setting.get("enabled", True),
-                        custom_properties=ensure_custom_properties_dict(
-                            setting.get("custom_properties")
-                        ),
+                        # Merge, never replace: a caller sending only `language`
+                        # can't wipe an unrelated key (e.g. `quality`). Uses the
+                        # already-validated/normalised (lowercased language)
+                        # props computed above, not the raw request payload.
+                        custom_properties={
+                            **existing_category_props.get(setting["id"], {}),
+                            **validated_category_props.get(setting["id"], {}),
+                        },
                     )
                     for setting in category_settings
                     if setting.get("id")
@@ -566,6 +599,9 @@ class M3UAccountViewSet(viewsets.ModelViewSet):
                         unique_fields=["m3u_account", "category"],
                         update_fields=["enabled", "custom_properties"],
                     )
+
+            if category_settings:
+                invalidate_category_metadata_cache()
 
             return Response({"message": "Group settings updated successfully"})
 

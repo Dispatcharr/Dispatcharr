@@ -1260,6 +1260,121 @@ def _xc_fetch_priority_distinct_relations(
     return rows
 
 
+def _xc_movie_language_relations(*, rel_filters, value_fields, order_by_name_field):
+    """Language-aware movie fetch: dedup key is (movie_id, resolved language).
+
+    Nominates the anchor relation (min id) per group as the ID-bearing
+    row. The anchor is purely an identifier: playback (`_select_vod_stream`)
+    re-ranks the whole language group by quality independently of it, so
+    nominating a stable relation costs nothing here.
+
+    Pass 1 (this function's narrow query) transfers a handful of scalar
+    columns per relation; pass 2 (the hydration fetch) is the same wide
+    fetch the non-language path uses, restricted to the nominated ids.
+    """
+    from django.db.models.fields.json import KeyTextTransform
+    from apps.vod.models import M3UMovieRelation
+    from apps.vod.language import get_category_metadata, resolve_language
+
+    cat_meta = get_category_metadata()
+
+    narrow_rows = (
+        M3UMovieRelation.objects.filter(**rel_filters)
+        .annotate(rel_lang=KeyTextTransform('language', 'custom_properties'))
+        .values('id', 'movie_id', 'category_id', 'm3u_account_id', 'rel_lang')
+        .order_by('movie_id', 'id')
+    )
+
+    seen_groups = set()
+    anchor_ids = []
+    anchor_language = {}
+    for row in narrow_rows:
+        language = resolve_language(
+            row['rel_lang'], cat_meta.get((row['m3u_account_id'], row['category_id']))
+        )
+        key = (row['movie_id'], language)
+        if key in seen_groups:
+            continue
+        # Ascending (movie_id, id) order means the first row seen for a group
+        # is already the minimum id in that group.
+        seen_groups.add(key)
+        anchor_ids.append(row['id'])
+        anchor_language[row['id']] = language
+
+    if not anchor_ids:
+        return []
+
+    rows = list(
+        _xc_annotate_relation_artwork(M3UMovieRelation.objects.filter(pk__in=anchor_ids))
+        .values(*value_fields)
+        .order_by(Lower(order_by_name_field))
+    )
+    for row in rows:
+        row['_resolved_language'] = anchor_language.get(row['id'])
+    return rows
+
+
+def _xc_series_language_relations(*, rel_filters, value_fields, order_by_name_field):
+    """Language-aware series fetch: dedup key is (series_id, resolved language).
+
+    Nominates the winner relation (best quality, then priority, then id)
+    per group. This keeps the pre-existing winner-ID behaviour for series;
+    only the dedup key changes.
+
+    `xc_get_series_info` additionally re-derives this same series_relation's
+    resolved language and re-ranks each episode's own candidate relations
+    against it (quality, then priority). Picking a provider for the series
+    card here doesn't pin the episode list too; `M3UEpisodeRelation` rows
+    are looked up per-episode, independently.
+    """
+    from django.db.models.fields.json import KeyTextTransform
+    from apps.vod.models import M3USeriesRelation
+    from apps.vod.language import (
+        get_category_metadata, resolve_language, resolve_quality, quality_rank,
+    )
+
+    cat_meta = get_category_metadata()
+
+    narrow_rows = (
+        M3USeriesRelation.objects.filter(**rel_filters)
+        .annotate(rel_lang=KeyTextTransform('language', 'custom_properties'))
+        .values(
+            'id', 'series_id', 'series__name', 'category_id',
+            'm3u_account_id', 'm3u_account__priority', 'rel_lang',
+        )
+    )
+
+    best_rank = {}
+    winner_id = {}
+    winner_language = {}
+    for row in narrow_rows:
+        meta = cat_meta.get((row['m3u_account_id'], row['category_id']))
+        language = resolve_language(row['rel_lang'], meta)
+        quality = resolve_quality(row['series__name'], meta)
+        # Lower sorts better: best quality first, then higher priority, then
+        # lowest id as a stable final tiebreak (matches the non-language path).
+        rank = (quality_rank(quality), -row['m3u_account__priority'], row['id'])
+        key = (row['series_id'], language)
+        if key not in best_rank or rank < best_rank[key]:
+            best_rank[key] = rank
+            winner_id[key] = row['id']
+            winner_language[row['id']] = language
+
+    if not winner_id:
+        return []
+
+    rows = list(
+        _xc_annotate_relation_artwork(
+            M3USeriesRelation.objects.filter(pk__in=winner_id.values())
+        )
+        .values(*value_fields)
+        .order_by(Lower(order_by_name_field))
+    )
+    for row in rows:
+        row['_resolved_language'] = winner_language.get(row['id'])
+    return rows
+
+
 def xc_get_vod_categories(user):
     """Get VOD categories for XtreamCodes API"""
     if not is_vod_movies_enabled(user=user):
@@ -1291,6 +1406,7 @@ def xc_get_vod_streams(request, user, category_id=None):
         return []
 
     from apps.vod.models import M3UMovieRelation
+    from apps.vod.language import vod_language_enabled, apply_language_suffix
 
     rel_filters = {"m3u_account__is_active": True}
     if category_id:
@@ -1299,13 +1415,23 @@ def xc_get_vod_streams(request, user, category_id=None):
     if user.user_level < 10 and (user.custom_properties or {}).get('hide_adult_content', False):
         rel_filters["movie__is_adult"] = False
 
-    relations = _xc_fetch_priority_distinct_relations(
-        manager=M3UMovieRelation.objects,
-        rel_filters=rel_filters,
-        distinct_field='movie_id',
-        value_fields=XC_MOVIE_VALUE_FIELDS,
-        order_by_name_field='movie__name',
-    )
+    language_enabled = vod_language_enabled()
+    if language_enabled:
+        # Namespace switches uniformly to relation IDs the moment any
+        # category is language-assigned.
+        relations = _xc_movie_language_relations(
+            rel_filters=rel_filters,
+            value_fields=XC_MOVIE_VALUE_FIELDS,
+            order_by_name_field='movie__name',
+        )
+    else:
+        relations = _xc_fetch_priority_distinct_relations(
+            manager=M3UMovieRelation.objects,
+            rel_filters=rel_filters,
+            distinct_field='movie_id',
+            value_fields=XC_MOVIE_VALUE_FIELDS,
+            order_by_name_field='movie__name',
+        )
 
     _logo_url_parts = _xc_vodlogo_url_parts(request)
     # One reverse for the fallback-icon proxy rewrites below.
@@ -1320,12 +1446,17 @@ def xc_get_vod_streams(request, user, category_id=None):
         category_id_list = [category_id] if category_id else []
         rating = row['movie__rating']
         artwork = _xc_relation_artwork_from_row(row, custom_props)
+        name = row['movie__name']
+        stream_id = row['movie__id']
+        if language_enabled:
+            name = apply_language_suffix(name, row.get('_resolved_language'))
+            stream_id = row['id']
 
         append({
             "num": num,
-            "name": row['movie__name'],
+            "name": name,
             "stream_type": "movie",
-            "stream_id": row['movie__id'],
+            "stream_id": stream_id,
             "stream_icon": _xc_cover_or_logo(
                 request,
                 'movie',
@@ -1389,18 +1520,26 @@ def xc_get_series(request, user, category_id=None):
         return []
 
     from apps.vod.models import M3USeriesRelation
+    from apps.vod.language import vod_language_enabled, apply_language_suffix
 
     rel_filters = {"m3u_account__is_active": True}
     if category_id:
         rel_filters["category_id"] = category_id
 
-    relations = _xc_fetch_priority_distinct_relations(
-        manager=M3USeriesRelation.objects,
-        rel_filters=rel_filters,
-        distinct_field='series_id',
-        value_fields=XC_SERIES_VALUE_FIELDS,
-        order_by_name_field='series__name',
-    )
+    if vod_language_enabled():
+        relations = _xc_series_language_relations(
+            rel_filters=rel_filters,
+            value_fields=XC_SERIES_VALUE_FIELDS,
+            order_by_name_field='series__name',
+        )
+    else:
+        relations = _xc_fetch_priority_distinct_relations(
+            manager=M3USeriesRelation.objects,
+            rel_filters=rel_filters,
+            distinct_field='series_id',
+            value_fields=XC_SERIES_VALUE_FIELDS,
+            order_by_name_field='series__name',
+        )
 
     _logo_url_parts = _xc_vodlogo_url_parts(request)
     # One reverse for all series backdrop rewrites.
@@ -1415,10 +1554,11 @@ def xc_get_series(request, user, category_id=None):
         year_str = str(row['series__year']) if row['series__year'] else ""
         release_date = custom_props.get('release_date', year_str)
         artwork = _xc_relation_artwork_from_row(row, custom_props)
+        name = apply_language_suffix(row['series__name'], row.get('_resolved_language'))
 
         append({
             "num": num,
-            "name": row['series__name'],
+            "name": name,
             "series_id": row['id'],
             "cover": _xc_cover_or_logo(
                 request,
@@ -1500,9 +1640,20 @@ def xc_get_series_info(request, user, series_id):
     except Exception as e:
         logger.error(f"Error refreshing series data for relation {series_relation.id}: {str(e)}")
 
-    # Include episodes from any active provider for this shared Series (XC clients
-    # see a unified catalog). Prefer the highest-priority account's stream metadata.
+    # Include episodes from any active provider for this shared Series (XC
+    # clients see a unified catalog). Which provider's relation wins per
+    # episode depends on whether the VOD language feature is on: off, it's
+    # the highest-priority account (legacy, unchanged); on, it's the best
+    # (quality, then priority) relation whose resolved language matches the
+    # language of the specific series_relation the client asked for
+    # (`series_id`), falling back to the best of the rest rather than
+    # 404ing when nothing matches that language (mirrors
+    # _order_candidates_by_language's playback-time fallback for movies).
     from apps.vod.models import Episode, M3UEpisodeRelation
+    from apps.vod.language import (
+        vod_language_enabled, get_category_metadata, resolve_language,
+        resolve_quality, quality_rank, category_id_for_relation,
+    )
 
     episodes = list(
         Episode.objects.filter(
@@ -1510,21 +1661,45 @@ def xc_get_series_info(request, user, series_id):
             m3u_relations__m3u_account__is_active=True,
         ).distinct().order_by('season_number', 'episode_number')
     )
+    episodes_by_id = {ep.id: ep for ep in episodes}
+
+    language_enabled = vod_language_enabled()
+    requested_language = None
+    if language_enabled:
+        cat_meta = get_category_metadata()
+        series_rel_lang = (
+            (series_relation.custom_properties or {}).get('language')
+            if series_relation.custom_properties else None
+        )
+        requested_language = resolve_language(
+            series_rel_lang,
+            cat_meta.get((series_relation.m3u_account_id, series_relation.category_id)),
+        )
 
     relations_by_episode_id = {}
+    best_rank_by_episode_id = {}
     for rel in M3UEpisodeRelation.objects.filter(
         episode_id__in=[ep.id for ep in episodes],
         m3u_account__is_active=True,
-    ).select_related('m3u_account').only(
-        'episode_id',
-        'container_extension',
-        'created_at',
-        'custom_properties',
-        'm3u_account__priority',
-    ).order_by('episode_id', '-m3u_account__priority', 'id'):
-        # First row per episode wins due to priority/id ordering.
-        if rel.episode_id not in relations_by_episode_id:
-            relations_by_episode_id[rel.episode_id] = rel
+    ).select_related('m3u_account', 'series_relation'):
+        if language_enabled:
+            meta = cat_meta.get((rel.m3u_account_id, category_id_for_relation(rel)))
+            resolved = resolve_language((rel.custom_properties or {}).get('language'), meta)
+            quality = resolve_quality(episodes_by_id[rel.episode_id].name, meta)
+            rank = (
+                0 if resolved == requested_language else 1,
+                quality_rank(quality),
+                -rel.m3u_account.priority,
+                rel.id,
+            )
+        else:
+            # Legacy behaviour: highest priority wins, then lowest id.
+            rank = (-rel.m3u_account.priority, rel.id)
+
+        key = rel.episode_id
+        if key not in best_rank_by_episode_id or rank < best_rank_by_episode_id[key]:
+            best_rank_by_episode_id[key] = rank
+            relations_by_episode_id[key] = rel
 
     # Group episodes by season
     seasons = {}
@@ -1567,8 +1742,17 @@ def xc_get_series_info(request, user, series_id):
             episode.custom_properties,
         )
 
+        # stream_id is namespaced to M3UEpisodeRelation.id once any category
+        # has a language assigned, so playback (stream_xc_episode) resolves
+        # the exact provider relation this listing chose for this episode,
+        # not just whichever provider happens to have the highest priority
+        # overall (mirrors movies).
+        episode_stream_id = (
+            best_relation.id if (language_enabled and best_relation) else episode.id
+        )
+
         seasons[season_num].append({
-            "id": episode.id,
+            "id": episode_stream_id,
             "season": season_num,
             "episode_num": episode.episode_number or 0,
             "title": episode.name,
@@ -1726,25 +1910,38 @@ def xc_get_vod_info(request, user, vod_id):
         raise Http404()
 
     from apps.vod.models import M3UMovieRelation
+    from apps.vod.language import vod_language_enabled, resolve_movie_relation
     from django.utils import timezone
     from datetime import timedelta
 
     if not vod_id:
         raise Http404()
 
-    # Users with VOD access get it from all active M3U accounts
-    filters = {"movie_id": vod_id, "m3u_account__is_active": True}
+    extra_filters = {}
     if user.user_level < 10 and (user.custom_properties or {}).get('hide_adult_content', False):
-        filters["movie__is_adult"] = False
+        extra_filters["movie__is_adult"] = False
 
-    try:
-        # Order by account priority to get the best relation when multiple exist
-        movie_relation = M3UMovieRelation.objects.select_related('movie', 'movie__logo').filter(**filters).order_by('-m3u_account__priority', 'id').first()
+    language_enabled = vod_language_enabled()
+    if language_enabled:
+        # vod_id is namespaced to M3UMovieRelation.id once any category has a
+        # language assigned; falls back to Movie.id for stale clients.
+        movie_relation = resolve_movie_relation(
+            vod_id, extra_filters=extra_filters, select_related=('movie', 'movie__logo')
+        )
         if not movie_relation:
             raise Http404()
         movie = movie_relation.movie
-    except (M3UMovieRelation.DoesNotExist, M3UMovieRelation.MultipleObjectsReturned):
-        raise Http404()
+    else:
+        # Users with VOD access get it from all active M3U accounts
+        filters = {"movie_id": vod_id, "m3u_account__is_active": True, **extra_filters}
+        try:
+            # Order by account priority to get the best relation when multiple exist
+            movie_relation = M3UMovieRelation.objects.select_related('movie', 'movie__logo').filter(**filters).order_by('-m3u_account__priority', 'id').first()
+            if not movie_relation:
+                raise Http404()
+            movie = movie_relation.movie
+        except (M3UMovieRelation.DoesNotExist, M3UMovieRelation.MultipleObjectsReturned):
+            raise Http404()
 
     # Initialize basic movie data first
     movie_data = {
@@ -1875,7 +2072,7 @@ def xc_get_vod_info(request, user, vod_id):
             'audio': movie_data.get('audio', {}),
         },
         "movie_data": {
-            "stream_id": movie.id,
+            "stream_id": movie_relation.id if language_enabled else movie.id,
             "name": movie.name,
             "added": str(int(movie_relation.created_at.timestamp())),
             "category_id": str(movie_relation.category.id) if movie_relation.category else "0",

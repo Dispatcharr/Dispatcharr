@@ -9,12 +9,29 @@ from .models import (
     VODCategory, Series, Movie, Episode, VODLogo,
     M3USeriesRelation, M3UMovieRelation, M3UEpisodeRelation, M3UVODCategoryRelation
 )
+from .language import extract_provider_language
 from datetime import datetime
 import logging
 import json
 import re
 
 logger = logging.getLogger(__name__)
+
+
+def _with_provider_language(custom_properties, provider_data):
+    """Set/clear the top-level `language` key from the provider's raw payload.
+
+    Recomputed on every scan (like `basic_data` itself) so a provider that
+    stops reporting a language for a stream doesn't leave a stale value
+    behind. Category-assigned language is applied at read time instead,
+    in apps/vod/language.py.
+    """
+    language = extract_provider_language(provider_data)
+    if language:
+        custom_properties['language'] = language
+    else:
+        custom_properties.pop('language', None)
+    return custom_properties
 
 
 def _empty_categories_should_abort(categories_data, account, category_type):
@@ -674,10 +691,9 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
                 # Merge so list sync updates basic_data without dropping detail
                 # payloads or detailed_fetched / related flags.
                 existing_rel_cp = relation.custom_properties or {}
-                relation.custom_properties = {
-                    **existing_rel_cp,
-                    'basic_data': movie_data,
-                }
+                relation.custom_properties = _with_provider_language(
+                    {**existing_rel_cp, 'basic_data': movie_data}, movie_data
+                )
                 relation.last_seen = scan_start_time or timezone.now()  # Mark as seen during this scan
                 relations_to_update.append(relation)
             else:
@@ -688,10 +704,9 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
                     category=category,
                     stream_id=stream_id,
                     container_extension=movie_data.get('container_extension', 'mp4'),
-                    custom_properties={
-                        'basic_data': movie_data,
-                        'detailed_fetched': False
-                    },
+                    custom_properties=_with_provider_language(
+                        {'basic_data': movie_data, 'detailed_fetched': False}, movie_data
+                    ),
                     last_seen=scan_start_time or timezone.now()  # Mark as seen during this scan
                 )
                 relations_to_create.append(relation)
@@ -1029,10 +1044,9 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
                 # Merge so list sync updates basic_data without dropping detail
                 # payloads or detailed_fetched / episodes_fetched flags.
                 existing_rel_cp = relation.custom_properties or {}
-                relation.custom_properties = {
-                    **existing_rel_cp,
-                    'basic_data': series_data,
-                }
+                relation.custom_properties = _with_provider_language(
+                    {**existing_rel_cp, 'basic_data': series_data}, series_data
+                )
                 relation.last_seen = scan_start_time or timezone.now()  # Mark as seen during this scan
                 relations_to_update.append(relation)
             else:
@@ -1042,11 +1056,14 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
                     series=series,
                     category=category,
                     external_series_id=series_id,
-                    custom_properties={
-                        'basic_data': series_data,
-                        'detailed_fetched': False,
-                        'episodes_fetched': False
-                    },
+                    custom_properties=_with_provider_language(
+                        {
+                            'basic_data': series_data,
+                            'detailed_fetched': False,
+                            'episodes_fetched': False,
+                        },
+                        series_data,
+                    ),
                     last_seen=scan_start_time or timezone.now()  # Mark as seen during this scan
                 )
                 relations_to_create.append(relation)
@@ -1540,10 +1557,10 @@ def batch_process_episodes(account, series, episodes_data, scan_start_time=None,
                 relation.episode = episode
                 relation.series_relation = series_relation
                 relation.container_extension = episode_data.get('container_extension', 'mp4')
-                relation.custom_properties = {
-                    'info': episode_data,
-                    'season_number': season_number,
-                }
+                relation.custom_properties = _with_provider_language(
+                    {'info': episode_data, 'season_number': season_number},
+                    {**episode_data, **(info or {})},
+                )
                 relation.last_seen = scan_start_time or timezone.now()  # Mark as seen during this scan
                 relations_to_update.append(relation)
             else:
@@ -1554,10 +1571,10 @@ def batch_process_episodes(account, series, episodes_data, scan_start_time=None,
                     series_relation=series_relation,
                     stream_id=episode_id,
                     container_extension=episode_data.get('container_extension', 'mp4'),
-                    custom_properties={
-                        'info': episode_data,
-                        'season_number': season_number,
-                    },
+                    custom_properties=_with_provider_language(
+                        {'info': episode_data, 'season_number': season_number},
+                        {**episode_data, **(info or {})},
+                    ),
                     last_seen=scan_start_time or timezone.now()  # Mark as seen during this scan
                 )
                 relations_to_create.append(relation)
@@ -2446,6 +2463,14 @@ def refresh_movie_advanced_data(m3u_movie_relation_id, force_refresh=False):
                 if cleaned_movie_data:
                     relation_custom_props['movie_data'] = cleaned_movie_data
                 relation_custom_props['detailed_fetched'] = True
+
+                # Basic-data list scans already set this when the provider exposes
+                # a language there; the detailed payload can surface one (e.g. in
+                # `audio`) that the list entry didn't.
+                if not relation_custom_props.get('language') and cleaned_info:
+                    detailed_language = extract_provider_language(cleaned_info)
+                    if detailed_language:
+                        relation_custom_props['language'] = detailed_language
 
                 relation.custom_properties = relation_custom_props
                 relation.last_advanced_refresh = now
