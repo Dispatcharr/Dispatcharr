@@ -3,16 +3,10 @@ import tempfile
 
 from django.test import SimpleTestCase
 
-from apps.channels.tasks import _dvr_finalized_events
-from apps.connect.models import SUPPORTED_EVENTS
-from core.models import SystemEvent
+from apps.channels.tasks import _dvr_recording_end_payload
 
 
-def _names(events):
-    return [name for name, _ in events]
-
-
-class DvrFinalizedEventsTests(SimpleTestCase):
+class DvrRecordingEndPayloadTests(SimpleTestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.path = os.path.join(self.tmp.name, "rec.mkv")
@@ -22,73 +16,85 @@ class DvrFinalizedEventsTests(SimpleTestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def test_completed_recording_is_finalized_only(self):
+    def test_completed_recording_succeeds(self):
         cp = {
             "status": "completed",
             "bytes_written": 1234,
             "file_url": "/api/channels/recordings/7/file/",
+            "file_name": "rec.mkv",
         }
-        events = _dvr_finalized_events(cp, self.path, True)
-        self.assertEqual(_names(events), ["recording_finalized"])
-        payload = events[0][1]
+        payload = _dvr_recording_end_payload(cp, self.path, True)
+        self.assertEqual(payload["outcome"], "success")
+        self.assertTrue(payload["has_file"])
+        self.assertIsNone(payload["failure_reason"])
         self.assertEqual(payload["status"], "completed")
         self.assertEqual(payload["file_path"], self.path)
+        self.assertEqual(payload["file_name"], "rec.mkv")
         self.assertEqual(payload["file_size"], 32)
-        self.assertTrue(payload["has_file"])
         self.assertTrue(payload["remux_success"])
         self.assertEqual(payload["bytes_written"], 1234)
         self.assertEqual(payload["file_url"], "/api/channels/recordings/7/file/")
         self.assertIsNone(payload["interrupted_reason"])
 
-    def test_interrupted_with_a_file_is_finalized_not_failed(self):
+    def test_interrupted_with_a_file_still_succeeds(self):
         cp = {"status": "interrupted", "interrupted_reason": "stream_lost"}
-        events = _dvr_finalized_events(cp, self.path, True)
-        self.assertEqual(_names(events), ["recording_finalized"])
-        self.assertEqual(events[0][1]["interrupted_reason"], "stream_lost")
+        payload = _dvr_recording_end_payload(cp, self.path, True)
+        self.assertEqual(payload["outcome"], "success")
+        self.assertEqual(payload["interrupted_reason"], "stream_lost")
 
-    def test_failed_remux_adds_recording_failed(self):
+    def test_failed_remux_is_a_failure_with_reason(self):
         cp = {"status": "interrupted", "bytes_written": 0}
-        events = _dvr_finalized_events(cp, self.path, False)
-        self.assertEqual(_names(events), ["recording_finalized", "recording_failed"])
-        self.assertIs(events[0][1], events[1][1])
-        self.assertFalse(events[0][1]["has_file"])
+        payload = _dvr_recording_end_payload(cp, self.path, False)
+        self.assertEqual(payload["outcome"], "failed")
+        self.assertFalse(payload["has_file"])
+        self.assertEqual(payload["failure_reason"], "remux_failed")
 
-    def test_missing_file_adds_recording_failed_even_if_remux_claimed_success(self):
+    def test_missing_file_is_a_failure_even_if_remux_claimed_success(self):
         missing = os.path.join(self.tmp.name, "gone.mkv")
-        events = _dvr_finalized_events({"status": "completed"}, missing, True)
-        self.assertEqual(_names(events), ["recording_finalized", "recording_failed"])
-        self.assertIsNone(events[0][1]["file_size"])
+        payload = _dvr_recording_end_payload({"status": "completed"}, missing, True)
+        self.assertEqual(payload["outcome"], "failed")
+        self.assertEqual(payload["failure_reason"], "missing_file")
+        self.assertIsNone(payload["file_size"])
 
-    def test_empty_file_counts_as_no_file(self):
+    def test_empty_file_is_a_failure(self):
         empty = os.path.join(self.tmp.name, "empty.mkv")
         open(empty, "wb").close()
-        events = _dvr_finalized_events({"status": "completed"}, empty, True)
-        self.assertIn("recording_failed", _names(events))
+        payload = _dvr_recording_end_payload({"status": "completed"}, empty, True)
+        self.assertEqual(payload["outcome"], "failed")
+        self.assertEqual(payload["failure_reason"], "empty_file")
 
     def test_malformed_inputs_never_raise(self):
         for cp in (None, [], "x", 5, {"status": None, "bytes_written": "12"}):
             for path in (None, "", 3, self.path):
-                events = _dvr_finalized_events(cp, path, remux_success="yes")
-                self.assertEqual(events[0][0], "recording_finalized")
-                payload = events[0][1]
+                payload = _dvr_recording_end_payload(cp, path, remux_success="yes")
                 self.assertIn(payload["status"], ("unknown",))
                 self.assertIsNone(payload["bytes_written"])
                 self.assertIsNone(payload["interrupted_reason"])
                 self.assertIs(payload["remux_success"], True)
 
     def test_bool_bytes_written_is_rejected(self):
-        events = _dvr_finalized_events({"bytes_written": True}, self.path, True)
-        self.assertIsNone(events[0][1]["bytes_written"])
+        payload = _dvr_recording_end_payload({"bytes_written": True}, self.path, True)
+        self.assertIsNone(payload["bytes_written"])
+
+    def test_file_name_falls_back_to_basename_of_final_path(self):
+        payload = _dvr_recording_end_payload({"status": "completed"}, self.path, True)
+        self.assertEqual(payload["file_name"], "rec.mkv")
 
     def test_payload_is_json_serialisable(self):
         import json
 
-        events = _dvr_finalized_events({"status": "completed"}, self.path, True)
-        json.dumps(events[0][1])
+        payload = _dvr_recording_end_payload({"status": "completed"}, self.path, True)
+        json.dumps(payload)
 
-    def test_events_are_registered_for_subscriptions_and_the_event_log(self):
-        types = {key for key, _ in SystemEvent.EVENT_TYPES}
-        for name in ("recording_finalized", "recording_failed"):
-            self.assertIn(name, SUPPORTED_EVENTS)
-            self.assertIn(name, types)
+    def test_start_and_end_time_pass_through_when_given(self):
+        payload = _dvr_recording_end_payload(
+            {"status": "completed"}, self.path, True,
+            start_time="2026-09-15T04:00:00+08:00", end_time="2026-09-15T04:30:00+08:00",
+        )
+        self.assertEqual(payload["start_time"], "2026-09-15T04:00:00+08:00")
+        self.assertEqual(payload["end_time"], "2026-09-15T04:30:00+08:00")
 
+    def test_start_and_end_time_default_to_none(self):
+        payload = _dvr_recording_end_payload({"status": "completed"}, self.path, True)
+        self.assertIsNone(payload["start_time"])
+        self.assertIsNone(payload["end_time"])

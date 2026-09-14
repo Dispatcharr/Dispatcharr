@@ -9,8 +9,6 @@ SUPPORTED_EVENTS = {
     "stream_switch": "Stream Switch",
     "recording_start": "Recording Started",
     "recording_end": "Recording Ended",
-    "recording_finalized": "Recording Finalized",
-    "recording_failed": "Recording Failed",
     "epg_refresh": "EPG Refreshed",
     "m3u_refresh": "M3U Refreshed",
     "client_connect": "Client Connected",
