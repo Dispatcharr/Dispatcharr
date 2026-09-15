@@ -15,7 +15,7 @@ from django.db import close_old_connections
 from ...server import ProxyServer
 from ...redis_keys import RedisKeys
 from ...constants import ChannelMetadataField
-from .buffer import FMP4StreamBuffer
+from ..buffer import OutputStreamBuffer
 from .manager import FMP4_STATE_ACTIVE, INIT_SEGMENT_TIMEOUT
 from ...config_helper import ConfigHelper
 from ...utils import get_logger, resolve_channel_display_name
@@ -197,9 +197,9 @@ class FMP4StreamGenerator:
         proxy_server = ProxyServer.get_instance()
         self.proxy_server = proxy_server
 
-        # Build a local FMP4StreamBuffer reader (shares Redis keyspace, no local state)
+        # Build a local OutputStreamBuffer reader (shares Redis keyspace, no local state)
         from core.utils import RedisClient
-        self.fmp4_buffer = FMP4StreamBuffer(
+        self.fmp4_buffer = OutputStreamBuffer(
             self.channel_id, redis_client=RedisClient.get_buffer(), fmt=self.fmt
         )
 

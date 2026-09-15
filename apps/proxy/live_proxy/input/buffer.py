@@ -195,7 +195,7 @@ class StreamBuffer:
             if flushed:
                 self.chunk_available.set()
                 self.chunk_available.clear()
-            logger.info(
+            logger.debug(
                 f"Marked stream discontinuity for channel {self.channel_id} "
                 f"at buffer index {next_index} (flushed={flushed})"
             )

@@ -1,7 +1,7 @@
 from django.urls import path, include
 
 from apps.proxy import stats_views
-from apps.proxy.live_proxy.views import hls_playlist, hls_segment
+from apps.proxy.live_proxy.output.hls.views import hls_playlist, hls_segment
 
 app_name = 'proxy'
 

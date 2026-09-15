@@ -1,13 +1,15 @@
 """
-Unit tests for the HLS TS segmenter. Dependency-free (stdlib unittest, no
-Django/Redis), so they run standalone:
+Unit tests for the HLS TS segmenter.
 
-    python3 -m unittest apps.proxy.live_proxy.output.hls.test_segmenter
+The segmenter itself is dependency-free (stdlib only, no Django/Redis). These
+tests stay on unittest so they can still be run without the Django harness:
+
+    python3 -m unittest apps.proxy.live_proxy.tests.test_hls_segmenter
 """
 
 import unittest
 
-from .segmenter import (
+from apps.proxy.live_proxy.output.hls.segmenter import (
     TSSegmenter,
     TS_PACKET_SIZE,
     extract_pts,

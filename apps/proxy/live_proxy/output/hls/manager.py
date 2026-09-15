@@ -16,7 +16,7 @@ import threading
 import time
 
 from core.utils import RedisClient
-from ..fmp4.buffer import FMP4StreamBuffer
+from ..buffer import OutputStreamBuffer
 from .segmenter import TSSegmenter
 from ...redis_keys import RedisKeys
 from ...config_helper import ConfigHelper
@@ -89,11 +89,11 @@ class HLSOutputManager:
         # would, keeping the frozen value truthful (RFC 8216 4.3.3.1).
         self.adv_target = int(2 * self.segment_duration + 0.999)
 
-        # Same Redis-backed chunk store the fMP4 manager uses; it is
+        # Same Redis-backed chunk store other output managers use; it is
         # format-parameterized by design ("adding a new output format only
         # requires a new manager" - redis_keys.py). One HLS segment per
         # chunk; the chunk index doubles as the HLS media sequence number.
-        self.segment_buffer = FMP4StreamBuffer(
+        self.segment_buffer = OutputStreamBuffer(
             channel_id, redis_client=RedisClient.get_buffer(), fmt=fmt
         )
         # Size the chunk TTL to the advertised window plus ~one playlist of
@@ -115,7 +115,7 @@ class HLSOutputManager:
         # Seed the rolling window + frozen target from an existing descriptor so
         # a mid-session worker restart/takeover does not clobber the playlist to
         # a fresh window (MEDIA-SEQUENCE must never regress; RFC 8216 6.2.2). The
-        # FMP4StreamBuffer already restores its chunk index from Redis, so the
+        # OutputStreamBuffer already restores its chunk index from Redis, so the
         # seeded window's seqs line up with the segments still in the buffer.
         if self._redis:
             try:
@@ -270,14 +270,12 @@ class HLSOutputManager:
                     # nothing has expired (same assumption as the buffer reader).
                     # Advance by what we actually feed so a discontinuity cut
                     # lands on the real boundary, not a padded new_index.
-                    disc_at = set()
                     end_index = local_index + len(chunks)
-                    if hasattr(self.ts_buffer, 'discontinuities_in_range'):
-                        disc_at = set(
-                            self.ts_buffer.discontinuities_in_range(
-                                local_index, end_index
-                            )
+                    disc_at = set(
+                        self.ts_buffer.discontinuities_in_range(
+                            local_index, end_index
                         )
+                    )
                     chunk_index = local_index
                     for chunk in chunks:
                         if not self.running:
@@ -321,14 +319,14 @@ class HLSOutputManager:
         tail = segmenter.flag_discontinuity()
         if tail is not None:
             self._store_segment(tail)
-        logger.info(
+        logger.debug(
             f"[HLS:{self.channel_id}] Discontinuity cut"
             f"{f' ({reason})' if reason else ''}; next segment will be marked"
         )
 
     def _store_segment(self, segment):
         """Store one finished segment and refresh the playlist descriptor."""
-        if not self.segment_buffer.put_fragment(segment.data):
+        if not self.segment_buffer.put_chunk(segment.data):
             return
         seq = self.segment_buffer.index
         self._window.append({
